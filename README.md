@@ -91,6 +91,7 @@ All configuration is through environment variables.
 | `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
 | `ROUTER_BACKFILL_SECONDS` | default history window a stream negentropy-backfills before its live tail; per-stream `backfillSeconds` overrides it | `0` (live-tail only) |
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
+| `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation; a stuck upstream gives up and leans on its live tail. Raise for genuinely large historical fills | `600` |
 
 ## The router: mirror from upstream relays
 
@@ -137,6 +138,14 @@ negentropy-reconciles history. **Up** re-reconciles the store against the
 upstream every `ROUTER_UP_INTERVAL_SECONDS` and publishes only what the
 upstream is missing — set reconciliation gives echo-suppression for free, so an
 event just pulled *down* from a relay is never pushed back *up* to it.
+
+The **live tail works against every relay**; the **negentropy backfill depends
+on the upstream**. Some relays advertise NIP-77 but their reconciliation never
+converges (no download, no error). Each negentropy session is therefore capped
+at `ROUTER_NEG_TIMEOUT_SECONDS`: a stuck upstream gives up, logs it, and leans
+on its live tail, while relays that reconcile cleanly backfill in full. So a
+brand-new store is filled forward from connect universally, and backfilled
+historically for the relays whose NIP-77 cooperates.
 
 While backfilling, the router logs progress and an ETA to "useful" (backfill
 complete), so you can tell how long the initial fill will take:

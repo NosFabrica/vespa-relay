@@ -41,6 +41,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
@@ -106,6 +107,9 @@ class MirrorRouter(
     private val downUpstreams = config.downUpstreams()
     private val upUpstreams = config.upUpstreams()
     private val progress = BackfillProgress()
+
+    // Hard cap per negentropy session, from ROUTER_NEG_TIMEOUT_SECONDS.
+    private val negTimeoutMs = config.negTimeoutSec * 1000
 
     fun start(): MirrorRouter {
         if (downUpstreams.isEmpty() && upUpstreams.isEmpty()) {
@@ -192,8 +196,9 @@ class MirrorRouter(
      * Progress is reported through [progress]. Failures are logged, never fatal.
      */
     private suspend fun backfill(ups: List<MirrorUpstream>) {
-        // Concurrently, so a slow upstream doesn't block the rest (no head-of-line
-        // blocking) — each reports its own progress and finishes independently.
+        // Concurrently: a fast upstream (ditto reconciles in seconds) shouldn't
+        // wait on a slow or stuck one. Each backfill is time-boxed (below), so a
+        // negentropy session that never converges gives up instead of blocking.
         coroutineScope {
             ups.forEachIndexed { idx, up -> launch { backfillOne(idx, up) } }
         }
@@ -206,20 +211,31 @@ class MirrorRouter(
         val until = nowSeconds()
         val window = up.filter.copy(since = until - up.backfillSeconds, until = until)
         try {
-            val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+            // Hard cap: some relays advertise NIP-77 but their negentropy never
+            // converges (no download, no idle-timeout either). Bound each session
+            // so it fails cleanly and the live tail carries that upstream instead.
             val result =
-                client.negentropySyncOrFetch(
-                    relay = up.url,
-                    filter = window,
-                    localEntries = local,
-                    onProgress = { needSoFar, downloaded -> progress.update(idx, needSoFar, downloaded) },
-                    onEvent = { event -> if (up.filter.match(event)) inbound.trySend(Inbound(event, up.trusted)) },
+                withTimeoutOrNull(negTimeoutMs) {
+                    val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+                    client.negentropySyncOrFetch(
+                        relay = up.url,
+                        filter = window,
+                        idleTimeoutMs = NEG_IDLE_MS,
+                        localEntries = local,
+                        onProgress = { needSoFar, downloaded -> progress.update(idx, needSoFar, downloaded) },
+                        onEvent = { event -> if (up.filter.match(event)) inbound.trySend(Inbound(event, up.trusted)) },
+                    )
+                }
+            if (result == null) {
+                progress.done(idx, 0)
+                System.err.println("router: backfill ${up.url.url} timed out after ${negTimeoutMs / 1000}s — live tail continues")
+            } else {
+                progress.done(idx, result.downloaded)
+                System.err.println(
+                    "router: backfill ${up.url.url} downloaded ${result.downloaded}" +
+                        if (result.pagedFallback) " (paged REQ fallback — no NIP-77)" else " (negentropy)",
                 )
-            progress.done(idx, result.downloaded)
-            System.err.println(
-                "router: backfill ${up.url.url} downloaded ${result.downloaded}" +
-                    if (result.pagedFallback) " (paged REQ fallback — no NIP-77)" else " (negentropy)",
-            )
+            }
         } catch (e: Exception) {
             progress.done(idx, 0)
             System.err.println("router: backfill ${up.url.url} failed: ${e.message}")
@@ -241,28 +257,38 @@ class MirrorRouter(
                 var rounds = 0
                 var pushedThisPass: Long
                 var pushedThisWindow = 0L
+                var timedOut = false
                 do {
                     pushedThisPass = 0
-                    val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(up.filter))
-                    client.negentropyReconcile(
-                        relay = up.url,
-                        filter = up.filter,
-                        localEntries = local,
-                        onHaveIds = { ids ->
-                            val events: List<Event> = store.query(Filter(ids = ids))
-                            for (event in events) {
-                                client.publish(event, setOf(up.url))
-                                pushed.incrementAndGet()
-                                pushedThisPass++
-                                delay(UP_PUBLISH_PACE_MS)
-                            }
-                        },
-                        onNeedIds = { /* up-only: we don't pull here, the down tail does */ },
-                    )
+                    val completed =
+                        withTimeoutOrNull(negTimeoutMs) {
+                            val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(up.filter))
+                            client.negentropyReconcile(
+                                relay = up.url,
+                                filter = up.filter,
+                                localEntries = local,
+                                idleTimeoutMs = NEG_IDLE_MS,
+                                onHaveIds = { ids ->
+                                    val events: List<Event> = store.query(Filter(ids = ids))
+                                    for (event in events) {
+                                        client.publish(event, setOf(up.url))
+                                        pushed.incrementAndGet()
+                                        pushedThisPass++
+                                        delay(UP_PUBLISH_PACE_MS)
+                                    }
+                                },
+                                onNeedIds = { /* up-only: we don't pull here, the down tail does */ },
+                            )
+                            true
+                        }
+                    timedOut = completed == null
                     pushedThisWindow += pushedThisPass
                     rounds++
-                } while (pushedThisPass > 0 && rounds < UP_MAX_ROUNDS && scope.isActive)
-                System.err.println("router: up ${up.url.url} pushed $pushedThisWindow event(s) upstream ($rounds round(s))")
+                } while (pushedThisPass > 0 && !timedOut && rounds < UP_MAX_ROUNDS && scope.isActive)
+                System.err.println(
+                    "router: up ${up.url.url} pushed $pushedThisWindow event(s) upstream ($rounds round(s))" +
+                        if (timedOut) " [reconcile timed out]" else "",
+                )
             } catch (e: Exception) {
                 System.err.println("router: up ${up.url.url} failed: ${e.message}")
             }
@@ -395,6 +421,10 @@ class MirrorRouter(
         private const val PROGRESS_INTERVAL_MS = 15_000L
         private const val UP_PUBLISH_PACE_MS = 40L
         private const val UP_MAX_ROUNDS = 8
+
+        // Idle (no protocol frames for this long) aborts a negentropy session,
+        // below the hard [negTimeoutMs] cap.
+        private const val NEG_IDLE_MS = 30_000L
 
         private fun fmtDuration(ms: Long): String {
             val s = ms / 1000

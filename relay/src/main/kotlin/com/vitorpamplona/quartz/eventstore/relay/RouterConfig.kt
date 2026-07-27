@@ -62,6 +62,11 @@ data class RouterConfig(
     // How often (seconds) an `up`/`both` stream re-reconciles the store against
     // its upstream to push newly-arrived local events. From ROUTER_UP_INTERVAL_SECONDS.
     val upIntervalSec: Long = 300,
+    // Hard cap (seconds) on a single negentropy reconciliation. Some relays
+    // advertise NIP-77 but never converge; this bounds a stuck session so it
+    // fails cleanly and the live tail carries that upstream. From
+    // ROUTER_NEG_TIMEOUT_SECONDS. Raise it for genuinely large historical fills.
+    val negTimeoutSec: Long = 600,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.DOWN)
@@ -122,13 +127,15 @@ object RouterConfigLoader {
         val raw = inline ?: fromFile ?: return null
         val backfillDefault = env["ROUTER_BACKFILL_SECONDS"]?.trim()?.toLongOrNull() ?: 0L
         val upInterval = env["ROUTER_UP_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 300L
-        return parse(raw, backfillDefault, upInterval)
+        val negTimeout = env["ROUTER_NEG_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 600L
+        return parse(raw, backfillDefault, upInterval, negTimeout)
     }
 
     fun parse(
         hocon: String,
         backfillDefault: Long = 0L,
         upIntervalSec: Long = 300L,
+        negTimeoutSec: Long = 600L,
     ): RouterConfig {
         val cfg = ConfigFactory.parseString(hocon)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
@@ -152,7 +159,7 @@ object RouterConfigLoader {
                     backfillSeconds = if (s.hasPath("backfillSeconds")) s.getLong("backfillSeconds") else backfillDefault,
                 )
             }
-        return RouterConfig(connTimeout, streams, upIntervalSec)
+        return RouterConfig(connTimeout, streams, upIntervalSec, negTimeoutSec)
     }
 
     /**
