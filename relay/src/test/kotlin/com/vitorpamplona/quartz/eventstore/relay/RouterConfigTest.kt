@@ -84,14 +84,15 @@ class RouterConfigTest {
 
         assertEquals(12, ups.size)
         assertTrue(ups.all { it.filter.kinds == listOf(0, 3, 5, 1984, 10000, 30000) })
-        assertTrue(cfg.skippedUpDirections().isEmpty())
+        // All streams are down, so nothing to push up.
+        assertTrue(cfg.upUpstreams().isEmpty())
         // Every configured url normalized and survived.
         assertTrue(ups.any { it.url.url.contains("relay.primal.net") })
         assertTrue(ups.any { it.url.url.contains("directory.yabu.me") })
     }
 
     @Test
-    fun `up and both directions parse but are reported as skipped`() {
+    fun `down up and both expand into the right direction sets`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -115,15 +116,17 @@ class RouterConfigTest {
                 """.trimIndent(),
             )
 
-        // both counts as a down upstream too; up does not.
         val downUrls = cfg.downUpstreams().map { it.url.url }
+        val upUrls = cfg.upUpstreams().map { it.url.url }
+
+        // both counts in each direction; up-only and down-only in one each.
         assertTrue(downUrls.any { it.contains("b.example") }, "both should mirror down")
         assertTrue(downUrls.any { it.contains("c.example") })
         assertTrue(downUrls.none { it.contains("a.example") }, "pure up should not mirror down")
 
-        val skipped = cfg.skippedUpDirections()
-        assertTrue(skipped.any { it.startsWith("pushUp=") })
-        assertTrue(skipped.any { it.startsWith("twoWay=") })
+        assertTrue(upUrls.any { it.contains("b.example") }, "both should mirror up")
+        assertTrue(upUrls.any { it.contains("a.example") })
+        assertTrue(upUrls.none { it.contains("c.example") }, "pure down should not mirror up")
     }
 
     @Test

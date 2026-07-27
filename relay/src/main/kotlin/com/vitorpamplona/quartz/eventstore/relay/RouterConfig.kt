@@ -44,9 +44,9 @@ import java.io.File
  *     }
  *
  * `dir` is `down` (mirror upstream events into our store), `up` (publish our
- * store's matching events upstream), or `both`. Only `down` is implemented; a
- * config with `up`/`both` parses, and [MirrorRouter] logs that it is skipping
- * that direction.
+ * store's matching events upstream), or `both` (both directions on the same
+ * relay). All three are implemented; `up` reconciles our store against the
+ * upstream and pushes what the upstream is missing.
  *
  * Two fields extend strfry's schema, both optional:
  *  - `trusted` (bool, default false): skip signature verification for events
@@ -59,15 +59,20 @@ import java.io.File
 data class RouterConfig(
     val connectionTimeoutSec: Long,
     val streams: List<MirrorStream>,
+    // How often (seconds) an `up`/`both` stream re-reconciles the store against
+    // its upstream to push newly-arrived local events. From ROUTER_UP_INTERVAL_SECONDS.
+    val upIntervalSec: Long = 300,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
-    fun downUpstreams(): List<MirrorUpstream> =
-        streams
-            .filter { it.dir == MirrorDirection.DOWN || it.dir == MirrorDirection.BOTH }
-            .flatMap { s -> s.urls.map { MirrorUpstream(s.name, it, s.filter, s.trusted, s.backfillSeconds) } }
+    fun downUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.DOWN)
 
-    /** Stream names that ask for an unimplemented direction, for a one-line warning. */
-    fun skippedUpDirections(): List<String> = streams.filter { it.dir != MirrorDirection.DOWN }.map { "${it.name}=${it.dir.wire}" }
+    /** Every (stream, url) pair whose direction pushes our events up to the upstream. */
+    fun upUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.UP)
+
+    private fun upstreamsFor(want: MirrorDirection): List<MirrorUpstream> =
+        streams
+            .filter { it.dir == want || it.dir == MirrorDirection.BOTH }
+            .flatMap { s -> s.urls.map { MirrorUpstream(s.name, it, s.filter, s.trusted, s.backfillSeconds) } }
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */
@@ -107,7 +112,8 @@ enum class MirrorDirection(
  * Loads [RouterConfig] from the environment. `ROUTER_CONFIG` holds the HOCON
  * inline; `ROUTER_CONFIG_FILE` points at a file holding it. Neither set ⇒ no
  * router (returns null; the relay serves without mirroring). `ROUTER_BACKFILL_SECONDS`
- * sets the default backfill window for streams that don't state their own.
+ * sets the default backfill window for streams that don't state their own;
+ * `ROUTER_UP_INTERVAL_SECONDS` sets how often up/both streams re-reconcile.
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
@@ -115,12 +121,14 @@ object RouterConfigLoader {
         val fromFile = env["ROUTER_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
         val raw = inline ?: fromFile ?: return null
         val backfillDefault = env["ROUTER_BACKFILL_SECONDS"]?.trim()?.toLongOrNull() ?: 0L
-        return parse(raw, backfillDefault)
+        val upInterval = env["ROUTER_UP_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 300L
+        return parse(raw, backfillDefault, upInterval)
     }
 
     fun parse(
         hocon: String,
         backfillDefault: Long = 0L,
+        upIntervalSec: Long = 300L,
     ): RouterConfig {
         val cfg = ConfigFactory.parseString(hocon)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
@@ -144,7 +152,7 @@ object RouterConfigLoader {
                     backfillSeconds = if (s.hasPath("backfillSeconds")) s.getLong("backfillSeconds") else backfillDefault,
                 )
             }
-        return RouterConfig(connTimeout, streams)
+        return RouterConfig(connTimeout, streams, upIntervalSec)
     }
 
     /**

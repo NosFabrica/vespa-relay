@@ -39,8 +39,23 @@ services:
       RELAY_NAME: ${RELAY_NAME:-vespa-relay}
       # 64-hex pubkey whose web of trust ranks anonymous searches; empty = untrusted.
       DEFAULT_OBSERVER: ${DEFAULT_OBSERVER:-}
+      # Router (upstream mirror). Off by default. To turn it on, drop a strfry-style
+      # streams config next to this file (see router.conf.example) and start with:
+      #   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
+      #   ROUTER_BACKFILL_SECONDS=86400 docker compose up --build
+      # The volume line below mounts ./router.conf when ROUTER_CONFIG_FILE is set.
+      ROUTER_CONFIG_FILE: ${ROUTER_CONFIG_FILE:-}
+      # Default history window (seconds) a stream negentropy-backfills before its
+      # live tail; per-stream `backfillSeconds` overrides it. 0 = live-tail only.
+      ROUTER_BACKFILL_SECONDS: ${ROUTER_BACKFILL_SECONDS:-0}
+      # How often (seconds) up/both streams re-reconcile to push new local events.
+      ROUTER_UP_INTERVAL_SECONDS: ${ROUTER_UP_INTERVAL_SECONDS:-300}
     ports:
       - "${RELAY_PORT:-7777}:7777"
+    volumes:
+      # Mounts your local ./router.conf into the container when the router is on.
+      # Harmless when ROUTER_CONFIG_FILE is empty (nothing reads the file).
+      - ${ROUTER_CONFIG_LOCAL:-./router.conf.example}:/etc/vespa-relay/router.conf:ro
     restart: unless-stopped
 
 volumes:

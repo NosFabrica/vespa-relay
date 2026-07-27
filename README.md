@@ -90,6 +90,7 @@ All configuration is through environment variables.
 | `ROUTER_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store | unset ⇒ router off |
 | `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
 | `ROUTER_BACKFILL_SECONDS` | default history window a stream negentropy-backfills before its live tail; per-stream `backfillSeconds` overrides it | `0` (live-tail only) |
+| `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
 
 ## The router: mirror from upstream relays
 
@@ -116,8 +117,8 @@ streams {
 
 Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
 
-- **`dir`** — `down` mirrors upstream events into our store. `up` / `both`
-  parse but are not yet implemented; the router logs and skips them.
+- **`dir`** — `down` mirrors upstream events into our store; `up` publishes our
+  matching events to the upstream; `both` does each on the same relay.
 - **`filter`** — the NIP-01 filter to mirror (kinds, authors, `#tags`, …).
 - **`backfillSeconds`** *(optional)* — history window to negentropy-backfill
   before the live tail takes over. Upstreams without NIP-77 fall back to paged
@@ -130,6 +131,36 @@ The router shares the relay's Vespa store, so mirrored events are immediately
 searchable. It runs one outbound connection per upstream (reconnect and
 re-subscribe are handled for you) and logs unreachable upstreams rather than
 failing — a paused or down relay in the list is skipped, not fatal.
+
+**Down** keeps a live subscription open and, with a backfill window, first
+negentropy-reconciles history. **Up** re-reconciles the store against the
+upstream every `ROUTER_UP_INTERVAL_SECONDS` and publishes only what the
+upstream is missing — set reconciliation gives echo-suppression for free, so an
+event just pulled *down* from a relay is never pushed back *up* to it.
+
+While backfilling, the router logs progress and an ETA to "useful" (backfill
+complete), so you can tell how long the initial fill will take:
+
+```
+router: backfill 4/12 upstream(s), 12,340/29,110 events (42%), 851/s, ETA ~0:03:17 to useful
+router: backfill complete — 41,880 events from 12 upstream(s) in 0:04:52; live tail now streaming
+```
+
+### Enabling it under docker compose
+
+`docker-compose.yml` wires the router env through and mounts `./router.conf`.
+Copy the bundled example, then start with the router on:
+
+```bash
+cp router.conf.example router.conf   # then edit the relay list / filters
+ROUTER_CONFIG_LOCAL=./router.conf \
+ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
+ROUTER_BACKFILL_SECONDS=86400 \
+docker compose up --build
+```
+
+Leave `ROUTER_CONFIG_FILE` unset (the default) and the relay serves without
+mirroring.
 
 ## Supported NIPs
 
