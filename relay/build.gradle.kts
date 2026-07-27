@@ -12,6 +12,10 @@ dependencies {
     implementation(libs.kotlinx.coroutines)
     // NIP-86 ban-list state is persisted to a JSON file (RelayStateStore).
     implementation(libs.kotlinx.serialization.json)
+    // The router mirrors kinds from upstream relays: OkHttp for the outbound
+    // websockets quartz's NostrClient dials, typesafe-config for the streams HOCON.
+    implementation(libs.okhttp)
+    implementation(libs.typesafe.config)
     // The Ktor server: serveRelay binds a port over the Netty engine.
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.websockets)

@@ -8,8 +8,10 @@ Point a [Nostr](https://nostr.com) client at it. It speaks NIP-01 filters and NI
 search over websockets. Log in with NIP-42 to rank results by your own web of trust.
 Anonymous searches use the operator's default. A web search UI ships on the same port.
 
-It serves what is in the store. Filling the store from the network — crawling and
-trust-sync — is a separate job.
+It serves what is in the store. To fill the store from the network, the built-in
+**router** mirrors events from upstream relays — a strfry-style `streams` config
+of live subscriptions plus negentropy backfill (see [The router](#the-router-mirror-from-upstream-relays)).
+Large-scale crawling and trust-sync remain a separate job.
 
 ## Run it
 
@@ -80,6 +82,54 @@ All configuration is through environment variables.
 | `RELAY_ADMIN_PUBKEYS` | comma/space-separated 64-hex admin keys; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth) | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
+
+### Router (upstream mirror)
+
+| var | meaning | default |
+|---|---|---|
+| `ROUTER_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store | unset ⇒ router off |
+| `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
+| `ROUTER_BACKFILL_SECONDS` | default history window a stream negentropy-backfills before its live tail; per-stream `backfillSeconds` overrides it | `0` (live-tail only) |
+
+## The router: mirror from upstream relays
+
+Point `ROUTER_CONFIG` (or `ROUTER_CONFIG_FILE`) at a strfry-style `streams`
+config and the relay keeps a live subscription open against each upstream,
+mirroring matching events into the same store it serves:
+
+```hocon
+connectionTimeout = 20
+streams {
+  popular {
+    dir    = "down"
+    filter = { "kinds": [0, 3, 5, 1984, 10000, 30000] }
+    urls   = [ "wss://relay.primal.net", "wss://relay.damus.io", "wss://purplepag.es" ]
+  }
+  mirrors {
+    dir             = "down"
+    filter          = { "kinds": [0, 3, 5, 1984, 10000, 30000] }
+    backfillSeconds = 86400   # negentropy-reconcile the last day, then live-tail
+    urls            = [ "wss://profiles.nostr1.com", "wss://directory.yabu.me", "wss://relay.ditto.pub" ]
+  }
+}
+```
+
+Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
+
+- **`dir`** — `down` mirrors upstream events into our store. `up` / `both`
+  parse but are not yet implemented; the router logs and skips them.
+- **`filter`** — the NIP-01 filter to mirror (kinds, authors, `#tags`, …).
+- **`backfillSeconds`** *(optional)* — history window to negentropy-backfill
+  before the live tail takes over. Upstreams without NIP-77 fall back to paged
+  REQ automatically. `0` (default, or `ROUTER_BACKFILL_SECONDS`) is live-only.
+- **`trusted`** *(optional)* — skip signature verification for this upstream's
+  events. Off by default; every mirrored event is verified and re-checked
+  against the stream filter before it enters the store.
+
+The router shares the relay's Vespa store, so mirrored events are immediately
+searchable. It runs one outbound connection per upstream (reconnect and
+re-subscribe are handled for you) and logs unreachable upstreams rather than
+failing — a paused or down relay in the list is skipped, not fatal.
 
 ## Supported NIPs
 

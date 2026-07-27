@@ -9,6 +9,12 @@ vespaEventStore = "afa1b4627c"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
+# The router mirrors kinds from upstream relays. OkHttp drives the outbound
+# websockets (quartz's BasicOkHttpWebSocket) and typesafe-config parses the
+# strfry-style `streams { }` HOCON. Both already ride in transitively from
+# quartz / vespa-eventstore; pinned here so the router's direct use is explicit.
+okhttp = "5.4.0"
+typesafeConfig = "1.4.9"
 spotless = "8.8.0"
 ktlint = "1.8.0"
 
@@ -25,6 +31,10 @@ ktor-server-websockets = { module = "io.ktor:ktor-server-websockets", version.re
 # serveRelay bundles the Netty engine (batteries-included) so a consumer — or the
 # standalone main() — can bind a port without wiring an engine itself.
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
+# Outbound upstream websockets for the router (quartz's BasicOkHttpWebSocket
+# takes an OkHttpClient factory) and the HOCON parser for the streams config.
+okhttp = { module = "com.squareup.okhttp3:okhttp", version.ref = "okhttp" }
+typesafe-config = { module = "com.typesafe:config", version.ref = "typesafeConfig" }
 
 [plugins]
 kotlin-jvm = { id = "org.jetbrains.kotlin.jvm", version.ref = "kotlin" }

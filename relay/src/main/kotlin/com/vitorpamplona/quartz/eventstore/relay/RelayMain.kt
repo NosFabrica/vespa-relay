@@ -25,10 +25,11 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 
 /**
- * Run a standalone trust-ranking Nostr relay against a Vespa. This is the
- * serve-only half — it opens the store, serves the NIP-50 relay + NIP-11 doc, and
- * blocks. Crawling/trust-sync (filling the store from the network) is a separate
- * concern; SoT (github.com/vitorpamplona/sot) is the reference app that adds it.
+ * Run a standalone trust-ranking Nostr relay against a Vespa. It opens the
+ * store, serves the NIP-50 relay + NIP-11 doc, and blocks. When a router config
+ * is set it also mirrors events from upstream relays into that store (see the
+ * router env vars below); large-scale crawling/trust-sync remains a separate
+ * concern, for which SoT (github.com/vitorpamplona/sot) is the reference app.
  *
  * Configuration is entirely from the environment:
  *
@@ -58,6 +59,12 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
  *   RELAY_ADMIN_PUBKEYS   comma/space-separated 64-hex admin keys; empty ⇒ off
  *   RELAY_HTTP_URL        the http(s) url NIP-98 auth must be tagged with
  *                         (default: RELAY_URL with ws→http, wss→https)
+ *
+ *   Router / upstream mirror (optional; see RouterConfig / MirrorRouter):
+ *   ROUTER_CONFIG            strfry-style `streams { }` config (HOCON), inline
+ *   ROUTER_CONFIG_FILE       path to a file holding that config
+ *   ROUTER_BACKFILL_SECONDS  default history window streams negentropy-backfill
+ *                            before their live tail (default 0 ⇒ live-only)
  */
 fun main() {
     val env = System.getenv()
@@ -105,6 +112,12 @@ fun main() {
     // Prune NIP-40 expired events on a schedule (the store schedules nothing itself).
     val sweeper = ExpirationSweeper(store, expirationSweepSecondsFromEnv(env)).start()
 
+    // The router (strfry-style mirror): when ROUTER_CONFIG / ROUTER_CONFIG_FILE is
+    // set, keep live subscriptions open against the configured upstream relays and
+    // mirror their events of the configured kinds into this same store. Fills what
+    // the search serves, from the network. Unset ⇒ serve-only.
+    val router = RouterConfigLoader.fromEnv(env)?.let { MirrorRouter(store, it).start() }
+
     val admin =
         banStore?.let {
             Nip86Admin(
@@ -118,13 +131,19 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
+            // Stop mirroring into the store before the relay and store close.
+            router?.close()
             sweeper.close()
             relay.close()
             store.close()
         },
     )
 
-    println("vespa-relay listening on :$port  (vespa $vespaUrl, relay $relayUrl)" + if (admin != null) "  [NIP-86 admin: ${adminPubkeys.size} key(s)]" else "")
+    println(
+        "vespa-relay listening on :$port  (vespa $vespaUrl, relay $relayUrl)" +
+            (if (admin != null) "  [NIP-86 admin: ${adminPubkeys.size} key(s)]" else "") +
+            (if (router != null) "  [router: mirroring ${router.upstreamCount()} upstream(s)]" else ""),
+    )
     serveRelay(
         relay = relay,
         port = port,
