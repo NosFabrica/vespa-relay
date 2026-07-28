@@ -28,7 +28,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyn
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip01Core.relay.server.backend.IngestQueue
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
@@ -37,6 +36,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
+import kotlinx.coroutines.channels.trySendBlocking
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -57,10 +57,11 @@ import kotlin.coroutines.CoroutineContext
  * matching events into the store; with a backfill window it first
  * negentropy-reconciles history, then the tail keeps it current. Structure
  * follows geode's MirrorWorker — [SubscriptionListener.onEvent] can't suspend,
- * so events land on an unbounded [inbound] channel and one consumer does the
- * suspending write through an [IngestQueue] (the same group-commit + verify
- * path a client publish takes). Every event is re-checked against its stream's
- * filter before ingest; untrusted upstreams have every signature verified.
+ * so events land on a bounded [inbound] channel (a blocking send backpressures
+ * the download when ingest falls behind) and a pool of [INGEST_WORKERS] drains
+ * it in batches through [IEventStore.batchInsert] — the store's parallel bulk
+ * feed. Every event is re-checked against its stream's filter before ingest;
+ * untrusted upstreams have every signature verified off the download threads.
  *
  * Up (`dir = up`/`both`): periodically negentropy-reconciles the store against
  * the upstream and publishes the events the upstream is missing. Reconciliation
@@ -95,11 +96,11 @@ class MirrorRouter(
 
     private val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
 
-    // Events are verified in the queue's parallel stage (off the socket thread),
-    // exactly as NostrRelayServer does for client publishes.
-    private val ingest = IngestQueue(store = store, parentContext = scope.coroutineContext, verify = { it.verify() })
-
-    private val inbound = Channel<Inbound>(Channel.UNLIMITED)
+    // Bounded, so a fast download (negentropy/paged can deliver >10k/s) can't
+    // outrun Vespa ingest and pile millions of events onto the heap. When it
+    // fills, the producing thread blocks in [offer] and the upstream download
+    // throttles to the ingest rate — flat memory instead of an OOM.
+    private val inbound = Channel<Inbound>(INGEST_BUFFER)
     private val accepted = AtomicLong()
     private val rejected = AtomicLong()
     private val pushed = AtomicLong()
@@ -117,17 +118,11 @@ class MirrorRouter(
             return this
         }
 
-        // Single consumer: the only writer to the store from the router.
-        scope.launch {
-            for (msg in inbound) {
-                ingest.submit(msg.event, msg.skipVerify) { outcome ->
-                    when (outcome) {
-                        is IEventStore.InsertOutcome.Accepted -> accepted.incrementAndGet()
-                        is IEventStore.InsertOutcome.Rejected -> rejected.incrementAndGet()
-                    }
-                }
-            }
-        }
+        // A pool of consumers drains the channel in batches and writes each batch
+        // through the store's bulk path (batchInsert -> parallel Vespa feed), which
+        // is what actually exploits the store's ingest parallelism. Feeding it one
+        // event at a time — the old path — left that parallelism unused.
+        repeat(INGEST_WORKERS) { scope.launch { ingestLoop() } }
 
         // Down live tail: subscribe on each upstream from now forward. History,
         // when asked for, is the backfill's job — so the tail never floods on connect.
@@ -161,6 +156,61 @@ class MirrorRouter(
         return this
     }
 
+    // ---- ingest ------------------------------------------------------------
+
+    /**
+     * Hand an event to the ingest pool, blocking the caller if the buffer is
+     * full. The negentropy/subscription callbacks that call this are not
+     * suspending, so a blocking send is how backpressure reaches the download:
+     * when ingest can't keep up, the producing thread parks here and the
+     * upstream stops being drained until there's room.
+     */
+    private fun offer(
+        event: Event,
+        skipVerify: Boolean,
+    ) {
+        inbound.trySendBlocking(Inbound(event, skipVerify))
+    }
+
+    /**
+     * Drain the channel in batches and write each batch through [IEventStore.batchInsert]
+     * (the store's bulk path: replaceable-dedup preload + a parallel Vespa feed).
+     * Signatures are verified here, off the download threads, and skipped for
+     * trusted upstreams. Several of these run at once ([INGEST_WORKERS]).
+     */
+    private suspend fun ingestLoop() {
+        val batch = ArrayList<Inbound>(INGEST_BATCH)
+        while (scope.isActive) {
+            val first = inbound.receiveCatching().getOrNull() ?: break
+            batch.clear()
+            batch.add(first)
+            while (batch.size < INGEST_BATCH) {
+                val next = inbound.tryReceive().getOrNull() ?: break
+                batch.add(next)
+            }
+            val valid = ArrayList<Event>(batch.size)
+            var verifyRejected = 0
+            for (msg in batch) {
+                if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
+                    valid.add(msg.event)
+                } else {
+                    verifyRejected++
+                }
+            }
+            if (verifyRejected > 0) rejected.addAndGet(verifyRejected.toLong())
+            if (valid.isEmpty()) continue
+            runCatching { store.batchInsert(valid) }
+                .onSuccess { outcomes ->
+                    for (outcome in outcomes) {
+                        when (outcome) {
+                            is IEventStore.InsertOutcome.Accepted -> accepted.incrementAndGet()
+                            is IEventStore.InsertOutcome.Rejected -> rejected.incrementAndGet()
+                        }
+                    }
+                }.onFailure { rejected.addAndGet(valid.size.toLong()) }
+        }
+    }
+
     // ---- down --------------------------------------------------------------
 
     private fun downListener(up: MirrorUpstream): SubscriptionListener =
@@ -175,7 +225,7 @@ class MirrorRouter(
                 // re-check scope so a broken upstream can't widen what we ingest.
                 if (relay != up.url) return
                 if (!up.filter.match(event)) return
-                inbound.trySend(Inbound(event, up.trusted))
+                offer(event, up.trusted)
             }
 
             override fun onCannotConnect(
@@ -223,7 +273,7 @@ class MirrorRouter(
                         idleTimeoutMs = NEG_IDLE_MS,
                         localEntries = local,
                         onProgress = { needSoFar, downloaded -> progress.update(idx, needSoFar, downloaded) },
-                        onEvent = { event -> if (up.filter.match(event)) inbound.trySend(Inbound(event, up.trusted)) },
+                        onEvent = { event -> if (up.filter.match(event)) offer(event, up.trusted) },
                     )
                 }
             if (result == null) {
@@ -341,7 +391,6 @@ class MirrorRouter(
         downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
         inbound.close()
-        runCatching { ingest.close() }
         scope.cancel()
         runCatching {
             okhttp.dispatcher.executorService.shutdown()
@@ -421,6 +470,13 @@ class MirrorRouter(
         private const val PROGRESS_INTERVAL_MS = 15_000L
         private const val UP_PUBLISH_PACE_MS = 40L
         private const val UP_MAX_ROUNDS = 8
+
+        // Ingest pool: several workers drain the bounded buffer in batches and
+        // write each batch through the store's bulk path. The buffer bounds heap
+        // use; when it fills, producers block and the download throttles to match.
+        private const val INGEST_WORKERS = 4
+        private const val INGEST_BATCH = 512
+        private const val INGEST_BUFFER = 8192
 
         // Idle (no protocol frames for this long) aborts a negentropy session,
         // below the hard [negTimeoutMs] cap.
