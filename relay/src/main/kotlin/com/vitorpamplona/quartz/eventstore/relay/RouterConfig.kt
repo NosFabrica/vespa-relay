@@ -67,6 +67,13 @@ data class RouterConfig(
     // fails cleanly and the live tail carries that upstream. From
     // ROUTER_NEG_TIMEOUT_SECONDS. Raise it for genuinely large historical fills.
     val negTimeoutSec: Long = 600,
+    // Ingest tuning. The store serializes writes through one mutex, so extra
+    // workers mostly overlap verify (CPU) with the write (I/O) — a couple is
+    // plenty; throughput comes from the batch size (each mutex hold amortizes a
+    // read-before-write preload + a Vespa feed over the whole batch).
+    // From ROUTER_INGEST_CONCURRENCY / ROUTER_INGEST_BATCH.
+    val ingestConcurrency: Int = 2,
+    val ingestBatch: Int = 1000,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.DOWN)
@@ -128,7 +135,9 @@ object RouterConfigLoader {
         val backfillDefault = env["ROUTER_BACKFILL_SECONDS"]?.trim()?.toLongOrNull() ?: 0L
         val upInterval = env["ROUTER_UP_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 300L
         val negTimeout = env["ROUTER_NEG_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 600L
-        return parse(raw, backfillDefault, upInterval, negTimeout)
+        val ingestConcurrency = env["ROUTER_INGEST_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 64) ?: 2
+        val ingestBatch = env["ROUTER_INGEST_BATCH"]?.trim()?.toIntOrNull()?.coerceIn(1, 20_000) ?: 1000
+        return parse(raw, backfillDefault, upInterval, negTimeout, ingestConcurrency, ingestBatch)
     }
 
     fun parse(
@@ -136,6 +145,8 @@ object RouterConfigLoader {
         backfillDefault: Long = 0L,
         upIntervalSec: Long = 300L,
         negTimeoutSec: Long = 600L,
+        ingestConcurrency: Int = 2,
+        ingestBatch: Int = 1000,
     ): RouterConfig {
         val cfg = ConfigFactory.parseString(hocon)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
@@ -159,7 +170,7 @@ object RouterConfigLoader {
                     backfillSeconds = if (s.hasPath("backfillSeconds")) s.getLong("backfillSeconds") else backfillDefault,
                 )
             }
-        return RouterConfig(connTimeout, streams, upIntervalSec, negTimeoutSec)
+        return RouterConfig(connTimeout, streams, upIntervalSec, negTimeoutSec, ingestConcurrency, ingestBatch)
     }
 
     /**

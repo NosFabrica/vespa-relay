@@ -58,9 +58,10 @@ import kotlin.coroutines.CoroutineContext
  * negentropy-reconciles history, then the tail keeps it current. Structure
  * follows geode's MirrorWorker — [SubscriptionListener.onEvent] can't suspend,
  * so events land on a bounded [inbound] channel (a blocking send backpressures
- * the download when ingest falls behind) and a pool of [INGEST_WORKERS] drains
- * it in batches through [IEventStore.batchInsert] — the store's parallel bulk
- * feed. Every event is re-checked against its stream's filter before ingest;
+ * the download when ingest falls behind) and a pool of ingest workers drains
+ * it in batches through [IEventStore.batchInsert] — the store's bulk feed
+ * (the store serializes writes on one mutex, so throughput comes from the batch
+ * size, not the worker count). Every event is re-checked against its filter;
  * untrusted upstreams have every signature verified off the download threads.
  *
  * Up (`dir = up`/`both`): periodically negentropy-reconciles the store against
@@ -100,7 +101,11 @@ class MirrorRouter(
     // outrun Vespa ingest and pile millions of events onto the heap. When it
     // fills, the producing thread blocks in [offer] and the upstream download
     // throttles to the ingest rate — flat memory instead of an OOM.
-    private val inbound = Channel<Inbound>(INGEST_BUFFER)
+    // Workers and batch come from config; the buffer is sized to a few batches
+    // so producers block (backpressure) rather than pile events onto the heap.
+    private val ingestWorkers = config.ingestConcurrency
+    private val ingestBatch = config.ingestBatch
+    private val inbound = Channel<Inbound>((ingestBatch * 4).coerceAtLeast(4096))
     private val accepted = AtomicLong()
     private val rejected = AtomicLong()
     private val pushed = AtomicLong()
@@ -122,7 +127,7 @@ class MirrorRouter(
         // through the store's bulk path (batchInsert -> parallel Vespa feed), which
         // is what actually exploits the store's ingest parallelism. Feeding it one
         // event at a time — the old path — left that parallelism unused.
-        repeat(INGEST_WORKERS) { scope.launch { ingestLoop() } }
+        repeat(ingestWorkers) { scope.launch { ingestLoop() } }
 
         // Down live tail: subscribe on each upstream from now forward. History,
         // when asked for, is the backfill's job — so the tail never floods on connect.
@@ -176,15 +181,15 @@ class MirrorRouter(
      * Drain the channel in batches and write each batch through [IEventStore.batchInsert]
      * (the store's bulk path: replaceable-dedup preload + a parallel Vespa feed).
      * Signatures are verified here, off the download threads, and skipped for
-     * trusted upstreams. Several of these run at once ([INGEST_WORKERS]).
+     * trusted upstreams. [ingestWorkers] of these run at once.
      */
     private suspend fun ingestLoop() {
-        val batch = ArrayList<Inbound>(INGEST_BATCH)
+        val batch = ArrayList<Inbound>(ingestBatch)
         while (scope.isActive) {
             val first = inbound.receiveCatching().getOrNull() ?: break
             batch.clear()
             batch.add(first)
-            while (batch.size < INGEST_BATCH) {
+            while (batch.size < ingestBatch) {
                 val next = inbound.tryReceive().getOrNull() ?: break
                 batch.add(next)
             }
@@ -470,13 +475,6 @@ class MirrorRouter(
         private const val PROGRESS_INTERVAL_MS = 15_000L
         private const val UP_PUBLISH_PACE_MS = 40L
         private const val UP_MAX_ROUNDS = 8
-
-        // Ingest pool: several workers drain the bounded buffer in batches and
-        // write each batch through the store's bulk path. The buffer bounds heap
-        // use; when it fills, producers block and the download throttles to match.
-        private const val INGEST_WORKERS = 4
-        private const val INGEST_BATCH = 512
-        private const val INGEST_BUFFER = 8192
 
         // Idle (no protocol frames for this long) aborts a negentropy session,
         // below the hard [negTimeoutMs] cap.
