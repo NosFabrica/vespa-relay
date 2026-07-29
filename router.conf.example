@@ -19,31 +19,41 @@ connectionTimeout = 20
 
 streams {
 
-    # WoT-relevant kinds from popular general-purpose relays.
+    # Profile Info + Active services
     popular {
         dir = "down"
-        filter = { "kinds": [0, 3, 5, 1984, 10000, 30000] }
+        filter = { "kinds": [0, 10002, 10040] }
         urls = [
             "wss://relay.primal.net",
             "wss://relay.damus.io",
-            "wss://purplepag.es",
             "wss://nos.lol",
+            "wss://nostr.mom",
             "wss://nostr-pub.wellorder.net"
+            "wss://relay.ditto.pub",
+            "wss://wot.grapevine.network"
         ]
     }
 
-    # Profile / indexer / mirror relays.
-    mirrors {
+    # Indexer Relays
+    popular {
         dir = "down"
-        filter = { "kinds": [0, 3, 5, 1984, 10000, 30000] }
+        filter = { "kinds": [0, 10002] }
         urls = [
-            "wss://brainstorm.nostr1.com",
+            "wss://purplepag.es",
             "wss://primus.nostr1.com",
             "wss://profiles.nostr1.com",
             "wss://indexer.coracle.social",
             "wss://user.kindpag.es",
-            "wss://directory.yabu.me",
-            "wss://relay.ditto.pub"
+            "wss://directory.yabu.me"
+        ]
+    }
+
+    # WoT
+    mirrors {
+        dir = "down"
+        filter = { "kinds": [30382] }
+        urls = [
+            "wss://scores.brainstorm.world"
         ]
     }
 }
