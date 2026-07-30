@@ -21,7 +21,6 @@
 package com.vitorpamplona.quartz.eventstore.relay
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -38,7 +37,8 @@ data class DiscoveredRelay(
  * extraction path driven by [RelaySource] covers NIP-65 outboxes, NIP-51 relay
  * sets, NIP-17 DM inboxes, NIP-66 monitor reports, NIP-85 provider lists, and
  * the relay hints riding on ordinary `e`/`p`/`a`/`q` tags. Nothing here knows
- * about a specific kind.
+ * about a specific kind: each source brings its own NIP-01 filter for which
+ * events to scan, and a list of selects for where the urls sit in them.
  *
  * The store is the crawl: an ordinary `down` stream on a few relays fills it,
  * and this turns what landed into the fan-out the dynamic stream syncs against.
@@ -62,11 +62,13 @@ object RelayDiscovery {
     ): List<DiscoveredRelay> {
         val counts = HashMap<NormalizedRelayUrl, Int>()
         for (source in dynamic.sources) {
-            val since = if (source.sinceSeconds > 0) System.currentTimeMillis() / 1000 - source.sinceSeconds else null
-            val events: List<Event> = store.query(Filter(kinds = listOf(source.kind), since = since))
+            // One query per source, every select applied to what it returns — a
+            // shelf of relay-list kinds costs one scan, not one scan each.
+            val events: List<Event> = store.query(source.filter)
             for (event in events) {
-                // One event counts a relay once, however many of its tags repeat it.
-                for (url in urlsIn(event, source)) counts[url] = (counts[url] ?: 0) + 1
+                // One event counts a relay once, however many tags — or selects —
+                // repeat it.
+                for (url in urlsIn(event, source.selects)) counts[url] = (counts[url] ?: 0) + 1
             }
         }
 
@@ -78,28 +80,46 @@ object RelayDiscovery {
             .toList()
     }
 
+    /** The distinct relay urls one event advertises across every applicable select. */
+    fun urlsIn(
+        event: Event,
+        selects: List<RelaySelect>,
+    ): Set<NormalizedRelayUrl> {
+        val urls = LinkedHashSet<NormalizedRelayUrl>()
+        for (select in selects) {
+            // A select with no kind applies to everything the scan collected.
+            if (select.kind != null && select.kind != event.kind) continue
+            urlsIn(event, select, urls)
+        }
+        return urls
+    }
+
     /**
-     * The distinct relay urls one event advertises for [source]: every tag named
-     * [RelaySource.tag] (or every tag at all, when it is null) that carries a url
-     * at [RelaySource.urlIndex] and passes the marker check at the slot after it.
+     * The relay urls one event advertises for a single [select]: every tag named
+     * [RelaySelect.tag] (or every tag at all, when it is null) that carries a url
+     * at [RelaySelect.index] and passes the marker check at the slot after it.
      */
     fun urlsIn(
         event: Event,
-        source: RelaySource,
-    ): Set<NormalizedRelayUrl> {
-        val urls = LinkedHashSet<NormalizedRelayUrl>()
+        select: RelaySelect,
+    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, select, it) }
+
+    private fun urlsIn(
+        event: Event,
+        select: RelaySelect,
+        into: MutableSet<NormalizedRelayUrl>,
+    ) {
         for (tag in event.tags) {
-            if (tag.size <= source.urlIndex) continue
-            if (source.tag != null && tag[0] != source.tag) continue
+            if (tag.size <= select.index) continue
+            if (select.tag != null && tag[0] != select.tag) continue
             // NIP-65 marks its relays `read` or `write` in the slot after the url;
             // an unmarked tag is both, so it matches whichever side we asked for.
-            val role = source.role
-            if (role != null && !role.matches(tag.getOrNull(source.urlIndex + 1)?.trim()?.lowercase())) continue
+            val role = select.role
+            if (role != null && !role.matches(tag.getOrNull(select.index + 1)?.trim()?.lowercase())) continue
             // With no tag name to go on, anything in the event could land here, so
             // only take values that already say they are a relay.
-            normalize(tag[source.urlIndex], requireScheme = source.tag == null)?.let { urls.add(it) }
+            normalize(tag[select.index], requireScheme = select.tag == null)?.let { into.add(it) }
         }
-        return urls
     }
 
     /**

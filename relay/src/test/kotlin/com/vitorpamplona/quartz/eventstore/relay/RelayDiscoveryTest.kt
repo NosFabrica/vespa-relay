@@ -23,6 +23,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import kotlinx.coroutines.runBlocking
@@ -33,17 +34,24 @@ import kotlin.test.assertTrue
 
 /**
  * The dynamic relay list: what [RelayDiscovery] reads out of the store, driven
- * entirely by a [RelaySource]'s kind/tag/urlIndex rather than per-kind code.
+ * entirely by a [RelaySource]'s filter and its [RelaySelect]s rather than by
+ * per-kind code.
  */
 class RelayDiscoveryTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
-    private fun source(
-        kind: Int,
+    private fun select(
         tag: String? = null,
-        urlIndex: Int = 1,
+        index: Int = 1,
+        kind: Int? = null,
         role: RelayRole? = null,
-    ) = RelaySource(kind = kind, tag = tag, urlIndex = urlIndex, role = role, sinceSeconds = 0)
+    ) = RelaySelect(kind = kind, tag = tag, index = index, role = role)
+
+    private fun source(
+        vararg kinds: Int,
+        selects: List<RelaySelect>,
+        limit: Int? = null,
+    ) = RelaySource(filter = Filter(kinds = kinds.toList(), limit = limit), selects = selects)
 
     private fun dynamic(
         vararg sources: RelaySource,
@@ -62,8 +70,8 @@ class RelayDiscoveryTest {
 
     private fun urls(
         event: Event,
-        source: RelaySource,
-    ) = RelayDiscovery.urlsIn(event, source).map { it.url }
+        select: RelaySelect,
+    ) = RelayDiscovery.urlsIn(event, select).map { it.url }
 
     // ---- extraction --------------------------------------------------------
 
@@ -77,22 +85,22 @@ class RelayDiscoveryTest {
                 arrayOf("r", "wss://both.example"),
             )
 
-        val write = urls(list, source(10002, tag = "r", role = RelayRole.WRITE))
+        val write = urls(list, select(tag = "r", role = RelayRole.WRITE))
         assertTrue(write.any { it.contains("write.example") })
         assertTrue(write.any { it.contains("both.example") }, "an unmarked r tag is read AND write")
         assertFalse(write.any { it.contains("read.example") })
 
-        val read = urls(list, source(10002, tag = "r", role = RelayRole.READ))
+        val read = urls(list, select(tag = "r", role = RelayRole.READ))
         assertTrue(read.any { it.contains("read.example") })
         assertTrue(read.any { it.contains("both.example") })
         assertFalse(read.any { it.contains("write.example") })
 
         // No marker configured at all: every relay the tag names.
-        assertEquals(3, urls(list, source(10002, tag = "r")).size)
+        assertEquals(3, urls(list, select(tag = "r")).size)
     }
 
     @Test
-    fun `urlIndex reads NIP-85 service tags, which put the pubkey first`() {
+    fun `index reads NIP-85 service tags, which put the pubkey first`() {
         val list =
             event(
                 10040,
@@ -101,16 +109,16 @@ class RelayDiscoveryTest {
             )
 
         // A named tag picks exactly one service...
-        assertEquals(listOf("wss://scores.example/"), urls(list, source(10040, tag = "30382:rank", urlIndex = 2)))
+        assertEquals(listOf("wss://scores.example/"), urls(list, select(tag = "30382:rank", index = 2)))
         // ...and no tag name takes the whole <kind>:<type> family.
         assertEquals(
             listOf("wss://scores.example/", "wss://graph.example/"),
-            urls(list, source(10040, urlIndex = 2)),
+            urls(list, select(index = 2)),
         )
     }
 
     @Test
-    fun `relay hints on e and p tags are just another source`() {
+    fun `relay hints on e and p tags are just another select`() {
         val note =
             event(
                 1,
@@ -119,8 +127,8 @@ class RelayDiscoveryTest {
                 arrayOf("t", "nostr"),
             )
 
-        assertEquals(listOf("wss://hint.example/"), urls(note, source(1, tag = "e", urlIndex = 2)))
-        assertEquals(listOf("wss://inbox.example/"), urls(note, source(1, tag = "p", urlIndex = 2)))
+        assertEquals(listOf("wss://hint.example/"), urls(note, select(tag = "e", index = 2)))
+        assertEquals(listOf("wss://inbox.example/"), urls(note, select(tag = "p", index = 2)))
     }
 
     @Test
@@ -129,9 +137,9 @@ class RelayDiscoveryTest {
         val relaySet = event(30002, arrayOf("relay", "wss://set.example"))
         val monitor = event(30166, arrayOf("d", "wss://monitored.example"))
 
-        assertEquals(listOf("wss://dm.example/"), urls(dmRelays, source(10050, tag = "relay")))
-        assertEquals(listOf("wss://set.example/"), urls(relaySet, source(30002, tag = "relay")))
-        assertEquals(listOf("wss://monitored.example/"), urls(monitor, source(30166, tag = "d")))
+        assertEquals(listOf("wss://dm.example/"), urls(dmRelays, select(tag = "relay")))
+        assertEquals(listOf("wss://set.example/"), urls(relaySet, select(tag = "relay")))
+        assertEquals(listOf("wss://monitored.example/"), urls(monitor, select(tag = "d")))
     }
 
     @Test
@@ -151,7 +159,7 @@ class RelayDiscoveryTest {
 
         assertEquals(
             listOf("wss://write.example/", "wss://relay.example/"),
-            urls(list, source(10002, tag = "r", role = RelayRole.WRITE)),
+            urls(list, select(tag = "r", role = RelayRole.WRITE)),
         )
     }
 
@@ -166,7 +174,7 @@ class RelayDiscoveryTest {
                 arrayOf("p", "b".repeat(64), "petname"),
             )
 
-        assertEquals(listOf("wss://scores.example/"), urls(list, source(10040, urlIndex = 2)))
+        assertEquals(listOf("wss://scores.example/"), urls(list, select(index = 2)))
     }
 
     // ---- discovery ---------------------------------------------------------
@@ -182,7 +190,11 @@ class RelayDiscoveryTest {
 
             // Nothing is dropped for being unpopular — the one-list relay is synced
             // like the rest; the count only decides who goes first.
-            val all = RelayDiscovery.discover(store, dynamic(source(10002, tag = "r", role = RelayRole.WRITE)))
+            val all =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(source(10002, selects = listOf(select(tag = "r", role = RelayRole.WRITE)))),
+                )
             assertEquals(
                 listOf("wss://popular.example/" to 3, "wss://quiet.example/" to 2, "wss://lonely.example/" to 1),
                 all.map { it.url.url to it.references },
@@ -190,28 +202,54 @@ class RelayDiscoveryTest {
         }
 
     @Test
-    fun `several sources merge into one fan-out and their counts add up`() =
+    fun `one scan feeds several selects, and their counts add up`() =
         runBlocking {
             val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
             store.insert(event(10002, arrayOf("r", "wss://shared.example", "write")))
             store.insert(event(10040, arrayOf("30382:rank", "a".repeat(64), "wss://shared.example")))
             store.insert(event(10050, arrayOf("relay", "wss://dm.example")))
 
+            // One filter over all three kinds; the selects sort out which is which.
             val found =
                 RelayDiscovery.discover(
                     store,
                     dynamic(
-                        source(10002, tag = "r", role = RelayRole.WRITE),
-                        source(10040, tag = "30382:rank", urlIndex = 2),
-                        source(10050, tag = "relay"),
+                        source(
+                            10002,
+                            10040,
+                            10050,
+                            selects =
+                                listOf(
+                                    select(kind = 10002, tag = "r", role = RelayRole.WRITE),
+                                    select(kind = 10040, tag = "30382:rank", index = 2),
+                                    // No kind: applies to everything the scan collected.
+                                    select(tag = "relay"),
+                                ),
+                        ),
                     ),
                 )
 
-            // A relay two sources agree on outranks one only a single source names.
+            // A relay two events name outranks one only a single event names.
             assertEquals(
                 listOf("wss://shared.example/" to 2, "wss://dm.example/" to 1),
                 found.map { it.url.url to it.references },
             )
+        }
+
+    @Test
+    fun `a select bound to a kind never reads another kind's tags`() =
+        runBlocking {
+            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            // Both carry an `r` tag, but only the 10002 is a relay list.
+            store.insert(event(10002, arrayOf("r", "wss://list.example", "write")))
+            store.insert(event(10006, arrayOf("r", "wss://blocked.example")))
+
+            val found =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(source(10002, 10006, selects = listOf(select(kind = 10002, tag = "r")))),
+                )
+            assertEquals(listOf("wss://list.example/"), found.map { it.url.url })
         }
 
     @Test
@@ -230,7 +268,10 @@ class RelayDiscoveryTest {
             val kept =
                 RelayDiscovery.discover(
                     store,
-                    dynamic(source(10002, tag = "r", role = RelayRole.WRITE), exclude = setOf("wss://popular.example")),
+                    dynamic(
+                        source(10002, selects = listOf(select(tag = "r", role = RelayRole.WRITE))),
+                        exclude = setOf("wss://popular.example"),
+                    ),
                     skip = setOf(RelayUrlNormalizer.normalize("wss://quiet.example")),
                 )
             assertEquals(listOf("wss://lonely.example/"), kept.map { it.url.url })
@@ -240,6 +281,6 @@ class RelayDiscoveryTest {
     fun `an empty store discovers nothing`() =
         runBlocking {
             val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
-            assertTrue(RelayDiscovery.discover(store, dynamic(source(10002, tag = "r"))).isEmpty())
+            assertTrue(RelayDiscovery.discover(store, dynamic(source(10002, selects = listOf(select(tag = "r"))))).isEmpty())
         }
 }

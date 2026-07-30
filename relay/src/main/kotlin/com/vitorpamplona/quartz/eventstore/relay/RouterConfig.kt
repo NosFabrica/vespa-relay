@@ -132,19 +132,27 @@ data class MirrorStream(
  *       concurrency    = 8
  *       exclude        = [ "wss://relay.example" ]
  *       relaySource = [
- *         { kind = 10002, tag = "r", marker = "write" }
- *         { kind = 10040, tag = "30382:rank", urlIndex = 2 }
- *         { kind = 1, tag = "e", urlIndex = 2, sinceSeconds = 86400 }
+ *         {
+ *           filter = { "kinds": [10002, 10040] }
+ *           select = [
+ *             { kind = 10002, tag = "r", marker = "write" }
+ *             { kind = 10040, tag = "30382:rank", index = 2 }
+ *           ]
+ *         }
+ *         {
+ *           filter = { "kinds": [1], "limit": 100000 }
+ *           select = [ { tag = "e", index = 2 } ]
+ *         }
  *       ]
  *     }
  *
- * Every refresh the router re-reads all of those, unions the relays they name,
- * and negentropy-syncs (or paged-REQ-fetches) the stream filter against every
- * one of them — the whole set, however large it has grown. [concurrency] paces
- * that fan-out; nothing truncates it. There is no live tail either: a set this
- * size is synced on a period, not held open.
+ * Every refresh the router runs each scan, unions the relays they name, and
+ * negentropy-syncs (or paged-REQ-fetches) the stream filter against every one of
+ * them — the whole set, however large it has grown. [concurrency] paces that
+ * fan-out; nothing truncates it. There is no live tail either: a set this size
+ * is synced on a period, not held open.
  *
- * @param sources every place to read relay urls from, merged.
+ * @param sources every scan to read relay urls from, merged.
  * @param refreshSeconds how often the whole cycle (re-read the sources, re-sync
  *   every relay) runs again.
  * @param concurrency how many of those relays sync at the same time.
@@ -158,36 +166,60 @@ data class DynamicRelayList(
 )
 
 /**
- * One place to read relay urls out of. Every relay list in the protocol is some
- * tag with a url at a fixed offset, so a kind, a tag name and that offset cover
- * all of them — no per-kind code:
+ * One scan of the store: a NIP-01 [filter] saying which events to collect, and
+ * the [selects] saying where in their tags the relay urls sit. The filter runs
+ * once and every select is applied to what it returns, so a whole shelf of
+ * relay-list kinds costs one query rather than one each:
  *
- *     { kind = 10002, tag = "r", marker = "write" }   NIP-65 outbox
- *     { kind = 10050, tag = "relay" }                 NIP-17 DM inboxes
- *     { kind = 30002, tag = "relay" }                 NIP-51 relay sets
- *     { kind = 30166, tag = "d" }                     NIP-66 monitor reports
- *     { kind = 10040, tag = "30382:rank", urlIndex = 2 }   NIP-85 providers
- *     { kind = 1, tag = "e", urlIndex = 2, sinceSeconds = 86400 }  hints
+ *     {
+ *       filter = { "kinds": [10002, 10050, 30002, 30166, 10040] }
+ *       select = [
+ *         { kind = 10002, tag = "r", marker = "write" }   NIP-65 outbox
+ *         { kind = 10040, tag = "30382:rank", index = 2 } NIP-85 providers
+ *         { kind = 30166, tag = "d" }                     NIP-66 monitor reports
+ *         { tag = "relay" }                               everything else in the filter
+ *       ]
+ *     }
  *
- * @param kind the event kind to scan.
+ * The filter is an ordinary NIP-01 filter — `authors`, `since`, `until`,
+ * `limit`, `#t`-style tag filters — so a scan can be narrowed however you like:
+ *
+ *     { filter = { "kinds": [1], "limit": 100000 }, select = [ { tag = "e", index = 2 } ] }
+ *
+ * `since`/`until` are absolute unix seconds, as everywhere else in NIP-01. On a
+ * repeating cycle `limit` is the bound that stays meaningful, since a fixed
+ * `since` only ages.
+ */
+data class RelaySource(
+    val filter: Filter,
+    val selects: List<RelaySelect>,
+)
+
+/**
+ * Where a relay url sits in a tag. Every relay list in the protocol is some tag
+ * with a url at a fixed offset, so this covers all of them with no per-kind code.
+ *
+ * Note the two different tag notions: [tag] names the tag urls are *read from*,
+ * while a `"#e" = [...]` entry in the [RelaySource.filter] narrows which events
+ * are scanned at all. They are unrelated.
+ *
+ * @param kind apply this select only to events of that kind, or null to apply it
+ *   to everything the filter returned. A kind the filter never collects simply
+ *   never matches, so listing selects the scan can't reach is harmless.
  * @param tag the tag name to read, or null for any tag. Leaving it out is how
  *   you take a whole family (NIP-85's `<kind>:<type>` service tags) without
  *   naming each one — at the cost of a stricter url check, see [RelayDiscovery].
- * @param urlIndex which element of the tag holds the url. 1 for nearly
- *   everything; 2 for NIP-85 service tags and for `e`/`p`/`a`/`q` relay hints,
- *   which put an id or a pubkey first.
- * @param role which NIP-65 marker to keep, read from `urlIndex + 1` (the only
- *   kind that marks its relays is 10002). Null does no marker filtering.
- * @param sinceSeconds scan only events created in this window. 0 scans the kind
- *   outright, which is what you want for the replaceable relay-list kinds (one
- *   event per author) and never what you want for a regular kind like 1.
+ * @param index which element of the tag holds the url. 1 for nearly everything;
+ *   2 for NIP-85 service tags and for `e`/`p`/`a`/`q` relay hints, which put an
+ *   id or a pubkey first.
+ * @param role which NIP-65 marker to keep, read from `index + 1` (the only kind
+ *   that marks its relays is 10002). Null does no marker filtering.
  */
-data class RelaySource(
-    val kind: Int,
+data class RelaySelect(
+    val kind: Int?,
     val tag: String?,
-    val urlIndex: Int,
+    val index: Int,
     val role: RelayRole?,
-    val sinceSeconds: Long,
 )
 
 /** Which side of a NIP-65 relay list a [RelaySource] pulls from. */
@@ -333,32 +365,48 @@ object RouterConfigLoader {
         )
     }
 
-    /** One `{ kind = ..., tag = ..., urlIndex = ... }` entry of that list. */
+    /** One `{ filter = { }, select = [ ] }` entry of that list: a scan and what to pull out of it. */
     private fun parseRelaySource(
         stream: String,
         s: Config,
     ): RelaySource {
-        require(s.hasPath("kind")) { "router: stream '$stream' has a relaySource entry with no `kind`" }
-        val kind = s.getInt("kind")
-        val urlIndex = if (s.hasPath("urlIndex")) s.getInt("urlIndex") else 1
-        require(urlIndex >= 1) {
-            "router: stream '$stream' relaySource kind $kind has urlIndex $urlIndex — index 0 is the tag name, so the url is at 1 or later"
-        }
-        val sinceSeconds = if (s.hasPath("sinceSeconds")) s.getLong("sinceSeconds").coerceAtLeast(0L) else 0L
+        require(s.hasPath("filter")) { "router: stream '$stream' has a relaySource entry with no `filter { }`" }
+        require(s.hasPath("select")) { "router: stream '$stream' has a relaySource entry with no `select [ ]`" }
+        val filter = parseFilter(s.getConfig("filter"))
+        val selects = s.getConfigList("select").map { parseRelaySelect(stream, it) }
+        require(selects.isNotEmpty()) { "router: stream '$stream' has a relaySource entry with an empty `select`" }
+
+        val kinds = filter.kinds
+        require(!kinds.isNullOrEmpty()) { "router: stream '$stream' relaySource filter needs `kinds`" }
         // A regular kind is unbounded — scanning all of kind 1 means loading every
         // note in the store into one list. The replaceable/addressable kinds are
         // one event per author (or per author+d), which is what makes them safe to
-        // scan whole. Relay hints therefore have to say how far back they look.
-        require(sinceSeconds > 0 || isBoundedKind(kind)) {
-            "router: stream '$stream' relaySource kind $kind is a regular kind — set `sinceSeconds` to bound the scan " +
-                "(scanning it whole would load every kind-$kind event in the store)"
+        // scan whole. Anything else has to narrow itself. `until` alone doesn't
+        // count: it caps the top of the window and leaves all of history below it.
+        val narrowed = filter.limit != null || filter.since != null || filter.authors != null || filter.ids != null
+        require(narrowed || kinds.all { isBoundedKind(it) }) {
+            "router: stream '$stream' relaySource filter ${kinds.joinToString("/")} scans a regular kind unbounded — " +
+                "add `limit` (the bound that stays meaningful on a repeating cycle), `since`, or `authors`, " +
+                "or it would load every matching event in the store at once"
         }
-        return RelaySource(
-            kind = kind,
+        return RelaySource(filter = filter, selects = selects)
+    }
+
+    /** One `{ kind = ..., tag = ..., index = ... }` entry of a source's `select` list. */
+    private fun parseRelaySelect(
+        stream: String,
+        s: Config,
+    ): RelaySelect {
+        val index = if (s.hasPath("index")) s.getInt("index") else 1
+        require(index >= 1) {
+            "router: stream '$stream' has a select with index $index — element 0 is the tag name, so the url is at 1 or later"
+        }
+        return RelaySelect(
+            // No kind: the select applies to everything the filter collected.
+            kind = if (s.hasPath("kind")) s.getInt("kind") else null,
             tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
-            urlIndex = urlIndex,
+            index = index,
             role = if (s.hasPath("marker")) RelayRole.parse(s.getString("marker")) else null,
-            sinceSeconds = sinceSeconds,
         )
     }
 

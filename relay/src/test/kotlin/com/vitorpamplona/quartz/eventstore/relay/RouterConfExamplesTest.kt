@@ -23,6 +23,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -52,29 +53,33 @@ class RouterConfExamplesTest {
         val sources = outbox.dynamic!!.sources
         assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
 
-        // NIP-65 write side, the outbox proper.
-        val nip65 = sources.first { it.kind == 10002 }
+        // One scan covers every relay-list kind; the selects sort them out.
+        val lists = sources.first { it.filter.kinds?.contains(10002) == true }
+        val nip65 = lists.selects.first { it.kind == 10002 }
         assertEquals("r", nip65.tag)
         assertEquals(RelayRole.WRITE, nip65.role)
+        assertTrue(lists.selects.any { it.kind == 30166 && it.tag == "d" }, "NIP-66 monitors")
+        // The ["relay", "<url>"] family rides on one kind-less select.
+        assertTrue(lists.selects.any { it.kind == null && it.tag == "relay" })
+        assertTrue(lists.filter.kinds!!.containsAll(listOf(10050, 30002)))
 
-        // The ["relay", "<url>"] family and NIP-66's `d` tag, no code per kind.
-        assertTrue(sources.any { it.kind == 10050 && it.tag == "relay" })
-        assertTrue(sources.any { it.kind == 30166 && it.tag == "d" })
-
-        // Relay hints, at index 2 and with the scan window a regular kind demands.
-        val hints = sources.filter { it.kind == 1 }
-        assertTrue(hints.isNotEmpty())
-        assertTrue(hints.all { it.urlIndex == 2 && it.sinceSeconds > 0 })
+        // Relay hints: a regular kind, so its scan must be bounded, and the urls
+        // sit after the id/pubkey.
+        val hints = sources.first { it.filter.kinds == listOf(1) }
+        assertNotNull(hints.filter.limit, "a kind-1 scan has to bound itself")
+        assertTrue(hints.selects.isNotEmpty())
+        assertTrue(hints.selects.all { it.index == 2 })
+        assertTrue(hints.selects.any { it.tag == "e" })
     }
 
     @Test
     fun `the assertions stream names the NIP-85 services it wants`() {
         val assertions = example.dynamicStreams().first { it.name == "assertions" }
-        val sources = assertions.dynamic!!.sources
+        val source = assertions.dynamic!!.sources.single()
         assertTrue(assertions.urls.isEmpty(), "a relaySource stream carries no static urls")
-        assertTrue(sources.isNotEmpty())
-        // Every entry is a 10040 service tag with the url after the provider pubkey.
-        assertTrue(sources.all { it.kind == 10040 && it.urlIndex == 2 })
-        assertTrue(sources.any { it.tag == "30382:rank" })
+        assertEquals(listOf(10040), source.filter.kinds)
+        // Every select is a service tag with the url after the provider pubkey.
+        assertTrue(source.selects.all { it.index == 2 })
+        assertTrue(source.selects.any { it.tag == "30382:rank" })
     }
 }

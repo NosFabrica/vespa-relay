@@ -181,48 +181,66 @@ outbox {
   concurrency     = 8
   exclude         = []
   relaySource = [
-    { kind = 10002, tag = "r", marker = "write" }               # NIP-65 outbox
-    { kind = 10050, tag = "relay" }                             # NIP-17 DM inboxes
-    { kind = 30002, tag = "relay" }                             # NIP-51 relay sets
-    { kind = 30166, tag = "d" }                                 # NIP-66 monitors
-    { kind = 10040, tag = "30382:rank", urlIndex = 2 }          # NIP-85 providers
-    { kind = 1, tag = "e", urlIndex = 2, sinceSeconds = 86400 } # relay hints
+    {
+      filter = { "kinds": [10002, 10050, 30002, 30166] }
+      select = [
+        { kind = 10002, tag = "r", marker = "write" }  # NIP-65 outbox
+        { kind = 30166, tag = "d" }                    # NIP-66 monitor reports
+        { tag = "relay" }                              # everything else in the scan
+      ]
+    }
+    {
+      filter = { "kinds": [1], "limit": 100000 }
+      select = [ { tag = "e", index = 2 } ]            # relay hints
+    }
   ]
 }
 ```
 
-Each cycle reads every source, unions the relays they name, and negentropy-syncs
-the stream `filter` against **all** of them, `concurrency` at a time (paged REQ
-where NIP-77 is missing, same as a backfill). Then it sleeps `refreshSeconds` and
-does it again — so the fan-out widens on its own as the store fills.
+Each entry is one **scan**: a `filter` saying which events to collect, and a
+`select` list saying where the urls sit in their tags. The filter runs once and
+every select is applied to what comes back, so a whole shelf of relay-list kinds
+costs one query rather than one each.
 
-Nothing truncates that set: no cap on events scanned or relays synced, and no
-popularity floor. `concurrency` paces the fan-out, it doesn't bound it, and
-`exclude` is the only way to leave a relay out.
+Each cycle runs every scan, unions the relays they name, and negentropy-syncs the
+stream `filter` against **all** of them, `concurrency` at a time (paged REQ where
+NIP-77 is missing, same as a backfill). Then it sleeps `refreshSeconds` and does
+it again — so the fan-out widens on its own as the store fills.
+
+Nothing truncates that set: no cap on relays synced and no popularity floor.
+`concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
+way to leave a relay out.
 
 **No kind needs its own code.** Every relay list in the protocol is a tag with a
-url at a fixed offset, so a source is just that shape:
+url at a fixed offset, so a select is just that shape:
 
 | field | meaning |
 |---|---|
-| `kind` | the event kind to scan |
+| `kind` | apply this select only to that kind; **omit to apply it to everything the filter collected**. A kind the scan never returns simply never matches |
 | `tag` | the tag name to read; **omit for any tag** — that's how you take a whole family like NIP-85's `<kind>:<type>` service tags without naming each one |
-| `urlIndex` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first |
-| `marker` | NIP-65 only: keep `write` / `read` / `any`, read from `urlIndex + 1`. Unmarked tags mean *both*, so they match either side |
-| `sinceSeconds` | scan only this far back. Required for regular kinds |
+| `index` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first |
+| `marker` | NIP-65 only: keep `write` / `read` / `any`, read from `index + 1`. Unmarked tags mean *both*, so they match either side |
 
-Two consequences worth knowing:
+The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`,
+`until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:
+`{ "kinds": [1], "authors": [...] }` harvests hints from your WoT's notes only.
 
+Three things worth knowing:
+
+- **`tag` and `"#t"` are unrelated.** `tag = "e"` is the tag urls are *read
+  from*; a `"#e"` entry in the scan's filter narrows *which events are scanned*.
 - **Omitting `tag` demands a scheme.** With no tag name to filter on, anything in
-  the event could land at `urlIndex` — a pet name in a `["p", <pubkey>, "bob"]`
-  tag would otherwise normalize to `wss://bob/`. So values must already start
-  with `ws://` or `wss://`. Name a tag and scheme-less hosts work again, which is
-  what NIP-65 lists in the wild need.
-- **Regular kinds must set `sinceSeconds`.** Relay hints live on kind 1, and
+  the event could land at `index` — a pet name in a `["p", <pubkey>, "bob"]` tag
+  would otherwise normalize to `wss://bob/`. So values must already start with
+  `ws://` or `wss://`. Name a tag and scheme-less hosts work again, which is what
+  NIP-65 lists in the wild need.
+- **Regular kinds must narrow their scan.** Relay hints live on kind 1, and
   scanning that kind whole would load every note in the store into one list. The
   replaceable and addressable kinds hold one event per author, which is what makes
-  them safe to scan outright; the parser rejects an unbounded regular kind rather
-  than let you find out in production.
+  them safe to scan outright; anything else needs `limit`, `since` or `authors`,
+  and the parser rejects it rather than let you find out in production. Prefer
+  `limit` on a repeating cycle — `since`/`until` are absolute unix seconds, so a
+  fixed `since` only ages, while `until` alone bounds nothing at all.
 
 All of it needs events to fan out over, so pair these with an ordinary `down`
 stream on a few relays — that seed stream is what fills the store. The example
@@ -236,7 +254,7 @@ Some notes on the other knobs:
   negentropy, which diffs against what we already hold, but a relay *without*
   NIP-77 falls back to paged REQ, which carries no such state and re-pages its
   entire history on every cycle.
-- **`concurrency`** is the one dial on cost. The union of every source on a full
+- **`concurrency`** is the one dial on cost. The union of every scan on a full
   store is a large set — plenty of it long-dead hosts that will each burn a
   connect timeout — so the cycle is as long as it needs to be, and this decides
   how much of the network it talks to at once.
@@ -250,7 +268,7 @@ unreachable (a relay list is full of dead hosts — the tally is how you tell
 "normal" from "the whole cycle is broken"):
 
 ```
-router: outbox syncing 3184 relay(s) from [kind 10002 r, kind 10050 relay, kind 1 e, ...] (top: wss://relay.damus.io/ x8214, ...)
+router: outbox syncing 3184 relay(s) from [kinds 10002/10050/30002/30166 x3 select(s), kinds 1 x1 select(s)] (top: wss://relay.damus.io/ x8214, ...)
 router: outbox cycle done — 214,880 event(s) from 1102/3184 relay(s) in 1:12:41; unreachable: timeout x938, Connection refused x421; next in 21600s
 ```
 

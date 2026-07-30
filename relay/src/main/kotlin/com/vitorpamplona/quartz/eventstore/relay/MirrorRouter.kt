@@ -337,7 +337,10 @@ class MirrorRouter(
      */
     private suspend fun dynamicLoop(stream: MirrorStream) {
         val dynamic = stream.dynamic ?: return
-        val sourceNames = dynamic.sources.joinToString { "kind ${it.kind}${it.tag?.let { t -> " $t" } ?: ""}" }
+        val sourceNames =
+            dynamic.sources.joinToString { s ->
+                "kinds ${s.filter.kinds?.joinToString("/") ?: "?"} x${s.selects.size} select(s)"
+            }
         while (scope.isActive) {
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.

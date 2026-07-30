@@ -204,14 +204,28 @@ class RouterConfigTest {
                         concurrency    = 4
                         exclude        = [ "wss://skip.example" ]
                         relaySource = [
-                            { kind = 10002, tag = "r", marker = "write" }
-                            { kind = 10040, tag = "30382:rank", urlIndex = 2 }
-                            { kind = 1, tag = "e", urlIndex = 2, sinceSeconds = 86400 }
+                            {
+                                filter = { "kinds": [10002, 10040, 10050] }
+                                select = [
+                                    { kind = 10002, tag = "r", marker = "write" }
+                                    { kind = 10040, tag = "30382:rank", index = 2 }
+                                    { tag = "relay" }
+                                ]
+                            }
+                            {
+                                filter = { "kinds": [1], "limit": 1000, "authors": ["abc"] }
+                                select = [ { tag = "e", index = 2 } ]
+                            }
                         ]
                     }
                     assertions {
                         filter = { "kinds": [30382] }
-                        relaySource = [ { kind = 10040, urlIndex = 2 } ]
+                        relaySource = [
+                            {
+                                filter = { "kinds": [10040] }
+                                select = [ { index = 2 } ]
+                            }
+                        ]
                     }
                 }
                 """.trimIndent(),
@@ -221,27 +235,43 @@ class RouterConfigTest {
         assertEquals(3600L, outbox.refreshSeconds)
         assertEquals(4, outbox.concurrency)
         assertEquals(listOf("wss://skip.example/"), outbox.exclude.map { it.url })
-        assertEquals(3, outbox.sources.size)
+        assertEquals(2, outbox.sources.size)
 
-        // Defaults: urlIndex 1, no tag filter, no marker filter, whole-kind scan.
-        val nip65 = outbox.sources[0]
+        // One scan over three kinds, three selects sorting them out.
+        val lists = outbox.sources[0]
+        assertEquals(listOf(10002, 10040, 10050), lists.filter.kinds)
+        assertEquals(3, lists.selects.size)
+
+        // Defaults: index 1, no marker filter, and a kind-less select applies to all.
+        val nip65 = lists.selects[0]
         assertEquals(10002, nip65.kind)
         assertEquals("r", nip65.tag)
-        assertEquals(1, nip65.urlIndex)
+        assertEquals(1, nip65.index)
         assertEquals(RelayRole.WRITE, nip65.role)
-        assertEquals(0L, nip65.sinceSeconds)
 
         // A NIP-85 service tag, named exactly, with the url after the pubkey.
-        val provider = outbox.sources[1]
+        val provider = lists.selects[1]
         assertEquals("30382:rank", provider.tag)
-        assertEquals(2, provider.urlIndex)
+        assertEquals(2, provider.index)
         assertNull(provider.role)
 
-        // A relay hint on a regular kind, bounded by its scan window.
-        assertEquals(86_400L, outbox.sources[2].sinceSeconds)
+        assertNull(lists.selects[2].kind, "no kind = every event the filter collected")
+
+        // The second scan is a bounded sweep of a regular kind, filter fields and all.
+        val hints = outbox.sources[1]
+        assertEquals(listOf(1), hints.filter.kinds)
+        assertEquals(1000, hints.filter.limit)
+        assertEquals(listOf("abc"), hints.filter.authors)
 
         val assertions = cfg.streams.first { it.name == "assertions" }.dynamic!!
-        assertNull(assertions.sources.single().tag, "no tag = every tag in the event")
+        assertNull(
+            assertions.sources
+                .single()
+                .selects
+                .single()
+                .tag,
+            "no tag = every tag in the event",
+        )
         assertEquals(21_600L, assertions.refreshSeconds) // the built-in default
 
         // Dynamic streams have no static urls, so they are not down/up upstreams.
@@ -250,21 +280,55 @@ class RouterConfigTest {
         assertTrue(cfg.upUpstreams().isEmpty())
     }
 
+    /** A one-source `relaySource` list, with [filter] as the scan. */
+    private fun sourced(
+        filter: String,
+        select: String = """{ tag = "r" }""",
+    ) = stream(
+        """
+        relaySource = [
+            {
+                filter = $filter
+                select = [ $select ]
+            }
+        ]
+        """.trimIndent(),
+    )
+
     @Test
     fun `a regular kind must bound its scan, a replaceable one need not`() {
         // Scanning all of kind 1 would load every note in the store.
+        assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(sourced("""{ "kinds": [1] }""")) }
+        // Any of limit / since / authors narrows it enough to be safe.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [1], "limit": 1000 }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [1], "since": 1750000000 }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [1], "authors": ["abc"] }"""))
+        // `until` alone doesn't: it caps the top and leaves all of history below.
         assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""relaySource = [ { kind = 1, tag = "e", urlIndex = 2 } ]"""))
+            RouterConfigLoader.parse(sourced("""{ "kinds": [1], "until": 1750000000 }"""))
         }
         // Replaceable and addressable kinds are one event per author — safe whole.
-        RouterConfigLoader.parse(stream("""relaySource = [ { kind = 10002, tag = "r" } ]"""))
-        RouterConfigLoader.parse(stream("""relaySource = [ { kind = 30166, tag = "d" } ]"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002] }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [30166] }"""))
     }
 
     @Test
-    fun `urlIndex 0 is the tag name, never the url`() {
+    fun `index 0 is the tag name, never the url`() {
         assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""relaySource = [ { kind = 10002, tag = "r", urlIndex = 0 } ]"""))
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002] }""", """{ tag = "r", index = 0 }"""))
+        }
+    }
+
+    @Test
+    fun `a relaySource entry needs both a filter with kinds and a select`() {
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""relaySource = [ { select = [ { tag = "r" } ] } ]"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""relaySource = [ { filter = { "kinds": [10002] } } ]"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "authors": ["abc"] }"""))
         }
     }
 
@@ -278,7 +342,12 @@ class RouterConfigTest {
                         streams {
                             outbox {
                                 filter = { "kinds": [1] }
-                                relaySource = [ { kind = 10002, tag = "r" } ]
+                                relaySource = [
+                                    {
+                                        filter = { "kinds": [10002] }
+                                        select = [ { tag = "r" } ]
+                                    }
+                                ]
                             }
                         }
                         """.trimIndent(),
@@ -310,7 +379,7 @@ class RouterConfigTest {
                 stream(
                     """
                     urls = ["wss://a.example"]
-                    relaySource = [ { kind = 10002, tag = "r" } ]
+                    relaySource = [ { filter = { "kinds": [10002] }, select = [ { tag = "r" } ] } ]
                     """.trimIndent(),
                 ),
             )
@@ -319,19 +388,16 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a relaySource stream can only pull down, and every entry needs a kind`() {
+    fun `a relaySource stream can only pull down`() {
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(
                 stream(
                     """
                     dir = "up"
-                    relaySource = [ { kind = 10002, tag = "r" } ]
+                    relaySource = [ { filter = { "kinds": [10002] }, select = [ { tag = "r" } ] } ]
                     """.trimIndent(),
                 ),
             )
-        }
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""relaySource = [ { tag = "r" } ]"""))
         }
     }
 
