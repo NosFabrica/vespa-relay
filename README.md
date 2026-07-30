@@ -94,6 +94,50 @@ All configuration is through environment variables.
 | `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation, per upstream (they run in parallel). This is not the stuck-upstream guard — a session with no frames for 30s aborts itself — so it only needs to be large enough for a legitimate fill of `ROUTER_BACKFILL_SECONDS` to finish. Too tight and big upstreams get truncated to live-tail | `14400` (4h) |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
 
+### Parse audit (what quartz cannot read)
+
+Mirroring profiles replays every malformed kind 0 ever published through quartz's
+`UserMetadata` deserializer, because `SearchableEvent.indexableContent()` is what
+builds the NIP-50 search text. Quartz reports what it cannot read, one line per
+event, which buries the router's own logging:
+
+```
+[MetadataEvent] Content Parse Error: nostr:naddr1… Expected start of the object '{', but had 'EOF' instead
+[TolerantStringSerializer] Ignoring non-primitive string field (JsonObject)
+[BirthdayTolerantSerializer] Ignoring non-object birthday (JsonLiteral)
+```
+
+| var | meaning | default |
+|---|---|---|
+| `PARSE_AUDIT_FILE` | collect those failures into a JSON report at this path instead of logging each one. Unset ⇒ off | unset |
+| `PARSE_AUDIT_SAMPLES` | raw events kept per distinct failure, for a quartz regression test | `5` |
+| `PARSE_AUDIT_INTERVAL_SECONDS` | how often the report is rewritten while running | `60` |
+| `QUARTZ_LOG_LEVEL` | quartz's own log floor — `DEBUG` / `INFO` / `WARN` / `ERROR`. Quartz defaults to `DEBUG`, which is why the parse reports are so loud. Works with or without the audit | quartz's default |
+
+The report groups by failure rather than by event, so "the same quartz gap" is one
+entry with a count however many events hit it, each carrying a few whole events:
+
+```json
+{
+  "inspected": 412330, "eventsWithFindings": 1876, "distinctFindings": 4,
+  "findings": [
+    { "tag": "MetadataEvent", "count": 1204,
+      "message": "Content Parse Error: <event> Expected start of the object '{', but had 'EOF' instead at path: $",
+      "samples": [ { "eventId": "…", "pubkey": "…", "event": { "…the whole event…" } } ] }
+  ]
+}
+```
+
+Note the severity split. `MetadataEvent Content Parse Error` means the content was
+not a JSON object at all, so there is no metadata to index and that profile is not
+findable by name. The tolerant-serializer entries mean the parse *succeeded* and one
+wrongly-typed field was skipped by design — noise, unless quartz should be widening
+what it accepts.
+
+The audit runs each parse itself, on the ingest worker, because a `LogSink` receives
+only `(level, tag, message, throwable)` — no event. That is also why it is opt-in: it
+costs one extra parse per mirrored event. See `ParseAudit`.
+
 ## The router: mirror from upstream relays
 
 Point `ROUTER_CONFIG` (or `ROUTER_CONFIG_FILE`) at a strfry-style `streams`

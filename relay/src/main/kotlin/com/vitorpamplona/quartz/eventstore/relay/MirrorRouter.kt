@@ -77,6 +77,10 @@ class MirrorRouter(
     private val store: IEventStore,
     private val config: RouterConfig,
     parentContext: CoroutineContext = SupervisorJob(),
+    // When set (PARSE_AUDIT_FILE), every mirrored event is also run through
+    // quartz's search-indexing parse to collect what quartz cannot read. Off by
+    // default: it costs one extra parse per event. See [ParseAudit].
+    private val audit: ParseAudit? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -204,6 +208,11 @@ class MirrorRouter(
             }
             if (verifyRejected > 0) rejected.addAndGet(verifyRejected.toLong())
             if (valid.isEmpty()) continue
+            // Before the batch write: the store feeds Vespa in parallel, so a parse
+            // report raised inside batchInsert cannot be attributed to one event.
+            // Inspecting here keeps each parse on this worker thread, where the
+            // audit's ThreadLocal makes the attribution exact.
+            audit?.let { for (event in valid) it.inspect(event) }
             runCatching { store.batchInsert(valid) }
                 .onSuccess { outcomes ->
                     for (outcome in outcomes) {

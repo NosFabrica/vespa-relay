@@ -69,12 +69,23 @@ services:
       # (the store serializes writes). Lower the batch to cut memory.
       ROUTER_INGEST_BATCH: ${ROUTER_INGEST_BATCH:-1000}
       ROUTER_INGEST_CONCURRENCY: ${ROUTER_INGEST_CONCURRENCY:-2}
+      # Quartz's own log floor (it defaults to DEBUG, which makes malformed
+      # profiles log a line per event during a backfill).
+      QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,
+      # which the volume below maps to PARSE_AUDIT_LOCAL_DIR on the host, so the
+      # report is readable without entering the container. Unset ⇒ off.
+      PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
+      PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
+      PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}
     ports:
       - "${RELAY_PORT:-7777}:7777"
     volumes:
       # Mounts your local ./router.conf into the container when the router is on.
       # Harmless when ROUTER_CONFIG_FILE is empty (nothing reads the file).
       - ${ROUTER_CONFIG_LOCAL:-./router.conf.example}:/etc/vespa-relay/router.conf:ro
+      # Where PARSE_AUDIT_FILE lands, so the report is readable on the host.
+      - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
     restart: unless-stopped
 
 volumes:
