@@ -116,6 +116,7 @@ streams {
         backfillSeconds = 172800   # 48h of history per cycle
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 8            # relays synced at the same time
+        syncTimeoutSeconds = 600   # hard cap on ONE relay's sync
         exclude = []               # relays to skip however many sources name them
         relaySource = [
             # One scan over every relay-list kind we hold. All replaceable or
@@ -193,6 +194,7 @@ streams {
         backfillSeconds = 172800   # 48h of history per cycle
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 8            # relays synced at the same time
+        syncTimeoutSeconds = 600   # hard cap on ONE relay's sync
         exclude = []               # relays to skip however many sources name them
         relaySource = [
             {

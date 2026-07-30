@@ -373,17 +373,26 @@ class MirrorRouter(
             dynamic.sources.joinToString { s ->
                 "kinds ${s.filter.kinds?.joinToString("/") ?: "?"} x${s.selects.size} select(s)"
             }
+        // How long to wait before trying again when a cycle did NOT run. The full
+        // refresh interval is the wrong answer there: a store that is still
+        // filling has no relays to find yet, and a store that failed one query
+        // (a degraded Vespa response aborts discovery by design, rather than
+        // syncing against a half-read relay list) is usually fine moments later.
+        // Waiting hours to notice either would be self-inflicted downtime, so
+        // back off from short and climb, capped at the refresh interval.
+        var retrySec = DYNAMIC_RETRY_BASE_SECONDS
         while (scope.isActive) {
+            var ran = false
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
                 val relays = RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay))
                 if (relays.isEmpty()) {
                     System.err.println(
-                        "router: ${stream.name} found no relays in [$sourceNames] yet" +
-                            " — retrying in ${dynamic.refreshSeconds}s",
+                        "router: ${stream.name} found no relays in [$sourceNames] yet — retrying in ${retrySec}s",
                     )
                 } else {
                     dynamicCycle(stream, dynamic, sourceNames, relays)
+                    ran = true
                 }
             } catch (e: CancellationException) {
                 // Shutdown, not a failure — a cycle can be mid-fan-out for a long
@@ -391,9 +400,16 @@ class MirrorRouter(
                 // loop quietly instead of logging a scary line on every stop.
                 throw e
             } catch (e: Exception) {
-                System.err.println("router: ${stream.name} refresh failed: ${e.message}")
+                System.err.println("router: ${stream.name} refresh failed: ${e.message} — retrying in ${retrySec}s")
             }
-            delay(dynamic.refreshSeconds * 1000)
+
+            if (ran) {
+                retrySec = DYNAMIC_RETRY_BASE_SECONDS
+                delay(dynamic.refreshSeconds * 1000)
+            } else {
+                delay(retrySec * 1000)
+                retrySec = (retrySec * 2).coerceAtMost(dynamic.refreshSeconds)
+            }
         }
     }
 
@@ -443,7 +459,7 @@ class MirrorRouter(
                 launch {
                     gate.withPermit {
                         val got =
-                            dynamicSyncOne(stream, relay.url, window, local) { reason ->
+                            dynamicSyncOne(stream, relay.url, window, local, dynamic.syncTimeoutSeconds * 1000) { reason ->
                                 reasons.merge(reason, 1L, Long::plus)
                             }
                         if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
@@ -477,12 +493,13 @@ class MirrorRouter(
         url: NormalizedRelayUrl,
         window: Filter,
         local: List<IdAndTime>,
+        timeoutMs: Long,
         onFailure: (String) -> Unit,
     ): Int {
         inFlight.merge(url, 1, Int::plus)
         return try {
             val result =
-                withTimeoutOrNull(negTimeoutMs) {
+                withTimeoutOrNull(timeoutMs) {
                     client.negentropySyncOrFetch(
                         relay = url,
                         filter = window,
@@ -721,6 +738,10 @@ class MirrorRouter(
         private const val PROGRESS_INTERVAL_MS = 15_000L
         private const val UP_PUBLISH_PACE_MS = 40L
         private const val UP_MAX_ROUNDS = 8
+
+        // First wait after a dynamic cycle could not run; doubles up to the
+        // stream's own refresh interval.
+        private const val DYNAMIC_RETRY_BASE_SECONDS = 30L
 
         // Idle (no protocol frames for this long) aborts a negentropy session,
         // below the hard [negTimeoutMs] cap.

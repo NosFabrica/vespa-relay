@@ -21,6 +21,7 @@
 package com.vitorpamplona.quartz.eventstore.relay
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -59,13 +60,13 @@ object RelayDiscovery {
         store: IEventStore,
         dynamic: DynamicRelayList,
         skip: Set<NormalizedRelayUrl> = emptySet(),
+        pageSize: Int = SCAN_PAGE,
     ): List<DiscoveredRelay> {
         val counts = HashMap<NormalizedRelayUrl, Int>()
         for (source in dynamic.sources) {
-            // One query per source, every select applied to what it returns — a
+            // One scan per source, every select applied to what it returns — a
             // shelf of relay-list kinds costs one scan, not one scan each.
-            val events: List<Event> = store.query(source.filter)
-            for (event in events) {
+            scan(store, source.filter, pageSize) { event ->
                 // One event counts a relay once, however many tags — or selects —
                 // repeat it.
                 for (url in urlsIn(event, source.selects)) counts[url] = (counts[url] ?: 0) + 1
@@ -79,6 +80,86 @@ object RelayDiscovery {
             .sortedWith(compareByDescending<DiscoveredRelay> { it.references }.thenBy { it.url.url })
             .toList()
     }
+
+    /**
+     * Walk everything [filter] matches, a page at a time, oldest-ward.
+     *
+     * The store answers an unbounded query with the whole match set in one list,
+     * and a relay-list kind on a large relay is millions of events — a scan that
+     * asked for all of it at once would size the heap to the corpus. Only the url
+     * counts need to survive a page, so this pages by a `until` cursor and lets
+     * each page go: memory is a page plus the counts, whatever the corpus.
+     *
+     * A page boundary can fall inside a run of events sharing one `created_at`.
+     * `until` is inclusive, so the next page re-sees them; [boundaryIds] carries
+     * exactly that run forward to skip it, which is bounded by the page rather
+     * than by the scan. A page that is *entirely* one timestamp can't advance the
+     * cursor at all — then it steps below the timestamp, the one case where a
+     * scan may miss same-second events beyond a page's worth.
+     */
+    private suspend fun scan(
+        store: IEventStore,
+        filter: Filter,
+        pageSize: Int,
+        onEach: (Event) -> Unit,
+    ) {
+        // An explicit `limit` is the caller's budget for the whole scan, not a
+        // per-page size — and only events actually handed to [onEach] spend it,
+        // so re-reading a boundary doesn't quietly eat into it.
+        var remaining = filter.limit ?: Int.MAX_VALUE
+        var until = filter.until
+        var boundaryIds = emptySet<String>()
+        while (remaining > 0) {
+            // Room for what we still owe the caller, plus the boundary run we
+            // are about to re-read and discard.
+            val budget = remaining.toLong() + boundaryIds.size
+            var ask = minOf(pageSize.toLong(), budget).toInt()
+            var page: List<Event> = store.query(filter.copy(until = until, limit = ask))
+            if (page.isEmpty()) return
+
+            // Results are newest-first, so a page whose ends share a `created_at`
+            // is entirely one timestamp — and then the cursor has nowhere to go:
+            // `until` is inclusive, so repeating it re-reads the same page, and
+            // stepping below it drops the events in that run we haven't seen.
+            // Ask for a bigger page until it spans two timestamps. This is the
+            // one place the page may exceed [pageSize]; a run longer than a page
+            // is rare, and reading it is the only way not to lose it.
+            while (page.size == ask && ask < budget && page.first().createdAt == page.last().createdAt) {
+                ask = minOf(ask.toLong() * 2, budget).toInt()
+                page = store.query(filter.copy(until = until, limit = ask))
+            }
+
+            var oldest = Long.MAX_VALUE
+            for (event in page) {
+                if (remaining <= 0) break
+                if (event.id !in boundaryIds) {
+                    onEach(event)
+                    remaining--
+                }
+                if (event.createdAt < oldest) oldest = event.createdAt
+            }
+            // Short page: the store had nothing older left to give.
+            if (page.size < ask) return
+
+            val newBoundary = page.filter { it.createdAt == oldest }.mapTo(HashSet()) { it.id }
+            if (newBoundary.size == page.size) {
+                // Still one timestamp even after growing — we ran out of budget
+                // to widen. Step below it; the remainder of that second is what
+                // the caller's own `limit` chose to stop at.
+                until = oldest - 1
+                boundaryIds = emptySet()
+            } else {
+                until = oldest
+                boundaryIds = newBoundary
+            }
+        }
+    }
+
+    /**
+     * Events per page. Big enough that a normal relay-list scan is one or two
+     * round trips, small enough that a page is a bounded allocation.
+     */
+    private const val SCAN_PAGE = 10_000
 
     /** The distinct relay urls one event advertises across every applicable select. */
     fun urlsIn(

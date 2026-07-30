@@ -169,12 +169,20 @@ data class MirrorStream(
  * @param refreshSeconds how often the whole cycle (re-read the sources, re-sync
  *   every relay) runs again.
  * @param concurrency how many of those relays sync at the same time.
+ * @param syncTimeoutSeconds hard cap on ONE relay's sync. Deliberately separate
+ *   from `ROUTER_NEG_TIMEOUT_SECONDS`, which is sized for a multi-year backfill
+ *   of a hand-picked upstream: here the relays are strangers off a list, there
+ *   are thousands of them, and one that keeps talking without converging would
+ *   otherwise hold a [concurrency] slot for hours while the rest of the network
+ *   waits behind it. A cycle syncs a window, not a lifetime, so minutes is the
+ *   right order of magnitude.
  * @param exclude relays to skip however many sources name them.
  */
 data class DynamicRelayList(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
     val concurrency: Int,
+    val syncTimeoutSeconds: Long,
     val exclude: Set<NormalizedRelayUrl>,
 )
 
@@ -272,6 +280,7 @@ enum class RelayRole(
 data class RelaySourceDefaults(
     val refreshSeconds: Long = 21_600,
     val concurrency: Int = 8,
+    val syncTimeoutSeconds: Long = 600,
 )
 
 enum class MirrorDirection(
@@ -296,8 +305,9 @@ enum class MirrorDirection(
  * sets the default backfill window for streams that don't state their own;
  * `ROUTER_UP_INTERVAL_SECONDS` sets how often up/both streams re-reconcile.
  *
- * `ROUTER_DYNAMIC_REFRESH_SECONDS` and `ROUTER_DYNAMIC_CONCURRENCY` do the same
- * for dynamic streams — the per-stream `refreshSeconds`/`concurrency` override both.
+ * `ROUTER_DYNAMIC_REFRESH_SECONDS`, `ROUTER_DYNAMIC_CONCURRENCY` and
+ * `ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS` do the same for dynamic streams — the
+ * per-stream keys of the same name override each of them.
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
@@ -314,6 +324,9 @@ object RouterConfigLoader {
             RelaySourceDefaults(
                 refreshSeconds = env["ROUTER_DYNAMIC_REFRESH_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
                 concurrency = env["ROUTER_DYNAMIC_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 256) ?: fallback.concurrency,
+                syncTimeoutSeconds =
+                    env["ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L)
+                        ?: fallback.syncTimeoutSeconds,
             )
         return parse(raw, backfillDefault, upInterval, negTimeout, ingestConcurrency, ingestBatch, relaySourceDefaults)
     }
@@ -384,6 +397,14 @@ object RouterConfigLoader {
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
+            syncTimeoutSeconds =
+                (
+                    if (s.hasPath("syncTimeoutSeconds")) {
+                        s.getLong("syncTimeoutSeconds")
+                    } else {
+                        defaults.syncTimeoutSeconds
+                    }
+                ).coerceAtLeast(10L),
             exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
         )
     }

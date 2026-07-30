@@ -200,9 +200,10 @@ class RouterConfigTest {
                     outbox {
                         dir            = "down"
                         filter         = { "kinds": [0, 3, 10002] }
-                        refreshSeconds = 3600
-                        concurrency    = 4
-                        exclude        = [ "wss://skip.example" ]
+                        refreshSeconds     = 3600
+                        concurrency        = 4
+                        syncTimeoutSeconds = 120
+                        exclude            = [ "wss://skip.example" ]
                         relaySource = [
                             {
                                 select = [
@@ -234,6 +235,7 @@ class RouterConfigTest {
         val outbox = cfg.streams.first { it.name == "outbox" }.dynamic!!
         assertEquals(3600L, outbox.refreshSeconds)
         assertEquals(4, outbox.concurrency)
+        assertEquals(120L, outbox.syncTimeoutSeconds)
         assertEquals(listOf("wss://skip.example/"), outbox.exclude.map { it.url })
         assertEquals(2, outbox.sources.size)
 
@@ -272,7 +274,8 @@ class RouterConfigTest {
                 .tag,
             "no tag = every tag in the event",
         )
-        assertEquals(21_600L, assertions.refreshSeconds) // the built-in default
+        assertEquals(21_600L, assertions.refreshSeconds) // the built-in defaults
+        assertEquals(600L, assertions.syncTimeoutSeconds)
 
         // Dynamic streams have no static urls, so they are not down/up upstreams.
         assertEquals(2, cfg.dynamicStreams().size)
@@ -353,11 +356,13 @@ class RouterConfigTest {
                         """.trimIndent(),
                     "ROUTER_DYNAMIC_REFRESH_SECONDS" to "900",
                     "ROUTER_DYNAMIC_CONCURRENCY" to "16",
+                    "ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS" to "45",
                 ),
             )
         val dynamic = cfg!!.dynamicStreams().single().dynamic!!
         assertEquals(900L, dynamic.refreshSeconds)
         assertEquals(16, dynamic.concurrency)
+        assertEquals(45L, dynamic.syncTimeoutSeconds)
     }
 
     /** A one-stream config, with [body] as the stream's keys. */

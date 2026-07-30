@@ -60,6 +60,7 @@ class RelayDiscoveryTest {
         sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
+        syncTimeoutSeconds = 600,
         exclude = exclude.map { RelayUrlNormalizer.normalize(it) }.toSet(),
     )
 
@@ -275,6 +276,58 @@ class RelayDiscoveryTest {
                     skip = setOf(RelayUrlNormalizer.normalize("wss://quiet.example")),
                 )
             assertEquals(listOf("wss://lonely.example/"), kept.map { it.url.url })
+        }
+
+    @Test
+    fun `a paged scan sees every event, across page boundaries and repeated timestamps`() =
+        runBlocking {
+            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            // 12 lists over 4 distinct timestamps, so pages of 2 land mid-run of
+            // events sharing a created_at — the case `until` being inclusive makes
+            // awkward, and the case a naive cursor either loops on or skips.
+            repeat(12) { i ->
+                store.insert(
+                    NostrSignerSync().sign<Event>(
+                        1_700_000_000L + (i % 4),
+                        10002,
+                        arrayOf(arrayOf("r", "wss://relay$i.example", "write")),
+                        "",
+                    ),
+                )
+            }
+
+            val found =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(source(10002, selects = listOf(select(tag = "r")))),
+                    pageSize = 2,
+                )
+            assertEquals(12, found.size, "every event must be seen exactly once, whatever the page size")
+            assertEquals(List(12) { 1 }, found.map { it.references }, "no event counted twice across a page boundary")
+        }
+
+    @Test
+    fun `a scan limit is a budget for the whole scan, not per page`() =
+        runBlocking {
+            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            repeat(10) { i ->
+                store.insert(
+                    NostrSignerSync().sign<Event>(
+                        1_700_000_000L + i,
+                        10002,
+                        arrayOf(arrayOf("r", "wss://relay$i.example", "write")),
+                        "",
+                    ),
+                )
+            }
+
+            val found =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(source(10002, selects = listOf(select(tag = "r")), limit = 4)),
+                    pageSize = 2,
+                )
+            assertEquals(4, found.size, "the limit bounds the scan across pages, it does not multiply by them")
         }
 
     @Test

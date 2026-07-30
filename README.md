@@ -95,6 +95,7 @@ All configuration is through environment variables.
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
 | `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
 | `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
+| `ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS` | default hard cap on one discovered relay's sync. Deliberately far tighter than `ROUTER_NEG_TIMEOUT_SECONDS`: these relays are strangers off a list and there are thousands of them, so one that talks without converging must not hold a concurrency slot for hours | `600` (10m) |
 
 ## The router: mirror from upstream relays
 
@@ -272,6 +273,12 @@ Some notes on the other knobs:
   negentropy, which diffs against what we already hold, but a relay *without*
   NIP-77 falls back to paged REQ, which carries no such state and re-pages its
   entire history on every cycle.
+- **`syncTimeoutSeconds`** caps one relay's sync. This is *not*
+  `ROUTER_NEG_TIMEOUT_SECONDS`, which is sized for a multi-year backfill of a
+  hand-picked upstream. Here the relays are strangers off a list and there are
+  thousands of them, so a relay that keeps talking without converging must not
+  hold a `concurrency` slot for hours while the network queues behind it. A
+  cycle syncs a window, not a lifetime — minutes is the right order.
 - **`concurrency`** is the one dial on cost. The union of every scan on a full
   store is a large set — plenty of it long-dead hosts that will each burn a
   connect timeout — so the cycle is as long as it needs to be, and this decides
