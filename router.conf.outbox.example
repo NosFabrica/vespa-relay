@@ -39,10 +39,10 @@ streams {
 
     # THE OUTBOX. No `urls`: the relays come from the 10002s above.
     #
-    # Every `refreshSeconds` the router re-reads those lists, ranks each relay by
-    # how many lists name it, and negentropy-syncs this `filter` against the top
-    # `maxRelays` of them, `concurrency` at a time. Relays without NIP-77 fall
-    # back to a paged REQ fetch automatically.
+    # Every `refreshSeconds` the router re-reads those lists and negentropy-syncs
+    # this `filter` against every relay they name — the whole set, however far it
+    # has grown — `concurrency` at a time. Relays without NIP-77 fall back to a
+    # paged REQ fetch automatically, and unreachable ones are tallied and skipped.
     #
     # `backfillSeconds` is the history window each cycle reconciles. Keep it
     # comfortably longer than `refreshSeconds` so consecutive cycles overlap
@@ -57,11 +57,8 @@ streams {
             kind           = 10002   # NIP-65 relay list metadata
             marker         = "write" # write + unmarked; use "read" or "any" to widen
             refreshSeconds = 21600   # re-read the lists and re-sync every 6h
-            maxLists       = 50000   # how many 10002s to scan, newest first
-            maxRelays      = 500     # sync the 500 best-referenced (0 = all)
-            minReferences  = 2       # ignore relays only one list names
             concurrency    = 8       # relays synced at the same time
-            exclude        = []      # relays to skip regardless of ranking
+            exclude        = []      # relays to skip however many lists name them
         }
     }
 }

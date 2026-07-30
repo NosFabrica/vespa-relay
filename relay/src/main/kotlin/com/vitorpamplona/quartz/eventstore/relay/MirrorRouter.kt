@@ -73,10 +73,11 @@ import kotlin.coroutines.CoroutineContext
  *
  * Dynamic (`relaySource { }`): the stream has no configured relays. Every
  * refresh it reads the relay lists already in our store ([RelayDiscovery]) and
- * negentropy-syncs the stream filter against each relay they name, a bounded
- * number at a time. A set that size is synced on a period rather than held
- * open, so these streams have no live tail — the refresh *is* the tail — and
- * each relay's socket is dropped again once its sync returns.
+ * negentropy-syncs the stream filter against every relay they name — all of
+ * them, with `concurrency` pacing the fan-out rather than capping it. A set that
+ * size is synced on a period rather than held open, so these streams have no
+ * live tail — the refresh *is* the tail — and each relay's socket is dropped
+ * again once its sync returns.
  *
  * While backfilling, a progress line reports overall percent and an ETA to
  * "useful" (backfill complete), so an operator can tell how long the initial

@@ -132,39 +132,29 @@ data class MirrorStream(
  *         kind           = 10002    # or 10040
  *         marker         = "write"  # 10002 only: write / read / any
  *         refreshSeconds = 21600
- *         maxRelays      = 500
- *         minReferences  = 2
  *         concurrency    = 8
  *         exclude        = [ "wss://relay.example" ]
  *       }
  *     }
  *
- * Every refresh the router re-reads the lists, ranks the relays by how many of
- * those lists name them, and negentropy-syncs (or paged-REQ-fetches) the stream
- * filter against the top [maxRelays] of them. There is no live tail: a set this
- * large is synced on a period, not held open.
+ * Every refresh the router re-reads every list of that kind in the store and
+ * negentropy-syncs (or paged-REQ-fetches) the stream filter against every relay
+ * they name — the whole set, however large it has grown. [concurrency] paces
+ * that fan-out; nothing truncates it. There is no live tail either: a set this
+ * size is synced on a period, not held open.
  *
  * @param kind which relay-list event to read the urls out of.
  * @param role for [RelayListKind.OUTBOX], which NIP-65 marker to keep. Unmarked
  *   `r` tags mean both read and write, so they match every role.
  * @param refreshSeconds how often the whole cycle (re-read the lists, re-sync
  *   every relay) runs again.
- * @param maxLists how many relay-list events to read per cycle, newest first.
- *   A ceiling on the scan, not on the network — raise it on a large store.
- * @param maxRelays how many of the discovered relays to sync, best-referenced
- *   first. 0 means all of them.
- * @param minReferences drop relays named by fewer than this many lists — the
- *   long tail of one-user relays is mostly dead hosts.
  * @param concurrency how many of those relays sync at the same time.
- * @param exclude relays to skip no matter how well-referenced they are.
+ * @param exclude relays to skip however many lists name them.
  */
 data class RelaySource(
     val kind: RelayListKind,
     val role: RelayRole,
     val refreshSeconds: Long,
-    val maxLists: Int,
-    val maxRelays: Int,
-    val minReferences: Int,
     val concurrency: Int,
     val exclude: Set<NormalizedRelayUrl>,
 )
@@ -213,9 +203,6 @@ enum class RelayRole(
 /** Env-level fallbacks for the per-stream `relaySource { }` knobs. */
 data class RelaySourceDefaults(
     val refreshSeconds: Long = 21_600,
-    val maxLists: Int = 50_000,
-    val maxRelays: Int = 500,
-    val minReferences: Int = 1,
     val concurrency: Int = 8,
 )
 
@@ -241,10 +228,8 @@ enum class MirrorDirection(
  * sets the default backfill window for streams that don't state their own;
  * `ROUTER_UP_INTERVAL_SECONDS` sets how often up/both streams re-reconcile.
  *
- * `ROUTER_DYNAMIC_REFRESH_SECONDS`, `ROUTER_DYNAMIC_MAX_LISTS`,
- * `ROUTER_DYNAMIC_MAX_RELAYS`, `ROUTER_DYNAMIC_MIN_REFERENCES` and
- * `ROUTER_DYNAMIC_CONCURRENCY` do the same for [RelaySource] streams — the
- * per-stream `relaySource { }` keys override each of them.
+ * `ROUTER_DYNAMIC_REFRESH_SECONDS` and `ROUTER_DYNAMIC_CONCURRENCY` do the same
+ * for [RelaySource] streams — the per-stream `relaySource { }` keys override both.
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
@@ -260,9 +245,6 @@ object RouterConfigLoader {
         val relaySourceDefaults =
             RelaySourceDefaults(
                 refreshSeconds = env["ROUTER_DYNAMIC_REFRESH_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
-                maxLists = env["ROUTER_DYNAMIC_MAX_LISTS"]?.trim()?.toIntOrNull()?.coerceAtLeast(1) ?: fallback.maxLists,
-                maxRelays = env["ROUTER_DYNAMIC_MAX_RELAYS"]?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: fallback.maxRelays,
-                minReferences = env["ROUTER_DYNAMIC_MIN_REFERENCES"]?.trim()?.toIntOrNull()?.coerceAtLeast(1) ?: fallback.minReferences,
                 concurrency = env["ROUTER_DYNAMIC_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 256) ?: fallback.concurrency,
             )
         return parse(raw, backfillDefault, upInterval, negTimeout, ingestConcurrency, ingestBatch, relaySourceDefaults)
@@ -343,9 +325,6 @@ object RouterConfigLoader {
             kind = kind,
             role = role,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
-            maxLists = (if (s.hasPath("maxLists")) s.getInt("maxLists") else defaults.maxLists).coerceAtLeast(1),
-            maxRelays = (if (s.hasPath("maxRelays")) s.getInt("maxRelays") else defaults.maxRelays).coerceAtLeast(0),
-            minReferences = (if (s.hasPath("minReferences")) s.getInt("minReferences") else defaults.minReferences).coerceAtLeast(1),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
             exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
         )

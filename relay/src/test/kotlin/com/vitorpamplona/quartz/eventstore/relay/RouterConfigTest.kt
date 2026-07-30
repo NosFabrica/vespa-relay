@@ -204,9 +204,6 @@ class RouterConfigTest {
                             kind           = 10002
                             marker         = "write"
                             refreshSeconds = 3600
-                            maxLists       = 1000
-                            maxRelays      = 50
-                            minReferences  = 2
                             concurrency    = 4
                             exclude        = [ "wss://skip.example" ]
                         }
@@ -223,9 +220,6 @@ class RouterConfigTest {
         assertEquals(RelayListKind.OUTBOX, outbox.kind)
         assertEquals(RelayRole.WRITE, outbox.role)
         assertEquals(3600L, outbox.refreshSeconds)
-        assertEquals(1000, outbox.maxLists)
-        assertEquals(50, outbox.maxRelays)
-        assertEquals(2, outbox.minReferences)
         assertEquals(4, outbox.concurrency)
         assertEquals(listOf("wss://skip.example/"), outbox.exclude.map { it.url })
 
@@ -256,13 +250,11 @@ class RouterConfigTest {
                         }
                         """.trimIndent(),
                     "ROUTER_DYNAMIC_REFRESH_SECONDS" to "900",
-                    "ROUTER_DYNAMIC_MAX_RELAYS" to "42",
                     "ROUTER_DYNAMIC_CONCURRENCY" to "16",
                 ),
             )
         val source = cfg!!.dynamicStreams().single().relaySource!!
         assertEquals(900L, source.refreshSeconds)
-        assertEquals(42, source.maxRelays)
         assertEquals(16, source.concurrency)
     }
 

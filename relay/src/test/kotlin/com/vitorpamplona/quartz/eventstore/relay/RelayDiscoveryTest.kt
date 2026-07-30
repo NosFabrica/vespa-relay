@@ -41,16 +41,11 @@ class RelayDiscoveryTest {
     private fun source(
         kind: RelayListKind,
         role: RelayRole = RelayRole.WRITE,
-        maxRelays: Int = 500,
-        minReferences: Int = 1,
         exclude: Set<String> = emptySet(),
     ) = RelaySource(
         kind = kind,
         role = role,
         refreshSeconds = 3_600,
-        maxLists = 50_000,
-        maxRelays = maxRelays,
-        minReferences = minReferences,
         concurrency = 4,
         exclude = exclude.map { RelayUrlNormalizer.normalize(it) }.toSet(),
     )
@@ -149,7 +144,7 @@ class RelayDiscoveryTest {
     }
 
     @Test
-    fun `discovery ranks relays by how many lists name them`() =
+    fun `discovery keeps every relay, ordered by how many lists name it`() =
         runBlocking {
             val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
             // popular: 3 lists, quiet: 2, lonely: 1.
@@ -157,28 +152,34 @@ class RelayDiscoveryTest {
             store.insert(outboxList("wss://popular.example" to "write", "wss://quiet.example" to null))
             store.insert(outboxList("wss://popular.example" to "write", "wss://lonely.example" to "write"))
 
+            // Nothing is dropped for being unpopular — the one-list relay is synced
+            // like the rest; the count only decides who goes first.
             val all = RelayDiscovery.discover(store, source(RelayListKind.OUTBOX))
             assertEquals(
                 listOf("wss://popular.example/" to 3, "wss://quiet.example/" to 2, "wss://lonely.example/" to 1),
                 all.map { it.url.url to it.references },
             )
+        }
 
-            // minReferences trims the one-user tail...
-            val busy = RelayDiscovery.discover(store, source(RelayListKind.OUTBOX, minReferences = 2))
-            assertEquals(listOf("wss://popular.example/", "wss://quiet.example/"), busy.map { it.url.url })
+    @Test
+    fun `exclude and the caller's skip set are the only things dropped`() =
+        runBlocking {
+            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            store.insert(
+                outboxList(
+                    "wss://popular.example" to "write",
+                    "wss://quiet.example" to "write",
+                    "wss://lonely.example" to "write",
+                ),
+            )
 
-            // ...maxRelays keeps only the best-referenced...
-            val top = RelayDiscovery.discover(store, source(RelayListKind.OUTBOX, maxRelays = 1))
-            assertEquals(listOf("wss://popular.example/"), top.map { it.url.url })
-
-            // ...and both `exclude` and the caller's skip set drop a relay outright.
-            val excluded =
+            val kept =
                 RelayDiscovery.discover(
                     store,
                     source(RelayListKind.OUTBOX, exclude = setOf("wss://popular.example")),
                     skip = setOf(RelayUrlNormalizer.normalize("wss://quiet.example")),
                 )
-            assertEquals(listOf("wss://lonely.example/"), excluded.map { it.url.url })
+            assertEquals(listOf("wss://lonely.example/"), kept.map { it.url.url })
         }
 
     @Test

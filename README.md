@@ -94,9 +94,6 @@ All configuration is through environment variables.
 | `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation, per upstream (they run in parallel). This is not the stuck-upstream guard — a session with no frames for 30s aborts itself — so it only needs to be large enough for a legitimate fill of `ROUTER_BACKFILL_SECONDS` to finish. Too tight and big upstreams get truncated to live-tail | `14400` (4h) |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
 | `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource { }` stream (re-read the relay lists, re-sync every relay) | `21600` (6h) |
-| `ROUTER_DYNAMIC_MAX_LISTS` | default cap on how many relay-list events one cycle scans, newest first | `50000` |
-| `ROUTER_DYNAMIC_MAX_RELAYS` | default cap on how many discovered relays one cycle syncs, best-referenced first (`0` = all) | `500` |
-| `ROUTER_DYNAMIC_MIN_REFERENCES` | default floor on how many lists must name a relay before it is synced | `1` |
 | `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
 
 ## The router: mirror from upstream relays
@@ -184,19 +181,20 @@ outbox {
     kind           = 10002    # NIP-65 relay lists  (10040 = NIP-85 trust providers)
     marker         = "write"  # write + unmarked; "read" or "any" to widen
     refreshSeconds = 21600
-    maxRelays      = 500
-    minReferences  = 2
     concurrency    = 8
   }
 }
 ```
 
 Each cycle reads the relay-list events already in our store, takes the urls out
-of them, ranks each relay by how many lists name it, and negentropy-syncs the
-stream `filter` against the top `maxRelays` of them, `concurrency` at a time
-(paged REQ where NIP-77 is missing, same as a backfill). Then it sleeps
-`refreshSeconds` and does it again — so the fan-out widens on its own as more
-relay lists land in the store.
+of them, and negentropy-syncs the stream `filter` against **every** relay they
+name, `concurrency` at a time (paged REQ where NIP-77 is missing, same as a
+backfill). Then it sleeps `refreshSeconds` and does it again — so the fan-out
+widens on its own as more relay lists land in the store.
+
+Nothing truncates that set: there is no cap on how many lists are scanned or how
+many relays are synced, and no popularity floor. `concurrency` paces the fan-out,
+it doesn't bound it, and `exclude` is the only way to leave a relay out.
 
 - **`kind = 10002`** — the outbox. `["r", "<url>", "write"]` and unmarked `["r",
   "<url>"]` tags (unmarked means read *and* write) are the relays a user's events
@@ -216,10 +214,10 @@ Some notes on the knobs:
   longer than `refreshSeconds` so consecutive cycles overlap; leave it unset and
   every cycle reconciles the filter's whole history, which is correct but much
   more expensive once the fan-out is wide.
-- **`minReferences`** matters more than it looks. The tail of a 10002 scan is
-  thousands of hosts exactly one person named, most of them long dead; `2` cuts
-  that off. Assertion providers are scarce enough that `1` is right for 10040.
-- **`maxLists`** caps the scan, not the network — raise it on a large store.
+- **`concurrency`** is the one dial on cost. A 10002 scan of a full store is a
+  large set — plenty of it long-dead hosts that will each burn a connect timeout
+  — so the cycle is as long as it needs to be, and this decides how much of the
+  network it talks to at once.
 - These streams have **no live tail**. Holding hundreds of subscriptions open is
   what the periodic sync exists to avoid, so each relay's socket is dropped again
   as soon as its sync returns. `dir` must be `down`, and a `relaySource { }`
@@ -230,8 +228,8 @@ unreachable (a relay list is full of dead hosts — the tally is how you tell
 "normal" from "the whole cycle is broken"):
 
 ```
-router: outbox syncing 500 relay(s) from kind 10002 lists (top: wss://relay.damus.io/ x8214, ...)
-router: outbox cycle done — 214,880 event(s) from 431/500 relay(s) in 12:41; unreachable: timeout x38, Connection refused x21; next in 21600s
+router: outbox syncing 3184 relay(s) from kind 10002 lists (top: wss://relay.damus.io/ x8214, ...)
+router: outbox cycle done — 214,880 event(s) from 1102/3184 relay(s) in 1:12:41; unreachable: timeout x938, Connection refused x421; next in 21600s
 ```
 
 ### Enabling it under docker compose

@@ -26,27 +26,28 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 
-/** One relay a [RelaySource] found, and how many lists in the store named it. */
+/** One relay a [RelaySource] found, and how many lists in the store name it. */
 data class DiscoveredRelay(
     val url: NormalizedRelayUrl,
     val references: Int,
 )
 
 /**
- * Reads a dynamic stream's relay list out of the store: pull the relay-list
- * events of the source's kind, take the urls each one advertises, and rank them
- * by how many lists agree. The store is the crawl — an ordinary `down` stream on
- * a handful of indexer relays fills it with 10002s and 10040s, and this turns
- * that into the fan-out the dynamic stream syncs against.
+ * Reads a dynamic stream's relay list out of the store: pull every relay-list
+ * event of the source's kind and take the urls each one advertises. The store is
+ * the crawl — an ordinary `down` stream on a handful of indexer relays fills it
+ * with 10002s and 10040s, and this turns that into the fan-out the dynamic
+ * stream syncs against.
  *
- * Ranking by reference count matters more than it looks: the tail of a 10002
- * scan is thousands of hosts named by exactly one person, most of them long
- * dead. [RelaySource.minReferences] cuts that off and [RelaySource.maxRelays]
- * keeps the survivors to a set that can actually be synced in a cycle.
+ * Nothing here truncates that set. Every relay named by any list is returned, so
+ * a cycle covers the whole network the store knows about; the only relays left
+ * out are the ones the config named in [RelaySource.exclude] and the caller's
+ * own [skip] set. The reference count rides along to order the fan-out (the
+ * relays most lists agree on go first) and to make the logs legible.
  */
 object RelayDiscovery {
     /**
-     * The relays [source] points at right now, best-referenced first. Ties break
+     * Every relay [source] points at right now, most-referenced first. Ties break
      * on the url so a cycle's fan-out is stable between refreshes.
      */
     suspend fun discover(
@@ -55,24 +56,18 @@ object RelayDiscovery {
         skip: Set<NormalizedRelayUrl> = emptySet(),
     ): List<DiscoveredRelay> {
         val counts = HashMap<NormalizedRelayUrl, Int>()
-        // Newest lists first, capped: this is a scan of our own index, and on a
-        // large store the whole kind is far more than a refresh needs to look at.
-        val lists: List<Event> = store.query(Filter(kinds = listOf(source.kind.kind), limit = source.maxLists))
+        val lists: List<Event> = store.query(Filter(kinds = listOf(source.kind.kind)))
         for (list in lists) {
             // One list counts a relay once, however many times it repeats the tag.
             for (url in urlsIn(list, source)) counts[url] = (counts[url] ?: 0) + 1
         }
 
-        val ranked =
-            counts
-                .asSequence()
-                .filter { it.value >= source.minReferences }
-                .filter { it.key !in source.exclude && it.key !in skip }
-                .map { DiscoveredRelay(it.key, it.value) }
-                .sortedWith(compareByDescending<DiscoveredRelay> { it.references }.thenBy { it.url.url })
-                .toList()
-
-        return if (source.maxRelays > 0) ranked.take(source.maxRelays) else ranked
+        return counts
+            .asSequence()
+            .filter { it.key !in source.exclude && it.key !in skip }
+            .map { DiscoveredRelay(it.key, it.value) }
+            .sortedWith(compareByDescending<DiscoveredRelay> { it.references }.thenBy { it.url.url })
+            .toList()
     }
 
     /** The distinct relay urls one relay-list event advertises for [source]. */

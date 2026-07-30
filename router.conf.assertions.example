@@ -39,11 +39,9 @@ streams {
     }
 
     # THE ASSERTION PROVIDERS. No `urls`: the relays are the ones named in the
-    # 10040s above. 10040 has no read/write markers — every relay a service tag
-    # points at is a relay we sync — so `marker` doesn't apply here.
-    #
-    # `minReferences = 1` is deliberate: there are far fewer assertion providers
-    # than outbox relays, and a provider only one list trusts is still a provider.
+    # 10040s above — every one of them, re-synced each cycle. 10040 has no
+    # read/write markers (every relay a service tag points at is a relay we
+    # sync), so `marker` doesn't apply here.
     assertions {
         dir = "down"
         # 30382 users, 30383 events, 30384 addressables, 30385 external ids.
@@ -52,11 +50,8 @@ streams {
         relaySource {
             kind           = 10040  # NIP-85 trusted assertions
             refreshSeconds = 21600  # re-read the lists and re-sync every 6h
-            maxLists       = 50000  # how many 10040s to scan, newest first
-            maxRelays      = 200    # sync the 200 best-referenced (0 = all)
-            minReferences  = 1      # keep the long tail: providers are scarce
             concurrency    = 8      # relays synced at the same time
-            exclude        = []     # relays to skip regardless of ranking
+            exclude        = []     # relays to skip however many lists name them
         }
     }
 }
