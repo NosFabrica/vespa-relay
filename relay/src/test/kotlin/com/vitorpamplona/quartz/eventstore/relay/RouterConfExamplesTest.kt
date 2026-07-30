@@ -23,7 +23,6 @@ package com.vitorpamplona.quartz.eventstore.relay
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /**
@@ -40,36 +39,59 @@ class RouterConfExamplesTest {
         )
 
     @Test
-    fun `the static streams parse and seed the dynamic ones`() {
-        // The dynamic streams can only fan out over relay lists these mirror in.
-        assertTrue(example.downUpstreams().any { it.streamName == "indexers" })
-        assertTrue(example.downUpstreams().any { it.filter.kinds?.contains(10002) == true })
-        assertTrue(example.downUpstreams().any { it.filter.kinds?.contains(10040) == true })
+    fun `a static stream seeds the store the dynamic scans read from`() {
+        // A relaySource stream reads its relays out of events we already hold, so
+        // something with hand-written urls has to put the first ones there. Only
+        // static streams can: a store with no relay lists gives every dynamic
+        // stream an empty fan-out, forever.
+        val static = example.streams.filter { it.dynamic == null }
+        assertTrue(static.isNotEmpty(), "the example needs at least one statically-addressed stream")
+        assertTrue(static.any { it.urls.isNotEmpty() }, "a static stream must name real urls")
+        assertEquals(
+            example
+                .downUpstreams()
+                .map { it.streamName }
+                .distinct()
+                .sorted(),
+            static
+                .filter { it.urls.isNotEmpty() }
+                .map { it.name }
+                .distinct()
+                .sorted(),
+            "downUpstreams() is the static streams only — a dynamic one resolves its relays at run time",
+        )
     }
 
     @Test
-    fun `the outbox stream merges relay lists, monitor reports and hints`() {
-        val outbox = example.dynamicStreams().first { it.name == "outbox" }
-        val sources = outbox.dynamic!!.sources
+    fun `every dynamic scan reads a kind some stream actually mirrors`() {
+        // The chain in the example is static(10002) -> outbox(10040) -> assertions.
+        // A scan for a kind nothing mirrors is a stream that can never fan out,
+        // and it fails silently — there is no error, just no relays.
+        val mirrored = example.streams.flatMap { it.filter.kinds.orEmpty() }.toSet()
+        example.dynamicStreams().forEach { stream ->
+            stream.dynamic!!.sources.forEach { source ->
+                source.filter.kinds.orEmpty().forEach { kind ->
+                    assertTrue(kind in mirrored, "stream '${stream.name}' scans kind $kind, which no stream mirrors")
+                }
+            }
+        }
+    }
+
+    @Test
+    fun `the outbox stream fans out over NIP-65 write relays`() {
+        val outbox = example.dynamicStreams().first { it.name == "dataViaOutbox" }
         assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
 
-        // One scan covers every relay-list kind; the selects sort them out.
-        val lists = sources.first { it.filter.kinds?.contains(10002) == true }
-        val nip65 = lists.selects.first { it.kind == 10002 }
-        assertEquals("r", nip65.tag)
-        assertEquals(RelayRole.WRITE, nip65.role)
-        assertTrue(lists.selects.any { it.kind == 30166 && it.tag == "d" }, "NIP-66 monitors")
-        // The ["relay", "<url>"] family rides on one kind-less select.
-        assertTrue(lists.selects.any { it.kind == null && it.tag == "relay" })
-        assertTrue(lists.filter.kinds!!.containsAll(listOf(10050, 30002)))
+        val source = outbox.dynamic!!.sources.single()
+        assertEquals(listOf(10002), source.filter.kinds, "the scan reads NIP-65 relay lists")
 
-        // Relay hints: a regular kind, so its scan must be bounded, and the urls
-        // sit after the id/pubkey.
-        val hints = sources.first { it.filter.kinds == listOf(1) }
-        assertNotNull(hints.filter.limit, "a kind-1 scan has to bound itself")
-        assertTrue(hints.selects.isNotEmpty())
-        assertTrue(hints.selects.all { it.index == 2 })
-        assertTrue(hints.selects.any { it.tag == "e" })
+        val nip65 = source.selects.single()
+        assertEquals(10002, nip65.kind)
+        assertEquals("r", nip65.tag)
+        // 10002 puts the url first and its marker after it; only the write side
+        // is where a user's own events land, which is what an outbox mirror wants.
+        assertEquals(1, nip65.index)
+        assertEquals(RelayRole.WRITE, nip65.role)
     }
 
     @Test
@@ -78,8 +100,25 @@ class RouterConfExamplesTest {
         val source = assertions.dynamic!!.sources.single()
         assertTrue(assertions.urls.isEmpty(), "a relaySource stream carries no static urls")
         assertEquals(listOf(10040), source.filter.kinds)
-        // Every select is a service tag with the url after the provider pubkey.
+        // Every select is a service tag with the url AFTER the provider pubkey.
         assertTrue(source.selects.all { it.index == 2 })
         assertTrue(source.selects.any { it.tag == "30382:rank" })
+        assertTrue(source.selects.any { it.tag == "30382:followers" })
+        // Mirroring 30382 is the point: the scores those services publish.
+        assertTrue(assertions.filter.kinds?.contains(30382) == true)
+    }
+
+    @Test
+    fun `a dynamic cycle is bounded so one dead relay cannot stall it`() {
+        // These relays are strangers off a list, not hand-picked upstreams: a
+        // cycle syncs a window on a period, so every knob that bounds it must
+        // actually be set in the example rather than left to an env default.
+        example.dynamicStreams().forEach { stream ->
+            val d = stream.dynamic!!
+            assertTrue(d.refreshSeconds > 0, "'${stream.name}' needs a refresh period")
+            assertTrue(d.concurrency > 0, "'${stream.name}' needs a fan-out width")
+            assertTrue(d.syncTimeoutSeconds > 0, "'${stream.name}' needs a per-relay cap")
+            assertTrue(stream.backfillSeconds > 0, "'${stream.name}' syncs a window, not a lifetime")
+        }
     }
 }
