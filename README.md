@@ -283,11 +283,16 @@ Some notes on the other knobs:
 
 Every cycle logs what it did, including why the unreachable relays were
 unreachable (a relay list is full of dead hosts — the tally is how you tell
-"normal" from "the whole cycle is broken"):
+"normal" from "the whole cycle is broken") and what the rejections were. Expect
+rejections to *outnumber* accepts on a wide fan-out: a thousand relays asked for
+the same replaceable profiles means the store discards nearly every copy as
+already-held, which is the system working, not failing. The breakdown is there so
+a bad signature or a failing store doesn't hide inside that number:
 
 ```
-router: outbox syncing 3184 relay(s) from [kinds 10002/10050/30002/30166 x3 select(s), kinds 1 x1 select(s)] (top: wss://relay.damus.io/ x8214, ...)
+router: outbox syncing 3184 relay(s) from [kinds 10002/10050/30002/30166 x3 select(s), kinds 1 x1 select(s)] against 88412 local id(s) (top: wss://relay.damus.io/ x8214, ...)
 router: outbox cycle done — 214,880 event(s) from 1102/3184 relay(s) in 1:12:41; unreachable: timeout x938, Connection refused x421; next in 21600s
+router: ingested 214880 accepted, 402113 rejected [duplicate: already have this event x401980]; 14 relay(s) connected, 12 pinned + dynamic
 ```
 
 ### Enabling it under docker compose

@@ -121,6 +121,15 @@ class MirrorRouter(
     private val rejected = AtomicLong()
     private val pushed = AtomicLong()
 
+    // Why events were rejected. Worth separating, because on a wide fan-out the
+    // two are wildly different news: a bad signature means an upstream is
+    // serving junk, while "the store already has this" is the expected result of
+    // asking a thousand relays for the same replaceable profile — and the second
+    // routinely outnumbers accepts. One `rejected` number for both reads like an
+    // emergency when it is the system working.
+    private val unverified = AtomicLong()
+    private val rejectReasons = java.util.concurrent.ConcurrentHashMap<String, Long>()
+
     private val downUpstreams = config.downUpstreams()
     private val upUpstreams = config.upUpstreams()
     private val dynamicStreams = config.dynamicStreams()
@@ -129,6 +138,13 @@ class MirrorRouter(
     // The relays we hold a live subscription on. A dynamic sync drops its socket
     // when it finishes, and must not drop one of these out from under its tail.
     private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
+
+    // How many dynamic syncs are currently using each relay. Streams discover
+    // from the same store, so two of them (an outbox and a NIP-85 one, say)
+    // routinely land on the same relay at the same time — and whichever finished
+    // first used to close the socket out from under the other, failing a sync
+    // that was working. Only the last one out disconnects.
+    private val inFlight = java.util.concurrent.ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
     // Hard cap per negentropy session, from ROUTER_NEG_TIMEOUT_SECONDS.
     private val negTimeoutMs = config.negTimeoutSec * 1000
@@ -229,17 +245,32 @@ class MirrorRouter(
                     verifyRejected++
                 }
             }
-            if (verifyRejected > 0) rejected.addAndGet(verifyRejected.toLong())
+            if (verifyRejected > 0) {
+                rejected.addAndGet(verifyRejected.toLong())
+                unverified.addAndGet(verifyRejected.toLong())
+            }
             if (valid.isEmpty()) continue
             runCatching { store.batchInsert(valid) }
                 .onSuccess { outcomes ->
                     for (outcome in outcomes) {
                         when (outcome) {
-                            is IEventStore.InsertOutcome.Accepted -> accepted.incrementAndGet()
-                            is IEventStore.InsertOutcome.Rejected -> rejected.incrementAndGet()
+                            is IEventStore.InsertOutcome.Accepted -> {
+                                accepted.incrementAndGet()
+                            }
+
+                            is IEventStore.InsertOutcome.Rejected -> {
+                                rejected.incrementAndGet()
+                                rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
+                            }
                         }
                     }
-                }.onFailure { rejected.addAndGet(valid.size.toLong()) }
+                }.onFailure { e ->
+                    // Name the exception type too: a batch can fail with a
+                    // message-less throwable, and "store: null" tells nobody
+                    // anything about the events it just cost us.
+                    rejected.addAndGet(valid.size.toLong())
+                    rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", valid.size.toLong(), Long::plus)
+                }
         }
     }
 
@@ -377,12 +408,34 @@ class MirrorRouter(
         val gate = Semaphore(dynamic.concurrency)
         val downloaded = AtomicLong()
         val failed = AtomicLong()
+
+        // ONE window and ONE local snapshot for the whole cycle, not one per
+        // relay. Every relay in this stream reconciles the same filter, so a
+        // per-relay snapshot re-scanned the identical range once per relay —
+        // hundreds of full store scans per cycle, all returning the same thing.
+        //
+        // The cost of sharing it is that a relay synced late in the cycle
+        // reconciles against the store as it was at the start, so an event two
+        // relays both have can be downloaded twice. That was already true:
+        // ingest is asynchronous (events queue through [inbound] and land in
+        // batches), so a snapshot taken mid-cycle wouldn't have seen the earlier
+        // relay's events either. The store dedups on insert; the scans were pure
+        // waste.
+        val window =
+            if (stream.backfillSeconds > 0) {
+                val until = nowSeconds()
+                stream.filter.copy(since = until - stream.backfillSeconds, until = until)
+            } else {
+                stream.filter
+            }
+        val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
         // Why the unreachable ones were unreachable, tallied — a relay list is
         // full of dead hosts, and the shape of the failures is what tells an
         // operator whether that is normal or whether the whole cycle is broken.
         val reasons = java.util.concurrent.ConcurrentHashMap<String, Long>()
         System.err.println(
             "router: ${stream.name} syncing ${relays.size} relay(s) from [$sourceNames]" +
+                " against ${local.size} local id(s)" +
                 " (top: ${relays.take(3).joinToString { "${it.url.url} x${it.references}" }})",
         )
         coroutineScope {
@@ -390,7 +443,7 @@ class MirrorRouter(
                 launch {
                     gate.withPermit {
                         val got =
-                            dynamicSyncOne(stream, relay.url) { reason ->
+                            dynamicSyncOne(stream, relay.url, window, local) { reason ->
                                 reasons.merge(reason, 1L, Long::plus)
                             }
                         if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
@@ -416,27 +469,20 @@ class MirrorRouter(
      * we don't — negentropy when the relay speaks NIP-77, paged REQ when it
      * doesn't. Returns the download count, or -1 when the relay never delivered.
      *
-     * With `backfillSeconds` set the sync is windowed to that much history,
-     * which is what makes a repeating cycle cheap; keep the window at least as
-     * long as `refreshSeconds` so consecutive cycles overlap instead of leaving
-     * a gap. Unset, every cycle reconciles the filter's whole history.
+     * [window] and [local] are the cycle's, shared by every relay in it — see
+     * [dynamicCycle] for why they are not recomputed here.
      */
     private suspend fun dynamicSyncOne(
         stream: MirrorStream,
         url: NormalizedRelayUrl,
+        window: Filter,
+        local: List<IdAndTime>,
         onFailure: (String) -> Unit,
     ): Int {
-        val window =
-            if (stream.backfillSeconds > 0) {
-                val until = nowSeconds()
-                stream.filter.copy(since = until - stream.backfillSeconds, until = until)
-            } else {
-                stream.filter
-            }
+        inFlight.merge(url, 1, Int::plus)
         return try {
             val result =
                 withTimeoutOrNull(negTimeoutMs) {
-                    val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
                     client.negentropySyncOrFetch(
                         relay = url,
                         filter = window,
@@ -453,10 +499,20 @@ class MirrorRouter(
             onFailure(e.message?.take(60) ?: e.javaClass.simpleName)
             -1
         } finally {
-            // Hundreds of relays a cycle would otherwise leave hundreds of idle
-            // sockets open until the next one. Anything with a live subscription
-            // on it stays connected.
-            if (url !in pinnedUrls) runCatching { client.getOrCreateRelay(url).disconnect() }
+            releaseSocket(url)
+        }
+    }
+
+    /**
+     * Drop a dynamic relay's socket once nothing is using it. Hundreds of relays
+     * a cycle would otherwise leave hundreds of idle connections open until the
+     * next one; relays carrying a live subscription ([pinnedUrls]) and relays
+     * another stream is still syncing are left alone.
+     */
+    private fun releaseSocket(url: NormalizedRelayUrl) {
+        val stillInUse = inFlight.compute(url) { _, n -> ((n ?: 1) - 1).takeIf { it > 0 } } != null
+        if (!stillInUse && url !in pinnedUrls) {
+            runCatching { client.getOrCreateRelay(url).disconnect() }
         }
     }
 
@@ -542,7 +598,7 @@ class MirrorRouter(
         while (scope.isActive) {
             delay(60_000)
             System.err.println(
-                "router: ingested ${accepted.get()} accepted, ${rejected.get()} rejected" +
+                "router: ingested ${accepted.get()} accepted, ${rejected.get()} rejected${rejectionBreakdown()}" +
                     (if (upUpstreams.isNotEmpty()) ", pushed ${pushed.get()} up" else "") +
                     // A dynamic cycle connects relays that are in no upstream list,
                     // so the connected count is reported against the pinned ones
@@ -555,6 +611,24 @@ class MirrorRouter(
 
     /** Accepted/rejected/pushed counters, for tests and a final log line. */
     fun stats(): Triple<Long, Long, Long> = Triple(accepted.get(), rejected.get(), pushed.get())
+
+    /**
+     * What the rejections actually were. A wide fan-out asks a thousand relays
+     * for the same replaceable events, so "already have it" dwarfing the accept
+     * count is the system working — while a bad signature or a failing store is
+     * not, and the bare total hides which one you are looking at.
+     */
+    private fun rejectionBreakdown(): String {
+        if (rejected.get() == 0L) return ""
+        val why =
+            rejectReasons.entries
+                .sortedByDescending { it.value }
+                .take(2)
+                .joinToString { "${it.key} x${it.value}" }
+        val bad = if (unverified.get() > 0) "bad signature x${unverified.get()}" else ""
+        val parts = listOf(bad, why).filter { it.isNotEmpty() }
+        return if (parts.isEmpty()) "" else " [${parts.joinToString("; ")}]"
+    }
 
     /** Number of distinct configured upstreams (down + up) being mirrored. */
     fun upstreamCount(): Int = pinnedUrls.size
@@ -571,7 +645,9 @@ class MirrorRouter(
             okhttp.dispatcher.executorService.shutdown()
             okhttp.connectionPool.evictAll()
         }
-        System.err.println("router: stopped (${accepted.get()} accepted, ${rejected.get()} rejected, ${pushed.get()} pushed)")
+        System.err.println(
+            "router: stopped (${accepted.get()} accepted, ${rejected.get()} rejected${rejectionBreakdown()}, ${pushed.get()} pushed)",
+        )
     }
 
     private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
