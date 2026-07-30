@@ -71,13 +71,13 @@ import kotlin.coroutines.CoroutineContext
  * gives echo-suppression for free — an event we just pulled down from a relay
  * is one that relay already has, so it is never pushed back.
  *
- * Dynamic (`relaySource { }`): the stream has no configured relays. Every
- * refresh it reads the relay lists already in our store ([RelayDiscovery]) and
- * negentropy-syncs the stream filter against every relay they name — all of
- * them, with `concurrency` pacing the fan-out rather than capping it. A set that
- * size is synced on a period rather than held open, so these streams have no
- * live tail — the refresh *is* the tail — and each relay's socket is dropped
- * again once its sync returns.
+ * Dynamic (`relaySource = [ ... ]`): the stream has no configured relays. Every
+ * refresh it reads each configured source out of our store ([RelayDiscovery]) —
+ * relay lists, provider lists, relay hints on ordinary tags — and negentropy-syncs
+ * the stream filter against every relay they name, all of them, with `concurrency`
+ * pacing the fan-out rather than capping it. A set that size is synced on a period
+ * rather than held open, so these streams have no live tail — the refresh *is* the
+ * tail — and each relay's socket is dropped again once its sync returns.
  *
  * While backfilling, a progress line reports overall percent and an ETA to
  * "useful" (backfill complete), so an operator can tell how long the initial
@@ -175,7 +175,14 @@ class MirrorRouter(
             "router: ${downUpstreams.size} down + ${upUpstreams.size} up upstream(s)" +
                 (if (backfillers.isNotEmpty()) "; backfilling ${backfillers.size}" else "; live-tail only") +
                 (if (upUpstreams.isNotEmpty()) "; up every ${config.upIntervalSec}s" else "") +
-                (if (dynamicStreams.isNotEmpty()) "; ${dynamicStreams.size} dynamic stream(s): ${dynamicStreams.joinToString { "${it.name} (kind ${it.relaySource?.kind?.kind})" }}" else ""),
+                (
+                    if (dynamicStreams.isNotEmpty()) {
+                        "; ${dynamicStreams.size} dynamic stream(s): " +
+                            dynamicStreams.joinToString { "${it.name} (${it.dynamic?.sources?.size} source(s))" }
+                    } else {
+                        ""
+                    }
+                ),
         )
         return this
     }
@@ -329,34 +336,36 @@ class MirrorRouter(
      * next refresh will find some.
      */
     private suspend fun dynamicLoop(stream: MirrorStream) {
-        val source = stream.relaySource ?: return
+        val dynamic = stream.dynamic ?: return
+        val sourceNames = dynamic.sources.joinToString { "kind ${it.kind}${it.tag?.let { t -> " $t" } ?: ""}" }
         while (scope.isActive) {
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
-                val relays = RelayDiscovery.discover(store, source, skip = setOfNotNull(store.relay))
+                val relays = RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay))
                 if (relays.isEmpty()) {
                     System.err.println(
-                        "router: ${stream.name} found no relays in kind ${source.kind.kind} lists yet" +
-                            " — retrying in ${source.refreshSeconds}s",
+                        "router: ${stream.name} found no relays in [$sourceNames] yet" +
+                            " — retrying in ${dynamic.refreshSeconds}s",
                     )
                 } else {
-                    dynamicCycle(stream, source, relays)
+                    dynamicCycle(stream, dynamic, sourceNames, relays)
                 }
             } catch (e: Exception) {
                 System.err.println("router: ${stream.name} refresh failed: ${e.message}")
             }
-            delay(source.refreshSeconds * 1000)
+            delay(dynamic.refreshSeconds * 1000)
         }
     }
 
-    /** Sync every discovered relay, [RelaySource.concurrency] of them at a time. */
+    /** Sync every discovered relay, [DynamicRelayList.concurrency] of them at a time. */
     private suspend fun dynamicCycle(
         stream: MirrorStream,
-        source: RelaySource,
+        dynamic: DynamicRelayList,
+        sourceNames: String,
         relays: List<DiscoveredRelay>,
     ) {
         val startedMs = System.currentTimeMillis()
-        val gate = Semaphore(source.concurrency)
+        val gate = Semaphore(dynamic.concurrency)
         val downloaded = AtomicLong()
         val failed = AtomicLong()
         // Why the unreachable ones were unreachable, tallied — a relay list is
@@ -364,7 +373,7 @@ class MirrorRouter(
         // operator whether that is normal or whether the whole cycle is broken.
         val reasons = java.util.concurrent.ConcurrentHashMap<String, Long>()
         System.err.println(
-            "router: ${stream.name} syncing ${relays.size} relay(s) from kind ${source.kind.kind} lists" +
+            "router: ${stream.name} syncing ${relays.size} relay(s) from [$sourceNames]" +
                 " (top: ${relays.take(3).joinToString { "${it.url.url} x${it.references}" }})",
         )
         coroutineScope {
@@ -389,7 +398,7 @@ class MirrorRouter(
             "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get()}/${relays.size} relay(s)" +
                 " in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
-                "; next in ${source.refreshSeconds}s",
+                "; next in ${dynamic.refreshSeconds}s",
         )
     }
 

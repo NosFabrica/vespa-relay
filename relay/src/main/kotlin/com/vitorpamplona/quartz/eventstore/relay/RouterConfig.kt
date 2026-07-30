@@ -55,7 +55,7 @@ import java.io.File
  *    how far back to negentropy-backfill history before the live tail takes
  *    over. 0 means live-only (strfry-router parity) — stream new events from
  *    connect, don't reach for history.
- *  - `relaySource { }` (see [RelaySource]): the stream has no static `urls` at
+ *  - `relaySource = [ ]` (see [DynamicRelayList]): the stream has no static `urls` at
  *    all — its relay list is read out of the store's own relay-list events and
  *    re-synced on a period. That is the outbox stream, and its NIP-85 twin.
  */
@@ -90,7 +90,7 @@ data class RouterConfig(
     fun upUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.UP)
 
     /** The streams whose relay list is discovered from the store, not configured. */
-    fun dynamicStreams(): List<MirrorStream> = streams.filter { it.relaySource != null }
+    fun dynamicStreams(): List<MirrorStream> = streams.filter { it.dynamic != null }
 
     private fun upstreamsFor(want: MirrorDirection): List<MirrorUpstream> =
         streams
@@ -115,67 +115,80 @@ data class MirrorStream(
     val trusted: Boolean,
     val backfillSeconds: Long,
     // Null for an ordinary stream (its relays are the `urls` above). Set for a
-    // stream whose relays come out of the store instead — see [RelaySource].
-    val relaySource: RelaySource? = null,
+    // stream whose relays come out of the store instead — see [DynamicRelayList].
+    val dynamic: DynamicRelayList? = null,
 )
 
 /**
- * A stream's relay list, read from the relay-list events our own store already
- * holds instead of from a hand-written `urls` array. The store fills with 10002s
- * and 10040s (an ordinary `down` stream on the indexer relays does that), and
- * this turns those into the fan-out the stream syncs against:
+ * A stream's relay list, read from events our own store already holds instead of
+ * from a hand-written `urls` array. `relaySource` is a *list* of places to read
+ * urls from — relay lists, trust-provider lists, and the relay hints riding on
+ * ordinary tags — all merged into one fan-out:
  *
  *     outbox {
- *       dir    = "down"
- *       filter = { "kinds": [0, 3, 10002] }
- *       relaySource {
- *         kind           = 10002    # or 10040
- *         marker         = "write"  # 10002 only: write / read / any
- *         refreshSeconds = 21600
- *         concurrency    = 8
- *         exclude        = [ "wss://relay.example" ]
- *       }
+ *       dir            = "down"
+ *       filter         = { "kinds": [0, 3, 10002] }
+ *       refreshSeconds = 21600
+ *       concurrency    = 8
+ *       exclude        = [ "wss://relay.example" ]
+ *       relaySource = [
+ *         { kind = 10002, tag = "r", marker = "write" }
+ *         { kind = 10040, tag = "30382:rank", urlIndex = 2 }
+ *         { kind = 1, tag = "e", urlIndex = 2, sinceSeconds = 86400 }
+ *       ]
  *     }
  *
- * Every refresh the router re-reads every list of that kind in the store and
- * negentropy-syncs (or paged-REQ-fetches) the stream filter against every relay
- * they name — the whole set, however large it has grown. [concurrency] paces
+ * Every refresh the router re-reads all of those, unions the relays they name,
+ * and negentropy-syncs (or paged-REQ-fetches) the stream filter against every
+ * one of them — the whole set, however large it has grown. [concurrency] paces
  * that fan-out; nothing truncates it. There is no live tail either: a set this
  * size is synced on a period, not held open.
  *
- * @param kind which relay-list event to read the urls out of.
- * @param role for [RelayListKind.OUTBOX], which NIP-65 marker to keep. Unmarked
- *   `r` tags mean both read and write, so they match every role.
- * @param refreshSeconds how often the whole cycle (re-read the lists, re-sync
+ * @param sources every place to read relay urls from, merged.
+ * @param refreshSeconds how often the whole cycle (re-read the sources, re-sync
  *   every relay) runs again.
  * @param concurrency how many of those relays sync at the same time.
- * @param exclude relays to skip however many lists name them.
+ * @param exclude relays to skip however many sources name them.
  */
-data class RelaySource(
-    val kind: RelayListKind,
-    val role: RelayRole,
+data class DynamicRelayList(
+    val sources: List<RelaySource>,
     val refreshSeconds: Long,
     val concurrency: Int,
     val exclude: Set<NormalizedRelayUrl>,
 )
 
-/** The relay-list events a [RelaySource] knows how to read urls out of. */
-enum class RelayListKind(
+/**
+ * One place to read relay urls out of. Every relay list in the protocol is some
+ * tag with a url at a fixed offset, so a kind, a tag name and that offset cover
+ * all of them — no per-kind code:
+ *
+ *     { kind = 10002, tag = "r", marker = "write" }   NIP-65 outbox
+ *     { kind = 10050, tag = "relay" }                 NIP-17 DM inboxes
+ *     { kind = 30002, tag = "relay" }                 NIP-51 relay sets
+ *     { kind = 30166, tag = "d" }                     NIP-66 monitor reports
+ *     { kind = 10040, tag = "30382:rank", urlIndex = 2 }   NIP-85 providers
+ *     { kind = 1, tag = "e", urlIndex = 2, sinceSeconds = 86400 }  hints
+ *
+ * @param kind the event kind to scan.
+ * @param tag the tag name to read, or null for any tag. Leaving it out is how
+ *   you take a whole family (NIP-85's `<kind>:<type>` service tags) without
+ *   naming each one — at the cost of a stricter url check, see [RelayDiscovery].
+ * @param urlIndex which element of the tag holds the url. 1 for nearly
+ *   everything; 2 for NIP-85 service tags and for `e`/`p`/`a`/`q` relay hints,
+ *   which put an id or a pubkey first.
+ * @param role which NIP-65 marker to keep, read from `urlIndex + 1` (the only
+ *   kind that marks its relays is 10002). Null does no marker filtering.
+ * @param sinceSeconds scan only events created in this window. 0 scans the kind
+ *   outright, which is what you want for the replaceable relay-list kinds (one
+ *   event per author) and never what you want for a regular kind like 1.
+ */
+data class RelaySource(
     val kind: Int,
-) {
-    /** NIP-65 relay list metadata: `["r", "<url>", "read"|"write"|absent]`. */
-    OUTBOX(10002),
-
-    /** NIP-85 trusted assertions: `["<kind>:<type>", "<pubkey>", "<url>"]`. */
-    TRUST_PROVIDERS(10040),
-    ;
-
-    companion object {
-        fun parse(kind: Int): RelayListKind =
-            entries.firstOrNull { it.kind == kind }
-                ?: error("router: relaySource kind $kind has no relay-list reader (expected ${entries.joinToString(" / ") { it.kind.toString() }})")
-    }
-}
+    val tag: String?,
+    val urlIndex: Int,
+    val role: RelayRole?,
+    val sinceSeconds: Long,
+)
 
 /** Which side of a NIP-65 relay list a [RelaySource] pulls from. */
 enum class RelayRole(
@@ -200,7 +213,7 @@ enum class RelayRole(
     }
 }
 
-/** Env-level fallbacks for the per-stream `relaySource { }` knobs. */
+/** Env-level fallbacks for the per-stream dynamic-relay knobs. */
 data class RelaySourceDefaults(
     val refreshSeconds: Long = 21_600,
     val concurrency: Int = 8,
@@ -229,7 +242,7 @@ enum class MirrorDirection(
  * `ROUTER_UP_INTERVAL_SECONDS` sets how often up/both streams re-reconcile.
  *
  * `ROUTER_DYNAMIC_REFRESH_SECONDS` and `ROUTER_DYNAMIC_CONCURRENCY` do the same
- * for [RelaySource] streams — the per-stream `relaySource { }` keys override both.
+ * for dynamic streams — the per-stream `refreshSeconds`/`concurrency` override both.
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
@@ -268,17 +281,16 @@ object RouterConfigLoader {
                 val s = streamsCfg.getConfig(quote(name))
                 val urls = if (s.hasPath("urls")) normalizeUrls(name, s.getStringList("urls")) else emptyList()
                 val dir = MirrorDirection.parse(if (s.hasPath("dir")) s.getString("dir") else "down")
-                val relaySource =
-                    if (s.hasPath("relaySource")) parseRelaySource(name, s.getConfig("relaySource"), relaySourceDefaults) else null
+                val dynamic = parseDynamic(name, s, relaySourceDefaults)
 
-                require(relaySource != null || s.hasPath("urls")) {
-                    "router: stream '$name' has neither `urls` nor a `relaySource { }` block"
+                require(dynamic != null || s.hasPath("urls")) {
+                    "router: stream '$name' has neither `urls` nor a `relaySource` list"
                 }
-                require(relaySource == null || urls.isEmpty()) {
-                    "router: stream '$name' cannot mix `relaySource { }` with static `urls` — split them into two streams"
+                require(dynamic == null || urls.isEmpty()) {
+                    "router: stream '$name' cannot mix `relaySource` with static `urls` — split them into two streams"
                 }
-                require(relaySource == null || dir == MirrorDirection.DOWN) {
-                    "router: stream '$name' is `relaySource { }`, which only pulls down — set dir = \"down\""
+                require(dynamic == null || dir == MirrorDirection.DOWN) {
+                    "router: stream '$name' has a `relaySource`, which only pulls down — set dir = \"down\""
                 }
 
                 MirrorStream(
@@ -288,7 +300,7 @@ object RouterConfigLoader {
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     backfillSeconds = if (s.hasPath("backfillSeconds")) s.getLong("backfillSeconds") else backfillDefault,
-                    relaySource = relaySource,
+                    dynamic = dynamic,
                 )
             }
         return RouterConfig(connTimeout, streams, upIntervalSec, negTimeoutSec, ingestConcurrency, ingestBatch)
@@ -304,31 +316,54 @@ object RouterConfigLoader {
             }
         }
 
-    /** The `relaySource { }` block: which relay list to read, and how hard to fan out over it. */
-    private fun parseRelaySource(
+    /** The `relaySource = [ ... ]` list plus the stream-level knobs pacing its cycle. */
+    private fun parseDynamic(
         stream: String,
         s: Config,
         defaults: RelaySourceDefaults,
-    ): RelaySource {
-        require(s.hasPath("kind")) { "router: stream '$stream' relaySource needs a `kind` (10002 or 10040)" }
-        val kind = RelayListKind.parse(s.getInt("kind"))
-        val role =
-            if (s.hasPath("marker")) {
-                RelayRole.parse(s.getString("marker"))
-            } else if (kind == RelayListKind.OUTBOX) {
-                RelayRole.WRITE
-            } else {
-                // Only NIP-65 marks its relays; a 10040's urls are all there is.
-                RelayRole.ANY
-            }
-        return RelaySource(
-            kind = kind,
-            role = role,
+    ): DynamicRelayList? {
+        if (!s.hasPath("relaySource")) return null
+        val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
+        require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
+        return DynamicRelayList(
+            sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
             exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
         )
     }
+
+    /** One `{ kind = ..., tag = ..., urlIndex = ... }` entry of that list. */
+    private fun parseRelaySource(
+        stream: String,
+        s: Config,
+    ): RelaySource {
+        require(s.hasPath("kind")) { "router: stream '$stream' has a relaySource entry with no `kind`" }
+        val kind = s.getInt("kind")
+        val urlIndex = if (s.hasPath("urlIndex")) s.getInt("urlIndex") else 1
+        require(urlIndex >= 1) {
+            "router: stream '$stream' relaySource kind $kind has urlIndex $urlIndex — index 0 is the tag name, so the url is at 1 or later"
+        }
+        val sinceSeconds = if (s.hasPath("sinceSeconds")) s.getLong("sinceSeconds").coerceAtLeast(0L) else 0L
+        // A regular kind is unbounded — scanning all of kind 1 means loading every
+        // note in the store into one list. The replaceable/addressable kinds are
+        // one event per author (or per author+d), which is what makes them safe to
+        // scan whole. Relay hints therefore have to say how far back they look.
+        require(sinceSeconds > 0 || isBoundedKind(kind)) {
+            "router: stream '$stream' relaySource kind $kind is a regular kind — set `sinceSeconds` to bound the scan " +
+                "(scanning it whole would load every kind-$kind event in the store)"
+        }
+        return RelaySource(
+            kind = kind,
+            tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
+            urlIndex = urlIndex,
+            role = if (s.hasPath("marker")) RelayRole.parse(s.getString("marker")) else null,
+            sinceSeconds = sinceSeconds,
+        )
+    }
+
+    /** Replaceable (0, 3, 10000-19999) and addressable (30000-39999) kinds hold one event per author. */
+    private fun isBoundedKind(kind: Int): Boolean = kind == 0 || kind == 3 || kind in 10_000..19_999 || kind in 30_000..39_999
 
     /**
      * Turn a HOCON filter object (`{ "kinds": [0,3], "authors": [...], "#t": [...] }`)

@@ -65,7 +65,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
  *   ROUTER_CONFIG_FILE       path to a file holding that config
  *   ROUTER_BACKFILL_SECONDS  default history window streams negentropy-backfill
  *                            before their live tail (default 0 ⇒ live-only)
- *   ROUTER_DYNAMIC_*         defaults for `relaySource { }` streams, whose relay
+ *   ROUTER_DYNAMIC_*         defaults for `relaySource = [...]` streams, whose relay
  *                            list is read from the store's own 10002s/10040s
  *                            rather than configured (see RelaySource)
  */

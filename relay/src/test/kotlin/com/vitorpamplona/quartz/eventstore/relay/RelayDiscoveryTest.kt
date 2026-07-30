@@ -32,132 +32,185 @@ import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
- * The dynamic relay list: what [RelayDiscovery] reads out of the 10002s and
- * 10040s a store already holds, and how it ranks them.
+ * The dynamic relay list: what [RelayDiscovery] reads out of the store, driven
+ * entirely by a [RelaySource]'s kind/tag/urlIndex rather than per-kind code.
  */
 class RelayDiscoveryTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
     private fun source(
-        kind: RelayListKind,
-        role: RelayRole = RelayRole.WRITE,
+        kind: Int,
+        tag: String? = null,
+        urlIndex: Int = 1,
+        role: RelayRole? = null,
+    ) = RelaySource(kind = kind, tag = tag, urlIndex = urlIndex, role = role, sinceSeconds = 0)
+
+    private fun dynamic(
+        vararg sources: RelaySource,
         exclude: Set<String> = emptySet(),
-    ) = RelaySource(
-        kind = kind,
-        role = role,
+    ) = DynamicRelayList(
+        sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
         exclude = exclude.map { RelayUrlNormalizer.normalize(it) }.toSet(),
     )
 
-    /** A kind-10002 relay list. Each tag is `r, url, [marker]`. */
-    private fun outboxList(vararg relays: Pair<String, String?>): Event =
-        NostrSignerSync().sign(
-            1_700_000_000L,
-            10002,
-            relays
-                .map { (url, marker) -> if (marker == null) arrayOf("r", url) else arrayOf("r", url, marker) }
-                .toTypedArray(),
-            "",
-        )
-
-    /** A kind-10040 trusted-assertion list: `<kind>:<type>, pubkey, url`. */
-    private fun trustList(vararg providers: Pair<String, String>): Event =
-        NostrSignerSync().sign(
-            1_700_000_000L,
-            10040,
-            providers
-                .map { (type, url) -> arrayOf(type, "a".repeat(64), url) }
-                .toTypedArray(),
-            "",
-        )
+    private fun event(
+        kind: Int,
+        vararg tags: Array<String>,
+    ): Event = NostrSignerSync().sign(1_700_000_000L, kind, arrayOf(*tags), "")
 
     private fun urls(
         event: Event,
         source: RelaySource,
     ) = RelayDiscovery.urlsIn(event, source).map { it.url }
 
+    // ---- extraction --------------------------------------------------------
+
     @Test
-    fun `outbox keeps write and unmarked relays and drops read-only ones`() {
+    fun `NIP-65 keeps write and unmarked relays and drops read-only ones`() {
         val list =
-            outboxList(
-                "wss://write.example" to "write",
-                "wss://read.example" to "read",
-                "wss://both.example" to null,
+            event(
+                10002,
+                arrayOf("r", "wss://write.example", "write"),
+                arrayOf("r", "wss://read.example", "read"),
+                arrayOf("r", "wss://both.example"),
             )
 
-        val write = urls(list, source(RelayListKind.OUTBOX, RelayRole.WRITE))
+        val write = urls(list, source(10002, tag = "r", role = RelayRole.WRITE))
         assertTrue(write.any { it.contains("write.example") })
         assertTrue(write.any { it.contains("both.example") }, "an unmarked r tag is read AND write")
         assertFalse(write.any { it.contains("read.example") })
 
-        val read = urls(list, source(RelayListKind.OUTBOX, RelayRole.READ))
+        val read = urls(list, source(10002, tag = "r", role = RelayRole.READ))
         assertTrue(read.any { it.contains("read.example") })
         assertTrue(read.any { it.contains("both.example") })
         assertFalse(read.any { it.contains("write.example") })
 
-        assertEquals(3, urls(list, source(RelayListKind.OUTBOX, RelayRole.ANY)).size)
+        // No marker configured at all: every relay the tag names.
+        assertEquals(3, urls(list, source(10002, tag = "r")).size)
     }
 
     @Test
-    fun `outbox tolerates upper-case markers, junk tags, and repeats`() {
+    fun `urlIndex reads NIP-85 service tags, which put the pubkey first`() {
         val list =
-            NostrSignerSync().sign<Event>(
-                1_700_000_000L,
-                10002,
-                arrayOf(
-                    arrayOf("r", "wss://write.example", "WRITE"),
-                    arrayOf("r", "wss://write.example", "write"),
-                    arrayOf("r"),
-                    arrayOf("p", "wss://not-a-relay-tag.example"),
-                    // The normalizer would turn this into `wss://not/`; we don't let it.
-                    arrayOf("r", "not a url at all"),
-                    arrayOf("r", "   "),
-                ),
-                "",
-            )
-
-        // The repeat collapses; the malformed and non-`r` tags are ignored.
-        assertEquals(listOf("wss://write.example/"), urls(list, source(RelayListKind.OUTBOX)))
-    }
-
-    @Test
-    fun `trust providers read the relay out of NIP-85 service tags`() {
-        val list =
-            NostrSignerSync().sign<Event>(
-                1_700_000_000L,
+            event(
                 10040,
-                arrayOf(
-                    arrayOf("30382:rank", "a".repeat(64), "wss://scores.example"),
-                    arrayOf("30382:followers", "b".repeat(64), "wss://graph.example"),
-                    // Not a `kind:type` tag, and a service tag with no relay.
-                    arrayOf("alt", "a trusted assertion list"),
-                    arrayOf("30382:rank", "c".repeat(64)),
-                ),
-                "",
+                arrayOf("30382:rank", "a".repeat(64), "wss://scores.example"),
+                arrayOf("30382:followers", "b".repeat(64), "wss://graph.example"),
             )
 
+        // A named tag picks exactly one service...
+        assertEquals(listOf("wss://scores.example/"), urls(list, source(10040, tag = "30382:rank", urlIndex = 2)))
+        // ...and no tag name takes the whole <kind>:<type> family.
         assertEquals(
             listOf("wss://scores.example/", "wss://graph.example/"),
-            urls(list, source(RelayListKind.TRUST_PROVIDERS, RelayRole.ANY)),
+            urls(list, source(10040, urlIndex = 2)),
         )
     }
 
     @Test
-    fun `discovery keeps every relay, ordered by how many lists name it`() =
+    fun `relay hints on e and p tags are just another source`() {
+        val note =
+            event(
+                1,
+                arrayOf("e", "f".repeat(64), "wss://hint.example", "root"),
+                arrayOf("p", "a".repeat(64), "wss://inbox.example"),
+                arrayOf("t", "nostr"),
+            )
+
+        assertEquals(listOf("wss://hint.example/"), urls(note, source(1, tag = "e", urlIndex = 2)))
+        assertEquals(listOf("wss://inbox.example/"), urls(note, source(1, tag = "p", urlIndex = 2)))
+    }
+
+    @Test
+    fun `the relay tag family used by every NIP-51 list needs no special casing`() {
+        val dmRelays = event(10050, arrayOf("relay", "wss://dm.example"))
+        val relaySet = event(30002, arrayOf("relay", "wss://set.example"))
+        val monitor = event(30166, arrayOf("d", "wss://monitored.example"))
+
+        assertEquals(listOf("wss://dm.example/"), urls(dmRelays, source(10050, tag = "relay")))
+        assertEquals(listOf("wss://set.example/"), urls(relaySet, source(30002, tag = "relay")))
+        assertEquals(listOf("wss://monitored.example/"), urls(monitor, source(30166, tag = "d")))
+    }
+
+    @Test
+    fun `a named tag tolerates junk, repeats, and scheme-less hosts`() {
+        val list =
+            event(
+                10002,
+                arrayOf("r", "wss://write.example", "WRITE"),
+                arrayOf("r", "wss://write.example", "write"),
+                arrayOf("r", "relay.example"), // scheme-less: the normalizer fixes it
+                arrayOf("r"),
+                arrayOf("p", "wss://not-an-r-tag.example"),
+                // The normalizer would turn these into `wss://not/`; we don't let it.
+                arrayOf("r", "not a url at all"),
+                arrayOf("r", "   "),
+            )
+
+        assertEquals(
+            listOf("wss://write.example/", "wss://relay.example/"),
+            urls(list, source(10002, tag = "r", role = RelayRole.WRITE)),
+        )
+    }
+
+    @Test
+    fun `with no tag name only values that say they are relays are taken`() {
+        val list =
+            event(
+                10040,
+                arrayOf("30382:rank", "a".repeat(64), "wss://scores.example"),
+                // Without a tag name to filter on, a pet name would otherwise
+                // normalize to `wss://petname/` and enter the fan-out.
+                arrayOf("p", "b".repeat(64), "petname"),
+            )
+
+        assertEquals(listOf("wss://scores.example/"), urls(list, source(10040, urlIndex = 2)))
+    }
+
+    // ---- discovery ---------------------------------------------------------
+
+    @Test
+    fun `discovery keeps every relay, ordered by how many tags name it`() =
         runBlocking {
             val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
             // popular: 3 lists, quiet: 2, lonely: 1.
-            store.insert(outboxList("wss://popular.example" to "write", "wss://quiet.example" to "write"))
-            store.insert(outboxList("wss://popular.example" to "write", "wss://quiet.example" to null))
-            store.insert(outboxList("wss://popular.example" to "write", "wss://lonely.example" to "write"))
+            store.insert(event(10002, arrayOf("r", "wss://popular.example", "write"), arrayOf("r", "wss://quiet.example", "write")))
+            store.insert(event(10002, arrayOf("r", "wss://popular.example", "write"), arrayOf("r", "wss://quiet.example")))
+            store.insert(event(10002, arrayOf("r", "wss://popular.example", "write"), arrayOf("r", "wss://lonely.example", "write")))
 
             // Nothing is dropped for being unpopular — the one-list relay is synced
             // like the rest; the count only decides who goes first.
-            val all = RelayDiscovery.discover(store, source(RelayListKind.OUTBOX))
+            val all = RelayDiscovery.discover(store, dynamic(source(10002, tag = "r", role = RelayRole.WRITE)))
             assertEquals(
                 listOf("wss://popular.example/" to 3, "wss://quiet.example/" to 2, "wss://lonely.example/" to 1),
                 all.map { it.url.url to it.references },
+            )
+        }
+
+    @Test
+    fun `several sources merge into one fan-out and their counts add up`() =
+        runBlocking {
+            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            store.insert(event(10002, arrayOf("r", "wss://shared.example", "write")))
+            store.insert(event(10040, arrayOf("30382:rank", "a".repeat(64), "wss://shared.example")))
+            store.insert(event(10050, arrayOf("relay", "wss://dm.example")))
+
+            val found =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(
+                        source(10002, tag = "r", role = RelayRole.WRITE),
+                        source(10040, tag = "30382:rank", urlIndex = 2),
+                        source(10050, tag = "relay"),
+                    ),
+                )
+
+            // A relay two sources agree on outranks one only a single source names.
+            assertEquals(
+                listOf("wss://shared.example/" to 2, "wss://dm.example/" to 1),
+                found.map { it.url.url to it.references },
             )
         }
 
@@ -166,39 +219,27 @@ class RelayDiscoveryTest {
         runBlocking {
             val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
             store.insert(
-                outboxList(
-                    "wss://popular.example" to "write",
-                    "wss://quiet.example" to "write",
-                    "wss://lonely.example" to "write",
+                event(
+                    10002,
+                    arrayOf("r", "wss://popular.example", "write"),
+                    arrayOf("r", "wss://quiet.example", "write"),
+                    arrayOf("r", "wss://lonely.example", "write"),
                 ),
             )
 
             val kept =
                 RelayDiscovery.discover(
                     store,
-                    source(RelayListKind.OUTBOX, exclude = setOf("wss://popular.example")),
+                    dynamic(source(10002, tag = "r", role = RelayRole.WRITE), exclude = setOf("wss://popular.example")),
                     skip = setOf(RelayUrlNormalizer.normalize("wss://quiet.example")),
                 )
             assertEquals(listOf("wss://lonely.example/"), kept.map { it.url.url })
         }
 
     @Test
-    fun `discovery reads 10040 lists out of the same store`() =
-        runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
-            store.insert(trustList("30382:rank" to "wss://scores.example"))
-            store.insert(trustList("30382:rank" to "wss://scores.example"))
-            // A 10002 in the same store must not leak into the 10040 source.
-            store.insert(outboxList("wss://outbox.example" to "write"))
-
-            val found = RelayDiscovery.discover(store, source(RelayListKind.TRUST_PROVIDERS, RelayRole.ANY))
-            assertEquals(listOf("wss://scores.example/" to 2), found.map { it.url.url to it.references })
-        }
-
-    @Test
     fun `an empty store discovers nothing`() =
         runBlocking {
             val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
-            assertTrue(RelayDiscovery.discover(store, source(RelayListKind.OUTBOX)).isEmpty())
+            assertTrue(RelayDiscovery.discover(store, dynamic(source(10002, tag = "r"))).isEmpty())
         }
 }

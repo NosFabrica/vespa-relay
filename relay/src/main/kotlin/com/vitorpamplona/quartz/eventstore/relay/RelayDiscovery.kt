@@ -26,109 +26,96 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 
-/** One relay a [RelaySource] found, and how many lists in the store name it. */
+/** One relay a [DynamicRelayList] found, and how many tags across it named the relay. */
 data class DiscoveredRelay(
     val url: NormalizedRelayUrl,
     val references: Int,
 )
 
 /**
- * Reads a dynamic stream's relay list out of the store: pull every relay-list
- * event of the source's kind and take the urls each one advertises. The store is
- * the crawl — an ordinary `down` stream on a handful of indexer relays fills it
- * with 10002s and 10040s, and this turns that into the fan-out the dynamic
- * stream syncs against.
+ * Reads a dynamic stream's relay list out of the store. Every relay list in the
+ * protocol is the same shape — a tag with a url at a fixed offset — so one
+ * extraction path driven by [RelaySource] covers NIP-65 outboxes, NIP-51 relay
+ * sets, NIP-17 DM inboxes, NIP-66 monitor reports, NIP-85 provider lists, and
+ * the relay hints riding on ordinary `e`/`p`/`a`/`q` tags. Nothing here knows
+ * about a specific kind.
  *
- * Nothing here truncates that set. Every relay named by any list is returned, so
- * a cycle covers the whole network the store knows about; the only relays left
- * out are the ones the config named in [RelaySource.exclude] and the caller's
- * own [skip] set. The reference count rides along to order the fan-out (the
- * relays most lists agree on go first) and to make the logs legible.
+ * The store is the crawl: an ordinary `down` stream on a few relays fills it,
+ * and this turns what landed into the fan-out the dynamic stream syncs against.
+ * Every source in the list is read and their relays unioned, so one stream can
+ * pull from relay lists and hints at once.
+ *
+ * Nothing truncates that set. Every relay any source names is returned; the only
+ * ones left out are [DynamicRelayList.exclude] and the caller's [skip] set. The
+ * reference count rides along to order the fan-out (relays the most tags agree
+ * on go first) and to make the logs legible.
  */
 object RelayDiscovery {
     /**
-     * Every relay [source] points at right now, most-referenced first. Ties break
-     * on the url so a cycle's fan-out is stable between refreshes.
+     * Every relay [dynamic]'s sources point at right now, most-referenced first.
+     * Ties break on the url so a cycle's fan-out is stable between refreshes.
      */
     suspend fun discover(
         store: IEventStore,
-        source: RelaySource,
+        dynamic: DynamicRelayList,
         skip: Set<NormalizedRelayUrl> = emptySet(),
     ): List<DiscoveredRelay> {
         val counts = HashMap<NormalizedRelayUrl, Int>()
-        val lists: List<Event> = store.query(Filter(kinds = listOf(source.kind.kind)))
-        for (list in lists) {
-            // One list counts a relay once, however many times it repeats the tag.
-            for (url in urlsIn(list, source)) counts[url] = (counts[url] ?: 0) + 1
+        for (source in dynamic.sources) {
+            val since = if (source.sinceSeconds > 0) System.currentTimeMillis() / 1000 - source.sinceSeconds else null
+            val events: List<Event> = store.query(Filter(kinds = listOf(source.kind), since = since))
+            for (event in events) {
+                // One event counts a relay once, however many of its tags repeat it.
+                for (url in urlsIn(event, source)) counts[url] = (counts[url] ?: 0) + 1
+            }
         }
 
         return counts
             .asSequence()
-            .filter { it.key !in source.exclude && it.key !in skip }
+            .filter { it.key !in dynamic.exclude && it.key !in skip }
             .map { DiscoveredRelay(it.key, it.value) }
             .sortedWith(compareByDescending<DiscoveredRelay> { it.references }.thenBy { it.url.url })
             .toList()
     }
 
-    /** The distinct relay urls one relay-list event advertises for [source]. */
+    /**
+     * The distinct relay urls one event advertises for [source]: every tag named
+     * [RelaySource.tag] (or every tag at all, when it is null) that carries a url
+     * at [RelaySource.urlIndex] and passes the marker check at the slot after it.
+     */
     fun urlsIn(
         event: Event,
         source: RelaySource,
-    ): Set<NormalizedRelayUrl> =
-        when (source.kind) {
-            RelayListKind.OUTBOX -> outboxUrls(event, source.role)
-            RelayListKind.TRUST_PROVIDERS -> trustProviderUrls(event)
-        }
-
-    /**
-     * NIP-65: `["r", "<url>"]`, optionally marked `read` or `write`. An unmarked
-     * tag is both, so it belongs to whichever side we asked for — that is the
-     * "write or empty" rule the outbox model runs on.
-     */
-    private fun outboxUrls(
-        event: Event,
-        role: RelayRole,
     ): Set<NormalizedRelayUrl> {
         val urls = LinkedHashSet<NormalizedRelayUrl>()
         for (tag in event.tags) {
-            if (tag.size < 2 || tag[0] != "r") continue
-            if (!role.matches(tag.getOrNull(2)?.trim()?.lowercase())) continue
-            normalize(tag[1])?.let { urls.add(it) }
+            if (tag.size <= source.urlIndex) continue
+            if (source.tag != null && tag[0] != source.tag) continue
+            // NIP-65 marks its relays `read` or `write` in the slot after the url;
+            // an unmarked tag is both, so it matches whichever side we asked for.
+            val role = source.role
+            if (role != null && !role.matches(tag.getOrNull(source.urlIndex + 1)?.trim()?.lowercase())) continue
+            // With no tag name to go on, anything in the event could land here, so
+            // only take values that already say they are a relay.
+            normalize(tag[source.urlIndex], requireScheme = source.tag == null)?.let { urls.add(it) }
         }
         return urls
     }
 
     /**
-     * NIP-85: `["<kind>:<type>", "<pubkey of the provider>", "<relay url>"]` —
-     * the relay is where that provider publishes its assertions, so it is the
-     * relay we want to sync. Anything that isn't a `kind:type` service tag with
-     * a url in it is skipped.
+     * Relay lists in the wild carry prose and pet names where a url belongs. The
+     * normalizer is forgiving by design — it will happily turn `not a url` into
+     * `wss://not/` — so anything blank or with whitespace in it is dropped before
+     * it gets there. A scheme-less host is still fine when the source named a tag:
+     * that one the normalizer fixes correctly.
      */
-    private fun trustProviderUrls(event: Event): Set<NormalizedRelayUrl> {
-        val urls = LinkedHashSet<NormalizedRelayUrl>()
-        for (tag in event.tags) {
-            if (tag.size < 3 || !isServiceTag(tag[0])) continue
-            normalize(tag[2])?.let { urls.add(it) }
-        }
-        return urls
-    }
-
-    /** `30382:rank` and friends: a kind, a colon, and a non-empty type. */
-    private fun isServiceTag(name: String): Boolean {
-        val colon = name.indexOf(':')
-        if (colon <= 0 || colon == name.length - 1) return false
-        return name.take(colon).all { it.isDigit() }
-    }
-
-    /**
-     * Relay lists in the wild carry prose where a url belongs. The normalizer is
-     * forgiving by design — it will happily turn `not a url` into `wss://not/` —
-     * so anything blank or with whitespace in it is dropped before it gets there.
-     * A scheme-less host is still fine: that one the normalizer fixes correctly.
-     */
-    private fun normalize(raw: String): NormalizedRelayUrl? {
+    private fun normalize(
+        raw: String,
+        requireScheme: Boolean,
+    ): NormalizedRelayUrl? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
+        if (requireScheme && !trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return null
         return RelayUrlNormalizer.normalizeOrNull(trimmed)
     }
 }

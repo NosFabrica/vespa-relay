@@ -47,19 +47,34 @@ class RouterConfExamplesTest {
     }
 
     @Test
-    fun `the outbox stream reads write-marked relays out of the 10002s`() {
+    fun `the outbox stream merges relay lists, monitor reports and hints`() {
         val outbox = example.dynamicStreams().first { it.name == "outbox" }
-        assertEquals(RelayListKind.OUTBOX, outbox.relaySource?.kind)
-        assertEquals(RelayRole.WRITE, outbox.relaySource?.role)
+        val sources = outbox.dynamic!!.sources
         assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
+
+        // NIP-65 write side, the outbox proper.
+        val nip65 = sources.first { it.kind == 10002 }
+        assertEquals("r", nip65.tag)
+        assertEquals(RelayRole.WRITE, nip65.role)
+
+        // The ["relay", "<url>"] family and NIP-66's `d` tag, no code per kind.
+        assertTrue(sources.any { it.kind == 10050 && it.tag == "relay" })
+        assertTrue(sources.any { it.kind == 30166 && it.tag == "d" })
+
+        // Relay hints, at index 2 and with the scan window a regular kind demands.
+        val hints = sources.filter { it.kind == 1 }
+        assertTrue(hints.isNotEmpty())
+        assertTrue(hints.all { it.urlIndex == 2 && it.sinceSeconds > 0 })
     }
 
     @Test
-    fun `the assertions stream reads every relay out of the 10040s`() {
+    fun `the assertions stream names the NIP-85 services it wants`() {
         val assertions = example.dynamicStreams().first { it.name == "assertions" }
-        assertEquals(RelayListKind.TRUST_PROVIDERS, assertions.relaySource?.kind)
-        // 10040 has no read/write sides, so every url it names is in scope.
-        assertEquals(RelayRole.ANY, assertions.relaySource?.role)
+        val sources = assertions.dynamic!!.sources
         assertTrue(assertions.urls.isEmpty(), "a relaySource stream carries no static urls")
+        assertTrue(sources.isNotEmpty())
+        // Every entry is a 10040 service tag with the url after the provider pubkey.
+        assertTrue(sources.all { it.kind == 10040 && it.urlIndex == 2 })
+        assertTrue(sources.any { it.tag == "30382:rank" })
     }
 }
