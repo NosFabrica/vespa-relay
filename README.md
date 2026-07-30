@@ -91,7 +91,7 @@ All configuration is through environment variables.
 | `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
 | `ROUTER_BACKFILL_SECONDS` | default history window a stream negentropy-backfills before its live tail; per-stream `backfillSeconds` overrides it | `0` (live-tail only) |
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
-| `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation; a stuck upstream gives up and leans on its live tail. Raise for genuinely large historical fills | `600` |
+| `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation, per upstream (they run in parallel). This is not the stuck-upstream guard — a session with no frames for 30s aborts itself — so it only needs to be large enough for a legitimate fill of `ROUTER_BACKFILL_SECONDS` to finish. Too tight and big upstreams get truncated to live-tail | `14400` (4h) |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
 
 ## The router: mirror from upstream relays
@@ -142,11 +142,19 @@ event just pulled *down* from a relay is never pushed back *up* to it.
 
 The **live tail works against every relay**; the **negentropy backfill depends
 on the upstream**. Some relays advertise NIP-77 but their reconciliation never
-converges (no download, no error). Each negentropy session is therefore capped
-at `ROUTER_NEG_TIMEOUT_SECONDS`: a stuck upstream gives up, logs it, and leans
-on its live tail, while relays that reconcile cleanly backfill in full. So a
-brand-new store is filled forward from connect universally, and backfilled
-historically for the relays whose NIP-77 cooperates.
+converges. Two independent bounds handle that: a session with no protocol frames
+for 30 seconds aborts itself — that is what catches a *stuck* upstream — and
+`ROUTER_NEG_TIMEOUT_SECONDS` hard-caps a session that keeps talking without
+converging. Either way the upstream logs it and leans on its live tail, while
+relays that reconcile cleanly backfill in full. So a brand-new store is filled
+forward from connect universally, and backfilled historically for the relays
+whose NIP-77 cooperates.
+
+Because the idle timeout is the real liveness guard, size the hard cap for your
+backfill window, not defensively: a multi-year fill across many relays needs
+hours, and a cap below that silently truncates every upstream that was working.
+Events already downloaded when a cap fires are kept — the session abandons only
+the remainder — though the progress line undercounts that upstream's total.
 
 While backfilling, the router logs progress and an ETA to "useful" (backfill
 complete), so you can tell how long the initial fill will take:

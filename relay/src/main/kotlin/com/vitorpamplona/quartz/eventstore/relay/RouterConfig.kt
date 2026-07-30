@@ -63,10 +63,15 @@ data class RouterConfig(
     // its upstream to push newly-arrived local events. From ROUTER_UP_INTERVAL_SECONDS.
     val upIntervalSec: Long = 300,
     // Hard cap (seconds) on a single negentropy reconciliation. Some relays
-    // advertise NIP-77 but never converge; this bounds a stuck session so it
-    // fails cleanly and the live tail carries that upstream. From
-    // ROUTER_NEG_TIMEOUT_SECONDS. Raise it for genuinely large historical fills.
-    val negTimeoutSec: Long = 600,
+    // advertise NIP-77 but never converge; this bounds a session that keeps
+    // talking without progressing, so it fails cleanly and the live tail carries
+    // that upstream. From ROUTER_NEG_TIMEOUT_SECONDS.
+    //
+    // The default is generous because it is not what protects against a *stuck*
+    // upstream — MirrorRouter's 30s idle timeout does that, and it fires whether
+    // this cap is 10 minutes or 10 hours. Real backfill windows are measured in
+    // years, and a tight cap truncates those legitimate fills for no safety gain.
+    val negTimeoutSec: Long = 14_400,
     // Ingest tuning. The store serializes writes through one mutex, so extra
     // workers mostly overlap verify (CPU) with the write (I/O) — a couple is
     // plenty; throughput comes from the batch size (each mutex hold amortizes a
@@ -134,7 +139,7 @@ object RouterConfigLoader {
         val raw = inline ?: fromFile ?: return null
         val backfillDefault = env["ROUTER_BACKFILL_SECONDS"]?.trim()?.toLongOrNull() ?: 0L
         val upInterval = env["ROUTER_UP_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 300L
-        val negTimeout = env["ROUTER_NEG_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 600L
+        val negTimeout = env["ROUTER_NEG_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 14_400L
         val ingestConcurrency = env["ROUTER_INGEST_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 64) ?: 2
         val ingestBatch = env["ROUTER_INGEST_BATCH"]?.trim()?.toIntOrNull()?.coerceIn(1, 20_000) ?: 1000
         return parse(raw, backfillDefault, upInterval, negTimeout, ingestConcurrency, ingestBatch)
@@ -144,7 +149,7 @@ object RouterConfigLoader {
         hocon: String,
         backfillDefault: Long = 0L,
         upIntervalSec: Long = 300L,
-        negTimeoutSec: Long = 600L,
+        negTimeoutSec: Long = 14_400L,
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
     ): RouterConfig {

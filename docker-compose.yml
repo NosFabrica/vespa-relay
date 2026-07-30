@@ -61,6 +61,14 @@ services:
       ROUTER_BACKFILL_SECONDS: ${ROUTER_BACKFILL_SECONDS:-0}
       # How often (seconds) up/both streams re-reconcile to push new local events.
       ROUTER_UP_INTERVAL_SECONDS: ${ROUTER_UP_INTERVAL_SECONDS:-300}
+      # Hard cap (seconds) on one negentropy reconciliation. A stuck upstream is
+      # caught by the 30s idle timeout regardless, so this only needs to be large
+      # enough for a legitimate multi-year fill to finish.
+      ROUTER_NEG_TIMEOUT_SECONDS: ${ROUTER_NEG_TIMEOUT_SECONDS:-14400}
+      # Ingest tuning. Throughput comes from the batch size, not the worker count
+      # (the store serializes writes). Lower the batch to cut memory.
+      ROUTER_INGEST_BATCH: ${ROUTER_INGEST_BATCH:-1000}
+      ROUTER_INGEST_CONCURRENCY: ${ROUTER_INGEST_CONCURRENCY:-2}
     ports:
       - "${RELAY_PORT:-7777}:7777"
     volumes:
