@@ -19,6 +19,9 @@ local.properties
 .idea/
 *.iml
 
+# Parse audit reports (PARSE_AUDIT_FILE / the compose ./.audit mount)
+.audit/
+
 # Local event store (SQLite + WAL/SHM) and sync cursors
 *.db
 *.db-shm

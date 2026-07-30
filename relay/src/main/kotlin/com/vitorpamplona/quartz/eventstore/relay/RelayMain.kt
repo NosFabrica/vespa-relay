@@ -68,6 +68,15 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
  *   ROUTER_DYNAMIC_*         defaults for `relaySource = [...]` streams, whose relay
  *                            list is read from the store's own 10002s/10040s
  *                            rather than configured (see RelaySource)
+ *
+ *   Parse audit / quartz logging (optional; see ParseAudit):
+ *   QUARTZ_LOG_LEVEL         quartz's log floor: DEBUG/INFO/WARN/ERROR. Quartz
+ *                            defaults to DEBUG, so malformed upstream profiles
+ *                            log a line per event during a backfill
+ *   PARSE_AUDIT_FILE         collect what quartz cannot parse into a grouped JSON
+ *                            report here, with raw sample events; unset ⇒ off
+ *   PARSE_AUDIT_SAMPLES      raw events kept per distinct failure (default 5)
+ *   PARSE_AUDIT_INTERVAL_SECONDS  report rewrite interval (default 60)
  */
 fun main() {
     val env = System.getenv()
@@ -119,7 +128,12 @@ fun main() {
     // set, keep live subscriptions open against the configured upstream relays and
     // mirror their events of the configured kinds into this same store. Fills what
     // the search serves, from the network. Unset ⇒ serve-only.
-    val router = RouterConfigLoader.fromEnv(env)?.let { MirrorRouter(store, it).start() }
+    // Opt-in diagnostic: collect the events quartz cannot fully parse, with their
+    // raw JSON, so the gaps can be fixed upstream. Also the knob that quiets
+    // quartz's own logging, whose floor defaults to DEBUG.
+    val parseAudit = ParseAudit.installFromEnv(env)
+
+    val router = RouterConfigLoader.fromEnv(env)?.let { MirrorRouter(store, it, audit = parseAudit).start() }
 
     val admin =
         banStore?.let {
@@ -136,6 +150,8 @@ fun main() {
         Thread {
             // Stop mirroring into the store before the relay and store close.
             router?.close()
+            // After the router, so the final report includes the last batch.
+            parseAudit?.close()
             sweeper.close()
             relay.close()
             store.close()
