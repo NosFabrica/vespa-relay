@@ -205,16 +205,16 @@ class RouterConfigTest {
                         exclude        = [ "wss://skip.example" ]
                         relaySource = [
                             {
-                                filter = { "kinds": [10002, 10040, 10050] }
                                 select = [
                                     { kind = 10002, tag = "r", marker = "write" }
                                     { kind = 10040, tag = "30382:rank", index = 2 }
                                     { tag = "relay" }
                                 ]
+                                filter = { "kinds": [10002, 10040, 10050] }
                             }
                             {
-                                filter = { "kinds": [1], "limit": 1000, "authors": ["abc"] }
                                 select = [ { tag = "e", index = 2 } ]
+                                filter = { "kinds": [1], "limit": 1000, "authors": ["abc"] }
                             }
                         ]
                     }
@@ -288,8 +288,8 @@ class RouterConfigTest {
         """
         relaySource = [
             {
-                filter = $filter
                 select = [ $select ]
+                filter = $filter
             }
         ]
         """.trimIndent(),
@@ -344,8 +344,8 @@ class RouterConfigTest {
                                 filter = { "kinds": [1] }
                                 relaySource = [
                                     {
-                                        filter = { "kinds": [10002] }
                                         select = [ { tag = "r" } ]
+                                        filter = { "kinds": [10002] }
                                     }
                                 ]
                             }
@@ -379,7 +379,7 @@ class RouterConfigTest {
                 stream(
                     """
                     urls = ["wss://a.example"]
-                    relaySource = [ { filter = { "kinds": [10002] }, select = [ { tag = "r" } ] } ]
+                    relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]
                     """.trimIndent(),
                 ),
             )
@@ -394,7 +394,7 @@ class RouterConfigTest {
                 stream(
                     """
                     dir = "up"
-                    relaySource = [ { filter = { "kinds": [10002] }, select = [ { tag = "r" } ] } ]
+                    relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]
                     """.trimIndent(),
                 ),
             )

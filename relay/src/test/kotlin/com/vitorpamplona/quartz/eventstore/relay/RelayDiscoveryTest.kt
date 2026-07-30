@@ -51,7 +51,7 @@ class RelayDiscoveryTest {
         vararg kinds: Int,
         selects: List<RelaySelect>,
         limit: Int? = null,
-    ) = RelaySource(filter = Filter(kinds = kinds.toList(), limit = limit), selects = selects)
+    ) = RelaySource(selects = selects, filter = Filter(kinds = kinds.toList(), limit = limit))
 
     private fun dynamic(
         vararg sources: RelaySource,

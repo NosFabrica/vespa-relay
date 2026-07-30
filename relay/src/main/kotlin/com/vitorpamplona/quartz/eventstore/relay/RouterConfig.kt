@@ -133,15 +133,28 @@ data class MirrorStream(
  *       exclude        = [ "wss://relay.example" ]
  *       relaySource = [
  *         {
- *           filter = { "kinds": [10002, 10040] }
  *           select = [
- *             { kind = 10002, tag = "r", marker = "write" }
- *             { kind = 10040, tag = "30382:rank", index = 2 }
+ *             {
+ *               kind = 10002
+ *               tag = "r"
+ *               marker = "write"
+ *             }
+ *             {
+ *               kind = 10040
+ *               tag = "30382:rank"
+ *               index = 2
+ *             }
  *           ]
+ *           filter = { "kinds": [10002, 10040] }
  *         }
  *         {
+ *           select = [
+ *             {
+ *               tag = "e"
+ *               index = 2
+ *             }
+ *           ]
  *           filter = { "kinds": [1], "limit": 100000 }
- *           select = [ { tag = "e", index = 2 } ]
  *         }
  *       ]
  *     }
@@ -166,33 +179,43 @@ data class DynamicRelayList(
 )
 
 /**
- * One scan of the store: a NIP-01 [filter] saying which events to collect, and
- * the [selects] saying where in their tags the relay urls sit. The filter runs
- * once and every select is applied to what it returns, so a whole shelf of
- * relay-list kinds costs one query rather than one each:
+ * One scan of the store: the [selects] saying which relay urls to pull out, and
+ * a NIP-01 [filter] saying which events to pull them from. The filter runs once
+ * and every select is applied to what it returns, so a whole shelf of relay-list
+ * kinds costs one query rather than one each:
  *
  *     {
- *       filter = { "kinds": [10002, 10050, 30002, 30166, 10040] }
  *       select = [
- *         { kind = 10002, tag = "r", marker = "write" }   NIP-65 outbox
- *         { kind = 10040, tag = "30382:rank", index = 2 } NIP-85 providers
- *         { kind = 30166, tag = "d" }                     NIP-66 monitor reports
- *         { tag = "relay" }                               everything else in the filter
+ *         {                          NIP-65 outbox
+ *           kind = 10002
+ *           tag = "r"
+ *           marker = "write"
+ *         }
+ *         {                          NIP-85 providers
+ *           kind = 10040
+ *           tag = "30382:rank"
+ *           index = 2
+ *         }
+ *         {                          NIP-66 monitor reports
+ *           kind = 30166
+ *           tag = "d"
+ *         }
+ *         {                          everything else in the filter
+ *           tag = "relay"
+ *         }
  *       ]
+ *       filter = { "kinds": [10002, 10050, 30002, 30166, 10040] }
  *     }
  *
  * The filter is an ordinary NIP-01 filter — `authors`, `since`, `until`,
- * `limit`, `#t`-style tag filters — so a scan can be narrowed however you like:
- *
- *     { filter = { "kinds": [1], "limit": 100000 }, select = [ { tag = "e", index = 2 } ] }
- *
- * `since`/`until` are absolute unix seconds, as everywhere else in NIP-01. On a
+ * `limit`, `#t`-style tag filters — so a scan can be narrowed however you like.
+ * `since`/`until` are absolute unix seconds, as everywhere else in NIP-01; on a
  * repeating cycle `limit` is the bound that stays meaningful, since a fixed
  * `since` only ages.
  */
 data class RelaySource(
-    val filter: Filter,
     val selects: List<RelaySelect>,
+    val filter: Filter,
 )
 
 /**
@@ -365,7 +388,7 @@ object RouterConfigLoader {
         )
     }
 
-    /** One `{ filter = { }, select = [ ] }` entry of that list: a scan and what to pull out of it. */
+    /** One `{ select = [ ], filter = { } }` entry of that list: what to pull out, and the scan to pull it from. */
     private fun parseRelaySource(
         stream: String,
         s: Config,
@@ -389,7 +412,7 @@ object RouterConfigLoader {
                 "add `limit` (the bound that stays meaningful on a repeating cycle), `since`, or `authors`, " +
                 "or it would load every matching event in the store at once"
         }
-        return RelaySource(filter = filter, selects = selects)
+        return RelaySource(selects = selects, filter = filter)
     }
 
     /** One `{ kind = ..., tag = ..., index = ... }` entry of a source's `select` list. */

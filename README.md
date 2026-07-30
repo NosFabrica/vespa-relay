@@ -182,23 +182,41 @@ outbox {
   exclude         = []
   relaySource = [
     {
-      filter = { "kinds": [10002, 10050, 30002, 30166] }
       select = [
-        { kind = 10002, tag = "r", marker = "write" }  # NIP-65 outbox
-        { kind = 30166, tag = "d" }                    # NIP-66 monitor reports
-        { tag = "relay" }                              # everything else in the scan
+        # NIP-65 outbox
+        {
+          kind = 10002
+          tag = "r"
+          marker = "write"
+        }
+        # NIP-66 monitor reports
+        {
+          kind = 30166
+          tag = "d"
+        }
+        # everything else in the scan
+        {
+          tag = "relay"
+        }
       ]
+      filter = { "kinds": [10002, 10050, 30002, 30166] }
     }
     {
+      select = [
+        # relay hints
+        {
+          tag = "e"
+          index = 2
+        }
+      ]
       filter = { "kinds": [1], "limit": 100000 }
-      select = [ { tag = "e", index = 2 } ]            # relay hints
     }
   ]
 }
 ```
 
-Each entry is one **scan**: a `filter` saying which events to collect, and a
-`select` list saying where the urls sit in their tags. The filter runs once and
+Each entry is one **scan**: a `select` list saying which relay urls to pull out,
+and the `filter` saying which events to pull them from. The filter runs once and
 every select is applied to what comes back, so a whole shelf of relay-list kinds
 costs one query rather than one each.
 
