@@ -69,6 +69,12 @@ services:
       # (the store serializes writes). Lower the batch to cut memory.
       ROUTER_INGEST_BATCH: ${ROUTER_INGEST_BATCH:-1000}
       ROUTER_INGEST_CONCURRENCY: ${ROUTER_INGEST_CONCURRENCY:-2}
+      # Defaults for `relaySource = [...]` streams, whose relay list is read out of
+      # the store's own events instead of the config (see the `outbox` and
+      # `assertions` streams in router.conf.example). Per-stream keys override these.
+      ROUTER_DYNAMIC_REFRESH_SECONDS: ${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}
+      ROUTER_DYNAMIC_CONCURRENCY: ${ROUTER_DYNAMIC_CONCURRENCY:-8}
+      ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS: ${ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS:-600}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       # profiles log a line per event during a backfill).
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}

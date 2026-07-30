@@ -93,6 +93,9 @@ All configuration is through environment variables.
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
 | `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation, per upstream (they run in parallel). This is not the stuck-upstream guard — a session with no frames for 30s aborts itself — so it only needs to be large enough for a legitimate fill of `ROUTER_BACKFILL_SECONDS` to finish. Too tight and big upstreams get truncated to live-tail | `14400` (4h) |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
+| `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
+| `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
+| `ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS` | default hard cap on one discovered relay's sync. Deliberately far tighter than `ROUTER_NEG_TIMEOUT_SECONDS`: these relays are strangers off a list and there are thousands of them, so one that talks without converging must not hold a concurrency slot for hours | `600` (10m) |
 
 ### Parse audit (what quartz cannot read)
 
@@ -206,6 +209,141 @@ complete), so you can tell how long the initial fill will take:
 ```
 router: backfill 4/12 upstream(s), 12,340/29,110 events (42%), 851/s, ETA ~0:03:17 to useful
 router: backfill complete — 41,880 events from 12 upstream(s) in 0:04:52; live tail now streaming
+```
+
+### Dynamic relay lists: the outbox, and everything else that names a relay
+
+A stream can leave `urls` out entirely and take its relay list from the store
+instead. `relaySource` is a **list** of places to read urls from, all merged into
+one fan-out:
+
+```hocon
+outbox {
+  dir             = "down"
+  filter          = { "kinds": [0, 3, 10002, 10040] }
+  backfillSeconds = 172800
+  refreshSeconds  = 21600
+  concurrency     = 8
+  exclude         = []
+  relaySource = [
+    {
+      select = [
+        # NIP-65 outbox
+        {
+          kind = 10002
+          tag = "r"
+          marker = "write"
+        }
+        # NIP-66 monitor reports
+        {
+          kind = 30166
+          tag = "d"
+        }
+        # everything else in the scan
+        {
+          tag = "relay"
+        }
+      ]
+      filter = { "kinds": [10002, 10050, 30002, 30166] }
+    }
+    {
+      select = [
+        # relay hints
+        {
+          tag = "e"
+          index = 2
+        }
+      ]
+      filter = { "kinds": [1], "limit": 100000 }
+    }
+  ]
+}
+```
+
+Each entry is one **scan**: a `select` list saying which relay urls to pull out,
+and the `filter` saying which events to pull them from. The filter runs once and
+every select is applied to what comes back, so a whole shelf of relay-list kinds
+costs one query rather than one each.
+
+Each cycle runs every scan, unions the relays they name, and negentropy-syncs the
+stream `filter` against **all** of them, `concurrency` at a time (paged REQ where
+NIP-77 is missing, same as a backfill). Then it sleeps `refreshSeconds` and does
+it again — so the fan-out widens on its own as the store fills.
+
+Nothing truncates that set: no cap on relays synced and no popularity floor.
+`concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
+way to leave a relay out.
+
+**No kind needs its own code.** Every relay list in the protocol is a tag with a
+url at a fixed offset, so a select is just that shape:
+
+| field | meaning |
+|---|---|
+| `kind` | apply this select only to that kind; **omit to apply it to everything the filter collected**. A kind the scan never returns simply never matches |
+| `tag` | the tag name to read; **omit for any tag** — that's how you take a whole family like NIP-85's `<kind>:<type>` service tags without naming each one |
+| `index` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first |
+| `marker` | NIP-65 only: keep `write` / `read` / `any`, read from `index + 1`. Unmarked tags mean *both*, so they match either side |
+
+The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`,
+`until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:
+`{ "kinds": [1], "authors": [...] }` harvests hints from your WoT's notes only.
+
+Three things worth knowing:
+
+- **`tag` and `"#t"` are unrelated.** `tag = "e"` is the tag urls are *read
+  from*; a `"#e"` entry in the scan's filter narrows *which events are scanned*.
+- **Omitting `tag` demands a scheme.** With no tag name to filter on, anything in
+  the event could land at `index` — a pet name in a `["p", <pubkey>, "bob"]` tag
+  would otherwise normalize to `wss://bob/`. So values must already start with
+  `ws://` or `wss://`. Name a tag and scheme-less hosts work again, which is what
+  NIP-65 lists in the wild need.
+- **Regular kinds must narrow their scan.** Relay hints live on kind 1, and
+  scanning that kind whole would load every note in the store into one list. The
+  replaceable and addressable kinds hold one event per author, which is what makes
+  them safe to scan outright; anything else needs `limit`, `since` or `authors`,
+  and the parser rejects it rather than let you find out in production. Prefer
+  `limit` on a repeating cycle — `since`/`until` are absolute unix seconds, so a
+  fixed `since` only ages, while `until` alone bounds nothing at all.
+
+All of it needs events to fan out over, so pair these with an ordinary `down`
+stream on a few relays — that seed stream is what fills the store. The example
+config's static streams do exactly that, which is why they come first in the file.
+
+Some notes on the other knobs:
+
+- **`backfillSeconds`** is the history window each cycle reconciles. Keep it
+  longer than `refreshSeconds` so consecutive cycles overlap. Leave it unset and
+  every cycle reconciles the filter's whole history — cheap enough over
+  negentropy, which diffs against what we already hold, but a relay *without*
+  NIP-77 falls back to paged REQ, which carries no such state and re-pages its
+  entire history on every cycle.
+- **`syncTimeoutSeconds`** caps one relay's sync. This is *not*
+  `ROUTER_NEG_TIMEOUT_SECONDS`, which is sized for a multi-year backfill of a
+  hand-picked upstream. Here the relays are strangers off a list and there are
+  thousands of them, so a relay that keeps talking without converging must not
+  hold a `concurrency` slot for hours while the network queues behind it. A
+  cycle syncs a window, not a lifetime — minutes is the right order.
+- **`concurrency`** is the one dial on cost. The union of every scan on a full
+  store is a large set — plenty of it long-dead hosts that will each burn a
+  connect timeout — so the cycle is as long as it needs to be, and this decides
+  how much of the network it talks to at once.
+- These streams have **no live tail**. Holding hundreds of subscriptions open is
+  what the periodic sync exists to avoid, so each relay's socket is dropped again
+  as soon as its sync returns. `dir` must be `down`, and a `relaySource` stream
+  can't also carry static `urls` — split those into two streams.
+
+Every cycle logs what it did, including why the unreachable relays were
+unreachable (a relay list is full of dead hosts — the tally is how you tell
+"normal" from "the whole cycle is broken") and what the rejections were. Expect
+rejections to *outnumber* accepts on a wide fan-out: a thousand relays asked for
+the same replaceable profiles means the store discards nearly every copy as
+already-held, which is the system working, not failing. The breakdown is there so
+a bad signature or a failing store doesn't hide inside that number:
+
+```
+router: outbox syncing 3184 relay(s) from [kinds 10002/10050/30002/30166 x3 select(s), kinds 1 x1 select(s)] against 88412 local id(s) (top: wss://relay.damus.io/ x8214, ...)
+router: outbox cycle done — 214,880 event(s) from 1102/3184 relay(s) in 1:12:41; unreachable: timeout x938, Connection refused x421; next in 21600s
+router: ingested 214880 accepted, 402113 rejected [duplicate: already have this event x401980]; 14 relay(s) connected, 12 pinned + dynamic
 ```
 
 ### Enabling it under docker compose

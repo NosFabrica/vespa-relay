@@ -14,6 +14,9 @@
 # stream: `backfillSeconds` (history window to negentropy-backfill before the
 # live tail; overrides ROUTER_BACKFILL_SECONDS) and `trusted` (skip signature
 # verification for that upstream — leave off for public relays).
+#
+# A stream can also drop `urls` entirely and take its relay list from the store,
+# with a `relaySource = [ ... ]` list — see the last two streams below.
 
 connectionTimeout = 20
 
@@ -53,6 +56,164 @@ streams {
         filter = { "kinds": [0, 10002, 30382] }
         urls = [
             "wss://scores.brainstorm.world"
+        ]
+    }
+
+    # ---- Dynamic relay lists ------------------------------------------------
+    #
+    # No `urls`: these two take their relays from events the streams above mirror
+    # into our store. `relaySource` is a LIST of places to read urls from, all
+    # merged into one fan-out. Every `refreshSeconds` the router re-reads them and
+    # negentropy-syncs its `filter` against every relay they name — the whole set,
+    # however far it has grown — `concurrency` at a time. Relays without NIP-77
+    # fall back to a paged REQ fetch automatically, and unreachable ones are
+    # tallied and skipped.
+    #
+    # Each source entry is one scan: a `select` list saying which relay urls to
+    # pull out, and the `filter` saying which events to pull them from. The filter
+    # runs ONCE and every select is applied to what comes back, so a whole shelf
+    # of relay-list kinds costs one query rather than one each.
+    #
+    # Each `select` entry is:
+    #
+    #   kind    apply this select only to that kind; omit to apply it to
+    #           everything the filter collected. A kind the filter never returns
+    #           simply never matches, so an unused select is harmless.
+    #   tag     the tag name to read; omit for ANY tag, which is how you take a
+    #           whole family (NIP-85's <kind>:<type> service tags) without naming
+    #           each one. Omitting it also demands the value already start with
+    #           ws:// or wss://, since with no tag name to go on anything in the
+    #           event could otherwise land here.
+    #   index   which element of the tag holds the url (default 1; use 2 for
+    #           NIP-85 service tags and for e/p/a/q hints, which put an id or a
+    #           pubkey first)
+    #   marker  NIP-65 only: keep "write" / "read" / "any", read from the slot
+    #           after the url. Unmarked means both.
+    #
+    # `filter` is an ordinary NIP-01 filter — kinds, authors, since, until, limit,
+    # "#t"-style tag filters. `since`/`until` are absolute unix seconds as always;
+    # on a repeating cycle `limit` is the bound that stays meaningful, since a
+    # fixed `since` only ages. A regular kind must narrow itself with `limit`,
+    # `since` or `authors` — scanning one whole would load every matching event in
+    # the store at once.
+    #
+    # Careful with the two tag notions: `tag = "e"` is the tag urls are READ FROM,
+    # while `"#e" = [...]` in the filter narrows which events are scanned at all.
+    #
+    # These need events to fan out over, so keep at least one static `down` stream
+    # above: that is what makes the first cycle non-empty.
+    #
+    # `backfillSeconds` is the history window each cycle reconciles. Keep it
+    # comfortably longer than `refreshSeconds` so consecutive cycles overlap
+    # instead of leaving a gap between them. Drop it and every cycle reconciles
+    # the filter's whole history — fine over negentropy, but a relay without
+    # NIP-77 then re-pages its entire history on every single cycle.
+
+    # THE OUTBOX. Every relay anyone publishes to, from every list that names one.
+    outbox {
+        dir = "down"
+        filter = { "kinds": [0, 3, 10002, 10040] }
+        backfillSeconds = 172800   # 48h of history per cycle
+        refreshSeconds = 21600     # re-read the sources and re-sync every 6h
+        concurrency = 8            # relays synced at the same time
+        syncTimeoutSeconds = 600   # hard cap on ONE relay's sync
+        exclude = []               # relays to skip however many sources name them
+        relaySource = [
+            # One scan over every relay-list kind we hold. All replaceable or
+            # addressable, so one event per author — safe to read whole.
+            {
+                select = [
+                    # NIP-65: write-marked and unmarked relays are where a user publishes.
+                    {
+                        kind = 10002
+                        tag = "r"
+                        marker = "write"
+                    }
+                    # NIP-66: a monitor's report describes one relay, named in its `d` tag.
+                    {
+                        kind = 30166
+                        tag = "d"
+                    }
+                    # Everything else on that list is ["relay", "<url>"] — NIP-51
+                    # feeds/indexers/broadcast/sets and NIP-17 DM inboxes alike.
+                    {
+                        tag = "relay"
+                    }
+                ]
+                filter = { "kinds": [10002, 10012, 10050, 10086, 10088, 30002, 30166] }
+            }
+
+            # A second scan for the NIP-85 provider lists, whose service tags put
+            # the provider pubkey before the relay.
+            {
+                select = [
+                    {
+                        tag = "30382:rank"
+                        index = 2
+                    }
+                ]
+                filter = { "kinds": [10040] }
+            }
+
+            # Relay hints riding on the tags of notes we already mirror. A regular
+            # kind, so the scan has to bound itself — `limit` rather than `since`
+            # because this runs every cycle and a fixed timestamp only ages.
+            {
+                select = [
+                    {
+                        tag = "e"
+                        index = 2
+                    }
+                    {
+                        tag = "p"
+                        index = 2
+                    }
+                    {
+                        tag = "q"
+                        index = 2
+                    }
+                    {
+                        tag = "a"
+                        index = 2
+                    }
+                ]
+                filter = { "kinds": [1], "limit": 100000 }
+            }
+        ]
+    }
+
+    # THE ASSERTION PROVIDERS. Kind 10040 (NIP-85): each service tag —
+    # ["30382:rank", "<provider pubkey>", "wss://scores.example"] — names a
+    # provider *and* the relay it publishes on, so those relays are the ones
+    # worth syncing trust data from. Naming the tag picks one service; drop the
+    # `tag` line to take every <kind>:<type> a 10040 carries.
+    assertions {
+        dir = "down"
+        # 30382 users, 30383 events, 30384 addressables, 30385 external ids.
+        filter = { "kinds": [30382, 30383, 30384, 30385] }
+        backfillSeconds = 172800   # 48h of history per cycle
+        refreshSeconds = 21600     # re-read the sources and re-sync every 6h
+        concurrency = 8            # relays synced at the same time
+        syncTimeoutSeconds = 600   # hard cap on ONE relay's sync
+        exclude = []               # relays to skip however many sources name them
+        relaySource = [
+            {
+                select = [
+                    {
+                        tag = "30382:rank"
+                        index = 2
+                    }
+                    {
+                        tag = "30382:followers"
+                        index = 2
+                    }
+                    {
+                        tag = "30383:rank"
+                        index = 2
+                    }
+                ]
+                filter = { "kinds": [10040] }
+            }
         ]
     }
 }
