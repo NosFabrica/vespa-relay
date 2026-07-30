@@ -26,40 +26,40 @@ import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 
 /**
- * The shipped example configs are the router's documentation, so they have to
- * parse into what they claim to be — a broken example is a broken feature.
+ * The shipped example config is the router's documentation, so it has to parse
+ * into what it claims to be — a broken example is a broken feature.
  */
 class RouterConfExamplesTest {
-    /** Tests run from the module dir; the examples sit at the repo root. */
-    private fun load(name: String): RouterConfig {
-        val file = listOf(File("../$name"), File(name)).firstOrNull { it.isFile }
-        return RouterConfigLoader.parse(requireNotNull(file) { "missing example config $name" }.readText())
+    /** Tests run from the module dir; the example sits at the repo root. */
+    private val example: RouterConfig =
+        RouterConfigLoader.parse(
+            requireNotNull(
+                listOf(File("../router.conf.example"), File("router.conf.example")).firstOrNull { it.isFile },
+            ) { "missing router.conf.example" }.readText(),
+        )
+
+    @Test
+    fun `the static streams parse and seed the dynamic ones`() {
+        // The dynamic streams can only fan out over relay lists these mirror in.
+        assertTrue(example.downUpstreams().any { it.streamName == "indexers" })
+        assertTrue(example.downUpstreams().any { it.filter.kinds?.contains(10002) == true })
+        assertTrue(example.downUpstreams().any { it.filter.kinds?.contains(10040) == true })
     }
 
     @Test
-    fun `the plain example parses`() {
-        assertTrue(load("router.conf.example").streams.isNotEmpty())
-    }
-
-    @Test
-    fun `the outbox example is a seed stream plus a 10002 relaySource`() {
-        val cfg = load("router.conf.outbox.example")
-        val outbox = cfg.dynamicStreams().single()
-        assertEquals("outbox", outbox.name)
+    fun `the outbox stream reads write-marked relays out of the 10002s`() {
+        val outbox = example.dynamicStreams().first { it.name == "outbox" }
         assertEquals(RelayListKind.OUTBOX, outbox.relaySource?.kind)
         assertEquals(RelayRole.WRITE, outbox.relaySource?.role)
-        // The seed stream is what fills the store the outbox stream then reads.
-        assertTrue(cfg.downUpstreams().any { it.streamName == "indexers" })
+        assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
     }
 
     @Test
-    fun `the assertions example is a seed stream plus a 10040 relaySource`() {
-        val cfg = load("router.conf.assertions.example")
-        val assertions = cfg.dynamicStreams().single()
-        assertEquals("assertions", assertions.name)
+    fun `the assertions stream reads every relay out of the 10040s`() {
+        val assertions = example.dynamicStreams().first { it.name == "assertions" }
         assertEquals(RelayListKind.TRUST_PROVIDERS, assertions.relaySource?.kind)
         // 10040 has no read/write sides, so every url it names is in scope.
         assertEquals(RelayRole.ANY, assertions.relaySource?.role)
-        assertTrue(cfg.downUpstreams().any { it.streamName == "indexers" })
+        assertTrue(assertions.urls.isEmpty(), "a relaySource stream carries no static urls")
     }
 }

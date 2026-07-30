@@ -169,8 +169,8 @@ router: backfill complete — 41,880 events from 12 upstream(s) in 0:04:52; live
 ### Dynamic relay lists: the outbox, and its NIP-85 twin
 
 A stream can leave `urls` out entirely and take its relay list from the store
-instead. Two configs ship with this shape — `router.conf.outbox.example` and
-`router.conf.assertions.example` — and they differ only in which list they read:
+instead. `router.conf.example` ends with two streams of this shape, differing
+only in which list they read:
 
 ```hocon
 outbox {
@@ -206,14 +206,17 @@ it doesn't bound it, and `exclude` is the only way to leave a relay out.
 
 Both need relay lists to exist before they can fan out over them, so pair them
 with an ordinary `down` stream on a few indexer relays — that seed stream is
-what fills the store with 10002s and 10040s. Both example configs include one.
+what fills the store with 10002s and 10040s. The example config's static streams
+do exactly that, which is why they come first in the file.
 
 Some notes on the knobs:
 
 - **`backfillSeconds`** is the history window each cycle reconciles. Keep it
-  longer than `refreshSeconds` so consecutive cycles overlap; leave it unset and
-  every cycle reconciles the filter's whole history, which is correct but much
-  more expensive once the fan-out is wide.
+  longer than `refreshSeconds` so consecutive cycles overlap. Leave it unset and
+  every cycle reconciles the filter's whole history — cheap enough over
+  negentropy, which diffs against what we already hold, but a relay *without*
+  NIP-77 falls back to paged REQ, which carries no such state and re-pages its
+  entire history on every cycle.
 - **`concurrency`** is the one dial on cost. A 10002 scan of a full store is a
   large set — plenty of it long-dead hosts that will each burn a connect timeout
   — so the cycle is as long as it needs to be, and this decides how much of the

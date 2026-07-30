@@ -9,16 +9,14 @@
 # Without Docker, point the relay straight at it:
 #   ROUTER_CONFIG_FILE=./router.conf ROUTER_BACKFILL_SECONDS=86400 ./gradlew :relay:run
 #
-# For a stream whose relay list comes from the store instead of from this file —
-# every relay the 10002s (outbox) or the 10040s (NIP-85 trust providers) name,
-# re-read and re-synced on a period — see router.conf.outbox.example and
-# router.conf.assertions.example.
-#
 # Each named stream mirrors a NIP-01 `filter` from a set of `urls` in a `dir`
 # (down = pull into our store, up = push ours upstream, both). Optional per
 # stream: `backfillSeconds` (history window to negentropy-backfill before the
 # live tail; overrides ROUTER_BACKFILL_SECONDS) and `trusted` (skip signature
 # verification for that upstream — leave off for public relays).
+#
+# A stream can also drop `urls` entirely and take its relay list from the store,
+# with a `relaySource { }` block — see the last two streams below.
 
 connectionTimeout = 20
 
@@ -59,5 +57,57 @@ streams {
         urls = [
             "wss://scores.brainstorm.world"
         ]
+    }
+
+    # ---- Dynamic relay lists ------------------------------------------------
+    #
+    # No `urls`: these two take their relays from the relay-list events the
+    # streams above mirror into our store. Every `refreshSeconds` the router
+    # re-reads those lists and negentropy-syncs its `filter` against every relay
+    # they name — the whole set, however far it has grown — `concurrency` at a
+    # time. Relays without NIP-77 fall back to a paged REQ fetch automatically,
+    # and unreachable ones are tallied and skipped.
+    #
+    # They need lists to fan out over, so keep at least one static `down` stream
+    # on 10002/10040 above: that is what makes the first cycle non-empty.
+    #
+    # `backfillSeconds` is the history window each cycle reconciles. Keep it
+    # comfortably longer than `refreshSeconds` so consecutive cycles overlap
+    # instead of leaving a gap between them. Drop it and every cycle reconciles
+    # the filter's whole history — fine over negentropy, but a relay without
+    # NIP-77 then re-pages its entire history on every single cycle.
+
+    # THE OUTBOX. Kind 10002 (NIP-65): every relay a user marks `write` — or
+    # leaves unmarked, which means read *and* write — is a relay their events go
+    # to, so it is a relay we pull from.
+    outbox {
+        dir = "down"
+        filter = { "kinds": [0, 3, 10002, 10040] }
+        backfillSeconds = 172800   # 48h of history per cycle
+        relaySource {
+            kind           = 10002   # NIP-65 relay list metadata
+            marker         = "write" # write + unmarked; use "read" or "any" to widen
+            refreshSeconds = 21600   # re-read the lists and re-sync every 6h
+            concurrency    = 8       # relays synced at the same time
+            exclude        = []      # relays to skip however many lists name them
+        }
+    }
+
+    # THE ASSERTION PROVIDERS. Kind 10040 (NIP-85): each service tag —
+    # ["30382:rank", "<provider pubkey>", "wss://scores.example"] — names a
+    # provider *and* the relay it publishes on, so those relays are the ones
+    # worth syncing trust data from. 10040 has no read/write markers (every
+    # relay a service tag points at is one we sync), so `marker` doesn't apply.
+    assertions {
+        dir = "down"
+        # 30382 users, 30383 events, 30384 addressables, 30385 external ids.
+        filter = { "kinds": [30382, 30383, 30384, 30385] }
+        backfillSeconds = 172800   # 48h of history per cycle
+        relaySource {
+            kind           = 10040  # NIP-85 trusted assertions
+            refreshSeconds = 21600  # re-read the lists and re-sync every 6h
+            concurrency    = 8      # relays synced at the same time
+            exclude        = []     # relays to skip however many lists name them
+        }
     }
 }
