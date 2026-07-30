@@ -36,7 +36,18 @@ services:
       RELAY_PORT: 7777
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
+      # How the relay presents itself in its NIP-11 document. All optional —
+      # empty values are omitted from the doc. See .env.example.
       RELAY_NAME: ${RELAY_NAME:-vespa-relay}
+      RELAY_DESCRIPTION: ${RELAY_DESCRIPTION:-}
+      RELAY_ICON: ${RELAY_ICON:-}
+      RELAY_BANNER: ${RELAY_BANNER:-}
+      RELAY_CONTACT: ${RELAY_CONTACT:-}
+      RELAY_CONTACT_PUBKEY: ${RELAY_CONTACT_PUBKEY:-}
+      RELAY_SELF_PUBKEY: ${RELAY_SELF_PUBKEY:-}
+      RELAY_POSTING_POLICY: ${RELAY_POSTING_POLICY:-}
+      RELAY_PRIVACY_POLICY: ${RELAY_PRIVACY_POLICY:-}
+      RELAY_TERMS_OF_SERVICE: ${RELAY_TERMS_OF_SERVICE:-}
       # 64-hex pubkey whose web of trust ranks anonymous searches; empty = untrusted.
       DEFAULT_OBSERVER: ${DEFAULT_OBSERVER:-}
       # Router (upstream mirror). Off by default. To turn it on, drop a strfry-style

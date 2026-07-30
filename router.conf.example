@@ -35,7 +35,7 @@ streams {
     }
 
     # Indexer Relays
-    popular {
+    indexers {
         dir = "down"
         filter = { "kinds": [0, 10002] }
         urls = [
