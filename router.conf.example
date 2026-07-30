@@ -40,7 +40,6 @@ streams {
         filter = { "kinds": [0, 10002] }
         urls = [
             "wss://purplepag.es",
-            "wss://primus.nostr1.com",
             "wss://profiles.nostr1.com",
             "wss://indexer.coracle.social",
             "wss://user.kindpag.es",
