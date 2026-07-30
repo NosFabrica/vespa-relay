@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -353,6 +354,11 @@ class MirrorRouter(
                 } else {
                     dynamicCycle(stream, dynamic, sourceNames, relays)
                 }
+            } catch (e: CancellationException) {
+                // Shutdown, not a failure — a cycle can be mid-fan-out for a long
+                // time, so close() almost always lands inside one. Let it end the
+                // loop quietly instead of logging a scary line on every stop.
+                throw e
             } catch (e: Exception) {
                 System.err.println("router: ${stream.name} refresh failed: ${e.message}")
             }
