@@ -9,6 +9,11 @@
 # Without Docker, point the relay straight at it:
 #   ROUTER_CONFIG_FILE=./router.conf ROUTER_BACKFILL_SECONDS=86400 ./gradlew :relay:run
 #
+# For a stream whose relay list comes from the store instead of from this file —
+# every relay the 10002s (outbox) or the 10040s (NIP-85 trust providers) name,
+# re-read and re-synced on a period — see router.conf.outbox.example and
+# router.conf.assertions.example.
+#
 # Each named stream mirrors a NIP-01 `filter` from a set of `urls` in a `dir`
 # (down = pull into our store, up = push ours upstream, both). Optional per
 # stream: `backfillSeconds` (history window to negentropy-backfill before the

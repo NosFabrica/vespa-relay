@@ -22,6 +22,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -188,6 +189,124 @@ class RouterConfigTest {
         assertEquals(listOf("abc"), f.authors)
         assertEquals("hello", f.search)
         assertEquals(listOf("nostr", "bitcoin"), f.tags?.get("t"))
+    }
+
+    @Test
+    fun `parses a dynamic relaySource stream`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    outbox {
+                        dir    = "down"
+                        filter = { "kinds": [0, 3, 10002] }
+                        relaySource {
+                            kind           = 10002
+                            marker         = "write"
+                            refreshSeconds = 3600
+                            maxLists       = 1000
+                            maxRelays      = 50
+                            minReferences  = 2
+                            concurrency    = 4
+                            exclude        = [ "wss://skip.example" ]
+                        }
+                    }
+                    assertions {
+                        filter = { "kinds": [30382] }
+                        relaySource { kind = 10040 }
+                    }
+                }
+                """.trimIndent(),
+            )
+
+        val outbox = cfg.streams.first { it.name == "outbox" }.relaySource!!
+        assertEquals(RelayListKind.OUTBOX, outbox.kind)
+        assertEquals(RelayRole.WRITE, outbox.role)
+        assertEquals(3600L, outbox.refreshSeconds)
+        assertEquals(1000, outbox.maxLists)
+        assertEquals(50, outbox.maxRelays)
+        assertEquals(2, outbox.minReferences)
+        assertEquals(4, outbox.concurrency)
+        assertEquals(listOf("wss://skip.example/"), outbox.exclude.map { it.url })
+
+        // 10040 has no read/write markers, so it defaults to every url it names.
+        val assertions = cfg.streams.first { it.name == "assertions" }.relaySource!!
+        assertEquals(RelayListKind.TRUST_PROVIDERS, assertions.kind)
+        assertEquals(RelayRole.ANY, assertions.role)
+        assertEquals(21_600L, assertions.refreshSeconds) // the built-in default
+
+        // Dynamic streams have no static urls, so they are not down/up upstreams.
+        assertEquals(2, cfg.dynamicStreams().size)
+        assertTrue(cfg.downUpstreams().isEmpty())
+        assertTrue(cfg.upUpstreams().isEmpty())
+    }
+
+    @Test
+    fun `relaySource defaults come from the env`() {
+        val cfg =
+            RouterConfigLoader.fromEnv(
+                mapOf(
+                    "ROUTER_CONFIG" to
+                        """
+                        streams {
+                            outbox {
+                                filter = { "kinds": [1] }
+                                relaySource { kind = 10002 }
+                            }
+                        }
+                        """.trimIndent(),
+                    "ROUTER_DYNAMIC_REFRESH_SECONDS" to "900",
+                    "ROUTER_DYNAMIC_MAX_RELAYS" to "42",
+                    "ROUTER_DYNAMIC_CONCURRENCY" to "16",
+                ),
+            )
+        val source = cfg!!.dynamicStreams().single().relaySource!!
+        assertEquals(900L, source.refreshSeconds)
+        assertEquals(42, source.maxRelays)
+        assertEquals(16, source.concurrency)
+    }
+
+    /** A one-stream config, with [body] as the stream's keys. */
+    private fun stream(body: String) =
+        """
+        streams {
+            s {
+                filter = { "kinds": [1] }
+                $body
+            }
+        }
+        """.trimIndent()
+
+    @Test
+    fun `a stream must have either urls or a relaySource, never both`() {
+        assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(stream("")) }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(
+                stream(
+                    """
+                    urls = ["wss://a.example"]
+                    relaySource { kind = 10002 }
+                    """.trimIndent(),
+                ),
+            )
+        }
+    }
+
+    @Test
+    fun `a relaySource stream can only pull down, and only from a known list kind`() {
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(
+                stream(
+                    """
+                    dir = "up"
+                    relaySource { kind = 10002 }
+                    """.trimIndent(),
+                ),
+            )
+        }
+        assertFailsWith<IllegalStateException> {
+            RouterConfigLoader.parse(stream("relaySource { kind = 3 }"))
+        }
     }
 
     @Test

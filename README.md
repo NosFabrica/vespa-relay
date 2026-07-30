@@ -93,6 +93,11 @@ All configuration is through environment variables.
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
 | `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation, per upstream (they run in parallel). This is not the stuck-upstream guard — a session with no frames for 30s aborts itself — so it only needs to be large enough for a legitimate fill of `ROUTER_BACKFILL_SECONDS` to finish. Too tight and big upstreams get truncated to live-tail | `14400` (4h) |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
+| `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource { }` stream (re-read the relay lists, re-sync every relay) | `21600` (6h) |
+| `ROUTER_DYNAMIC_MAX_LISTS` | default cap on how many relay-list events one cycle scans, newest first | `50000` |
+| `ROUTER_DYNAMIC_MAX_RELAYS` | default cap on how many discovered relays one cycle syncs, best-referenced first (`0` = all) | `500` |
+| `ROUTER_DYNAMIC_MIN_REFERENCES` | default floor on how many lists must name a relay before it is synced | `1` |
+| `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
 
 ## The router: mirror from upstream relays
 
@@ -162,6 +167,71 @@ complete), so you can tell how long the initial fill will take:
 ```
 router: backfill 4/12 upstream(s), 12,340/29,110 events (42%), 851/s, ETA ~0:03:17 to useful
 router: backfill complete — 41,880 events from 12 upstream(s) in 0:04:52; live tail now streaming
+```
+
+### Dynamic relay lists: the outbox, and its NIP-85 twin
+
+A stream can leave `urls` out entirely and take its relay list from the store
+instead. Two configs ship with this shape — `router.conf.outbox.example` and
+`router.conf.assertions.example` — and they differ only in which list they read:
+
+```hocon
+outbox {
+  dir             = "down"
+  filter          = { "kinds": [0, 3, 10002, 10040] }
+  backfillSeconds = 172800
+  relaySource {
+    kind           = 10002    # NIP-65 relay lists  (10040 = NIP-85 trust providers)
+    marker         = "write"  # write + unmarked; "read" or "any" to widen
+    refreshSeconds = 21600
+    maxRelays      = 500
+    minReferences  = 2
+    concurrency    = 8
+  }
+}
+```
+
+Each cycle reads the relay-list events already in our store, takes the urls out
+of them, ranks each relay by how many lists name it, and negentropy-syncs the
+stream `filter` against the top `maxRelays` of them, `concurrency` at a time
+(paged REQ where NIP-77 is missing, same as a backfill). Then it sleeps
+`refreshSeconds` and does it again — so the fan-out widens on its own as more
+relay lists land in the store.
+
+- **`kind = 10002`** — the outbox. `["r", "<url>", "write"]` and unmarked `["r",
+  "<url>"]` tags (unmarked means read *and* write) are the relays a user's events
+  are published to, so they are the relays to pull from.
+- **`kind = 10040`** — NIP-85 trusted assertions. Each `["30382:rank", "<pubkey>",
+  "<url>"]` tag names a provider *and* the relay it publishes on; those relays are
+  the ones worth syncing trust data from. `marker` doesn't apply — 10040 has no
+  read/write sides.
+
+Both need relay lists to exist before they can fan out over them, so pair them
+with an ordinary `down` stream on a few indexer relays — that seed stream is
+what fills the store with 10002s and 10040s. Both example configs include one.
+
+Some notes on the knobs:
+
+- **`backfillSeconds`** is the history window each cycle reconciles. Keep it
+  longer than `refreshSeconds` so consecutive cycles overlap; leave it unset and
+  every cycle reconciles the filter's whole history, which is correct but much
+  more expensive once the fan-out is wide.
+- **`minReferences`** matters more than it looks. The tail of a 10002 scan is
+  thousands of hosts exactly one person named, most of them long dead; `2` cuts
+  that off. Assertion providers are scarce enough that `1` is right for 10040.
+- **`maxLists`** caps the scan, not the network — raise it on a large store.
+- These streams have **no live tail**. Holding hundreds of subscriptions open is
+  what the periodic sync exists to avoid, so each relay's socket is dropped again
+  as soon as its sync returns. `dir` must be `down`, and a `relaySource { }`
+  stream can't also carry static `urls` — split those into two streams.
+
+Every cycle logs what it did, including why the unreachable relays were
+unreachable (a relay list is full of dead hosts — the tally is how you tell
+"normal" from "the whole cycle is broken"):
+
+```
+router: outbox syncing 500 relay(s) from kind 10002 lists (top: wss://relay.damus.io/ x8214, ...)
+router: outbox cycle done — 214,880 event(s) from 431/500 relay(s) in 12:41; unreachable: timeout x38, Connection refused x21; next in 21600s
 ```
 
 ### Enabling it under docker compose

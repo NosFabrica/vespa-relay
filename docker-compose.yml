@@ -69,6 +69,14 @@ services:
       # (the store serializes writes). Lower the batch to cut memory.
       ROUTER_INGEST_BATCH: ${ROUTER_INGEST_BATCH:-1000}
       ROUTER_INGEST_CONCURRENCY: ${ROUTER_INGEST_CONCURRENCY:-2}
+      # Defaults for `relaySource { }` streams, whose relay list comes from the
+      # 10002s/10040s in the store instead of the config (router.conf.outbox.example,
+      # router.conf.assertions.example). Per-stream keys override each of these.
+      ROUTER_DYNAMIC_REFRESH_SECONDS: ${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}
+      ROUTER_DYNAMIC_MAX_LISTS: ${ROUTER_DYNAMIC_MAX_LISTS:-50000}
+      ROUTER_DYNAMIC_MAX_RELAYS: ${ROUTER_DYNAMIC_MAX_RELAYS:-500}
+      ROUTER_DYNAMIC_MIN_REFERENCES: ${ROUTER_DYNAMIC_MIN_REFERENCES:-1}
+      ROUTER_DYNAMIC_CONCURRENCY: ${ROUTER_DYNAMIC_CONCURRENCY:-8}
     ports:
       - "${RELAY_PORT:-7777}:7777"
     volumes:
