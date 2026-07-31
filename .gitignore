@@ -19,7 +19,12 @@ local.properties
 .idea/
 *.iml
 
-# Parse audit reports (PARSE_AUDIT_FILE / the compose ./.audit mount)
+# The live router config — machine-local (relay list, filters, stream urls).
+# router.conf.example is the tracked template.
+router.conf
+
+# Parse audit reports and router sync cursors (PARSE_AUDIT_FILE /
+# ROUTER_SYNC_STATE_FILE, both under the compose ./.audit mount)
 .audit/
 
 # Local event store (SQLite + WAL/SHM) and sync cursors
