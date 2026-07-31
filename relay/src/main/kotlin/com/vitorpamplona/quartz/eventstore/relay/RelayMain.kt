@@ -267,13 +267,24 @@ private suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
         val cause = result.exceptionOrNull()
         if (waited >= TRUST_RECONCILE_MAX_WAIT_MS) {
             System.err.println(
-                "trust: reconcile still failing after ${waited / 1000}s (${cause?.message?.take(120)}); " +
+                "trust: reconcile still failing after ${waited / 1000}s; " +
                     "serving with the projection as-is — ranked searches may return nothing until it runs clean",
             )
+            // The WHOLE stack, once. A message alone says a failure happened and
+            // nothing about where: an `IndexOutOfBoundsException: Index: 1, Size:
+            // 1` from this path cost a day of inference that a single frame would
+            // have ended. This is the only place it can be printed — the throwable
+            // is caught here and goes no further.
+            cause?.printStackTrace()
             return
         }
         if (attempt == 1) {
             println("trust: engine not answering yet (${cause?.message?.take(80)}); waiting for it before ranking is usable")
+            // Also on the FIRST failure, not only after the budget runs out. A
+            // deterministic bug and a cold engine look identical from one
+            // message, and waiting ten minutes to tell them apart is ten minutes
+            // of a relay that is not serving.
+            cause?.printStackTrace()
         }
         delay(TRUST_RECONCILE_RETRY_MS)
         waited += TRUST_RECONCILE_RETRY_MS
