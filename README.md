@@ -90,6 +90,7 @@ All configuration is through environment variables.
 | `ROUTER_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store | unset ⇒ router off |
 | `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
+| `ROUTER_SYNC_STATE_FILE` | where the per-(relay, filter) synced `created_at` band is kept. A relay without NIP-77 has no memory of what it already sent, so without this every restart re-downloads its whole corpus; with it the router asks only for what falls outside the band it already walked. Keyed by filter — edit a stream's filter and that stream starts over | unset ⇒ in memory only |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
 | `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
 | `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
@@ -185,6 +186,38 @@ history its filter asks for. **Up** re-reconciles the store against the
 upstream every `ROUTER_UP_INTERVAL_SECONDS` and publishes only what the
 upstream is missing — set reconciliation gives echo-suppression for free, so an
 event just pulled *down* from a relay is never pushed back *up* to it.
+
+### Resuming a paged relay
+
+Negentropy relays need no cursor: reconciliation compares id sets and downloads
+only the difference, so re-running a sync costs the diff and nothing more. Most
+relays do not speak NIP-77 — in one measured run, seven of nine upstreams fell
+back to paged REQ — and a paged fetch has no such memory. It walks `created_at`
+newest-first and re-reads everything it read last time, every restart.
+
+Set `ROUTER_SYNC_STATE_FILE` and the router remembers the band it has covered per
+relay and per filter, then asks only for what lies outside it:
+
+```
+stored band:        |<-------- covered -------->|
+next fetch:  <------|                           |------>
+             older than min                newer than max
+```
+
+The newer leg catches what was published while the relay was down. The older leg
+keeps walking back into history, which is what makes progress against a relay
+that caps its responses: each run reaches a little further instead of re-reading
+the same newest events forever.
+
+The two boundary seconds are re-read every run, deliberately: a paged relay cuts
+pages by count, so a boundary can fall inside a run of events sharing one
+`created_at`, and asking strictly outside the band would strand the rest of that
+second forever.
+
+One thing it does not promise: Nostr lets an event be published with any
+`created_at`, so one can land inside a band already walked past. The trade is
+deliberate — re-reading a corpus every restart is a certain daily cost, while
+that hole is occasional and clears the next time the filter changes.
 
 The **live tail works against every relay**; the **negentropy backfill depends
 on the upstream**. Some relays advertise NIP-77 but their reconciliation never

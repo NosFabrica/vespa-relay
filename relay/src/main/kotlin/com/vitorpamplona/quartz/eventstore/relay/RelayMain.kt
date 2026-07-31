@@ -77,6 +77,12 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
  *                            report here, with raw sample events; unset ⇒ off
  *   PARSE_AUDIT_SAMPLES      raw events kept per distinct failure (default 5)
  *   PARSE_AUDIT_INTERVAL_SECONDS  report rewrite interval (default 60)
+ *
+ *   Router resume state (optional; see SyncCursors):
+ *   ROUTER_SYNC_STATE_FILE   where the per-(relay, filter) synced `created_at`
+ *                            band is kept, so a relay without NIP-77 is not
+ *                            re-read from scratch on every restart; unset ⇒
+ *                            in memory only
  */
 fun main() {
     val env = System.getenv()
@@ -133,7 +139,12 @@ fun main() {
     // quartz's own logging, whose floor defaults to DEBUG.
     val parseAudit = ParseAudit.installFromEnv(env)
 
-    val router = RouterConfigLoader.fromEnv(env)?.let { MirrorRouter(store, it, audit = parseAudit).start() }
+    // Where a paged relay's already-walked history is remembered, so a restart
+    // resumes instead of re-reading the corpus. Unset ⇒ in memory, which is the
+    // same as not having it.
+    val cursors = SyncCursors.fromEnv(env)
+
+    val router = RouterConfigLoader.fromEnv(env)?.let { MirrorRouter(store, it, audit = parseAudit, cursors = cursors).start() }
 
     val admin =
         banStore?.let {

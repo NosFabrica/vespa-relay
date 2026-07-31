@@ -91,6 +91,9 @@ class MirrorRouter(
     // quartz's search-indexing parse to collect what quartz cannot read. Off by
     // default: it costs one extra parse per event. See [ParseAudit].
     private val audit: ParseAudit? = null,
+    // How much of each filter's history we have already pulled from each relay,
+    // so a paged relay is not re-read from scratch every restart. See [SyncCursors].
+    private val cursors: SyncCursors = SyncCursors(null),
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -390,30 +393,61 @@ class MirrorRouter(
         up: MirrorUpstream,
     ) {
         // The filter as the operator wrote it. `since`/`until` are NIP-01's own,
-        // so absent means unbounded and this reaches the upstream's whole history.
-        val window = up.filter
+        // so absent means unbounded and this reaches the upstream's whole history
+        // — minus whatever a previous run already walked, when this relay paged.
+        val legs = cursors.legs(up.url, up.filter)
+        if (legs.isEmpty()) {
+            // Only reachable if a future change makes the legs exclusive again;
+            // today the boundary seconds always leave something to ask for.
+            progress.done(idx, 0)
+            System.err.println("router: backfill ${up.url.url} already covers its filter — nothing outside the synced band")
+            return
+        }
         try {
-            // No deadline. Every timeout in the client is measured from the last
-            // message, so a relay that stops answering is dropped in seconds by
-            // [NEG_IDLE_MS] — and one still sending is doing the work we asked
-            // for, however long its history takes. A wall clock could only fire
-            // on the healthy case, which is how a 4h cap came to truncate four
-            // working upstreams at exactly 14400s.
-            val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
-            val result =
-                client.negentropySyncOrFetch(
-                    relay = up.url,
-                    filter = window,
-                    idleTimeoutMs = NEG_IDLE_MS,
-                    localEntries = local,
-                    onProgress = { needSoFar, downloaded -> progress.update(idx, needSoFar, downloaded) },
-                    onEvent = { event -> if (up.filter.match(event)) offer(event, up.trusted) },
-                )
+            var downloaded = 0
+            var paged = false
+            for (window in legs) {
+                // Track the span this leg actually saw. The client reports how
+                // many events came back, not when they were from, and the band
+                // is the whole point of the exercise.
+                var seenMin: Long? = null
+                var seenMax: Long? = null
+                // No deadline. Every timeout in the client is measured from the last
+                // message, so a relay that stops answering is dropped in seconds by
+                // [NEG_IDLE_MS] — and one still sending is doing the work we asked
+                // for, however long its history takes. A wall clock could only fire
+                // on the healthy case, which is how a 4h cap came to truncate four
+                // working upstreams at exactly 14400s.
+                val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+                val result =
+                    client.negentropySyncOrFetch(
+                        relay = up.url,
+                        filter = window,
+                        idleTimeoutMs = NEG_IDLE_MS,
+                        localEntries = local,
+                        onProgress = { needSoFar, done -> progress.update(idx, needSoFar, downloaded + done) },
+                        onEvent = { event ->
+                            if (up.filter.match(event)) {
+                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                offer(event, up.trusted)
+                            }
+                        },
+                    )
+                downloaded += result.downloaded
+                paged = paged || result.pagedFallback
+                // Per leg, not once at the end: a crash between legs then keeps
+                // the ground the first one gained.
+                cursors.record(up.url, up.filter, seenMin, seenMax, result.pagedFallback)
+            }
             run {
-                progress.done(idx, result.downloaded)
+                progress.done(idx, downloaded)
+                val band = cursors.band(up.url, up.filter)
                 System.err.println(
-                    "router: backfill ${up.url.url} downloaded ${result.downloaded}" +
-                        if (result.pagedFallback) " (paged REQ fallback — no NIP-77)" else " (negentropy)",
+                    "router: backfill ${up.url.url} downloaded $downloaded" +
+                        (if (paged) " (paged REQ fallback — no NIP-77)" else " (negentropy)") +
+                        (if (legs.size > 1) " [resumed: ${legs.size} leg(s) outside the synced band]" else "") +
+                        (if (band != null) " [synced ${band.minCreatedAt}..${band.maxCreatedAt}]" else ""),
                 )
             }
         } catch (e: Exception) {
@@ -533,6 +567,8 @@ class MirrorRouter(
                 .sortedByDescending { it.value }
                 .take(3)
                 .joinToString { "${it.key} x${it.value}" }
+        // One write for the whole fan-out, not one per relay.
+        cursors.flush()
         System.err.println(
             "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get()}/${relays.size} relay(s)" +
                 " in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
@@ -561,15 +597,28 @@ class MirrorRouter(
             // No wall clock here either: these relays are strangers off a list,
             // but a slot held by one that is delivering is a slot doing its job.
             // Silence is what costs us, and [NEG_IDLE_MS] already answers that.
-            val result =
-                client.negentropySyncOrFetch(
-                    relay = url,
-                    filter = window,
-                    idleTimeoutMs = NEG_IDLE_MS,
-                    localEntries = local,
-                    onEvent = { event -> if (stream.filter.match(event)) offer(event, stream.trusted) },
-                )
-            result.downloaded
+            var downloaded = 0
+            for (leg in cursors.legs(url, window)) {
+                var seenMin: Long? = null
+                var seenMax: Long? = null
+                val result =
+                    client.negentropySyncOrFetch(
+                        relay = url,
+                        filter = leg,
+                        idleTimeoutMs = NEG_IDLE_MS,
+                        localEntries = local,
+                        onEvent = { event ->
+                            if (stream.filter.match(event)) {
+                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                offer(event, stream.trusted)
+                            }
+                        },
+                    )
+                downloaded += result.downloaded
+                cursors.record(url, window, seenMin, seenMax, result.pagedFallback)
+            }
+            downloaded
         } catch (e: Exception) {
             // A dead host in a relay list is the common case, not an incident:
             // tally it and move on — one line per cycle carries the totals.
@@ -649,6 +698,7 @@ class MirrorRouter(
             delay(PROGRESS_INTERVAL_MS)
             val s = progress.snapshot()
             if (s.allDone) {
+                cursors.flush()
                 System.err.println("router: backfill complete — ${s.downloaded} events from ${s.total} upstream(s) in ${fmtDuration(s.elapsedMs)}; live tail now streaming")
                 return
             }
@@ -709,6 +759,8 @@ class MirrorRouter(
     fun dynamicStreamCount(): Int = dynamicStreams.size
 
     override fun close() {
+        // First: a backfill killed mid-flight still keeps the ground it gained.
+        runCatching { cursors.flush() }
         downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
         inbound.close()
