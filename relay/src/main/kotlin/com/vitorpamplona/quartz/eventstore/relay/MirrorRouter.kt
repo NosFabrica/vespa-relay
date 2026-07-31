@@ -200,7 +200,7 @@ class MirrorRouter(
         scope.launch { statsLoop() }
 
         System.err.println(
-            "router: ${downUpstreams.size} down + ${upUpstreams.size} up upstream(s)" +
+            "router: ${downUpstreams.size} down + ${upUpstreams.size} up relay(s)" +
                 (if (backfillers.isNotEmpty()) "; backfilling ${backfillers.size}" else "; live-tail only") +
                 (if (upUpstreams.isNotEmpty()) "; up every ${config.upIntervalSec}s" else "") +
                 (
@@ -381,8 +381,11 @@ class MirrorRouter(
      */
     private suspend fun backfill(ups: List<MirrorUpstream>) {
         // Concurrently: a fast upstream (ditto reconciles in seconds) shouldn't
-        // wait on a slow or stuck one. Each backfill is time-boxed (below), so a
-        // negentropy session that never converges gives up instead of blocking.
+        // wait on a slow or stuck one. Nothing bounds a backfill by wall clock —
+        // the only bound is quartz's idle timeout, seconds since the last message
+        // — so a relay that keeps talking without converging holds its slot for
+        // as long as it keeps talking. Deliberate: a wall-clock cap truncates the
+        // download of a big honest relay, which is the worse failure.
         coroutineScope {
             ups.forEachIndexed { idx, up -> launch { backfillOne(idx, up) } }
         }
@@ -400,7 +403,7 @@ class MirrorRouter(
             // Only reachable if a future change makes the legs exclusive again;
             // today the boundary seconds always leave something to ask for.
             progress.done(idx, 0)
-            System.err.println("router: backfill ${up.url.url} already covers its filter — nothing outside the synced band")
+            System.err.println("router: static backfill ${up.url.url} already covers its filter — nothing outside the synced band")
             return
         }
         try {
@@ -428,8 +431,16 @@ class MirrorRouter(
                         onProgress = { needSoFar, done -> progress.update(idx, needSoFar, downloaded + done) },
                         onEvent = { event ->
                             if (up.filter.match(event)) {
-                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                // Only PLAUSIBLE stamps widen the band. Filtering
+                                // here rather than on the aggregate matters: one
+                                // future-dated event among 700k used to discard
+                                // the whole upstream's band, so purplepag.es
+                                // recorded nothing at all after a run that
+                                // downloaded 700,767 events.
+                                if (SyncCursors.isPlausible(event.createdAt)) {
+                                    seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                    seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                }
                                 offer(event, up.trusted)
                             }
                         },
@@ -444,7 +455,7 @@ class MirrorRouter(
                 progress.done(idx, downloaded)
                 val band = cursors.band(up.url, up.filter)
                 System.err.println(
-                    "router: backfill ${up.url.url} downloaded $downloaded" +
+                    "router: static backfill ${up.url.url} downloaded $downloaded" +
                         (if (paged) " (paged REQ fallback — no NIP-77)" else " (negentropy)") +
                         (if (legs.size > 1) " [resumed: ${legs.size} leg(s) outside the synced band]" else "") +
                         (if (band != null) " [synced ${band.minCreatedAt}..${band.maxCreatedAt}]" else ""),
@@ -452,7 +463,7 @@ class MirrorRouter(
             }
         } catch (e: Exception) {
             progress.done(idx, 0)
-            System.err.println("router: backfill ${up.url.url} failed: ${e.message}")
+            System.err.println("router: static backfill ${up.url.url} failed: ${e.message}")
         }
     }
 
@@ -634,8 +645,10 @@ class MirrorRouter(
                         localEntries = local,
                         onEvent = { event ->
                             if (stream.filter.match(event)) {
-                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                if (SyncCursors.isPlausible(event.createdAt)) {
+                                    seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                    seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                }
                                 offer(event, stream.trusted)
                             }
                         },
@@ -729,7 +742,7 @@ class MirrorRouter(
                 // order of magnitude on a real relay list — were still going.
                 val stillSyncing = dynamicStreams.size
                 System.err.println(
-                    "router: static backfill complete — ${s.downloaded} events from ${s.total} upstream(s)" +
+                    "router: static backfill complete — ${s.downloaded} events from ${s.total} relay(s)" +
                         " in ${fmtDuration(s.elapsedMs)}; live tail now streaming" +
                         if (stillSyncing > 0) "; $stillSyncing dynamic stream(s) still syncing" else "",
                 )
@@ -742,7 +755,11 @@ class MirrorRouter(
             val remaining = (s.need - s.downloaded).coerceAtLeast(0)
             val etaSec = if (avgRate > 1) (remaining / avgRate).toLong() else -1
             System.err.println(
-                "router: backfill ${s.done}/${s.total} upstream(s), ${s.downloaded}/${s.need} events (${s.percent()}%)" +
+                // Named, because "backfill 5/12" says nothing about WHICH 12 —
+                // and the dynamic streams, which do the larger share of the work,
+                // are not in this count at all. "done" because all 12 run at
+                // once: this counts the finished ones, not a position in a queue.
+                "router: static backfill ${s.done}/${s.total} relay(s) done, ${s.downloaded}/${s.need} events (${s.percent()}%)" +
                     ", ${"%.0f".format(avgRate)}/s avg" +
                     (if (etaSec >= 0) ", ETA ~${fmtDuration(etaSec * 1000)} to useful" else ", ETA —"),
             )

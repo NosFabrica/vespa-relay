@@ -132,6 +132,23 @@ class SyncCursorsTest {
     }
 
     @Test
+    fun `one misdated event does not cost a relay its whole band`() {
+        // purplepag.es downloaded 700,767 events and recorded NOTHING, because a
+        // single future-dated stamp among them failed a check applied to the
+        // aggregate. Screening per event keeps the honest 700,766.
+        val c = SyncCursors(null)
+        val far = System.currentTimeMillis() / 1000 + 400L * 86_400
+        val observed = listOf(1_700_001_000L, far, 1_700_002_000L, 0L)
+
+        val plausible = observed.filter { SyncCursors.isPlausible(it) }
+        c.record(relay, profiles, plausible.min(), plausible.max(), paged = true)
+
+        val band = c.band(relay, profiles)!!
+        assertEquals(1_700_001_000L, band.minCreatedAt)
+        assertEquals(1_700_002_000L, band.maxCreatedAt)
+    }
+
+    @Test
     fun `changing the filter starts over`() {
         val c = SyncCursors(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)

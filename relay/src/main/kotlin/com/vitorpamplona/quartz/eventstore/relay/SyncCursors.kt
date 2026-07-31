@@ -168,20 +168,13 @@ class SyncCursors(
         paged: Boolean,
     ) {
         if (!paged) return
-        // Outliers are not evidence of coverage. Nostr lets an author stamp any
-        // created_at, and a single misdated event drags the band to it: a 1970
-        // floor makes a relay claim it has walked its whole history (its older
-        // leg then asks for events before 1970, forever), and a 2027 ceiling
-        // kills the newer leg the same way. Both were observed in the wild —
-        // relay.ditto.pub recorded 0.., purplepag.es ..1800000000.
-        //
-        // The events themselves are still stored; they just do not get to say
-        // what has been covered.
-        val floor = observedMin?.takeIf { it in PLAUSIBLE_FLOOR..nowSeconds() + FUTURE_SKEW_SECONDS }
-        val ceiling = observedMax?.takeIf { it in PLAUSIBLE_FLOOR..nowSeconds() + FUTURE_SKEW_SECONDS }
-        val observedMin = floor
-        val observedMax = ceiling
+        // Callers widen the band only with plausible stamps (see [isPlausible]),
+        // so an outlier never reaches here. Guarded anyway: a band is a claim
+        // about coverage, and a 1970 floor or a 2027 ceiling makes that claim
+        // over the whole timeline — the leg outside it then asks for a range
+        // nothing can be in, forever.
         if (observedMin == null || observedMax == null) return
+        if (!isPlausible(observedMin) || !isPlausible(observedMax)) return
         val k = key(url, filter)
         bands.compute(k) { _, prev ->
             if (prev == null) {
@@ -323,6 +316,16 @@ class SyncCursors(
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
         private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+
+        /**
+         * Whether a `created_at` can be believed as evidence of coverage.
+         *
+         * Filter with this per EVENT, not over a leg's aggregate: rejecting the
+         * aggregate throws away the whole upstream's band because one event in
+         * it was misdated, which is how an upstream that downloaded 700k events
+         * ended up recording nothing.
+         */
+        fun isPlausible(createdAt: Long): Boolean = createdAt in PLAUSIBLE_FLOOR..(nowSeconds() + FUTURE_SKEW_SECONDS)
 
         /**
          * `ROUTER_SYNC_STATE_FILE` — where the cursors live. Unset keeps them in
