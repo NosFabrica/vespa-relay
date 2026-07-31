@@ -161,7 +161,18 @@ fun main() {
     // same as not having it.
     val cursors = SyncCursors.fromEnv(env)
 
-    val router = RouterConfigLoader.fromEnv(env)?.let { MirrorRouter(store, it, audit = parseAudit, cursors = cursors).start() }
+    // The identity the router authenticates with when an upstream demands NIP-42.
+    // Read before the router is built so a malformed key stops the process here,
+    // with a clear message, rather than becoming silent empty relays later.
+    val authSigner = RouterIdentity.fromEnv { env[it] }
+    if (authSigner != null) {
+        System.err.println("router: authenticating to relays as ${authSigner.pubKey.take(12)}… (NIP-42)")
+    }
+
+    val router =
+        RouterConfigLoader.fromEnv(env)?.let {
+            MirrorRouter(store, it, audit = parseAudit, cursors = cursors, signer = authSigner).start()
+        }
 
     val admin =
         banStore?.let {
