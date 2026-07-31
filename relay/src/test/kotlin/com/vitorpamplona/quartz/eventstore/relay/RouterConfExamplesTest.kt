@@ -90,8 +90,17 @@ class RouterConfExamplesTest {
         assertEquals("r", nip65.tag)
         // 10002 puts the url first and its marker after it; only the write side
         // is where a user's own events land, which is what an outbox mirror wants.
+        // The example says `marker = "write"`, which is sugar for exactly this:
+        // marked write, marked empty, or too short to carry a marker at all.
         assertEquals(1, nip65.index)
-        assertEquals(RelayRole.WRITE, nip65.role)
+        assertEquals(
+            listOf(
+                TagCondition(index = 2, equals = "write"),
+                TagCondition(index = 2, equals = ""),
+                TagCondition(maxSize = 2),
+            ),
+            nip65.where,
+        )
     }
 
     @Test

@@ -274,10 +274,14 @@ outbox {
     }
     {
       select = [
-        # relay hints
+        # relay hints, thread markers only
         {
           tag = "e"
           index = 2
+          where = [
+            { index = 3, equals = "root" }
+            { index = 3, equals = "reply" }
+          ]
         }
       ]
       filter = { "kinds": [1], "limit": 100000 }
@@ -308,7 +312,8 @@ url at a fixed offset, so a select is just that shape:
 | `kind` | apply this select only to that kind; **omit to apply it to everything the filter collected**. A kind the scan never returns simply never matches |
 | `tag` | the tag name to read; **omit for any tag** — that's how you take a whole family like NIP-85's `<kind>:<type>` service tags without naming each one |
 | `index` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first |
-| `marker` | NIP-65 only: keep `write` / `read` / `any`, read from `index + 1`. Unmarked tags mean *both*, so they match either side |
+| `where` | conditions on the rest of the tag, shaped like NIP-01 filters: entries in the list **OR** together, the fields inside one entry **AND**. Each entry states any of `index` + `equals` (the element at that position is exactly that string — case-sensitive and untrimmed, and a missing element matches nothing, not even `""`), `minSize`, and `maxSize` (bounds on the tag's length). Omit to keep every tag |
+| `marker` | sugar for NIP-65's rule: `write` / `read` expand to the `where` that keeps that side *plus* unmarked tags — with the url at 1, `[ { index = 2, equals = "write" }, { index = 2, equals = "" }, { maxSize = 2 } ]`, the slots following the select's own `index` — and `any` to no conditions. A select states `marker` or `where`, not both |
 
 The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`,
 `until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:

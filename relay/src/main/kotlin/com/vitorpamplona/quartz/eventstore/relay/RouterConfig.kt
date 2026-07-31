@@ -235,36 +235,53 @@ data class RelaySource(
  * @param index which element of the tag holds the url. 1 for nearly everything;
  *   2 for NIP-85 service tags and for `e`/`p`/`a`/`q` relay hints, which put an
  *   id or a pubkey first.
- * @param role which NIP-65 marker to keep, read from `index + 1` (the only kind
- *   that marks its relays is 10002). Null does no marker filtering.
+ * @param where conditions on the rest of the tag, see [TagCondition]. Empty
+ *   keeps every tag. The config's `marker = "write" / "read" / "any"` is sugar
+ *   that expands into this list.
  */
 data class RelaySelect(
     val kind: Int?,
     val tag: String?,
     val index: Int,
-    val role: RelayRole?,
+    val where: List<TagCondition> = emptyList(),
 )
 
-/** Which side of a NIP-65 relay list a [RelaySource] pulls from. */
-enum class RelayRole(
-    val wire: String,
+/**
+ * One alternative in a select's `where` list. The list is NIP-01's own boolean
+ * shape pointed at a tag instead of an event: entries OR together, and the
+ * fields inside one entry AND. A tag passes an empty list outright.
+ *
+ * [equals] is exact — no case folding, no trimming — and an element that does
+ * not exist matches nothing, not even `""`. Structure is the size bounds' job:
+ * `maxSize = 2` is the `["r", url]` tag with no marker slot, and [minSize] the
+ * "slot exists, whatever it says" side.
+ *
+ * NIP-65's write side in these terms (what `marker = "write"` expands to):
+ * marked write, marked empty, or no marker slot at all —
+ *
+ *     where = [
+ *       { index = 2, equals = "write" }
+ *       { index = 2, equals = "" }
+ *       { maxSize = 2 }
+ *     ]
+ *
+ * @param index which element [equals] tests. The two only mean something
+ *   together, so the parser demands both or neither.
+ * @param equals the element at [index] is exactly this string.
+ * @param minSize the tag has at least this many elements.
+ * @param maxSize the tag has at most this many elements.
+ */
+data class TagCondition(
+    val index: Int? = null,
+    val equals: String? = null,
+    val minSize: Int? = null,
+    val maxSize: Int? = null,
 ) {
-    WRITE("write"),
-    READ("read"),
-    ANY("any"),
-    ;
-
-    /** Unmarked `r` tags are read *and* write, so they match whatever we asked for. */
-    fun matches(marker: String?): Boolean = this == ANY || marker.isNullOrEmpty() || marker == wire
-
-    companion object {
-        fun parse(raw: String): RelayRole =
-            when (val v = raw.trim().lowercase()) {
-                WRITE.wire -> WRITE
-                READ.wire -> READ
-                ANY.wire, "both", "all" -> ANY
-                else -> error("router: unknown relaySource marker '$v' (expected write / read / any)")
-            }
+    fun matches(tag: Array<String>): Boolean {
+        if (equals != null && (index == null || tag.getOrNull(index) != equals)) return false
+        if (minSize != null && tag.size < minSize) return false
+        if (maxSize != null && tag.size > maxSize) return false
+        return true
     }
 }
 
@@ -411,7 +428,7 @@ object RouterConfigLoader {
         return RelaySource(selects = selects, filter = filter)
     }
 
-    /** One `{ kind = ..., tag = ..., index = ... }` entry of a source's `select` list. */
+    /** One `{ kind = ..., tag = ..., index = ..., where = [ ] }` entry of a source's `select` list. */
     private fun parseRelaySelect(
         stream: String,
         s: Config,
@@ -420,13 +437,92 @@ object RouterConfigLoader {
         require(index >= 1) {
             "router: stream '$stream' has a select with index $index — element 0 is the tag name, so the url is at 1 or later"
         }
+        require(!(s.hasPath("marker") && s.hasPath("where"))) {
+            "router: stream '$stream' has a select with both `marker` and `where` — `marker` is sugar for a `where`, write one or the other"
+        }
+        val where =
+            when {
+                s.hasPath("where") -> s.getConfigList("where").map { parseTagCondition(stream, index, it) }
+                s.hasPath("marker") -> markerSugar(stream, index, s.getString("marker"))
+                else -> emptyList()
+            }
         return RelaySelect(
             // No kind: the select applies to everything the filter collected.
             kind = if (s.hasPath("kind")) s.getInt("kind") else null,
             tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
             index = index,
-            role = if (s.hasPath("marker")) RelayRole.parse(s.getString("marker")) else null,
+            where = where,
         )
+    }
+
+    /**
+     * NIP-65's rule spelled as a `where`: keep tags marked the asked-for side,
+     * marked empty, or too short to carry a marker at all — an unmarked `r` tag
+     * is read *and* write. `any` keeps everything, so it expands to no
+     * conditions.
+     */
+    private fun markerSugar(
+        stream: String,
+        urlIndex: Int,
+        raw: String,
+    ): List<TagCondition> =
+        when (val v = raw.trim().lowercase()) {
+            "write", "read" -> {
+                listOf(
+                    TagCondition(index = urlIndex + 1, equals = v),
+                    TagCondition(index = urlIndex + 1, equals = ""),
+                    TagCondition(maxSize = urlIndex + 1),
+                )
+            }
+
+            "any", "both", "all" -> {
+                emptyList()
+            }
+
+            else -> {
+                error("router: stream '$stream' has an unknown relaySource marker '$v' (expected write / read / any)")
+            }
+        }
+
+    /** One `{ index = ..., equals = ..., minSize = ..., maxSize = ... }` entry of a select's `where` list. */
+    private fun parseTagCondition(
+        stream: String,
+        urlIndex: Int,
+        c: Config,
+    ): TagCondition {
+        val index = if (c.hasPath("index")) c.getInt("index") else null
+        val equals = if (c.hasPath("equals")) c.getString("equals") else null
+        val minSize = if (c.hasPath("minSize")) c.getInt("minSize") else null
+        val maxSize = if (c.hasPath("maxSize")) c.getInt("maxSize") else null
+        require(equals != null || minSize != null || maxSize != null) {
+            "router: stream '$stream' has a where entry with no predicate — set `equals` (with `index`), `minSize`, or `maxSize`"
+        }
+        require((equals == null) == (index == null)) {
+            "router: stream '$stream' has a where entry with `index` and `equals` apart — they only mean something together"
+        }
+        require(index == null || index >= 0) {
+            "router: stream '$stream' has a where entry with a negative index"
+        }
+        // The select itself already demands the url at urlIndex, so a bound the
+        // url can't fit under is a condition that can never match.
+        require(maxSize == null || maxSize >= urlIndex + 1) {
+            "router: stream '$stream' has a where entry with maxSize $maxSize, but the url at index $urlIndex already needs ${urlIndex + 1} elements — it can never match"
+        }
+        require(minSize == null || maxSize == null || minSize <= maxSize) {
+            "router: stream '$stream' has a where entry with minSize $minSize > maxSize $maxSize — it can never match"
+        }
+        // The same clash inside one entry: equals demands the element exist, so
+        // its index has to fit under the entry's own maxSize.
+        require(equals == null || maxSize == null || index!! < maxSize) {
+            "router: stream '$stream' has a where entry whose equals at index $index needs ${index!! + 1} elements but maxSize is $maxSize — it can never match"
+        }
+        // And the mirror image: every tag reaching a where already has the url,
+        // so a minSize at or under that floor holds for every tag — and one
+        // always-true entry in an OR list silently disables the other entries.
+        require(minSize == null || minSize > urlIndex + 1) {
+            "router: stream '$stream' has a where entry with minSize $minSize, which the url at index $urlIndex already guarantees — it matches every tag"
+        }
+        return TagCondition(index = index, equals = equals, minSize = minSize, maxSize = maxSize)
     }
 
     /** Replaceable (0, 3, 10000-19999) and addressable (30000-39999) kinds hold one event per author. */

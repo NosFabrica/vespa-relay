@@ -100,8 +100,27 @@ streams {
     #   index   which element of the tag holds the url (default 1; use 2 for
     #           NIP-85 service tags and for e/p/a/q hints, which put an id or a
     #           pubkey first)
-    #   marker  NIP-65 only: keep "write" / "read" / "any", read from the slot
-    #           after the url. Unmarked means both.
+    #   where   conditions on the rest of the tag, shaped like NIP-01 filters:
+    #           entries in the list OR together, the fields inside one entry
+    #           AND. Omit to keep every tag. Each entry states any of:
+    #
+    #             index + equals   the element at that position (0 is the tag
+    #                              name) is exactly that string — case-sensitive
+    #                              and untrimmed, and a missing element matches
+    #                              nothing, not even ""
+    #             minSize          the tag has at least this many elements
+    #             maxSize          the tag has at most this many elements
+    #
+    #           e.g. keep only root/reply e-tag hints:
+    #             where = [ { index = 3, equals = "root" }
+    #                       { index = 3, equals = "reply" } ]
+    #   marker  sugar for NIP-65's rule: "write" / "read" expand to the where
+    #           that keeps that side plus unmarked tags — with the url at 1,
+    #             where = [ { index = 2, equals = "write" }
+    #                       { index = 2, equals = "" }
+    #                       { maxSize = 2 } ]
+    #           (the slots follow the select's own index) — and "any" to no
+    #           conditions at all. A select states `marker` or `where`, not both.
     #
     # `filter` is an ordinary NIP-01 filter — kinds, authors, since, until, limit,
     # "#t"-style tag filters. `since`/`until` are absolute unix seconds as always;

@@ -44,8 +44,18 @@ class RelayDiscoveryTest {
         tag: String? = null,
         index: Int = 1,
         kind: Int? = null,
-        role: RelayRole? = null,
-    ) = RelaySelect(kind = kind, tag = tag, index = index, role = role)
+        where: List<TagCondition> = emptyList(),
+    ) = RelaySelect(kind = kind, tag = tag, index = index, where = where)
+
+    /** What `marker = <value>` desugars to: marked that side, marked "", or no marker slot. */
+    private fun marker(
+        value: String,
+        urlIndex: Int = 1,
+    ) = listOf(
+        TagCondition(index = urlIndex + 1, equals = value),
+        TagCondition(index = urlIndex + 1, equals = ""),
+        TagCondition(maxSize = urlIndex + 1),
+    )
 
     private fun source(
         vararg kinds: Int,
@@ -85,17 +95,17 @@ class RelayDiscoveryTest {
                 arrayOf("r", "wss://both.example"),
             )
 
-        val write = urls(list, select(tag = "r", role = RelayRole.WRITE))
+        val write = urls(list, select(tag = "r", where = marker("write")))
         assertTrue(write.any { it.contains("write.example") })
         assertTrue(write.any { it.contains("both.example") }, "an unmarked r tag is read AND write")
         assertFalse(write.any { it.contains("read.example") })
 
-        val read = urls(list, select(tag = "r", role = RelayRole.READ))
+        val read = urls(list, select(tag = "r", where = marker("read")))
         assertTrue(read.any { it.contains("read.example") })
         assertTrue(read.any { it.contains("both.example") })
         assertFalse(read.any { it.contains("write.example") })
 
-        // No marker configured at all: every relay the tag names.
+        // No where at all: every relay the tag names.
         assertEquals(3, urls(list, select(tag = "r")).size)
     }
 
@@ -147,6 +157,8 @@ class RelayDiscoveryTest {
         val list =
             event(
                 10002,
+                // `equals` is exact, so "WRITE" is not a write marker — NIP-65
+                // specifies lowercase. The url survives via its lowercase twin.
                 arrayOf("r", "wss://write.example", "WRITE"),
                 arrayOf("r", "wss://write.example", "write"),
                 arrayOf("r", "relay.example"), // scheme-less: the normalizer fixes it
@@ -159,7 +171,87 @@ class RelayDiscoveryTest {
 
         assertEquals(
             listOf("wss://write.example/", "wss://relay.example/"),
-            urls(list, select(tag = "r", role = RelayRole.WRITE)),
+            urls(list, select(tag = "r", where = marker("write"))),
+        )
+    }
+
+    @Test
+    fun `where entries OR together and each ANDs its own fields`() {
+        val note =
+            event(
+                1,
+                arrayOf("e", "a".repeat(64), "wss://root.example", "root"),
+                arrayOf("e", "b".repeat(64), "wss://reply.example", "reply"),
+                arrayOf("e", "c".repeat(64), "wss://mention.example", "mention"),
+                arrayOf("e", "d".repeat(64), "wss://bare.example"),
+                // NIP-10 also allows a pubkey after the marker — this is the tag
+                // that proves maxSize actually cuts inside an AND.
+                arrayOf("e", "e".repeat(64), "wss://deep.example", "root", "f".repeat(64)),
+            )
+
+        // Two OR-ed alternatives keep root and reply hints, dropping the rest.
+        val threaded =
+            select(
+                tag = "e",
+                index = 2,
+                where =
+                    listOf(
+                        TagCondition(index = 3, equals = "root"),
+                        TagCondition(index = 3, equals = "reply"),
+                    ),
+            )
+        assertEquals(listOf("wss://root.example/", "wss://reply.example/", "wss://deep.example/"), urls(note, threaded))
+
+        // Fields inside one entry AND: the marker must say root AND the tag must
+        // stop right there, so the root tag with a pubkey after it is out.
+        val strictRoot =
+            select(
+                tag = "e",
+                index = 2,
+                where = listOf(TagCondition(index = 3, equals = "root", maxSize = 4)),
+            )
+        assertEquals(listOf("wss://root.example/"), urls(note, strictRoot))
+    }
+
+    @Test
+    fun `minSize and maxSize split marked from unmarked tags`() {
+        val note =
+            event(
+                1,
+                arrayOf("e", "a".repeat(64), "wss://marked.example", "root"),
+                arrayOf("e", "b".repeat(64), "wss://bare.example"),
+            )
+
+        // Has a marker, whatever it says.
+        assertEquals(
+            listOf("wss://marked.example/"),
+            urls(note, select(tag = "e", index = 2, where = listOf(TagCondition(minSize = 4)))),
+        )
+        // Structurally has no marker slot.
+        assertEquals(
+            listOf("wss://bare.example/"),
+            urls(note, select(tag = "e", index = 2, where = listOf(TagCondition(maxSize = 3)))),
+        )
+    }
+
+    @Test
+    fun `equals never matches an element that does not exist`() {
+        val list =
+            event(
+                10002,
+                arrayOf("r", "wss://bare.example"),
+                arrayOf("r", "wss://empty.example", ""),
+            )
+
+        // An absent marker slot is not an empty string: `equals = ""` demands the
+        // slot exists. The structural case is maxSize's job.
+        assertEquals(
+            listOf("wss://empty.example/"),
+            urls(list, select(tag = "r", where = listOf(TagCondition(index = 2, equals = "")))),
+        )
+        assertEquals(
+            listOf("wss://bare.example/"),
+            urls(list, select(tag = "r", where = listOf(TagCondition(maxSize = 2)))),
         )
     }
 
@@ -193,7 +285,7 @@ class RelayDiscoveryTest {
             val all =
                 RelayDiscovery.discover(
                     store,
-                    dynamic(source(10002, selects = listOf(select(tag = "r", role = RelayRole.WRITE)))),
+                    dynamic(source(10002, selects = listOf(select(tag = "r", where = marker("write"))))),
                 )
             assertEquals(
                 listOf("wss://popular.example/" to 3, "wss://quiet.example/" to 2, "wss://lonely.example/" to 1),
@@ -220,7 +312,7 @@ class RelayDiscoveryTest {
                             10050,
                             selects =
                                 listOf(
-                                    select(kind = 10002, tag = "r", role = RelayRole.WRITE),
+                                    select(kind = 10002, tag = "r", where = marker("write")),
                                     select(kind = 10040, tag = "30382:rank", index = 2),
                                     // No kind: applies to everything the scan collected.
                                     select(tag = "relay"),
@@ -269,7 +361,7 @@ class RelayDiscoveryTest {
                 RelayDiscovery.discover(
                     store,
                     dynamic(
-                        source(10002, selects = listOf(select(tag = "r", role = RelayRole.WRITE))),
+                        source(10002, selects = listOf(select(tag = "r", where = marker("write")))),
                         exclude = setOf("wss://popular.example"),
                     ),
                     skip = setOf(RelayUrlNormalizer.normalize("wss://quiet.example")),
