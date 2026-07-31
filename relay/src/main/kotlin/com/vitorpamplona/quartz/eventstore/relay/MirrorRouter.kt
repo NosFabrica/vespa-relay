@@ -46,6 +46,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
@@ -113,7 +114,29 @@ class MirrorRouter(
     private val okhttp =
         OkHttpClient
             .Builder()
-            .pingInterval(Duration.ofSeconds(120))
+            // The single most important number in the fan-out, and the least
+            // obvious. OkHttp opens a websocket by ENQUEUING a call whose callback
+            // runs loopReader() inline, and the Dispatcher counts a call as
+            // running until its callback returns — so an open websocket holds one
+            // of these slots for its entire life and never gives it back.
+            //
+            // At the stock 64 that is the real concurrency ceiling for the whole
+            // router, whatever a stream's `concurrency` says: the permits are
+            // handed out, the sockets queue in readyAsyncCalls, and the semaphore
+            // stops throttling anything. Measured on a 20,340-relay outbox list:
+            // 52 relays done and an ETA of 330 hours. Every static upstream also
+            // holds one permanently, so they come straight off this budget.
+            //
+            // Must exceed (static upstreams + the sum of every stream's
+            // `concurrency`) or the config silently does not mean what it says.
+            .dispatcher(
+                Dispatcher().apply {
+                    maxRequests = MAX_CONCURRENT_SOCKETS
+                    // Per HOST, and every relay is a different host — this only
+                    // ever bites when one host serves several of a list's urls.
+                    maxRequestsPerHost = MAX_CONCURRENT_SOCKETS_PER_HOST
+                },
+            ).pingInterval(Duration.ofSeconds(120))
             .connectTimeout(Duration.ofSeconds(config.connectionTimeoutSec))
             .build()
 
@@ -438,6 +461,11 @@ class MirrorRouter(
                 // for, however long its history takes. A wall clock could only fire
                 // on the healthy case, which is how a 4h cap came to truncate four
                 // working upstreams at exactly 14400s.
+                // Stamped BEFORE the sync, not after: everything the reconcile
+                // compared against is our state as of now, so this is the instant
+                // we are provably in sync through. Taking it afterwards would
+                // claim coverage of events that arrived while it ran.
+                val syncStartedAt = System.currentTimeMillis() / 1000
                 val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
                 val result =
                     client.negentropySyncOrFetch(
@@ -466,7 +494,15 @@ class MirrorRouter(
                 paged = paged || result.pagedFallback
                 // Per leg, not once at the end: a crash between legs then keeps
                 // the ground the first one gained.
-                cursors.record(up.url, up.filter, seenMin, seenMax, result.pagedFallback)
+                cursors.record(
+                    up.url,
+                    up.filter,
+                    seenMin,
+                    seenMax,
+                    result.pagedFallback,
+                    // A reconcile that did not fall back covered the whole leg.
+                    reconciledThrough = syncStartedAt.takeUnless { result.pagedFallback },
+                )
             }
             run {
                 progress.done(idx, downloaded)
@@ -567,7 +603,20 @@ class MirrorRouter(
         // relay's events either. The store dedups on insert; the scans were pure
         // waste.
         val window = stream.filter
-        val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+        // ONE snapshot for the fan-out, but NOT over the whole filter. Taken over
+        // the full stream filter this walked every kind-0 and kind-30382 we hold
+        // — 24.8M ids on a real store, ~15 minutes of visit requests and gigabytes
+        // of IdAndTime, all of it BEFORE the first log line, so a stream that was
+        // busy was indistinguishable from one that had hung. Once every relay in
+        // the list carries a complete band, this is the sliver since the oldest
+        // of their ceilings instead. See [SyncCursors.coveringWindow].
+        val snapshotWindow = cursors.coveringWindow(relays.map { it.url }, window)
+        val snapStartedMs = System.currentTimeMillis()
+        val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(snapshotWindow))
+        System.err.println(
+            "router: ${stream.name} local snapshot ${local.size} id(s) in ${fmtDuration(System.currentTimeMillis() - snapStartedMs)}" +
+                (snapshotWindow.since?.let { ", since $it" } ?: ", full filter (no relay is caught up yet)"),
+        )
         // Why the unreachable ones were unreachable, tallied — a relay list is
         // full of dead hosts, and the shape of the failures is what tells an
         // operator whether that is normal or whether the whole cycle is broken.
@@ -662,6 +711,7 @@ class MirrorRouter(
             for (leg in cursors.legs(url, window)) {
                 var seenMin: Long? = null
                 var seenMax: Long? = null
+                val syncStartedAt = System.currentTimeMillis() / 1000
                 val result =
                     client.negentropySyncOrFetch(
                         relay = url,
@@ -679,7 +729,14 @@ class MirrorRouter(
                         },
                     )
                 downloaded += result.downloaded
-                cursors.record(url, window, seenMin, seenMax, result.pagedFallback)
+                cursors.record(
+                    url,
+                    window,
+                    seenMin,
+                    seenMax,
+                    result.pagedFallback,
+                    reconciledThrough = syncStartedAt.takeUnless { result.pagedFallback },
+                )
             }
             downloaded
         } catch (e: Exception) {
@@ -929,6 +986,12 @@ class MirrorRouter(
         // Idle (no protocol frames for this long) aborts a negentropy session.
         // This is the ONLY bound on a session: there is no wall-clock deadline,
         // because a relay that is still answering is one we still want.
+        // Each running slot is a thread parked on a socket read, so this is a
+        // real resource — but a modest one next to what it buys, and the fan-out
+        // is bounded by the streams' own `concurrency` rather than by this.
+        private const val MAX_CONCURRENT_SOCKETS = 1024
+        private const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
+
         private const val NEG_IDLE_MS = 30_000L
 
         // Distinct store failures to dump a raw event for. A handful names every

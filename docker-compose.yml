@@ -96,6 +96,9 @@ services:
       # without NIP-77 resumes instead of re-reading its corpus every restart.
       # Same mounted volume as the audit below. Unset ⇒ in memory only.
       ROUTER_SYNC_STATE_FILE: ${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}
+      # How long a recorded sync window narrows work before the whole filter is
+      # walked again. Nothing is capped — the full pass is periodic, not skipped.
+      ROUTER_FULL_RESYNC_SECONDS: ${ROUTER_FULL_RESYNC_SECONDS:-604800}
       # NIP-42 identity for the router. Relays that gate reads behind AUTH serve
       # nothing without it, and look like empty relays when it is missing.
       # nsec1… or 64 hex. Unset ⇒ challenges are ignored. See .env.example.

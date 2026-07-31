@@ -26,6 +26,7 @@ import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNull
+import kotlin.test.assertSame
 import kotlin.test.assertTrue
 
 /**
@@ -38,6 +39,8 @@ class SyncCursorsTest {
     private val relay = RelayUrlNormalizer.normalize("wss://relay.example")
     private val other = RelayUrlNormalizer.normalize("wss://other.example")
     private val profiles = Filter(kinds = listOf(0))
+
+    private fun now(): Long = System.currentTimeMillis() / 1000
 
     private fun tempFile(): File {
         val f = File.createTempFile("sync-cursors", ".json")
@@ -113,13 +116,112 @@ class SyncCursorsTest {
     // ---- when a cursor must not be used ------------------------------------
 
     @Test
-    fun `a negentropy sync records nothing`() {
-        // Reconciliation already downloads only the diff; a band could only
-        // narrow a future reconciliation for no gain.
+    fun `a negentropy sync that reported no outcome records nothing`() {
+        // Only a sync that says how far it reconciled earns a band; a bare
+        // paged=false call carries no claim to record.
         val c = SyncCursors(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = false)
         assertNull(c.band(relay, profiles))
         assertEquals(listOf(profiles), c.legs(relay, profiles))
+    }
+
+    // ---- coverage: what a finished reconcile earns -------------------------
+
+    @Test
+    fun `a finished reconcile is in sync through the instant it started`() {
+        // Not through the newest event it happened to see: "the relay had nothing
+        // newer" and "we never asked" must not record the same thing.
+        val c = SyncCursors(null)
+        val startedAt = now() - 60
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = false, reconciledThrough = startedAt)
+
+        val band = c.band(relay, profiles)!!
+        assertTrue(band.complete)
+        assertEquals(startedAt, band.maxCreatedAt)
+    }
+
+    @Test
+    fun `a reconcile that downloaded nothing still records coverage`() {
+        // The empty case is the WHOLE point: nothing came back because we already
+        // have it, and that is exactly when the next run should ask for a sliver.
+        val c = SyncCursors(null)
+        val startedAt = now() - 60
+        c.record(relay, profiles, null, null, paged = false, reconciledThrough = startedAt)
+
+        val leg = c.legs(relay, profiles).single()
+        assertEquals(startedAt, leg.since)
+        assertNull(leg.until)
+    }
+
+    @Test
+    fun `a complete band drops its older leg, a paged one keeps it`() {
+        val reconciled = SyncCursors(null)
+        reconciled.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_002_000L)
+        val only = reconciled.legs(relay, profiles).single()
+        assertEquals(1_700_002_000L, only.since)
+
+        val walked = SyncCursors(null)
+        walked.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        assertEquals(2, walked.legs(relay, profiles).size, "a paged walk says nothing about what it never asked for")
+    }
+
+    // ---- the periodic full re-walk -----------------------------------------
+
+    @Test
+    fun `a band stops narrowing once it is older than the resync period`() {
+        val c = SyncCursors(null, fullResyncSeconds = 60)
+        c.record(relay, profiles, null, null, paged = false, reconciledThrough = now() - 3600)
+        // Recorded 'now' whatever the created_at claim, so age it by rewriting.
+        c.record(relay, profiles, null, null, paged = false, reconciledThrough = now())
+        assertEquals(1, c.legs(relay, profiles).size, "fresh band still narrows")
+
+        val stale = SyncCursors(null, fullResyncSeconds = 0)
+        stale.record(relay, profiles, null, null, paged = false, reconciledThrough = now())
+        assertSame(profiles, stale.legs(relay, profiles).single(), "a band past its period re-walks everything")
+    }
+
+    @Test
+    fun `the re-walk replaces the old claim instead of widening it`() {
+        // Widening would carry the stale band's floor forward forever and the
+        // periodic pass would never actually reset anything.
+        val c = SyncCursors(null, fullResyncSeconds = 0)
+        c.record(relay, profiles, 1_700_000_000L, 1_700_001_000L, paged = true)
+        c.record(relay, profiles, 1_700_005_000L, 1_700_006_000L, paged = true)
+
+        val band = c.band(relay, profiles)!!
+        assertEquals(1_700_005_000L, band.minCreatedAt, "the second pass walked everything; its span is the whole picture")
+    }
+
+    // ---- the shared snapshot window ----------------------------------------
+
+    @Test
+    fun `covering window collapses to the oldest ceiling once everyone is caught up`() {
+        val c = SyncCursors(null)
+        c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        c.record(other, profiles, null, null, paged = false, reconciledThrough = 1_700_003_000L)
+
+        assertEquals(1_700_003_000L, c.coveringWindow(listOf(relay, other), profiles).since)
+    }
+
+    @Test
+    fun `one relay that has never synced puts the window back to the whole filter`() {
+        // It genuinely needs everything — narrowing the shared snapshot would
+        // reconcile it against ids we never looked up.
+        val c = SyncCursors(null)
+        c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+
+        // The filter itself, unnarrowed — identity, since Filter has no equals.
+        assertSame(profiles, c.coveringWindow(listOf(relay, other), profiles))
+        assertSame(profiles, c.coveringWindow(emptyList(), profiles))
+    }
+
+    @Test
+    fun `a relay with an older gap also widens the shared window`() {
+        val c = SyncCursors(null)
+        c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        c.record(other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+
+        assertSame(profiles, c.coveringWindow(listOf(relay, other), profiles))
     }
 
     @Test

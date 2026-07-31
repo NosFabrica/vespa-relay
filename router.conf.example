@@ -43,7 +43,7 @@ streams {
         dir = "down"
         filter = { "kinds": [0, 3, 10002, 10040] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
-        concurrency = 8            # relays synced at the same time
+        concurrency = 100          # relays synced at the same time
         exclude = []               # relays to skip however many sources name them
         relaySource = [
             {
@@ -59,7 +59,7 @@ streams {
         dir = "down"
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
-        concurrency = 8            # relays synced at the same time
+        concurrency = 100          # relays synced at the same time
         exclude = []               # relays to skip however many sources name them
         relaySource = [
             {
@@ -81,6 +81,20 @@ streams {
     # however far it has grown — `concurrency` at a time. Relays without NIP-77
     # fall back to a paged REQ fetch automatically, and unreachable ones are
     # tallied and skipped.
+    #
+    # `concurrency` is per stream, and the router's socket budget has to fit the
+    # sum of them plus every `urls` upstream above: an open websocket occupies one
+    # OkHttp dispatcher slot for its whole life, so the ceiling is real. An outbox
+    # list on a mature store reaches five figures of relays, most of them long
+    # dead, so this wants to be in the hundreds, not the single digits.
+    #
+    # A finished sync is REMEMBERED per (relay, filter): a negentropy reconcile
+    # compares the whole range, so the next cycle asks that relay only for what
+    # arrived since — which is also what keeps the local id snapshot this fan-out
+    # shares from being the entire corpus. Every ROUTER_FULL_RESYNC_SECONDS
+    # (default 7 days) the whole filter is walked again, so a relay that gained
+    # older events is not invisible forever. Nothing is capped; the full pass is
+    # periodic rather than never.
     #
     # Each source entry is one scan: a `select` list saying which relay urls to
     # pull out, and the `filter` saying which events to pull them from. The filter
