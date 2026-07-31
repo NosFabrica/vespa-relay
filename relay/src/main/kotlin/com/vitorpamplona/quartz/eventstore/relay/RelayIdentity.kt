@@ -26,47 +26,56 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePrivateKeyAsHexOrNull
 import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * The keypair the router authenticates with, when it has one.
+ * This relay's own identity — one keypair for every role in which the relay
+ * acts as itself.
  *
- * Some relays serve nothing until the client proves who it is (NIP-42): paid
- * relays, allowlisted relays, and an increasing number of the ones an outbox
- * fan-out discovers from users' 10002s. Without a key we simply skip the
- * challenge, which costs only whatever those relays would have served.
+ * Three things needed a key and each of them is the same claim, so they share
+ * one:
  *
- * ## This is a real identity, not a transport detail
+ *  - **NIP-11 `self`.** What the relay advertises as its own pubkey. Derived
+ *    here rather than declared, which is the point: a declared pubkey is an
+ *    assertion nobody can check, while a derived one is provable against
+ *    everything below.
+ *  - **NIP-42.** Paid relays, allowlisted relays and a growing share of the ones
+ *    an outbox fan-out discovers serve nothing until the client proves who it
+ *    is. An unanswered challenge is indistinguishable from an empty relay.
+ *  - **NIP-66.** A monitor publishing relay-liveness records is its own pubkey
+ *    with its own profile — and for a relay, that profile is simply the relay's.
  *
- * Authenticating makes the mirroring attributable: every relay that challenges
- * us learns this pubkey and can log, rate-limit or bill against it, and the
- * signed 22242s are ordinary events those relays may keep. That is the point —
- * it is how a paid relay recognises a subscriber — but it means the key is a
- * deliberate choice rather than a default. There is no generated fallback here
- * for that reason: an ephemeral key would authenticate as a stranger every
- * restart, which is worse than not authenticating at all.
+ * Splitting them buys separation nobody asked for and costs the ability to
+ * verify: a client seeing a 30166 or an AUTH response could not tell whether it
+ * came from the relay whose NIP-11 it just read.
  *
- * Prefer a key dedicated to this relay over the operator's personal one. The
- * signer can sign anything it is handed; only the challenge is ever handed to it
- * here, but a leaked key is a leaked key.
+ * ## A real identity, not a transport detail
+ *
+ * This makes the relay's activity attributable: every relay it authenticates to
+ * learns this pubkey and can log, rate-limit or bill against it, and the signed
+ * 22242s and 30166s are ordinary events others may keep. That is the point — it
+ * is how a paid relay recognises a subscriber — but it makes the key a
+ * deliberate choice rather than a default. There is no generated fallback: an
+ * ephemeral key would be a stranger every restart, and would mint a fresh author
+ * for every monitor record it ever wrote.
+ *
+ * Unset, the relay simply acts anonymously: it answers no challenges, publishes
+ * no liveness records, and advertises no `self`. Everything else works.
  */
-object RouterIdentity {
-    const val ENV_VAR = "ROUTER_AUTH_NSEC"
+object RelayIdentity {
+    const val ENV_VAR = "RELAY_NSEC"
 
     /**
      * The signer built from [ENV_VAR], or null when it is unset or blank.
      *
      * Accepts `nsec1…` or 64 hex characters. A value that is neither is a
-     * configuration error and throws rather than starting unauthenticated: a
-     * relay silently serving nothing is exactly the failure this is meant to
-     * fix, so a typo must be loud.
+     * configuration error and throws rather than starting anonymous: a relay
+     * silently serving nothing because it never answered a challenge is exactly
+     * the failure this is meant to fix, so a typo must be loud.
      */
     fun fromEnv(env: (String) -> String? = System::getenv): NostrSignerInternal? {
         val raw = env(ENV_VAR)?.trim()?.ifEmpty { null } ?: return null
         return signerFor(raw)
     }
 
-    fun signerFor(
-        secret: String,
-        varName: String = ENV_VAR,
-    ): NostrSignerInternal {
+    fun signerFor(secret: String): NostrSignerInternal {
         val hex =
             when {
                 // Not `NSec(secret).hex` — that constructor takes the hex, so it
@@ -74,7 +83,7 @@ object RouterIdentity {
                 // keypair derived from nonsense.
                 secret.startsWith("nsec1") -> {
                     decodePrivateKeyAsHexOrNull(secret)
-                        ?: throw IllegalArgumentException("$varName is not a valid nsec")
+                        ?: throw IllegalArgumentException("$ENV_VAR is not a valid nsec")
                 }
 
                 secret.length == 64 && secret.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } -> {
@@ -83,7 +92,7 @@ object RouterIdentity {
 
                 else -> {
                     throw IllegalArgumentException(
-                        "$varName must be an nsec1… or 64 hex characters, got ${describe(secret)}",
+                        "$ENV_VAR must be an nsec1… or 64 hex characters, got ${describe(secret)}",
                     )
                 }
             }

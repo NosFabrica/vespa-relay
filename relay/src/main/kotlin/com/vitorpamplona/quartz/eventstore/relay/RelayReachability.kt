@@ -47,11 +47,12 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachability
  * 30166 inherits the network's census without dialling anything. Twenty thousand
  * relays pre-classified before the first cycle, for the cost of a stream entry.
  *
- * Writing our own findings back is opt-in ([ROUTER_MONITOR_NSEC]) because it
- * mints a persistent identity: per NIP-66 a monitor is its own pubkey, distinct
- * from the observer whose web of trust this relay ranks by, and distinct from
- * [RouterIdentity]'s NIP-42 key. An ephemeral key would be worse than none — a
- * new author every restart, one more copy of every record, forever.
+ * Writing our own findings back needs [RelayIdentity] — this relay's own key,
+ * the same one it authenticates with and advertises as its NIP-11 `self`. That
+ * is what makes a record checkable: a reader can tell the 30166 came from the
+ * relay whose NIP-11 they just read, rather than from an anonymous stranger. An
+ * ephemeral key would be worse than none, minting a fresh author for every
+ * record on every restart.
  *
  * A dead mark only ever lasts [ttlSeconds]. Skipping is "not now", never "never
  * again": relays come back, and a permanent blacklist would quietly amputate an
@@ -87,19 +88,6 @@ class RelayReachability(
     }
 
     companion object {
-        const val ENV_VAR = "ROUTER_MONITOR_NSEC"
-
         private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
-
-        /**
-         * The monitor identity from [ENV_VAR], or null to read-only. Shares
-         * [RouterIdentity]'s parsing (and its refusal to start on a malformed
-         * key) but deliberately NOT its key: NIP-42 authentication and relay
-         * monitoring are different claims about who we are.
-         */
-        fun fromEnv(env: (String) -> String? = System::getenv): NostrSigner? {
-            val raw = env(ENV_VAR)?.trim()?.ifEmpty { null } ?: return null
-            return RouterIdentity.signerFor(raw, ENV_VAR)
-        }
     }
 }

@@ -99,7 +99,7 @@ class MirrorRouter(
     // so a paged relay is not re-read from scratch every restart. See [SyncCursors].
     private val cursors: SyncCursors = SyncCursors(null),
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
-    // Null (the default) leaves challenges unanswered. See [RouterIdentity].
+    // Null (the default) leaves challenges unanswered. See [RelayIdentity].
     private val signer: NostrSigner? = null,
     // Relay liveness that survives a restart, as NIP-66 30166 in this same store.
     // Null disables it entirely; the default reads but does not publish.
