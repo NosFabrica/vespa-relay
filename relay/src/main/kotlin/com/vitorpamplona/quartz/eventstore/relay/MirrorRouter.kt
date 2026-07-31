@@ -25,10 +25,12 @@ import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
+import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import kotlinx.coroutines.CancellationException
@@ -94,6 +96,9 @@ class MirrorRouter(
     // How much of each filter's history we have already pulled from each relay,
     // so a paged relay is not re-read from scratch every restart. See [SyncCursors].
     private val cursors: SyncCursors = SyncCursors(null),
+    // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
+    // Null (the default) leaves challenges unanswered. See [RouterIdentity].
+    private val signer: NostrSigner? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -113,6 +118,18 @@ class MirrorRouter(
             .build()
 
     private val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
+
+    // NIP-42. Relays that gate reads behind AUTH serve nothing until we answer
+    // their challenge — and an unanswered challenge looks exactly like an
+    // ordinary empty relay from here, so this is invisible when it is missing.
+    // Attaching the authenticator is enough: it listens for AUTH on every
+    // upstream, signs the 22242 back, and re-authenticates when a relay CLOSEs a
+    // subscription with `auth-required`. Null when no key is configured, in
+    // which case challenges are ignored exactly as before.
+    private val authenticator =
+        signer?.let { s ->
+            RelayAuthenticator(client, scope) { _, template, _ -> listOf(s.sign(template)) }
+        }
 
     // Bounded, so a fast download (negentropy/paged can deliver >10k/s) can't
     // outrun Vespa ingest and pile millions of events onto the heap. When it
@@ -582,15 +599,23 @@ class MirrorRouter(
                     }
                 }
             try {
-                relays.forEach { relay ->
-                    launch {
-                        gate.withPermit {
-                            val got =
-                                dynamicSyncOne(stream, relay.url, window, local) { reason ->
-                                    reasons.merge(reason, 1L, Long::plus)
-                                }
-                            if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
-                            done.incrementAndGet()
+                // The inner scope is what makes the ticker work. `forEach { launch }`
+                // returns the moment the jobs are *issued*, so cancelling on the way
+                // out of it killed the ticker microseconds after it started — before
+                // its first delay ever elapsed, which is why a cycle over thousands
+                // of relays printed its opening line and then nothing for hours.
+                // Awaiting the jobs here keeps the ticker alive for the whole fan-out.
+                coroutineScope {
+                    relays.forEach { relay ->
+                        launch {
+                            gate.withPermit {
+                                val got =
+                                    dynamicSyncOne(stream, relay.url, window, local) { reason ->
+                                        reasons.merge(reason, 1L, Long::plus)
+                                    }
+                                if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
+                                done.incrementAndGet()
+                            }
                         }
                     }
                 }
@@ -811,6 +836,7 @@ class MirrorRouter(
     override fun close() {
         // First: a backfill killed mid-flight still keeps the ground it gained.
         runCatching { cursors.flush() }
+        runCatching { authenticator?.destroy() }
         downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
         inbound.close()
