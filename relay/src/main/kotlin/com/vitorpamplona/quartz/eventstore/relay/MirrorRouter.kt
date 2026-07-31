@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSoc
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -668,6 +669,21 @@ class MirrorRouter(
                 coroutineScope {
                     relays.forEach { relay ->
                         launch {
+                            // A TCP connect before the websocket handshake. The
+                            // reachability records only help from the SECOND cycle
+                            // on — the first one has nothing written down yet and
+                            // would pay a full connect timeout for each of ~20k
+                            // corpses. A refused connection or an unresolvable host
+                            // comes back in milliseconds, and this is the cheapest
+                            // possible way to learn it. Only a NEGATIVE result is
+                            // acted on: a TCP handshake proves a socket, never a
+                            // relay, so success still goes the long way round.
+                            if (!tcpReachable(relay.url)) {
+                                skipped.incrementAndGet()
+                                done.incrementAndGet()
+                                health.strike(relay.url)
+                                return@launch
+                            }
                             // Checked INSIDE the coroutine but OUTSIDE the permit,
                             // and re-checked rather than filtered up front: an
                             // authority struck out while this one waited for a slot
@@ -794,6 +810,15 @@ class MirrorRouter(
             releaseSocket(url)
         }
     }
+
+    /**
+     * Can we open a TCP connection to this relay at all?
+     *
+     * Deliberately fail-OPEN: any error deciding this returns true, so a probe
+     * that is itself broken can never silently amputate the fan-out. The cost of
+     * a false positive is the connect timeout we were going to pay anyway.
+     */
+    private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
 
     /**
      * Drop a dynamic relay's socket once nothing is using it. Hundreds of relays

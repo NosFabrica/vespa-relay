@@ -176,6 +176,26 @@ class RelayDiscoveryTest {
     }
 
     @Test
+    fun `urls we could never dial are dropped rather than discovered`() {
+        // Not a matter of taste: this client has no Tor transport, and a loopback
+        // host in someone else's relay list means THEIR machine. Both are certain
+        // failures, and a certain failure kept in the list is worse than absent —
+        // it burns a connect timeout and a concurrency permit every cycle forever,
+        // and gets written down as an unreachable relay when the truth is that we
+        // were never in a position to ask.
+        val list =
+            event(
+                10002,
+                arrayOf("r", "wss://real.example"),
+                arrayOf("r", "wss://sc7l4cy2s3sfxbqiz4ntxdpsjfsrijgcdpwcsuqxpwkyoqgnzcvfmuad.onion"),
+                arrayOf("r", "ws://localhost:4869"),
+                arrayOf("r", "ws://127.0.0.1:7777"),
+            )
+
+        assertEquals(listOf("wss://real.example/"), urls(list, select(tag = "r")))
+    }
+
+    @Test
     fun `where entries OR together and each ANDs its own fields`() {
         val note =
             event(

@@ -94,6 +94,13 @@ streams {
     # is advertised as hundreds of per-user path urls, and a per-url counter never
     # adds up to a verdict on any of them. A host that ever delivers is never shed.
     #
+    # Urls that could never work are dropped at discovery rather than dialled:
+    # .onion (no Tor transport here) and loopback/private hosts (someone else's
+    # `ws://localhost:4869` means THEIR machine). A relay that cannot be reached
+    # in principle is worse than one that is merely down — it would burn a connect
+    # timeout and a permit every cycle forever, and be recorded as unreachable
+    # when the truth is we were never in a position to ask.
+    #
     # The cheapest win here is a filter that includes kind 30166: those records are
     # ordinary events published by monitors like nostr.watch, so mirroring them
     # inherits the network's whole relay census before this relay dials anything.
