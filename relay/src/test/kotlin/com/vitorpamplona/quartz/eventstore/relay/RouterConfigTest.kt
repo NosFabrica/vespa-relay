@@ -421,6 +421,14 @@ class RouterConfigTest {
         // Bounds no tag can meet: below the url the select itself demands, or crossed.
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { maxSize = 1 } ] }""") }
         assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { minSize = 4, maxSize = 3 } ] }""") }
+        // An equals whose element can't exist under the entry's own maxSize.
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { index = 2, equals = "write", maxSize = 2 } ] }""") }
+        // A minSize the url guard already guarantees holds for every tag — and one
+        // always-true entry in an OR list silently disables the others.
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { minSize = 2 } ] }""") }
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { minSize = 0 } ] }""") }
+        // The smallest minSize that can actually filter is one past the url slot.
+        parse("""{ tag = "r", where = [ { minSize = 3 } ] }""")
     }
 
     @Test

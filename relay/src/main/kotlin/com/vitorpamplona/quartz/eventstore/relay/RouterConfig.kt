@@ -511,6 +511,17 @@ object RouterConfigLoader {
         require(minSize == null || maxSize == null || minSize <= maxSize) {
             "router: stream '$stream' has a where entry with minSize $minSize > maxSize $maxSize — it can never match"
         }
+        // The same clash inside one entry: equals demands the element exist, so
+        // its index has to fit under the entry's own maxSize.
+        require(equals == null || maxSize == null || index!! < maxSize) {
+            "router: stream '$stream' has a where entry whose equals at index $index needs ${index!! + 1} elements but maxSize is $maxSize — it can never match"
+        }
+        // And the mirror image: every tag reaching a where already has the url,
+        // so a minSize at or under that floor holds for every tag — and one
+        // always-true entry in an OR list silently disables the other entries.
+        require(minSize == null || minSize > urlIndex + 1) {
+            "router: stream '$stream' has a where entry with minSize $minSize, which the url at index $urlIndex already guarantees — it matches every tag"
+        }
         return TagCondition(index = index, equals = equals, minSize = minSize, maxSize = maxSize)
     }
 

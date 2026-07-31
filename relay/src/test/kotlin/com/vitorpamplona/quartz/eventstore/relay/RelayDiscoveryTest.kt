@@ -184,6 +184,9 @@ class RelayDiscoveryTest {
                 arrayOf("e", "b".repeat(64), "wss://reply.example", "reply"),
                 arrayOf("e", "c".repeat(64), "wss://mention.example", "mention"),
                 arrayOf("e", "d".repeat(64), "wss://bare.example"),
+                // NIP-10 also allows a pubkey after the marker — this is the tag
+                // that proves maxSize actually cuts inside an AND.
+                arrayOf("e", "e".repeat(64), "wss://deep.example", "root", "f".repeat(64)),
             )
 
         // Two OR-ed alternatives keep root and reply hints, dropping the rest.
@@ -197,10 +200,10 @@ class RelayDiscoveryTest {
                         TagCondition(index = 3, equals = "reply"),
                     ),
             )
-        assertEquals(listOf("wss://root.example/", "wss://reply.example/"), urls(note, threaded))
+        assertEquals(listOf("wss://root.example/", "wss://reply.example/", "wss://deep.example/"), urls(note, threaded))
 
         // Fields inside one entry AND: the marker must say root AND the tag must
-        // stop right there, so a root tag with anything after it is out.
+        // stop right there, so the root tag with a pubkey after it is out.
         val strictRoot =
             select(
                 tag = "e",
