@@ -549,17 +549,42 @@ class MirrorRouter(
                 " against ${local.size} local id(s)" +
                 " (top: ${relays.take(3).joinToString { "${it.url.url} x${it.references}" }})",
         )
+        val done = AtomicLong()
         coroutineScope {
-            relays.forEach { relay ->
+            // A cycle over a relay list runs for HOURS with nothing but its
+            // opening line, so a stalled fan-out and a working one look the same
+            // from outside. The static backfill has a progress line for exactly
+            // this reason; the bigger job had none.
+            val ticker =
                 launch {
-                    gate.withPermit {
-                        val got =
-                            dynamicSyncOne(stream, relay.url, window, local) { reason ->
-                                reasons.merge(reason, 1L, Long::plus)
-                            }
-                        if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
+                    while (true) {
+                        delay(PROGRESS_INTERVAL_MS)
+                        val finished = done.get()
+                        val elapsed = System.currentTimeMillis() - startedMs
+                        val rate = if (elapsed > 0) finished * 1000.0 / elapsed else 0.0
+                        val etaSec = if (rate > 0) ((relays.size - finished) / rate).toLong() else -1
+                        System.err.println(
+                            "router: ${stream.name} $finished/${relays.size} relay(s), ${downloaded.get()} event(s)" +
+                                (if (failed.get() > 0) ", ${failed.get()} unreachable" else "") +
+                                (if (etaSec >= 0) ", ETA ~${fmtDuration(etaSec * 1000)}" else ""),
+                        )
                     }
                 }
+            try {
+                relays.forEach { relay ->
+                    launch {
+                        gate.withPermit {
+                            val got =
+                                dynamicSyncOne(stream, relay.url, window, local) { reason ->
+                                    reasons.merge(reason, 1L, Long::plus)
+                                }
+                            if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
+                            done.incrementAndGet()
+                        }
+                    }
+                }
+            } finally {
+                ticker.cancel()
             }
         }
         val topReasons =
@@ -699,7 +724,15 @@ class MirrorRouter(
             val s = progress.snapshot()
             if (s.allDone) {
                 cursors.flush()
-                System.err.println("router: backfill complete — ${s.downloaded} events from ${s.total} upstream(s) in ${fmtDuration(s.elapsedMs)}; live tail now streaming")
+                // "backfill complete" used to read as "the relay is caught up",
+                // while the dynamic streams — the larger half of the fill, by an
+                // order of magnitude on a real relay list — were still going.
+                val stillSyncing = dynamicStreams.size
+                System.err.println(
+                    "router: static backfill complete — ${s.downloaded} events from ${s.total} upstream(s)" +
+                        " in ${fmtDuration(s.elapsedMs)}; live tail now streaming" +
+                        if (stillSyncing > 0) "; $stillSyncing dynamic stream(s) still syncing" else "",
+                )
                 return
             }
             // ETA from the average download rate since start — steadier than an
