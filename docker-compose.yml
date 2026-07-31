@@ -32,6 +32,11 @@ services:
       vespa:
         condition: service_healthy
     environment:
+      # The negentropy reconciliation holds one local id snapshot per upstream
+      # IN MEMORY, and all 12 backfill at once — so the heap has to cover the
+      # whole fan-out, not one relay. The JVM default is 25% of the container,
+      # which OOM'd at 8.4 GiB the first time every stream asked for full history.
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=45}
       VESPA_URL: http://vespa:8080
       RELAY_PORT: 7777
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).

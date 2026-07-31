@@ -23,6 +23,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
+import kotlinx.coroutines.runBlocking
 
 /**
  * Run a standalone trust-ranking Nostr relay against a Vespa. It opens the
@@ -69,6 +70,12 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
  *                            list is read from the store's own 10002s/10040s
  *                            rather than configured (see RelaySource)
  *
+ *   Trust view (see TrustProjection.reconcile):
+ *   TRUST_RECONCILE_ON_START  at startup, re-derive any service whose scores are
+ *                             not projected under its current observer. Needed
+ *                             because the view is maintained by write triggers
+ *                             that a duplicate never reaches (default true)
+ *
  *   Parse audit / quartz logging (optional; see ParseAudit):
  *   QUARTZ_LOG_LEVEL         quartz's log floor: DEBUG/INFO/WARN/ERROR. Quartz
  *                            defaults to DEBUG, so malformed upstream profiles
@@ -111,6 +118,26 @@ fun main() {
         }
 
     val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = autoDeploy)
+
+    // The trust view is derived on WRITE, and dedup drops an event the store
+    // already holds before the projection sees it — so a corpus mirrored before
+    // its 10040s arrived stays unprojected, and every ranked search comes back
+    // empty with nothing logged anywhere. Settling it here costs a few queries
+    // when the answer is "nothing to do", which is the normal case.
+    if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
+        runBlocking {
+            runCatching { store.reconcileTrust() }
+                .onSuccess { r ->
+                    if (r.isClean()) {
+                        println("trust: ${r.services} service(s) checked, projection consistent")
+                    } else {
+                        println("trust: re-derived ${r.rebuilt.size} of ${r.services} service(s) whose scores were unprojected")
+                    }
+                }.onFailure {
+                    System.err.println("trust: reconcile failed (${it.message}); ranking stays incomplete until it runs clean")
+                }
+        }
+    }
     val relay =
         NostrRelayServer(
             store = store,

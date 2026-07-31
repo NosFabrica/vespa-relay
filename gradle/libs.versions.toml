@@ -5,7 +5,7 @@ app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 quartz = "4179a6312a"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-vespaEventStore = "f191a3eb78"
+vespaEventStore = "c53bfad782"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
