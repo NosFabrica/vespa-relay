@@ -56,13 +56,13 @@ class SyncCursorsTest {
     @Test
     fun `a recorded band is fetched around, not through`() {
         val c = SyncCursors(null)
-        c.record(relay, profiles, observedMin = 1_000, observedMax = 2_000, paged = true)
+        c.record(relay, profiles, observedMin = 1_700_001_000L, observedMax = 1_700_002_000L, paged = true)
 
         val legs = c.legs(relay, profiles)
         assertEquals(2, legs.size, "one leg older than the band, one newer")
-        assertEquals(1_000L, legs[0].until, "older leg stops AT the band's floor")
+        assertEquals(1_700_001_000L, legs[0].until, "older leg stops AT the band's floor")
         assertNull(legs[0].since, "and reaches as far back as the filter allows")
-        assertEquals(2_000L, legs[1].since, "newer leg starts AT its ceiling")
+        assertEquals(1_700_002_000L, legs[1].since, "newer leg starts AT its ceiling")
         assertNull(legs[1].until)
     }
 
@@ -72,30 +72,30 @@ class SyncCursorsTest {
         // of events sharing one created_at. Excluding the edge would strand the
         // rest of that second in no leg at all, while the band called it covered.
         val c = SyncCursors(null)
-        c.record(relay, profiles, 1_000, 2_000, paged = true)
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
 
         val legs = c.legs(relay, profiles)
 
         fun reachable(t: Long) = legs.any { (it.since ?: Long.MIN_VALUE) <= t && t <= (it.until ?: Long.MAX_VALUE) }
 
-        assertTrue(reachable(1_000), "the band's own floor second must be re-read")
-        assertTrue(reachable(2_000), "and its ceiling second")
-        assertTrue(reachable(999), "below the band")
-        assertTrue(reachable(2_001), "above it")
+        assertTrue(reachable(1_700_001_000L), "the band's own floor second must be re-read")
+        assertTrue(reachable(1_700_002_000L), "and its ceiling second")
+        assertTrue(reachable(1_700_000_999L), "below the band")
+        assertTrue(reachable(1_700_002_001L), "above it")
         // Only the interior is skipped, which is the entire point.
-        assertTrue(!reachable(1_500), "the covered interior is not re-read")
+        assertTrue(!reachable(1_700_001_500L), "the covered interior is not re-read")
     }
 
     @Test
     fun `successive runs widen the band rather than replacing it`() {
         val c = SyncCursors(null)
-        c.record(relay, profiles, 1_000, 2_000, paged = true)
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         // A later run reaches further back and picks up newer events.
-        c.record(relay, profiles, 500, 2_500, paged = true)
+        c.record(relay, profiles, 1_700_000_500L, 1_700_002_500L, paged = true)
 
         val band = c.band(relay, profiles)!!
-        assertEquals(500L, band.minCreatedAt)
-        assertEquals(2_500L, band.maxCreatedAt)
+        assertEquals(1_700_000_500L, band.minCreatedAt)
+        assertEquals(1_700_002_500L, band.maxCreatedAt)
     }
 
     @Test
@@ -103,11 +103,11 @@ class SyncCursorsTest {
         // The case that makes this worth having: a relay that only ever answers
         // with its newest N events. Each run starts below the last one's floor.
         val c = SyncCursors(null)
-        c.record(relay, profiles, 9_000, 10_000, paged = true)
-        assertEquals(9_000L, c.legs(relay, profiles)[0].until)
+        c.record(relay, profiles, 1_700_009_000L, 1_700_010_000L, paged = true)
+        assertEquals(1_700_009_000L, c.legs(relay, profiles)[0].until)
 
-        c.record(relay, profiles, 8_000, 8_999, paged = true)
-        assertEquals(8_000L, c.legs(relay, profiles)[0].until)
+        c.record(relay, profiles, 1_700_008_000L, 1_700_008_999L, paged = true)
+        assertEquals(1_700_008_000L, c.legs(relay, profiles)[0].until)
     }
 
     // ---- when a cursor must not be used ------------------------------------
@@ -117,7 +117,7 @@ class SyncCursorsTest {
         // Reconciliation already downloads only the diff; a band could only
         // narrow a future reconciliation for no gain.
         val c = SyncCursors(null)
-        c.record(relay, profiles, 1_000, 2_000, paged = false)
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = false)
         assertNull(c.band(relay, profiles))
         assertEquals(listOf(profiles), c.legs(relay, profiles))
     }
@@ -134,20 +134,20 @@ class SyncCursorsTest {
     @Test
     fun `changing the filter starts over`() {
         val c = SyncCursors(null)
-        c.record(relay, profiles, 1_000, 2_000, paged = true)
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
 
         // Widening the kinds means the old band skipped events it never fetched.
         val wider = Filter(kinds = listOf(0, 10002))
         assertEquals(listOf(wider), c.legs(relay, wider), "a new filter has no band")
         assertNull(c.band(relay, wider))
         // ...and the original is untouched, so reverting resumes where it was.
-        assertEquals(1_000L, c.band(relay, profiles)!!.minCreatedAt)
+        assertEquals(1_700_001_000L, c.band(relay, profiles)!!.minCreatedAt)
     }
 
     @Test
     fun `each relay keeps its own band`() {
         val c = SyncCursors(null)
-        c.record(relay, profiles, 1_000, 2_000, paged = true)
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         assertEquals(listOf(profiles), c.legs(other, profiles))
     }
 
@@ -155,16 +155,16 @@ class SyncCursorsTest {
 
     @Test
     fun `a bounded filter never widens past its own since and until`() {
-        val bounded = Filter(kinds = listOf(0), since = 1_000, until = 5_000)
+        val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
         val c = SyncCursors(null)
-        c.record(relay, bounded, 2_000, 3_000, paged = true)
+        c.record(relay, bounded, 1_700_002_000L, 1_700_003_000L, paged = true)
 
         val legs = c.legs(relay, bounded)
         assertEquals(2, legs.size)
-        assertEquals(1_000L, legs[0].since, "the older leg keeps the configured floor")
-        assertEquals(2_000L, legs[0].until)
-        assertEquals(3_000L, legs[1].since)
-        assertEquals(5_000L, legs[1].until, "the newer leg keeps the configured ceiling")
+        assertEquals(1_700_001_000L, legs[0].since, "the older leg keeps the configured floor")
+        assertEquals(1_700_002_000L, legs[0].until)
+        assertEquals(1_700_003_000L, legs[1].since)
+        assertEquals(1_700_005_000L, legs[1].until, "the newer leg keeps the configured ceiling")
     }
 
     @Test
@@ -173,29 +173,29 @@ class SyncCursorsTest {
         // the two boundary seconds are always re-read, because that is the only
         // way to catch a run of same-second events a page boundary cut in half.
         // Two seconds per cycle is the price of not stranding them.
-        val bounded = Filter(kinds = listOf(0), since = 1_000, until = 5_000)
+        val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
         val c = SyncCursors(null)
-        c.record(relay, bounded, 1_000, 5_000, paged = true)
+        c.record(relay, bounded, 1_700_001_000L, 1_700_005_000L, paged = true)
 
         val legs = c.legs(relay, bounded)
         assertEquals(2, legs.size)
-        assertEquals(1_000L to 1_000L, legs[0].since to legs[0].until, "the floor second only")
-        assertEquals(5_000L to 5_000L, legs[1].since to legs[1].until, "the ceiling second only")
+        assertEquals(1_700_001_000L to 1_700_001_000L, legs[0].since to legs[0].until, "the floor second only")
+        assertEquals(1_700_005_000L to 1_700_005_000L, legs[1].since to legs[1].until, "the ceiling second only")
     }
 
     @Test
     fun `bands survive a restart`() {
         val f = tempFile()
         SyncCursors(f).apply {
-            record(relay, profiles, 1_000, 2_000, paged = true)
+            record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
             flush()
         }
 
         // A fresh instance, as a restart would build.
         val reopened = SyncCursors(f)
-        assertEquals(1_000L, reopened.band(relay, profiles)!!.minCreatedAt)
-        assertEquals(2_000L, reopened.band(relay, profiles)!!.maxCreatedAt)
-        assertEquals(1_000L, reopened.legs(relay, profiles)[0].until)
+        assertEquals(1_700_001_000L, reopened.band(relay, profiles)!!.minCreatedAt)
+        assertEquals(1_700_002_000L, reopened.band(relay, profiles)!!.maxCreatedAt)
+        assertEquals(1_700_001_000L, reopened.legs(relay, profiles)[0].until)
         f.delete()
     }
 
@@ -212,8 +212,26 @@ class SyncCursorsTest {
     @Test
     fun `with no file configured it still works, just not across restarts`() {
         val c = SyncCursors(null)
-        c.record(relay, profiles, 1_000, 2_000, paged = true)
-        assertEquals(1_000L, c.band(relay, profiles)!!.minCreatedAt)
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        assertEquals(1_700_001_000L, c.band(relay, profiles)!!.minCreatedAt)
+    }
+
+    @Test
+    fun `a periodic flush persists progress a hard kill would otherwise lose`() {
+        // The milestone flushes are minutes to hours apart; a SIGKILL between
+        // them loses every band the run earned, and the next start re-downloads
+        // the corpus. That is the cost this class exists to avoid.
+        val f = tempFile()
+        val c = SyncCursors(f).startPeriodicFlush(intervalSec = 1)
+        c.record(relay, profiles, 1_700_000_000, 1_785_000_000, paged = true)
+
+        val deadline = System.currentTimeMillis() + 15_000
+        while (!f.isFile && System.currentTimeMillis() < deadline) Thread.sleep(100)
+        assertTrue(f.isFile, "the periodic flush should have written it with no milestone reached")
+
+        c.close()
+        assertEquals(1_700_000_000L, SyncCursors(f).band(relay, profiles)?.minCreatedAt)
+        f.delete()
     }
 
     @Test
@@ -222,7 +240,7 @@ class SyncCursorsTest {
         // serialize the whole map thousands of times per cycle.
         val f = tempFile()
         val c = SyncCursors(f)
-        c.record(relay, profiles, 1_000, 2_000, paged = true)
+        c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         assertTrue(!f.exists(), "record() must not touch the file")
 
         c.flush()
@@ -241,15 +259,15 @@ class SyncCursorsTest {
         // author-scoped filter, and the fan-out keys once per relay per cycle.
         val big = Filter(kinds = listOf(30382), authors = (1..500).map { "%064x".format(it) })
         val c = SyncCursors(null)
-        c.record(relay, big, 1_000, 2_000, paged = true)
+        c.record(relay, big, 1_700_001_000L, 1_700_002_000L, paged = true)
 
         // Same instance, many lookups: still one band, and cheap.
         repeat(50) { c.legs(relay, big) }
-        assertEquals(1_000L, c.band(relay, big)!!.minCreatedAt)
+        assertEquals(1_700_001_000L, c.band(relay, big)!!.minCreatedAt)
 
         // An equal-but-distinct instance keys the same way; it just misses the cache.
         val copy = Filter(kinds = listOf(30382), authors = (1..500).map { "%064x".format(it) })
-        assertEquals(1_000L, c.band(relay, copy)?.minCreatedAt, "identity caching must not change the key")
+        assertEquals(1_700_001_000L, c.band(relay, copy)?.minCreatedAt, "identity caching must not change the key")
     }
 
     @Test

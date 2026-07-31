@@ -84,7 +84,7 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class SyncCursors(
     private val file: File?,
-) {
+) : AutoCloseable {
     /** The `created_at` span already pulled for one (relay, filter) pair. */
     data class Band(
         val minCreatedAt: Long,
@@ -94,6 +94,8 @@ class SyncCursors(
     private val bands = ConcurrentHashMap<String, Band>()
 
     @Volatile private var dirty = false
+
+    @Volatile private var flusher: Thread? = null
 
     // filter -> its canonical json. Filter.toJson() walks every field, and an
     // author-scoped filter runs to tens of thousands of characters (67k for a
@@ -165,7 +167,21 @@ class SyncCursors(
         observedMax: Long?,
         paged: Boolean,
     ) {
-        if (!paged || observedMin == null || observedMax == null) return
+        if (!paged) return
+        // Outliers are not evidence of coverage. Nostr lets an author stamp any
+        // created_at, and a single misdated event drags the band to it: a 1970
+        // floor makes a relay claim it has walked its whole history (its older
+        // leg then asks for events before 1970, forever), and a 2027 ceiling
+        // kills the newer leg the same way. Both were observed in the wild —
+        // relay.ditto.pub recorded 0.., purplepag.es ..1800000000.
+        //
+        // The events themselves are still stored; they just do not get to say
+        // what has been covered.
+        val floor = observedMin?.takeIf { it in PLAUSIBLE_FLOOR..nowSeconds() + FUTURE_SKEW_SECONDS }
+        val ceiling = observedMax?.takeIf { it in PLAUSIBLE_FLOOR..nowSeconds() + FUTURE_SKEW_SECONDS }
+        val observedMin = floor
+        val observedMax = ceiling
+        if (observedMin == null || observedMax == null) return
         val k = key(url, filter)
         bands.compute(k) { _, prev ->
             if (prev == null) {
@@ -180,6 +196,42 @@ class SyncCursors(
         // thousand integers. [flush] does it once, and losing the last unflushed
         // window to a hard kill costs one partial re-fetch, not correctness.
         dirty = true
+    }
+
+    /**
+     * Write the map every [intervalSec] on a daemon thread, so progress survives
+     * a hard kill.
+     *
+     * The milestone flushes — a completed backfill, the end of a dynamic cycle —
+     * are minutes to hours apart, and a SIGKILL in between loses every band the
+     * run earned. That turns the next start into a full re-download, which is the
+     * exact cost this class exists to avoid. One write per interval is nothing
+     * next to that: the map is small, and unchanged intervals write nothing.
+     */
+    fun startPeriodicFlush(intervalSec: Long = DEFAULT_FLUSH_SECONDS): SyncCursors {
+        if (file == null) return this
+        flusher =
+            Thread {
+                while (!Thread.currentThread().isInterrupted) {
+                    try {
+                        Thread.sleep(intervalSec * 1000)
+                    } catch (_: InterruptedException) {
+                        return@Thread
+                    }
+                    flush()
+                }
+            }.apply {
+                isDaemon = true
+                name = "sync-cursor-flush"
+                start()
+            }
+        return this
+    }
+
+    /** Stop the periodic flush and write anything outstanding. */
+    override fun close() {
+        flusher?.interrupt()
+        flush()
     }
 
     /** Write the map if anything changed since the last write. */
@@ -247,7 +299,7 @@ class SyncCursors(
                 }
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(Json.encodeToString(JsonObject.serializer(), snapshot))
+            tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
             Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }.onFailure {
             System.err.println("router: could not write sync cursors to ${f.path}: ${it.message}")
@@ -255,11 +307,28 @@ class SyncCursors(
     }
 
     companion object {
+        // Pretty-printed: this file is read by a human debugging why a relay
+        // re-synced, and a one-line map of a thousand entries answers nothing.
+        private val json = Json { prettyPrint = true }
+
+        // Nostr's first events are from 2020; anything older is a misdated
+        // stamp, not history we walked.
+        private const val PLAUSIBLE_FLOOR = 1_577_836_800L // 2020-01-01
+
+        // Clock skew a relay may legitimately be ahead by. Past this, a
+        // created_at is the author's fiction rather than a time.
+        private const val FUTURE_SKEW_SECONDS = 86_400L
+
+        // Often enough that a kill costs little, rare enough to be free.
+        private const val DEFAULT_FLUSH_SECONDS = 30L
+
+        private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+
         /**
          * `ROUTER_SYNC_STATE_FILE` — where the cursors live. Unset keeps them in
          * memory, which is the same as not having them: the whole point is
          * surviving the restart. Under compose, point it inside a mounted volume.
          */
-        fun fromEnv(env: Map<String, String>): SyncCursors = SyncCursors(env["ROUTER_SYNC_STATE_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File))
+        fun fromEnv(env: Map<String, String>): SyncCursors = SyncCursors(env["ROUTER_SYNC_STATE_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File)).startPeriodicFlush()
     }
 }
