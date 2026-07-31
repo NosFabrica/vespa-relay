@@ -191,7 +191,7 @@ fun main() {
             (if (admin != null) "  [NIP-86 admin: ${adminPubkeys.size} key(s)]" else "") +
             (
                 if (router != null) {
-                    "  [router: mirroring ${router.upstreamCount()} upstream(s)" +
+                    "  [router: mirroring ${router.upstreamCount()} relay(s)" +
                         (if (router.dynamicStreamCount() > 0) " + ${router.dynamicStreamCount()} dynamic stream(s)" else "") +
                         "]"
                 } else {
