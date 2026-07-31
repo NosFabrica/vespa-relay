@@ -27,6 +27,14 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class RouterConfigTest {
+    /** What `marker = "write"` desugars to on a url-at-1 select. */
+    private val nip65Write =
+        listOf(
+            TagCondition(index = 2, equals = "write"),
+            TagCondition(index = 2, equals = ""),
+            TagCondition(maxSize = 2),
+        )
+
     // The exact strfry-style routerConfigOverride an operator would drop in.
     private val streamsConfig =
         """
@@ -252,18 +260,18 @@ class RouterConfigTest {
         assertEquals(listOf(10002, 10040, 10050), lists.filter.kinds)
         assertEquals(3, lists.selects.size)
 
-        // Defaults: index 1, no marker filter, and a kind-less select applies to all.
+        // Defaults: index 1, no where filter, and a kind-less select applies to all.
         val nip65 = lists.selects[0]
         assertEquals(10002, nip65.kind)
         assertEquals("r", nip65.tag)
         assertEquals(1, nip65.index)
-        assertEquals(RelayRole.WRITE, nip65.role)
+        assertEquals(nip65Write, nip65.where)
 
         // A NIP-85 service tag, named exactly, with the url after the pubkey.
         val provider = lists.selects[1]
         assertEquals("30382:rank", provider.tag)
         assertEquals(2, provider.index)
-        assertNull(provider.role)
+        assertTrue(provider.where.isEmpty())
 
         assertNull(lists.selects[2].kind, "no kind = every event the filter collected")
 
@@ -327,6 +335,92 @@ class RouterConfigTest {
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002] }""", """{ tag = "r", index = 0 }"""))
         }
+    }
+
+    @Test
+    fun `where entries parse with their fields`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                sourced(
+                    """{ "kinds": [1], "limit": 1000 }""",
+                    """
+                    {
+                        tag = "e"
+                        index = 2
+                        where = [
+                            { index = 3, equals = "root" }
+                            { index = 3, equals = "reply", maxSize = 4 }
+                            { minSize = 4 }
+                            { maxSize = 3 }
+                        ]
+                    }
+                    """.trimIndent(),
+                ),
+            )
+        val select =
+            cfg
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .selects
+                .single()
+        assertEquals(
+            listOf(
+                TagCondition(index = 3, equals = "root"),
+                TagCondition(index = 3, equals = "reply", maxSize = 4),
+                TagCondition(minSize = 4),
+                TagCondition(maxSize = 3),
+            ),
+            select.where,
+        )
+    }
+
+    @Test
+    fun `marker is sugar for the where that spells the NIP-65 rule`() {
+        fun whereOf(select: String) =
+            RouterConfigLoader
+                .parse(sourced("""{ "kinds": [10002] }""", select))
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .selects
+                .single()
+                .where
+
+        assertEquals(nip65Write, whereOf("""{ tag = "r", marker = "write" }"""))
+        // The desugar follows the url, so hint-style tags get the slot after theirs.
+        assertEquals(
+            listOf(
+                TagCondition(index = 3, equals = "read"),
+                TagCondition(index = 3, equals = ""),
+                TagCondition(maxSize = 3),
+            ),
+            whereOf("""{ tag = "e", index = 2, marker = "read" }"""),
+        )
+        // `any` keeps everything, which is what no conditions means.
+        assertEquals(emptyList(), whereOf("""{ tag = "r", marker = "any" }"""))
+        assertFailsWith<IllegalStateException> { whereOf("""{ tag = "r", marker = "nonsense" }""") }
+    }
+
+    @Test
+    fun `a where entry must be satisfiable and whole`() {
+        fun parse(select: String) = RouterConfigLoader.parse(sourced("""{ "kinds": [10002] }""", select))
+
+        // marker is sugar for a where; saying both is saying it twice.
+        assertFailsWith<IllegalArgumentException> {
+            parse("""{ tag = "r", marker = "write", where = [ { maxSize = 2 } ] }""")
+        }
+        // No predicate at all, and the index/equals halves apart.
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { } ] }""") }
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { index = 2 } ] }""") }
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { equals = "write" } ] }""") }
+        // Bounds no tag can meet: below the url the select itself demands, or crossed.
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { maxSize = 1 } ] }""") }
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", where = [ { minSize = 4, maxSize = 3 } ] }""") }
     }
 
     @Test

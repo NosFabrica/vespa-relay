@@ -178,7 +178,7 @@ object RelayDiscovery {
     /**
      * The relay urls one event advertises for a single [select]: every tag named
      * [RelaySelect.tag] (or every tag at all, when it is null) that carries a url
-     * at [RelaySelect.index] and passes the marker check at the slot after it.
+     * at [RelaySelect.index] and passes the select's [RelaySelect.where] list.
      */
     fun urlsIn(
         event: Event,
@@ -193,10 +193,10 @@ object RelayDiscovery {
         for (tag in event.tags) {
             if (tag.size <= select.index) continue
             if (select.tag != null && tag[0] != select.tag) continue
-            // NIP-65 marks its relays `read` or `write` in the slot after the url;
-            // an unmarked tag is both, so it matches whichever side we asked for.
-            val role = select.role
-            if (role != null && !role.matches(tag.getOrNull(select.index + 1)?.trim()?.lowercase())) continue
+            // `where` entries OR together and each ANDs its own fields — NIP-01's
+            // boolean shape pointed at the tag. An empty list keeps everything;
+            // NIP-65's read/write rule is the three-entry OR `marker` expands to.
+            if (select.where.isNotEmpty() && select.where.none { it.matches(tag) }) continue
             // With no tag name to go on, anything in the event could land here, so
             // only take values that already say they are a relay.
             normalize(tag[select.index], requireScheme = select.tag == null)?.let { into.add(it) }
