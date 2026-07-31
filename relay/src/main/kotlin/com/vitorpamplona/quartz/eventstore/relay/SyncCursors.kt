@@ -32,6 +32,8 @@ import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.Collections
+import java.util.IdentityHashMap
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -91,6 +93,16 @@ class SyncCursors(
 
     private val bands = ConcurrentHashMap<String, Band>()
 
+    @Volatile private var dirty = false
+
+    // filter -> its canonical json. Filter.toJson() walks every field, and an
+    // author-scoped filter runs to tens of thousands of characters (67k for a
+    // thousand authors) — while the dynamic streams key once per relay per cycle
+    // over the SAME handful of filter objects. Identity is the right equality
+    // here: the router hands the same instance down the whole fan-out, and a
+    // filter that is merely equal still keys correctly, just without the cache.
+    private val fingerprints = Collections.synchronizedMap(IdentityHashMap<Filter, String>())
+
     init {
         load()
     }
@@ -103,6 +115,20 @@ class SyncCursors(
      * a bounded filter never widens: a leg that would reach past the configured
      * edge is dropped rather than trimmed to nothing, and when both are dropped
      * the band already covers everything asked for and the result is empty.
+     *
+     * ## The boundary seconds are re-read on purpose
+     *
+     * The legs are INCLUSIVE of the band's own edges — `until = min`, not
+     * `min - 1`. A paged relay cuts its pages by count, so a page boundary can
+     * fall inside a run of events that share one `created_at`, leaving some of
+     * that second fetched and the rest not. Excluding the edge would put those
+     * stragglers in no leg at all while the band claimed their second was done —
+     * unreachable for as long as the filter stays the same.
+     *
+     * [RelayDiscovery]'s paging walk hits the same hazard and answers it the same
+     * way: "`until` is inclusive, so the next page re-sees them". The cost is
+     * re-reading one second's worth of events per leg per run, which the store
+     * rejects as duplicates.
      */
     fun legs(
         url: NormalizedRelayUrl,
@@ -111,16 +137,14 @@ class SyncCursors(
         val band = bands[key(url, filter)] ?: return listOf(filter)
         val legs = mutableListOf<Filter>()
 
-        // Older: everything before the band, but not before the filter's floor.
-        val olderUntil = band.minCreatedAt - 1
-        if (filter.since == null || olderUntil >= filter.since!!) {
-            legs.add(filter.copy(until = minOf(olderUntil, filter.until ?: Long.MAX_VALUE)))
+        // Older: up to and including the band's floor, but not past the filter's.
+        if (filter.since == null || band.minCreatedAt >= filter.since!!) {
+            legs.add(filter.copy(until = minOf(band.minCreatedAt, filter.until ?: Long.MAX_VALUE)))
         }
 
-        // Newer: everything after the band, but not past the filter's ceiling.
-        val newerSince = band.maxCreatedAt + 1
-        if (filter.until == null || newerSince <= filter.until!!) {
-            legs.add(filter.copy(since = maxOf(newerSince, filter.since ?: Long.MIN_VALUE)))
+        // Newer: from the band's ceiling on, but not past the filter's.
+        if (filter.until == null || band.maxCreatedAt <= filter.until!!) {
+            legs.add(filter.copy(since = maxOf(band.maxCreatedAt, filter.since ?: Long.MIN_VALUE)))
         }
         return legs
     }
@@ -150,6 +174,19 @@ class SyncCursors(
                 Band(minOf(prev.minCreatedAt, observedMin), maxOf(prev.maxCreatedAt, observedMax))
             }
         }
+        // Marked, not written. A dynamic stream records once per leg per relay
+        // and every write serializes the whole map, so saving here would cost
+        // O(relays²) per cycle — thousands of full-file rewrites to persist a few
+        // thousand integers. [flush] does it once, and losing the last unflushed
+        // window to a hard kill costs one partial re-fetch, not correctness.
+        dirty = true
+    }
+
+    /** Write the map if anything changed since the last write. */
+    @Synchronized
+    fun flush() {
+        if (!dirty) return
+        dirty = false
         save()
     }
 

@@ -397,6 +397,8 @@ class MirrorRouter(
         // — minus whatever a previous run already walked, when this relay paged.
         val legs = cursors.legs(up.url, up.filter)
         if (legs.isEmpty()) {
+            // Only reachable if a future change makes the legs exclusive again;
+            // today the boundary seconds always leave something to ask for.
             progress.done(idx, 0)
             System.err.println("router: backfill ${up.url.url} already covers its filter — nothing outside the synced band")
             return
@@ -565,6 +567,8 @@ class MirrorRouter(
                 .sortedByDescending { it.value }
                 .take(3)
                 .joinToString { "${it.key} x${it.value}" }
+        // One write for the whole fan-out, not one per relay.
+        cursors.flush()
         System.err.println(
             "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get()}/${relays.size} relay(s)" +
                 " in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
@@ -694,6 +698,7 @@ class MirrorRouter(
             delay(PROGRESS_INTERVAL_MS)
             val s = progress.snapshot()
             if (s.allDone) {
+                cursors.flush()
                 System.err.println("router: backfill complete — ${s.downloaded} events from ${s.total} upstream(s) in ${fmtDuration(s.elapsedMs)}; live tail now streaming")
                 return
             }
@@ -754,6 +759,8 @@ class MirrorRouter(
     fun dynamicStreamCount(): Int = dynamicStreams.size
 
     override fun close() {
+        // First: a backfill killed mid-flight still keeps the ground it gained.
+        runCatching { cursors.flush() }
         downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
         inbound.close()

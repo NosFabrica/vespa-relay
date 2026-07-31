@@ -209,11 +209,15 @@ keeps walking back into history, which is what makes progress against a relay
 that caps its responses: each run reaches a little further instead of re-reading
 the same newest events forever.
 
-Two things it does not promise. A relay that truncates a page leaves a gap
-recorded as covered, and Nostr lets an event be published with any `created_at`,
-so one can land inside a band already walked past. The trade is deliberate —
-re-reading a corpus every restart is a certain daily cost, while both holes are
-occasional and clear the next time the filter changes.
+The two boundary seconds are re-read every run, deliberately: a paged relay cuts
+pages by count, so a boundary can fall inside a run of events sharing one
+`created_at`, and asking strictly outside the band would strand the rest of that
+second forever.
+
+One thing it does not promise: Nostr lets an event be published with any
+`created_at`, so one can land inside a band already walked past. The trade is
+deliberate — re-reading a corpus every restart is a certain daily cost, while
+that hole is occasional and clears the next time the filter changes.
 
 The **live tail works against every relay**; the **negentropy backfill depends
 on the upstream**. Some relays advertise NIP-77 but their reconciliation never
