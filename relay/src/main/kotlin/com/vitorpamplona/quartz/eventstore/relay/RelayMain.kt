@@ -63,8 +63,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
  *   Router / upstream mirror (optional; see RouterConfig / MirrorRouter):
  *   ROUTER_CONFIG            strfry-style `streams { }` config (HOCON), inline
  *   ROUTER_CONFIG_FILE       path to a file holding that config
- *   ROUTER_BACKFILL_SECONDS  default history window streams negentropy-backfill
- *                            before their live tail (default 0 ⇒ live-only)
+ *                            (how far back a stream reaches is its filter's own
+ *                            `since`/`until` — absent means the whole history)
  *   ROUTER_DYNAMIC_*         defaults for `relaySource = [...]` streams, whose relay
  *                            list is read from the store's own 10002s/10040s
  *                            rather than configured (see RelaySource)

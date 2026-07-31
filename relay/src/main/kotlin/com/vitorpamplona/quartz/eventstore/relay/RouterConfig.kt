@@ -48,16 +48,22 @@ import java.io.File
  * relay). All three are implemented; `up` reconciles our store against the
  * upstream and pushes what the upstream is missing.
  *
- * Three fields extend strfry's schema, all optional:
+ * Two fields extend strfry's schema, both optional:
  *  - `trusted` (bool, default false): skip signature verification for events
  *    from this stream's relays. Leave it off for public relays.
- *  - `backfillSeconds` (long, default from `ROUTER_BACKFILL_SECONDS`, else 0):
- *    how far back to negentropy-backfill history before the live tail takes
- *    over. 0 means live-only (strfry-router parity) — stream new events from
- *    connect, don't reach for history.
  *  - `relaySource = [ ]` (see [DynamicRelayList]): the stream has no static `urls` at
  *    all — its relay list is read out of the store's own relay-list events and
  *    re-synced on a period. That is the outbox stream, and its NIP-85 twin.
+ *
+ * ## How far back a stream reaches
+ *
+ * The [filter]'s own `since`/`until`, and nothing else. They are an ordinary
+ * NIP-01 filter and mean what NIP-01 says: absent is unbounded, so a stream that
+ * names neither backfills the upstream's whole history.
+ *
+ * The backfill phase runs the filter as written. The live tail runs it from
+ * connect forward — that is what a tail *is*, not a knob — but it keeps the
+ * filter's `until`, so a stream bounded on the right stops there in both phases.
  */
 data class RouterConfig(
     val connectionTimeoutSec: Long,
@@ -65,16 +71,6 @@ data class RouterConfig(
     // How often (seconds) an `up`/`both` stream re-reconciles the store against
     // its upstream to push newly-arrived local events. From ROUTER_UP_INTERVAL_SECONDS.
     val upIntervalSec: Long = 300,
-    // Hard cap (seconds) on a single negentropy reconciliation. Some relays
-    // advertise NIP-77 but never converge; this bounds a session that keeps
-    // talking without progressing, so it fails cleanly and the live tail carries
-    // that upstream. From ROUTER_NEG_TIMEOUT_SECONDS.
-    //
-    // The default is generous because it is not what protects against a *stuck*
-    // upstream — MirrorRouter's 30s idle timeout does that, and it fires whether
-    // this cap is 10 minutes or 10 hours. Real backfill windows are measured in
-    // years, and a tight cap truncates those legitimate fills for no safety gain.
-    val negTimeoutSec: Long = 14_400,
     // Ingest tuning. The store serializes writes through one mutex, so extra
     // workers mostly overlap verify (CPU) with the write (I/O) — a couple is
     // plenty; throughput comes from the batch size (each mutex hold amortizes a
@@ -95,7 +91,7 @@ data class RouterConfig(
     private fun upstreamsFor(want: MirrorDirection): List<MirrorUpstream> =
         streams
             .filter { it.dir == want || it.dir == MirrorDirection.BOTH }
-            .flatMap { s -> s.urls.map { MirrorUpstream(s.name, it, s.filter, s.trusted, s.backfillSeconds) } }
+            .flatMap { s -> s.urls.map { MirrorUpstream(s.name, it, s.filter, s.trusted) } }
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */
@@ -104,7 +100,6 @@ data class MirrorUpstream(
     val url: NormalizedRelayUrl,
     val filter: Filter,
     val trusted: Boolean,
-    val backfillSeconds: Long,
 )
 
 data class MirrorStream(
@@ -113,7 +108,6 @@ data class MirrorStream(
     val filter: Filter,
     val urls: List<NormalizedRelayUrl>,
     val trusted: Boolean,
-    val backfillSeconds: Long,
     // Null for an ordinary stream (its relays are the `urls` above). Set for a
     // stream whose relays come out of the store instead — see [DynamicRelayList].
     val dynamic: DynamicRelayList? = null,
@@ -169,20 +163,18 @@ data class MirrorStream(
  * @param refreshSeconds how often the whole cycle (re-read the sources, re-sync
  *   every relay) runs again.
  * @param concurrency how many of those relays sync at the same time.
- * @param syncTimeoutSeconds hard cap on ONE relay's sync. Deliberately separate
- *   from `ROUTER_NEG_TIMEOUT_SECONDS`, which is sized for a multi-year backfill
- *   of a hand-picked upstream: here the relays are strangers off a list, there
- *   are thousands of them, and one that keeps talking without converging would
- *   otherwise hold a [concurrency] slot for hours while the rest of the network
- *   waits behind it. A cycle syncs a window, not a lifetime, so minutes is the
- *   right order of magnitude.
+ *
+ *   A relay's sync has no wall-clock cap. Every timeout in the client is measured
+ *   from the last message, so a relay that goes quiet is already dropped in
+ *   seconds — and one that is still delivering is doing the work the slot exists
+ *   for, however long it takes. A deadline could only ever fire on the healthy
+ *   case.
  * @param exclude relays to skip however many sources name them.
  */
 data class DynamicRelayList(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
     val concurrency: Int,
-    val syncTimeoutSeconds: Long,
     val exclude: Set<NormalizedRelayUrl>,
 )
 
@@ -280,7 +272,6 @@ enum class RelayRole(
 data class RelaySourceDefaults(
     val refreshSeconds: Long = 21_600,
     val concurrency: Int = 8,
-    val syncTimeoutSeconds: Long = 600,
 )
 
 enum class MirrorDirection(
@@ -306,7 +297,7 @@ enum class MirrorDirection(
  * `ROUTER_UP_INTERVAL_SECONDS` sets how often up/both streams re-reconcile.
  *
  * `ROUTER_DYNAMIC_REFRESH_SECONDS`, `ROUTER_DYNAMIC_CONCURRENCY` and
- * `ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS` do the same for dynamic streams — the
+ * do the same for dynamic streams — the
  * per-stream keys of the same name override each of them.
  */
 object RouterConfigLoader {
@@ -314,9 +305,7 @@ object RouterConfigLoader {
         val inline = env["ROUTER_CONFIG"]?.takeIf { it.isNotBlank() }
         val fromFile = env["ROUTER_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
         val raw = inline ?: fromFile ?: return null
-        val backfillDefault = env["ROUTER_BACKFILL_SECONDS"]?.trim()?.toLongOrNull() ?: 0L
         val upInterval = env["ROUTER_UP_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 300L
-        val negTimeout = env["ROUTER_NEG_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 14_400L
         val ingestConcurrency = env["ROUTER_INGEST_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 64) ?: 2
         val ingestBatch = env["ROUTER_INGEST_BATCH"]?.trim()?.toIntOrNull()?.coerceIn(1, 20_000) ?: 1000
         val fallback = RelaySourceDefaults()
@@ -324,18 +313,13 @@ object RouterConfigLoader {
             RelaySourceDefaults(
                 refreshSeconds = env["ROUTER_DYNAMIC_REFRESH_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
                 concurrency = env["ROUTER_DYNAMIC_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 256) ?: fallback.concurrency,
-                syncTimeoutSeconds =
-                    env["ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L)
-                        ?: fallback.syncTimeoutSeconds,
             )
-        return parse(raw, backfillDefault, upInterval, negTimeout, ingestConcurrency, ingestBatch, relaySourceDefaults)
+        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults)
     }
 
     fun parse(
         hocon: String,
-        backfillDefault: Long = 0L,
         upIntervalSec: Long = 300L,
-        negTimeoutSec: Long = 14_400L,
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
@@ -367,11 +351,10 @@ object RouterConfigLoader {
                     filter = parseFilter(s.getConfig("filter")),
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
-                    backfillSeconds = if (s.hasPath("backfillSeconds")) s.getLong("backfillSeconds") else backfillDefault,
                     dynamic = dynamic,
                 )
             }
-        return RouterConfig(connTimeout, streams, upIntervalSec, negTimeoutSec, ingestConcurrency, ingestBatch)
+        return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch)
     }
 
     private fun normalizeUrls(
@@ -397,14 +380,6 @@ object RouterConfigLoader {
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
-            syncTimeoutSeconds =
-                (
-                    if (s.hasPath("syncTimeoutSeconds")) {
-                        s.getLong("syncTimeoutSeconds")
-                    } else {
-                        defaults.syncTimeoutSeconds
-                    }
-                ).coerceAtLeast(10L),
             exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
         )
     }

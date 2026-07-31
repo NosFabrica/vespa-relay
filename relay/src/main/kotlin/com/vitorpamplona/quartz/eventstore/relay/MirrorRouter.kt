@@ -44,7 +44,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.OkHttpClient
 import java.time.Duration
 import java.util.concurrent.atomic.AtomicLong
@@ -134,6 +133,12 @@ class MirrorRouter(
     private val unverified = AtomicLong()
     private val rejectReasons = java.util.concurrent.ConcurrentHashMap<String, Long>()
 
+    // Store failures already reported in full, so the raw-event dump stays one
+    // per distinct defect however many events trip it. Ingest workers share it.
+    private val poisonSeen =
+        java.util.concurrent.ConcurrentHashMap
+            .newKeySet<String>()
+
     private val downUpstreams = config.downUpstreams()
     private val upUpstreams = config.upUpstreams()
     private val dynamicStreams = config.dynamicStreams()
@@ -149,9 +154,6 @@ class MirrorRouter(
     // first used to close the socket out from under the other, failing a sync
     // that was working. Only the last one out disconnects.
     private val inFlight = java.util.concurrent.ConcurrentHashMap<NormalizedRelayUrl, Int>()
-
-    // Hard cap per negentropy session, from ROUTER_NEG_TIMEOUT_SECONDS.
-    private val negTimeoutMs = config.negTimeoutSec * 1000
 
     fun start(): MirrorRouter {
         if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {
@@ -177,7 +179,9 @@ class MirrorRouter(
         }
         client.connect()
 
-        val backfillers = downUpstreams.filter { it.backfillSeconds > 0 }
+        // Every down upstream backfills: the stream's filter says how far, and a
+        // filter naming no `since` is unbounded, exactly as NIP-01 reads it.
+        val backfillers = downUpstreams
         if (backfillers.isNotEmpty()) {
             progress.begin(backfillers.size)
             scope.launch { backfill(backfillers) }
@@ -259,28 +263,83 @@ class MirrorRouter(
             // Inspecting here keeps each parse on this worker thread, where the
             // audit's ThreadLocal makes the attribution exact.
             audit?.let { for (event in valid) it.inspect(event) }
-            runCatching { store.batchInsert(valid) }
-                .onSuccess { outcomes ->
-                    for (outcome in outcomes) {
-                        when (outcome) {
-                            is IEventStore.InsertOutcome.Accepted -> {
-                                accepted.incrementAndGet()
-                            }
+            insertIsolating(valid)
+        }
+    }
 
-                            is IEventStore.InsertOutcome.Rejected -> {
-                                rejected.incrementAndGet()
-                                rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
-                            }
+    /**
+     * Write a batch, and if it throws, bisect it and write the halves.
+     *
+     * [IEventStore.batchInsert] fails as a unit: one event the store cannot handle
+     * takes the whole batch with it. At the default batch size that is 999 good
+     * events lost per bad one, permanently and with no retry — the loss is silent
+     * except for a count, and the count is a multiple of the batch size rather
+     * than a number of malformed events, which is itself misleading.
+     *
+     * Halving turns that into ~2·log2(n) extra writes on the rare failing batch
+     * and isolates the offender to a single event. Re-writing the good halves is
+     * safe: a batch that threw may have applied some of its events already, and
+     * re-inserting those is just a duplicate the store rejects.
+     *
+     * The isolated event is then reported in full — that is the diagnostic this
+     * exists for. A store-level throw has no other trace: it never reaches the
+     * parse audit (which only covers the search-indexing path) and the exception
+     * is caught here, so without this the raw event is unrecoverable.
+     */
+    private suspend fun insertIsolating(events: List<Event>) =
+        insertBisecting(
+            events = events,
+            write = { store.batchInsert(it) },
+            onOutcomes = { outcomes ->
+                for (outcome in outcomes) {
+                    when (outcome) {
+                        is IEventStore.InsertOutcome.Accepted -> {
+                            accepted.incrementAndGet()
+                        }
+
+                        is IEventStore.InsertOutcome.Rejected -> {
+                            rejected.incrementAndGet()
+                            rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
                         }
                     }
-                }.onFailure { e ->
-                    // Name the exception type too: a batch can fail with a
-                    // message-less throwable, and "store: null" tells nobody
-                    // anything about the events it just cost us.
-                    rejected.addAndGet(valid.size.toLong())
-                    rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", valid.size.toLong(), Long::plus)
                 }
-        }
+            },
+            onPoison = { event, e ->
+                // Name the exception type too — a batch can fail with a
+                // message-less throwable, and "store: null" tells nobody
+                // anything about the event it just cost us.
+                rejected.incrementAndGet()
+                rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L, Long::plus)
+                reportPoison(event, e)
+            },
+            onGaveUp = { batch, e ->
+                // Isolation ran out of budget, so these are counted but unnamed.
+                // Tallied apart from the isolated ones on purpose: "we could not
+                // say which" is a different fact from "this event is bad", and
+                // reading them as one number hides a store-wide outage.
+                rejected.addAndGet(batch.size.toLong())
+                rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
+            },
+        )
+
+    /**
+     * Log an event the store threw on, once per distinct failure, with the raw
+     * JSON. One line per occurrence would be a flood at mirror rates and the
+     * hundredth copy of a defect teaches nothing the first did not, so the
+     * signature is what is deduplicated — and [POISON_SAMPLE_LIMIT] caps even
+     * that, because a genuinely novel corpus could otherwise print all day.
+     */
+    private fun reportPoison(
+        event: Event,
+        error: Throwable,
+    ) {
+        val signature = "${error.javaClass.name}: ${error.message}"
+        if (!poisonSeen.add(signature) || poisonSeen.size > POISON_SAMPLE_LIMIT) return
+        System.err.println(
+            "router: store rejected event ${event.id} (kind ${event.kind}, pubkey ${event.pubKey}) — " +
+                "${error.javaClass.simpleName}: ${error.message}\n" +
+                "router: the event, verbatim: ${event.toJson().take(POISON_JSON_CHARS)}",
+        )
     }
 
     // ---- down --------------------------------------------------------------
@@ -311,7 +370,7 @@ class MirrorRouter(
 
     /**
      * One-shot historical catch-up per upstream: negentropy-reconcile the
-     * `[now - backfillSeconds, now]` window against what we already hold and
+     * stream's filter against what we already hold and
      * download only the diff. quartz falls back to paged REQ automatically for
      * upstreams without NIP-77. Downloaded events funnel through the same
      * [inbound] channel, so ingest, verification, and dedup match the live path.
@@ -330,28 +389,27 @@ class MirrorRouter(
         idx: Int,
         up: MirrorUpstream,
     ) {
-        val until = nowSeconds()
-        val window = up.filter.copy(since = until - up.backfillSeconds, until = until)
+        // The filter as the operator wrote it. `since`/`until` are NIP-01's own,
+        // so absent means unbounded and this reaches the upstream's whole history.
+        val window = up.filter
         try {
-            // Hard cap: some relays advertise NIP-77 but their negentropy never
-            // converges (no download, no idle-timeout either). Bound each session
-            // so it fails cleanly and the live tail carries that upstream instead.
+            // No deadline. Every timeout in the client is measured from the last
+            // message, so a relay that stops answering is dropped in seconds by
+            // [NEG_IDLE_MS] — and one still sending is doing the work we asked
+            // for, however long its history takes. A wall clock could only fire
+            // on the healthy case, which is how a 4h cap came to truncate four
+            // working upstreams at exactly 14400s.
+            val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
             val result =
-                withTimeoutOrNull(negTimeoutMs) {
-                    val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
-                    client.negentropySyncOrFetch(
-                        relay = up.url,
-                        filter = window,
-                        idleTimeoutMs = NEG_IDLE_MS,
-                        localEntries = local,
-                        onProgress = { needSoFar, downloaded -> progress.update(idx, needSoFar, downloaded) },
-                        onEvent = { event -> if (up.filter.match(event)) offer(event, up.trusted) },
-                    )
-                }
-            if (result == null) {
-                progress.done(idx, 0)
-                System.err.println("router: backfill ${up.url.url} timed out after ${negTimeoutMs / 1000}s — live tail continues")
-            } else {
+                client.negentropySyncOrFetch(
+                    relay = up.url,
+                    filter = window,
+                    idleTimeoutMs = NEG_IDLE_MS,
+                    localEntries = local,
+                    onProgress = { needSoFar, downloaded -> progress.update(idx, needSoFar, downloaded) },
+                    onEvent = { event -> if (up.filter.match(event)) offer(event, up.trusted) },
+                )
+            run {
                 progress.done(idx, result.downloaded)
                 System.err.println(
                     "router: backfill ${up.url.url} downloaded ${result.downloaded}" +
@@ -446,13 +504,7 @@ class MirrorRouter(
         // batches), so a snapshot taken mid-cycle wouldn't have seen the earlier
         // relay's events either. The store dedups on insert; the scans were pure
         // waste.
-        val window =
-            if (stream.backfillSeconds > 0) {
-                val until = nowSeconds()
-                stream.filter.copy(since = until - stream.backfillSeconds, until = until)
-            } else {
-                stream.filter
-            }
+        val window = stream.filter
         val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
         // Why the unreachable ones were unreachable, tallied — a relay list is
         // full of dead hosts, and the shape of the failures is what tells an
@@ -468,7 +520,7 @@ class MirrorRouter(
                 launch {
                     gate.withPermit {
                         val got =
-                            dynamicSyncOne(stream, relay.url, window, local, dynamic.syncTimeoutSeconds * 1000) { reason ->
+                            dynamicSyncOne(stream, relay.url, window, local) { reason ->
                                 reasons.merge(reason, 1L, Long::plus)
                             }
                         if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
@@ -502,23 +554,22 @@ class MirrorRouter(
         url: NormalizedRelayUrl,
         window: Filter,
         local: List<IdAndTime>,
-        timeoutMs: Long,
         onFailure: (String) -> Unit,
     ): Int {
         inFlight.merge(url, 1, Int::plus)
         return try {
+            // No wall clock here either: these relays are strangers off a list,
+            // but a slot held by one that is delivering is a slot doing its job.
+            // Silence is what costs us, and [NEG_IDLE_MS] already answers that.
             val result =
-                withTimeoutOrNull(timeoutMs) {
-                    client.negentropySyncOrFetch(
-                        relay = url,
-                        filter = window,
-                        idleTimeoutMs = NEG_IDLE_MS,
-                        localEntries = local,
-                        onEvent = { event -> if (stream.filter.match(event)) offer(event, stream.trusted) },
-                    )
-                }
-            if (result == null) onFailure("timeout")
-            result?.downloaded ?: -1
+                client.negentropySyncOrFetch(
+                    relay = url,
+                    filter = window,
+                    idleTimeoutMs = NEG_IDLE_MS,
+                    localEntries = local,
+                    onEvent = { event -> if (stream.filter.match(event)) offer(event, stream.trusted) },
+                )
+            result.downloaded
         } catch (e: Exception) {
             // A dead host in a relay list is the common case, not an incident:
             // tally it and move on — one line per cycle carries the totals.
@@ -557,37 +608,32 @@ class MirrorRouter(
                 var rounds = 0
                 var pushedThisPass: Long
                 var pushedThisWindow = 0L
-                var timedOut = false
                 do {
                     pushedThisPass = 0
-                    val completed =
-                        withTimeoutOrNull(negTimeoutMs) {
-                            val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(up.filter))
-                            client.negentropyReconcile(
-                                relay = up.url,
-                                filter = up.filter,
-                                localEntries = local,
-                                idleTimeoutMs = NEG_IDLE_MS,
-                                onHaveIds = { ids ->
-                                    val events: List<Event> = store.query(Filter(ids = ids))
-                                    for (event in events) {
-                                        client.publish(event, setOf(up.url))
-                                        pushed.incrementAndGet()
-                                        pushedThisPass++
-                                        delay(UP_PUBLISH_PACE_MS)
-                                    }
-                                },
-                                onNeedIds = { /* up-only: we don't pull here, the down tail does */ },
-                            )
-                            true
-                        }
-                    timedOut = completed == null
+                    run {
+                        val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(up.filter))
+                        client.negentropyReconcile(
+                            relay = up.url,
+                            filter = up.filter,
+                            localEntries = local,
+                            idleTimeoutMs = NEG_IDLE_MS,
+                            onHaveIds = { ids ->
+                                val events: List<Event> = store.query(Filter(ids = ids))
+                                for (event in events) {
+                                    client.publish(event, setOf(up.url))
+                                    pushed.incrementAndGet()
+                                    pushedThisPass++
+                                    delay(UP_PUBLISH_PACE_MS)
+                                }
+                            },
+                            onNeedIds = { /* up-only: we don't pull here, the down tail does */ },
+                        )
+                    }
                     pushedThisWindow += pushedThisPass
                     rounds++
-                } while (pushedThisPass > 0 && !timedOut && rounds < UP_MAX_ROUNDS && scope.isActive)
+                } while (pushedThisPass > 0 && rounds < UP_MAX_ROUNDS && scope.isActive)
                 System.err.println(
-                    "router: up ${up.url.url} pushed $pushedThisWindow event(s) upstream ($rounds round(s))" +
-                        if (timedOut) " [reconcile timed out]" else "",
+                    "router: up ${up.url.url} pushed $pushedThisWindow event(s) upstream ($rounds round(s))",
                 )
             } catch (e: Exception) {
                 System.err.println("router: up ${up.url.url} failed: ${e.message}")
@@ -752,9 +798,18 @@ class MirrorRouter(
         // stream's own refresh interval.
         private const val DYNAMIC_RETRY_BASE_SECONDS = 30L
 
-        // Idle (no protocol frames for this long) aborts a negentropy session,
-        // below the hard [negTimeoutMs] cap.
+        // Idle (no protocol frames for this long) aborts a negentropy session.
+        // This is the ONLY bound on a session: there is no wall-clock deadline,
+        // because a relay that is still answering is one we still want.
         private const val NEG_IDLE_MS = 30_000L
+
+        // Distinct store failures to dump a raw event for. A handful names every
+        // defect a real corpus carries; past that it is a stuck loop, not news.
+        private const val POISON_SAMPLE_LIMIT = 20
+
+        // Enough of the event to reproduce it. Kind 0 content runs long, and a
+        // truncated tail still leaves the id, pubkey, kind and tags readable.
+        private const val POISON_JSON_CHARS = 4_000
 
         private fun fmtDuration(ms: Long): String {
             val s = ms / 1000
@@ -765,3 +820,78 @@ class MirrorRouter(
         }
     }
 }
+
+/**
+ * Write [events] through [write]; if that throws, split the batch and write the
+ * halves, down to the single event the writer cannot take.
+ *
+ * A bulk write fails as a unit, so one event the store chokes on costs the whole
+ * batch — at a 1000-event batch that is 999 good events lost per bad one, with no
+ * retry and no way to tell which one did it. The failure count is then a multiple
+ * of the batch size rather than a number of bad events, which reads as far worse
+ * damage than it is.
+ *
+ * Bisecting costs ~2·log2(n) extra writes on a failing batch and nothing at all on
+ * a healthy one, and it ends holding the offender by itself. Re-writing the good
+ * halves is safe: a batch that threw may already have applied some of its events,
+ * and re-inserting those is a duplicate the store rejects.
+ *
+ * Free-standing and injectable so the isolation can be tested without a store.
+ */
+internal suspend fun insertBisecting(
+    events: List<Event>,
+    write: suspend (List<Event>) -> List<IEventStore.InsertOutcome>,
+    onOutcomes: (List<IEventStore.InsertOutcome>) -> Unit,
+    onPoison: (Event, Throwable) -> Unit,
+    onGaveUp: (List<Event>, Throwable) -> Unit = { _, _ -> },
+) = bisect(events, write, onOutcomes, onPoison, onGaveUp, intArrayOf(ISOLATION_WRITE_BUDGET))
+
+private suspend fun bisect(
+    events: List<Event>,
+    write: suspend (List<Event>) -> List<IEventStore.InsertOutcome>,
+    onOutcomes: (List<IEventStore.InsertOutcome>) -> Unit,
+    onPoison: (Event, Throwable) -> Unit,
+    onGaveUp: (List<Event>, Throwable) -> Unit,
+    budget: IntArray,
+) {
+    if (events.isEmpty()) return
+    try {
+        onOutcomes(write(events))
+    } catch (e: CancellationException) {
+        throw e
+    } catch (e: Throwable) {
+        if (events.size == 1) {
+            onPoison(events.single(), e)
+            return
+        }
+        // Splitting assumes ONE event is at fault and the rest are fine. When the
+        // store itself is refusing — a full disk, a dead engine — that assumption
+        // inverts: every half fails, all the way down, and isolation turns one
+        // failed write into ~2n. Precisely the wrong moment to multiply the load.
+        //
+        // Rather than reading the exception to guess which case this is (engine
+        // error strings are not an API), spend a fixed budget of writes trying to
+        // isolate, and give up on the remainder when it runs out. A batch with a
+        // handful of bad events finishes well inside it; a store-wide failure
+        // stops after a bounded probe instead of hammering the store 2n times.
+        if (budget[0] <= 0) {
+            onGaveUp(events, e)
+            return
+        }
+        budget[0] -= 2
+        val mid = events.size / 2
+        bisect(events.subList(0, mid), write, onOutcomes, onPoison, onGaveUp, budget)
+        bisect(events.subList(mid, events.size), write, onOutcomes, onPoison, onGaveUp, budget)
+    }
+}
+
+/**
+ * Writes one batch may spend isolating its bad events before giving up on the
+ * rest.
+ *
+ * Isolating k bad events out of n costs about `2·k·log2(n)` writes, so 64 covers
+ * three of them in a 1000-event batch — well past the one-per-batch rate seen in
+ * practice. What it really bounds is the store-wide case, where every write fails
+ * and the alternative is ~2000.
+ */
+private const val ISOLATION_WRITE_BUDGET = 64

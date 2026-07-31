@@ -3,16 +3,12 @@
 # Copy to router.conf and enable it with:
 #   ROUTER_CONFIG_LOCAL=./router.conf \
 #   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
-#   ROUTER_BACKFILL_SECONDS=86400 \
 #   docker compose up --build
 #
 # Without Docker, point the relay straight at it:
-#   ROUTER_CONFIG_FILE=./router.conf ROUTER_BACKFILL_SECONDS=86400 ./gradlew :relay:run
 #
 # Each named stream mirrors a NIP-01 `filter` from a set of `urls` in a `dir`
 # (down = pull into our store, up = push ours upstream, both). Optional per
-# stream: `backfillSeconds` (history window to negentropy-backfill before the
-# live tail; overrides ROUTER_BACKFILL_SECONDS) and `trusted` (skip signature
 # verification for that upstream — leave off for public relays).
 #
 # A stream can also drop `urls` entirely and take its relay list from the store,
@@ -46,7 +42,6 @@ streams {
     dataViaOutbox {
         dir = "down"
         filter = { "kinds": [0, 3, 10002, 10040] }
-        backfillSeconds = 172800   # 48h of history per cycle
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 8            # relays synced at the same time
         exclude = []               # relays to skip however many sources name them
@@ -63,7 +58,6 @@ streams {
     assertions {
         dir = "down"
         filter = { "kinds": [0, 10002, 30382] }
-        backfillSeconds = 172800   # 48h of history per cycle
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 8            # relays synced at the same time
         exclude = []               # relays to skip however many sources name them
@@ -122,7 +116,6 @@ streams {
     # These need events to fan out over, so keep at least one static `down` stream
     # above: that is what makes the first cycle non-empty.
     #
-    # `backfillSeconds` is the history window each cycle reconciles. Keep it
     # comfortably longer than `refreshSeconds` so consecutive cycles overlap
     # instead of leaving a gap between them. Drop it and every cycle reconciles
     # the filter's whole history — fine over negentropy, but a relay without
