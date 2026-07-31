@@ -89,13 +89,10 @@ All configuration is through environment variables.
 |---|---|---|
 | `ROUTER_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store | unset ⇒ router off |
 | `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
-| `ROUTER_BACKFILL_SECONDS` | default history window a stream negentropy-backfills before its live tail; per-stream `backfillSeconds` overrides it | `0` (live-tail only) |
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
-| `ROUTER_NEG_TIMEOUT_SECONDS` | hard cap on a single negentropy reconciliation, per upstream (they run in parallel). This is not the stuck-upstream guard — a session with no frames for 30s aborts itself — so it only needs to be large enough for a legitimate fill of `ROUTER_BACKFILL_SECONDS` to finish. Too tight and big upstreams get truncated to live-tail | `14400` (4h) |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
 | `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
 | `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
-| `ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS` | default hard cap on one discovered relay's sync. Deliberately far tighter than `ROUTER_NEG_TIMEOUT_SECONDS`: these relays are strangers off a list and there are thousands of them, so one that talks without converging must not hold a concurrency slot for hours | `600` (10m) |
 
 ### Parse audit (what quartz cannot read)
 
@@ -156,10 +153,11 @@ streams {
     urls   = [ "wss://relay.primal.net", "wss://relay.damus.io", "wss://purplepag.es" ]
   }
   mirrors {
-    dir             = "down"
-    filter          = { "kinds": [0, 3, 5, 1984, 10000, 30000] }
-    backfillSeconds = 86400   # negentropy-reconcile the last day, then live-tail
-    urls            = [ "wss://profiles.nostr1.com", "wss://directory.yabu.me", "wss://relay.ditto.pub" ]
+    dir    = "down"
+    # since/until are the ordinary NIP-01 fields: this one reaches back a day,
+    # while the stream above names neither and so asks for the whole history.
+    filter = { "kinds": [0, 3, 5, 1984, 10000, 30000], "since": 1785000000 }
+    urls   = [ "wss://profiles.nostr1.com", "wss://directory.yabu.me", "wss://relay.ditto.pub" ]
   }
 }
 ```
@@ -168,10 +166,11 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
 
 - **`dir`** — `down` mirrors upstream events into our store; `up` publishes our
   matching events to the upstream; `both` does each on the same relay.
-- **`filter`** — the NIP-01 filter to mirror (kinds, authors, `#tags`, …).
-- **`backfillSeconds`** *(optional)* — history window to negentropy-backfill
-  before the live tail takes over. Upstreams without NIP-77 fall back to paged
-  REQ automatically. `0` (default, or `ROUTER_BACKFILL_SECONDS`) is live-only.
+- **`filter`** — the NIP-01 filter to mirror (kinds, authors, `#tags`, …),
+  including `since` / `until`. They mean what NIP-01 says: absent is unbounded,
+  so a stream naming neither backfills the upstream's **whole history**. Bound it
+  with `since` when that is not what you want. Upstreams without NIP-77 fall back
+  to paged REQ automatically.
 - **`trusted`** *(optional)* — skip signature verification for this upstream's
   events. Off by default; every mirrored event is verified and re-checked
   against the stream filter before it enters the store.
@@ -181,27 +180,21 @@ searchable. It runs one outbound connection per upstream (reconnect and
 re-subscribe are handled for you) and logs unreachable upstreams rather than
 failing — a paused or down relay in the list is skipped, not fatal.
 
-**Down** keeps a live subscription open and, with a backfill window, first
-negentropy-reconciles history. **Up** re-reconciles the store against the
+**Down** keeps a live subscription open and first negentropy-reconciles the
+history its filter asks for. **Up** re-reconciles the store against the
 upstream every `ROUTER_UP_INTERVAL_SECONDS` and publishes only what the
 upstream is missing — set reconciliation gives echo-suppression for free, so an
 event just pulled *down* from a relay is never pushed back *up* to it.
 
 The **live tail works against every relay**; the **negentropy backfill depends
 on the upstream**. Some relays advertise NIP-77 but their reconciliation never
-converges. Two independent bounds handle that: a session with no protocol frames
-for 30 seconds aborts itself — that is what catches a *stuck* upstream — and
-`ROUTER_NEG_TIMEOUT_SECONDS` hard-caps a session that keeps talking without
-converging. Either way the upstream logs it and leans on its live tail, while
-relays that reconcile cleanly backfill in full. So a brand-new store is filled
-forward from connect universally, and backfilled historically for the relays
-whose NIP-77 cooperates.
-
-Because the idle timeout is the real liveness guard, size the hard cap for your
-backfill window, not defensively: a multi-year fill across many relays needs
-hours, and a cap below that silently truncates every upstream that was working.
-Events already downloaded when a cap fires are kept — the session abandons only
-the remainder — though the progress line undercounts that upstream's total.
+converges. One bound handles that: a session with no protocol frames for 30
+seconds aborts itself, and the upstream leans on its live tail while relays that
+reconcile cleanly backfill in full. There is deliberately no wall-clock deadline —
+every timeout is measured from the last message, so a relay that stops answering
+is already gone, and one still sending is doing the work we asked for. So a
+brand-new store is filled forward from connect universally, and backfilled
+historically for the relays whose NIP-77 cooperates.
 
 While backfilling, the router logs progress and an ETA to "useful" (backfill
 complete), so you can tell how long the initial fill will take:
@@ -221,7 +214,6 @@ one fan-out:
 outbox {
   dir             = "down"
   filter          = { "kinds": [0, 3, 10002, 10040] }
-  backfillSeconds = 172800
   refreshSeconds  = 21600
   concurrency     = 8
   exclude         = []
@@ -311,18 +303,12 @@ config's static streams do exactly that, which is why they come first in the fil
 
 Some notes on the other knobs:
 
-- **`backfillSeconds`** is the history window each cycle reconciles. Keep it
+- **the filter's `since`** is the history each cycle reconciles. Keep it
   longer than `refreshSeconds` so consecutive cycles overlap. Leave it unset and
   every cycle reconciles the filter's whole history — cheap enough over
   negentropy, which diffs against what we already hold, but a relay *without*
   NIP-77 falls back to paged REQ, which carries no such state and re-pages its
   entire history on every cycle.
-- **`syncTimeoutSeconds`** caps one relay's sync. This is *not*
-  `ROUTER_NEG_TIMEOUT_SECONDS`, which is sized for a multi-year backfill of a
-  hand-picked upstream. Here the relays are strangers off a list and there are
-  thousands of them, so a relay that keeps talking without converging must not
-  hold a `concurrency` slot for hours while the network queues behind it. A
-  cycle syncs a window, not a lifetime — minutes is the right order.
 - **`concurrency`** is the one dial on cost. The union of every scan on a full
   store is a large set — plenty of it long-dead hosts that will each burn a
   connect timeout — so the cycle is as long as it needs to be, and this decides
@@ -355,7 +341,6 @@ Copy the bundled example, then start with the router on:
 cp router.conf.example router.conf   # then edit the relay list / filters
 ROUTER_CONFIG_LOCAL=./router.conf \
 ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
-ROUTER_BACKFILL_SECONDS=86400 \
 docker compose up --build
 ```
 

@@ -75,7 +75,9 @@ class RouterConfigTest {
         assertEquals(5, popular.urls.size)
         assertEquals(7, mirrors.urls.size)
         assertEquals(false, popular.trusted)
-        assertEquals(0L, popular.backfillSeconds)
+        // No `since`: NIP-01 reads that as unbounded, so the stream reaches the
+        // upstream's whole history rather than only its live tail.
+        assertEquals(null, popular.filter.since)
     }
 
     @Test
@@ -140,34 +142,42 @@ class RouterConfigTest {
                         filter = { "kinds": [0] }
                         urls = ["wss://x.example"]
                         trusted = true
-                        backfillSeconds = 86400
                     }
                 }
                 """.trimIndent(),
-                backfillDefault = 10L,
             )
         val s = cfg.streams.single()
         assertEquals(20L, cfg.connectionTimeoutSec) // default when unset
         assertEquals(MirrorDirection.DOWN, s.dir) // default dir
         assertEquals(true, s.trusted)
-        assertEquals(86400L, s.backfillSeconds) // explicit beats the default
     }
 
     @Test
-    fun `backfillSeconds falls back to the env default`() {
+    fun `a filter's since and until bound how far the stream reaches`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
                 streams {
-                    s {
-                        filter = { "kinds": [0] }
+                    bounded {
+                        filter = { "kinds": [0], "since": 1700000000, "until": 1800000000 }
                         urls = ["wss://x.example"]
+                    }
+                    unbounded {
+                        filter = { "kinds": [0] }
+                        urls = ["wss://y.example"]
                     }
                 }
                 """.trimIndent(),
-                backfillDefault = 3600L,
             )
-        assertEquals(3600L, cfg.streams.single().backfillSeconds)
+        val bounded = cfg.streams.first { it.name == "bounded" }
+        assertEquals(1_700_000_000L, bounded.filter.since)
+        assertEquals(1_800_000_000L, bounded.filter.until)
+
+        // The absent case is the one that matters: nothing substitutes a window
+        // for it, so the stream asks the upstream for everything it has.
+        val unbounded = cfg.streams.first { it.name == "unbounded" }
+        assertEquals(null, unbounded.filter.since)
+        assertEquals(null, unbounded.filter.until)
     }
 
     @Test
@@ -202,7 +212,6 @@ class RouterConfigTest {
                         filter         = { "kinds": [0, 3, 10002] }
                         refreshSeconds     = 3600
                         concurrency        = 4
-                        syncTimeoutSeconds = 120
                         exclude            = [ "wss://skip.example" ]
                         relaySource = [
                             {
@@ -235,7 +244,6 @@ class RouterConfigTest {
         val outbox = cfg.streams.first { it.name == "outbox" }.dynamic!!
         assertEquals(3600L, outbox.refreshSeconds)
         assertEquals(4, outbox.concurrency)
-        assertEquals(120L, outbox.syncTimeoutSeconds)
         assertEquals(listOf("wss://skip.example/"), outbox.exclude.map { it.url })
         assertEquals(2, outbox.sources.size)
 
@@ -275,7 +283,6 @@ class RouterConfigTest {
             "no tag = every tag in the event",
         )
         assertEquals(21_600L, assertions.refreshSeconds) // the built-in defaults
-        assertEquals(600L, assertions.syncTimeoutSeconds)
 
         // Dynamic streams have no static urls, so they are not down/up upstreams.
         assertEquals(2, cfg.dynamicStreams().size)
@@ -356,13 +363,11 @@ class RouterConfigTest {
                         """.trimIndent(),
                     "ROUTER_DYNAMIC_REFRESH_SECONDS" to "900",
                     "ROUTER_DYNAMIC_CONCURRENCY" to "16",
-                    "ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS" to "45",
                 ),
             )
         val dynamic = cfg!!.dynamicStreams().single().dynamic!!
         assertEquals(900L, dynamic.refreshSeconds)
         assertEquals(16, dynamic.concurrency)
-        assertEquals(45L, dynamic.syncTimeoutSeconds)
     }
 
     /** A one-stream config, with [body] as the stream's keys. */

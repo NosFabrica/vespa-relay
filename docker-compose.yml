@@ -52,19 +52,11 @@ services:
       DEFAULT_OBSERVER: ${DEFAULT_OBSERVER:-}
       # Router (upstream mirror). Off by default. To turn it on, drop a strfry-style
       # streams config next to this file (see router.conf.example) and start with:
-      #   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
-      #   ROUTER_BACKFILL_SECONDS=86400 docker compose up --build
+      #   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf docker compose up --build
       # The volume line below mounts ./router.conf when ROUTER_CONFIG_FILE is set.
       ROUTER_CONFIG_FILE: ${ROUTER_CONFIG_FILE:-}
-      # Default history window (seconds) a stream negentropy-backfills before its
-      # live tail; per-stream `backfillSeconds` overrides it. 0 = live-tail only.
-      ROUTER_BACKFILL_SECONDS: ${ROUTER_BACKFILL_SECONDS:-0}
       # How often (seconds) up/both streams re-reconcile to push new local events.
       ROUTER_UP_INTERVAL_SECONDS: ${ROUTER_UP_INTERVAL_SECONDS:-300}
-      # Hard cap (seconds) on one negentropy reconciliation. A stuck upstream is
-      # caught by the 30s idle timeout regardless, so this only needs to be large
-      # enough for a legitimate multi-year fill to finish.
-      ROUTER_NEG_TIMEOUT_SECONDS: ${ROUTER_NEG_TIMEOUT_SECONDS:-14400}
       # Ingest tuning. Throughput comes from the batch size, not the worker count
       # (the store serializes writes). Lower the batch to cut memory.
       ROUTER_INGEST_BATCH: ${ROUTER_INGEST_BATCH:-1000}
@@ -74,9 +66,7 @@ services:
       # `assertions` streams in router.conf.example). Per-stream keys override these.
       ROUTER_DYNAMIC_REFRESH_SECONDS: ${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}
       ROUTER_DYNAMIC_CONCURRENCY: ${ROUTER_DYNAMIC_CONCURRENCY:-8}
-      ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS: ${ROUTER_DYNAMIC_SYNC_TIMEOUT_SECONDS:-600}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
-      # profiles log a line per event during a backfill).
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,
       # which the volume below maps to PARSE_AUDIT_LOCAL_DIR on the host, so the

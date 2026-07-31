@@ -60,7 +60,6 @@ class RelayDiscoveryTest {
         sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
-        syncTimeoutSeconds = 600,
         exclude = exclude.map { RelayUrlNormalizer.normalize(it) }.toSet(),
     )
 
