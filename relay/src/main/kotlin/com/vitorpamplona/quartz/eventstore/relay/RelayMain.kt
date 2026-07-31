@@ -260,21 +260,41 @@ private suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
                 // Said "consistent" once when the store had 24M events and the
                 // engine had simply not finished loading them. Zero providers is
                 // either a fresh relay or a store that is not answering properly
-                // yet — never a clean bill of health.
+                // yet — never a clean bill of health, so it does NOT end the wait.
+                //
+                // Returning here is what left a relay with 270 kind-10040s and an
+                // empty projection for hours: the call had succeeded, one second
+                // after start, against a content node still loading 24M events.
+                // Zero is indistinguishable from cold, so it is retried like cold
+                // and only accepted once the budget is spent.
                 r.services == 0 -> {
-                    println("trust: no provider lists found — nothing to project (a fresh store, or the engine is not serving its corpus yet)")
+                    if (waited >= TRUST_RECONCILE_MAX_WAIT_MS) {
+                        println(
+                            "trust: still no provider lists after ${waited / 1000}s — nothing to project. " +
+                                "A fresh relay: ranking stays empty until a kind 10040 arrives and this runs again.",
+                        )
+                        return
+                    }
+                    if (attempt == 1) {
+                        println("trust: no provider lists yet; waiting for the engine to serve its corpus before ranking is usable")
+                    }
+                    delay(TRUST_RECONCILE_RETRY_MS)
+                    waited += TRUST_RECONCILE_RETRY_MS
+                    return@onSuccess
                 }
 
                 r.isClean() -> {
                     println("trust: ${r.services} service(s) checked, projection consistent")
+                    return
                 }
 
                 else -> {
                     println("trust: re-derived ${r.rebuilt.size} of ${r.services} service(s) whose scores were unprojected")
+                    return
                 }
             }
-            return
         }
+        if (result.isSuccess) continue
         val cause = result.exceptionOrNull()
         if (waited >= TRUST_RECONCILE_MAX_WAIT_MS) {
             System.err.println(

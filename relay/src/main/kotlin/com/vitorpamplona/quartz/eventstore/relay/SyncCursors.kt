@@ -24,6 +24,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.boolean
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -84,11 +85,34 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class SyncCursors(
     private val file: File?,
+    // How long a band may narrow work before the whole filter is walked again.
+    // Not a tuning knob so much as an honesty interval: everything a band claims
+    // is a claim about the past, and this is how long we are willing to trust it
+    // without re-testing. See [Band.fullAt].
+    private val fullResyncSeconds: Long = DEFAULT_FULL_RESYNC_SECONDS,
 ) : AutoCloseable {
-    /** The `created_at` span already pulled for one (relay, filter) pair. */
+    /**
+     * What is already covered for one (relay, filter) pair.
+     *
+     * [complete] is the difference between "we walked this span" and "we are in
+     * sync below this point". A paged fetch only earns the first: it saw the
+     * events it saw, and says nothing about the ones it never asked for. A
+     * negentropy reconcile earns the second — it compares the WHOLE filter range
+     * against our ids, so when it finishes there is nothing older left to want,
+     * whatever it happened to download. Only a complete band may skip its older
+     * leg, which is what turns the next run's snapshot from the whole corpus
+     * into the sliver since [maxCreatedAt].
+     *
+     * [fullAt] is when the last pass that started from nothing finished — the
+     * clock for the periodic re-walk. A band narrows work indefinitely otherwise,
+     * and a relay that later gains an event below our floor (or one we dropped)
+     * would be invisible for as long as the filter stays the same.
+     */
     data class Band(
         val minCreatedAt: Long,
         val maxCreatedAt: Long,
+        val complete: Boolean = false,
+        val fullAt: Long = 0,
     )
 
     private val bands = ConcurrentHashMap<String, Band>()
@@ -137,10 +161,17 @@ class SyncCursors(
         filter: Filter,
     ): List<Filter> {
         val band = bands[key(url, filter)] ?: return listOf(filter)
+        // Time for another full pass. Everything a band claims is a claim about
+        // the past, and relays gain old events — a backfill from elsewhere, a
+        // NIP-77 peer catching up. Without this the claim is never re-tested.
+        if (isStale(band)) return listOf(filter)
         val legs = mutableListOf<Filter>()
 
         // Older: up to and including the band's floor, but not past the filter's.
-        if (filter.since == null || band.minCreatedAt >= filter.since!!) {
+        // A complete band has no older leg at all: the reconcile that produced it
+        // already compared the whole range, so anything below the ceiling that we
+        // do not have is something the relay does not have either.
+        if (!band.complete && (filter.since == null || band.minCreatedAt >= filter.since!!)) {
             legs.add(filter.copy(until = minOf(band.minCreatedAt, filter.until ?: Long.MAX_VALUE)))
         }
 
@@ -166,7 +197,17 @@ class SyncCursors(
         observedMin: Long?,
         observedMax: Long?,
         paged: Boolean,
+        reconciledThrough: Long? = null,
     ) {
+        // A finished reconcile is the strong case: it compared the filter's whole
+        // range against our ids, so we are in sync up to the instant the sync
+        // started — regardless of how many events came back, including none.
+        // Recorded against that instant rather than the newest event seen, because
+        // "the relay had nothing newer" and "we never asked" must not look alike.
+        if (reconciledThrough != null) {
+            put(url, filter, observedMin ?: reconciledThrough, reconciledThrough, complete = true)
+            return
+        }
         if (!paged) return
         // Callers widen the band only with plausible stamps (see [isPlausible]),
         // so an outlier never reaches here. Guarded anyway: a band is a claim
@@ -175,12 +216,42 @@ class SyncCursors(
         // nothing can be in, forever.
         if (observedMin == null || observedMax == null) return
         if (!isPlausible(observedMin) || !isPlausible(observedMax)) return
-        val k = key(url, filter)
-        bands.compute(k) { _, prev ->
-            if (prev == null) {
-                Band(observedMin, observedMax)
+        put(url, filter, observedMin, observedMax, complete = false)
+        // Marked, not written. A dynamic stream records once per leg per relay
+        // and every write serializes the whole map, so saving here would cost
+        // O(relays²) per cycle — thousands of full-file rewrites to persist a few
+        // thousand integers. [flush] does it once, and losing the last unflushed
+        // window to a hard kill costs one partial re-fetch, not correctness.
+        dirty = true
+    }
+
+    /**
+     * Widen (or reset) the band for (url, filter).
+     *
+     * A pass that ran because the previous band had gone stale REPLACES it rather
+     * than widening it — it re-walked the whole filter, so its own span is the
+     * complete picture, and [Band.fullAt] restarts from here. Widening a stale
+     * band instead would carry its claim forward forever and the re-walk would
+     * never actually reset anything.
+     */
+    private fun put(
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        min: Long,
+        max: Long,
+        complete: Boolean,
+    ) {
+        val now = nowSeconds()
+        bands.compute(key(url, filter)) { _, prev ->
+            if (prev == null || isStale(prev)) {
+                Band(min, max, complete, now)
             } else {
-                Band(minOf(prev.minCreatedAt, observedMin), maxOf(prev.maxCreatedAt, observedMax))
+                Band(
+                    minOf(prev.minCreatedAt, min),
+                    maxOf(prev.maxCreatedAt, max),
+                    prev.complete || complete,
+                    prev.fullAt,
+                )
             }
         }
         // Marked, not written. A dynamic stream records once per leg per relay
@@ -189,6 +260,37 @@ class SyncCursors(
         // thousand integers. [flush] does it once, and losing the last unflushed
         // window to a hard kill costs one partial re-fetch, not correctness.
         dirty = true
+    }
+
+    private fun isStale(band: Band): Boolean = nowSeconds() - band.fullAt >= fullResyncSeconds
+
+    /**
+     * The narrowest single filter that still covers what every one of [urls]
+     * needs — the window a shared negentropy snapshot has to be taken over.
+     *
+     * A dynamic cycle takes ONE snapshot of our own ids for the whole fan-out,
+     * so it cannot be narrowed per relay; it has to satisfy the hungriest. In
+     * steady state every relay carries a complete band and this collapses to
+     * `since = the oldest of their ceilings` — which is the difference between
+     * snapshotting 24M ids and snapshotting a few thousand. One relay that has
+     * never been synced (or whose band just went stale) puts it back to the full
+     * filter, correctly: that relay genuinely needs everything.
+     */
+    fun coveringWindow(
+        urls: List<NormalizedRelayUrl>,
+        filter: Filter,
+    ): Filter {
+        if (urls.isEmpty()) return filter
+        var since = Long.MAX_VALUE
+        for (url in urls) {
+            val legs = legs(url, filter)
+            // More than one leg means an older gap this relay still wants, so the
+            // snapshot cannot start anywhere above the filter's own floor.
+            val only = legs.singleOrNull() ?: return filter
+            val legSince = only.since ?: return filter
+            since = minOf(since, legSince)
+        }
+        return if (since == Long.MAX_VALUE) filter else filter.copy(since = since)
     }
 
     /**
@@ -263,7 +365,17 @@ class SyncCursors(
         runCatching {
             Json.parseToJsonElement(f.readText()).jsonObject.forEach { (k, v) ->
                 val o = v.jsonObject
-                bands[k] = Band(o.getValue("min").jsonPrimitive.long, o.getValue("max").jsonPrimitive.long)
+                bands[k] =
+                    Band(
+                        o.getValue("min").jsonPrimitive.long,
+                        o.getValue("max").jsonPrimitive.long,
+                        // Absent in files written before coverage was tracked. A
+                        // missing `complete` reads as "span only", and a missing
+                        // `fullAt` as 0 — which is stale, so the first run after an
+                        // upgrade re-walks once and records the real thing.
+                        o["complete"]?.jsonPrimitive?.boolean ?: false,
+                        o["fullAt"]?.jsonPrimitive?.long ?: 0L,
+                    )
             }
         }.onFailure {
             // A corrupt cursor file is not worth refusing to start over: the cost
@@ -288,6 +400,8 @@ class SyncCursors(
                             buildJsonObject {
                                 put("min", band.minCreatedAt)
                                 put("max", band.maxCreatedAt)
+                                put("complete", band.complete)
+                                put("fullAt", band.fullAt)
                             },
                         )
                     }
@@ -308,6 +422,14 @@ class SyncCursors(
 
         // Nostr's first events are from 2020; anything older is a misdated
         // stamp, not history we walked.
+
+        /**
+         * A week. Long enough that the narrow path is the normal one — the whole
+         * point is that a cycle costs a sliver, not a corpus — and short enough
+         * that anything a band is wrong about is wrong for days, not forever.
+         */
+        const val DEFAULT_FULL_RESYNC_SECONDS = 7L * 24 * 60 * 60
+
         private const val PLAUSIBLE_FLOOR = 1_577_836_800L // 2020-01-01
 
         // Clock skew a relay may legitimately be ahead by. Past this, a
@@ -334,6 +456,10 @@ class SyncCursors(
          * memory, which is the same as not having them: the whole point is
          * surviving the restart. Under compose, point it inside a mounted volume.
          */
-        fun fromEnv(env: Map<String, String>): SyncCursors = SyncCursors(env["ROUTER_SYNC_STATE_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File)).startPeriodicFlush()
+        fun fromEnv(env: Map<String, String>): SyncCursors =
+            SyncCursors(
+                env["ROUTER_SYNC_STATE_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File),
+                env["ROUTER_FULL_RESYNC_SECONDS"]?.trim()?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_FULL_RESYNC_SECONDS,
+            ).startPeriodicFlush()
     }
 }
