@@ -23,6 +23,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
 
 /**
@@ -125,18 +126,7 @@ fun main() {
     // empty with nothing logged anywhere. Settling it here costs a few queries
     // when the answer is "nothing to do", which is the normal case.
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
-        runBlocking {
-            runCatching { store.reconcileTrust() }
-                .onSuccess { r ->
-                    if (r.isClean()) {
-                        println("trust: ${r.services} service(s) checked, projection consistent")
-                    } else {
-                        println("trust: re-derived ${r.rebuilt.size} of ${r.services} service(s) whose scores were unprojected")
-                    }
-                }.onFailure {
-                    System.err.println("trust: reconcile failed (${it.message}); ranking stays incomplete until it runs clean")
-                }
-        }
+        runBlocking { reconcileTrustWithRetry(store) }
     }
     val relay =
         NostrRelayServer(
@@ -232,6 +222,68 @@ fun main() {
         landingPage = webUi(),
     )
 }
+
+/**
+ * Reconcile the trust view, waiting out an engine that is not answering yet.
+ *
+ * A cold Vespa serves its config port within seconds and its QUERIES only once
+ * the content node has loaded the index, which on a large corpus is minutes. A
+ * relay that starts in that gap gets a 503, and a reconcile that gave up there
+ * would skip the repair for the whole life of the process — the same shape as the
+ * bug it exists to fix: a repair that runs once and can never run again. So a
+ * failure is treated as "not yet" and retried, rather than as an answer.
+ *
+ * Bounded, because a failure that is NOT warm-up (a wrong url, a dead cluster)
+ * must not hold the relay off its port forever. When the budget runs out the
+ * relay serves anyway and says what that costs, since serving unranked results
+ * beats serving nothing.
+ */
+private suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
+    var waited = 0L
+    var attempt = 0
+    while (true) {
+        attempt++
+        val result = runCatching { store.reconcileTrust() }
+        result.onSuccess { r ->
+            when {
+                // Said "consistent" once when the store had 24M events and the
+                // engine had simply not finished loading them. Zero providers is
+                // either a fresh relay or a store that is not answering properly
+                // yet — never a clean bill of health.
+                r.services == 0 -> {
+                    println("trust: no provider lists found — nothing to project (a fresh store, or the engine is not serving its corpus yet)")
+                }
+
+                r.isClean() -> {
+                    println("trust: ${r.services} service(s) checked, projection consistent")
+                }
+
+                else -> {
+                    println("trust: re-derived ${r.rebuilt.size} of ${r.services} service(s) whose scores were unprojected")
+                }
+            }
+            return
+        }
+        val cause = result.exceptionOrNull()
+        if (waited >= TRUST_RECONCILE_MAX_WAIT_MS) {
+            System.err.println(
+                "trust: reconcile still failing after ${waited / 1000}s (${cause?.message?.take(120)}); " +
+                    "serving with the projection as-is — ranked searches may return nothing until it runs clean",
+            )
+            return
+        }
+        if (attempt == 1) {
+            println("trust: engine not answering yet (${cause?.message?.take(80)}); waiting for it before ranking is usable")
+        }
+        delay(TRUST_RECONCILE_RETRY_MS)
+        waited += TRUST_RECONCILE_RETRY_MS
+    }
+}
+
+// The engine is being waited ON, not polled at: a cold content node takes
+// minutes, and each attempt is a real query.
+private const val TRUST_RECONCILE_RETRY_MS = 5_000L
+private const val TRUST_RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000L
 
 /** Map a ws/wss url to its http/https origin for NIP-98's `u` tag. */
 private fun String.httpFromWs(): String =

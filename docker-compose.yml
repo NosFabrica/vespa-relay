@@ -18,11 +18,27 @@ services:
     volumes:
       - vespa_var:/opt/vespa/var
     healthcheck:
-      test: ["CMD", "curl", "-fSs", "http://localhost:19071/state/v1/health"]
+      # A query that returns a CONTENT NODE, not the config server and not a
+      # bare HTTP 200. :19071 answers within seconds of the container starting,
+      # and a container whose content node is still loading answers a search with
+      # 200 and {"documents":0,"nodes":0} — so both weaker probes make
+      # `depends_on: service_healthy` mean "Vespa exists" rather than "Vespa has
+      # the corpus". Everything the relay does at startup then runs against an
+      # apparently empty store: the trust reconcile finds no providers and calls
+      # itself consistent, and every dynamic stream finds no relays. Requiring a
+      # node still passes on a genuinely empty store, where nodes is 2 and
+      # documents is 0.
+      test:
+        - CMD-SHELL
+        - >-
+          curl -fSs 'http://localhost:8080/search/?yql=select+*+from+sources+*+where+true&hits=0&timeout=3s'
+          | grep -q '"nodes":[1-9]'
       interval: 5s
-      timeout: 3s
-      retries: 60
-      start_period: 60s
+      timeout: 5s
+      # A cold 20M-doc index takes minutes; these bound the wait at ~30, and a
+      # relay that starts anyway would only find an empty store.
+      retries: 180
+      start_period: 120s
     restart: unless-stopped
 
   relay:
