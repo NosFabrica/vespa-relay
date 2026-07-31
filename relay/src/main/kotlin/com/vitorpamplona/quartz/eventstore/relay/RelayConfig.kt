@@ -96,7 +96,7 @@ fun negentropySettingsFromEnv(env: Map<String, String>): NegentropySettings {
  * from a comma/space-separated `RELAY_ADMIN_PUBKEYS`. Empty ⇒ NIP-86 disabled.
  * Entries that aren't 64-hex are dropped.
  */
-fun adminPubkeysFromEnv(env: Map<String, String>): Set<String> = parseHexSet(env["RELAY_ADMIN_PUBKEYS"])
+fun adminPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["RELAY_ADMIN_PUBKEYS"], "RELAY_ADMIN_PUBKEYS")
 
 /**
  * Static write authorization (geode's `[authorization]`): only these pubkeys may
@@ -104,9 +104,9 @@ fun adminPubkeysFromEnv(env: Map<String, String>): Set<String> = parseHexSet(env
  * (`DENY_PUBKEYS`). Applied to EVENT commands before verification. Distinct from
  * NIP-86 bans, which are a runtime-mutable denylist.
  */
-fun allowPubkeysFromEnv(env: Map<String, String>): Set<String> = parseHexSet(env["ALLOW_PUBKEYS"])
+fun allowPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["ALLOW_PUBKEYS"], "ALLOW_PUBKEYS")
 
-fun denyPubkeysFromEnv(env: Map<String, String>): Set<String> = parseHexSet(env["DENY_PUBKEYS"])
+fun denyPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["DENY_PUBKEYS"], "DENY_PUBKEYS")
 
 /** Static kind authorization: `ALLOW_KINDS` (empty ⇒ all) minus `DENY_KINDS`. */
 fun allowKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["ALLOW_KINDS"])
@@ -125,17 +125,6 @@ fun rejectFutureSecondsFromEnv(env: Map<String, String>): Int = env["REJECT_FUTU
  * (`EXPIRATION_SWEEP_SECONDS`). 0 or negative disables the sweeper. Default 1h.
  */
 fun expirationSweepSecondsFromEnv(env: Map<String, String>): Long = env["EXPIRATION_SWEEP_SECONDS"]?.trim()?.toLongOrNull() ?: 3_600L
-
-private val HEX64 = Regex("^[0-9a-f]{64}$")
-
-/** Split a comma/space/newline list into a deduped set of lowercased 64-hex keys. */
-private fun parseHexSet(raw: String?): Set<String> =
-    raw
-        ?.split(',', ' ', '\n')
-        ?.map { it.trim().lowercase() }
-        ?.filter { it.matches(HEX64) }
-        ?.toSet()
-        .orEmpty()
 
 /** Split a comma/space/newline list into a deduped set of ints, dropping non-numeric entries. */
 private fun parseIntSet(raw: String?): Set<Int> =

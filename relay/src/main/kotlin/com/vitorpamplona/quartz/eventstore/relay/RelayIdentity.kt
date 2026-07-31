@@ -60,6 +60,8 @@ import com.vitorpamplona.quartz.utils.Hex
  * no liveness records, and advertises no `self`. Everything else works.
  */
 object RelayIdentity {
+    private val HEX64 = Regex("^[0-9a-f]{64}$")
+
     const val ENV_VAR = "RELAY_NSEC"
 
     /**
@@ -76,26 +78,23 @@ object RelayIdentity {
     }
 
     fun signerFor(secret: String): NostrSignerInternal {
+        val trimmed = secret.trim().removeSurrounding("\"")
         val hex =
             when {
-                // Not `NSec(secret).hex` — that constructor takes the hex, so it
-                // would happily wrap the bech32 string itself and hand back a
-                // keypair derived from nonsense.
-                secret.startsWith("nsec1") -> {
-                    decodePrivateKeyAsHexOrNull(secret)
-                        ?: throw IllegalArgumentException("$ENV_VAR is not a valid nsec")
-                }
+                // quartz owns the bech32 side, and returns null for an npub rather
+                // than pretending a public key could sign.
+                trimmed.startsWith("n") -> decodePrivateKeyAsHexOrNull(trimmed)
 
-                secret.length == 64 && secret.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } -> {
-                    secret.lowercase()
-                }
-
-                else -> {
-                    throw IllegalArgumentException(
-                        "$ENV_VAR must be an nsec1… or 64 hex characters, got ${describe(secret)}",
-                    )
-                }
-            }
+                // Bare hex is checked HERE, not delegated: Hex.decode maps
+                // characters outside [0-9a-f] instead of refusing them, so one
+                // mistyped digit yields a valid key that is not the one anybody
+                // meant — and the relay would authenticate, and sign, as a
+                // stranger from then on, with nothing to indicate it.
+                else -> trimmed.lowercase().takeIf { it.matches(HEX64) }
+            }?.takeIf { it.length == 64 }
+                ?: throw IllegalArgumentException(
+                    "$ENV_VAR must be an nsec1… or 64 hex characters, got ${describe(secret)}",
+                )
         return NostrSignerInternal(KeyPair(privKey = Hex.decode(hex)))
     }
 

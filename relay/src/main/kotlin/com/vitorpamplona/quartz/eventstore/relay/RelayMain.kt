@@ -141,7 +141,7 @@ fun main() {
     val relay =
         NostrRelayServer(
             store = store,
-            defaultObserver = env["DEFAULT_OBSERVER"],
+            defaultObserver = PubKeys.decodeOrNull(env["DEFAULT_OBSERVER"], "DEFAULT_OBSERVER"),
             relayUrl = relayUrl,
             listener = listener,
             limits = limits,
@@ -233,7 +233,7 @@ fun main() {
                 description = env["RELAY_DESCRIPTION"],
                 icon = env["RELAY_ICON"],
                 banner = env["RELAY_BANNER"],
-                contactPubkey = env["RELAY_CONTACT_PUBKEY"],
+                contactPubkey = PubKeys.decodeOrNull(env["RELAY_CONTACT_PUBKEY"], "RELAY_CONTACT_PUBKEY"),
                 // Derived, never declared: a pubkey an operator types in is an
                 // assertion no reader can check, while this one is provable
                 // against every 22242 and 30166 the relay signs.

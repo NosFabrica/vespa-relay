@@ -23,6 +23,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 
 class RelayConfigTest {
     @Test
@@ -71,15 +72,44 @@ class RelayConfigTest {
     }
 
     @Test
-    fun `admin pubkeys are lowercased, deduped, and hex-validated`() {
+    fun `admin pubkeys are lowercased and deduped`() {
         val a = "a".repeat(64)
         val keys =
             adminPubkeysFromEnv(
-                mapOf(
-                    "RELAY_ADMIN_PUBKEYS" to "${a.uppercase()}, $a, not-hex, ${"b".repeat(63)}, ${"c".repeat(64)}",
-                ),
+                mapOf("RELAY_ADMIN_PUBKEYS" to "${a.uppercase()}, $a, ${"c".repeat(64)}"),
             )
         assertEquals(setOf(a, "c".repeat(64)), keys)
+    }
+
+    @Test
+    fun `a key that cannot be read stops the relay instead of being dropped`() {
+        // This used to filter silently, which is the worst possible outcome for an
+        // admin list: the relay starts, reports the key count it was given minus
+        // the ones it threw away, and the missing admin only finds out when a
+        // NIP-86 call is refused. Same for a deny list — a ban that is not
+        // enforced looks exactly like a ban that was never configured.
+        listOf("not-hex", "b".repeat(63), "npub1nope").forEach { junk ->
+            assertFailsWith<IllegalArgumentException>("'$junk' must not be silently dropped") {
+                adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to "${"a".repeat(64)}, $junk"))
+            }
+        }
+    }
+
+    @Test
+    fun `npub and hex are the same key`() {
+        // The npub of 000…01, so the two spellings must collapse to one entry.
+        val hex = "0000000000000000000000000000000000000000000000000000000000000001"
+        val npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
+        assertEquals(setOf(hex), adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to "$hex, $npub")))
+    }
+
+    @Test
+    fun `an nsec in a pubkey setting is called out by name`() {
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to "nsec1${"q".repeat(58)}"))
+            }
+        assertEquals(true, e.message!!.contains("PRIVATE key"), "got: ${e.message}")
     }
 
     @Test
@@ -94,7 +124,7 @@ class RelayConfigTest {
         val env =
             mapOf(
                 "ALLOW_PUBKEYS" to "${a.uppercase()} $b",
-                "DENY_PUBKEYS" to "not-hex",
+                "DENY_PUBKEYS" to "",
                 "ALLOW_KINDS" to "0,1, 30023",
                 "DENY_KINDS" to "4, junk",
             )

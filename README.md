@@ -70,7 +70,7 @@ All configuration is through environment variables.
 
 | var | meaning | default |
 |---|---|---|
-| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist, 64-hex, comma/space-separated | — |
+| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…` or 64-hex, comma/space-separated. An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
 | `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
@@ -79,7 +79,7 @@ All configuration is through environment variables.
 
 | var | meaning | default |
 |---|---|---|
-| `RELAY_ADMIN_PUBKEYS` | comma/space-separated 64-hex admin keys; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth) | unset ⇒ off |
+| `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…` or 64-hex; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
 

@@ -90,7 +90,11 @@ class RelayIdentityTest {
     @Test
     fun `a typo is rejected loudly rather than starting unauthenticated`() {
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor("not-a-key") }
+        // A character short. Hex.decode tolerates it, so without a length check
+        // this would quietly become a DIFFERENT valid key and the relay would
+        // authenticate as an identity nobody meant to create.
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.dropLast(1)) }
+        assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex + "ab") }
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.dropLast(1) + "z") }
     }
 
