@@ -61,11 +61,25 @@ class ParseAuditTest {
     fun `attributes an unparseable kind 0 content to its event`() {
         val dir = createTempDir()
         audit(dir).use { a ->
-            a.inspect(metadata("1", ""))
+            // A JSON array where an object belongs — still unparseable.
+            a.inspect(metadata("1", "[]"))
 
             val findings = a.snapshot()
             assertEquals(1, findings.size, "expected exactly one finding, got ${findings.map { it.normalizedMessage }}")
             assertEquals(1L, findings.single().count.get())
+        }
+    }
+
+    @Test
+    fun `empty content is no longer a parse failure`() {
+        // It was: "Content Parse Error: … Expected start of the object '{', but
+        // had 'EOF' instead" was the second-largest class in a live audit, 3,783
+        // of 77,753 reports. quartz cdef4e9658 reads an empty content as an empty
+        // profile instead of a failed parse, which is what it always meant.
+        val dir = createTempDir()
+        audit(dir).use { a ->
+            a.inspect(metadata("1", ""))
+            assertEquals(emptyList(), a.snapshot().map { it.normalizedMessage })
         }
     }
 
