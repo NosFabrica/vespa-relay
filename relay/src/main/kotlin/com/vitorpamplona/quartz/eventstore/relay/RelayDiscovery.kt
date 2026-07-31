@@ -63,13 +63,19 @@ object RelayDiscovery {
         pageSize: Int = SCAN_PAGE,
     ): List<DiscoveredRelay> {
         val counts = HashMap<NormalizedRelayUrl, Int>()
+        // One set reused across the whole walk. Most scanned events name no
+        // relay at all — a kind-1 hint scan is overwhelmingly hintless — and a
+        // fresh set per event was the scan's dominant allocation.
+        val perEvent = LinkedHashSet<NormalizedRelayUrl>()
         for (source in dynamic.sources) {
             // One scan per source, every select applied to what it returns — a
             // shelf of relay-list kinds costs one scan, not one scan each.
             scan(store, source.filter, pageSize) { event ->
                 // One event counts a relay once, however many tags — or selects —
                 // repeat it.
-                for (url in urlsIn(event, source.selects)) counts[url] = (counts[url] ?: 0) + 1
+                perEvent.clear()
+                urlsIn(event, source.selects, perEvent)
+                for (url in perEvent) counts.merge(url, 1, Int::plus)
             }
         }
 
@@ -141,7 +147,8 @@ object RelayDiscovery {
             // Short page: the store had nothing older left to give.
             if (page.size < ask) return
 
-            val newBoundary = page.filter { it.createdAt == oldest }.mapTo(HashSet()) { it.id }
+            val newBoundary = HashSet<String>()
+            for (event in page) if (event.createdAt == oldest) newBoundary.add(event.id)
             if (newBoundary.size == page.size) {
                 // Still one timestamp even after growing — we ran out of budget
                 // to widen. Step below it; the remainder of that second is what
@@ -165,14 +172,18 @@ object RelayDiscovery {
     fun urlsIn(
         event: Event,
         selects: List<RelaySelect>,
-    ): Set<NormalizedRelayUrl> {
-        val urls = LinkedHashSet<NormalizedRelayUrl>()
+    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, selects, it) }
+
+    private fun urlsIn(
+        event: Event,
+        selects: List<RelaySelect>,
+        into: MutableSet<NormalizedRelayUrl>,
+    ) {
         for (select in selects) {
             // A select with no kind applies to everything the scan collected.
             if (select.kind != null && select.kind != event.kind) continue
-            urlsIn(event, select, urls)
+            urlsIn(event, select, into)
         }
-        return urls
     }
 
     /**

@@ -249,11 +249,13 @@ class SyncCursors(
      * [Filter.toJson] is the canonical form the protocol itself uses, so two
      * filters that mean the same thing key the same way and any edit keys
      * differently — which is exactly the "config changed, start over" rule.
+     * Serialized once per filter instance through [fingerprints], not once per
+     * call — see the field for why.
      */
     private fun key(
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): String = "${url.url} ${filter.toJson()}"
+    ): String = "${url.url} ${fingerprints.computeIfAbsent(filter) { it.toJson() }}"
 
     private fun load() {
         val f = file ?: return
