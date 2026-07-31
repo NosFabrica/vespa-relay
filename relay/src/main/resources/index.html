@@ -149,7 +149,7 @@
   }
   .chip:hover { border-color: var(--border-strong); color: var(--fg); }
   .chip.on { background: var(--accent); border-color: var(--accent); color: var(--accent-fg); }
-  .bar-right { display: flex; align-items: center; gap: 12px; flex-shrink: 0; }
+  .bar-right { display: flex; flex-wrap: wrap; align-items: center; gap: 10px 14px; flex-shrink: 0; }
 
   .select {
     appearance: none;
@@ -167,10 +167,6 @@
     cursor: pointer;
   }
   .select:hover { border-color: var(--border-strong); color: var(--fg); }
-  .mini { display: inline-flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--muted); cursor: pointer; user-select: none; white-space: nowrap; }
-  .mini input { accent-color: var(--accent); margin: 0; }
-  .mini:hover { color: var(--fg); }
-
   .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
   .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
   .toggle-track { position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--border-strong); flex-shrink: 0; transition: background .15s; }
@@ -185,15 +181,6 @@
   .whoami:empty { display: none; }
   .whoami b { color: var(--fg); font-weight: 600; }
   .whoami .err { color: var(--danger); }
-
-  /* ---- what the page is, while nothing has been searched yet ------------- */
-  .hints { display: flex; flex-wrap: wrap; justify-content: center; gap: 6px 18px; margin-top: 28px; font-size: 12.5px; color: var(--faint); }
-  .hints b { color: var(--muted); font-weight: 600; }
-  .hints kbd {
-    font: inherit; font-size: 11px;
-    border: 1px solid var(--border-strong); border-bottom-width: 2px; border-radius: 5px;
-    padding: 0 5px; color: var(--muted); background: var(--surface);
-  }
 
   /* ---- type-ahead popup --------------------------------------------------- */
   .popup {
@@ -370,7 +357,7 @@
   }
   body.searching .brand { font-size: 15.5px; gap: 7px; margin: 0; }
   body.searching .brand .full { display: none; }
-  body.searching .tagline, body.searching .hints { display: none; }
+  body.searching .tagline { display: none; }
   body.searching #q { padding-top: 9px; padding-bottom: 9px; font-size: 14.5px; }
   body.searching .search-icon { left: 15px; width: 15px; height: 15px; }
   body.searching .bar { grid-column: 1 / -1; margin-top: 0; }
@@ -378,7 +365,7 @@
 
   @media (max-width: 620px) {
     .hero { padding-top: 7vh; }
-    .bar-right { width: 100%; justify-content: space-between; gap: 8px; }
+    .bar-right { width: 100%; gap: 10px 12px; }
     .select { padding-left: 8px; }
     /* the chip row scrolls sideways; fade its right edge so that reads as more */
     .chips {
@@ -429,8 +416,10 @@
           <option value="followers">Followers</option>
           <option value="text">Text only</option>
         </select>
-        <label class="mini" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
-          <input id="spam" type="checkbox" /> unranked too
+        <label class="toggle" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
+          <input id="spam" type="checkbox" />
+          <span class="toggle-track"><span class="toggle-thumb"></span></span>
+          <span class="toggle-text">unranked too</span>
         </label>
         <label class="toggle" title="Sign the relay's NIP-42 challenge with your NIP-07 extension: searches rank by YOUR web of trust, and the relay starts syncing it">
           <input id="asme" type="checkbox" />
@@ -441,12 +430,6 @@
     </div>
 
     <div id="whoami" class="whoami" aria-live="polite"></div>
-
-    <div class="hints">
-      <span><b>NIP-50</b> full-text search over the index</span>
-      <span><b>NIP-42</b> sign in to rank by your own follows</span>
-      <span>press <kbd>Enter</kbd> for the full list</span>
-    </div>
   </div>
 </header>
 
