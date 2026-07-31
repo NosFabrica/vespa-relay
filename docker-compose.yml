@@ -103,6 +103,9 @@ services:
       # nothing without it, and look like empty relays when it is missing.
       # nsec1… or 64 hex. Unset ⇒ challenges are ignored. See .env.example.
       ROUTER_AUTH_NSEC: ${ROUTER_AUTH_NSEC:-}
+      # NIP-66 monitor key. Reading relay liveness is always on and needs no key;
+      # this only PUBLISHES our findings as kind 30166. See .env.example.
+      ROUTER_MONITOR_NSEC: ${ROUTER_MONITOR_NSEC:-}
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
       PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}

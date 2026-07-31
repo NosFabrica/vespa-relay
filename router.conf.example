@@ -88,6 +88,17 @@ streams {
     # list on a mature store reaches five figures of relays, most of them long
     # dead, so this wants to be in the hundreds, not the single digits.
     #
+    # Relay liveness is remembered too, as NIP-66 kind 30166 in this same store,
+    # so a cycle stops re-dialling hosts that a previous one proved gone. Within a
+    # cycle, failures are counted per HOST rather than per url — a filtering relay
+    # is advertised as hundreds of per-user path urls, and a per-url counter never
+    # adds up to a verdict on any of them. A host that ever delivers is never shed.
+    #
+    # The cheapest win here is a filter that includes kind 30166: those records are
+    # ordinary events published by monitors like nostr.watch, so mirroring them
+    # inherits the network's whole relay census before this relay dials anything.
+    # Publishing our own findings back needs ROUTER_MONITOR_NSEC; reading does not.
+    #
     # A finished sync is REMEMBERED per (relay, filter): a negentropy reconcile
     # compares the whole range, so the next cycle asks that relay only for what
     # arrived since — which is also what keeps the local id snapshot this fan-out

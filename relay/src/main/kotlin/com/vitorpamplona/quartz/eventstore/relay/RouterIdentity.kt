@@ -63,7 +63,10 @@ object RouterIdentity {
         return signerFor(raw)
     }
 
-    fun signerFor(secret: String): NostrSignerInternal {
+    fun signerFor(
+        secret: String,
+        varName: String = ENV_VAR,
+    ): NostrSignerInternal {
         val hex =
             when {
                 // Not `NSec(secret).hex` — that constructor takes the hex, so it
@@ -71,7 +74,7 @@ object RouterIdentity {
                 // keypair derived from nonsense.
                 secret.startsWith("nsec1") -> {
                     decodePrivateKeyAsHexOrNull(secret)
-                        ?: throw IllegalArgumentException("$ENV_VAR is not a valid nsec")
+                        ?: throw IllegalArgumentException("$varName is not a valid nsec")
                 }
 
                 secret.length == 64 && secret.all { it.isDigit() || it in 'a'..'f' || it in 'A'..'F' } -> {
@@ -80,7 +83,7 @@ object RouterIdentity {
 
                 else -> {
                     throw IllegalArgumentException(
-                        "$ENV_VAR must be an nsec1… or 64 hex characters, got ${describe(secret)}",
+                        "$varName must be an nsec1… or 64 hex characters, got ${describe(secret)}",
                     )
                 }
             }

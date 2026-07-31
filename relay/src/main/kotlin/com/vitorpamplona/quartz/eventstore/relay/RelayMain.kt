@@ -169,9 +169,25 @@ fun main() {
         System.err.println("router: authenticating to relays as ${authSigner.pubKey.take(12)}… (NIP-42)")
     }
 
+    // Relay liveness across restarts, as NIP-66 30166 in this same store. Reading
+    // is always on and costs one query: a relay whose streams mirror kind 30166
+    // inherits every other monitor's census for free. Writing our own findings
+    // back needs a monitor identity, which is a deliberate choice, not a default.
+    val reachability = RelayReachability(store, RelayReachability.fromEnv { env[it] })
+    if (reachability.publishes) {
+        System.err.println("router: publishing relay reachability as NIP-66 30166")
+    }
+
     val router =
         RouterConfigLoader.fromEnv(env)?.let {
-            MirrorRouter(store, it, audit = parseAudit, cursors = cursors, signer = authSigner).start()
+            MirrorRouter(
+                store,
+                it,
+                audit = parseAudit,
+                cursors = cursors,
+                signer = authSigner,
+                reachability = reachability,
+            ).start()
         }
 
     val admin =
