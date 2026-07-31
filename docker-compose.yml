@@ -71,6 +71,10 @@ services:
       # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,
       # which the volume below maps to PARSE_AUDIT_LOCAL_DIR on the host, so the
       # report is readable without entering the container. Unset ⇒ off.
+      # Where the per-(relay, filter) synced created_at band is kept, so a relay
+      # without NIP-77 resumes instead of re-reading its corpus every restart.
+      # Same mounted volume as the audit below. Unset ⇒ in memory only.
+      ROUTER_SYNC_STATE_FILE: ${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
       PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}
