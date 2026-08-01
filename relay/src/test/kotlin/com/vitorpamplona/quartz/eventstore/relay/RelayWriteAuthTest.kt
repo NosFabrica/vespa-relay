@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
-import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -39,7 +39,7 @@ class RelayWriteAuthTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val signer = NostrSignerSync()
 
-    private fun newStore() = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+    private fun newStore() = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
 
     @Test
     fun `a denied pubkey cannot publish`() =
@@ -89,7 +89,7 @@ class RelayWriteAuthTest {
 
     private fun publishAndExpectReject(
         server: NostrRelayServer,
-        store: NostrEventStore,
+        store: NostrSemanticsStore,
         event: Event,
     ) = runBlocking {
         val out = Collections.synchronizedList(mutableListOf<String>())

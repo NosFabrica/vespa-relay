@@ -20,8 +20,6 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
-import com.vitorpamplona.quartz.eventstore.store.ObserverContext
-import com.vitorpamplona.quartz.eventstore.store.OriginalFilters
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.CountResult
@@ -43,6 +41,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.VerifyAuthOnlyPolicy
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanStore
@@ -141,11 +140,15 @@ class NostrRelayServer(
 }
 
 /**
- * Delegates everything to [LiveEventStore], wrapping each read in an
- * [ObserverContext] that carries the session's ranking observer: the first
+ * Delegates everything to [LiveEventStore], wrapping each read in a
+ * [StoreQueryContext] that carries the session's ranking observer: the first
  * NIP-42-authenticated pubkey, or else the operator's default. The store
  * reads that element back out when it builds the Vespa query. This is how a
  * per-connection fact crosses the caller-agnostic `IEventStore` interface.
+ *
+ * [LiveEventStore] installs the same element for authenticated connections, so
+ * only the default-observer half is ours — but that half is the anonymous
+ * caller, which is most of them.
  */
 internal class ObserverRoutingBackend(
     private val inner: LiveEventStore,
@@ -187,12 +190,20 @@ internal class ObserverRoutingBackend(
         val authenticated = ctx.authenticatedUsers.firstOrNull()
         authenticated?.let { onObserver?.invoke(it) }
         val observer = authenticated ?: defaultObserver
-        // Both elements cross IEventStore's caller-agnostic interface through
-        // the coroutine context. OriginalFilters preserves the NIP-50
-        // extensions that Quartz's engine strips before the store, which this
-        // store honors. ObserverContext carries the ranking observer.
-        var context: CoroutineContext = OriginalFilters(filters)
-        if (observer != null) context += ObserverContext(observer)
-        return withContext(context) { block() }
+        // Crosses IEventStore's caller-agnostic interface on the coroutine
+        // context, so no query/count signature has to widen to carry it.
+        //
+        // Quartz's own relay path installs this element too, but only for
+        // NIP-42-authenticated connections. This wrapper still exists for the
+        // other half: an operator-configured [defaultObserver] gives anonymous
+        // callers a ranking lens, and quartz will never install one for them.
+        //
+        // There used to be a second element here, OriginalFilters, carrying the
+        // NIP-50 extensions quartz's engine stripped before the store saw them.
+        // The IEventStore contract now passes `search` VERBATIM and the store
+        // parses `sort:`/`filter:rank:`/`include:spam`/`observer:` itself, so
+        // there is nothing left to preserve.
+        if (observer == null) return block()
+        return withContext(StoreQueryContext(setOf(observer))) { block() }
     }
 }

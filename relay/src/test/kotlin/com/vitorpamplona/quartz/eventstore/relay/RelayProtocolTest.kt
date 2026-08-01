@@ -20,8 +20,8 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
-import com.vitorpamplona.quartz.eventstore.store.DEFAULT_MIN_RANK
-import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
+import com.vitorpamplona.quartz.eventstore.store.mapping.DEFAULT_MIN_RANK
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -42,7 +42,7 @@ import kotlin.test.fail
 
 /**
  * The whole relay stack, driven over the wire protocol: Quartz's engine ->
- * ObserverRoutingBackend -> NostrEventStore -> a recording in-memory index.
+ * ObserverRoutingBackend -> NostrSemanticsStore -> a recording in-memory index.
  * Sessions speak raw NIP-01 JSON through [NostrRelayServer.connect], exactly
  * what the websocket route feeds them.
  */
@@ -78,7 +78,7 @@ class RelayProtocolTest {
     }
 
     private val index = RecordingIndex()
-    private val store = NostrEventStore(index, relay = relayUrl)
+    private val store = NostrSemanticsStore(index, relay = relayUrl)
     private val server = NostrRelayServer(store, defaultObserver, relayUrl)
     private val signer = NostrSignerSync()
 
@@ -174,11 +174,17 @@ class RelayProtocolTest {
         }
 
     /**
-     * Quartz's engine STRIPS NIP-50 extensions from REQ filters before the
-     * store ([OriginalFilters] carries the originals past it) — this store
-     * honors them, so they must survive the whole websocket path. This is the
-     * session-level net for future Quartz bumps: it fails if the extensions
-     * stop reaching the Vespa query.
+     * NIP-50 extensions must survive the whole websocket path to the engine
+     * query. The store parses `sort:`/`filter:rank:`/`include:spam`/`observer:`
+     * itself, which only works if it receives `search` verbatim.
+     *
+     * The mechanism behind that has already changed once: quartz's engine used
+     * to strip the extensions before the store, and the relay carried the
+     * originals past it on the coroutine context. The IEventStore contract now
+     * passes `search` through untouched and that workaround is gone. The test
+     * is unchanged across both, which is the point — it asserts the property
+     * the relay needs, not the arrangement that currently delivers it, so it
+     * keeps working as the session-level net for future quartz bumps.
      */
     @Test
     fun `NIP-50 extensions survive the session to the engine query`() =

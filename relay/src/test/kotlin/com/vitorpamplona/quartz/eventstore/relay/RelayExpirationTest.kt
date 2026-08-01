@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
-import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -41,7 +41,7 @@ class RelayExpirationTest {
             // events that expire while stored (the store's own deletion logic is
             // tested upstream). Here we verify the sweeper drives that path
             // cleanly and never over-deletes a live, non-expiring event.
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             val kept = signer.sign<Event>(1_700_000_000L, 1, emptyArray(), "stays")
             store.insert(kept)
 
@@ -52,7 +52,7 @@ class RelayExpirationTest {
 
     @Test
     fun `a non-positive interval never starts the loop`() {
-        val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+        val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
         // Should not throw, and close() is safe even though nothing was launched.
         ExpirationSweeper(store, intervalSeconds = 0).start().close()
     }
