@@ -5,6 +5,20 @@ plugins {
     application
 }
 
+// Our quartz pin WINS over the one vespa-eventstore drags in transitively.
+//
+// Both are JitPack commit hashes, and Gradle resolves a version conflict by
+// picking the "higher" string — which for hashes is lexicographic and therefore
+// meaningless. Pinning quartz to 6d518adddb while the store carried 79f198c729
+// silently resolved to 79f198c729, because '7' > '6', and the build compiled
+// against a quartz that did not have the method being added. Nothing warned;
+// the pin simply had no effect.
+configurations.all {
+    resolutionStrategy {
+        force(libs.quartz)
+    }
+}
+
 dependencies {
     // The relay is Quartz's protocol engine (RelayServerBase) over a vespa-eventstore store.
     api(libs.quartz)
