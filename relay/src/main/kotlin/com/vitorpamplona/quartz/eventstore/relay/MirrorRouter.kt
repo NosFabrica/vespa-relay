@@ -288,6 +288,9 @@ class MirrorRouter(
         java.util.concurrent.atomic
             .AtomicInteger()
 
+    /** Time-axis progress for every paged walk in flight, across both paths. */
+    private val paging = PagingProgress()
+
     fun start(): MirrorRouter {
         if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
@@ -597,20 +600,60 @@ class MirrorRouter(
                             } else {
                                 if (pagersReport) phases.set(name, StreamPhases.Phase.Fetching(0, pagers.size, 0))
                                 scope.launch {
-                                    pagers.forEach { (idx, up) ->
-                                        launch {
-                                            eventsEarly.addAndGet(pageOne(idx, up).toLong())
-                                            if (pagersReport) {
-                                                phases.set(
-                                                    name,
-                                                    StreamPhases.Phase.Fetching(
-                                                        pagedDone.incrementAndGet(),
-                                                        pagers.size,
-                                                        eventsEarly.get(),
-                                                    ),
-                                                )
+                                    // Refreshed on a tick, not only as relays
+                                    // finish: twelve relays paging for an hour
+                                    // complete almost never, and a window
+                                    // percentage that only moves on completion is
+                                    // the stale-phase bug this line was added to
+                                    // end. Cancelled by the join below.
+                                    val tick =
+                                        if (!pagersReport) {
+                                            null
+                                        } else {
+                                            launch {
+                                                while (true) {
+                                                    delay(PROGRESS_INTERVAL_MS)
+                                                    phases.set(
+                                                        name,
+                                                        StreamPhases.Phase.Fetching(
+                                                            pagedDone.get(),
+                                                            pagers.size,
+                                                            eventsEarly.get(),
+                                                            paging.fraction(),
+                                                            paging.etaMs(),
+                                                        ),
+                                                    )
+                                                }
                                             }
                                         }
+                                    // coroutineScope, because `forEach { launch }`
+                                    // inside scope.launch returns the instant the
+                                    // children START. Cancelling the ticker after
+                                    // it killed the ticker microseconds in — the
+                                    // same mistake [dynamicCycle] already carries
+                                    // a comment about. This awaits them.
+                                    try {
+                                        coroutineScope {
+                                            pagers.forEach { (idx, up) ->
+                                                launch {
+                                                    eventsEarly.addAndGet(pageOne(idx, up).toLong())
+                                                    if (pagersReport) {
+                                                        phases.set(
+                                                            name,
+                                                            StreamPhases.Phase.Fetching(
+                                                                pagedDone.incrementAndGet(),
+                                                                pagers.size,
+                                                                eventsEarly.get(),
+                                                                paging.fraction(),
+                                                                paging.etaMs(),
+                                                            ),
+                                                        )
+                                                    }
+                                                }
+                                            }
+                                        }
+                                    } finally {
+                                        tick?.cancel()
                                     }
                                 }
                             }
@@ -720,8 +763,15 @@ class MirrorRouter(
             for (window in legs) {
                 var seenMin: Long? = null
                 var seenMax: Long? = null
+                val walk = "${up.streamName}|${up.url.url}"
+                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCursors.PLAUSIBLE_FLOOR)
                 downloaded +=
-                    client.fetchAllPages(up.url, listOf(window), NEG_IDLE_MS) { event ->
+                    client.fetchAllPages(
+                        up.url,
+                        listOf(window),
+                        NEG_IDLE_MS,
+                        onNewPage = { until -> paging.mark(walk, until) },
+                    ) { event ->
                         if (up.filter.match(event)) {
                             if (SyncCursors.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -733,6 +783,7 @@ class MirrorRouter(
                     }
                 // paged = true: this walked a span, it did not reconcile a range,
                 // so the band it earns is the span it saw and nothing more.
+                paging.finish(walk)
                 cursors.record(up.url, up.filter, seenMin, seenMax, paged = true)
             }
             progress.done(idx, downloaded)
@@ -1079,6 +1130,23 @@ class MirrorRouter(
                         val elapsed = System.currentTimeMillis() - startedMs
                         val rate = if (elapsed > 0) finished * 1000.0 / elapsed else 0.0
                         val etaSec = if (rate > 0) ((relays.size - finished) / rate).toLong() else -1
+                        // A fetch-only stream has a real denominator — the time
+                        // window each relay is walking — where a relay COUNT only
+                        // ever says how many are finished, not how far the ones
+                        // still running have got.
+                        if (stream.sync == SyncMode.FETCH) {
+                            phases.set(
+                                stream.name,
+                                StreamPhases.Phase.Fetching(
+                                    done = finished.toInt(),
+                                    total = relays.size,
+                                    events = downloaded.get(),
+                                    fraction = paging.fraction(),
+                                    etaMs = paging.etaMs(),
+                                ),
+                            )
+                            continue
+                        }
                         phases.set(
                             stream.name,
                             StreamPhases.Phase.Syncing(
@@ -1168,11 +1236,15 @@ class MirrorRouter(
                 .joinToString { "${it.key} x${it.value}" }
         // One write for the whole fan-out, not one per relay.
         cursors.flush()
+        val elapsedMs = System.currentTimeMillis() - startedMs
         // Liveness is flushed by the monitor for the whole router, not per cycle:
         // it observes the static upstreams too, and they never pass through here.
         System.err.println(
             "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get() - skipped.get()}/${relays.size} relay(s)" +
-                " in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
+                " in ${fmtDuration(elapsedMs)}" +
+                // The one number that makes two cycles comparable. Total and
+                // duration were both here and the division was left to the reader.
+                (if (elapsedMs >= 1_000 && downloaded.get() > 0) " (${downloaded.get() * 1000 / elapsedMs}/s)" else "") +
                 "; ${health.summary(relays.size)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
                 "; next in ${dynamic.refreshSeconds}s",
@@ -1221,7 +1293,19 @@ class MirrorRouter(
                 val fetched = stream.sync == SyncMode.FETCH
                 val result =
                     if (fetched) {
-                        null.also { downloaded += client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS, onEvent = onEvent) }
+                        null.also {
+                            val walk = "${stream.name}|${url.url}"
+                            paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCursors.PLAUSIBLE_FLOOR)
+                            downloaded +=
+                                client.fetchAllPages(
+                                    url,
+                                    listOf(leg),
+                                    NEG_IDLE_MS,
+                                    onNewPage = { until -> paging.mark(walk, until) },
+                                    onEvent = onEvent,
+                                )
+                            paging.finish(walk)
+                        }
                     } else {
                         client
                             .negentropySyncOrFetch(
@@ -1732,3 +1816,6 @@ private suspend fun <T> List<T>.partitionSuspend(predicate: suspend (T) -> Boole
         val marked = map { item -> async { item to predicate(item) } }.awaitAll()
         marked.filter { it.second }.map { it.first } to marked.filterNot { it.second }.map { it.first }
     }
+
+/** Wall-clock seconds, the unit every `created_at` in the protocol is in. */
+private fun nowSeconds(): Long = System.currentTimeMillis() / 1000

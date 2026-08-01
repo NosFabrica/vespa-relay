@@ -106,6 +106,9 @@ class StreamPhases {
             val done: Int,
             val total: Int,
             val events: Long,
+            /** Time-axis progress of the relays still walking — see [PagingProgress]. */
+            val fraction: Double? = null,
+            val etaMs: Long? = null,
         ) : Phase
 
         /** Fanning out. */
@@ -202,11 +205,14 @@ class StreamPhases {
             }
 
             is Phase.Fetching -> {
-                "fetching ${phase.done}/${phase.total} relay(s), ${phase.events} event(s) ($elapsed elapsed)"
+                "fetching ${phase.done}/${phase.total} relay(s), ${phase.events} event(s)${rate(phase.events, elapsedMs)}" +
+                    (phase.fraction?.let { " — %.0f%% through the window".format(it * 100) } ?: "") +
+                    (phase.etaMs?.let { ", ETA ~${fmtDuration(it)}" } ?: "") +
+                    " ($elapsed elapsed)"
             }
 
             is Phase.Syncing -> {
-                "syncing ${phase.done}/${phase.total} relay(s), ${phase.events} event(s)" +
+                "syncing ${phase.done}/${phase.total} relay(s), ${phase.events} event(s)${rate(phase.events, elapsedMs)}" +
                     (if (phase.skipped > 0) ", ${phase.skipped} skipped as dead" else "") +
                     (if (phase.unreachable > 0) ", ${phase.unreachable} unreachable" else "") +
                     " ($elapsed elapsed)"
@@ -222,6 +228,28 @@ class StreamPhases {
         }
     }
 
+    /**
+     * `, 2350/s` — throughput for the phase, or nothing when it is too early to
+     * mean anything.
+     *
+     * Only the static backfill line ever carried a rate; the dynamic streams
+     * reported a running total against an elapsed clock and left the division
+     * to whoever was reading. A total that is still climbing and one that has
+     * stalled look identical that way, which is the thing worth seeing.
+     *
+     * The clock is the PHASE's, and it restarts when the phase kind changes, so
+     * this is the rate of the work being described rather than a lifetime
+     * average diluted by everything before it.
+     */
+    private fun rate(
+        events: Long,
+        elapsedMs: Long,
+    ): String {
+        // Under a second the divisor is noise and the answer is a wild number.
+        if (elapsedMs < 1_000 || events <= 0) return ""
+        return ", ${events * 1000 / elapsedMs}/s"
+    }
+
     companion object {
         /** 24.8M rather than 24819118: the magnitude is the point, not the digits. */
         fun fmtCount(n: Int): String =
@@ -230,5 +258,89 @@ class StreamPhases {
                 n >= 1_000 -> "%.0fk".format(n / 1_000.0)
                 else -> n.toString()
             }
+    }
+}
+
+/**
+ * How far a paged walk has got, and when it will finish — measured on the time
+ * axis, because that is the only axis whose end is known in advance.
+ *
+ * A paged fetch has no event denominator. It asks for the newest events below a
+ * moving `until` and walks backwards; how many exist is exactly what it is
+ * trying to find out. Every attempt to report a percentage from event counts
+ * therefore reported `downloaded/downloaded` — a permanent `100%` and an
+ * `ETA ~0:00` from the first event, printed for hours against a relay that had
+ * barely started. Five numbers on that line and not one of them measured
+ * anything.
+ *
+ * The time axis has what the event axis lacks: both ends are known before the
+ * first request. The walk starts at the filter's `until` (or now) and finishes
+ * at its `since` (or [SyncCursors.PLAUSIBLE_FLOOR], below which no real event
+ * can exist), and `fetchAllPages` reports each page's new `until` — the exact
+ * position of the walk between them. It needs no COUNT support, which matters:
+ * the relay holding the scores we most want does not implement NIP-45.
+ *
+ * The estimate assumes events are spread evenly over time, which they are not —
+ * a relay busier this month than in 2021 finishes its last stretch faster than
+ * predicted. So this errs pessimistic on the tail and is honest about what it
+ * is: a bound that only ever moves forward, never a promise.
+ */
+class PagingProgress {
+    private class Walk(
+        val top: Long,
+        val bottom: Long,
+        val startedMs: Long,
+        @Volatile var current: Long,
+    )
+
+    private val walks = ConcurrentHashMap<String, Walk>()
+
+    /** Begin a walk over `[bottom, top]` seconds. */
+    fun begin(
+        key: String,
+        top: Long,
+        bottom: Long,
+    ) {
+        if (top > bottom) walks[key] = Walk(top, bottom, System.currentTimeMillis(), top)
+    }
+
+    /** The walk reached [until]; monotonic, so a page that jumps back cannot un-advance it. */
+    fun mark(
+        key: String,
+        until: Long,
+    ) {
+        walks[key]?.let { if (until < it.current) it.current = until }
+    }
+
+    fun finish(key: String) {
+        walks.remove(key)
+    }
+
+    /**
+     * Fraction of the walk complete, averaged over every relay still walking.
+     *
+     * Averaged rather than summed: relays run concurrently and each covers its
+     * own span, so "half the relays are done and half are at zero" is 50% — the
+     * thing an operator actually wants to know.
+     */
+    fun fraction(): Double? {
+        val live = walks.values.toList()
+        if (live.isEmpty()) return null
+        return live.sumOf { w ->
+            val span = (w.top - w.bottom).coerceAtLeast(1)
+            ((w.top - w.current).toDouble() / span).coerceIn(0.0, 1.0)
+        } / live.size
+    }
+
+    /** Milliseconds left at the rate achieved so far, or null before it means anything. */
+    fun etaMs(): Long? {
+        val f = fraction() ?: return null
+        // Under a few percent the extrapolation is dominated by connect time and
+        // produces numbers like "ETA 9 days" that are worse than saying nothing.
+        if (f < 0.02) return null
+        val oldestStart = walks.values.minOfOrNull { it.startedMs } ?: return null
+        val elapsed = System.currentTimeMillis() - oldestStart
+        if (elapsed < 5_000) return null
+        return ((elapsed / f) - elapsed).toLong()
     }
 }
