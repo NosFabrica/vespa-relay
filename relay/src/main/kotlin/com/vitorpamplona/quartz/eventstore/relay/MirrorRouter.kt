@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
+import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
@@ -210,6 +211,11 @@ class MirrorRouter(
     private val dynamicStreams = config.dynamicStreams()
     private val progress = BackfillProgress()
 
+    // What every stream is doing right now. The old output only ever reported
+    // things that had FINISHED, so the two longest phases — walking the local id
+    // set and discovering relays — printed nothing at all. See [StreamPhases].
+    private val phases = StreamPhases()
+
     // The relays we hold a live subscription on. A dynamic sync drops its socket
     // when it finishes, and must not drop one of these out from under its tail.
     private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
@@ -256,6 +262,12 @@ class MirrorRouter(
 
         // Up: one reconcile loop per up-upstream.
         upUpstreams.forEach { up -> scope.launch { upLoop(up) } }
+
+        // Registered BEFORE anything runs: a configured stream must appear in the
+        // report from the first tick, so silence can never be read as "not
+        // configured" — which is exactly how two dynamic streams went unnoticed.
+        downUpstreams.map { it.streamName }.distinct().forEach { phases.register(it) }
+        dynamicStreams.forEach { phases.register(it.name) }
 
         // Dynamic: one refresh loop per stream, each discovering its own relays.
         dynamicStreams.forEach { stream -> scope.launch { dynamicLoop(stream) } }
@@ -473,6 +485,23 @@ class MirrorRouter(
     }
 
     /**
+     * The id walk, reporting its running count when the store can.
+     *
+     * The progress overload is a [VespaEventStore] capability, not part of
+     * quartz's [IEventStore] contract — no other implementation needs a hook
+     * only a mirror uses. A store without it still works; the phase simply
+     * reports elapsed time and no count.
+     */
+    private suspend fun snapshotReporting(
+        window: Filter,
+        onProgress: (Int) -> Unit,
+    ): List<IdAndTime> =
+        when (store) {
+            is VespaEventStore -> store.snapshotIdsForNegentropy(listOf(window), null, onProgress)
+            else -> store.snapshotIdsForNegentropy(listOf(window))
+        }
+
+    /**
      * The local id set every relay in one stream reconciles against.
      *
      * Narrowed to what the hungriest of them still needs: once they all carry a
@@ -499,8 +528,17 @@ class MirrorRouter(
         val window = cursors.coveringWindow(group.map { it.url }, filter)
         val startedMs = System.currentTimeMillis()
         val takenAt = startedMs / 1000
-        val local = store.snapshotIdsForNegentropy(listOf(window))
         val name = group.first().streamName
+        // The denominator, asked for once. Seconds against a walk that takes
+        // minutes, and it turns "4.2M ids so far" into "4.2M/14.9M (28%)".
+        // Null rather than a guess if it fails: an unknown denominator is
+        // better than a wrong one.
+        val expected = runCatching { store.count(window) }.getOrNull()
+        phases.set(name, StreamPhases.Phase.Snapshotting(0, expected, group.size))
+        val local =
+            snapshotReporting(window) { collected ->
+                phases.set(name, StreamPhases.Phase.Snapshotting(collected, expected, group.size))
+            }
         System.err.println(
             "router: static backfill $name local snapshot ${local.size} id(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
                 (window.since?.let { ", since $it" } ?: ", full filter (no relay is caught up yet)") +
@@ -630,11 +668,10 @@ class MirrorRouter(
             var ran = false
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
+                phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
                 val relays = RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay))
                 if (relays.isEmpty()) {
-                    System.err.println(
-                        "router: ${stream.name} found no relays in [$sourceNames] yet — retrying in ${retrySec}s",
-                    )
+                    phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else {
                     dynamicCycle(stream, dynamic, sourceNames, relays)
                     ran = true
@@ -645,7 +682,7 @@ class MirrorRouter(
                 // loop quietly instead of logging a scary line on every stop.
                 throw e
             } catch (e: Exception) {
-                System.err.println("router: ${stream.name} refresh failed: ${e.message} — retrying in ${retrySec}s")
+                phases.set(stream.name, StreamPhases.Phase.Failed(e.message?.take(80) ?: e.javaClass.simpleName, retrySec))
             }
 
             if (ran) {
@@ -698,7 +735,12 @@ class MirrorRouter(
         // of their ceilings instead. See [SyncCursors.coveringWindow].
         val snapshotWindow = cursors.coveringWindow(relays.map { it.url }, window)
         val snapStartedMs = System.currentTimeMillis()
-        val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(snapshotWindow))
+        val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
+        phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
+        val local: List<IdAndTime> =
+            snapshotReporting(snapshotWindow) { collected ->
+                phases.set(stream.name, StreamPhases.Phase.Snapshotting(collected, expected, relays.size))
+            }
         System.err.println(
             "router: ${stream.name} local snapshot ${local.size} id(s) in ${fmtDuration(System.currentTimeMillis() - snapStartedMs)}" +
                 (snapshotWindow.since?.let { ", since $it" } ?: ", full filter (no relay is caught up yet)"),
@@ -727,11 +769,15 @@ class MirrorRouter(
                         val elapsed = System.currentTimeMillis() - startedMs
                         val rate = if (elapsed > 0) finished * 1000.0 / elapsed else 0.0
                         val etaSec = if (rate > 0) ((relays.size - finished) / rate).toLong() else -1
-                        System.err.println(
-                            "router: ${stream.name} $finished/${relays.size} relay(s), ${downloaded.get()} event(s)" +
-                                (if (skipped.get() > 0) ", ${skipped.get()} skipped as dead" else "") +
-                                (if (failed.get() > 0) ", ${failed.get()} unreachable" else "") +
-                                (if (etaSec >= 0) ", ETA ~${fmtDuration(etaSec * 1000)}" else ""),
+                        phases.set(
+                            stream.name,
+                            StreamPhases.Phase.Syncing(
+                                done = finished.toInt(),
+                                total = relays.size,
+                                events = downloaded.get(),
+                                skipped = skipped.get(),
+                                unreachable = failed.get(),
+                            ),
                         )
                     }
                 }
@@ -821,6 +867,7 @@ class MirrorRouter(
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
                 "; next in ${dynamic.refreshSeconds}s",
         )
+        phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.refreshSeconds))
     }
 
     /**
@@ -977,6 +1024,7 @@ class MirrorRouter(
             }
             // ETA from the average download rate since start — steadier than an
             // instantaneous window, which flickers to zero between negentropy pages.
+            phases.report().forEach { System.err.println(it) }
             val elapsedSec = s.elapsedMs / 1000.0
             val avgRate = if (elapsedSec > 0) s.downloaded / elapsedSec else 0.0
             val remaining = (s.need - s.downloaded).coerceAtLeast(0)
@@ -1161,14 +1209,6 @@ class MirrorRouter(
         // Enough of the event to reproduce it. Kind 0 content runs long, and a
         // truncated tail still leaves the id, pubkey, kind and tags readable.
         private const val POISON_JSON_CHARS = 4_000
-
-        private fun fmtDuration(ms: Long): String {
-            val s = ms / 1000
-            val h = s / 3600
-            val m = (s % 3600) / 60
-            val sec = s % 60
-            return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
-        }
     }
 }
 
