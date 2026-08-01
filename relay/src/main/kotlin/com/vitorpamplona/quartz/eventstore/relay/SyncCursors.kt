@@ -265,6 +265,18 @@ class SyncCursors(
     private fun isStale(band: Band): Boolean = nowSeconds() - band.fullAt >= fullResyncSeconds
 
     /**
+     * Has this relay ever completed a negentropy reconcile for [filter]?
+     *
+     * False for one never synced and for one that paged, and those are the same
+     * answer to the question that matters: it will not read the local id set, so
+     * it need not wait for the walk that builds it.
+     */
+    fun everReconciled(
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ): Boolean = bands[key(url, filter)]?.complete == true
+
+    /**
      * The narrowest single filter that still covers what every one of [urls]
      * needs — the window a shared negentropy snapshot has to be taken over.
      *

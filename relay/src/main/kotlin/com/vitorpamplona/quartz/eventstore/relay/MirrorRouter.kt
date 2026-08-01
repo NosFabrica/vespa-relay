@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
@@ -492,21 +493,53 @@ class MirrorRouter(
                 .groupBy { it.value.filter }
                 .forEach { (filter, group) ->
                     launch {
-                        phases.set(group.first().value.streamName, StreamPhases.Phase.Queued(group.size))
+                        val name = group.first().value.streamName
+                        // Relays that will PAGE do not read the id set, so they do
+                        // not wait for it. fetchAllPages takes a relay, a filter
+                        // and a timeout — localEntries belongs to negentropySync
+                        // alone — yet every paging relay used to sit through the
+                        // whole walk for a set it never touched. That walk is 3:46
+                        // for 14.9M ids and 10:36 for 43.7M, and a stream behind
+                        // the gate waits for both.
+                        //
+                        // "Will page" comes off the cursor: a band is complete only
+                        // after a successful reconcile, so !complete covers the
+                        // relay that paged before AND the one never synced — and
+                        // the second wants paging anyway, since reconciling tens of
+                        // millions of ids to discover we need essentially
+                        // everything is the expensive way to learn it.
+                        val (reconcilers, pagers) =
+                            group.partition { cursors.everReconciled(it.value.url, it.value.filter) }
+                        val eventsEarly = AtomicLong()
+                        val early =
+                            if (pagers.isEmpty()) {
+                                null
+                            } else {
+                                scope.launch {
+                                    pagers.forEach { (idx, up) ->
+                                        launch { eventsEarly.addAndGet(pageOne(idx, up).toLong()) }
+                                    }
+                                }
+                            }
+                        if (reconcilers.isEmpty()) {
+                            early?.join()
+                            phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), 0))
+                            return@launch
+                        }
+                        phases.set(name, StreamPhases.Phase.Queued(reconcilers.size))
                         streamGate.withPermit {
-                            val local = snapshotForStream(group.map { it.value }, filter)
+                            val local = snapshotForStream(reconcilers.map { it.value }, filter)
                             // Awaited inside the permit: the id set stays live
                             // until the last relay is done with it, so releasing
                             // at the fan-out would let the next stream allocate
                             // its own on top of this one.
-                            val name = group.first().value.streamName
                             val done =
                                 java.util.concurrent.atomic
                                     .AtomicInteger()
                             val events = AtomicLong()
-                            phases.set(name, StreamPhases.Phase.Syncing(0, group.size, 0, 0, 0))
+                            phases.set(name, StreamPhases.Phase.Syncing(0, reconcilers.size, 0, 0, 0))
                             coroutineScope {
-                                group.forEach { (idx, up) ->
+                                reconcilers.forEach { (idx, up) ->
                                     launch {
                                         val got = backfillOne(idx, up, local)
                                         events.addAndGet(got.toLong())
@@ -519,7 +552,7 @@ class MirrorRouter(
                                             name,
                                             StreamPhases.Phase.Syncing(
                                                 done.incrementAndGet(),
-                                                group.size,
+                                                reconcilers.size,
                                                 events.get(),
                                                 0,
                                                 0,
@@ -528,7 +561,8 @@ class MirrorRouter(
                                     }
                                 }
                             }
-                            phases.set(name, StreamPhases.Phase.Idle(events.get(), 0))
+                            early?.join()
+                            phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), 0))
                         }
                     }
                 }
@@ -571,6 +605,51 @@ class MirrorRouter(
          */
         val takenAt: Long,
     )
+
+    /**
+     * Page a relay's whole window, with no local id set involved.
+     *
+     * Same leg walk and same cursor bookkeeping as the reconcile path — it just
+     * never touches the snapshot, so it runs while one is still being built.
+     */
+    private suspend fun pageOne(
+        idx: Int,
+        up: MirrorUpstream,
+    ): Int {
+        val legs = cursors.legs(up.url, up.filter)
+        if (legs.isEmpty()) {
+            progress.done(idx, 0)
+            return 0
+        }
+        var downloaded = 0
+        return try {
+            for (window in legs) {
+                var seenMin: Long? = null
+                var seenMax: Long? = null
+                downloaded +=
+                    client.fetchAllPages(up.url, listOf(window), NEG_IDLE_MS) { event ->
+                        if (up.filter.match(event)) {
+                            if (SyncCursors.isPlausible(event.createdAt)) {
+                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                            }
+                            offer(event, up.trusted)
+                        }
+                        progress.update(idx, downloaded, downloaded)
+                    }
+                // paged = true: this walked a span, it did not reconcile a range,
+                // so the band it earns is the span it saw and nothing more.
+                cursors.record(up.url, up.filter, seenMin, seenMax, paged = true)
+            }
+            progress.done(idx, downloaded)
+            System.err.println("router: static backfill ${up.url.url} paged $downloaded (no snapshot needed)")
+            downloaded
+        } catch (e: Exception) {
+            progress.done(idx, 0)
+            System.err.println("router: static backfill ${up.url.url} paged fetch failed: ${e.message}")
+            0
+        }
+    }
 
     private suspend fun snapshotForStream(
         group: List<MirrorUpstream>,
