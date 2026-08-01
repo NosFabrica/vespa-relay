@@ -495,6 +495,7 @@
       this.okWaiters = new Map();  // event id -> resolver for its OK
       this.nextId = 1;
       this.challenge = null;       // the connection's NIP-42 challenge
+      this.authed = false;         // did THIS connection complete NIP-42?
       this.opening = null;
       this.onclose = null;
     }
@@ -514,6 +515,7 @@
           fail(new Error("relay connection closed"));
           this.ws = null;
           this.challenge = null;
+          this.authed = false;
           for (const s of this.subs.values()) s.finish(new Error("connection closed"));
           this.subs.clear();
           this.onclose && this.onclose();
@@ -558,7 +560,7 @@
         const timer = setTimeout(() => { this.okWaiters.delete(signed.id); reject(new Error("auth timed out")); }, timeoutMs);
         this.okWaiters.set(signed.id, (msg) => {
           clearTimeout(timer);
-          msg[2] ? resolve() : reject(new Error(msg[3] || "auth rejected"));
+          if (msg[2]) { this.authed = true; resolve(); } else reject(new Error(msg[3] || "auth rejected"));
         });
         this.ws.send(JSON.stringify(["AUTH", signed]));
       });
@@ -572,7 +574,11 @@
   // (and enrolls you: the relay starts syncing your trust chain).
   let me = null; // authenticated hex pubkey
 
-  relay.onclose = () => { me = null; renderWhoami(); };
+  // A dropped socket loses the AUTH, not the identity. Keeping `me` means the
+  // page still knows who you are and re-authenticates on the next request,
+  // instead of silently downgrading you to anonymous ranking with nothing on
+  // screen to say the results changed meaning.
+  relay.onclose = () => { renderWhoami(); };
 
   async function waitForChallenge(ms) {
     const t0 = Date.now();
@@ -580,9 +586,17 @@
     return relay.challenge;
   }
 
-  async function login() {
-    if (!(window.nostr && window.nostr.signEvent)) throw new Error("No Nostr extension found (window.nostr / NIP-07)");
-    await relay.connect();
+  // Sign the CURRENT challenge and send it, retrying if the connection changed
+  // underneath us.
+  //
+  // NIP-07 signing waits on a human clicking approve in an extension popup,
+  // which is seconds — and a challenge belongs to one connection. If the socket
+  // is replaced in that window (an idle drop, or the relay restarting), the
+  // signature we are about to send is for a challenge the server has never
+  // heard of, and it answers "invalid: challenge does not match". Re-reading
+  // the challenge after signing and retrying against the new one is the whole
+  // fix; without it the only recovery is for the user to click again.
+  async function signAndAuth(attempt = 0) {
     const challenge = await waitForChallenge(3000);
     if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
     const signed = await window.nostr.signEvent({
@@ -591,8 +605,21 @@
       content: "",
       tags: [["relay", RELAY_URL], ["challenge", challenge]],
     });
+    if (relay.challenge !== challenge) {
+      // Two tries only: a socket flapping faster than a person can click is a
+      // broken relay, and looping would just spam the signer.
+      if (attempt >= 1) throw new Error("The connection kept resetting while signing — try again");
+      await relay.connect();
+      return signAndAuth(attempt + 1);
+    }
     await relay.auth(signed);
-    me = signed.pubkey;
+    return signed.pubkey;
+  }
+
+  async function login() {
+    if (!(window.nostr && window.nostr.signEvent)) throw new Error("No Nostr extension found (window.nostr / NIP-07)");
+    await relay.connect();
+    me = await signAndAuth();
     renderWhoami();
     // Show the observer's own profile name next to the toggle when we have it.
     enrichProfiles([me]).then(renderWhoami).catch(() => {});
@@ -600,8 +627,13 @@
 
   async function ensureLogin() {
     if (!$asme.checked) return;
-    if (me) return;
-    await login(); // a reconnect dropped the auth: sign in again
+    await relay.connect();
+    // Keyed on the CONNECTION's auth state, not on whether we remember a
+    // pubkey: a reconnect leaves `me` set but the new socket unauthenticated,
+    // and searching then would quietly rank by nobody.
+    if (relay.authed) return;
+    me = await signAndAuth();
+    renderWhoami();
   }
 
   // ---- search over NIP-50 ---------------------------------------------------
