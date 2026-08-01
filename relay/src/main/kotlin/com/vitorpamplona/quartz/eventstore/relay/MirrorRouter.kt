@@ -540,12 +540,12 @@ class MirrorRouter(
                         // to be "we have never fetched from this relay", not "it
                         // has never reconciled" ([SyncCursors.everTouched] carries
                         // the full account). A paged fetch records an incomplete
-                        // band by design, so the reconcile predicate re-selected
-                        // the same relays every cycle and they paged their whole
-                        // history forever — 5.4M events re-downloaded to keep
-                        // 7,812. Paging is for first contact only, where there is
-                        // genuinely nothing to reconcile against and everything to
-                        // fetch anyway.
+                        // band by design, so the reconcile predicate kept the same
+                        // relays in the paging branch permanently — re-paging
+                        // their whole history on every full resync, and never
+                        // attempting negentropy in between. 14.4M events fetched
+                        // to keep 9,878. Paging is for first contact only, where
+                        // there is genuinely no band to reconcile against.
                         val (reconcilers, pagers) =
                             group.partition { cursors.everTouched(it.value.url, it.value.filter) }
                         val eventsEarly = AtomicLong()

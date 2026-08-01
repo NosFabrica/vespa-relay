@@ -203,11 +203,12 @@ class SyncCursorsTest {
         // against and everything to fetch.
         //
         // The predicate used to be `band.complete`, which a paged fetch never
-        // sets, so paging relays re-selected themselves every cycle and paged
-        // forever: 5.4M events re-downloaded to keep 7,812. The test that
-        // shipped alongside it asserted precisely that, and passed. Hence this
+        // sets, so paging relays stayed in that branch permanently: re-paging
+        // their whole history on every full resync and never once attempting
+        // negentropy. 14.4M events fetched to keep 9,878. The test that shipped
+        // alongside it asserted precisely that behaviour, and passed. Hence this
         // one, which pins the property that actually matters rather than the
-        // implementation's own opinion of itself.
+        // implementation'"'"'s own opinion of itself.
         val c = SyncCursors(null)
         assertFalse(c.everTouched(relay, profiles), "never fetched — this one pages")
 
