@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSoc
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
@@ -101,9 +102,6 @@ class MirrorRouter(
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
     // Null (the default) leaves challenges unanswered. See [RelayIdentity].
     private val signer: NostrSigner? = null,
-    // Relay liveness that survives a restart, as NIP-66 30166 in this same store.
-    // Null disables it entirely; the default reads but does not publish.
-    private val reachability: RelayReachability? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -146,10 +144,26 @@ class MirrorRouter(
 
     private val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
 
-    // Watches EVERY connection this client makes — static live tails, backfills,
-    // up-reconciles, dynamic fan-outs — so what we learn about a relay does not
-    // depend on which code path happened to dial it. See [RelayObserver].
-    private val observer = RelayObserver().also { client.addConnectionListener(it) }
+    // NIP-66. Watches EVERY connection this client makes — static live tails,
+    // backfills, up-reconciles, dynamic fan-outs — so what we learn about a relay
+    // does not depend on which code path dialled it, measures the round trips,
+    // signs them as kind 30166 into this same store, and hands back a cheap
+    // dead-relay set for the fan-out to skip.
+    //
+    // Built from what the router already holds, and only when there is an
+    // identity to sign with: publishing relay quality is the whole point of
+    // NIP-66, so a monitor that cannot sign would be a component configured,
+    // silent, and doing nothing.
+    private val monitor =
+        signer?.let {
+            RelayMonitor(
+                client = client,
+                store = store,
+                scope = scope,
+                signer = it,
+                onError = { message -> System.err.println("router: $message") },
+            )
+        }
 
     // NIP-42. Relays that gate reads behind AUTH serve nothing until we answer
     // their challenge — and an unanswered challenge looks exactly like an
@@ -242,12 +256,6 @@ class MirrorRouter(
 
         // Up: one reconcile loop per up-upstream.
         upUpstreams.forEach { up -> scope.launch { upLoop(up) } }
-
-        // Sign and persist what we have learned about other relays, periodically.
-        // Not at the end of a cycle: the static upstreams are observed too, and
-        // they never end a cycle — a relay whose live tail has been up for hours
-        // is the one we know the most about.
-        if (reachability?.publishes == true) scope.launch { reachabilityLoop() }
 
         // Dynamic: one refresh loop per stream, each discovering its own relays.
         dynamicStreams.forEach { stream -> scope.launch { dynamicLoop(stream) } }
@@ -608,7 +616,7 @@ class MirrorRouter(
         // What earlier runs — and any other NIP-66 monitor whose 30166s we mirror
         // — already proved unreachable. Loaded once for the fan-out, exactly as
         // the cursor bands are: this is a policy input, not a per-dial lookup.
-        val knownDead = reachability?.deadSet().orEmpty()
+        val knownDead = monitor?.deadSet().orEmpty()
         val health = RelayHealth(knownDead = knownDead)
 
         // ONE window and ONE local snapshot for the whole cycle, not one per
@@ -747,9 +755,8 @@ class MirrorRouter(
                 .joinToString { "${it.key} x${it.value}" }
         // One write for the whole fan-out, not one per relay.
         cursors.flush()
-        // Liveness is flushed by [reachabilityLoop] for the whole router, not per
-        // cycle: the observer sees the static upstreams too, and they never pass
-        // through here.
+        // Liveness is flushed by the monitor for the whole router, not per cycle:
+        // it observes the static upstreams too, and they never pass through here.
         System.err.println(
             "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get() - skipped.get()}/${relays.size} relay(s)" +
                 " in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
@@ -818,24 +825,6 @@ class MirrorRouter(
             -1
         } finally {
             releaseSocket(url)
-        }
-    }
-
-    /**
-     * Write out what [observer] has measured, on an interval.
-     *
-     * Drained rather than copied, so a relay whose state has not changed since
-     * the last flush is left alone instead of having its record — and therefore
-     * its TTL — refreshed on a measurement nobody re-took.
-     */
-    private suspend fun reachabilityLoop() {
-        while (scope.isActive) {
-            delay(REACHABILITY_FLUSH_MS)
-            val observations = observer.drain()
-            val written = runCatching { reachability?.record(observations) ?: 0 }.getOrDefault(0)
-            if (written > 0) {
-                System.err.println("router: published $written relay reachability record(s) (NIP-66 30166)")
-            }
         }
     }
 
@@ -993,21 +982,17 @@ class MirrorRouter(
         // First: a backfill killed mid-flight still keeps the ground it gained.
         runCatching { cursors.flush() }
         // A last flush: a run that ends between intervals still knows things about
-        // relays that the next run would otherwise pay to rediscover.
-        //
-        // Time-boxed, because this is a blocking write on the shutdown path. The
-        // engine being unreachable is a normal way for a relay to be going down
-        // in the first place, and there is no read deadline on that client — so
-        // without a bound, the one case where close() hangs forever is the case
-        // where it is most likely to happen.
+        // relays that the next run would otherwise pay to rediscover. The monitor
+        // deliberately leaves this to us, because only the caller knows how long
+        // a shutdown may block — and the engine being unreachable is a normal way
+        // for a relay to be going down, with no read deadline on that client, so
+        // unbounded here would hang exactly when it is most likely to.
         runCatching {
             kotlinx.coroutines.runBlocking {
-                kotlinx.coroutines.withTimeoutOrNull(SHUTDOWN_FLUSH_MS) {
-                    reachability?.record(observer.drain())
-                }
+                kotlinx.coroutines.withTimeoutOrNull(SHUTDOWN_FLUSH_MS) { monitor?.flush() }
             }
         }
-        runCatching { client.removeConnectionListener(observer) }
+        runCatching { monitor?.close() }
         runCatching { authenticator?.destroy() }
         downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
@@ -1106,14 +1091,6 @@ class MirrorRouter(
         // is bounded by the streams' own `concurrency` rather than by this.
         private const val MAX_CONCURRENT_SOCKETS = 1024
         private const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
-
-        /**
-         * How often measurements become signed records. Five minutes: long enough
-         * that a relay flapping does not mint a record per flap, short enough that
-         * a restart loses little — and the 30166s are replaceable, so the cost of
-         * writing again is one document, not one more.
-         */
-        private const val REACHABILITY_FLUSH_MS = 5 * 60 * 1000L
 
         /** How long a shutdown will wait on that last write before giving up. */
         private const val SHUTDOWN_FLUSH_MS = 5_000L
