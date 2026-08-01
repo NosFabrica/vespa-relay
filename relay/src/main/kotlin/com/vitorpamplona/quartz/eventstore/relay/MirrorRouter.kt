@@ -443,20 +443,76 @@ class MirrorRouter(
      * Progress is reported through [progress]. Failures are logged, never fatal.
      */
     private suspend fun backfill(ups: List<MirrorUpstream>) {
-        // Concurrently: a fast upstream (ditto reconciles in seconds) shouldn't
-        // wait on a slow or stuck one. Nothing bounds a backfill by wall clock —
-        // the only bound is quartz's idle timeout, seconds since the last message
-        // — so a relay that keeps talking without converging holds its slot for
-        // as long as it keeps talking. Deliberate: a wall-clock cap truncates the
-        // download of a big honest relay, which is the worse failure.
+        // ONE snapshot per STREAM, not one per relay.
+        //
+        // Every url in a stream shares that stream's filter instance, so a
+        // per-relay snapshot walked the identical range once per url and threw
+        // away N-1 byte-identical answers. Measured here: 7,683 visit pages
+        // against a single `kind==0 or kind==10002` selection, ~6 minutes of
+        // engine time, before one event had been downloaded — and none of it
+        // visible, because `need` is unknown until the reconcile starts, so the
+        // progress line reads "0/0 events (0%)" the whole time.
+        //
+        // [dynamicCycle] was fixed this way already; this is the same fix on the
+        // path it missed. The trade is identical too: a relay reconciles against
+        // the store as it was when its stream started, so an event a sibling
+        // relay delivered in the meantime can be fetched twice. That was always
+        // true — ingest is asynchronous, so a per-relay snapshot would not have
+        // seen it either — and the store dedups on insert.
         coroutineScope {
-            ups.forEachIndexed { idx, up -> launch { backfillOne(idx, up) } }
+            ups
+                .withIndex()
+                .groupBy { it.value.filter }
+                .forEach { (filter, group) ->
+                    launch {
+                        val local = snapshotForStream(group.map { it.value }, filter)
+                        group.forEach { (idx, up) -> launch { backfillOne(idx, up, local) } }
+                    }
+                }
         }
+    }
+
+    /**
+     * The local id set every relay in one stream reconciles against.
+     *
+     * Narrowed to what the hungriest of them still needs: once they all carry a
+     * complete band, this is the sliver since the oldest ceiling rather than the
+     * whole corpus. One relay that has never synced correctly widens it back —
+     * that relay genuinely needs everything.
+     */
+    private class StreamSnapshot(
+        val ids: List<IdAndTime>,
+        /**
+         * When the ids were read, in seconds. The coverage a reconcile earns is
+         * measured from HERE, not from when a given relay's leg happened to
+         * start: the comparison is against the store as it was at this instant,
+         * and every relay in the stream shares it. Stamping the later leg start
+         * would claim we had compared a window we never looked at.
+         */
+        val takenAt: Long,
+    )
+
+    private suspend fun snapshotForStream(
+        group: List<MirrorUpstream>,
+        filter: Filter,
+    ): StreamSnapshot {
+        val window = cursors.coveringWindow(group.map { it.url }, filter)
+        val startedMs = System.currentTimeMillis()
+        val takenAt = startedMs / 1000
+        val local = store.snapshotIdsForNegentropy(listOf(window))
+        val name = group.first().streamName
+        System.err.println(
+            "router: static backfill $name local snapshot ${local.size} id(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
+                (window.since?.let { ", since $it" } ?: ", full filter (no relay is caught up yet)") +
+                " — shared by ${group.size} relay(s)",
+        )
+        return StreamSnapshot(local, takenAt)
     }
 
     private suspend fun backfillOne(
         idx: Int,
         up: MirrorUpstream,
+        snapshot: StreamSnapshot,
     ) {
         // The filter as the operator wrote it. `since`/`until` are NIP-01's own,
         // so absent means unbounded and this reaches the upstream's whole history
@@ -484,18 +540,19 @@ class MirrorRouter(
                 // for, however long its history takes. A wall clock could only fire
                 // on the healthy case, which is how a 4h cap came to truncate four
                 // working upstreams at exactly 14400s.
-                // Stamped BEFORE the sync, not after: everything the reconcile
-                // compared against is our state as of now, so this is the instant
-                // we are provably in sync through. Taking it afterwards would
-                // claim coverage of events that arrived while it ran.
-                val syncStartedAt = System.currentTimeMillis() / 1000
-                val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+
+                // Coverage is stamped from when the SNAPSHOT was read, not from
+                // now: that is the state the relay is being compared against, and
+                // it is shared by the whole stream. Using the later leg start
+                // would claim we had compared a window we never looked at — and
+                // erring early only costs a small re-fetch, never a gap.
+                val syncStartedAt = snapshot.takenAt
                 val result =
                     client.negentropySyncOrFetch(
                         relay = up.url,
                         filter = window,
                         idleTimeoutMs = NEG_IDLE_MS,
-                        localEntries = local,
+                        localEntries = snapshot.ids,
                         onProgress = { needSoFar, done -> progress.update(idx, needSoFar, downloaded + done) },
                         onEvent = { event ->
                             if (up.filter.match(event)) {

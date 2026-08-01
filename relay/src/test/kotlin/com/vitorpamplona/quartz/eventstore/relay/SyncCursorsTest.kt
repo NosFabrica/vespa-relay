@@ -216,6 +216,22 @@ class SyncCursorsTest {
     }
 
     @Test
+    fun `one shared window serves a whole stream of relays`() {
+        // Every url in a stream shares that stream's filter, so the static
+        // backfill takes ONE snapshot for all of them instead of walking the
+        // identical range once per relay — 7,683 visit pages against a single
+        // selection, on a real store, for byte-identical answers.
+        val c = SyncCursors(null)
+        val third = RelayUrlNormalizer.normalize("wss://third.example")
+        c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        c.record(other, profiles, null, null, paged = false, reconciledThrough = 1_700_003_000L)
+        c.record(third, profiles, null, null, paged = false, reconciledThrough = 1_700_007_000L)
+
+        // The hungriest of them sets the floor; the other two re-read a little.
+        assertEquals(1_700_003_000L, c.coveringWindow(listOf(relay, other, third), profiles).since)
+    }
+
+    @Test
     fun `a relay with an older gap also widens the shared window`() {
         val c = SyncCursors(null)
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
