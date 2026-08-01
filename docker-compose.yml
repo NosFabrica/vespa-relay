@@ -69,12 +69,18 @@ services:
       # whole fan-out, not one relay. The JVM default is 25% of the container,
       # which OOM'd at 8.4 GiB the first time every stream asked for full history.
       #
-      # 45% is now 45% of mem_limit below, which is the point of setting one:
+      # 70% because the streams are serialised: the peak is now ONE stream's id
+      # set rather than every stream's sum, and the largest single one — 43.7M
+      # ids for the assertions filter — is about 5.3 GiB. At 45% of a 12 GiB
+      # container the heap was 5.4 GiB, which that set only just fits inside
+      # before anything else is allocated.
+      #
+      # The percentage is of mem_limit below, which is the point of setting one:
       # MaxRAMPercentage reads the cgroup, and without a limit it reads the HOST,
       # so this asked for 22.7 GiB of a machine the engine had already claimed 32
       # GiB of. A bounded heap also makes ingest backpressure do its job instead
       # of letting the relay grow into the engine's memory.
-      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=45}
+      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}
       VESPA_URL: http://vespa:8080
       RELAY_PORT: 7777
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).

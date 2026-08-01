@@ -115,6 +115,21 @@ class StreamPhasesTest {
     }
 
     @Test
+    fun `a stream waiting its turn says so rather than looking idle`() {
+        // Streams reconcile one at a time, because each holds its whole local id
+        // set for its entire cycle and two resident at once is what reached the
+        // heap ceiling. A stream waiting for the gate has discovered its relays
+        // and is doing nothing — indistinguishable from stuck without this.
+        val p = StreamPhases()
+        p.set("assertions", StreamPhases.Phase.Queued(16507))
+
+        val line = p.report().single()
+        assertTrue(line.contains("queued behind another stream"), "got: $line")
+        assertTrue(line.contains("16507 relay(s) ready"), "got: $line")
+        assertTrue(line.contains("elapsed"), "waiting is a phase too, and its duration is the point")
+    }
+
+    @Test
     fun `syncing reports skipped and unreachable only when there are any`() {
         val p = StreamPhases()
         p.set("s", StreamPhases.Phase.Syncing(6, 19, 1204, 0, 0))
