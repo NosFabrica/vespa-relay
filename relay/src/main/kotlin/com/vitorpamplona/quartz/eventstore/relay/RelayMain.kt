@@ -171,11 +171,6 @@ fun main() {
     // same as not having it.
     val cursors = SyncCursors.fromEnv(env)
 
-    // Relay liveness across restarts, as NIP-66 30166 in this same store. Reading
-    // is always on and costs one query: a relay whose streams mirror kind 30166
-    // inherits every other monitor's census for free. Writing needs the identity.
-    val reachability = RelayReachability(store, identity)
-
     val router =
         RouterConfigLoader.fromEnv(env)?.let {
             MirrorRouter(
@@ -184,7 +179,6 @@ fun main() {
                 audit = parseAudit,
                 cursors = cursors,
                 signer = identity,
-                reachability = reachability,
             ).start()
         }
 
