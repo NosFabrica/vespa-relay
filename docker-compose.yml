@@ -114,6 +114,13 @@ services:
       # `assertions` streams in router.conf.example). Per-stream keys override these.
       ROUTER_DYNAMIC_REFRESH_SECONDS: ${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}
       ROUTER_DYNAMIC_CONCURRENCY: ${ROUTER_DYNAMIC_CONCURRENCY:-8}
+      # Run only these streams (comma-separated), so one part of the sync can be
+      # tuned without the rest competing for the same sockets, heap and ingest
+      # queue. Empty (the default) runs every stream the config defines. The
+      # router prints what it is NOT running on every startup, so a leftover
+      # setting can't be mistaken for a stream that is failing.
+      #   ROUTER_STREAMS=dataViaOutbox docker compose up -d relay
+      ROUTER_STREAMS: ${ROUTER_STREAMS:-}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,

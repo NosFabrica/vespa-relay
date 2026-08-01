@@ -523,4 +523,30 @@ class RouterConfigTest {
         val cfg = RouterConfigLoader.fromEnv(mapOf("ROUTER_CONFIG" to streamsConfig))
         assertEquals(12, cfg!!.downUpstreams().size)
     }
+
+    @Test
+    fun `ROUTER_STREAMS runs only the streams it names`() {
+        val cfg =
+            RouterConfigLoader.fromEnv(
+                mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_STREAMS" to " mirrors "),
+            )
+
+        assertEquals(listOf("mirrors"), cfg!!.streams.map { it.name })
+    }
+
+    @Test
+    fun `ROUTER_STREAMS naming a stream the config lacks is an error rather than an empty run`() {
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.fromEnv(
+                mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_STREAMS" to "mirrorz"),
+            )
+        }
+    }
+
+    @Test
+    fun `no ROUTER_STREAMS runs everything`() {
+        val cfg = RouterConfigLoader.fromEnv(mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_STREAMS" to "  "))
+
+        assertEquals(2, cfg!!.streams.size)
+    }
 }

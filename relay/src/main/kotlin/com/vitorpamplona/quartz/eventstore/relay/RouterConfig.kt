@@ -316,6 +316,9 @@ enum class MirrorDirection(
  * `ROUTER_DYNAMIC_REFRESH_SECONDS`, `ROUTER_DYNAMIC_CONCURRENCY` and
  * do the same for dynamic streams — the
  * per-stream keys of the same name override each of them.
+ *
+ * `ROUTER_STREAMS` narrows the run to a comma-separated subset of the config's
+ * streams — see [select].
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
@@ -326,12 +329,51 @@ object RouterConfigLoader {
         val ingestConcurrency = env["ROUTER_INGEST_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 64) ?: 2
         val ingestBatch = env["ROUTER_INGEST_BATCH"]?.trim()?.toIntOrNull()?.coerceIn(1, 20_000) ?: 1000
         val fallback = RelaySourceDefaults()
+        val only = env["ROUTER_STREAMS"]?.trim()?.takeIf { it.isNotBlank() }
         val relaySourceDefaults =
             RelaySourceDefaults(
                 refreshSeconds = env["ROUTER_DYNAMIC_REFRESH_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
                 concurrency = env["ROUTER_DYNAMIC_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 256) ?: fallback.concurrency,
             )
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults)
+        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults).let {
+            if (only == null) it else it.copy(streams = select(it.streams, only))
+        }
+    }
+
+    /**
+     * `ROUTER_STREAMS=dataViaOutbox` — run only the named streams, so one part of
+     * the sync can be measured without the others competing for the same sockets,
+     * heap and ingest queue.
+     *
+     * This exists because the alternative is commenting out a HOCON block, and a
+     * commented-out stream is indistinguishable from a broken one three days
+     * later. A name that matches nothing is a hard error rather than a silent
+     * empty run: a typo here would otherwise look exactly like a relay that
+     * mirrors nothing.
+     */
+    fun select(
+        streams: List<MirrorStream>,
+        only: String,
+    ): List<MirrorStream> {
+        val wanted =
+            only
+                .split(',')
+                .map { it.trim() }
+                .filter { it.isNotEmpty() }
+                .toSet()
+        val known = streams.map { it.name }.toSet()
+        val unknown = wanted - known
+        require(unknown.isEmpty()) {
+            "router: ROUTER_STREAMS names ${unknown.joinToString()}, which the config does not define (has: ${known.joinToString()})"
+        }
+        val (on, off) = streams.partition { it.name in wanted }
+        // Said out loud, every startup. A stream that is off because someone was
+        // measuring last week must never be mistaken for one that is failing.
+        System.err.println(
+            "router: ROUTER_STREAMS is set — running ${on.joinToString { it.name }};" +
+                " NOT running ${off.joinToString { it.name }.ifEmpty { "nothing else" }}",
+        )
+        return on
     }
 
     fun parse(
