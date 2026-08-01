@@ -1305,10 +1305,17 @@ class MirrorRouter(
                     ", ingest queue $depth/$inboundCapacity" +
                     // Full and empty are opposite diagnoses and look identical in
                     // every other line the router prints.
+                    //
+                    // The depth is an instant, the rate a 60s average, so an empty
+                    // queue means two different things depending on the rate and
+                    // only the pair can tell them apart. Reading the depth alone
+                    // had this line print "nothing is arriving to ingest" during a
+                    // minute that ingested 15,443 events a second.
                     (
                         when {
-                            depth >= inboundCapacity -> " FULL (downloads are being backpressured)"
-                            depth == 0 -> " empty (nothing is arriving to ingest)"
+                            depth >= inboundCapacity -> " FULL (ingest is the limit — downloads are backpressured)"
+                            depth == 0 && rate == 0 -> " empty (nothing is arriving — the limit is upstream of ingest)"
+                            depth == 0 -> " drained (ingest is keeping up; downloads are the limit)"
                             else -> ""
                         }
                     ) +
