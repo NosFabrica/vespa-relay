@@ -430,7 +430,12 @@ class SyncCursors(
          */
         const val DEFAULT_FULL_RESYNC_SECONDS = 7L * 24 * 60 * 60
 
-        private const val PLAUSIBLE_FLOOR = 1_577_836_800L // 2020-01-01
+        /**
+         * 2020-01-01. Below this a `created_at` is a bug, not a date — the
+         * protocol did not exist. Also the floor a paged walk measures its
+         * progress against when a filter names no `since` (see [PagingProgress]).
+         */
+        const val PLAUSIBLE_FLOOR = 1_577_836_800L
 
         // Clock skew a relay may legitimately be ahead by. Past this, a
         // created_at is the author's fiction rather than a time.

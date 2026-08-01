@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
-import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -294,7 +294,7 @@ class RelayDiscoveryTest {
     @Test
     fun `discovery keeps every relay, ordered by how many tags name it`() =
         runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             // popular: 3 lists, quiet: 2, lonely: 1.
             store.insert(event(10002, arrayOf("r", "wss://popular.example", "write"), arrayOf("r", "wss://quiet.example", "write")))
             store.insert(event(10002, arrayOf("r", "wss://popular.example", "write"), arrayOf("r", "wss://quiet.example")))
@@ -316,7 +316,7 @@ class RelayDiscoveryTest {
     @Test
     fun `one scan feeds several selects, and their counts add up`() =
         runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             store.insert(event(10002, arrayOf("r", "wss://shared.example", "write")))
             store.insert(event(10040, arrayOf("30382:rank", "a".repeat(64), "wss://shared.example")))
             store.insert(event(10050, arrayOf("relay", "wss://dm.example")))
@@ -351,7 +351,7 @@ class RelayDiscoveryTest {
     @Test
     fun `a select bound to a kind never reads another kind's tags`() =
         runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             // Both carry an `r` tag, but only the 10002 is a relay list.
             store.insert(event(10002, arrayOf("r", "wss://list.example", "write")))
             store.insert(event(10006, arrayOf("r", "wss://blocked.example")))
@@ -367,7 +367,7 @@ class RelayDiscoveryTest {
     @Test
     fun `exclude and the caller's skip set are the only things dropped`() =
         runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             store.insert(
                 event(
                     10002,
@@ -392,7 +392,7 @@ class RelayDiscoveryTest {
     @Test
     fun `a paged scan sees every event, across page boundaries and repeated timestamps`() =
         runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             // 12 lists over 4 distinct timestamps, so pages of 2 land mid-run of
             // events sharing a created_at — the case `until` being inclusive makes
             // awkward, and the case a naive cursor either loops on or skips.
@@ -420,7 +420,7 @@ class RelayDiscoveryTest {
     @Test
     fun `a scan limit is a budget for the whole scan, not per page`() =
         runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             repeat(10) { i ->
                 store.insert(
                     NostrSignerSync().sign<Event>(
@@ -444,7 +444,7 @@ class RelayDiscoveryTest {
     @Test
     fun `an empty store discovers nothing`() =
         runBlocking {
-            val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             assertTrue(RelayDiscovery.discover(store, dynamic(source(10002, selects = listOf(select(tag = "r"))))).isEmpty())
         }
 }

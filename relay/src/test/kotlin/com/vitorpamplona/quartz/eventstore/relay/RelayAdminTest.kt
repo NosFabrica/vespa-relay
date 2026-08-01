@@ -20,7 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
-import com.vitorpamplona.quartz.eventstore.store.NostrEventStore
+import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -43,7 +43,7 @@ import kotlin.test.fail
 class RelayAdminTest {
     private val defaultObserver = "d".repeat(64)
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
-    private val store = NostrEventStore(InMemoryEventIndex(), relay = relayUrl)
+    private val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
     private val banStore = BanStore {}
     private val server = NostrRelayServer(store, defaultObserver, relayUrl, banStore = banStore)
     private val signer = NostrSignerSync()
