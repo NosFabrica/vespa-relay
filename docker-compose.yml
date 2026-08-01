@@ -127,6 +127,12 @@ services:
       # setting can't be mistaken for a stream that is failing.
       #   ROUTER_STREAMS=dataViaOutbox docker compose up -d relay
       ROUTER_STREAMS: ${ROUTER_STREAMS:-}
+      # What goes down the wire to upstream relays. Empty (the default) still
+      # logs what the relay COMPLAINS about — NOTICE, CLOSED, failed sends —
+      # which are the relay telling us why it stopped and were previously
+      # discarded. "sent" adds every command we send; "full" adds every message
+      # received, which is a line per event and is for a specific investigation.
+      ROUTER_WIRE_LOG: ${ROUTER_WIRE_LOG:-}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,
