@@ -544,6 +544,53 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `sync defaults to auto and parses the three modes`() {
+        fun mode(body: String) =
+            RouterConfigLoader
+                .parse(stream(body))
+                .streams
+                .first()
+                .sync
+
+        assertEquals(SyncMode.AUTO, mode("""urls = [ "wss://a.example" ]"""))
+        assertEquals(
+            SyncMode.FETCH,
+            mode(
+                """
+                sync = "fetch"
+                urls = [ "wss://a.example" ]
+                """.trimIndent(),
+            ),
+        )
+        assertEquals(
+            SyncMode.NEGENTROPY,
+            mode(
+                """
+                sync = "negentropy"
+                urls = [ "wss://a.example" ]
+                """.trimIndent(),
+            ),
+        )
+    }
+
+    @Test
+    fun `an unknown sync mode is rejected rather than silently defaulted`() {
+        // Defaulting a typo to `auto` would pick a strategy the operator did not
+        // ask for on a stream they went out of their way to declare — and the
+        // wrong strategy here is millions of redundant events, not a warning.
+        assertFailsWith<IllegalStateException> {
+            RouterConfigLoader.parse(
+                stream(
+                    """
+                    sync = "negantropy"
+                    urls = [ "wss://a.example" ]
+                    """.trimIndent(),
+                ),
+            )
+        }
+    }
+
+    @Test
     fun `no ROUTER_STREAMS runs everything`() {
         val cfg = RouterConfigLoader.fromEnv(mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_STREAMS" to "  "))
 

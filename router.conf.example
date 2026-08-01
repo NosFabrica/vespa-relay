@@ -41,6 +41,11 @@ streams {
 
     dataViaOutbox {
         dir = "down"
+        # Every relay mirrors these kinds, so by the time this sweep runs the
+        # indexers above have already given us most of what each of the 20,000
+        # relays holds. Reconciling id sets moves almost nothing; fetching moves
+        # all of it again.
+        sync = "negentropy"
         filter = { "kinds": [0, 3, 10002, 10040] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 100          # relays synced at the same time
@@ -57,6 +62,14 @@ streams {
 
     assertions {
         dir = "down"
+        # The opposite case, and the reason `sync` is declared rather than
+        # measured. NIP-85 assertions are per-provider by construction: every
+        # provider authors its own, so two provider relays share essentially
+        # nothing even though both hold millions. Comparing millions of ids
+        # against millions for a near-empty intersection is the expensive way to
+        # learn that — and it would build a 24.8M-id local snapshot to do it.
+        # The sync cursor already answers "what is new since we last asked".
+        sync = "fetch"
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 100          # relays synced at the same time
@@ -72,6 +85,18 @@ streams {
         ]
     }
 
+    # `sync` picks how a stream asks for what it is missing, and it is about the
+    # DATA, not the relay:
+    #   negentropy  the same event lives on many relays (profiles, relay lists,
+    #               follow lists) — reconcile id sets and transfer only the diff
+    #   fetch       each relay holds its own events and nobody else's (NIP-85
+    #               assertions) — reconciling compares huge sets for no match, so
+    #               page from the sync cursor instead
+    #   auto        (default) decide by size: reconcile only when both our store
+    #               and the relay hold more than ROUTER_NEG_MIN_EVENTS for the
+    #               filter. Correct only where overlap tracks volume — say which
+    #               you mean when you know.
+    #
     # ---- Dynamic relay lists ------------------------------------------------
     #
     # No `urls`: these two take their relays from events the streams above mirror

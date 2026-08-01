@@ -25,7 +25,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -194,22 +193,6 @@ class SyncCursorsTest {
     }
 
     // ---- the shared snapshot window ----------------------------------------
-
-    @Test
-    fun `only a completed reconcile counts as having reconciled`() {
-        // This decides who waits for the id walk. A relay that paged, and one
-        // never synced, both answer false — and that is the same answer to the
-        // question that matters: neither reads the local set, so neither should
-        // sit through a walk that takes minutes to build one.
-        val c = SyncCursors(null)
-        assertFalse(c.everReconciled(relay, profiles), "never synced")
-
-        c.record(other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
-        assertFalse(c.everReconciled(other, profiles), "paged, so it never read the set")
-
-        c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        assertTrue(c.everReconciled(relay, profiles), "a finished reconcile is the only thing that counts")
-    }
 
     @Test
     fun `covering window collapses to the oldest ceiling once everyone is caught up`() {

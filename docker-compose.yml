@@ -114,6 +114,12 @@ services:
       # `assertions` streams in router.conf.example). Per-stream keys override these.
       ROUTER_DYNAMIC_REFRESH_SECONDS: ${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}
       ROUTER_DYNAMIC_CONCURRENCY: ${ROUTER_DYNAMIC_CONCURRENCY:-8}
+      # For `sync = "auto"` streams: how many events both we and the relay must
+      # hold on the stream's filter before a negentropy reconcile is worth its id
+      # exchange, and how long the relay gets to answer the NIP-45 COUNT that
+      # measures it. Streams that declare `sync` in router.conf ignore both.
+      ROUTER_NEG_MIN_EVENTS: ${ROUTER_NEG_MIN_EVENTS:-100000}
+      ROUTER_COUNT_TIMEOUT_MS: ${ROUTER_COUNT_TIMEOUT_MS:-5000}
       # Run only these streams (comma-separated), so one part of the sync can be
       # tuned without the rest competing for the same sockets, heap and ingest
       # queue. Empty (the default) runs every stream the config defines. The

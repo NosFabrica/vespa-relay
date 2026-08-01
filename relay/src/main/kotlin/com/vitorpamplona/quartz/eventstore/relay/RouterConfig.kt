@@ -78,6 +78,11 @@ data class RouterConfig(
     // From ROUTER_INGEST_CONCURRENCY / ROUTER_INGEST_BATCH.
     val ingestConcurrency: Int = 2,
     val ingestBatch: Int = 1000,
+    // How much overlap makes a negentropy reconcile worth its id exchange, and
+    // how long a relay gets to answer the NIP-45 COUNT that measures it.
+    // From ROUTER_NEG_MIN_EVENTS / ROUTER_COUNT_TIMEOUT_MS.
+    val negMinEvents: Int = 100_000,
+    val countTimeoutMs: Long = 5_000,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.DOWN)
@@ -91,7 +96,7 @@ data class RouterConfig(
     private fun upstreamsFor(want: MirrorDirection): List<MirrorUpstream> =
         streams
             .filter { it.dir == want || it.dir == MirrorDirection.BOTH }
-            .flatMap { s -> s.urls.map { MirrorUpstream(s.name, it, s.filter, s.trusted) } }
+            .flatMap { s -> s.urls.map { MirrorUpstream(s.name, it, s.filter, s.trusted, s.sync) } }
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */
@@ -100,6 +105,7 @@ data class MirrorUpstream(
     val url: NormalizedRelayUrl,
     val filter: Filter,
     val trusted: Boolean,
+    val sync: SyncMode = SyncMode.AUTO,
 )
 
 data class MirrorStream(
@@ -111,6 +117,8 @@ data class MirrorStream(
     // Null for an ordinary stream (its relays are the `urls` above). Set for a
     // stream whose relays come out of the store instead — see [DynamicRelayList].
     val dynamic: DynamicRelayList? = null,
+    // Whether this stream's relays share events with each other — see [SyncMode].
+    val sync: SyncMode = SyncMode.AUTO,
 )
 
 /**
@@ -291,6 +299,43 @@ data class RelaySourceDefaults(
     val concurrency: Int = 8,
 )
 
+/**
+ * How a stream asks a relay for what it is missing.
+ *
+ * This is a property of the DATA, which is why it is declared rather than
+ * measured. Negentropy pays for itself in proportion to how much of a relay's
+ * set we already hold, and no count can reveal that: the `assertions` stream and
+ * the `dataViaOutbox` stream both put millions on each side, and only one of
+ * them overlaps.
+ *
+ *  - [NEGENTROPY] — the same event lives on many relays. Profiles, relay lists,
+ *    follow lists: everyone mirrors them, so a 20,000-relay sweep is mostly
+ *    re-offering us what the indexer relays already delivered. Reconciling id
+ *    sets moves almost nothing; paging moves all of it.
+ *  - [FETCH] — each relay holds its own events and no one else's. NIP-85
+ *    assertions are per-provider by construction, so two providers share
+ *    essentially nothing. Comparing millions of ids against millions of ids for
+ *    a near-empty intersection is the expensive way to learn that, and the
+ *    [SyncCursors] band already answers "what is new since we last asked".
+ *  - [AUTO] — decide by size (see MirrorRouter.worthReconciling). Safe only
+ *    where overlap tracks volume, which is why it is not the default for a
+ *    stream whose config says otherwise.
+ */
+enum class SyncMode(
+    val wire: String,
+) {
+    AUTO("auto"),
+    NEGENTROPY("negentropy"),
+    FETCH("fetch"),
+    ;
+
+    companion object {
+        fun parse(raw: String): SyncMode =
+            entries.firstOrNull { it.wire.equals(raw.trim(), ignoreCase = true) }
+                ?: error("router: unknown stream sync '$raw' (expected auto / negentropy / fetch)")
+    }
+}
+
 enum class MirrorDirection(
     val wire: String,
 ) {
@@ -328,6 +373,8 @@ object RouterConfigLoader {
         val upInterval = env["ROUTER_UP_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 300L
         val ingestConcurrency = env["ROUTER_INGEST_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 64) ?: 2
         val ingestBatch = env["ROUTER_INGEST_BATCH"]?.trim()?.toIntOrNull()?.coerceIn(1, 20_000) ?: 1000
+        val negMinEvents = env["ROUTER_NEG_MIN_EVENTS"]?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 100_000
+        val countTimeoutMs = env["ROUTER_COUNT_TIMEOUT_MS"]?.trim()?.toLongOrNull()?.coerceIn(500, 60_000) ?: 5_000
         val fallback = RelaySourceDefaults()
         val only = env["ROUTER_STREAMS"]?.trim()?.takeIf { it.isNotBlank() }
         val relaySourceDefaults =
@@ -335,7 +382,7 @@ object RouterConfigLoader {
                 refreshSeconds = env["ROUTER_DYNAMIC_REFRESH_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
                 concurrency = env["ROUTER_DYNAMIC_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 256) ?: fallback.concurrency,
             )
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults).let {
+        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, negMinEvents, countTimeoutMs).let {
             if (only == null) it else it.copy(streams = select(it.streams, only))
         }
     }
@@ -382,6 +429,8 @@ object RouterConfigLoader {
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
+        negMinEvents: Int = 100_000,
+        countTimeoutMs: Long = 5_000,
     ): RouterConfig {
         val cfg = ConfigFactory.parseString(hocon)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
@@ -411,9 +460,10 @@ object RouterConfigLoader {
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     dynamic = dynamic,
+                    sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO,
                 )
             }
-        return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch)
+        return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents, countTimeoutMs)
     }
 
     private fun normalizeUrls(
