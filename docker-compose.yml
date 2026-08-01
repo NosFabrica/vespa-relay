@@ -12,6 +12,17 @@ services:
     image: vespaengine/vespa
     container_name: vespa
     hostname: vespa
+    # A LIMIT, not a reservation. Without one both containers see the whole
+    # Docker VM and each sizes itself against it: the engine settles around 32
+    # GiB while the relay's MaxRAMPercentage=45 lets its heap reach 22.7 GiB, so
+    # the two are entitled to 55 GiB of a 47 GiB machine. Nothing collides while
+    # the relay is idle, and the workload that would collide — several streams
+    # holding negentropy id snapshots at once — is the normal one.
+    #
+    # The engine gets the larger share because losing it is worse: the relay can
+    # be restarted in seconds, while a killed content node replays its
+    # transaction log for minutes before it serves anything.
+    mem_limit: ${VESPA_MEM_LIMIT:-34g}
     ports:
       - "${VESPA_PORT:-8080}:8080" # query / document API
       - "${VESPA_CONFIG_PORT:-19071}:19071" # config server
@@ -44,14 +55,25 @@ services:
   relay:
     build: .
     container_name: vespa-relay
+    # Heap becomes 45% of this. Sized from what a full fan-out actually uses —
+    # the largest observed snapshot phase peaked around 13 GiB across three
+    # concurrent streams — with room above it rather than room to take the
+    # engine's share.
+    mem_limit: ${RELAY_MEM_LIMIT:-12g}
     depends_on:
       vespa:
         condition: service_healthy
     environment:
-      # The negentropy reconciliation holds one local id snapshot per upstream
-      # IN MEMORY, and all 12 backfill at once — so the heap has to cover the
+      # The negentropy reconciliation holds one local id snapshot per stream IN
+      # MEMORY, and every stream backfills at once — so the heap has to cover the
       # whole fan-out, not one relay. The JVM default is 25% of the container,
       # which OOM'd at 8.4 GiB the first time every stream asked for full history.
+      #
+      # 45% is now 45% of mem_limit below, which is the point of setting one:
+      # MaxRAMPercentage reads the cgroup, and without a limit it reads the HOST,
+      # so this asked for 22.7 GiB of a machine the engine had already claimed 32
+      # GiB of. A bounded heap also makes ingest backpressure do its job instead
+      # of letting the relay grow into the engine's memory.
       JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=45}
       VESPA_URL: http://vespa:8080
       RELAY_PORT: 7777
