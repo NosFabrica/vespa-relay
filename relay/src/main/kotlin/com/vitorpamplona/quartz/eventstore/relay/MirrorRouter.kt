@@ -188,7 +188,22 @@ class MirrorRouter(
     // so producers block (backpressure) rather than pile events onto the heap.
     private val ingestWorkers = config.ingestConcurrency
     private val ingestBatch = config.ingestBatch
-    private val inbound = Channel<Inbound>((ingestBatch * 4).coerceAtLeast(4096))
+    private val inboundCapacity = (ingestBatch * 4).coerceAtLeast(4096)
+    private val inbound = Channel<Inbound>(inboundCapacity)
+
+    // How full [inbound] is. Channel does not expose its depth, and this one
+    // number decides whether the pipeline is starved or backpressured — the
+    // question every stall this router has had came down to, and the one thing
+    // nothing could answer without guessing from Vespa's access log.
+    private val queued =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
+    // OutOfMemoryError kills the thread that happens to allocate next and is
+    // caught by nobody: four of them passed unnoticed while the router reported
+    // healthy phases and a frozen counter. Counted here so the health line can
+    // say the process is damaged rather than merely quiet.
+    private val fatals = AtomicLong()
     private val accepted = AtomicLong()
     private val rejected = AtomicLong()
     private val pushed = AtomicLong()
@@ -255,6 +270,22 @@ class MirrorRouter(
         // event at a time — the old path — left that parallelism unused.
         repeat(ingestWorkers) { scope.launch { ingestLoop() } }
 
+        // An OutOfMemoryError kills the thread that happens to allocate next and
+        // is caught by nobody — not by `catch (e: Exception)`, which is what most
+        // of this file uses. Four of them passed unnoticed in one run while the
+        // phases still read healthy and the counters simply stopped moving. This
+        // does not recover anything; it makes the damage visible instead of
+        // leaving a silent process that looks merely quiet.
+        val previous = Thread.getDefaultUncaughtExceptionHandler()
+        Thread.setDefaultUncaughtExceptionHandler { thread, error ->
+            if (error is VirtualMachineError) {
+                fatals.incrementAndGet()
+                System.err.println("router: FATAL ${error.javaClass.simpleName} killed thread ${thread.name} — the router is now degraded")
+            }
+            previous?.uncaughtException(thread, error)
+        }
+        scope.launch { healthLoop() }
+
         // Down live tail: subscribe on each upstream from now forward. History,
         // when asked for, is the backfill's job — so the tail never floods on connect.
         val liveSince = nowSeconds()
@@ -320,6 +351,7 @@ class MirrorRouter(
         skipVerify: Boolean,
     ) {
         inbound.trySendBlocking(Inbound(event, skipVerify))
+        queued.incrementAndGet()
     }
 
     /**
@@ -332,10 +364,12 @@ class MirrorRouter(
         val batch = ArrayList<Inbound>(ingestBatch)
         while (scope.isActive) {
             val first = inbound.receiveCatching().getOrNull() ?: break
+            queued.decrementAndGet()
             batch.clear()
             batch.add(first)
             while (batch.size < ingestBatch) {
                 val next = inbound.tryReceive().getOrNull() ?: break
+                queued.decrementAndGet()
                 batch.add(next)
             }
             val valid = ArrayList<Event>(batch.size)
@@ -1213,6 +1247,65 @@ class MirrorRouter(
                     ", ${"%.0f".format(avgRate)}/s avg" +
                     (if (etaSec >= 0) ", ETA ~${fmtDuration(etaSec * 1000)} to useful" else ", ETA —"),
             )
+        }
+    }
+
+    /**
+     * Why the machine is idle, once a minute.
+     *
+     * Every stall this router has had was diagnosed from `docker stats`, Vespa's
+     * access log and /proc — never from the relay, which reported healthy phases
+     * throughout. This is the line that answers it directly: a full heap, a full
+     * or empty queue, and a rate of zero each mean something different, and
+     * together they name the bottleneck without guessing.
+     *
+     * The heap matters most. Four OutOfMemoryErrors passed unnoticed while the
+     * counters simply stopped, because an OOM kills whichever thread allocates
+     * next and nothing here was watching for it.
+     */
+    private suspend fun healthLoop() {
+        var lastEvents = 0L
+        var lastAt = System.currentTimeMillis()
+        while (scope.isActive) {
+            delay(60_000)
+            val rt = Runtime.getRuntime()
+            val usedMb = (rt.totalMemory() - rt.freeMemory()) / 1_048_576
+            val maxMb = rt.maxMemory() / 1_048_576
+            val heapPct = if (maxMb > 0) usedMb * 100 / maxMb else 0
+            val events = accepted.get() + rejected.get()
+            val now = System.currentTimeMillis()
+            val rate = ((events - lastEvents) * 1000.0 / (now - lastAt).coerceAtLeast(1)).toInt()
+            lastEvents = events
+            lastAt = now
+            val depth = queued.get()
+            System.err.println(
+                "router: health heap $usedMb/${maxMb}MB ($heapPct%)" +
+                    (if (heapPct >= 90) " !! AT THE CEILING" else "") +
+                    ", ingest queue $depth/$inboundCapacity" +
+                    // Full and empty are opposite diagnoses and look identical in
+                    // every other line the router prints.
+                    (
+                        when {
+                            depth >= inboundCapacity -> " FULL (downloads are being backpressured)"
+                            depth == 0 -> " empty (nothing is arriving to ingest)"
+                            else -> ""
+                        }
+                    ) +
+                    ", $rate ev/s" +
+                    ", ${inFlight.size} relay(s) transferring" +
+                    ", ${client.connectedRelaysFlow().value.size} connected" +
+                    (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else ""),
+            )
+            // Named, because "16,248 skipped" says nothing about which corner of
+            // the network we stopped looking at, or whether the reason still
+            // holds. These are relays a PREVIOUS run recorded unreachable; the
+            // record expires on its own, and until it does they are invisible.
+            monitor?.deadSet()?.takeIf { it.isNotEmpty() }?.let { dead ->
+                System.err.println(
+                    "router: health ${dead.size} relay(s) skipped on earlier NIP-66 records" +
+                        " (top: ${dead.take(3).joinToString { it.url }})",
+                )
+            }
         }
     }
 
