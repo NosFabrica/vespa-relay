@@ -196,19 +196,40 @@ class SyncCursorsTest {
     // ---- the shared snapshot window ----------------------------------------
 
     @Test
-    fun `only a completed reconcile counts as having reconciled`() {
-        // This decides who waits for the id walk. A relay that paged, and one
-        // never synced, both answer false — and that is the same answer to the
-        // question that matters: neither reads the local set, so neither should
-        // sit through a walk that takes minutes to build one.
+    fun `a relay that paged once does not page again`() {
+        // This decides who skips the id walk and pages instead. Paging
+        // re-downloads a relay's whole history for the filter, so it is worth it
+        // exactly once — on first contact, when there is nothing to reconcile
+        // against and everything to fetch.
+        //
+        // The predicate used to be `band.complete`, which a paged fetch never
+        // sets, so paging relays re-selected themselves every cycle and paged
+        // forever: 5.4M events re-downloaded to keep 7,812. The test that
+        // shipped alongside it asserted precisely that, and passed. Hence this
+        // one, which pins the property that actually matters rather than the
+        // implementation's own opinion of itself.
         val c = SyncCursors(null)
-        assertFalse(c.everReconciled(relay, profiles), "never synced")
+        assertFalse(c.everTouched(relay, profiles), "never fetched — this one pages")
 
         c.record(other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
-        assertFalse(c.everReconciled(other, profiles), "paged, so it never read the set")
+        assertTrue(c.everTouched(other, profiles), "paged once, so it reconciles from now on")
 
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        assertTrue(c.everReconciled(relay, profiles), "a finished reconcile is the only thing that counts")
+        assertTrue(c.everTouched(relay, profiles), "a finished reconcile counts too")
+    }
+
+    @Test
+    fun `an empty paged fetch leaves the relay to page again`() {
+        // record() ignores a fetch that saw nothing, since an empty result says
+        // nothing about what the relay holds. That has to keep the relay in the
+        // paging branch: treating "we asked and got silence" as "we have a band"
+        // would let one bad cycle put a relay into reconcile mode against a set
+        // we never actually compared it to.
+        val c = SyncCursors(null)
+
+        c.record(relay, profiles, null, null, paged = true)
+
+        assertFalse(c.everTouched(relay, profiles), "nothing was recorded, so nothing was learned")
     }
 
     @Test

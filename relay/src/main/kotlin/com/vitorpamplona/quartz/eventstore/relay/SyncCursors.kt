@@ -265,16 +265,29 @@ class SyncCursors(
     private fun isStale(band: Band): Boolean = nowSeconds() - band.fullAt >= fullResyncSeconds
 
     /**
-     * Has this relay ever completed a negentropy reconcile for [filter]?
+     * Have we fetched anything at all from this relay for [filter], by any means?
      *
-     * False for one never synced and for one that paged, and those are the same
-     * answer to the question that matters: it will not read the local id set, so
-     * it need not wait for the walk that builds it.
+     * This is what decides whether a relay skips the local id walk and pages
+     * instead, and getting the predicate wrong cost 5.4 million redundant events:
+     *
+     * The obvious-looking question is "has it ever completed a reconcile"
+     * (`band.complete`), and it is the wrong one. A paged fetch records an
+     * incomplete band by design — it walked a span, it did not reconcile a range
+     * — so a relay that pages never satisfies that predicate, takes the paging
+     * branch again next cycle, and re-downloads its whole history for the filter
+     * forever. One measured cycle: 7,812 events accepted against 5,436,967
+     * rejected as already-held. 0.14% useful, 82% of ingest time spent deciding
+     * to discard.
+     *
+     * Paging is a FIRST-CONTACT optimisation: it buys a head start while nothing
+     * is known and there is no band to reconcile against. Once we hold any band
+     * at all, negentropy — which exists precisely so neither side re-sends what
+     * both already have — is the cheaper way to ask again.
      */
-    fun everReconciled(
+    fun everTouched(
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): Boolean = bands[key(url, filter)]?.complete == true
+    ): Boolean = bands.containsKey(key(url, filter))
 
     /**
      * The narrowest single filter that still covers what every one of [urls]

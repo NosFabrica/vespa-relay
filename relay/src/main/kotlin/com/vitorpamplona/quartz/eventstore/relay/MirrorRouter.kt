@@ -536,14 +536,18 @@ class MirrorRouter(
                         // for 14.9M ids and 10:36 for 43.7M, and a stream behind
                         // the gate waits for both.
                         //
-                        // "Will page" comes off the cursor: a band is complete only
-                        // after a successful reconcile, so !complete covers the
-                        // relay that paged before AND the one never synced — and
-                        // the second wants paging anyway, since reconciling tens of
-                        // millions of ids to discover we need essentially
-                        // everything is the expensive way to learn it.
+                        // "Will page" comes off the cursor, and the predicate has
+                        // to be "we have never fetched from this relay", not "it
+                        // has never reconciled" ([SyncCursors.everTouched] carries
+                        // the full account). A paged fetch records an incomplete
+                        // band by design, so the reconcile predicate re-selected
+                        // the same relays every cycle and they paged their whole
+                        // history forever — 5.4M events re-downloaded to keep
+                        // 7,812. Paging is for first contact only, where there is
+                        // genuinely nothing to reconcile against and everything to
+                        // fetch anyway.
                         val (reconcilers, pagers) =
-                            group.partition { cursors.everReconciled(it.value.url, it.value.filter) }
+                            group.partition { cursors.everTouched(it.value.url, it.value.filter) }
                         val eventsEarly = AtomicLong()
                         val early =
                             if (pagers.isEmpty()) {
