@@ -53,6 +53,16 @@ internal fun fmtDuration(ms: Long): String {
  */
 class StreamPhases {
     sealed interface Phase {
+        /**
+         * Registered, not yet started. The only honest thing to say before a
+         * stream's first phase arrives.
+         *
+         * The default used to be `Discovering("")`, which had a static stream —
+         * one whose relays are written in the config and are never discovered at
+         * all — reporting `discovering relays from []` for its first minute.
+         */
+        data object Starting : Phase
+
         /** Configured, nothing to do yet — its sources have named no relays. */
         data class Waiting(
             val sources: String,
@@ -117,7 +127,7 @@ class StreamPhases {
 
     @Synchronized
     fun register(name: String) {
-        if (phases.putIfAbsent(name, Entry(Phase.Discovering(""), System.currentTimeMillis())) == null) {
+        if (phases.putIfAbsent(name, Entry(Phase.Starting, System.currentTimeMillis())) == null) {
             order += name
         }
     }
@@ -154,6 +164,10 @@ class StreamPhases {
     ): String {
         val elapsed = fmtDuration(elapsedMs)
         return when (phase) {
+            is Phase.Starting -> {
+                "starting ($elapsed elapsed)"
+            }
+
             is Phase.Waiting -> {
                 "waiting — no relays in [${phase.sources}] yet, retry in ${phase.retrySec}s ($elapsed elapsed)"
             }

@@ -258,6 +258,19 @@ class MirrorRouter(
     // that was working. Only the last one out disconnects.
     private val inFlight = java.util.concurrent.ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
+    /**
+     * Relays with a transfer actually running, across every path.
+     *
+     * Not [inFlight], which is the dynamic path's socket refcount and is only
+     * touched by [dynamicSyncOne]. Reusing it for the health line made that line
+     * report `0 relay(s) transferring` while eleven static relays delivered
+     * 16,000 events a second — the precise kind of confident wrong number the
+     * health line exists to replace.
+     */
+    private val transferring =
+        java.util.concurrent.atomic
+            .AtomicInteger()
+
     fun start(): MirrorRouter {
         if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
@@ -656,6 +669,7 @@ class MirrorRouter(
             return 0
         }
         var downloaded = 0
+        transferring.incrementAndGet()
         return try {
             for (window in legs) {
                 var seenMin: Long? = null
@@ -682,6 +696,8 @@ class MirrorRouter(
             progress.done(idx, 0)
             System.err.println("router: static backfill ${up.url.url} paged fetch failed: ${e.message}")
             0
+        } finally {
+            transferring.decrementAndGet()
         }
     }
 
@@ -727,6 +743,7 @@ class MirrorRouter(
             System.err.println("router: static backfill ${up.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
+        transferring.incrementAndGet()
         try {
             var downloaded = 0
             var paged = false
@@ -801,6 +818,8 @@ class MirrorRouter(
             progress.done(idx, 0)
             System.err.println("router: static backfill ${up.url.url} failed: ${e.message}")
             return 0
+        } finally {
+            transferring.decrementAndGet()
         }
     }
 
@@ -1057,6 +1076,7 @@ class MirrorRouter(
         onFailure: (String) -> Unit,
     ): Int {
         inFlight.merge(url, 1, Int::plus)
+        transferring.incrementAndGet()
         return try {
             // No wall clock here either: these relays are strangers off a list,
             // but a slot held by one that is delivering is a slot doing its job.
@@ -1099,6 +1119,7 @@ class MirrorRouter(
             onFailure(e.message?.take(60) ?: e.javaClass.simpleName)
             -1
         } finally {
+            transferring.decrementAndGet()
             releaseSocket(url)
         }
     }
@@ -1292,7 +1313,7 @@ class MirrorRouter(
                         }
                     ) +
                     ", $rate ev/s" +
-                    ", ${inFlight.size} relay(s) transferring" +
+                    ", ${transferring.get()} relay(s) transferring" +
                     ", ${client.connectedRelaysFlow().value.size} connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else ""),
             )
