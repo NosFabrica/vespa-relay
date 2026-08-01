@@ -499,9 +499,36 @@ class MirrorRouter(
                             // until the last relay is done with it, so releasing
                             // at the fan-out would let the next stream allocate
                             // its own on top of this one.
+                            val name = group.first().value.streamName
+                            val done =
+                                java.util.concurrent.atomic
+                                    .AtomicInteger()
+                            val events = AtomicLong()
+                            phases.set(name, StreamPhases.Phase.Syncing(0, group.size, 0, 0, 0))
                             coroutineScope {
-                                group.forEach { (idx, up) -> launch { backfillOne(idx, up, local) } }
+                                group.forEach { (idx, up) ->
+                                    launch {
+                                        val got = backfillOne(idx, up, local)
+                                        events.addAndGet(got.toLong())
+                                        // Reported per relay, because the snapshot
+                                        // phase used to be the LAST thing this path
+                                        // said: a stream that had finished still
+                                        // read "snapshotting 100%" hours later, and
+                                        // twice sent a diagnosis down the wrong path.
+                                        phases.set(
+                                            name,
+                                            StreamPhases.Phase.Syncing(
+                                                done.incrementAndGet(),
+                                                group.size,
+                                                events.get(),
+                                                0,
+                                                0,
+                                            ),
+                                        )
+                                    }
+                                }
                             }
+                            phases.set(name, StreamPhases.Phase.Idle(events.get(), 0))
                         }
                     }
                 }
@@ -575,7 +602,7 @@ class MirrorRouter(
         idx: Int,
         up: MirrorUpstream,
         snapshot: StreamSnapshot,
-    ) {
+    ): Int {
         // The filter as the operator wrote it. `since`/`until` are NIP-01's own,
         // so absent means unbounded and this reaches the upstream's whole history
         // — minus whatever a previous run already walked, when this relay paged.
@@ -585,7 +612,7 @@ class MirrorRouter(
             // today the boundary seconds always leave something to ask for.
             progress.done(idx, 0)
             System.err.println("router: static backfill ${up.url.url} already covers its filter — nothing outside the synced band")
-            return
+            return 0
         }
         try {
             var downloaded = 0
@@ -656,9 +683,11 @@ class MirrorRouter(
                         (if (band != null) " [synced ${band.minCreatedAt}..${band.maxCreatedAt}]" else ""),
                 )
             }
+            return downloaded
         } catch (e: Exception) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${up.url.url} failed: ${e.message}")
+            return 0
         }
     }
 
