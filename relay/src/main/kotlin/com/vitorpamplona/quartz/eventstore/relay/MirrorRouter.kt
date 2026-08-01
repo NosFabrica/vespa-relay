@@ -146,6 +146,11 @@ class MirrorRouter(
 
     private val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
 
+    // Watches EVERY connection this client makes — static live tails, backfills,
+    // up-reconciles, dynamic fan-outs — so what we learn about a relay does not
+    // depend on which code path happened to dial it. See [RelayObserver].
+    private val observer = RelayObserver().also { client.addConnectionListener(it) }
+
     // NIP-42. Relays that gate reads behind AUTH serve nothing until we answer
     // their challenge — and an unanswered challenge looks exactly like an
     // ordinary empty relay from here, so this is invisible when it is missing.
@@ -237,6 +242,12 @@ class MirrorRouter(
 
         // Up: one reconcile loop per up-upstream.
         upUpstreams.forEach { up -> scope.launch { upLoop(up) } }
+
+        // Sign and persist what we have learned about other relays, periodically.
+        // Not at the end of a cycle: the static upstreams are observed too, and
+        // they never end a cycle — a relay whose live tail has been up for hours
+        // is the one we know the most about.
+        if (reachability?.publishes == true) scope.launch { reachabilityLoop() }
 
         // Dynamic: one refresh loop per stream, each discovering its own relays.
         dynamicStreams.forEach { stream -> scope.launch { dynamicLoop(stream) } }
@@ -736,10 +747,9 @@ class MirrorRouter(
                 .joinToString { "${it.key} x${it.value}" }
         // One write for the whole fan-out, not one per relay.
         cursors.flush()
-        // Liveness, likewise once. Only relays this cycle actually dialled are
-        // recorded — the ones skipped as known-dead learned nothing new, and
-        // re-asserting their death would refresh a TTL we never re-tested.
-        reachability?.record(health.reachable, health.unreachable)
+        // Liveness is flushed by [reachabilityLoop] for the whole router, not per
+        // cycle: the observer sees the static upstreams too, and they never pass
+        // through here.
         System.err.println(
             "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get() - skipped.get()}/${relays.size} relay(s)" +
                 " in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
@@ -808,6 +818,24 @@ class MirrorRouter(
             -1
         } finally {
             releaseSocket(url)
+        }
+    }
+
+    /**
+     * Write out what [observer] has measured, on an interval.
+     *
+     * Drained rather than copied, so a relay whose state has not changed since
+     * the last flush is left alone instead of having its record — and therefore
+     * its TTL — refreshed on a measurement nobody re-took.
+     */
+    private suspend fun reachabilityLoop() {
+        while (scope.isActive) {
+            delay(REACHABILITY_FLUSH_MS)
+            val observations = observer.drain()
+            val written = runCatching { reachability?.record(observations) ?: 0 }.getOrDefault(0)
+            if (written > 0) {
+                System.err.println("router: published $written relay reachability record(s) (NIP-66 30166)")
+            }
         }
     }
 
@@ -964,6 +992,12 @@ class MirrorRouter(
     override fun close() {
         // First: a backfill killed mid-flight still keeps the ground it gained.
         runCatching { cursors.flush() }
+        // A last flush: a run that ends between intervals still knows things about
+        // relays that the next run would otherwise pay to rediscover.
+        runCatching {
+            kotlinx.coroutines.runBlocking { reachability?.record(observer.drain()) }
+        }
+        runCatching { client.removeConnectionListener(observer) }
         runCatching { authenticator?.destroy() }
         downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
@@ -1062,6 +1096,14 @@ class MirrorRouter(
         // is bounded by the streams' own `concurrency` rather than by this.
         private const val MAX_CONCURRENT_SOCKETS = 1024
         private const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
+
+        /**
+         * How often measurements become signed records. Five minutes: long enough
+         * that a relay flapping does not mint a record per flap, short enough that
+         * a restart loses little — and the 30166s are replaceable, so the cost of
+         * writing again is one document, not one more.
+         */
+        private const val REACHABILITY_FLUSH_MS = 5 * 60 * 1000L
 
         private const val NEG_IDLE_MS = 30_000L
 

@@ -72,19 +72,38 @@ class RelayReachability(
     suspend fun deadSet(): Set<NormalizedRelayUrl> = runCatching { reads.snapshot().dead }.getOrDefault(emptySet())
 
     /**
-     * Persist a cycle's findings. A no-op without a monitor key — the run still
-     * benefited from everyone else's records, it just adds none of its own.
+     * Persist what [RelayObserver] measured. A no-op without an identity to sign
+     * with — the run still benefited from everyone else's records, it just adds
+     * none of its own.
      *
-     * Never throws: liveness bookkeeping failing is not a reason to fail a sync
+     * The rtt is the MEASURED open time, never a placeholder. Aggregators rank
+     * relays by that field, so a hard-coded zero published to a store other
+     * people sync from would be telling the network every relay answers
+     * instantly. A relay we somehow reached without timing it is therefore
+     * recorded as reachable with no claim about speed, not as reachable in 0ms.
+     *
+     * Never throws: liveness bookkeeping failing is not a reason to fail syncs
      * that already worked.
      */
-    suspend fun record(
-        reachable: Set<NormalizedRelayUrl>,
-        dead: Set<NormalizedRelayUrl>,
-    ) {
-        if (writer == null) return
-        runCatching { reads.record(reachable, dead - reachable, 0L, nowSeconds()) }
+    suspend fun record(observations: Map<NormalizedRelayUrl, RelayObserver.Observation>): Int {
+        if (writer == null || observations.isEmpty()) return 0
+        val reachable = HashMap<NormalizedRelayUrl, Long>()
+        val dead = HashSet<NormalizedRelayUrl>()
+        for ((url, o) in observations) {
+            when {
+                o.reachable -> reachable[url] = o.rttOpenMs ?: continue
+
+                // Only a connection we actually attempted and that actually failed.
+                // Silence is not evidence: a relay nobody dialled this round has
+                // nothing to report, and saying otherwise would refresh a TTL on a
+                // claim we never tested.
+                o.error != null -> dead += url
+            }
+        }
+        if (reachable.isEmpty() && dead.isEmpty()) return 0
+        runCatching { reads.recordProbed(reachable, dead, nowSeconds()) }
             .onFailure { System.err.println("router: could not record relay reachability: ${it.message}") }
+        return reachable.size + dead.size
     }
 
     companion object {
