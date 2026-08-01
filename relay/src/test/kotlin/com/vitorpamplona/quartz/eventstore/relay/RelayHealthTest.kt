@@ -24,6 +24,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNotNull
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -77,6 +79,31 @@ class RelayHealthTest {
 
         h.strike(url("wss://filter.example/npub1ccc"))
         assertTrue(h.isDead(url("wss://filter.example/npub1ddd")), "the host is out, including urls never tried")
+    }
+
+    @Test
+    fun `eviction returns a verdict once, so it is published once`() {
+        // The eviction is the only finding that will ever exist about the sibling
+        // urls under this host: from here they are skipped without being dialled,
+        // so nothing observes them again. It must surface exactly once — silent
+        // would publish nothing, repeated would rewrite the record every strike.
+        val h = RelayHealth()
+        assertNull(h.strike(url("wss://filter.example/npub1")), "one strike is not a verdict")
+        assertNull(h.strike(url("wss://filter.example/npub2")), "two is not either")
+
+        val evicted = h.strike(url("wss://filter.example/npub3"))
+        assertNotNull(evicted, "the third strike is the finding")
+        assertEquals("filter.example", evicted.authority)
+        assertEquals(3, evicted.strikes)
+
+        assertNull(h.strike(url("wss://filter.example/npub4")), "already evicted — do not report it again")
+    }
+
+    @Test
+    fun `a host that has delivered is never evicted, so nothing is published`() {
+        val h = RelayHealth()
+        h.produced(url("wss://busy.example/npubY"))
+        repeat(5) { assertNull(h.strike(url("wss://busy.example/npub$it")), "ever-produced outranks any strike") }
     }
 
     @Test

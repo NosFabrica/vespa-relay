@@ -831,7 +831,7 @@ class MirrorRouter(
                             if (!tcpReachable(relay.url)) {
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
-                                health.strike(relay.url)
+                                publishStrike(health, relay.url)
                                 return@launch
                             }
                             // Checked INSIDE the coroutine but OUTSIDE the permit,
@@ -852,7 +852,7 @@ class MirrorRouter(
                                 when {
                                     got < 0 -> {
                                         failed.incrementAndGet()
-                                        health.strike(relay.url)
+                                        publishStrike(health, relay.url)
                                     }
 
                                     // Delivered. Its whole authority is alive, which
@@ -961,13 +961,51 @@ class MirrorRouter(
     }
 
     /**
+     * Strike a relay, and publish the verdict if it takes its whole host down.
+     *
+     * The relay itself is recorded by whatever observed it. What is NOT recorded
+     * anywhere else is the eviction: once an authority is struck out, every
+     * sibling url under it is skipped without being dialled, so nothing will
+     * ever observe them again. Publishing at the moment of eviction is the only
+     * point where evidence exists — three observed failures on that host — and
+     * it is what turns thousands of silent skips into a finding others can read.
+     */
+    private fun publishStrike(
+        health: RelayHealth,
+        url: NormalizedRelayUrl,
+    ) {
+        val evicted = health.strike(url) ?: return
+        monitor?.observer?.record(
+            url,
+            reachable = false,
+            error = "host ${evicted.authority} silent after ${evicted.strikes} attempts",
+        )
+    }
+
+    /**
      * Can we open a TCP connection to this relay at all?
      *
      * Deliberately fail-OPEN: any error deciding this returns true, so a probe
      * that is itself broken can never silently amputate the fan-out. The cost of
      * a false positive is the connect timeout we were going to pay anyway.
      */
-    private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
+    private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean {
+        val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
+        // PUBLISHED, not just acted on. This probe is the only thing that will
+        // ever look at most of these relays — a fan-out skips the rest before
+        // the websocket client sees them — so a verdict kept private means the
+        // monitor has nothing to say about the relays it just judged. Measured
+        // before this: 104 records for a 16,507-relay list.
+        //
+        // Only a NEGATIVE result is published. A completed TCP handshake proves
+        // a socket, not a relay, and reporting that as reachable would assert
+        // something this probe never tested; the connection that follows says it
+        // properly.
+        // No rtt either way: a TCP open is not a NIP-01 open, and publishing one
+        // as the other misreports the field aggregators rank by.
+        if (!ok) monitor?.observer?.record(url, reachable = false, error = "tcp: unreachable")
+        return ok
+    }
 
     /**
      * Drop a dynamic relay's socket once nothing is using it. Hundreds of relays

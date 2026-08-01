@@ -84,13 +84,26 @@ class RelayHealth(
      * This relay connected but delivered nothing before giving up. Count it
      * against its authority and, at [strikeLimit], stop dialling the host.
      */
-    fun strike(url: NormalizedRelayUrl) {
+    fun strike(url: NormalizedRelayUrl): Evicted? {
         unreachable += url
-        if (strikeLimit <= 0) return
+        if (strikeLimit <= 0) return null
         val authority = authorityOf(url.url)
-        if (authority in producedHosts || authority in deadHosts) return
-        if (strikes.merge(authority, 1, Int::plus)!! >= strikeLimit) deadHosts += authority
+        if (authority in producedHosts || authority in deadHosts) return null
+        if (strikes.merge(authority, 1, Int::plus)!! < strikeLimit) return null
+        deadHosts += authority
+        // The caller publishes this. Three separate urls on one host going
+        // silent is a finding about the HOST, and it is the only finding we will
+        // ever have about the thousands of sibling urls we now skip without
+        // dialling — so a verdict kept private means the monitor says nothing
+        // about the relays it just ruled out.
+        return Evicted(authority, strikeLimit)
     }
+
+    /** An authority struck out, and the evidence for it. */
+    class Evicted(
+        val authority: String,
+        val strikes: Int,
+    )
 
     /** This relay delivered. Its authority is alive, whatever else happened. */
     fun produced(url: NormalizedRelayUrl) {
