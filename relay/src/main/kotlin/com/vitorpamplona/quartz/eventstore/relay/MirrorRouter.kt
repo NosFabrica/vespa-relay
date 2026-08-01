@@ -994,8 +994,18 @@ class MirrorRouter(
         runCatching { cursors.flush() }
         // A last flush: a run that ends between intervals still knows things about
         // relays that the next run would otherwise pay to rediscover.
+        //
+        // Time-boxed, because this is a blocking write on the shutdown path. The
+        // engine being unreachable is a normal way for a relay to be going down
+        // in the first place, and there is no read deadline on that client — so
+        // without a bound, the one case where close() hangs forever is the case
+        // where it is most likely to happen.
         runCatching {
-            kotlinx.coroutines.runBlocking { reachability?.record(observer.drain()) }
+            kotlinx.coroutines.runBlocking {
+                kotlinx.coroutines.withTimeoutOrNull(SHUTDOWN_FLUSH_MS) {
+                    reachability?.record(observer.drain())
+                }
+            }
         }
         runCatching { client.removeConnectionListener(observer) }
         runCatching { authenticator?.destroy() }
@@ -1104,6 +1114,9 @@ class MirrorRouter(
          * writing again is one document, not one more.
          */
         private const val REACHABILITY_FLUSH_MS = 5 * 60 * 1000L
+
+        /** How long a shutdown will wait on that last write before giving up. */
+        private const val SHUTDOWN_FLUSH_MS = 5_000L
 
         private const val NEG_IDLE_MS = 30_000L
 

@@ -23,6 +23,8 @@ package com.vitorpamplona.quartz.eventstore.relay
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.AuthMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.ClosedMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.EoseMessage
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.CloseCmd
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -98,10 +100,43 @@ class RelayObserverTest {
         val o = observer()
         o.onConnecting(client(url))
         o.onConnected(client(url), 1, true)
-        o.onRequestSent(url)
+        // Through the real listener hook, not a helper the router never calls:
+        // the first version of this measured nothing in production because
+        // onSent was never wired, and this test passed anyway.
+        o.onSent(client(url), "", ReqCmd("sub", emptyList()), true)
         o.onIncomingMessage(client(url), "", EoseMessage("sub"))
 
         assertNotNull(o.drain().getValue(url).rttReadMs)
+    }
+
+    @Test
+    fun `a non-REQ command does not start the read clock`() {
+        val o = observer()
+        o.onConnecting(client(url))
+        o.onConnected(client(url), 1, true)
+        o.onSent(client(url), "", CloseCmd("sub"), true)
+        o.onIncomingMessage(client(url), "", EoseMessage("sub"))
+
+        assertNull(o.drain().getValue(url).rttReadMs)
+    }
+
+    @Test
+    fun `a still-connected relay keeps its measured latency across flushes`() {
+        // A static upstream's socket stays open for the process lifetime, so
+        // onConnected fires once and never again. Without carrying the timing
+        // forward, every later window would see "reachable, no timing" — which
+        // the writer skips — and the relays we are surest about would be the
+        // ones whose records silently expired.
+        val o = observer()
+        o.onConnecting(client(url))
+        o.onConnected(client(url), 1, true)
+        val first = o.drain().getValue(url).rttOpenMs
+        assertNotNull(first)
+
+        // A later window: events keep arriving on the same socket, no reconnect.
+        o.onIncomingMessage(client(url), "", EoseMessage("sub"))
+        val second = o.drain().getValue(url)
+        assertEquals(first, second.rttOpenMs, "the last real measurement still stands")
     }
 
     @Test

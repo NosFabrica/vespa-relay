@@ -28,6 +28,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.EoseMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.EventMessage
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.NoticeMessage
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.Command
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.ReqCmd
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
 
@@ -79,6 +81,17 @@ class RelayObserver : RelayConnectionListener {
 
     private val seen = ConcurrentHashMap<NormalizedRelayUrl, Observation>()
 
+    // The last open time ever measured for a relay, kept ACROSS drains.
+    //
+    // Without it a long-lived connection is reported once and then never again:
+    // the observation is drained, the socket stays up so onConnected never fires
+    // a second time, and every later window sees "reachable, no timing" — which
+    // the writer skips rather than invent a latency. The relays we are surest
+    // about, a static upstream streaming events for hours, would be exactly the
+    // ones whose records quietly expired. This is a real measurement of that
+    // relay, just not from this window, which beats having none.
+    private val lastOpenRttMs = ConcurrentHashMap<NormalizedRelayUrl, Long>()
+
     private fun of(relay: IRelayClient) = seen.getOrPut(relay.url) { Observation() }
 
     override fun onConnecting(relay: IRelayClient) {
@@ -98,7 +111,11 @@ class RelayObserver : RelayConnectionListener {
         val o = of(relay)
         o.reachable = true
         o.error = null
-        o.connectingAtMs?.let { o.rttOpenMs = (System.currentTimeMillis() - it).coerceAtLeast(0) }
+        o.connectingAtMs?.let {
+            val rtt = (System.currentTimeMillis() - it).coerceAtLeast(0)
+            o.rttOpenMs = rtt
+            lastOpenRttMs[relay.url] = rtt
+        }
     }
 
     override fun onCannotConnect(
@@ -117,8 +134,14 @@ class RelayObserver : RelayConnectionListener {
      * The outgoing REQ starts the read clock. Only the FIRST one per relay: a
      * later subscription on a warm socket measures nothing about the relay.
      */
-    fun onRequestSent(relay: NormalizedRelayUrl) {
-        val o = seen.getOrPut(relay) { Observation() }
+    override fun onSent(
+        relay: IRelayClient,
+        msgStr: String,
+        command: Command,
+        success: Boolean,
+    ) {
+        if (!success || command !is ReqCmd) return
+        val o = of(relay)
         if (o.firstReqAtMs == null) o.firstReqAtMs = System.currentTimeMillis()
     }
 
@@ -138,8 +161,11 @@ class RelayObserver : RelayConnectionListener {
             // Serving an event is proof of life even from a relay that never sends
             // EOSE — some do not, and treating those as unresponsive would shed
             // relays that are working perfectly well.
+            // Guarded, because this fires for EVERY mirrored event — thousands a
+            // second across many threads — and an unconditional volatile write
+            // would bounce the cache line between them to say nothing new.
             is EventMessage -> {
-                o.reachable = true
+                if (!o.reachable) o.reachable = true
             }
 
             is AuthMessage -> {
@@ -167,7 +193,12 @@ class RelayObserver : RelayConnectionListener {
      */
     fun drain(): Map<NormalizedRelayUrl, Observation> {
         val out = HashMap<NormalizedRelayUrl, Observation>(seen.size)
-        seen.keys.toList().forEach { url -> seen.remove(url)?.let { out[url] = it } }
+        seen.keys.toList().forEach { url ->
+            seen.remove(url)?.let { o ->
+                if (o.rttOpenMs == null) o.rttOpenMs = lastOpenRttMs[url]
+                out[url] = o
+            }
+        }
         return out
     }
 
