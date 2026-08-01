@@ -220,6 +220,18 @@ object RelayDiscovery {
      * `wss://not/` — so anything blank or with whitespace in it is dropped before
      * it gets there. A scheme-less host is still fine when the source named a tag:
      * that one the normalizer fixes correctly.
+     *
+     * Two more classes are dropped here because dialling them cannot work rather
+     * than merely being unlikely to, and a url that cannot work is worse than
+     * useless: it burns a connect timeout and a concurrency permit every cycle,
+     * forever, and would be recorded as an unreachable relay when the truth is
+     * that we were never able to ask.
+     *
+     *  - `.onion`, with no Tor transport configured on this client. Every dial is
+     *    a guaranteed timeout.
+     *  - loopback and private hosts. `ws://localhost:4869` in someone else's
+     *    relay list means THEIR machine; from in here it resolves to us or to
+     *    nothing, and following it is a request we were never invited to make.
      */
     private fun normalize(
         raw: String,
@@ -228,6 +240,8 @@ object RelayDiscovery {
         val trimmed = raw.trim()
         if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
         if (requireScheme && !trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return null
-        return RelayUrlNormalizer.normalizeOrNull(trimmed)
+        val url = RelayUrlNormalizer.normalizeOrNull(trimmed) ?: return null
+        if (RelayUrlNormalizer.isOnion(url.url) || RelayUrlNormalizer.isLocalHost(url.url)) return null
+        return url
     }
 }

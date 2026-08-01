@@ -45,7 +45,7 @@ All configuration is through environment variables.
 | `RELAY_URL` | this relay's own ws url — its NIP-42 identity and NIP-62 vanish scope | **required** |
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
 | `RELAY_PORT` | port to listen on | `7777` |
-| `DEFAULT_OBSERVER` | 64-hex pubkey whose web of trust ranks anonymous searches | unset ⇒ untrusted |
+| `DEFAULT_OBSERVER` | the `npub1…` whose web of trust ranks anonymous searches — somebody's public key, usually the NIP-85 provider you trust, not this relay's. Hex parses too, but a bad value stops the relay rather than being ignored | unset ⇒ untrusted |
 | `AUTO_DEPLOY` | deploy the bundled schema on first run | `true` |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
@@ -55,7 +55,7 @@ All configuration is through environment variables.
 |---|---|---|
 | `RELAY_NAME` / `RELAY_DESCRIPTION` / `RELAY_ICON` / `RELAY_BANNER` | how the relay presents itself | — |
 | `RELAY_CONTACT` | a human contact | — |
-| `RELAY_CONTACT_PUBKEY` / `RELAY_SELF_PUBKEY` | the relay's contact and self pubkeys | — |
+| `RELAY_CONTACT_PUBKEY` | the human operator's pubkey, for NIP-11 contact. The relay's own `self` is derived from `RELAY_NSEC`, not set here | — |
 | `RELAY_VERSION` | overrides the build version | — |
 | `RELAY_POSTING_POLICY` / `RELAY_PRIVACY_POLICY` / `RELAY_TERMS_OF_SERVICE` | policy urls | — |
 
@@ -70,7 +70,7 @@ All configuration is through environment variables.
 
 | var | meaning | default |
 |---|---|---|
-| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist, 64-hex, comma/space-separated | — |
+| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…` or 64-hex, comma/space-separated. An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
 | `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
@@ -79,7 +79,7 @@ All configuration is through environment variables.
 
 | var | meaning | default |
 |---|---|---|
-| `RELAY_ADMIN_PUBKEYS` | comma/space-separated 64-hex admin keys; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth) | unset ⇒ off |
+| `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…` or 64-hex; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
 
@@ -90,7 +90,7 @@ All configuration is through environment variables.
 | `ROUTER_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store | unset ⇒ router off |
 | `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
-| `ROUTER_AUTH_NSEC` | the key the router authenticates with when an upstream demands NIP-42. `nsec1…` or 64 hex. Relays that gate reads behind AUTH serve nothing without it and are indistinguishable from empty ones, so a paid or allowlisted upstream contributing zero is the symptom. A real identity — every relay that challenges us learns this pubkey — so prefer a key dedicated to this relay. Malformed ⇒ startup fails rather than running unauthenticated | unset ⇒ challenges ignored |
+| `RELAY_NSEC` | this relay's own keypair (`nsec1…` or 64 hex), used everywhere it acts as itself: the NIP-11 `self` it advertises (**derived**, so it is provable rather than merely asserted), the NIP-42 challenges it answers, and the NIP-66 kind-30166 liveness records it signs. Relays that gate reads behind AUTH are indistinguishable from empty ones without it. Unset ⇒ anonymous — reading other monitors' 30166s still works and needs no key. Malformed ⇒ startup fails | unset ⇒ anonymous |
 | `ROUTER_FULL_RESYNC_SECONDS` | how long a recorded sync window may narrow work before the router walks the whole filter again. A finished negentropy reconcile covers its filter's entire range, so the next run asks only for what arrived since — which is what keeps a dynamic cycle's shared id snapshot from being the entire corpus. Relays do gain old events, so the claim is re-tested on this period. Nothing is ever capped; the full pass is periodic, not skipped | `604800` (7 days) |
 | `ROUTER_SYNC_STATE_FILE` | where the per-(relay, filter) synced `created_at` band is kept. A relay without NIP-77 has no memory of what it already sent, so without this every restart re-downloads its whole corpus; with it the router asks only for what falls outside the band it already walked. Keyed by filter — edit a stream's filter and that stream starts over | unset ⇒ in memory only |
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |

@@ -45,7 +45,7 @@ import kotlinx.coroutines.runBlocking
  *
  *   NIP-11 identity:
  *   RELAY_NAME / RELAY_DESCRIPTION / RELAY_ICON / RELAY_BANNER /
- *   RELAY_CONTACT_PUBKEY / RELAY_SELF_PUBKEY / RELAY_CONTACT (human contact) /
+ *   RELAY_CONTACT_PUBKEY / RELAY_CONTACT (human contact) /
  *   RELAY_VERSION (override the build version) / RELAY_POSTING_POLICY /
  *   RELAY_PRIVACY_POLICY / RELAY_TERMS_OF_SERVICE
  *
@@ -102,6 +102,16 @@ fun main() {
             ?: error("RELAY_URL '$relayUrlRaw' is not a valid relay url.")
     val autoDeploy = env["AUTO_DEPLOY"]?.toBooleanStrictOrNull() ?: true
 
+    // This relay's own keypair, in every role where it acts as itself: the NIP-11
+    // `self` it advertises, the NIP-42 challenges it answers, the NIP-66 liveness
+    // it publishes. Read first so a malformed key stops the process here, with a
+    // clear message, rather than surfacing hours later as upstreams that
+    // mysteriously serve nothing. Unset ⇒ the relay acts anonymously.
+    val identity = RelayIdentity.fromEnv { env[it] }
+    if (identity != null) {
+        System.err.println("relay identity: ${identity.pubKey.take(12)}… (NIP-11 self, NIP-42 auth, NIP-66 monitor)")
+    }
+
     val limits = relayLimitsFromEnv(env)
     val negentropy = negentropySettingsFromEnv(env)
     val rejectFutureSeconds = rejectFutureSecondsFromEnv(env)
@@ -131,7 +141,7 @@ fun main() {
     val relay =
         NostrRelayServer(
             store = store,
-            defaultObserver = env["DEFAULT_OBSERVER"],
+            defaultObserver = PubKeys.decodeOrNull(env["DEFAULT_OBSERVER"], "DEFAULT_OBSERVER"),
             relayUrl = relayUrl,
             listener = listener,
             limits = limits,
@@ -161,17 +171,21 @@ fun main() {
     // same as not having it.
     val cursors = SyncCursors.fromEnv(env)
 
-    // The identity the router authenticates with when an upstream demands NIP-42.
-    // Read before the router is built so a malformed key stops the process here,
-    // with a clear message, rather than becoming silent empty relays later.
-    val authSigner = RouterIdentity.fromEnv { env[it] }
-    if (authSigner != null) {
-        System.err.println("router: authenticating to relays as ${authSigner.pubKey.take(12)}… (NIP-42)")
-    }
+    // Relay liveness across restarts, as NIP-66 30166 in this same store. Reading
+    // is always on and costs one query: a relay whose streams mirror kind 30166
+    // inherits every other monitor's census for free. Writing needs the identity.
+    val reachability = RelayReachability(store, identity)
 
     val router =
         RouterConfigLoader.fromEnv(env)?.let {
-            MirrorRouter(store, it, audit = parseAudit, cursors = cursors, signer = authSigner).start()
+            MirrorRouter(
+                store,
+                it,
+                audit = parseAudit,
+                cursors = cursors,
+                signer = identity,
+                reachability = reachability,
+            ).start()
         }
 
     val admin =
@@ -219,8 +233,11 @@ fun main() {
                 description = env["RELAY_DESCRIPTION"],
                 icon = env["RELAY_ICON"],
                 banner = env["RELAY_BANNER"],
-                contactPubkey = env["RELAY_CONTACT_PUBKEY"],
-                selfPubkey = env["RELAY_SELF_PUBKEY"],
+                contactPubkey = PubKeys.decodeOrNull(env["RELAY_CONTACT_PUBKEY"], "RELAY_CONTACT_PUBKEY"),
+                // Derived, never declared: a pubkey an operator types in is an
+                // assertion no reader can check, while this one is provable
+                // against every 22242 and 30166 the relay signs.
+                selfPubkey = identity?.pubKey,
                 contact = env["RELAY_CONTACT"],
                 version = env["RELAY_VERSION"],
                 postingPolicy = env["RELAY_POSTING_POLICY"],

@@ -33,6 +33,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSoc
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -98,8 +99,11 @@ class MirrorRouter(
     // so a paged relay is not re-read from scratch every restart. See [SyncCursors].
     private val cursors: SyncCursors = SyncCursors(null),
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
-    // Null (the default) leaves challenges unanswered. See [RouterIdentity].
+    // Null (the default) leaves challenges unanswered. See [RelayIdentity].
     private val signer: NostrSigner? = null,
+    // Relay liveness that survives a restart, as NIP-66 30166 in this same store.
+    // Null disables it entirely; the default reads but does not publish.
+    private val reachability: RelayReachability? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -590,6 +594,12 @@ class MirrorRouter(
         val downloaded = AtomicLong()
         val failed = AtomicLong()
 
+        // What earlier runs — and any other NIP-66 monitor whose 30166s we mirror
+        // — already proved unreachable. Loaded once for the fan-out, exactly as
+        // the cursor bands are: this is a policy input, not a per-dial lookup.
+        val knownDead = reachability?.deadSet().orEmpty()
+        val health = RelayHealth(knownDead = knownDead)
+
         // ONE window and ONE local snapshot for the whole cycle, not one per
         // relay. Every relay in this stream reconciles the same filter, so a
         // per-relay snapshot re-scanned the identical range once per relay —
@@ -627,6 +637,7 @@ class MirrorRouter(
                 " (top: ${relays.take(3).joinToString { "${it.url.url} x${it.references}" }})",
         )
         val done = AtomicLong()
+        val skipped = AtomicLong()
         coroutineScope {
             // A cycle over a relay list runs for HOURS with nothing but its
             // opening line, so a stalled fan-out and a working one look the same
@@ -642,6 +653,7 @@ class MirrorRouter(
                         val etaSec = if (rate > 0) ((relays.size - finished) / rate).toLong() else -1
                         System.err.println(
                             "router: ${stream.name} $finished/${relays.size} relay(s), ${downloaded.get()} event(s)" +
+                                (if (skipped.get() > 0) ", ${skipped.get()} skipped as dead" else "") +
                                 (if (failed.get() > 0) ", ${failed.get()} unreachable" else "") +
                                 (if (etaSec >= 0) ", ETA ~${fmtDuration(etaSec * 1000)}" else ""),
                         )
@@ -657,12 +669,57 @@ class MirrorRouter(
                 coroutineScope {
                     relays.forEach { relay ->
                         launch {
+                            // A TCP connect before the websocket handshake. The
+                            // reachability records only help from the SECOND cycle
+                            // on — the first one has nothing written down yet and
+                            // would pay a full connect timeout for each of ~20k
+                            // corpses. A refused connection or an unresolvable host
+                            // comes back in milliseconds, and this is the cheapest
+                            // possible way to learn it. Only a NEGATIVE result is
+                            // acted on: a TCP handshake proves a socket, never a
+                            // relay, so success still goes the long way round.
+                            if (!tcpReachable(relay.url)) {
+                                skipped.incrementAndGet()
+                                done.incrementAndGet()
+                                health.strike(relay.url)
+                                return@launch
+                            }
+                            // Checked INSIDE the coroutine but OUTSIDE the permit,
+                            // and re-checked rather than filtered up front: an
+                            // authority struck out while this one waited for a slot
+                            // should not still be dialled. Skipping costs nothing
+                            // and frees the permit for a relay that might answer.
+                            if (health.isDead(relay.url)) {
+                                skipped.incrementAndGet()
+                                done.incrementAndGet()
+                                return@launch
+                            }
                             gate.withPermit {
                                 val got =
                                     dynamicSyncOne(stream, relay.url, window, local) { reason ->
                                         reasons.merge(reason, 1L, Long::plus)
                                     }
-                                if (got < 0) failed.incrementAndGet() else downloaded.addAndGet(got.toLong())
+                                when {
+                                    got < 0 -> {
+                                        failed.incrementAndGet()
+                                        health.strike(relay.url)
+                                    }
+
+                                    // Delivered. Its whole authority is alive, which
+                                    // beats any strike a sibling url earned racing it.
+                                    got > 0 -> {
+                                        downloaded.addAndGet(got.toLong())
+                                        health.produced(relay.url)
+                                    }
+
+                                    // Answered cleanly with nothing new — a working
+                                    // relay we are simply already in sync with. Not a
+                                    // strike, and with a recorded band the next cycle
+                                    // asks it for far less.
+                                    else -> {
+                                        health.produced(relay.url)
+                                    }
+                                }
                                 done.incrementAndGet()
                             }
                         }
@@ -679,9 +736,14 @@ class MirrorRouter(
                 .joinToString { "${it.key} x${it.value}" }
         // One write for the whole fan-out, not one per relay.
         cursors.flush()
+        // Liveness, likewise once. Only relays this cycle actually dialled are
+        // recorded — the ones skipped as known-dead learned nothing new, and
+        // re-asserting their death would refresh a TTL we never re-tested.
+        reachability?.record(health.reachable, health.unreachable)
         System.err.println(
-            "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get()}/${relays.size} relay(s)" +
+            "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get() - skipped.get()}/${relays.size} relay(s)" +
                 " in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
+                "; ${health.summary(relays.size)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
                 "; next in ${dynamic.refreshSeconds}s",
         )
@@ -748,6 +810,15 @@ class MirrorRouter(
             releaseSocket(url)
         }
     }
+
+    /**
+     * Can we open a TCP connection to this relay at all?
+     *
+     * Deliberately fail-OPEN: any error deciding this returns true, so a probe
+     * that is itself broken can never silently amputate the fan-out. The cost of
+     * a false positive is the connect timeout we were going to pay anyway.
+     */
+    private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
 
     /**
      * Drop a dynamic relay's socket once nothing is using it. Hundreds of relays

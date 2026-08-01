@@ -65,7 +65,6 @@ services:
       RELAY_BANNER: ${RELAY_BANNER:-}
       RELAY_CONTACT: ${RELAY_CONTACT:-}
       RELAY_CONTACT_PUBKEY: ${RELAY_CONTACT_PUBKEY:-}
-      RELAY_SELF_PUBKEY: ${RELAY_SELF_PUBKEY:-}
       RELAY_POSTING_POLICY: ${RELAY_POSTING_POLICY:-}
       RELAY_PRIVACY_POLICY: ${RELAY_PRIVACY_POLICY:-}
       RELAY_TERMS_OF_SERVICE: ${RELAY_TERMS_OF_SERVICE:-}
@@ -99,10 +98,9 @@ services:
       # How long a recorded sync window narrows work before the whole filter is
       # walked again. Nothing is capped — the full pass is periodic, not skipped.
       ROUTER_FULL_RESYNC_SECONDS: ${ROUTER_FULL_RESYNC_SECONDS:-604800}
-      # NIP-42 identity for the router. Relays that gate reads behind AUTH serve
-      # nothing without it, and look like empty relays when it is missing.
-      # nsec1… or 64 hex. Unset ⇒ challenges are ignored. See .env.example.
-      ROUTER_AUTH_NSEC: ${ROUTER_AUTH_NSEC:-}
+      # This relay's own keypair: NIP-11 self, NIP-42 auth, NIP-66 monitor.
+      # nsec1… or 64 hex. Unset ⇒ the relay acts anonymously. See .env.example.
+      RELAY_NSEC: ${RELAY_NSEC:-}
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
       PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}
