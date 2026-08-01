@@ -59,6 +59,11 @@ class StreamPhases {
             val retrySec: Long,
         ) : Phase
 
+        /** Ready to reconcile, waiting for another stream to release the gate. */
+        data class Queued(
+            val relays: Int,
+        ) : Phase
+
         /** Reading relay urls out of the store. */
         data class Discovering(
             val sources: String,
@@ -151,6 +156,10 @@ class StreamPhases {
         return when (phase) {
             is Phase.Waiting -> {
                 "waiting — no relays in [${phase.sources}] yet, retry in ${phase.retrySec}s ($elapsed elapsed)"
+            }
+
+            is Phase.Queued -> {
+                "queued behind another stream — ${phase.relays} relay(s) ready ($elapsed elapsed)"
             }
 
             is Phase.Discovering -> {

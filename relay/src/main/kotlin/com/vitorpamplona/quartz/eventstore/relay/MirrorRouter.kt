@@ -216,6 +216,20 @@ class MirrorRouter(
     // set and discovering relays — printed nothing at all. See [StreamPhases].
     private val phases = StreamPhases()
 
+    // One stream reconciles at a time, across the static and dynamic paths both.
+    //
+    // A stream holds its whole local id set from the moment the snapshot starts
+    // until its last relay finishes — not just for the walk — so concurrent
+    // streams hold their sets SIMULTANEOUSLY. Measured: three of them at 48.9M
+    // ids and 5.97 GiB with two still only ~57% walked, heading for ~73.5M ids
+    // and roughly 9 GiB. Serialising makes the peak one stream's set instead of
+    // every stream's sum.
+    //
+    // It costs little in wall clock. The streams were contending for the same
+    // engine and the same heap, so running them together did not finish them
+    // sooner — it made all three slow at once and risked the ceiling.
+    private val streamGate = Semaphore(1)
+
     // The relays we hold a live subscription on. A dynamic sync drops its socket
     // when it finishes, and must not drop one of these out from under its tail.
     private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
@@ -477,8 +491,17 @@ class MirrorRouter(
                 .groupBy { it.value.filter }
                 .forEach { (filter, group) ->
                     launch {
-                        val local = snapshotForStream(group.map { it.value }, filter)
-                        group.forEach { (idx, up) -> launch { backfillOne(idx, up, local) } }
+                        phases.set(group.first().value.streamName, StreamPhases.Phase.Queued(group.size))
+                        streamGate.withPermit {
+                            val local = snapshotForStream(group.map { it.value }, filter)
+                            // Awaited inside the permit: the id set stays live
+                            // until the last relay is done with it, so releasing
+                            // at the fan-out would let the next stream allocate
+                            // its own on top of this one.
+                            coroutineScope {
+                                group.forEach { (idx, up) -> launch { backfillOne(idx, up, local) } }
+                            }
+                        }
                     }
                 }
         }
@@ -673,7 +696,11 @@ class MirrorRouter(
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else {
-                    dynamicCycle(stream, dynamic, sourceNames, relays)
+                    // Serialised with every other stream: this holds its id set
+                    // for the whole fan-out, and two large sets resident at once
+                    // is what pushed the heap to its ceiling.
+                    phases.set(stream.name, StreamPhases.Phase.Queued(relays.size))
+                    streamGate.withPermit { dynamicCycle(stream, dynamic, sourceNames, relays) }
                     ran = true
                 }
             } catch (e: CancellationException) {
@@ -735,6 +762,7 @@ class MirrorRouter(
         // of their ceilings instead. See [SyncCursors.coveringWindow].
         val snapshotWindow = cursors.coveringWindow(relays.map { it.url }, window)
         val snapStartedMs = System.currentTimeMillis()
+
         val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
         phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
         val local: List<IdAndTime> =
