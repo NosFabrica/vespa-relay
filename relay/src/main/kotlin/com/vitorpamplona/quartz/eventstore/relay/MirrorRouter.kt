@@ -40,6 +40,8 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
+import com.vitorpamplona.quartz.utils.Log
+import com.vitorpamplona.quartz.utils.LogLevel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -315,9 +317,30 @@ class MirrorRouter(
      */
     private val wireLog =
         when (wireLogMode) {
-            "full" -> RelayLogger(client, debugSending = true, debugReceiving = true)
-            "sent" -> RelayLogger(client, debugSending = true, debugReceiving = false)
-            else -> RelayLogger(client, debugSending = false, debugReceiving = false)
+            "full", "sent" -> {
+                // Lower the floor to match, or the switch does nothing. The sent
+                // and received lines are DEBUG, and QUARTZ_LOG_LEVEL is WARN in
+                // every deployment we run (quartz defaults to DEBUG, which logs a
+                // line per malformed upstream profile). So ROUTER_WIRE_LOG=sent
+                // was accepted, constructed its logger, and printed nothing —
+                // a component configured, silent, and doing its job invisibly,
+                // which is the failure this codebase keeps trying to design out.
+                // Announced, because raising quartz's verbosity is not something
+                // to do to an operator quietly.
+                if (Log.minLevel > LogLevel.DEBUG) {
+                    Log.minLevel = LogLevel.DEBUG
+                    System.err.println(
+                        "router: ROUTER_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG (was ${'$'}{LogLevel.WARN}) — this is verbose",
+                    )
+                }
+                RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")
+            }
+
+            // Errors only, which need no floor change: NOTICE, CLOSED and failed
+            // sends are logged at WARN and ERROR by RelayLogger regardless.
+            else -> {
+                RelayLogger(client, debugSending = false, debugReceiving = false)
+            }
         }
 
     fun start(): MirrorRouter {
