@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
@@ -42,6 +43,8 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.async
+import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.channels.trySendBlocking
@@ -188,6 +191,20 @@ class MirrorRouter(
     // so producers block (backpressure) rather than pile events onto the heap.
     private val ingestWorkers = config.ingestConcurrency
     private val ingestBatch = config.ingestBatch
+    private val negMinEvents = config.negMinEvents
+    private val countTimeoutMs = config.countTimeoutMs
+
+    /**
+     * Relays that did not answer a NIP-45 COUNT, so we stop asking this run.
+     *
+     * COUNT is optional and widely unimplemented, and a relay that does not
+     * support it is indistinguishable from one that is slow — both return null
+     * after the timeout. Asking 20,000 relays once is a diagnostic; asking them
+     * every cycle is [countTimeoutMs] of dead wait per relay per cycle.
+     */
+    private val countUnanswered =
+        java.util.concurrent.ConcurrentHashMap
+            .newKeySet<NormalizedRelayUrl>()
     private val inboundCapacity = (ingestBatch * 4).coerceAtLeast(4096)
     private val inbound = Channel<Inbound>(inboundCapacity)
 
@@ -536,18 +553,21 @@ class MirrorRouter(
                         // for 14.9M ids and 10:36 for 43.7M, and a stream behind
                         // the gate waits for both.
                         //
-                        // "Will page" comes off the cursor, and the predicate has
-                        // to be "we have never fetched from this relay", not "it
-                        // has never reconciled" ([SyncCursors.everTouched] carries
-                        // the full account). A paged fetch records an incomplete
-                        // band by design, so the reconcile predicate kept the same
-                        // relays in the paging branch permanently — re-paging
-                        // their whole history on every full resync, and never
-                        // attempting negentropy in between. 14.4M events fetched
-                        // to keep 9,878. Paging is for first contact only, where
-                        // there is genuinely no band to reconcile against.
+                        // Who pages is decided by OVERLAP, not by cursor history
+                        // — see [worthReconciling] for why that distinction cost
+                        // 14.4M downloaded events to keep 9,878.
+                        //
+                        // Our own count is taken once for the stream, since every
+                        // url here shares its filter, and it is the cheap half:
+                        // one engine query against a per-relay round trip.
+                        val ours = runCatching { store.count(filter) }.getOrNull() ?: 0
                         val (reconcilers, pagers) =
-                            group.partition { cursors.everTouched(it.value.url, it.value.filter) }
+                            group.partitionSuspend { worthReconciling(it.value, filter, ours) }
+                        System.err.println(
+                            "router: $name ${reconcilers.size} relay(s) will reconcile, ${pagers.size} will fetch" +
+                                " [sync=${group.first().value.sync.wire}]" +
+                                " (we hold ${StreamPhases.fmtCount(ours)} matching event(s), floor $negMinEvents)",
+                        )
                         val eventsEarly = AtomicLong()
                         val early =
                             if (pagers.isEmpty()) {
@@ -687,6 +707,69 @@ class MirrorRouter(
             System.err.println("router: static backfill ${up.url.url} paged fetch failed: ${e.message}")
             0
         }
+    }
+
+    /**
+     * Reconcile against our id set, or just page the relay?
+     *
+     * Negentropy is worth its id exchange exactly to the extent that the two
+     * sides already share data, and NOTHING ELSE decides it — not whether we
+     * have met the relay before, which is what an earlier version of this asked.
+     * A relay whose events we mostly hold is nearly free to reconcile and
+     * ruinous to fetch; a relay whose events we lack transfers the same bytes
+     * either way, and pays the id exchange on top.
+     *
+     * A stream that KNOWS which it is says so ([SyncMode]) and skips all of the
+     * below. Sharing is a property of the kind, not of the volume: NIP-85
+     * assertions put millions on both sides and share essentially none of them,
+     * because each provider authors its own. Counts cannot see that, so a stream
+     * whose relays do not mirror each other must declare `sync = "fetch"` rather
+     * than be measured into the wrong answer.
+     *
+     * For `auto`, the measurement is two counts, ours and theirs, on the same
+     * filter — a heuristic that assumes overlap tracks volume:
+     *
+     *  - **Ours below the floor** — we have nothing to reconcile against, so
+     *    reconciling would transfer the relay's whole set anyway and build a
+     *    snapshot to do it. Fetch. This is bootstrap, and it is why the indexer
+     *    relays SHOULD fetch on a fresh store: they are what creates the overlap
+     *    everything after them benefits from.
+     *  - **Theirs below the floor** — a small relay is cheap to fetch outright,
+     *    and cheaper than making it walk a set of ours it barely intersects.
+     *  - **Both large** — reconcile. This is the 20,000-relay sweep, where the
+     *    indexers have already given us the bulk of what each relay holds. It
+     *    is also the case that cost 14.4M downloaded events to keep 9,878:
+     *    `wss://profiles.nostr1.com` sent 5,099,996 profiles into a store that
+     *    already had 12.28M.
+     *
+     * A relay that does not answer COUNT is reconciled, not fetched. Our side is
+     * already known large by then, so overlap is the likely case; and if the
+     * relay turns out to lack NIP-77 too, `negentropySyncOrFetch` falls back to
+     * paging on its own. The failure mode of guessing wrong here is one
+     * redundant id exchange, against a re-download of everything for guessing
+     * wrong the other way.
+     */
+    private suspend fun worthReconciling(
+        up: MirrorUpstream,
+        filter: Filter,
+        ours: Int,
+    ): Boolean {
+        // Declared beats measured: the operator knows whether this stream's
+        // relays mirror each other, and no count can tell us.
+        when (up.sync) {
+            SyncMode.NEGENTROPY -> return true
+            SyncMode.FETCH -> return false
+            SyncMode.AUTO -> Unit
+        }
+        val url = up.url
+        if (ours < negMinEvents) return false
+        if (url in countUnanswered) return true
+        val theirs = runCatching { client.count(url, filter, countTimeoutMs)?.count }.getOrNull()
+        if (theirs == null) {
+            countUnanswered.add(url)
+            return true
+        }
+        return theirs >= negMinEvents
     }
 
     private suspend fun snapshotForStream(
@@ -910,16 +993,27 @@ class MirrorRouter(
         val snapshotWindow = cursors.coveringWindow(relays.map { it.url }, window)
         val snapStartedMs = System.currentTimeMillis()
 
-        val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
-        phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
+        // A fetch-only stream never reconciles, so it never reads the id set —
+        // and building one is the most expensive thing this router does. On the
+        // `assertions` stream that is 24.8M ids and gigabytes of IdAndTime held
+        // live for the whole fan-out, for relays that share essentially nothing
+        // with us and would compare against it for nothing. Skipped outright.
         val local: List<IdAndTime> =
-            snapshotReporting(snapshotWindow) { collected ->
-                phases.set(stream.name, StreamPhases.Phase.Snapshotting(collected, expected, relays.size))
+            if (stream.sync == SyncMode.FETCH) {
+                System.err.println("router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot")
+                emptyList()
+            } else {
+                val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
+                phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
+                snapshotReporting(snapshotWindow) { collected ->
+                    phases.set(stream.name, StreamPhases.Phase.Snapshotting(collected, expected, relays.size))
+                }.also {
+                    System.err.println(
+                        "router: ${stream.name} local snapshot ${it.size} id(s) in ${fmtDuration(System.currentTimeMillis() - snapStartedMs)}" +
+                            (snapshotWindow.since?.let { s -> ", since $s" } ?: ", full filter (no relay is caught up yet)"),
+                    )
+                }
             }
-        System.err.println(
-            "router: ${stream.name} local snapshot ${local.size} id(s) in ${fmtDuration(System.currentTimeMillis() - snapStartedMs)}" +
-                (snapshotWindow.since?.let { ", since $it" } ?: ", full filter (no relay is caught up yet)"),
-        )
         // Why the unreachable ones were unreachable, tallied — a relay list is
         // full of dead hosts, and the shape of the failures is what tells an
         // operator whether that is normal or whether the whole cycle is broken.
@@ -1070,30 +1164,39 @@ class MirrorRouter(
                 var seenMin: Long? = null
                 var seenMax: Long? = null
                 val syncStartedAt = System.currentTimeMillis() / 1000
+                val onEvent: (Event) -> Unit = { event ->
+                    if (stream.filter.match(event)) {
+                        if (SyncCursors.isPlausible(event.createdAt)) {
+                            seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                            seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                        }
+                        offer(event, stream.trusted)
+                    }
+                }
+                // Fetch-only: the leg came off the cursor band, so this asks for
+                // what is outside what we already walked and nothing else. That
+                // band IS the mechanism here — there is no id set to fall back on.
+                val fetched = stream.sync == SyncMode.FETCH
                 val result =
-                    client.negentropySyncOrFetch(
-                        relay = url,
-                        filter = leg,
-                        idleTimeoutMs = NEG_IDLE_MS,
-                        localEntries = local,
-                        onEvent = { event ->
-                            if (stream.filter.match(event)) {
-                                if (SyncCursors.isPlausible(event.createdAt)) {
-                                    seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                                    seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
-                                }
-                                offer(event, stream.trusted)
-                            }
-                        },
-                    )
-                downloaded += result.downloaded
+                    if (fetched) {
+                        null.also { downloaded += client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS, onEvent = onEvent) }
+                    } else {
+                        client
+                            .negentropySyncOrFetch(
+                                relay = url,
+                                filter = leg,
+                                idleTimeoutMs = NEG_IDLE_MS,
+                                localEntries = local,
+                                onEvent = onEvent,
+                            ).also { downloaded += it.downloaded }
+                    }
                 cursors.record(
                     url,
                     window,
                     seenMin,
                     seenMax,
-                    result.pagedFallback,
-                    reconciledThrough = syncStartedAt.takeUnless { result.pagedFallback },
+                    paged = fetched || result?.pagedFallback == true,
+                    reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
                 )
             }
             downloaded
@@ -1564,3 +1667,18 @@ private suspend fun bisect(
  * and the alternative is ~2000.
  */
 private const val ISOLATION_WRITE_BUDGET = 64
+
+/**
+ * [List.partition] where the predicate suspends, evaluated concurrently.
+ *
+ * Concurrency is the point, not a bonus: the predicate this exists for is a
+ * NIP-45 COUNT round trip with its own timeout, and a relay that never answers
+ * costs the whole timeout. Serially, twelve silent relays would be a minute of
+ * dead wait before a byte was fetched, and twenty thousand of them would end the
+ * cycle.
+ */
+private suspend fun <T> List<T>.partitionSuspend(predicate: suspend (T) -> Boolean): Pair<List<T>, List<T>> =
+    coroutineScope {
+        val marked = map { item -> async { item to predicate(item) } }.awaitAll()
+        marked.filter { it.second }.map { it.first } to marked.filterNot { it.second }.map { it.first }
+    }

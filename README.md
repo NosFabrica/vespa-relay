@@ -97,6 +97,8 @@ All configuration is through environment variables.
 | `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
 | `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
 | `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
+| `ROUTER_NEG_MIN_EVENTS` | for `sync = "auto"` streams: how many events both we and the relay must hold, on the stream's filter, before a negentropy reconcile is worth its id exchange | `100000` |
+| `ROUTER_COUNT_TIMEOUT_MS` | how long a relay gets to answer the NIP-45 COUNT that measures the above. A relay that never answers is asked once per run, then reconciled | `5000` |
 | `ROUTER_STREAMS` | run only these streams (comma-separated), to tune one part of the sync without the rest competing for the same sockets, heap and ingest queue. The router prints which streams it is *not* running on startup | every stream in the config |
 
 ### Parse audit (what quartz cannot read)

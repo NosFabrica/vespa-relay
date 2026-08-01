@@ -25,7 +25,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -194,44 +193,6 @@ class SyncCursorsTest {
     }
 
     // ---- the shared snapshot window ----------------------------------------
-
-    @Test
-    fun `a relay that paged once does not page again`() {
-        // This decides who skips the id walk and pages instead. Paging
-        // re-downloads a relay's whole history for the filter, so it is worth it
-        // exactly once — on first contact, when there is nothing to reconcile
-        // against and everything to fetch.
-        //
-        // The predicate used to be `band.complete`, which a paged fetch never
-        // sets, so paging relays stayed in that branch permanently: re-paging
-        // their whole history on every full resync and never once attempting
-        // negentropy. 14.4M events fetched to keep 9,878. The test that shipped
-        // alongside it asserted precisely that behaviour, and passed. Hence this
-        // one, which pins the property that actually matters rather than the
-        // implementation'"'"'s own opinion of itself.
-        val c = SyncCursors(null)
-        assertFalse(c.everTouched(relay, profiles), "never fetched — this one pages")
-
-        c.record(other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
-        assertTrue(c.everTouched(other, profiles), "paged once, so it reconciles from now on")
-
-        c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        assertTrue(c.everTouched(relay, profiles), "a finished reconcile counts too")
-    }
-
-    @Test
-    fun `an empty paged fetch leaves the relay to page again`() {
-        // record() ignores a fetch that saw nothing, since an empty result says
-        // nothing about what the relay holds. That has to keep the relay in the
-        // paging branch: treating "we asked and got silence" as "we have a band"
-        // would let one bad cycle put a relay into reconcile mode against a set
-        // we never actually compared it to.
-        val c = SyncCursors(null)
-
-        c.record(relay, profiles, null, null, paged = true)
-
-        assertFalse(c.everTouched(relay, profiles), "nothing was recorded, so nothing was learned")
-    }
 
     @Test
     fun `covering window collapses to the oldest ceiling once everyone is caught up`() {

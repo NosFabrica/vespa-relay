@@ -265,39 +265,6 @@ class SyncCursors(
     private fun isStale(band: Band): Boolean = nowSeconds() - band.fullAt >= fullResyncSeconds
 
     /**
-     * Have we fetched anything at all from this relay for [filter], by any means?
-     *
-     * This is what decides whether a relay skips the local id walk and pages
-     * instead, and getting the predicate wrong cost 5.4 million redundant events:
-     *
-     * The obvious-looking question is "has it ever completed a reconcile"
-     * (`band.complete`), and it is the wrong one. A paged fetch records an
-     * incomplete band by design — it walked a span, it did not reconcile a range
-     * — so a relay that pages never satisfies that predicate and stays in the
-     * paging branch permanently. It does not re-page every cycle: the band it
-     * earned narrows [legs] to the edges outside it. It re-pages its whole
-     * history every time that band goes stale (`fullResyncSeconds`), and it
-     * never once attempts negentropy in between.
-     *
-     * Both halves cost. First contact is when reconciling is worth the MOST,
-     * because a new relay's history is overwhelmingly events we already hold
-     * from other relays — our own store had 12.28M profiles when
-     * `wss://profiles.nostr1.com` paged 5,099,996 of them to us. One measured
-     * cycle across twelve such relays: 9,878 events accepted against 14,425,429
-     * rejected as already-held. 0.07% useful, with 82% of ingest time spent
-     * deciding to discard. Negentropy reconciles id sets and would have moved
-     * almost none of it; paging cannot, because it has no idea what we hold.
-     *
-     * So paging is strictly a FIRST-CONTACT measure — worth it only while there
-     * is no band at all to reconcile against. Once we hold any band, however
-     * earned, negentropy is the cheaper way to ask again.
-     */
-    fun everTouched(
-        url: NormalizedRelayUrl,
-        filter: Filter,
-    ): Boolean = bands.containsKey(key(url, filter))
-
-    /**
      * The narrowest single filter that still covers what every one of [urls]
      * needs — the window a shared negentropy snapshot has to be taken over.
      *
