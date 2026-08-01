@@ -569,13 +569,35 @@ class MirrorRouter(
                                 " (we hold ${StreamPhases.fmtCount(ours)} matching event(s), floor $negMinEvents)",
                         )
                         val eventsEarly = AtomicLong()
+                        // The pagers own the phase line only when there is nobody
+                        // else to own it. When relays also reconcile, that path is
+                        // the long pole and reports the id walk, which is the part
+                        // an operator cannot otherwise see; the pagers' progress is
+                        // on the `static backfill` line either way.
+                        val pagersReport = reconcilers.isEmpty()
+                        val pagedDone =
+                            java.util.concurrent.atomic
+                                .AtomicInteger()
                         val early =
                             if (pagers.isEmpty()) {
                                 null
                             } else {
+                                if (pagersReport) phases.set(name, StreamPhases.Phase.Fetching(0, pagers.size, 0))
                                 scope.launch {
                                     pagers.forEach { (idx, up) ->
-                                        launch { eventsEarly.addAndGet(pageOne(idx, up).toLong()) }
+                                        launch {
+                                            eventsEarly.addAndGet(pageOne(idx, up).toLong())
+                                            if (pagersReport) {
+                                                phases.set(
+                                                    name,
+                                                    StreamPhases.Phase.Fetching(
+                                                        pagedDone.incrementAndGet(),
+                                                        pagers.size,
+                                                        eventsEarly.get(),
+                                                    ),
+                                                )
+                                            }
+                                        }
                                     }
                                 }
                             }

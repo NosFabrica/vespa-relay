@@ -83,6 +83,21 @@ class StreamPhases {
             val relays: Int,
         ) : Phase
 
+        /**
+         * Paging relays that are not reconciling — no id set involved.
+         *
+         * A stream where every relay fetches used to report nothing at all: the
+         * paging path set no phase, so the line sat on its registration
+         * placeholder and read `discovering relays from []` for 46 minutes while
+         * twelve relays moved 14M events. The count was on the very next line
+         * the whole time.
+         */
+        data class Fetching(
+            val done: Int,
+            val total: Int,
+            val events: Long,
+        ) : Phase
+
         /** Fanning out. */
         data class Syncing(
             val done: Int,
@@ -170,6 +185,10 @@ class StreamPhases {
                 val of = phase.total?.let { "/${fmtCount(it)}" } ?: ""
                 val pct = phase.total?.takeIf { it > 0 }?.let { " (${(phase.collected * 100L / it)}%)" } ?: ""
                 "snapshotting ${fmtCount(phase.collected)}$of local ids$pct for ${phase.relays} relay(s) ($elapsed elapsed)"
+            }
+
+            is Phase.Fetching -> {
+                "fetching ${phase.done}/${phase.total} relay(s), ${phase.events} event(s) ($elapsed elapsed)"
             }
 
             is Phase.Syncing -> {
