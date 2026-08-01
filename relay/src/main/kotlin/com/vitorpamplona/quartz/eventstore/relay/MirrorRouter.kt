@@ -21,6 +21,7 @@
 package com.vitorpamplona.quartz.eventstore.relay
 
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
@@ -1119,6 +1120,12 @@ class MirrorRouter(
                     "; ${client.connectedRelaysFlow().value.size} relay(s) connected, ${pinnedUrls.size} pinned" +
                     (if (dynamicStreams.isNotEmpty()) " + dynamic" else ""),
             )
+            // Where the minute actually went. The store already times every
+            // ingest stage — dedup, guards, preload, versions, write and the two
+            // projection halves — and nothing printed it, so "ingest is slow" had
+            // to be inferred from access-log shapes instead of read off. A batch
+            // of 1000 was taking ~2.2 minutes; this says which stage owns it.
+            IngestStats.gauge().takeIf { it.isNotEmpty() }?.let { System.err.println("router: ingest $it") }
         }
     }
 
