@@ -198,21 +198,6 @@ class MirrorRouter(
     // Workers and batch come from config; the buffer is sized to a few batches
     // so producers block (backpressure) rather than pile events onto the heap.
     private val ingestWorkers = config.ingestConcurrency
-    private val ingestBatch = config.ingestBatch
-    private val negMinEvents = config.negMinEvents
-    private val countTimeoutMs = config.countTimeoutMs
-
-    /**
-     * Relays that did not answer a NIP-45 COUNT, so we stop asking this run.
-     *
-     * COUNT is optional and widely unimplemented, and a relay that does not
-     * support it is indistinguishable from one that is slow — both return null
-     * after the timeout. Asking 20,000 relays once is a diagnostic; asking them
-     * every cycle is [countTimeoutMs] of dead wait per relay per cycle.
-     */
-    private val countUnanswered =
-        java.util.concurrent.ConcurrentHashMap
-            .newKeySet<NormalizedRelayUrl>()
 
     /**
      * How many downloaded events may wait for ingest.
@@ -237,7 +222,42 @@ class MirrorRouter(
      * is not the only claimant — the in-flight batches, the relay sockets and
      * the negentropy id sets all want the same heap.
      */
-    private val inboundCapacity = (ingestBatch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
+    private val inboundCapacity = (config.ingestBatch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
+
+    /**
+     * How many events one worker takes per pass — capped so the workers can
+     * actually share the queue.
+     *
+     * [ingestLoop] drains up to this many from [inbound] per pass. If it exceeds
+     * what the channel can hold, the first worker takes EVERYTHING and the rest
+     * find an empty channel and idle: ingest concurrency collapses to one, and
+     * that single worker then grinds the whole queue through the store's dedup
+     * in one serial stall.
+     *
+     * Which is exactly what happened. ROUTER_INGEST_BATCH=20000 against a 16,384
+     * capacity produced minutes of `queue 16384/16384 FULL … 0 ev/s` broken by
+     * short bursts — an ingest that looked saturated and was mostly one thread
+     * waiting on a very long batch.
+     *
+     * A worker may take at most its fair share of the channel, so every worker
+     * can fill a batch from a full queue.
+     */
+    private val ingestBatch = config.ingestBatch.coerceAtMost((inboundCapacity / ingestWorkers).coerceAtLeast(1))
+    private val negMinEvents = config.negMinEvents
+    private val countTimeoutMs = config.countTimeoutMs
+
+    /**
+     * Relays that did not answer a NIP-45 COUNT, so we stop asking this run.
+     *
+     * COUNT is optional and widely unimplemented, and a relay that does not
+     * support it is indistinguishable from one that is slow — both return null
+     * after the timeout. Asking 20,000 relays once is a diagnostic; asking them
+     * every cycle is [countTimeoutMs] of dead wait per relay per cycle.
+     */
+    private val countUnanswered =
+        java.util.concurrent.ConcurrentHashMap
+            .newKeySet<NormalizedRelayUrl>()
+
     private val inbound = Channel<Inbound>(inboundCapacity)
 
     // How full [inbound] is. Channel does not expose its depth, and this one
@@ -387,6 +407,16 @@ class MirrorRouter(
         // through the store's bulk path (batchInsert -> parallel Vespa feed), which
         // is what actually exploits the store's ingest parallelism. Feeding it one
         // event at a time — the old path — left that parallelism unused.
+        // Said out loud when it bites: an operator who set ROUTER_INGEST_BATCH
+        // and silently got a different number would be tuning a knob that is not
+        // connected, which is the failure this repo keeps producing.
+        if (ingestBatch < config.ingestBatch) {
+            System.err.println(
+                "router: ROUTER_INGEST_BATCH=${config.ingestBatch} capped to $ingestBatch — " +
+                    "$ingestWorkers worker(s) share a $inboundCapacity-event queue, and a batch bigger than " +
+                    "one worker's share collapses ingest to a single thread",
+            )
+        }
         repeat(ingestWorkers) { scope.launch { ingestLoop() } }
 
         // An OutOfMemoryError kills the thread that happens to allocate next and
