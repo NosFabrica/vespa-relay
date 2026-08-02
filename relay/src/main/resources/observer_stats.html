@@ -63,7 +63,12 @@
   td.first { border-left: 1px solid var(--line); }
   tr:last-child td { border-bottom: 0; }
   .who { display: flex; align-items: center; gap: .5rem; min-width: 14rem; }
-  .who img { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; background: var(--line); }
+  .who img, .who .ph { width: 26px; height: 26px; border-radius: 50%; flex: 0 0 auto; }
+  .who img { object-fit: cover; background: var(--line); }
+  .who .ph { display: grid; place-items: center; background: var(--line); color: var(--muted);
+             font-size: .68rem; font-weight: 700; letter-spacing: .02em; }
+  .who .ph.broken { outline: 1px dashed var(--warn); }
+  .who .ph.missing { color: var(--warn); }
   .who .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 12rem; }
   .key { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
   .pending { color: var(--muted); font-style: italic; }
@@ -154,14 +159,24 @@ function client(url) {
       new Promise((res) => {
         const id = "r" + Math.random().toString(36).slice(2, 9);
         const acc = [];
-        const done = () => { clearTimeout(timer); res(acc); };
-        const timer = setTimeout(done, COUNT_TIMEOUT_MS);
         const prev = ws.onmessage;
+        // ONE exit, restoring the handler and closing the subscription however we
+        // leave. The first version only did that on EOSE, so a timed-out REQ left
+        // a stale handler chained in front of the real one and a subscription open
+        // on the relay — which caps them, so enough timeouts and every later REQ
+        // is rejected for a reason nothing on the page would have shown.
+        const finish = () => {
+          clearTimeout(timer);
+          ws.onmessage = prev;
+          try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
+          res(acc);
+        };
+        const timer = setTimeout(finish, COUNT_TIMEOUT_MS);
         ws.onmessage = (ev) => {
           let m; try { m = JSON.parse(ev.data); } catch { return; }
           if (m[1] !== id) return prev(ev);
           if (m[0] === "EVENT") acc.push(m[2]);
-          else if (m[0] === "EOSE" || m[0] === "CLOSED") { ws.onmessage = prev; try { ws.send(JSON.stringify(["CLOSE", id])); } catch {} done(); }
+          else if (m[0] === "EOSE" || m[0] === "CLOSED") finish();
         };
         ws.send(JSON.stringify(["REQ", id, filter]));
       });
@@ -187,10 +202,23 @@ function render(list) {
   rowsEl.innerHTML = "";
   for (const o of list) {
     const tr = document.createElement("tr");
+    // A grey circle used to mean three different things — no kind 0 in the
+    // store, a kind 0 with no `picture`, and a picture whose URL failed — and
+    // they read as one bug. Measured here: of 200 observers, 11 have no profile
+    // at all and 65 of the remaining 189 publish no picture, so most empty
+    // circles are the network being itself, not the relay missing data.
+    const initials = (o.name || o.pubkey).slice(0, 2).toUpperCase();
+    const avatar = o.picture
+      ? `<img src="${o.picture}" alt="" loading="lazy" ` +
+        `onerror="this.replaceWith(Object.assign(document.createElement('div'),` +
+        `{className:'ph broken',textContent:'${initials}',title:'picture URL failed to load'}))"/>`
+      : o.hasProfile
+        ? `<div class="ph" title="profile has no picture field">${initials}</div>`
+        : `<div class="ph missing" title="no kind 0 for this pubkey in this store">?</div>`;
     const who =
-      `<div class="who">` +
-      (o.picture ? `<img src="${o.picture}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"/>` : `<img alt=""/>`) +
-      `<div><div class="nm">${o.name || "(no name)"}</div><div class="key">${o.pubkey.slice(0, 12)}…</div></div></div>`;
+      `<div class="who">${avatar}` +
+      `<div><div class="nm">${o.name || (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
+      `<div class="key">${o.pubkey.slice(0, 12)}…</div></div></div>`;
     const dim = (d) =>
       `<td class="first"><span class="relay" title="${d.relay || ""}">${d.relay ? d.relay.replace(/^wss?:\/\//, "") : "—"}</span></td>` +
       `<td class="n">${d.service ? num(d.here) : "—"}</td>` +
@@ -233,6 +261,7 @@ async function run() {
     pubkey: ev.pubkey,
     name: "",
     picture: "",
+    hasProfile: false,
     rank: pick(ev, "30382:rank"),
     followers: pick(ev, "30382:followers"),
   }));
@@ -245,7 +274,7 @@ async function run() {
     for (const ev of await local.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
       let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
       const o = observers.find((x) => x.pubkey === ev.pubkey);
-      if (o) { o.name = c.display_name || c.name || ""; o.picture = c.picture || ""; }
+      if (o) { o.hasProfile = true; o.name = c.display_name || c.name || ""; o.picture = c.picture || ""; }
     }
   }
   render(observers);
@@ -285,7 +314,8 @@ async function run() {
   const noCount = dims.filter((d) => d.there === null).length;
   statusEl.textContent = "done";
   footEl.innerHTML =
-    `${observers.length} observer(s), ${dims.length} dimension(s) · ` +
+    `${observers.length} observer(s) (${observers.filter((o) => !o.hasProfile).length} with no kind 0 here, ` +
+    `${observers.filter((o) => o.hasProfile && !o.picture).length} publishing no picture), ${dims.length} dimension(s) · ` +
     `${withBoth.length} comparable · ` +
     (short.length
       ? `<span class="short">${short.length} short by ${fmt(missing)} score(s)</span>`
