@@ -7,33 +7,22 @@
 <meta name="description" content="How many events of each kind this relay holds." />
 <title>Kind stats</title>
 <!--
-  One NIP-45 COUNT per kind, THREE TIMES — once anonymous, once as you, once
-  through the relay's own key.
+  One NIP-45 COUNT per kind. Anonymous, always.
 
-  The store trust-gates an AUTHENTICATED reader: it counts and filters only
-  authors that reader has scored. An UNAUTHENTICATED reader gets everything —
-  this relay applies no default observer, so signed out means the whole corpus
-  rather than somebody else's view of it. The third column asks through whichever
-  observer you pick, which is how a lens is requested now that none is imposed.
+  This page asks "how many of these does the relay hold", and that has ONE true
+  answer. An authenticated reader would get a different, smaller number — the
+  store gates a reader carrying a lens to authors that lens has scored — which
+  is worth knowing and is a different question. The page used to ask three ways
+  at once, and three columns of plausible numbers made the simple question
+  harder to read rather than richer.
 
-  Same two widgets as the search page — the avatar that IS your login state, and
-  the typeahead over pubkeys that published a kind 10040. Copied rather than
-  shared: these pages are deliberately one file each with no build step, and
-  duplication is what that choice costs. Paid openly beats pretended away.
+  Deliberately not an http endpoint: COUNT is a protocol feature, so asking for
+  it the way a client would means this page also TESTS it. A kind that comes
+  back "no reply" is a finding about the relay, not a blank cell — zero is a
+  claim, silence is not.
 
-  Read the columns as a diff, not as three facts:
-
-    anonymous == as you        your web of trust is not being applied
-    as you    == 0             nothing you scored is in this kind
-    as you    >  named         you reach further than the observer you named
-    anonymous <  either        something is wrong: gating should only REMOVE
-
-  Deliberately not an http endpoint: COUNT is a protocol feature, and asking for
-  it the way a client would means this page also TESTS it — including whether
-  the relay answers COUNT at all, and whether AUTH changes what it says.
-
-  Counts are the relay's own: a COUNT is answered from the store's index, not
-  by walking events, so this stays cheap on a 50M-event corpus.
+  Counts come from the store's index rather than a walk over events, so this
+  stays cheap against a 50M-event corpus.
 -->
 <style>
   :root {
@@ -51,7 +40,7 @@
     margin: 0; padding: 1.5rem; background: var(--bg); color: var(--text);
     font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
   }
-  main { max-width: 60rem; margin: 0 auto; }
+  main { max-width: 46rem; margin: 0 auto; }
   h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
   .sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; }
   .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
@@ -61,37 +50,10 @@
   }
   button { cursor: pointer; }
   button:disabled { opacity: .5; cursor: default; }
-  input { width: 22rem; max-width: 100%; }
+  input { width: 20rem; max-width: 100%; }
   .status { color: var(--muted); font-size: .9rem; }
-  /* Same two widgets as the search page: who you are, and whose trust to ask
-     through. Duplicated rather than shared because these pages are deliberately
-     one file each with no build step — the cost of that choice, paid openly. */
-  .me { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 50%;
-        background: var(--bg); cursor: pointer; display: grid; place-items: center; overflow: hidden;
-        color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1; }
-  .me:hover { border-color: var(--accent); }
-  .me img { width: 100%; height: 100%; object-fit: cover; display: block; }
-  .me.in { border-color: var(--accent); }
-  .me.busy { opacity: .55; pointer-events: none; }
-  .obsbox { position: relative; display: inline-flex; align-items: center; gap: 6px; }
-  .obslabel { color: var(--muted); font-size: .85rem; }
-  .obscurrent { font-size: .85rem; font-weight: 600; max-width: 11rem; overflow: hidden;
-                text-overflow: ellipsis; white-space: nowrap; }
-  .obsbox.active .obscurrent { color: var(--accent); }
-  .obsfilter { width: 9rem; }
-  .obsreset { display: none; border: 0; background: none; color: var(--muted); cursor: pointer;
-              font-size: 15px; line-height: 1; padding: 0 .2rem; }
-  .obsbox.active .obsreset { display: inline; }
-  .obslist { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; margin: 0; padding: 4px;
-             list-style: none; min-width: 16rem; max-height: 15rem; overflow-y: auto;
-             background: var(--surface); border: 1px solid var(--line); border-radius: .5rem;
-             box-shadow: 0 6px 20px rgba(0,0,0,.18); }
-  .obslist:empty { display: none; }
-  .obslist li { padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: .85rem; white-space: nowrap; }
-  .obslist li:hover { background: var(--bg); }
-  .obslist li.muted { color: var(--muted); cursor: default; }
   .wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; }
-  table { border-collapse: collapse; width: 100%; min-width: 34rem; }
+  table { border-collapse: collapse; width: 100%; min-width: 28rem; }
   th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
   th { font-weight: 600; font-size: .82rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
   tr:last-child td { border-bottom: 0; }
@@ -100,6 +62,7 @@
   .name { color: var(--muted); }
   .pending { color: var(--muted); font-style: italic; }
   .none { color: var(--warn); }
+  .capped { color: var(--warn); }
   footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
   code { background: var(--bar); padding: .1rem .3rem; border-radius: .25rem; }
 </style>
@@ -107,21 +70,11 @@
 <body>
 <main>
   <h1>Kind stats</h1>
-  <p class="sub">One NIP-45 <code>COUNT</code> per kind, asked three ways. The store gates an
-     authenticated reader to authors that reader has scored; an anonymous reader sees everything.
-     You are signed in automatically — the avatar toggles it — and the third column asks through
-     whichever observer you pick.</p>
+  <p class="sub">One NIP-45 <code>COUNT</code> per kind, asked anonymously — totals for the whole store,
+     not for any one reader's web of trust.</p>
 
   <div class="bar-row">
     <button id="run">Count</button>
-    <button id="me" type="button" class="me" aria-label="Sign in"></button>
-    <span id="obsbox" class="obsbox" title="Whose web of trust the third column asks through. Only pubkeys with a kind 10040 can rank anything.">
-      <span class="obslabel">third column as</span>
-      <span id="obscurrent" class="obscurrent">nobody</span>
-      <input id="obsfilter" class="obsfilter" placeholder="pick an observer…" autocomplete="off" />
-      <button id="obsreset" class="obsreset" type="button" title="Drop the third column">&times;</button>
-      <ul id="obslist" class="obslist"></ul>
-    </span>
     <input id="extra" placeholder="also count these kinds, comma separated" />
     <span class="status" id="status">idle</span>
   </div>
@@ -129,12 +82,7 @@
   <div class="wrap">
     <table>
       <thead>
-        <tr>
-          <th>Kind</th><th>Name</th>
-          <th class="n">Anonymous</th>
-          <th class="n">As you</th>
-          <th class="n" id="thirdhead">As a named observer</th>
-        </tr>
+        <tr><th>Kind</th><th>Name</th><th class="n">Count</th></tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -145,28 +93,12 @@
 
 <script>
 // Same origin as the page, so this works wherever the relay is served from.
-// Override when developing against a remote relay.
 const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 
-// ---- signed-in preference, shared across the relay's pages ----------------
-// A cookie rather than localStorage: same-origin, survives a page switch, and
-// the pages are served by the relay itself so there is nothing cross-site about
-// it. Default is SIGNED IN — an unset cookie means "not chosen yet", and the
-// useful default is the one that makes ranking work.
-const AUTH_COOKIE = "sot_signedin";
-function wantsSignIn() {
-const m = document.cookie.match(/(?:^|;\s*)sot_signedin=([01])/);
-return m ? m[1] === "1" : true;
-}
-function rememberSignIn(yes) {
-document.cookie = `${AUTH_COOKIE}=${yes ? 1 : 0}; path=/; max-age=31536000; SameSite=Lax`;
-}
-
-
 // What this relay is actually for. Ranked search needs profiles to rank, scores
-// to rank them BY, and the two lists that say where to find each — so these five
-// are the ones whose numbers mean something here, and a page that answers in
-// five rows gets read.
+// to rank them BY, and the two lists that say where to find each — so these are
+// the kinds whose numbers mean something here, and a page that answers in five
+// rows gets read.
 //
 // Anything else goes in the box: COUNT needs a kind to ask about and the
 // protocol has no registry a client can enumerate, so there is no "all kinds"
@@ -180,256 +112,63 @@ const KINDS = [
 ];
 
 const PER_KIND_TIMEOUT_MS = 20000;
-// One at a time. A COUNT is cheap for the relay to answer but this is a status
-// page, not a load generator, and a wedged relay should degrade to slow rather
-// than to a burst of forty stalled subscriptions.
+// A COUNT landing exactly on one of these is more likely a relay reporting its
+// default page size than a real total. Flagged rather than hidden: this relay
+// did exactly that until quartz stopped applying defaultLimit to COUNT, and 500
+// looks like data.
+const SUSPICIOUS = new Set([100, 500, 1000, 5000]);
+
 const rowsEl = document.getElementById("rows");
 const statusEl = document.getElementById("status");
 const footEl = document.getElementById("foot");
 const runEl = document.getElementById("run");
 const extraEl = document.getElementById("extra");
-const meEl = document.getElementById("me");
-const obsBoxEl = document.getElementById("obsbox");
-const obsCurrentEl = document.getElementById("obscurrent");
-const obsFilterEl = document.getElementById("obsfilter");
-const obsListEl = document.getElementById("obslist");
-const obsResetEl = document.getElementById("obsreset");
-const thirdHeadEl = document.getElementById("thirdhead");
-
-// Who this page is, and whose lens the third column asks through. Same two
-// widgets as the search page, and the same rule behind them: signing in is not
-// a choice you make, the lens is.
-let me = null;              // hex pubkey once signed in
-let loginTried = false;
-let viewingAs = null;       // hex pubkey for the third column, or null
-let observers = null;       // [{pubkey,name,picture}] once loaded
-const profiles = new Map();
 
 const fmt = (n) => n.toLocaleString();
-
-/**
- * The one name to show: `display_name` first, `name` as the fallback, and blank
- * means blank so a profile carrying only whitespace falls through rather than
- * rendering a gap. Same rule as the search page.
- */
-const displayName = (c) => ((c && c.display_name) || "").trim() || ((c && c.name) || "").trim() || "";
-
-function cell(v) {
-  if (v === undefined) return '<span class="pending">…</span>';
-  if (v === null) return '<span class="none">no reply</span>';
-  return fmt(v.count) + (v.approximate ? ' <span class="name">≈</span>' : "");
-}
 
 function render(results) {
   rowsEl.innerHTML = "";
   for (const r of results) {
+    const v = r.count;
+    const cell =
+      v === undefined ? '<span class="pending">…</span>'
+      : v === null ? '<span class="none">no reply</span>'
+      : fmt(v.count) +
+        (v.approximate ? ' <span class="name">≈</span>' : "") +
+        (SUSPICIOUS.has(v.count)
+          ? ' <span class="capped" title="exactly a common page-size cap — the relay may be reporting its default limit instead of a count">⚠</span>'
+          : "");
     const tr = document.createElement("tr");
     tr.innerHTML =
-      `<td class="kind">${r.kind}</td>` +
-      `<td class="name">${r.name || ""}</td>` +
-      `<td class="n">${cell(r.anon)}</td>` +
-      `<td class="n">${cell(r.you)}</td>` +
-      `<td class="n">${cell(r.house)}</td>`;
+      `<td class="kind">${r.kind}</td><td class="name">${r.name || ""}</td><td class="n">${cell}</td>`;
     rowsEl.appendChild(tr);
   }
 }
 
-const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-function npub(hex) {
-  const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
-  // 8-bit -> 5-bit regrouping, then bech32's checksum over hrp + payload.
-  const words = [];
-  let acc = 0, bits = 0;
-  for (const b of bytes) {
-    acc = (acc << 8) | b; bits += 8;
-    while (bits >= 5) { bits -= 5; words.push((acc >> bits) & 31); }
-  }
-  if (bits) words.push((acc << (5 - bits)) & 31);
-  const polymod = (v) => {
-    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
-    let chk = 1;
-    for (const x of v) {
-      const top = chk >> 25;
-      chk = ((chk & 0x1ffffff) << 5) ^ x;
-      for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
-    }
-    return chk;
-  };
-  const hrp = "npub";
-  const expand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
-  const chk = polymod(expand.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
-  const sum = Array.from({ length: 6 }, (_, i) => (chk >> (5 * (5 - i))) & 31);
-  return hrp + "1" + words.concat(sum).map((w) => B32[w]).join("");
-}
-const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 10) + "…" + n.slice(-4); };
-
-/**
- * Every pubkey that published a kind 10040 — the only ones whose scores the
- * store projects, so the only ones worth offering as a lens.
- *
- * This column used to read the relay's NIP-11 `self` and call it "the house
- * key", wrong twice over: `self` is the relay's signing IDENTITY and has scored
- * nobody, and the DEFAULT_OBSERVER it stood in for has since been removed.
- */
-async function loadObservers(ws) {
-  if (observers) return observers;
-  const lists = await ws.req({ kinds: [10040], limit: 2000 });
-  const keys = [...new Set(lists.map((e) => e.pubkey))];
-  for (let i = 0; i < keys.length; i += 200) {
-    for (const ev of await ws.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
-      let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-      profiles.set(ev.pubkey, { name: displayName(c), picture: c.picture || "", nip05: c.nip05 || "" });
-    }
-  }
-  observers = keys
-    .map((pubkey) => ({ pubkey, name: profiles.get(pubkey)?.name || "", nip05: profiles.get(pubkey)?.nip05 || "" }))
-    .sort((a, b) => (a.name || "\uffff").localeCompare(b.name || "\uffff"));
-  return observers;
-}
-
-function renderObserverOptions(q) {
-  const t = q.trim().toLowerCase();
-  const hits = (observers || []).filter((o) =>
-    !t || o.name.toLowerCase().includes(t) || (o.nip05 || "").toLowerCase().includes(t) ||
-    npub(o.pubkey).startsWith(t) || o.pubkey.startsWith(t));
-  obsListEl.innerHTML = "";
-  for (const o of hits.slice(0, 50)) {
-    const li = document.createElement("li");
-    // Name, else nip05, else a short npub. Never the hex.
-    const label = o.name || o.nip05 || shortNpub(o.pubkey);
-    li.textContent = label;
-    li.title = npub(o.pubkey);
-    li.onclick = () => setViewingAs(o.pubkey, label);
-    obsListEl.appendChild(li);
-  }
-  if (!hits.length) {
-    const li = document.createElement("li");
-    li.className = "muted";
-    li.textContent = observers ? "no observer matches" : "loading observers…";
-    obsListEl.appendChild(li);
-  }
-}
-
-function setViewingAs(pubkey, name) {
-  viewingAs = pubkey;
-  obsBoxEl.classList.toggle("active", !!pubkey);
-  obsCurrentEl.textContent = pubkey ? (name || shortNpub(pubkey)) : "nobody";
-  thirdHeadEl.textContent = pubkey ? `As ${name || shortNpub(pubkey)}` : "As a named observer";
-  obsListEl.innerHTML = "";
-  obsFilterEl.value = "";
-}
-
-/** The avatar: your picture signed in, a neutral mark signed out. */
-function renderMe() {
-  const p = me ? profiles.get(me) : null;
-  meEl.classList.toggle("in", !!me);
-  if (me && p && p.picture) meEl.innerHTML = `<img src="${p.picture}" alt="" onerror="this.remove()"/>`;
-  else if (me) meEl.textContent = ((p && p.name) || npub(me)).slice(0, 2).toUpperCase();
-  // A person outline, not two dots: "no account" should look like an empty seat,
-  // and a dot pair looked like something still loading.
-  else meEl.innerHTML =
-    `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"` +
-    ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
-    `<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
-  meEl.title = me
-    ? `Signed in as ${(p && p.name) || me.slice(0, 12) + "…"} — click to sign out`
-    : loginTried ? "Signed out — click to sign in with your Nostr extension" : "Signing in…";
-}
-
-async function signIn(ws) {
-  if (!(window.nostr && window.nostr.signEvent)) throw new Error("no NIP-07 extension");
-  // 10s, not 2: the socket may have only just opened and the AUTH challenge is
-  // a message that arrives after the handshake, so a short budget gets spent on
-  // connecting and the first press fails for no visible reason.
-  for (let i = 0; i < 100 && !ws.challenge; i++) await new Promise((r) => setTimeout(r, 100));
-  if (!ws.challenge) throw new Error("relay sent no AUTH challenge");
-  const signed = await window.nostr.signEvent({
-    kind: 22242,
-    created_at: Math.floor(Date.now() / 1000),
-    tags: [["relay", RELAY_URL], ["challenge", ws.challenge]],
-    content: "",
-  });
-  ws.send(JSON.stringify(["AUTH", signed]));
-  await new Promise((r) => setTimeout(r, 300));
-  return signed.pubkey;
-}
-
-// A connection is either authenticated or not for its whole life, so each mode
-// needs its own. `observer` forces a specific ranking lens through the NIP-50
-// extension the store parses out of `search`; without it an authenticated
-// reader is its own observer.
-function connect(sign, observer) {
+/** A COUNT-only client that never authenticates — see the note at the top. */
+function connect() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(RELAY_URL);
     const pending = new Map();
-    let challenge = null;
-    ws.onerror = () => reject(new Error("could not connect to " + RELAY_URL));
-    ws.onclose = () => { for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); } pending.clear(); };
+    const failAll = () => { for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); } pending.clear(); };
+    ws.onopen = () => resolve(ws);
+    ws.onerror = () => { failAll(); reject(new Error("could not connect to " + RELAY_URL)); };
+    ws.onclose = failAll;
     ws.onmessage = (ev) => {
-      let msg; try { msg = JSON.parse(ev.data); } catch { return; }
-      const [type, id] = msg;
-      // Kept on the socket too: signIn() authenticates a connection opened
-      // elsewhere (the avatar's, the picker's), and a local would be invisible
-      // to it.
-      if (type === "AUTH") { challenge = id; ws.challenge = id; return; }
-      const p = pending.get(id);
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      // An AUTH challenge is ignored on purpose: answering it would turn every
+      // number below into "what this reader is allowed to see".
+      const p = pending.get(m[1]);
       if (!p) return;
-      if (type === "COUNT") { clearTimeout(p.timer); pending.delete(id); p.resolve(msg[2] || null); }
-      else if (type === "CLOSED" || type === "NOTICE") { clearTimeout(p.timer); pending.delete(id); p.resolve(null); }
+      if (m[0] === "COUNT") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(m[2] || null); }
+      else if (m[0] === "CLOSED" || m[0] === "NOTICE") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(null); }
     };
-    ws.onopen = async () => {
-      // Wait briefly for the challenge — signing is the whole point of this
-      // connection, and counting before AUTH lands would silently measure the
-      // anonymous case a second time.
-      if (sign) {
-        for (let i = 0; i < 20 && !challenge; i++) await new Promise((r) => setTimeout(r, 100));
-        if (challenge && window.nostr) {
-          try {
-            const signed = await window.nostr.signEvent({
-              kind: 22242,
-              created_at: Math.floor(Date.now() / 1000),
-              tags: [["relay", RELAY_URL], ["challenge", challenge]],
-              content: "",
-            });
-            ws.send(JSON.stringify(["AUTH", signed]));
-            ws.authed = true;
-            await new Promise((r) => setTimeout(r, 300));
-          } catch { ws.authed = false; }
-        }
-      }
-      resolve(ws);
-    };
-    ws.req = (filter) =>
-      new Promise((res) => {
-        const id = "r" + Math.random().toString(36).slice(2, 8);
-        const acc = [];
-        const prev = ws.onmessage;
-        // One exit, however the request ends — a timeout that left the handler
-        // swapped and the subscription open cost the sibling page a table full
-        // of blanks before anyone noticed.
-        const finish = () => {
-          clearTimeout(timer);
-          ws.onmessage = prev;
-          try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
-          res(acc);
-        };
-        const timer = setTimeout(finish, PER_KIND_TIMEOUT_MS);
-        ws.onmessage = (ev) => {
-          let m; try { m = JSON.parse(ev.data); } catch { return; }
-          if (m[1] !== id) return prev(ev);
-          if (m[0] === "EVENT") acc.push(m[2]);
-          else if (m[0] === "EOSE" || m[0] === "CLOSED") finish();
-        };
-        ws.send(JSON.stringify(["REQ", id, filter]));
-      });
     ws.count = (kind) =>
       new Promise((res) => {
-        const subId = "k" + kind + "-" + Math.random().toString(36).slice(2, 8);
-        const filter = { kinds: [kind] };
-        if (observer) filter.search = "observer:" + observer;
-        const timer = setTimeout(() => { pending.delete(subId); res(null); }, PER_KIND_TIMEOUT_MS);
-        pending.set(subId, { resolve: res, timer });
-        ws.send(JSON.stringify(["COUNT", subId, filter]));
+        const id = "k" + kind + "-" + Math.random().toString(36).slice(2, 8);
+        const timer = setTimeout(() => { pending.delete(id); res(null); }, PER_KIND_TIMEOUT_MS);
+        pending.set(id, { resolve: res, timer });
+        ws.send(JSON.stringify(["COUNT", id, { kinds: [kind] }]));
       });
   });
 }
@@ -443,123 +182,40 @@ async function run() {
   const results = [...KINDS.map(([kind, name]) => ({ kind, name })), ...extra.map((kind) => ({ kind, name: "" }))];
   render(results);
 
-  const modes = [
-    ["anon", false, null],
-    ["you", true, null],
-    ["house", true, viewingAs],
-  ];
-
-  const started = Date.now();
-  const notes = [];
-  for (const [key, sign, observer] of modes) {
-    if (key === "house" && !viewingAs) { notes.push("no observer picked, so the third column was skipped"); continue; }
-    let ws;
-    try {
-      statusEl.textContent = `connecting (${key})…`;
-      ws = await connect(sign, observer);
-    } catch (e) { notes.push(`${key}: ${e.message}`); continue; }
-    if (sign && !ws.authed) {
-      notes.push(`${key}: not signed in — no NIP-07 extension, or the challenge was declined`);
-      ws.close();
-      continue;
-    }
-    let i = 0;
-    for (const r of results) {
-      statusEl.textContent = `${key}: ${++i}/${results.length} (kind ${r.kind})…`;
-      r[key] = await ws.count(r.kind);
-      render(results);
-    }
-    ws.close();
+  let ws;
+  try {
+    statusEl.textContent = "connecting…";
+    ws = await connect();
+  } catch (e) {
+    statusEl.textContent = e.message;
+    runEl.disabled = false;
+    return;
   }
 
-  const answered = results.filter((r) => r.anon || r.you || r.house).length;
+  const started = Date.now();
+  let done = 0;
+  // One at a time: this is a status page, not a load generator, and a busy relay
+  // should degrade to slow rather than to a burst of stalled queries.
+  for (const r of results) {
+    statusEl.textContent = `counting ${++done}/${results.length} (kind ${r.kind})…`;
+    r.count = await ws.count(r.kind);
+    render(results);
+  }
+  ws.close();
+
+  const answered = results.filter((r) => r.count).length;
+  const total = results.reduce((n, r) => n + (r.count ? r.count.count : 0), 0);
   statusEl.textContent = `done in ${((Date.now() - started) / 1000).toFixed(1)}s`;
-  // Gating may only ever REMOVE rows. Anything above the anonymous count means
-  // the observer is not a filter on the same set, which is a bug worth seeing
-  // on the page rather than in a log.
-  const impossible = results.filter(
-    (r) => r.anon && ((r.you && r.you.count > r.anon.count) || (r.house && r.house.count > r.anon.count)),
-  );
   footEl.innerHTML =
-    `${answered}/${results.length} kind(s) answered` +
-    (viewingAs ? ` · third column through <code>${viewingAs.slice(0, 12)}…</code>` : "") +
-    (impossible.length
-      ? ` · <span class="none">kind(s) ${impossible.map((r) => r.kind).join(", ")} count MORE when authenticated than anonymous — gating should only remove</span>`
-      : "") +
-    (notes.length ? " · " + notes.join(" · ") : "") +
+    `${answered}/${results.length} kind(s) answered · ${fmt(total)} event(s) counted` +
     (answered === 0
-      ? ' · <span class="none">no COUNT answered at all — the relay advertises NIP-45, so this is worth chasing</span>'
+      ? ' · <span class="none">the relay answered no COUNT at all — it advertises NIP-45, so this is worth chasing</span>'
       : "");
   runEl.disabled = false;
 }
 
-// The picker needs a connection to read the 10040s from, and the avatar needs
-// one to authenticate on. One short-lived socket for both, opened on demand.
-async function withSocket(fn) {
-  const ws = await connect(false, null);
-  try { return await fn(ws); } finally { try { ws.close(); } catch {} }
-}
-
-obsFilterEl.addEventListener("focus", async () => {
-  renderObserverOptions(obsFilterEl.value);
-  await withSocket((ws) => loadObservers(ws));
-  renderObserverOptions(obsFilterEl.value);
-});
-obsFilterEl.addEventListener("input", () => renderObserverOptions(obsFilterEl.value));
-obsResetEl.addEventListener("click", () => setViewingAs(null, null));
-// Dismissed like any other popup — it floats over the page, so leaving it open
-// after a click elsewhere puts it on top of whatever you meant to reach.
-document.addEventListener("click", (e) => {
-  if (!e.target.closest("#obsbox")) obsListEl.innerHTML = "";
-});
-obsFilterEl.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { obsListEl.innerHTML = ""; obsFilterEl.blur(); }
-});
-
-meEl.addEventListener("click", async () => {
-  meEl.classList.add("busy");
-  try {
-    if (me) { rememberSignIn(false); me = null; } else {
-      rememberSignIn(true);
-      loginTried = true;
-      me = await withSocket((ws) => signIn(ws));
-      // Its own profile, so the avatar is a face rather than initials.
-      await withSocket(async (ws) => {
-        for (const ev of await ws.req({ kinds: [0], authors: [me], limit: 1 })) {
-          let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-          profiles.set(me, { name: displayName(c), picture: c.picture || "" });
-        }
-      });
-    }
-  } catch (e) {
-    me = null;
-    statusEl.textContent = e.message || String(e);
-  } finally {
-    meEl.classList.remove("busy");
-    renderMe();
-  }
-});
-
 runEl.addEventListener("click", run);
-renderMe();
-// Signed in on load, best effort: the "as you" column is the point of the page,
-// and it is empty without a reader. No extension just means that column reports
-// what an anonymous caller sees, which the page already says.
-(async () => {
-  loginTried = true;
-  if (!wantsSignIn()) { renderMe(); run(); return; }
-  try {
-    me = await withSocket((ws) => signIn(ws));
-    await withSocket(async (ws) => {
-      for (const ev of await ws.req({ kinds: [0], authors: [me], limit: 1 })) {
-        let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-        profiles.set(me, { name: displayName(c), picture: c.picture || "" });
-      }
-    });
-  } catch { me = null; }
-  renderMe();
-  run();
-})();
+run();
 </script>
 </body>
 </html>

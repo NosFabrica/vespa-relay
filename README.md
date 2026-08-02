@@ -425,11 +425,11 @@ limit instead of a total looks like data.
 ## Kind stats
 
 `GET /kind_stats.html` — how many events of each kind the store holds, one
-NIP-45 `COUNT` per kind over the relay's own WebSocket. Asked the way a client
-would rather than through an http endpoint, so the page also *tests* NIP-45: a
-kind that comes back `no reply` is a finding about the relay, not a blank cell.
-Signs the NIP-42 challenge with a NIP-07 extension when one is present, for
-relays that gate reads behind auth.
+NIP-45 `COUNT` per kind over the relay's own WebSocket. **Anonymous, always**:
+this asks "how many exist", which has one answer, where an authenticated reader
+would get the smaller "how many can I see". Asked the way a client would rather
+than through an http endpoint, so the page also *tests* NIP-45 — a kind that
+comes back `no reply` is a finding about the relay, not a blank cell.
 
 ## Supported NIPs
 
