@@ -13,8 +13,13 @@
   The store trust-gates an AUTHENTICATED reader: it counts and filters only
   authors that reader has scored. An UNAUTHENTICATED reader gets everything —
   this relay applies no default observer, so signed out means the whole corpus
-  rather than somebody else's view of it. The third column asks through whatever
-  observer you name, which is how a lens is requested now that none is imposed.
+  rather than somebody else's view of it. The third column asks through whichever
+  observer you pick, which is how a lens is requested now that none is imposed.
+
+  Same two widgets as the search page — the avatar that IS your login state, and
+  the typeahead over pubkeys that published a kind 10040. Copied rather than
+  shared: these pages are deliberately one file each with no build step, and
+  duplication is what that choice costs. Paid openly beats pretended away.
 
   Read the columns as a diff, not as three facts:
 
@@ -103,7 +108,9 @@
 <main>
   <h1>Kind stats</h1>
   <p class="sub">One NIP-45 <code>COUNT</code> per kind, asked three ways. The store gates an
-     authenticated reader to authors that reader has scored; an anonymous reader sees everything.</p>
+     authenticated reader to authors that reader has scored; an anonymous reader sees everything.
+     You are signed in automatically — the avatar toggles it — and the third column asks through
+     whichever observer you pick.</p>
 
   <div class="bar-row">
     <button id="run">Count</button>
