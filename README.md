@@ -22,7 +22,9 @@ docker compose up --build
 # relay + web UI on ws://localhost:7777
 ```
 
-On first run the relay deploys the bundled Vespa schema, then serves. Open
+On every start the relay deploys the bundled Vespa schema — so a fresh Vespa
+becomes queryable and an upgraded relay carries its schema changes with it — then
+serves. Open
 `http://localhost:7777` for the search UI, or connect a Nostr client to the websocket.
 
 To run against an existing Vespa, without Docker:
@@ -46,7 +48,8 @@ All configuration is through environment variables.
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
 | `RELAY_PORT` | port to listen on | `7777` |
 | `DEFAULT_OBSERVER` | the `npub1…` whose web of trust ranks anonymous searches — somebody's public key, usually the NIP-85 provider you trust, not this relay's. Hex parses too, but a bad value stops the relay rather than being ignored | unset ⇒ untrusted |
-| `AUTO_DEPLOY` | deploy the bundled schema on first run | `true` |
+| `AUTO_DEPLOY` | deploy the bundled schema on every boot — first run and upgrades alike. If the deploy fails but Vespa already serves a schema, the relay warns and keeps serving on it | `true` |
+| `VESPA_CONFIG_URL` | the Vespa config server the schema deploy goes to | `VESPA_URL`'s host on `:19071` |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
 ### Relay identity (NIP-11)
