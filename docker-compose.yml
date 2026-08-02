@@ -114,6 +114,19 @@ services:
       # `assertions` streams in router.conf.example). Per-stream keys override these.
       ROUTER_DYNAMIC_REFRESH_SECONDS: ${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}
       ROUTER_DYNAMIC_CONCURRENCY: ${ROUTER_DYNAMIC_CONCURRENCY:-8}
+      # Settle the trust projection before serving. Documented in the store as
+      # "a few queries when the answer is nothing to do", which held when this
+      # corpus was small: at 36M kind-30382 events it ran 12+ minutes with Vespa
+      # at 356% CPU and NO listener, no router, no NIP-11 — every restart is an
+      # outage for as long as it takes. Set false to serve immediately and leave
+      # ranked search unsettled until a reconcile is run some other way.
+      TRUST_RECONCILE_ON_START: ${TRUST_RECONCILE_ON_START:-}
+      # How many engine queries the store's bulk stages keep in flight. The
+      # store's default is 4, measured on heavy bulk-stage queries; the dedup
+      # preload is an id-only lookup and far lighter, so this is worth sweeping
+      # on a deployment whose ingest is dedup-bound. Too high 504s the summary
+      # stage ("Summary data is incomplete").
+      VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
       # For `sync = "auto"` streams: how many events both we and the relay must
       # hold on the stream's filter before a negentropy reconcile is worth its id
       # exchange, and how long the relay gets to answer the NIP-45 COUNT that

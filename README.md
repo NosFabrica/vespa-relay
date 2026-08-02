@@ -46,6 +46,7 @@ All configuration is through environment variables.
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
 | `RELAY_PORT` | port to listen on | `7777` |
 | `DEFAULT_OBSERVER` | the `npub1…` whose web of trust ranks anonymous searches — somebody's public key, usually the NIP-85 provider you trust, not this relay's. Hex parses too, but a bad value stops the relay rather than being ignored | unset ⇒ untrusted |
+| `TRUST_RECONCILE_ON_START` | settle the trust projection before the relay serves. It is a **barrier**: no websocket listener and no router until it finishes, which on a large corpus can be many minutes. `false` serves immediately and leaves ranked search unsettled | `true` |
 | `AUTO_DEPLOY` | deploy the bundled Vespa schema on **every** boot, so the cluster always matches the schema this build expects. A no-change deploy is a cheap no-op; a failed one is fatal, because feeding a cluster whose schema we disagree with loses events silently | `true` |
 | `VESPA_CONFIG_URL` | Vespa's config server, for the deploy above | `VESPA_URL` on `:19071` |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
