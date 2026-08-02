@@ -321,6 +321,13 @@ class MirrorRouter(
     private val paging = PagingProgress()
 
     /**
+     * Good events the store refused for structural reasons, and which nothing
+     * will re-offer. Distinct from [rejected], most of which is the protocol
+     * working: duplicates we already hold and signatures that were never valid.
+     */
+    private val lostToStore = AtomicLong()
+
+    /**
      * What actually goes down the wire, when the counters stop making sense.
      *
      * Tonight `purplepag.es` returned 3,137,680 events on one build and 601 on
@@ -556,6 +563,16 @@ class MirrorRouter(
                 // reading them as one number hides a store-wide outage.
                 rejected.addAndGet(batch.size.toLong())
                 rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
+                // These are LOST, not merely rejected. A bad signature is the
+                // event's fault and dropping it is correct; a whole batch failing
+                // structurally is the store's or the schema's fault, the events
+                // were perfectly good, and nothing will ever offer them again.
+                //
+                // A schema drift dropped 2,336,288 events this way in one run
+                // while every phase line read healthy — the total sat inside a
+                // reason string in a stats line nobody was reading. Surfaced on
+                // the health line so it cannot accumulate quietly again.
+                lostToStore.addAndGet(batch.size.toLong())
             },
         )
 
@@ -1632,7 +1649,14 @@ class MirrorRouter(
                     ", $rate ev/s" +
                     ", ${transferring.get()} relay(s) transferring" +
                     ", ${client.connectedRelaysFlow().value.size} connected" +
-                    (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else ""),
+                    (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
+                    (
+                        if (lostToStore.get() > 0) {
+                            ", ${lostToStore.get()} event(s) LOST to store errors (good events, gone — check the schema)"
+                        } else {
+                            ""
+                        }
+                    ),
             )
             // Named, because "16,248 skipped" says nothing about which corner of
             // the network we stopped looking at, or whether the reason still

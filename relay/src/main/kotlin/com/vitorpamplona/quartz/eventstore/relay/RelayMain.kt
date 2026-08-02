@@ -20,6 +20,7 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
+import com.vitorpamplona.quartz.eventstore.store.SchemaDeployer
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
@@ -41,7 +42,10 @@ import kotlinx.coroutines.runBlocking
  *                       vanish scope                      (REQUIRED)
  *   DEFAULT_OBSERVER    64-hex pubkey whose web of trust ranks anonymous searches;
  *                       unset ⇒ anonymous searches are untrusted
- *   AUTO_DEPLOY         deploy the bundled schema on first run (default true)
+ *   AUTO_DEPLOY         deploy the bundled schema on EVERY boot (default true),
+ *                        so the cluster always matches the schema this build
+ *                        expects. A no-change deploy is a cheap no-op
+ *   VESPA_CONFIG_URL     Vespa's config server (default: VESPA_URL on :19071)
  *
  *   NIP-11 identity:
  *   RELAY_NAME / RELAY_DESCRIPTION / RELAY_ICON / RELAY_BANNER /
@@ -132,7 +136,42 @@ fun main() {
             RelayServerListener.None
         }
 
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = autoDeploy)
+    // Deploy the schema this build EXPECTS, every boot — not only when Vespa has
+    // no application at all.
+    //
+    // VespaEventStore.open's own autoDeploy is deployIfAbsent: a fresh cluster
+    // gets the schema, one already serving is left alone. That is safe for a
+    // first run and wrong for an upgrade, because the schema travels with the
+    // store jar while the cluster keeps whatever it was given months ago. When
+    // the two drift, Vespa answers every write with
+    //
+    //   Status 400 ... Field 'name_parts' is not defined in document type 'event'
+    //
+    // and the router counts it, drops the event and carries on. That cost
+    // 2,336,288 events in one run before anybody noticed, and they are not
+    // recoverable — a 400 is permanent and nothing re-offers them.
+    //
+    // Deploying unconditionally makes the running cluster match the code that is
+    // talking to it. Vespa handles a no-change deploy as a cheap no-op (a new
+    // session that activates with no configChangeActions), so the cost of the
+    // common case is one request at startup.
+    val configUrl = env["VESPA_CONFIG_URL"] ?: vespaUrl.replace(":8080", ":19071")
+    if (autoDeploy) {
+        val deployer = SchemaDeployer(configUrl)
+        System.err.println("schema: deploying the bundled application package to $configUrl")
+        runCatching {
+            deployer.deploy()
+            deployer.awaitServing(vespaUrl)
+        }.onFailure {
+            // Loud and fatal. Continuing means feeding a cluster whose schema we
+            // know we disagree with, which is the silent-data-loss path above.
+            System.err.println("schema: DEPLOY FAILED — ${it.message}")
+            throw it
+        }
+        System.err.println("schema: deployed and serving")
+    }
+
+    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl)
 
     // The trust view is derived on WRITE, and dedup drops an event the store
     // already holds before the projection sees it — so a corpus mirrored before
