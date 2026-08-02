@@ -1231,6 +1231,13 @@ class MirrorRouter(
                             // acted on: a TCP handshake proves a socket, never a
                             // relay, so success still goes the long way round.
                             if (!tcpReachable(relay.url)) {
+                                // Counted AND named. This path produced most of the
+                                // "N unreachable" totals and never wrote a reason,
+                                // so the cycle line printed the count with the
+                                // explanation list empty — a number with no cause,
+                                // which is what sent this investigation down two
+                                // wrong paths.
+                                reasons.merge("tcp: no route or refused", 1L, Long::plus)
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
                                 publishStrike(health, relay.url)
@@ -1242,6 +1249,7 @@ class MirrorRouter(
                             // should not still be dialled. Skipping costs nothing
                             // and frees the permit for a relay that might answer.
                             if (health.isDead(relay.url)) {
+                                reasons.merge("skipped: authority already struck out", 1L, Long::plus)
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
                                 return@launch
@@ -1252,9 +1260,20 @@ class MirrorRouter(
                                         reasons.merge(reason, 1L, Long::plus)
                                     }
                                 when {
-                                    got < 0 -> {
+                                    // Could not reach it. Strike the authority and
+                                    // publish, which is the finding NIP-66 exists for.
+                                    got == UNREACHABLE -> {
                                         failed.incrementAndGet()
                                         publishStrike(health, relay.url)
+                                    }
+
+                                    // Reached it; the transfer broke. Counted as a
+                                    // failure for this cycle, but NOT struck and NOT
+                                    // published: the relay answered our handshake, so
+                                    // telling the network it is unreachable would be
+                                    // a false statement about someone else's server.
+                                    got == TRANSFER_FAILED -> {
+                                        failed.incrementAndGet()
                                     }
 
                                     // Delivered. Its whole authority is alive, which
@@ -1381,8 +1400,10 @@ class MirrorRouter(
         } catch (e: Exception) {
             // A dead host in a relay list is the common case, not an incident:
             // tally it and move on — one line per cycle carries the totals.
-            onFailure(e.message?.take(60) ?: e.javaClass.simpleName)
-            -1
+            onFailure("${e.javaClass.simpleName}: ${e.message?.take(50) ?: ""}".trim(':', ' '))
+            // -1 says "this relay is unreachable" and costs it a signed NIP-66
+            // record. Only say that when it is true. See [provesUnreachable].
+            if (Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
         } finally {
             transferring.decrementAndGet()
             releaseSocket(url)
@@ -1855,6 +1876,16 @@ private suspend fun bisect(
 private const val ISOLATION_WRITE_BUDGET = 64
 
 /**
+ * [MirrorRouter.dynamicSyncOne]'s two failure returns, distinct because only one
+ * of them is publishable — see [MirrorRouter.provesUnreachable]. Both are
+ * negative so `got > 0` (delivered) and `got == 0` (nothing new) keep meaning
+ * what they did.
+ */
+private const val UNREACHABLE = -1
+
+private const val TRANSFER_FAILED = -2
+
+/**
  * [List.partition] where the predicate suspends, evaluated concurrently.
  *
  * Concurrency is the point, not a bonus: the predicate this exists for is a
@@ -1871,3 +1902,43 @@ private suspend fun <T> List<T>.partitionSuspend(predicate: suspend (T) -> Boole
 
 /** Wall-clock seconds, the unit every `created_at` in the protocol is in. */
 private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+
+/**
+ * Whether a failure may be published as "this relay is unreachable".
+ *
+ * The distinction matters because the answer is PUBLISHED. A negative NIP-66
+ * record is a signed, public statement about someone else's server, and this
+ * router was making it for every failure of any kind.
+ *
+ * Two things were being libelled. A relay that completes a websocket handshake
+ * — `nip85.nosfabrica.com` answered in 50ms — and then sends EOFException
+ * part-way through a large page is emphatically reachable; it hung up on a
+ * query it did not want to finish, which is a different fact and arguably ours
+ * to fix. And an exception thrown by OUR code inside the fan-out (a
+ * ConcurrentModificationException cost a relay a record in a real cycle) says
+ * nothing whatever about the relay.
+ *
+ * So this asks only about the connection itself: name resolution, routing,
+ * refusal, TLS. Anything after a socket is open is a transfer failure, and
+ * anything that looks like our own bug is never the relay's fault.
+ *
+ * Unknown failures stay quiet — the conservative direction, because the cost of
+ * silence is one retry next cycle and the cost of being wrong is a false record
+ * carrying our signature.
+ *
+ * Top-level and pure so the rule can be tested without a live client. The rule
+ * is the part worth testing.
+ */
+object Unreachability {
+    fun proves(e: Exception): Boolean =
+        when (e) {
+            is java.net.UnknownHostException,
+            is java.net.ConnectException,
+            is java.net.NoRouteToHostException,
+            is java.net.PortUnreachableException,
+            is javax.net.ssl.SSLHandshakeException,
+            -> true
+
+            else -> false
+        }
+}
