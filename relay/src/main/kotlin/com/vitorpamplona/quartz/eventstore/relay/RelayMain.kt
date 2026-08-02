@@ -44,8 +44,6 @@ import kotlinx.coroutines.launch
  *   RELAY_PORT          the port to listen on             (default 7777)
  *   RELAY_URL           this relay's own ws url — its NIP-42 identity and NIP-62
  *                       vanish scope                      (REQUIRED)
- *   DEFAULT_OBSERVER    64-hex pubkey whose web of trust ranks anonymous searches;
- *                       unset ⇒ anonymous searches are untrusted
  *   AUTO_DEPLOY         deploy the bundled schema on EVERY boot (default true),
  *                        so the cluster always matches the schema this build
  *                        expects. A no-change deploy is a cheap no-op
@@ -215,7 +213,6 @@ fun main() {
         NostrRelayServer(
             store = store,
             servingPressure = servingPressure,
-            defaultObserver = PubKeys.decodeOrNull(env["DEFAULT_OBSERVER"], "DEFAULT_OBSERVER"),
             relayUrl = relayUrl,
             listener = listener,
             limits = limits,

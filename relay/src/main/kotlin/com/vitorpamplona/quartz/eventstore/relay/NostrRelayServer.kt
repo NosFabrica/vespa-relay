@@ -71,17 +71,16 @@ import kotlin.coroutines.CoroutineContext
  * what the relay rejects can never disagree. [negentropySettings] bound NIP-77
  * reconciliation (frame size, max events synced, sessions per connection).
  *
- * What auth does change is ranking. [ObserverRoutingBackend] resolves the
- * observer for every REQ/COUNT: the authenticated pubkey, or else
- * [defaultObserver]. This makes a search run through the caller's own web of
- * trust.
+ * What auth does change is ranking. [ObserverRoutingBackend] gives every
+ * REQ/COUNT from an authenticated connection that caller's own web of trust as
+ * its lens. An UNAUTHENTICATED connection gets no observer at all — see
+ * [ObserverRoutingBackend] for why it no longer gets a house one.
  *
  * [close] shuts down the connections and the ingest writer, but not the
  * store. The composition root owns the store, and the sync service shares it.
  */
 class NostrRelayServer(
     store: IEventStore,
-    defaultObserver: String?,
     relayUrl: NormalizedRelayUrl,
     parentContext: CoroutineContext = SupervisorJob(),
     listener: RelayServerListener = RelayServerListener.None,
@@ -134,7 +133,7 @@ class NostrRelayServer(
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
-        ObserverRoutingBackend(LiveEventStore(store, ingest), defaultObserver, onObserver, servingPressure)
+        ObserverRoutingBackend(LiveEventStore(store, ingest), onObserver, servingPressure)
 
     override fun close() {
         closeConnections()
@@ -144,19 +143,37 @@ class NostrRelayServer(
 }
 
 /**
- * Delegates everything to [LiveEventStore], wrapping each read in a
- * [StoreQueryContext] that carries the session's ranking observer: the first
- * NIP-42-authenticated pubkey, or else the operator's default. The store
- * reads that element back out when it builds the Vespa query. This is how a
- * per-connection fact crosses the caller-agnostic `IEventStore` interface.
+ * Delegates everything to [LiveEventStore], wrapping each read from an
+ * AUTHENTICATED connection in a [StoreQueryContext] carrying that caller's
+ * pubkey. The store reads the element back out when it builds the Vespa query;
+ * this is how a per-connection fact crosses the caller-agnostic `IEventStore`
+ * interface.
  *
- * [LiveEventStore] installs the same element for authenticated connections, so
- * only the default-observer half is ours — but that half is the anonymous
- * caller, which is most of them.
+ * ## An anonymous caller gets no observer, deliberately
+ *
+ * There used to be a `DEFAULT_OBSERVER` here: anonymous reads ran through an
+ * operator-chosen pubkey's web of trust, on the reasoning that some ranking
+ * beats none over a 50M-event corpus.
+ *
+ * That reasoning does not survive the store treating the observer as a FILTER
+ * rather than an ordering — which it now does, counting and returning only
+ * authors the observer has scored. Measured on this deployment: 335,971 of
+ * 12.28M profiles are scored by anyone at all (2.7%), the configured observer's
+ * provider publishes 145,968 scores, and we hold 14,195 of them. An anonymous
+ * visitor would have been gated to roughly a thousandth of the corpus and told
+ * nothing about it.
+ *
+ * It was also an editorial claim nobody made out loud — *this relay ranks the
+ * world through this one person's web of trust* — applied to every reader who
+ * had not logged in, and invisible to all of them.
+ *
+ * So anonymous now means anonymous: the whole corpus, unranked. A caller who
+ * wants a specific lens asks for it with NIP-50's `observer:` extension, which
+ * the store already parses, and that request is visible in the query rather
+ * than baked into the deployment.
  */
 internal class ObserverRoutingBackend(
     private val inner: LiveEventStore,
-    private val defaultObserver: String?,
     private val onObserver: ((String) -> Unit)? = null,
     // Every read is timed here, so the mirror can yield when clients start
     // waiting. This is the only place that sees serving latency.
@@ -194,16 +211,15 @@ internal class ObserverRoutingBackend(
         filters: List<Filter>,
         block: suspend () -> T,
     ): T {
-        val authenticated = ctx.authenticatedUsers.firstOrNull()
-        authenticated?.let { onObserver?.invoke(it) }
-        val observer = authenticated ?: defaultObserver
+        val observer = ctx.authenticatedUsers.firstOrNull()
+        observer?.let { onObserver?.invoke(it) }
         // Crosses IEventStore's caller-agnostic interface on the coroutine
         // context, so no query/count signature has to widen to carry it.
         //
-        // Quartz's own relay path installs this element too, but only for
-        // NIP-42-authenticated connections. This wrapper still exists for the
-        // other half: an operator-configured [defaultObserver] gives anonymous
-        // callers a ranking lens, and quartz will never install one for them.
+        // Quartz's own relay path installs this element for authenticated
+        // connections too. This wrapper stays because it is also where every
+        // read is timed for [ServingPressure], and because the observer we
+        // install is the one this relay enrolls as a sync observer.
         //
         // There used to be a second element here, OriginalFilters, carrying the
         // NIP-50 extensions quartz's engine stripped before the store saw them.

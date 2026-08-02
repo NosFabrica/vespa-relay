@@ -12,7 +12,9 @@
   searches with NIP-50 REQs (so the filter chips are literal `kinds` filters
   and the sort menu appends NIP-50 `sort:`/`include:spam` extensions), logs in
   with NIP-07 by signing the relay's NIP-42 AUTH challenge — which both ranks
-  every search by YOUR web of trust and enrolls you as a sync observer — and
+  every search by YOUR web of trust and enrolls you as a sync observer. Signed
+  out, results are the whole corpus with no web of trust applied at all; there
+  is no house lens standing in for you. And
   renders every kind the index holds as a card: profiles, notes, articles,
   media, code, listings, and a generic card for the rest.
 
@@ -576,8 +578,10 @@
 
   // A dropped socket loses the AUTH, not the identity. Keeping `me` means the
   // page still knows who you are and re-authenticates on the next request,
-  // instead of silently downgrading you to anonymous ranking with nothing on
-  // screen to say the results changed meaning.
+  // instead of silently dropping you to UNRANKED results with nothing on screen
+  // to say the results changed meaning. That downgrade got sharper when the
+  // relay stopped applying a default observer: signed out is now the whole
+  // corpus with no trust applied, not someone else's ranking of it.
   relay.onclose = () => { renderWhoami(); };
 
   async function waitForChallenge(ms) {
@@ -630,7 +634,8 @@
     await relay.connect();
     // Keyed on the CONNECTION's auth state, not on whether we remember a
     // pubkey: a reconnect leaves `me` set but the new socket unauthenticated,
-    // and searching then would quietly rank by nobody.
+    // and searching then really would rank by nobody — there is no default
+    // observer behind it any more.
     if (relay.authed) return;
     me = await signAndAuth();
     renderWhoami();

@@ -40,10 +40,9 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
  * The parser this replaces silently dropped anything it could not read. That is
  * the wrong failure for every one of these settings: a dropped entry in
  * `RELAY_ADMIN_PUBKEYS` is an admin who cannot administer, in `DENY_PUBKEYS` it
- * is a ban that is not enforced, and in `DEFAULT_OBSERVER` it is a relay whose
- * ranked searches quietly return nothing. None of those announce themselves —
- * they look exactly like the feature not working. A typo is a typo and it must
- * be loud.
+ * is a ban that is not enforced, and in `RELAY_CONTACT_PUBKEY` it is a NIP-11
+ * doc naming nobody. None of those announce themselves — they look exactly like
+ * the feature not working. A typo is a typo and it must be loud.
  */
 object PubKeys {
     private val HEX64 = Regex("^[0-9a-f]{64}$")

@@ -96,8 +96,6 @@ services:
       RELAY_POSTING_POLICY: ${RELAY_POSTING_POLICY:-}
       RELAY_PRIVACY_POLICY: ${RELAY_PRIVACY_POLICY:-}
       RELAY_TERMS_OF_SERVICE: ${RELAY_TERMS_OF_SERVICE:-}
-      # 64-hex pubkey whose web of trust ranks anonymous searches; empty = untrusted.
-      DEFAULT_OBSERVER: ${DEFAULT_OBSERVER:-}
       # Router (upstream mirror). Off by default. To turn it on, drop a strfry-style
       # streams config next to this file (see router.conf.example) and start with:
       #   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf docker compose up --build

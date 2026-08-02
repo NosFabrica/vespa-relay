@@ -11,15 +11,16 @@
   through the relay's own key.
 
   The store trust-gates an AUTHENTICATED reader: it counts and filters only
-  authors that reader (or the house key) has scored. An UNAUTHENTICATED reader
-  gets everything. So the same kind has three different true answers depending
-  on who asks, and a single number would hide the whole mechanism.
+  authors that reader has scored. An UNAUTHENTICATED reader gets everything —
+  this relay applies no default observer, so signed out means the whole corpus
+  rather than somebody else's view of it. The third column asks through whatever
+  observer you name, which is how a lens is requested now that none is imposed.
 
   Read the columns as a diff, not as three facts:
 
     anonymous == as you        your web of trust is not being applied
     as you    == 0             nothing you scored is in this kind
-    as you    >  house         you reach further than the relay's own key
+    as you    >  named         you reach further than the observer you named
     anonymous <  either        something is wrong: gating should only REMOVE
 
   Deliberately not an http endpoint: COUNT is a protocol feature, and asking for
@@ -80,6 +81,7 @@
   <div class="bar-row">
     <button id="run">Count</button>
     <input id="extra" placeholder="also count these kinds, comma separated" />
+    <input id="obs" placeholder="observer pubkey (64-hex) for the third column" />
     <span class="status" id="status">idle</span>
   </div>
 
@@ -90,7 +92,7 @@
           <th>Kind</th><th>Name</th>
           <th class="n">Anonymous</th>
           <th class="n">As you</th>
-          <th class="n">As the house key</th>
+          <th class="n">As a named observer</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -130,6 +132,7 @@ const statusEl = document.getElementById("status");
 const footEl = document.getElementById("foot");
 const runEl = document.getElementById("run");
 const extraEl = document.getElementById("extra");
+const obsEl = document.getElementById("obs");
 
 const fmt = (n) => n.toLocaleString();
 
@@ -153,12 +156,19 @@ function render(results) {
   }
 }
 
-/** The relay's OWN key, from its NIP-11 `self`. Null if it advertises none. */
-async function houseKey() {
-  try {
-    const r = await fetch("/", { headers: { Accept: "application/nostr+json" } });
-    return (await r.json()).self || null;
-  } catch { return null; }
+/**
+ * The pubkey typed into the observer box, or null.
+ *
+ * This column used to read the relay's NIP-11 `self` and call it "the house
+ * key", which was wrong twice over: `self` is the relay's IDENTITY (NIP-42,
+ * NIP-66 signing) and has scored nobody, and the separate DEFAULT_OBSERVER it
+ * was standing in for has since been removed — anonymous readers now get the
+ * whole corpus rather than someone else's lens. Any lens is now something a
+ * caller asks for explicitly, so the page asks explicitly too.
+ */
+function namedObserver() {
+  const v = (obsEl.value || "").trim().toLowerCase();
+  return /^[0-9a-f]{64}$/.test(v) ? v : null;
 }
 
 // A connection is either authenticated or not for its whole life, so each mode
@@ -224,7 +234,7 @@ async function run() {
   const results = [...KINDS.map(([kind, name]) => ({ kind, name })), ...extra.map((kind) => ({ kind, name: "" }))];
   render(results);
 
-  const house = await houseKey();
+  const house = namedObserver();
   const modes = [
     ["anon", false, null],
     ["you", true, null],
@@ -234,7 +244,7 @@ async function run() {
   const started = Date.now();
   const notes = [];
   for (const [key, sign, observer] of modes) {
-    if (key === "house" && !house) { notes.push("the relay advertises no NIP-11 <code>self</code>, so the house column was skipped"); continue; }
+    if (key === "house" && !house) { notes.push("no observer pubkey given, so that column was skipped"); continue; }
     let ws;
     try {
       statusEl.textContent = `connecting (${key})…`;
@@ -264,7 +274,7 @@ async function run() {
   );
   footEl.innerHTML =
     `${answered}/${results.length} kind(s) answered` +
-    (house ? ` · house key <code>${house.slice(0, 12)}…</code>` : "") +
+    (house ? ` · observer <code>${house.slice(0, 12)}…</code>` : "") +
     (impossible.length
       ? ` · <span class="none">kind(s) ${impossible.map((r) => r.kind).join(", ")} count MORE when authenticated than anonymous — gating should only remove</span>`
       : "") +

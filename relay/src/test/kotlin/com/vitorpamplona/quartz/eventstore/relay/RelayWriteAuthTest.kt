@@ -35,7 +35,6 @@ import kotlin.test.fail
 
 /** Static write authorization and the future-dated-event guard, driven over the protocol. */
 class RelayWriteAuthTest {
-    private val defaultObserver = "d".repeat(64)
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val signer = NostrSignerSync()
 
@@ -45,7 +44,7 @@ class RelayWriteAuthTest {
     fun `a denied pubkey cannot publish`() =
         runBlocking {
             val store = newStore()
-            val server = NostrRelayServer(store, defaultObserver, relayUrl, pubkeyDeny = setOf(signer.pubKey))
+            val server = NostrRelayServer(store, relayUrl, pubkeyDeny = setOf(signer.pubKey))
             publishAndExpectReject(server, store, signer.sign(1_700_000_000L, 1, emptyArray(), "denied"))
             server.close()
         }
@@ -54,7 +53,7 @@ class RelayWriteAuthTest {
     fun `an allowlist that omits the author rejects it`() =
         runBlocking {
             val store = newStore()
-            val server = NostrRelayServer(store, defaultObserver, relayUrl, pubkeyAllow = setOf("f".repeat(64)))
+            val server = NostrRelayServer(store, relayUrl, pubkeyAllow = setOf("f".repeat(64)))
             publishAndExpectReject(server, store, signer.sign(1_700_000_000L, 1, emptyArray(), "not allowlisted"))
             server.close()
         }
@@ -63,7 +62,7 @@ class RelayWriteAuthTest {
     fun `a denied kind is rejected`() =
         runBlocking {
             val store = newStore()
-            val server = NostrRelayServer(store, defaultObserver, relayUrl, kindDeny = setOf(1))
+            val server = NostrRelayServer(store, relayUrl, kindDeny = setOf(1))
             publishAndExpectReject(server, store, signer.sign(1_700_000_000L, 1, emptyArray(), "banned kind"))
             server.close()
         }
@@ -72,7 +71,7 @@ class RelayWriteAuthTest {
     fun `an event dated too far in the future is rejected but a current one is not`() =
         runBlocking {
             val store = newStore()
-            val server = NostrRelayServer(store, defaultObserver, relayUrl, rejectFutureSeconds = 60)
+            val server = NostrRelayServer(store, relayUrl, rejectFutureSeconds = 60)
             val now = System.currentTimeMillis() / 1000
 
             val future = signer.sign<Event>(now + 3_600, 1, emptyArray(), "from the future")

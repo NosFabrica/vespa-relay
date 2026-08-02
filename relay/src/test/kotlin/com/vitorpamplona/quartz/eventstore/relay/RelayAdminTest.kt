@@ -41,11 +41,10 @@ import kotlin.test.fail
  * BanStore instance the NIP-86 admin endpoint mutates.
  */
 class RelayAdminTest {
-    private val defaultObserver = "d".repeat(64)
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
     private val banStore = BanStore {}
-    private val server = NostrRelayServer(store, defaultObserver, relayUrl, banStore = banStore)
+    private val server = NostrRelayServer(store, relayUrl, banStore = banStore)
     private val signer = NostrSignerSync()
 
     @Test
