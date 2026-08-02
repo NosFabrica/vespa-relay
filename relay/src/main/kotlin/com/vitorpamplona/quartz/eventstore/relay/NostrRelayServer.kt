@@ -103,6 +103,9 @@ class NostrRelayServer(
     // the composition root enroll NIP-42 logins as sync observers
     // (SyncService.enroll dedups).
     onObserver: ((String) -> Unit)? = null,
+    // Shared with the router so mirroring yields when clients start waiting.
+    // Null leaves reads untimed and ingest unthrottled.
+    private val servingPressure: ServingPressure? = null,
 ) : RelayServerBase(
         // Events are verified in the ingest queue's parallel stage, so the
         // policy only verifies AUTH. Cheap rejections (bans, allow/deny lists,
@@ -130,7 +133,8 @@ class NostrRelayServer(
     // VerifyAuthOnlyPolicy. Invalid events get an InsertOutcome.Rejected -> OK:false.
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
-    override val backend: SessionBackend = ObserverRoutingBackend(LiveEventStore(store, ingest), defaultObserver, onObserver)
+    override val backend: SessionBackend =
+        ObserverRoutingBackend(LiveEventStore(store, ingest), defaultObserver, onObserver, servingPressure)
 
     override fun close() {
         closeConnections()
@@ -154,6 +158,9 @@ internal class ObserverRoutingBackend(
     private val inner: LiveEventStore,
     private val defaultObserver: String?,
     private val onObserver: ((String) -> Unit)? = null,
+    // Every read is timed here, so the mirror can yield when clients start
+    // waiting. This is the only place that sees serving latency.
+    private val pressure: ServingPressure? = null,
 ) : SessionBackend {
     override suspend fun query(
         ctx: RequestContext,
@@ -203,7 +210,14 @@ internal class ObserverRoutingBackend(
         // The IEventStore contract now passes `search` VERBATIM and the store
         // parses `sort:`/`filter:rank:`/`include:spam`/`observer:` itself, so
         // there is nothing left to preserve.
-        if (observer == null) return block()
-        return withContext(StoreQueryContext(setOf(observer))) { block() }
+        val startedMs = System.currentTimeMillis()
+        try {
+            if (observer == null) return block()
+            return withContext(StoreQueryContext(setOf(observer))) { block() }
+        } finally {
+            // In a finally: a read that THREW still occupied the engine, and a
+            // read that timed out is the most important sample there is.
+            pressure?.record(System.currentTimeMillis() - startedMs)
+        }
     }
 }

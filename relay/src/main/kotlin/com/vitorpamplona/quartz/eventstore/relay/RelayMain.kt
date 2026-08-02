@@ -82,6 +82,9 @@ import kotlinx.coroutines.runBlocking
  *                             that a duplicate never reaches (default true)
  *
  *   Parse audit / quartz logging (optional; see ParseAudit):
+ *   SERVING_PRESSURE_THRESHOLD_MS  mean client-read latency (default 2000) above
+ *                            which the mirror yields between batches, so a sync
+ *                            cannot starve the clients this relay exists for
  *   ROUTER_WIRE_LOG          "" (default) logs only what the relay complains
  *                            about — NOTICE, CLOSED, failed sends. "sent" adds
  *                            every command we send; "full" adds every message
@@ -181,9 +184,14 @@ fun main() {
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
         runBlocking { reconcileTrustWithRetry(store) }
     }
+    // One instance, shared: the relay server measures client reads into it, the
+    // router reads it back to decide whether to yield. A relay answers clients
+    // first and mirrors with what is left.
+    val servingPressure = ServingPressure(thresholdMs = env["SERVING_PRESSURE_THRESHOLD_MS"]?.trim()?.toLongOrNull()?.coerceAtLeast(100) ?: 2_000)
     val relay =
         NostrRelayServer(
             store = store,
+            servingPressure = servingPressure,
             defaultObserver = PubKeys.decodeOrNull(env["DEFAULT_OBSERVER"], "DEFAULT_OBSERVER"),
             relayUrl = relayUrl,
             listener = listener,
@@ -223,6 +231,7 @@ fun main() {
                 cursors = cursors,
                 signer = identity,
                 wireLogMode = env["ROUTER_WIRE_LOG"]?.trim()?.lowercase() ?: "",
+                servingPressure = servingPressure,
             ).start()
         }
 

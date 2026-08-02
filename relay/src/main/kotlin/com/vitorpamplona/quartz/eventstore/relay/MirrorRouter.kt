@@ -113,6 +113,9 @@ class MirrorRouter(
     private val signer: NostrSigner? = null,
     // ROUTER_WIRE_LOG: "" (errors only) / "sent" / "full". See [wireLog].
     private val wireLogMode: String = "",
+    // Shared with the relay server: how slow client reads have become. Ingest
+    // yields to them — see [ServingPressure].
+    private val servingPressure: ServingPressure? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -479,6 +482,11 @@ class MirrorRouter(
     private suspend fun ingestLoop() {
         val batch = ArrayList<Inbound>(ingestBatch)
         while (scope.isActive) {
+            // Clients first. A batch's dedup and projection queries land in the
+            // same engine a REQ does, and there is no way to reorder that queue
+            // from here — only to stop adding to it. Zero while reads are
+            // healthy, so the common case costs nothing.
+            servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
             val first = inbound.receiveCatching().getOrNull() ?: break
             queued.decrementAndGet()
             batch.clear()
@@ -1650,6 +1658,7 @@ class MirrorRouter(
                     ", ${transferring.get()} relay(s) transferring" +
                     ", ${client.connectedRelaysFlow().value.size} connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
+                    (servingPressure?.describe()?.let { ", $it" } ?: "") +
                     (
                         if (lostToStore.get() > 0) {
                             ", ${lostToStore.get()} event(s) LOST to store errors (good events, gone — check the schema)"
