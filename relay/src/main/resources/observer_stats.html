@@ -27,6 +27,11 @@
   alone tells you nothing, because "3,197 scores" reads as healthy right up
   until you learn the relay serving them holds 145,968.
 
+  One query per DISTINCT question. A 10040 usually names the same service for
+  both dimensions — 225 of 259 observers here — so asking per row asked
+  everything twice, at twice the wait and twice the load on relays that never
+  volunteered to be polled by a status page.
+
   Counted ANONYMOUSLY on purpose, whatever your signed-in preference elsewhere.
   An authenticated reader is trust-gated by the store — it counts only authors
   that reader has scored — and this page's entire question is "how many exist",
@@ -304,31 +309,51 @@ async function run() {
   }
   render(observers);
 
-  // Local counts first: one connection, fast, and it fills most of the table.
   const dims = observers.flatMap((o) => [o.rank, o.followers].filter((d) => d.service));
+
+  // ONE query per distinct question, not one per row.
+  //
+  // A 10040 usually names the same service for both dimensions — measured here,
+  // 225 of 259 observers do — so asking per row asked everything twice: 486
+  // queries for 247 distinct services locally, and 486 for 251 distinct
+  // (relay, service) pairs remotely. Same answer, twice the wait, and twice the
+  // load on relays that did not ask to be polled by a status page.
+  const localBySvc = new Map();
+  const svcs = [...new Set(dims.map((d) => d.service))];
   let done = 0;
-  for (const d of dims) {
-    statusEl.textContent = `counting here ${++done}/${dims.length}…`;
-    d.here = await local.count(d.service);
+  for (const svc of svcs) {
+    statusEl.textContent = `counting here ${++done}/${svcs.length}…`;
+    localBySvc.set(svc, await local.count(svc));
+    for (const d of dims) if (d.service === svc) d.here = localBySvc.get(svc);
     render(observers);
   }
 
   // Then the remote relays — other people's servers, a few at a time. Grouped
   // by url so one connection answers every dimension it serves.
+  // Same deduplication remotely, and grouped so one connection answers every
+  // distinct service that relay serves.
   const byRelay = new Map();
   for (const d of dims) {
     if (!d.relay) { d.there = null; continue; }
-    if (!byRelay.has(d.relay)) byRelay.set(d.relay, []);
-    byRelay.get(d.relay).push(d);
+    if (!byRelay.has(d.relay)) byRelay.set(d.relay, new Set());
+    byRelay.get(d.relay).add(d.service);
   }
   let rdone = 0;
-  await bounded(REMOTE_CONCURRENCY, [...byRelay.entries()].map(([url, ds]) => async () => {
+  await bounded(REMOTE_CONCURRENCY, [...byRelay.entries()].map(([url, svcSet]) => async () => {
     statusEl.textContent = `asking ${++rdone}/${byRelay.size} relay(s)…`;
+    const rows = (svc) => dims.filter((d) => d.relay === url && d.service === svc);
     let ws = null;
-    try { ws = await client(url); } catch { ds.forEach((d) => { d.there = null; }); render(observers); return; }
-    for (const d of ds) d.there = await ws.count(d.service);
+    try { ws = await client(url); } catch {
+      for (const svc of svcSet) for (const d of rows(svc)) d.there = null;
+      render(observers);
+      return;
+    }
+    for (const svc of svcSet) {
+      const answer = await ws.count(svc);
+      for (const d of rows(svc)) d.there = answer;
+      render(observers);
+    }
     try { ws.close(); } catch {}
-    render(observers);
   }));
 
   local.close();
@@ -339,7 +364,8 @@ async function run() {
   const noCount = dims.filter((d) => d.there === null).length;
   statusEl.textContent = "done";
   footEl.innerHTML =
-    `${observers.length} observer(s) with a 30382:rank service` +
+    `${observers.length} observer(s) with a 30382:rank service, ` +
+    `${svcs.length} distinct service(s) asked (${dims.length} dimension row(s))` +
     (withoutRank ? ` (${withoutRank} more declare no rank service and are not shown)` : "") +
     ` (${observers.filter((o) => !o.hasProfile).length} with no kind 0 here, ` +
     `${observers.filter((o) => o.hasProfile && !o.picture).length} publishing no picture), ${dims.length} dimension(s) · ` +
