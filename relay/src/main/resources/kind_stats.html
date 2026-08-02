@@ -498,6 +498,14 @@ obsFilterEl.addEventListener("focus", async () => {
 });
 obsFilterEl.addEventListener("input", () => renderObserverOptions(obsFilterEl.value));
 obsResetEl.addEventListener("click", () => setViewingAs(null, null));
+// Dismissed like any other popup — it floats over the page, so leaving it open
+// after a click elsewhere puts it on top of whatever you meant to reach.
+document.addEventListener("click", (e) => {
+  if (!e.target.closest("#obsbox")) obsListEl.innerHTML = "";
+});
+obsFilterEl.addEventListener("keydown", (e) => {
+  if (e.key === "Escape") { obsListEl.innerHTML = ""; obsFilterEl.blur(); }
+});
 
 meEl.addEventListener("click", async () => {
   meEl.classList.add("busy");

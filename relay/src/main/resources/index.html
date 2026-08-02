@@ -1249,6 +1249,14 @@ function rememberSignIn(yes) {
   });
   $obsFilter.addEventListener("input", () => renderObserverOptions($obsFilter.value));
   $obsReset.addEventListener("click", () => setViewingAs(null, null));
+  // Dismissed like any other popup. It is absolutely positioned over the page,
+  // so without this it sat open over whatever you clicked next.
+  document.addEventListener("click", (e) => {
+    if (!e.target.closest("#obsbox")) $obsList.innerHTML = "";
+  });
+  $obsFilter.addEventListener("keydown", (e) => {
+    if (e.key === "Escape") { $obsList.innerHTML = ""; $obsFilter.blur(); }
+  });
 
   const s = { requestId: 0, hits: [], lastMs: null, loading: false, error: null };
   let debounceTimer = null;
