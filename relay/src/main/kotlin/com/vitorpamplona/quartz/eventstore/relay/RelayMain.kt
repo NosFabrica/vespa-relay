@@ -20,11 +20,13 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
+import com.vitorpamplona.quartz.eventstore.store.SchemaDeployer
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import java.net.URI
 
 /**
  * Run a standalone trust-ranking Nostr relay against a Vespa. It opens the
@@ -41,7 +43,10 @@ import kotlinx.coroutines.runBlocking
  *                       vanish scope                      (REQUIRED)
  *   DEFAULT_OBSERVER    64-hex pubkey whose web of trust ranks anonymous searches;
  *                       unset ⇒ anonymous searches are untrusted
- *   AUTO_DEPLOY         deploy the bundled schema on first run (default true)
+ *   AUTO_DEPLOY         deploy the bundled schema on every boot — first run and
+ *                       upgrades alike (default true)
+ *   VESPA_CONFIG_URL    the config server that deploy goes to
+ *                       (default: VESPA_URL's host on :19071)
  *
  *   NIP-11 identity:
  *   RELAY_NAME / RELAY_DESCRIPTION / RELAY_ICON / RELAY_BANNER /
@@ -128,7 +133,18 @@ fun main() {
             RelayServerListener.None
         }
 
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = autoDeploy)
+    // Deploy the bundled schema on EVERY boot, not only when Vespa serves
+    // nothing yet. The store's own autoDeploy is first-run-only by design ("a
+    // schema upgrade is an explicit deploy") — which turned a routine relay
+    // upgrade into a store that rejects writes: the upgraded code fed fields
+    // the still-serving old schema had never heard of, and Vespa refused every
+    // kind 0 with "Field 'name_parts' is not defined in document type 'event'".
+    // Redeploying an unchanged package is a no-op and field additions apply
+    // live, so the relay owns the explicit deploy here.
+    if (autoDeploy) {
+        deployBundledSchema(vespaUrl, env["VESPA_CONFIG_URL"] ?: configUrlFor(vespaUrl))
+    }
+    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false)
 
     // The trust view is derived on WRITE, and dedup drops an event the store
     // already holds before the projection sees it — so a corpus mirrored before
@@ -337,6 +353,38 @@ private suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
 // minutes, and each attempt is a real query.
 private const val TRUST_RECONCILE_RETRY_MS = 5_000L
 private const val TRUST_RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000L
+
+/**
+ * Deploy the bundled application package and wait until Vespa serves it.
+ *
+ * A deploy failure against a Vespa that is already serving keeps the relay up
+ * on the schema it has (with a warning naming the cost: fields the schema
+ * lacks stay rejected) — a config server that is unreachable, say, must not
+ * take down a relay that ran fine yesterday. On a fresh Vespa the failure
+ * rethrows: there is no schema to fall back to, so nothing could serve anyway.
+ */
+private fun deployBundledSchema(
+    vespaUrl: String,
+    configUrl: String,
+) {
+    val deployer = SchemaDeployer(configUrl)
+    try {
+        deployer.deploy()
+    } catch (e: Exception) {
+        if (!deployer.isServing(vespaUrl)) throw e
+        System.err.println(
+            "relay: schema deploy to $configUrl failed (${e.message?.take(200)}); " +
+                "serving on the schema Vespa already has — writes carrying fields it lacks will be rejected until a deploy succeeds",
+        )
+    }
+    deployer.awaitServing(vespaUrl)
+}
+
+/** The config server sits on :19071 by convention, on the same host as the query endpoint. */
+private fun configUrlFor(queryUrl: String): String {
+    val u = URI.create(queryUrl)
+    return URI(u.scheme, null, u.host, 19071, null, null, null).toString()
+}
 
 /** Map a ws/wss url to its http/https origin for NIP-98's `u` tag. */
 private fun String.httpFromWs(): String =

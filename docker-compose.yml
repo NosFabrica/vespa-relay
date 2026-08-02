@@ -2,7 +2,8 @@
 #
 #   docker compose up --build
 #
-# The relay deploys the bundled schema to Vespa on first run (AUTO_DEPLOY), then
+# The relay deploys the bundled schema to Vespa on every boot (AUTO_DEPLOY) —
+# first run and schema upgrades alike — then
 # serves the NIP-50 websocket, the NIP-11 doc, and the web UI on RELAY_PORT.
 # Filling the store from the network (crawl / trust-sync) is a separate service —
 # see SoT (github.com/vitorpamplona/sot).
