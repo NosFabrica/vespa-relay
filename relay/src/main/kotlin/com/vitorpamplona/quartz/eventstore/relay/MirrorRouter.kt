@@ -46,6 +46,7 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
@@ -260,6 +261,36 @@ class MirrorRouter(
 
     private val inbound = Channel<Inbound>(inboundCapacity)
 
+    /**
+     * Threads the ingest workers own outright, which no producer can occupy.
+     *
+     * [offer] parks its caller when the channel is full — deliberate
+     * backpressure — but it parks a thread from the SAME pool [ingestLoop] runs
+     * on ([scope] is Dispatchers.IO, whose workers are the shared
+     * `DefaultDispatcher` scheduler). Backpressure only works if the parked
+     * thread is not the one that has to make room. It is not, until enough
+     * producers park at once, and then it is a deadlock: every thread is waiting
+     * for space that only a thread can create.
+     *
+     * That is not hypothetical. With 12-15 relays delivering concurrently:
+     *
+     *     ingest queue 8000/8000 FULL, 0 ev/s   (for minutes, permanently)
+     *     ingested 1 accepted, 4 rejected       (five events, total)
+     *
+     * and a thread dump showing DefaultDispatcher workers parked in
+     * BlockingCoroutine.joinBlocking — trySendBlocking's runBlocking, waiting on
+     * a drain that could never be scheduled.
+     *
+     * A dedicated pool sized to the worker count is the smallest fix that makes
+     * the invariant true rather than probable: however many producers park,
+     * these threads are still free to drain.
+     */
+    private val ingestPool =
+        java.util.concurrent.Executors
+            .newFixedThreadPool(ingestWorkers) { r ->
+                Thread(r, "vespa-relay-ingest").apply { isDaemon = true }
+            }.asCoroutineDispatcher()
+
     // How full [inbound] is. Channel does not expose its depth, and this one
     // number decides whether the pipeline is starved or backpressured — the
     // question every stall this router has had came down to, and the one thing
@@ -417,7 +448,7 @@ class MirrorRouter(
                     "one worker's share collapses ingest to a single thread",
             )
         }
-        repeat(ingestWorkers) { scope.launch { ingestLoop() } }
+        repeat(ingestWorkers) { scope.launch(ingestPool) { ingestLoop() } }
 
         // An OutOfMemoryError kills the thread that happens to allocate next and
         // is caught by nobody — not by `catch (e: Exception)`, which is what most
@@ -1778,6 +1809,9 @@ class MirrorRouter(
         runCatching { client.close() }
         inbound.close()
         scope.cancel()
+        // After the scope, so a worker mid-batch is cancelled rather than
+        // stranded on a pool that has stopped accepting work.
+        runCatching { ingestPool.close() }
         runCatching {
             okhttp.dispatcher.executorService.shutdown()
             okhttp.connectionPool.evictAll()
