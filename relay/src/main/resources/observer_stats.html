@@ -7,8 +7,12 @@
 <meta name="description" content="Every NIP-85 observer, and whether their scores actually reached this relay." />
 <title>Observer stats</title>
 <!--
-  Every kind-10040 observer, and whether their scores actually got here.
-     ─────────────────────────────────────────────────────────────────
+  Every kind-10040 observer WITH A RANK SERVICE, and whether their scores got here.
+     ────────────────────────────────────────────────────────────────────────────
+
+  Filtered to `30382:rank`: that dimension is what ranking reads, so a 10040
+  declaring only `30382:followers` cannot rank anything and its row would be a
+  name beside four dashes. The count of what was dropped is in the footer.
 
   A 10040 names, per dimension, a SERVICE pubkey and the RELAY that serves its
   scores:
@@ -85,7 +89,8 @@
 <body>
 <main>
   <h1>Observer stats</h1>
-  <p class="sub">Every kind-10040 observer, and whether the scores they trust actually reached this relay.
+  <p class="sub">Every kind-10040 observer that names a <code>30382:rank</code> service, and whether the
+     scores they trust actually reached this relay.
      <strong>here</strong> is this store; <strong>there</strong> is the relay their 10040 names.
      Equal means synced; short means the sync has not finished.</p>
 
@@ -257,7 +262,11 @@ async function run() {
     const t = (ev.tags || []).find((x) => x[0] === tag);
     return { service: t?.[1] || null, relay: t?.[2] || null };
   };
-  const observers = [...byPubkey.values()].map((ev) => ({
+  // Only observers that name a `30382:rank` service. The rank dimension is what
+  // ranking actually reads; a 10040 declaring only `30382:followers` cannot rank
+  // anything, so its row would be a name and four dashes. Counted below so the
+  // page says how many it dropped rather than quietly showing a shorter list.
+  const all = [...byPubkey.values()].map((ev) => ({
     pubkey: ev.pubkey,
     name: "",
     picture: "",
@@ -265,6 +274,8 @@ async function run() {
     rank: pick(ev, "30382:rank"),
     followers: pick(ev, "30382:followers"),
   }));
+  const withoutRank = all.length - all.filter((o) => o.rank.service).length;
+  const observers = all.filter((o) => o.rank.service);
   render(observers);
 
   // Names and pictures, batched.
@@ -314,7 +325,9 @@ async function run() {
   const noCount = dims.filter((d) => d.there === null).length;
   statusEl.textContent = "done";
   footEl.innerHTML =
-    `${observers.length} observer(s) (${observers.filter((o) => !o.hasProfile).length} with no kind 0 here, ` +
+    `${observers.length} observer(s) with a 30382:rank service` +
+    (withoutRank ? ` (${withoutRank} more declare no rank service and are not shown)` : "") +
+    ` (${observers.filter((o) => !o.hasProfile).length} with no kind 0 here, ` +
     `${observers.filter((o) => o.hasProfile && !o.picture).length} publishing no picture), ${dims.length} dimension(s) · ` +
     `${withBoth.length} comparable · ` +
     (short.length
