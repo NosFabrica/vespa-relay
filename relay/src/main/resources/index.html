@@ -262,7 +262,30 @@
   .row-name { font-weight: 550; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-about { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
+  /* A result you arrived at by clicking it in the quick popup. Fades on its own
+     so the mark keeps meaning "this one" rather than becoming decoration. */
+  .result.revealed {
+    animation: reveal-fade 5s ease-out forwards;
+  }
+  @keyframes reveal-fade {
+    0%   { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
+    70%  { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
+    100% { background: transparent; box-shadow: 0 0 0 2px transparent; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .result.revealed { animation: none; box-shadow: 0 0 0 2px var(--accent); }
+  }
+
   /* ---- avatars ------------------------------------------------------------ */
+  .av-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+  .score-chip {
+    position: absolute; right: -3px; bottom: -3px; display: none;
+    min-width: 15px; height: 15px; padding: 0 3px;
+    border-radius: 8px; background: var(--accent); color: var(--accent-fg);
+    font-size: 9px; font-weight: 800; line-height: 15px; text-align: center;
+    box-shadow: 0 0 0 2px var(--surface);
+  }
+  .score-chip.on { display: block; }
   .avatar {
     width: 34px; height: 34px;
     border-radius: 50%;
@@ -897,7 +920,13 @@ function rememberSignIn(yes) {
     const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
     if (!missing.length) return;
     try {
-      const found = await relay.req({ kinds: [0], authors: missing, limit: missing.length }, 5000);
+      // Anonymous, like every other reference lookup. A displayed author's name
+      // and face are not a personalised question, and the authenticated socket
+      // gates kind 0 to authors the reader has scored — so with "unranked too"
+      // on, results would render nameless and faceless for exactly the people
+      // you have not rated.
+      const conn = await refConn();
+      const found = await conn.req({ kinds: [0], authors: missing, limit: missing.length }, 5000);
       seedProfiles(found);
     } catch (e) {}
     for (const p of missing) if (!profiles.has(p)) profiles.set(p, null); // don't re-ask
@@ -936,6 +965,78 @@ function rememberSignIn(yes) {
     return { name, picture: (p && p.picture) || "" };
   }
 
+  // ---- trust scores, as the ACTIVE LENS sees them -------------------------
+  //
+  // The chip on a face answers "what does this ranking think of them", which is
+  // the question the whole relay is organised around and was nowhere on screen.
+  // The lens is whoever the page is reading as: you, or the observer picked in
+  // "ranking as" — the same key that ranks the results, so the chip and the
+  // order can never disagree.
+  //
+  // Read ANONYMOUSLY. A score is a fact about a subject, not about the reader,
+  // and asking on the authenticated socket would gate the lookup to authors the
+  // reader already scored — which is circular: you would only see scores for
+  // people you had already scored.
+  const scores = new Map();          // pubkey -> number | null (null = no score)
+  let scoreLensKey = null;           // whose lens `scores` was built for
+  const rankServices = new Map();    // observer pubkey -> rank service pubkey | null
+  let refRelay = null;
+
+  async function refConn() {
+    if (refRelay && refRelay.ws && refRelay.ws.readyState === 1) return refRelay;
+    refRelay = new Relay(RELAY_URL);
+    await refRelay.connect();
+    return refRelay;
+  }
+
+  /** The `30382:rank` service an observer trusts, from their kind 10040. */
+  async function rankServiceOf(observer) {
+    if (rankServices.has(observer)) return rankServices.get(observer);
+    let svc = null;
+    try {
+      const conn = await refConn();
+      const [ev] = await conn.req({ kinds: [10040], authors: [observer], limit: 1 });
+      svc = (ev?.tags || []).find(t => t[0] === "30382:rank")?.[1] || null;
+    } catch (e) { svc = null; }
+    rankServices.set(observer, svc);
+    return svc;
+  }
+
+  /** Fill in any score chips currently on the page. */
+  async function paintScores() {
+    const lens = viewingAs || me;
+    if (scoreLensKey !== lens) { scores.clear(); scoreLensKey = lens; }
+    const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
+    if (!lens || !chips.length) return;
+    const svc = await rankServiceOf(lens);
+    if (!svc) return;                     // this lens ranks nothing; no chips
+    const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
+    for (let i = 0; i < need.length; i += 100) {
+      const batch = need.slice(i, i + 100);
+      let evs = [];
+      try {
+        const conn = await refConn();
+        evs = await conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length });
+      } catch (e) { /* leave them unknown rather than wrong */ }
+      const seen = new Set();
+      for (const ev of evs) {
+        const d = (ev.tags || []).find(t => t[0] === "d")?.[1];
+        const rank = (ev.tags || []).find(t => t[0] === "rank")?.[1];
+        if (!d) continue;
+        seen.add(d);
+        scores.set(d, rank == null ? null : Number(rank));
+      }
+      for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
+    }
+    for (const c of chips) {
+      const v = scores.get(c.dataset.pk);
+      if (v == null || Number.isNaN(v)) { c.textContent = ""; c.classList.remove("on"); continue; }
+      c.textContent = v;
+      c.classList.add("on");
+      c.title = `trust ${v} — as ${viewingAs ? "the observer you are viewing as" : "you"} rank them`;
+    }
+  }
+
   /** A pubkey-derived hue, so a missing picture is still a stable, distinct face. */
   const hueOf = (seed) => (parseInt(String(seed || "").slice(0, 4), 16) || 0) % 360;
   const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
@@ -943,9 +1044,13 @@ function rememberSignIn(yes) {
   /** A broken picture falls back to the same generated face, in place. */
   function avatarHtml(pic, seed) {
     const style = `style="--h:${hueOf(seed)}"`;
-    if (!pic) return `<div class="avatar gen" ${style}></div>`;
-    return `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" referrerpolicy="no-referrer"
-      onerror="this.classList.add('gen');this.src='${BLANK}'" />`;
+    const face = pic
+      ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+           onerror="this.classList.add('gen');this.src='${BLANK}'" />`
+      : `<div class="avatar gen" ${style}></div>`;
+    // The chip is painted after the fact by paintScores(): the score is a second
+    // round trip, and a face should not wait on it.
+    return `<span class="av-wrap">${face}<span class="score-chip" data-pk="${esc(seed || "")}"></span></span>`;
   }
 
   const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(kindLabel(ev.kind))}</span>`;
@@ -974,7 +1079,7 @@ function rememberSignIn(yes) {
     if (p.lud16) props.push(["lightning", esc(p.lud16)]);
     props.push(["pubkey", `<a class="mono" href="${njump(ev.pubkey)}" target="_blank" rel="noopener noreferrer" title="${esc(ev.pubkey)}">${esc(shortKey(ev.pubkey))}</a>`]);
     return `
-      <article class="result">
+      <article class="result" data-id="${esc(ev.id)}">
         <div class="result-header">
           ${avatarHtml(p.picture, ev.pubkey)}
           <div class="who">
@@ -991,7 +1096,7 @@ function rememberSignIn(yes) {
   /** kinds 1/11 — the note card: author byline + the text itself. */
   function noteCard(ev) {
     return `
-      <article class="result">
+      <article class="result" data-id="${esc(ev.id)}">
         ${bylineHtml(ev)}
         <div class="result-body">${esc(clip(ev.content, 500))}</div>
         <dl class="props"><dt>note</dt><dd><a class="mono" href="${njump(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(shortKey(ev.id))}</a></dd></dl>
@@ -1010,7 +1115,7 @@ function rememberSignIn(yes) {
     const body = summary || clip(ev.content, 400);
     const img = imageOf(ev);
     return `
-      <article class="result">
+      <article class="result" data-id="${esc(ev.id)}">
         ${bylineHtml(ev)}
         <div class="result-main">
           <div class="text">
@@ -1173,6 +1278,7 @@ function rememberSignIn(yes) {
     const head = `<div class="popup-head"><span>Results</span><span class="timing">${meta}</span></div>`;
     const body = statusBody(skelRows(3)) ?? s.hits.slice(0, POPUP_LIMIT).map(popupRow).join("");
     $popup.innerHTML = head + body;
+    paintScores();
   }
 
   function renderResults() {
@@ -1180,6 +1286,8 @@ function rememberSignIn(yes) {
     const head = `<div class="list-head"><div class="list-title">${esc(tab.label)}</div><div class="list-stats">${stats}</div></div>`;
     const body = statusBody(skelCards(4)) ?? s.hits.map(card).join("");
     $results.innerHTML = head + body;
+    paintScores();
+    revealPending();
   }
 
   async function run(text, mode, render) {
@@ -1215,12 +1323,32 @@ function rememberSignIn(yes) {
   }
 
   function runPopup(text) { openPopup(); run(text, "popup", renderPopup); }
-  function runFull(text) {
+  // The id of a result clicked in the quick popup, waiting for the full view to
+  // render so it can be scrolled to.
+  let pendingReveal = null;
+
+  function runFull(text, revealId) {
     clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
     closePopup();
     $results.hidden = false;
     document.body.classList.add("searching");
+    // The reveal waits for the results to exist. run() renders when the search
+    // resolves, so hand the id forward rather than trying to scroll now.
+    pendingReveal = revealId || null;
     run(text, "full", renderResults);
+  }
+
+  /** Scroll a just-rendered result into view and flag it for a moment. */
+  function revealPending() {
+    if (!pendingReveal) return;
+    const el = $results.querySelector(`.result[data-id="${CSS.escape(pendingReveal)}"]`);
+    pendingReveal = null;
+    if (!el) return;
+    el.scrollIntoView({ behavior: "smooth", block: "center" });
+    el.classList.add("revealed");
+    // Removed rather than left on: a highlight that never fades stops meaning
+    // "this is the one you clicked" and starts meaning nothing.
+    setTimeout(() => el.classList.remove("revealed"), 5000);
   }
   function rerun() {
     const text = $q.value.trim();
@@ -1278,7 +1406,12 @@ function rememberSignIn(yes) {
     const item = e.target.closest(".popup-item");
     if (!item) return;
     e.preventDefault();
-    runFull($q.value.trim());
+    // Clicking a quick result should land you ON that result, not merely in a
+    // list that happens to contain it. The popup shows the first few of what
+    // the full view will render, so the id survives the switch — carry it over,
+    // scroll to it, and mark it briefly so the eye finds it without hunting.
+    const picked = s.hits[Number(item.dataset.idx)];
+    runFull($q.value.trim(), picked && picked.id);
   });
 
   document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
