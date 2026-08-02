@@ -321,6 +321,7 @@ fun main() {
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = webUi(),
         statsPage = kindStatsUi(),
+        observerStatsPage = observerStatsUi(),
     )
 }
 
@@ -430,3 +431,6 @@ private fun webUi(): String? = object {}.javaClass.getResource("/index.html")?.r
 
 /** The bundled per-kind COUNT page (`resources/kind_stats.html`). */
 private fun kindStatsUi(): String? = object {}.javaClass.getResource("/kind_stats.html")?.readText()
+
+/** The bundled observer sync-check page (`resources/observer_stats.html`). */
+private fun observerStatsUi(): String? = object {}.javaClass.getResource("/observer_stats.html")?.readText()

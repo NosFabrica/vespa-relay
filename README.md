@@ -406,6 +406,22 @@ docker compose up --build
 Leave `ROUTER_CONFIG_FILE` unset (the default) and the relay serves without
 mirroring.
 
+## Observer stats
+
+`GET /observer_stats.html` — every kind-10040 observer by name and picture, with
+the number of kind-30382 scores its `30382:rank` and `30382:followers` services
+have published, counted **here** and **on the relay its 10040 names**, side by
+side. Equal means synced; short shows the percentage and the shortfall.
+
+This is the page that answers "is the sync actually working", which a local
+count alone cannot: *3,197 scores* reads as healthy until you learn the relay
+serving them holds 145,968.
+
+Honest about two limits, both shown rather than hidden: a relay that does not
+implement NIP-45 gets `no COUNT` rather than a zero, and a count landing exactly
+on a common page-size cap is flagged, because a relay reporting its default
+limit instead of a total looks like data.
+
 ## Kind stats
 
 `GET /kind_stats.html` — how many events of each kind the store holds, one

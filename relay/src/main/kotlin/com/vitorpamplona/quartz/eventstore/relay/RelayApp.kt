@@ -62,6 +62,8 @@ data class Nip11Info(
  *              (e.g. a web UI) — or a plain notice when it is null.
  *   GET  /kind_stats.html -> [statsPage], how many events of each kind the
  *              store holds, counted with one NIP-45 COUNT per kind.
+ *   GET  /observer_stats.html -> [observerStatsPage], every kind-10040 observer
+ *              with its score counts here and on the relay its 10040 names.
  *   POST /  -> the NIP-86 relay-management RPC, when [admin] is configured.
  *
  * The NIP-11 doc is built from [nip11], [limits] (its `limitation` block) and
@@ -87,6 +89,9 @@ fun serveRelay(
     // the landing page: it asks one NIP-45 COUNT per kind, which is a diagnostic
     // an operator runs deliberately, not something a search UI should do on load.
     statsPage: String? = null,
+    // Served at GET /observer_stats.html — every NIP-85 observer, with their
+    // score counts here and on the relay their 10040 names, side by side.
+    observerStatsPage: String? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     // NIP-86 advertises itself in supported_nips only when an admin is wired.
@@ -108,6 +113,9 @@ fun serveRelay(
             }
             statsPage?.let { page ->
                 get("/kind_stats.html") { call.respondText(page, ContentType.Text.Html) }
+            }
+            observerStatsPage?.let { page ->
+                get("/observer_stats.html") { call.respondText(page, ContentType.Text.Html) }
             }
             admin?.let { nip86Admin(it, info) }
         }

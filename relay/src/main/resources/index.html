@@ -14,7 +14,10 @@
   with NIP-07 by signing the relay's NIP-42 AUTH challenge — which both ranks
   every search by YOUR web of trust and enrolls you as a sync observer. Signed
   out, results are the whole corpus with no web of trust applied at all; there
-  is no house lens standing in for you. And
+  is no house lens standing in for you. The "as" control ranks through somebody
+  ELSE's trust (NIP-50 `observer:`), choosing among the pubkeys that published a
+  kind 10040 — the only ones whose scores the store projects, 271 of them here
+  against 12.28M profiles. And
   renders every kind the index holds as a card: profiles, notes, articles,
   media, code, listings, and a generic card for the rest.
 
@@ -170,6 +173,24 @@
   }
   .select:hover { border-color: var(--border-strong); color: var(--fg); }
   .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+  /* "as" — whose web of trust ranks the results */
+  .obsbox { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+  .obslabel { color: var(--muted); font-size: 13px; }
+  .obscurrent { font-size: 13px; font-weight: 600; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .obsbox.active .obscurrent { color: var(--accent); }
+  .obsfilter { width: 8rem; font: inherit; font-size: 13px; padding: 3px 7px; border-radius: 8px;
+               border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
+  .obsfilter:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
+  .obsreset { display: none; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
+  .obsbox.active .obsreset { display: inline; }
+  .obslist { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; margin: 0; padding: 4px;
+             list-style: none; min-width: 16rem; max-height: 15rem; overflow-y: auto;
+             background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
+             box-shadow: var(--shadow-md); }
+  .obslist:empty { display: none; }
+  .obslist li { padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .obslist li:hover { background: var(--surface-2); }
+  .obslist li.muted { color: var(--faint); cursor: default; }
   .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
   .toggle-track { position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--border-strong); flex-shrink: 0; transition: background .15s; }
   .toggle-thumb { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }
@@ -418,6 +439,13 @@
           <option value="followers">Followers</option>
           <option value="text">Text only</option>
         </select>
+        <span id="obsbox" class="obsbox" title="Rank these results through somebody else's web of trust (NIP-50 observer:). Only pubkeys with a kind 10040 can rank anything.">
+          <span class="obslabel">as</span>
+          <span id="obscurrent" class="obscurrent">me</span>
+          <input id="obsfilter" class="obsfilter" placeholder="view as…" autocomplete="off" />
+          <button id="obsreset" class="obsreset" type="button" title="Back to your own web of trust">×</button>
+          <ul id="obslist" class="obslist"></ul>
+        </span>
         <label class="toggle" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
           <input id="spam" type="checkbox" />
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
@@ -649,6 +677,15 @@
     let s = text;
     if (sort) s += " sort:" + sort;
     if ($spam.checked) s += " include:spam";
+    // Whose web of trust ranks this. Absent, the store uses the connection's
+    // authenticated pubkey — you. Present, it uses theirs, which is how you
+    // read the index through somebody else's eyes without holding their key.
+    //
+    // Only sent while signed in. search() awaits ensureLogin() first, so this
+    // holds in practice; asserting it here means a future caller that skips
+    // that step degrades to your own ranking rather than sending a lens the
+    // store has no authenticated reader to apply it for.
+    if (viewingAs && me) s += " observer:" + viewingAs;
     return s;
   }
 
@@ -660,6 +697,62 @@
     seedProfiles(events);
     await enrichProfiles(events.filter(e => e.kind !== 0).map(e => e.pubkey));
     return events;
+  }
+
+  // ---- viewing as somebody else -------------------------------------------
+  //
+  // Only a pubkey that has published a kind 10040 is a usable observer: that
+  // event is what names the services whose scores the store projects. Anyone
+  // else ranks nothing, so offering them would be offering an empty feed.
+  //
+  // The whole set is small enough to hold — 271 of them on this relay against
+  // 12.28M profiles — so it is fetched once and filtered by name in the page.
+  // A server-side name search would have to join kind 0 against kind 10040,
+  // which NIP-01 filters cannot express in one REQ.
+  let viewingAs = null;         // hex pubkey, or null for "as me"
+  let observers = null;         // [{pubkey, name}] once loaded
+
+  async function loadObservers() {
+    if (observers) return observers;
+    const lists = await relay.req({ kinds: [10040], limit: 2000 });
+    const keys = [...new Set(lists.map(e => e.pubkey))];
+    // Their profiles, so the picker can show names rather than hex.
+    for (let i = 0; i < keys.length; i += 200) {
+      seedProfiles(await relay.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 }));
+    }
+    observers = keys.map(pubkey => {
+      const p = profiles.get(pubkey);
+      return { pubkey, name: (p?.display_name || p?.name || "").trim() };
+    }).sort((a, b) => (a.name || "\uffff").localeCompare(b.name || "\uffff"));
+    return observers;
+  }
+
+  function renderObserverOptions(filterText) {
+    const q = filterText.trim().toLowerCase();
+    const hits = (observers || []).filter(o =>
+      !q || o.name.toLowerCase().includes(q) || o.pubkey.startsWith(q));
+    $obsList.innerHTML = "";
+    for (const o of hits.slice(0, 50)) {
+      const li = document.createElement("li");
+      li.textContent = o.name ? `${o.name} · ${o.pubkey.slice(0, 8)}…` : o.pubkey.slice(0, 16) + "…";
+      li.onclick = () => { setViewingAs(o.pubkey, o.name); };
+      $obsList.appendChild(li);
+    }
+    if (!hits.length) {
+      const li = document.createElement("li");
+      li.className = "muted";
+      li.textContent = observers ? "no observer matches" : "loading observers…";
+      $obsList.appendChild(li);
+    }
+  }
+
+  function setViewingAs(pubkey, name) {
+    viewingAs = pubkey;
+    $obsBox.classList.toggle("active", !!pubkey);
+    $obsCurrent.textContent = pubkey ? (name || pubkey.slice(0, 12) + "…") : "me";
+    $obsList.innerHTML = "";
+    $obsFilter.value = "";
+    rerun();
   }
 
   // ---- author profiles (kind-0 cache + batched enrichment REQ) -------------
@@ -855,6 +948,21 @@
   const $spam = document.getElementById("spam");
   const $asme = document.getElementById("asme");
   const $whoami = document.getElementById("whoami");
+  const $obsBox = document.getElementById("obsbox");
+  const $obsCurrent = document.getElementById("obscurrent");
+  const $obsFilter = document.getElementById("obsfilter");
+  const $obsList = document.getElementById("obslist");
+  const $obsReset = document.getElementById("obsreset");
+
+  // Loaded lazily: the picker is a power feature, and 271 REQs' worth of
+  // profiles should not be on the path of somebody who just wants to search.
+  $obsFilter.addEventListener("focus", async () => {
+    renderObserverOptions($obsFilter.value);
+    await loadObservers();
+    renderObserverOptions($obsFilter.value);
+  });
+  $obsFilter.addEventListener("input", () => renderObserverOptions($obsFilter.value));
+  $obsReset.addEventListener("click", () => setViewingAs(null, null));
 
   const s = { requestId: 0, hits: [], lastMs: null, loading: false, error: null };
   let debounceTimer = null;

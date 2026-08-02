@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="Every NIP-85 observer, and whether their scores actually reached this relay." />
+<title>Observer stats</title>
+<!--
+  Every kind-10040 observer, and whether their scores actually got here.
+     ─────────────────────────────────────────────────────────────────
+
+  A 10040 names, per dimension, a SERVICE pubkey and the RELAY that serves its
+  scores:
+
+      ["30382:rank",      "<service pubkey>", "wss://…"]
+      ["30382:followers", "<service pubkey>", "wss://…"]
+
+  So for each observer there are four numbers worth having: how many kind-30382
+  events that service has published, counted HERE and counted THERE, for each
+  of the two dimensions. Equal means synced. Short means we have not finished
+  fetching. That comparison is the whole point of the page — a local number
+  alone tells you nothing, because "3,197 scores" reads as healthy right up
+  until you learn the relay serving them holds 145,968.
+
+  Two honest limitations, both shown rather than hidden:
+
+  * NIP-45 COUNT is optional and widely unimplemented. A relay that does not
+    answer gets "no COUNT", not a zero — the distinction matters, since zero is
+    a claim and silence is not.
+  * A relay applying a default page size to COUNT reports that size instead of
+    a count. Any value that lands exactly on a suspiciously round cap is
+    flagged, because 500 looks like data.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #fff; --text: #14171a; --muted: #6b7580;
+    --line: #e3e6ea; --accent: #4a5fd9; --warn: #a8611a; --bad: #b3261e; --ok: #1a7f4b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --surface: #1c1f24; --text: #e8eaed; --muted: #9aa3ad;
+      --line: #2b3038; --accent: #8b9cf0; --warn: #d99b56; --bad: #f2b8b5; --ok: #6dd39b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 78rem; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; max-width: 60rem; }
+  .bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  button { font: inherit; padding: .4rem .8rem; border-radius: .4rem; cursor: pointer;
+           border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { color: var(--muted); font-size: .9rem; }
+  .wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; }
+  table { border-collapse: collapse; width: 100%; min-width: 62rem; }
+  th, td { text-align: left; padding: .45rem .7rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  th.grp { text-align: center; border-left: 1px solid var(--line); }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.first { border-left: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  .who { display: flex; align-items: center; gap: .5rem; min-width: 14rem; }
+  .who img { width: 26px; height: 26px; border-radius: 50%; object-fit: cover; background: var(--line); }
+  .who .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 12rem; }
+  .key { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+  .pending { color: var(--muted); font-style: italic; }
+  .none { color: var(--warn); font-size: .82rem; }
+  .short { color: var(--bad); font-weight: 600; }
+  .synced { color: var(--ok); }
+  .capped { color: var(--warn); }
+  .relay { color: var(--muted); font-size: .78rem; white-space: nowrap; overflow: hidden;
+           text-overflow: ellipsis; max-width: 13rem; display: block; }
+  footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; max-width: 60rem; }
+  code { background: var(--line); padding: .1rem .3rem; border-radius: .25rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Observer stats</h1>
+  <p class="sub">Every kind-10040 observer, and whether the scores they trust actually reached this relay.
+     <strong>here</strong> is this store; <strong>there</strong> is the relay their 10040 names.
+     Equal means synced; short means the sync has not finished.</p>
+
+  <div class="bar">
+    <button id="run">Check every observer</button>
+    <span class="status" id="status">idle</span>
+  </div>
+
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Observer</th>
+          <th class="grp" colspan="3">30382:rank</th>
+          <th class="grp" colspan="3">30382:followers</th>
+        </tr>
+        <tr>
+          <th></th>
+          <th class="grp">relay</th><th class="n">here</th><th class="n">there</th>
+          <th class="grp">relay</th><th class="n">here</th><th class="n">there</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <footer id="foot"></footer>
+</main>
+
+<script>
+const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+const COUNT_TIMEOUT_MS = 15000;
+// Remote relays are other people's servers. A handful at a time, never a burst.
+const REMOTE_CONCURRENCY = 4;
+// A COUNT landing exactly on one of these is far more likely to be a relay's
+// default page size reported as a count than a real total. Flagged, not hidden.
+const SUSPICIOUS = new Set([100, 500, 1000, 5000]);
+
+const rowsEl = document.getElementById("rows");
+const statusEl = document.getElementById("status");
+const footEl = document.getElementById("foot");
+const runEl = document.getElementById("run");
+const fmt = (n) => n.toLocaleString();
+
+/** A tiny COUNT-only client. `null` means the relay never answered. */
+function client(url) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    try { ws = new WebSocket(url); } catch (e) { return reject(e); }
+    const pending = new Map();
+    const fail = () => { for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); } pending.clear(); };
+    ws.onerror = () => { fail(); reject(new Error("unreachable")); };
+    ws.onclose = fail;
+    ws.onopen = () => resolve(ws);
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      const p = pending.get(m[1]);
+      if (!p) return;
+      if (m[0] === "COUNT") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(m[2] || null); }
+      else if (m[0] === "CLOSED" || m[0] === "NOTICE") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(null); }
+    };
+    ws.count = (author) =>
+      new Promise((res) => {
+        const id = "c" + Math.random().toString(36).slice(2, 9);
+        const timer = setTimeout(() => { pending.delete(id); res(null); }, COUNT_TIMEOUT_MS);
+        pending.set(id, { resolve: res, timer });
+        try { ws.send(JSON.stringify(["COUNT", id, { kinds: [30382], authors: [author] }])); }
+        catch { clearTimeout(timer); pending.delete(id); res(null); }
+      });
+    ws.req = (filter) =>
+      new Promise((res) => {
+        const id = "r" + Math.random().toString(36).slice(2, 9);
+        const acc = [];
+        const done = () => { clearTimeout(timer); res(acc); };
+        const timer = setTimeout(done, COUNT_TIMEOUT_MS);
+        const prev = ws.onmessage;
+        ws.onmessage = (ev) => {
+          let m; try { m = JSON.parse(ev.data); } catch { return; }
+          if (m[1] !== id) return prev(ev);
+          if (m[0] === "EVENT") acc.push(m[2]);
+          else if (m[0] === "EOSE" || m[0] === "CLOSED") { ws.onmessage = prev; try { ws.send(JSON.stringify(["CLOSE", id])); } catch {} done(); }
+        };
+        ws.send(JSON.stringify(["REQ", id, filter]));
+      });
+  });
+}
+
+function num(v) {
+  if (v === undefined) return '<span class="pending">…</span>';
+  if (v === null) return '<span class="none">no COUNT</span>';
+  const cap = SUSPICIOUS.has(v.count) ? ' <span class="capped" title="exactly a common page-size cap — the relay may be reporting its default limit instead of a count">⚠</span>' : "";
+  return fmt(v.count) + cap;
+}
+
+/** here vs there, once both are known. */
+function verdict(here, there) {
+  if (!here || !there) return "";
+  if (here.count >= there.count) return ' <span class="synced">✓</span>';
+  const pct = there.count ? Math.round((here.count / there.count) * 100) : 0;
+  return ` <span class="short">${pct}%</span>`;
+}
+
+function render(list) {
+  rowsEl.innerHTML = "";
+  for (const o of list) {
+    const tr = document.createElement("tr");
+    const who =
+      `<div class="who">` +
+      (o.picture ? `<img src="${o.picture}" alt="" loading="lazy" onerror="this.style.visibility='hidden'"/>` : `<img alt=""/>`) +
+      `<div><div class="nm">${o.name || "(no name)"}</div><div class="key">${o.pubkey.slice(0, 12)}…</div></div></div>`;
+    const dim = (d) =>
+      `<td class="first"><span class="relay" title="${d.relay || ""}">${d.relay ? d.relay.replace(/^wss?:\/\//, "") : "—"}</span></td>` +
+      `<td class="n">${d.service ? num(d.here) : "—"}</td>` +
+      `<td class="n">${d.service ? num(d.there) + verdict(d.here, d.there) : "—"}</td>`;
+    tr.innerHTML = `<td>${who}</td>` + dim(o.rank) + dim(o.followers);
+    rowsEl.appendChild(tr);
+  }
+}
+
+/** Run [tasks] with at most [n] in flight. */
+async function bounded(n, tasks) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, tasks.length) }, async () => {
+    while (i < tasks.length) await tasks[i++]();
+  }));
+}
+
+async function run() {
+  runEl.disabled = true;
+  statusEl.textContent = "connecting…";
+  let local;
+  try { local = await client(RELAY_URL); }
+  catch { statusEl.textContent = "could not connect to this relay"; runEl.disabled = false; return; }
+
+  statusEl.textContent = "loading 10040s…";
+  const lists = await local.req({ kinds: [10040], limit: 2000 });
+
+  // One row per observer, newest 10040 wins — it is a replaceable kind, but a
+  // relay may still hand us more than one.
+  const byPubkey = new Map();
+  for (const ev of lists) {
+    const prev = byPubkey.get(ev.pubkey);
+    if (!prev || prev.created_at < ev.created_at) byPubkey.set(ev.pubkey, ev);
+  }
+  const pick = (ev, tag) => {
+    const t = (ev.tags || []).find((x) => x[0] === tag);
+    return { service: t?.[1] || null, relay: t?.[2] || null };
+  };
+  const observers = [...byPubkey.values()].map((ev) => ({
+    pubkey: ev.pubkey,
+    name: "",
+    picture: "",
+    rank: pick(ev, "30382:rank"),
+    followers: pick(ev, "30382:followers"),
+  }));
+  render(observers);
+
+  // Names and pictures, batched.
+  statusEl.textContent = `loading ${observers.length} profile(s)…`;
+  const keys = observers.map((o) => o.pubkey);
+  for (let i = 0; i < keys.length; i += 200) {
+    for (const ev of await local.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
+      let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
+      const o = observers.find((x) => x.pubkey === ev.pubkey);
+      if (o) { o.name = c.display_name || c.name || ""; o.picture = c.picture || ""; }
+    }
+  }
+  render(observers);
+
+  // Local counts first: one connection, fast, and it fills most of the table.
+  const dims = observers.flatMap((o) => [o.rank, o.followers].filter((d) => d.service));
+  let done = 0;
+  for (const d of dims) {
+    statusEl.textContent = `counting here ${++done}/${dims.length}…`;
+    d.here = await local.count(d.service);
+    render(observers);
+  }
+
+  // Then the remote relays — other people's servers, a few at a time. Grouped
+  // by url so one connection answers every dimension it serves.
+  const byRelay = new Map();
+  for (const d of dims) {
+    if (!d.relay) { d.there = null; continue; }
+    if (!byRelay.has(d.relay)) byRelay.set(d.relay, []);
+    byRelay.get(d.relay).push(d);
+  }
+  let rdone = 0;
+  await bounded(REMOTE_CONCURRENCY, [...byRelay.entries()].map(([url, ds]) => async () => {
+    statusEl.textContent = `asking ${++rdone}/${byRelay.size} relay(s)…`;
+    let ws = null;
+    try { ws = await client(url); } catch { ds.forEach((d) => { d.there = null; }); render(observers); return; }
+    for (const d of ds) d.there = await ws.count(d.service);
+    try { ws.close(); } catch {}
+    render(observers);
+  }));
+
+  local.close();
+
+  const withBoth = dims.filter((d) => d.here && d.there);
+  const short = withBoth.filter((d) => d.here.count < d.there.count);
+  const missing = short.reduce((n, d) => n + (d.there.count - d.here.count), 0);
+  const noCount = dims.filter((d) => d.there === null).length;
+  statusEl.textContent = "done";
+  footEl.innerHTML =
+    `${observers.length} observer(s), ${dims.length} dimension(s) · ` +
+    `${withBoth.length} comparable · ` +
+    (short.length
+      ? `<span class="short">${short.length} short by ${fmt(missing)} score(s)</span>`
+      : `<span class="synced">none short</span>`) +
+    (noCount ? ` · ${noCount} relay(s) answered no COUNT, so those cannot be compared` : "") +
+    ` · a <span class="capped">⚠</span> marks a count landing exactly on a common page-size cap, which usually means the relay reported its default limit rather than a total`;
+  runEl.disabled = false;
+}
+
+runEl.addEventListener("click", run);
+run();
+</script>
+</body>
+</html>
