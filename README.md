@@ -45,6 +45,7 @@ All configuration is through environment variables.
 | `RELAY_URL` | this relay's own ws url — its NIP-42 identity and NIP-62 vanish scope | **required** |
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
 | `RELAY_PORT` | port to listen on | `7777` |
+| `REINDEX_FTS_ON_START` | re-derive every event's search fields once, in the background. Needed after a store upgrade that changes `SearchExtractors` or adds *fed* search fields — a Vespa reindex cannot produce those, only a re-put can. Walks the whole corpus, so leave it off except for the boot that performs the migration | `false` |
 | `TRUST_RECONCILE_ON_START` | reconcile the trust projection at startup, in the **background** — the relay serves immediately and ranked search returns less until it finishes. `false` skips it entirely | `true` |
 | `AUTO_DEPLOY` | deploy the bundled Vespa schema on **every** boot, so the cluster always matches the schema this build expects. A no-change deploy is a cheap no-op; a failed one is fatal, because feeding a cluster whose schema we disagree with loses events silently | `true` |
 | `VESPA_CONFIG_URL` | Vespa's config server, for the deploy above | `VESPA_URL` on `:19071` |

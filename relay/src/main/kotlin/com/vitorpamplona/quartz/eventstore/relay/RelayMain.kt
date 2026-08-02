@@ -78,6 +78,10 @@ import kotlinx.coroutines.launch
  *                            rather than configured (see RelaySource)
  *
  *   Trust view (see TrustProjection.reconcile):
+ *   REINDEX_FTS_ON_START     re-derive every event's search fields once, in the
+ *                            background (default false). Needed after a store
+ *                            upgrade that changes SearchExtractors or adds fed
+ *                            search fields; walks the whole corpus
  *   TRUST_RECONCILE_ON_START  at startup, re-derive any service whose scores are
  *                             not projected under its current observer. Needed
  *                             because the view is maintained by write triggers
@@ -197,6 +201,50 @@ fun main() {
     // degrades all of them, absolutely, for an unbounded time. So it runs
     // behind the server and says where it has got to.
     val trustScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // A one-off migration, not a boot step — hence opt-in and off by default.
+    //
+    // Which kinds are searchable, and how SearchExtractors decomposes them, is
+    // baked into the build. A store fed by older code can be stale or missing
+    // from search entirely until this re-derives it, and it is also the RE-FEED
+    // that backfills the near-tier prefix/fuzzy arrays: those are fed fields, so
+    // a Vespa reindex cannot produce them — only a put can.
+    //
+    // In the background and NOT awaited, like the trust reconcile. It walks the
+    // whole corpus (54M events here) taking the writer lock a page at a time, so
+    // as a startup barrier it would be an outage measured in hours. Progress is
+    // printed because a silent hours-long job is indistinguishable from a hung
+    // one — this router has already taught that lesson twice.
+    //
+    // Ordering is already correct by construction: the schema deploy above runs
+    // before the store opens, and the store's own note requires exactly that —
+    // the backfill re-puts docs carrying the near fields, and a serving schema
+    // that predates them rejects those puts outright.
+    if (env["REINDEX_FTS_ON_START"]?.toBooleanStrictOrNull() == true) {
+        trustScope.launch {
+            val startedMs = System.currentTimeMillis()
+            println("fts: reindexing the whole corpus in the background — search results may be incomplete until it finishes")
+            var cursor: String? = null
+            var total = 0L
+            var pages = 0
+            try {
+                do {
+                    val p = store.reindexFullTextSearch(cursor)
+                    cursor = p.cursor
+                    total += p.processedThisBatch
+                    // Every page would be a flood; never would be silence.
+                    if (++pages % 50 == 0) {
+                        println("fts: reindexed $total event(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+                    }
+                } while (!p.done)
+                println("fts: reindex complete — $total event(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+            } catch (e: Exception) {
+                // Resumable by design, so say where it stopped rather than only
+                // that it did.
+                System.err.println("fts: reindex FAILED after $total event(s): ${e.message}")
+            }
+        }
+    }
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
         trustScope.launch {
             println("trust: reconciling in the background — ranked search may return less until this finishes")

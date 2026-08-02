@@ -22,6 +22,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 
 import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.store.mapping.DEFAULT_MIN_RANK
+import com.vitorpamplona.quartz.eventstore.store.mapping.INCLUDE_SPAM_MIN_RANK
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -207,7 +208,17 @@ class RelayProtocolTest {
 
                 session.receive("""["REQ","x2",{"search":"ali include:spam","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x2"]""") }
-                assertEquals(null, index.searchQueries.last().minRank, "include:spam lifts the default floor")
+                // include:spam SENDS a floor of 0 rather than omitting one. The
+                // floor is also the anchor of the default profile's trust boost
+                // — log(1 + user_score - min_rank) — and the schema's fail-open
+                // default for that feature is -1e9, so leaving it out would not
+                // "no floor", it would wreck the ordering. 0 keeps every hit,
+                // which is what the extension promises.
+                assertEquals(
+                    INCLUDE_SPAM_MIN_RANK,
+                    index.searchQueries.last().minRank,
+                    "include:spam keeps every hit, and still sends the floor the boost anchors on",
+                )
                 assertEquals("ali", index.searchQueries.last().search, "the extension itself never becomes a term")
 
                 session.receive("""["REQ","x3",{"search":"ali sort:rank filter:rank:gte:7","limit":5}]""")
