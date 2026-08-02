@@ -7,13 +7,24 @@
 <meta name="description" content="How many events of each kind this relay holds." />
 <title>Kind stats</title>
 <!--
-  One NIP-45 COUNT per kind, over the same WebSocket that serves this page.
+  One NIP-45 COUNT per kind, THREE TIMES — once anonymous, once as you, once
+  through the relay's own key.
 
-  Deliberately not an http endpoint: COUNT is a protocol feature, so asking for
-  it the way a client would means this page also TESTS it. A kind that comes
-  back "no reply" is a finding about the relay, not a blank cell — the relay
-  advertises NIP-45 in supported_nips, and whether it answers is exactly the
-  sort of thing that goes unnoticed until someone asks.
+  The store trust-gates an AUTHENTICATED reader: it counts and filters only
+  authors that reader (or the house key) has scored. An UNAUTHENTICATED reader
+  gets everything. So the same kind has three different true answers depending
+  on who asks, and a single number would hide the whole mechanism.
+
+  Read the columns as a diff, not as three facts:
+
+    anonymous == as you        your web of trust is not being applied
+    as you    == 0             nothing you scored is in this kind
+    as you    >  house         you reach further than the relay's own key
+    anonymous <  either        something is wrong: gating should only REMOVE
+
+  Deliberately not an http endpoint: COUNT is a protocol feature, and asking for
+  it the way a client would means this page also TESTS it — including whether
+  the relay answers COUNT at all, and whether AUTH changes what it says.
 
   Counts are the relay's own: a COUNT is answered from the store's index, not
   by walking events, so this stays cheap on a 50M-event corpus.
@@ -56,8 +67,6 @@
   .name { color: var(--muted); }
   .pending { color: var(--muted); font-style: italic; }
   .none { color: var(--warn); }
-  .barcell { width: 40%; min-width: 8rem; }
-  .barfill { height: .55rem; border-radius: .3rem; background: var(--bar); }
   footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
   code { background: var(--bar); padding: .1rem .3rem; border-radius: .25rem; }
 </style>
@@ -65,10 +74,11 @@
 <body>
 <main>
   <h1>Kind stats</h1>
-  <p class="sub">One NIP-45 <code>COUNT</code> per kind, asked over the relay's own WebSocket.</p>
+  <p class="sub">One NIP-45 <code>COUNT</code> per kind, asked three ways. The store gates an
+     authenticated reader to authors that reader has scored; an anonymous reader sees everything.</p>
 
   <div class="bar-row">
-    <button id="run">Count all kinds</button>
+    <button id="run">Count</button>
     <input id="extra" placeholder="also count these kinds, comma separated" />
     <span class="status" id="status">idle</span>
   </div>
@@ -76,7 +86,12 @@
   <div class="wrap">
     <table>
       <thead>
-        <tr><th>Kind</th><th>Name</th><th class="n">Events</th><th class="barcell">Share</th></tr>
+        <tr>
+          <th>Kind</th><th>Name</th>
+          <th class="n">Anonymous</th>
+          <th class="n">As you</th>
+          <th class="n">As the house key</th>
+        </tr>
       </thead>
       <tbody id="rows"></tbody>
     </table>
@@ -118,78 +133,86 @@ const extraEl = document.getElementById("extra");
 
 const fmt = (n) => n.toLocaleString();
 
-function render(results, total) {
-  const max = Math.max(1, ...results.map((r) => (typeof r.count === "number" ? r.count : 0)));
+function cell(v) {
+  if (v === undefined) return '<span class="pending">…</span>';
+  if (v === null) return '<span class="none">no reply</span>';
+  return fmt(v.count) + (v.approximate ? ' <span class="name">≈</span>' : "");
+}
+
+function render(results) {
   rowsEl.innerHTML = "";
   for (const r of results) {
     const tr = document.createElement("tr");
-    const val =
-      r.count === undefined ? '<span class="pending">…</span>'
-      : r.count === null ? '<span class="none">no reply</span>'
-      : fmt(r.count) + (r.approximate ? ' <span class="name">≈</span>' : "");
-    const pct = typeof r.count === "number" && total > 0 ? (r.count / total) * 100 : 0;
-    const width = typeof r.count === "number" ? (r.count / max) * 100 : 0;
     tr.innerHTML =
       `<td class="kind">${r.kind}</td>` +
       `<td class="name">${r.name || ""}</td>` +
-      `<td class="n">${val}</td>` +
-      `<td class="barcell"><div class="barfill" style="width:${width.toFixed(2)}%"></div>` +
-      `<span class="name">${pct ? pct.toFixed(pct < 1 ? 2 : 1) + "%" : ""}</span></td>`;
+      `<td class="n">${cell(r.anon)}</td>` +
+      `<td class="n">${cell(r.you)}</td>` +
+      `<td class="n">${cell(r.house)}</td>`;
     rowsEl.appendChild(tr);
   }
 }
 
-// A minimal client: connect, answer the NIP-42 challenge if a NIP-07 extension
-// is present, then one COUNT per kind.
-function connect() {
+/** The relay's OWN key, from its NIP-11 `self`. Null if it advertises none. */
+async function houseKey() {
+  try {
+    const r = await fetch("/", { headers: { Accept: "application/nostr+json" } });
+    return (await r.json()).self || null;
+  } catch { return null; }
+}
+
+// A connection is either authenticated or not for its whole life, so each mode
+// needs its own. `observer` forces a specific ranking lens through the NIP-50
+// extension the store parses out of `search`; without it an authenticated
+// reader is its own observer.
+function connect(sign, observer) {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(RELAY_URL);
-    const pending = new Map();     // subId -> {resolve, timer}
-    ws.challenge = null;
-    ws.onopen = () => resolve(ws);
+    const pending = new Map();
+    let challenge = null;
     ws.onerror = () => reject(new Error("could not connect to " + RELAY_URL));
-    ws.onclose = () => {
-      for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); }
-      pending.clear();
-    };
+    ws.onclose = () => { for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); } pending.clear(); };
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       const [type, id] = msg;
-      if (type === "AUTH") { ws.challenge = id; return; }
-      if (type === "COUNT") {
-        const p = pending.get(id);
-        if (p) { clearTimeout(p.timer); pending.delete(id); p.resolve(msg[2] || null); }
-        return;
+      if (type === "AUTH") { challenge = id; return; }
+      const p = pending.get(id);
+      if (!p) return;
+      if (type === "COUNT") { clearTimeout(p.timer); pending.delete(id); p.resolve(msg[2] || null); }
+      else if (type === "CLOSED" || type === "NOTICE") { clearTimeout(p.timer); pending.delete(id); p.resolve(null); }
+    };
+    ws.onopen = async () => {
+      // Wait briefly for the challenge — signing is the whole point of this
+      // connection, and counting before AUTH lands would silently measure the
+      // anonymous case a second time.
+      if (sign) {
+        for (let i = 0; i < 20 && !challenge; i++) await new Promise((r) => setTimeout(r, 100));
+        if (challenge && window.nostr) {
+          try {
+            const signed = await window.nostr.signEvent({
+              kind: 22242,
+              created_at: Math.floor(Date.now() / 1000),
+              tags: [["relay", RELAY_URL], ["challenge", challenge]],
+              content: "",
+            });
+            ws.send(JSON.stringify(["AUTH", signed]));
+            ws.authed = true;
+            await new Promise((r) => setTimeout(r, 300));
+          } catch { ws.authed = false; }
+        }
       }
-      // CLOSED/NOTICE against a live COUNT is a refusal — surface it as such
-      // rather than letting the row sit on "…" until the timeout.
-      if (type === "CLOSED" || type === "NOTICE") {
-        const p = pending.get(id);
-        if (p) { clearTimeout(p.timer); pending.delete(id); p.resolve(null); }
-      }
+      resolve(ws);
     };
     ws.count = (kind) =>
       new Promise((res) => {
-        const subId = "kc" + kind + "-" + Math.random().toString(36).slice(2, 8);
+        const subId = "k" + kind + "-" + Math.random().toString(36).slice(2, 8);
+        const filter = { kinds: [kind] };
+        if (observer) filter.search = "observer:" + observer;
         const timer = setTimeout(() => { pending.delete(subId); res(null); }, PER_KIND_TIMEOUT_MS);
         pending.set(subId, { resolve: res, timer });
-        ws.send(JSON.stringify(["COUNT", subId, { kinds: [kind] }]));
+        ws.send(JSON.stringify(["COUNT", subId, filter]));
       });
   });
-}
-
-async function maybeAuth(ws) {
-  if (!ws.challenge || !window.nostr) return false;
-  try {
-    const signed = await window.nostr.signEvent({
-      kind: 22242,
-      created_at: Math.floor(Date.now() / 1000),
-      tags: [["relay", RELAY_URL], ["challenge", ws.challenge]],
-      content: "",
-    });
-    ws.send(JSON.stringify(["AUTH", signed]));
-    return true;
-  } catch { return false; }
 }
 
 async function run() {
@@ -199,46 +222,55 @@ async function run() {
     .split(",").map((s) => parseInt(s.trim(), 10))
     .filter((n) => Number.isInteger(n) && n >= 0 && !KINDS.some(([k]) => k === n));
   const results = [...KINDS.map(([kind, name]) => ({ kind, name })), ...extra.map((kind) => ({ kind, name: "" }))];
-  render(results, 0);
+  render(results);
 
-  let ws;
-  try {
-    statusEl.textContent = "connecting…";
-    ws = await connect();
-  } catch (e) {
-    statusEl.textContent = e.message;
-    runEl.disabled = false;
-    return;
-  }
-
-  // Give the relay a moment to send its challenge before the first COUNT, so a
-  // relay that gates reads behind NIP-42 gets a signed session rather than a
-  // page full of "no reply".
-  await new Promise((r) => setTimeout(r, 400));
-  const authed = await maybeAuth(ws);
+  const house = await houseKey();
+  const modes = [
+    ["anon", false, null],
+    ["you", true, null],
+    ["house", true, house],
+  ];
 
   const started = Date.now();
-  let done = 0, answered = 0, total = 0;
-  for (const r of results) {
-    statusEl.textContent = `counting ${++done}/${results.length} (kind ${r.kind})…`;
-    const res = await ws.count(r.kind);
-    if (res && typeof res.count === "number") {
-      r.count = res.count; r.approximate = !!res.approximate; answered++; total += res.count;
-    } else {
-      r.count = null;
+  const notes = [];
+  for (const [key, sign, observer] of modes) {
+    if (key === "house" && !house) { notes.push("the relay advertises no NIP-11 <code>self</code>, so the house column was skipped"); continue; }
+    let ws;
+    try {
+      statusEl.textContent = `connecting (${key})…`;
+      ws = await connect(sign, observer);
+    } catch (e) { notes.push(`${key}: ${e.message}`); continue; }
+    if (sign && !ws.authed) {
+      notes.push(`${key}: not signed in — no NIP-07 extension, or the challenge was declined`);
+      ws.close();
+      continue;
     }
-    const shown = [...results].sort((a, b) => (b.count || 0) - (a.count || 0));
-    render(shown, total);
+    let i = 0;
+    for (const r of results) {
+      statusEl.textContent = `${key}: ${++i}/${results.length} (kind ${r.kind})…`;
+      r[key] = await ws.count(r.kind);
+      render(results);
+    }
+    ws.close();
   }
 
-  ws.close();
-  const secs = ((Date.now() - started) / 1000).toFixed(1);
-  statusEl.textContent = `done in ${secs}s`;
+  const answered = results.filter((r) => r.anon || r.you || r.house).length;
+  statusEl.textContent = `done in ${((Date.now() - started) / 1000).toFixed(1)}s`;
+  // Gating may only ever REMOVE rows. Anything above the anonymous count means
+  // the observer is not a filter on the same set, which is a bug worth seeing
+  // on the page rather than in a log.
+  const impossible = results.filter(
+    (r) => r.anon && ((r.you && r.you.count > r.anon.count) || (r.house && r.house.count > r.anon.count)),
+  );
   footEl.innerHTML =
-    `${answered}/${results.length} kind(s) answered · ${fmt(total)} event(s) counted · ` +
-    (authed ? "signed in with NIP-07" : "anonymous") +
+    `${answered}/${results.length} kind(s) answered` +
+    (house ? ` · house key <code>${house.slice(0, 12)}…</code>` : "") +
+    (impossible.length
+      ? ` · <span class="none">kind(s) ${impossible.map((r) => r.kind).join(", ")} count MORE when authenticated than anonymous — gating should only remove</span>`
+      : "") +
+    (notes.length ? " · " + notes.join(" · ") : "") +
     (answered === 0
-      ? ' · <span class="none">the relay answered no COUNT at all — it advertises NIP-45, so this is worth chasing</span>'
+      ? ' · <span class="none">no COUNT answered at all — the relay advertises NIP-45, so this is worth chasing</span>'
       : "");
   runEl.disabled = false;
 }
