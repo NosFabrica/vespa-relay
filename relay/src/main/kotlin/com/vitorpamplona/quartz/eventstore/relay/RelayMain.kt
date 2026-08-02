@@ -22,6 +22,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 
 import com.vitorpamplona.quartz.eventstore.store.SchemaDeployer
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import kotlinx.coroutines.CoroutineScope
@@ -227,6 +228,12 @@ fun main() {
             var cursor: String? = null
             var total = 0L
             var pages = 0
+            // The denominator, asked for once. A rising count with nothing to
+            // measure it against does not read as progress — it reads as
+            // something repeating, which is exactly how the first version of
+            // this line was received. Null rather than a guess if it fails: an
+            // unknown denominator is better than a wrong one.
+            val expected = runCatching { store.count(Filter()) }.getOrNull()?.toLong()
             try {
                 do {
                     val p = store.reindexFullTextSearch(cursor)
@@ -234,7 +241,19 @@ fun main() {
                     total += p.processedThisBatch
                     // Every page would be a flood; never would be silence.
                     if (++pages % 50 == 0) {
-                        println("fts: reindexed $total event(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+                        val secs = (System.currentTimeMillis() - startedMs) / 1000
+                        val rate = if (secs > 0) total / secs else 0
+                        val pct = expected?.takeIf { it > 0 }?.let { " (${total * 100 / it}%)" } ?: ""
+                        val eta =
+                            if (expected != null && rate > 0 && expected > total) {
+                                ", ETA ~${fmtDuration((expected - total) / rate * 1000)}"
+                            } else {
+                                ""
+                            }
+                        println(
+                            "fts: reindexed ${total}${expected?.let { "/$it" } ?: ""} event(s)$pct" +
+                                " in ${fmtDuration(secs * 1000)}, $rate/s$eta",
+                        )
                     }
                 } while (!p.done)
                 println("fts: reindex complete — $total event(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s")
