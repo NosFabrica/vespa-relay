@@ -279,6 +279,20 @@
     .result.revealed { animation: none; box-shadow: 0 0 0 2px var(--accent); }
   }
 
+  /* The raw event, for whoever needs it, invisible to whoever does not. */
+  .raw { margin-top: 10px; }
+  .raw-toggle {
+    border: 0; background: none; padding: 0; cursor: pointer;
+    color: var(--faint); font-size: 11px; letter-spacing: .04em; text-transform: uppercase;
+  }
+  .raw-toggle:hover { color: var(--muted); text-decoration: underline; }
+  .raw-body {
+    margin: 8px 0 0; padding: 10px; max-height: 320px; overflow: auto;
+    background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
+    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg);
+    white-space: pre-wrap; word-break: break-word;
+  }
+
   /* A nip05 is a claim until the domain agrees; the chip is the answer. */
   .nip05 { display: inline-flex; align-items: center; gap: 5px; }
   .n5chip {
@@ -820,7 +834,7 @@ function rememberSignIn(yes) {
   // npub, never hex. A 64-char hash is not an identifier a person picks from a
   // list, and it is not what any other Nostr client would show them.
   const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
-  function npub(hex) {
+  function bech32(hrp, hex) {
     const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
     // 8-bit -> 5-bit regrouping, then bech32's checksum over hrp + payload.
     const words = [];
@@ -840,13 +854,19 @@ function rememberSignIn(yes) {
       }
       return chk;
     };
-    const hrp = "npub";
     const expand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
     const chk = polymod(expand.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
     const sum = Array.from({ length: 6 }, (_, i) => (chk >> (5 * (5 - i))) & 31);
     return hrp + "1" + words.concat(sum).map((w) => B32[w]).join("");
   }
-  const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 10) + "…" + n.slice(-4); };
+  // NIP-19 identifiers, never hex. `note` is the bare event id; nevent/naddr
+  // carry TLV hints this page has nothing to put in, so the plain forms are the
+  // honest ones.
+  const npub = (hex) => bech32("npub", hex);
+  const noteId = (hex) => bech32("note", hex);
+  const shortB32 = (v) => v.slice(0, 12) + "…" + v.slice(-6);
+  const shortNpub = (hex) => shortB32(npub(hex));
+  const shortNote = (hex) => shortB32(noteId(hex));
 
   async function loadObservers() {
     if (observers) return observers;
@@ -968,8 +988,9 @@ function rememberSignIn(yes) {
   // ---- rendering ------------------------------------------------------------
   const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
   const clip = (s, n) => { s = String(s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
-  const njump = (hex) => `https://njump.me/${esc(hex)}`;
-  const shortKey = (hex) => hex.slice(0, 8) + "…" + hex.slice(-8);
+  // njump reads NIP-19 identifiers, so the link and the label agree.
+  const njumpKey = (hex) => `https://njump.me/${esc(npub(hex))}`;
+  const njumpNote = (hex) => `https://njump.me/${esc(noteId(hex))}`;
 
   const dateOf = (ev) => new Date(ev.created_at * 1000);
   const fullDate = (ev) => dateOf(ev).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
@@ -994,7 +1015,7 @@ function rememberSignIn(yes) {
 
   function authorOf(ev) {
     const p = profiles.get(ev.pubkey);
-    const name = displayName(p) || shortKey(ev.pubkey);
+    const name = displayName(p) || shortNpub(ev.pubkey);
     return { name, picture: (p && p.picture) || "" };
   }
 
@@ -1157,6 +1178,19 @@ function rememberSignIn(yes) {
 
   const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(kindLabel(ev.kind))}</span>`;
 
+  /**
+   * The raw event, one click away on every result.
+   *
+   * Deliberately quiet — a small grey word, not a button. Nobody reading search
+   * results wants it, and everybody debugging one does: what the relay actually
+   * returned, tags and sig included, without a console or a second client.
+   * Filled on demand rather than inlined into every card, so a page of results
+   * does not carry a second copy of itself in the DOM.
+   */
+  const jsonHtml = (ev) =>
+    `<div class="raw"><button type="button" class="raw-toggle" data-id="${esc(ev.id)}">json</button>` +
+    `<pre class="raw-body" hidden></pre></div>`;
+
   /** The shared author line: avatar, name, date, kind badge. */
   function bylineHtml(ev) {
     const a = authorOf(ev);
@@ -1174,7 +1208,7 @@ function rememberSignIn(yes) {
   /** kind 0 — the profile card (rendered purely from the event, no server-side numbers). */
   function profileCard(ev) {
     const p = parseProfile(ev);
-    const name = displayName(p) || shortKey(ev.pubkey);
+    const name = displayName(p) || shortNpub(ev.pubkey);
     const props = [];
     if (p.nip05) {
       props.push(["nip05",
@@ -1183,19 +1217,20 @@ function rememberSignIn(yes) {
     }
     if (p.website) props.push(["website", `<a href="${esc(p.website)}" target="_blank" rel="noopener noreferrer">${esc(p.website)}</a>`]);
     if (p.lud16) props.push(["lightning", esc(p.lud16)]);
-    props.push(["pubkey", `<a class="mono" href="${njump(ev.pubkey)}" target="_blank" rel="noopener noreferrer" title="${esc(ev.pubkey)}">${esc(shortKey(ev.pubkey))}</a>`]);
+    props.push(["pubkey", `<a class="mono" href="${njumpKey(ev.pubkey)}" target="_blank" rel="noopener noreferrer" title="${esc(npub(ev.pubkey))}">${esc(shortNpub(ev.pubkey))}</a>`]);
     return `
       <article class="result" data-id="${esc(ev.id)}">
         <div class="result-header">
           ${avatarHtml(p.picture, ev.pubkey)}
           <div class="who">
-            <h2 class="result-name"><a href="${njump(ev.pubkey)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a></h2>
+            <h2 class="result-name"><a href="${njumpKey(ev.pubkey)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a></h2>
             ${(p.name || "").trim() && (p.name || "").trim() !== name ? `<div class="result-display">${esc(p.name)}</div>` : ""}
           </div>
           ${badgeHtml(ev)}
         </div>
         ${p.about ? `<div class="result-body clamp">${esc(clip(p.about, 400))}</div>` : ""}
         <dl class="props">${props.map(([k, v]) => `<dt>${k}</dt><dd>${v}</dd>`).join("")}</dl>
+        ${jsonHtml(ev)}
       </article>`;
   }
 
@@ -1205,7 +1240,8 @@ function rememberSignIn(yes) {
       <article class="result" data-id="${esc(ev.id)}">
         ${bylineHtml(ev)}
         <div class="result-body">${esc(clip(ev.content, 500))}</div>
-        <dl class="props"><dt>note</dt><dd><a class="mono" href="${njump(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(shortKey(ev.id))}</a></dd></dl>
+        <dl class="props"><dt>note</dt><dd><a class="mono" href="${njumpNote(ev.id)}" target="_blank" rel="noopener noreferrer" title="${esc(noteId(ev.id))}">${esc(shortNote(ev.id))}</a></dd></dl>
+        ${jsonHtml(ev)}
       </article>`;
   }
 
@@ -1225,12 +1261,13 @@ function rememberSignIn(yes) {
         ${bylineHtml(ev)}
         <div class="result-main">
           <div class="text">
-            ${title ? `<h2 class="result-title"><a href="${njump(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(clip(title, 120))}</a></h2>` : ""}
+            ${title ? `<h2 class="result-title"><a href="${njumpNote(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(clip(title, 120))}</a></h2>` : ""}
             ${body ? `<div class="result-body clamp${summary ? " muted" : ""}">${esc(clip(body, 400))}</div>` : ""}
           </div>
           ${img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
         </div>
-        ${!title ? `<dl class="props"><dt>id</dt><dd><a class="mono" href="${njump(ev.id)}" target="_blank" rel="noopener noreferrer">${esc(shortKey(ev.id))}</a></dd></dl>` : ""}
+        ${!title ? `<dl class="props"><dt>id</dt><dd><a class="mono" href="${njumpNote(ev.id)}" target="_blank" rel="noopener noreferrer" title="${esc(noteId(ev.id))}">${esc(shortNote(ev.id))}</a></dd></dl>` : ""}
+        ${jsonHtml(ev)}
       </article>`;
   }
 
@@ -1245,7 +1282,7 @@ function rememberSignIn(yes) {
     let pic, name, sub;
     if (ev.kind === 0) {
       const p = parseProfile(ev);
-      pic = p.picture; name = displayName(p) || shortKey(ev.pubkey); sub = p.about;
+      pic = p.picture; name = displayName(p) || shortNpub(ev.pubkey); sub = p.about;
     } else {
       const a = authorOf(ev);
       pic = a.picture; name = titleOf(ev) || clip(ev.content, 60) || a.name; sub = titleOf(ev) ? (summaryOf(ev) || clip(ev.content, 60)) : a.name;
@@ -1283,7 +1320,7 @@ function rememberSignIn(yes) {
       $me.textContent = me ? (nm || me).slice(0, 2).toUpperCase() : "\u00b7\u00b7";
     }
     $me.title = me
-      ? `Signed in as ${nm || shortKey(me)} — click to sign out (reconnects)`
+      ? `Signed in as ${nm || shortNpub(me)} — click to sign out (reconnects)`
       : loginTried
         ? "Signed out — click to sign in with your Nostr extension"
         : "Signing in…";
@@ -1538,6 +1575,18 @@ function rememberSignIn(yes) {
 
   document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
   $q.addEventListener("focus", () => { if (s.hits.length && $q.value.trim() && $results.hidden) openPopup(); });
+
+  $results.addEventListener("click", (e) => {
+    const btn = e.target.closest(".raw-toggle");
+    if (!btn) return;
+    const box = btn.parentElement.querySelector(".raw-body");
+    if (!box.hidden) { box.hidden = true; btn.textContent = "json"; return; }
+    const ev = s.hits.find((h) => h.id === btn.dataset.id);
+    // Serialised only when asked for, and only once.
+    if (!box.textContent) box.textContent = ev ? JSON.stringify(ev, null, 2) : "(no longer in the current results)";
+    box.hidden = false;
+    btn.textContent = "hide json";
+  });
 
   $chips.addEventListener("click", (e) => {
     const chip = e.target.closest(".chip");
