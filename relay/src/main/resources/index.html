@@ -497,7 +497,7 @@
         <label class="toggle" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
           <input id="spam" type="checkbox" />
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          <span class="toggle-text">unranked too</span>
+          <span class="toggle-text">include spam</span>
         </label>
 
       </div>
@@ -863,7 +863,7 @@ function rememberSignIn(yes) {
     const keys = [...new Set(lists.map((e) => e.pubkey))];
     observers = keys.map(pubkey => {
       const p = profiles.get(pubkey);
-      return { pubkey, name: (p?.display_name || p?.name || "").trim(), nip05: (p?.nip05 || "").trim() };
+      return { pubkey, name: displayName(p), nip05: (p?.nip05 || "").trim() };
     }).sort((a, b) => (a.name || "\uffff").localeCompare(b.name || "\uffff"));
     return observers;
   }
@@ -902,6 +902,19 @@ function rememberSignIn(yes) {
   // ---- author profiles (kind-0 cache + batched enrichment REQ) -------------
   const profiles = new Map(); // pubkey -> {name, display_name, picture, nip05, about, website, lud16}
 
+  /**
+   * The one name to show when there is room for one.
+   *
+   * `display_name` first, `name` as the fallback — and blank means blank, so a
+   * profile carrying `display_name: "   "` falls through instead of rendering a
+   * gap. Three call sites had this the other way round and disagreed with the
+   * rest of the page about what somebody is called.
+   *
+   * Where BOTH are shown — the profile card — this gives the primary and the
+   * other is rendered beside it.
+   */
+  const displayName = (p) => (p && (p.display_name || "").trim()) || (p && (p.name || "").trim()) || "";
+
   function parseProfile(ev) {
     let c = {};
     try { c = JSON.parse(ev.content) || {}; } catch (e) {}
@@ -931,7 +944,7 @@ function rememberSignIn(yes) {
     try {
       // Anonymous, like every other reference lookup. A displayed author's name
       // and face are not a personalised question, and the authenticated socket
-      // gates kind 0 to authors the reader has scored — so with "unranked too"
+      // gates kind 0 to authors the reader has scored — so with "include spam"
       // on, results would render nameless and faceless for exactly the people
       // you have not rated.
       const conn = await refConn();
@@ -970,7 +983,7 @@ function rememberSignIn(yes) {
 
   function authorOf(ev) {
     const p = profiles.get(ev.pubkey);
-    const name = (p && (p.name || p.display_name)) || shortKey(ev.pubkey);
+    const name = displayName(p) || shortKey(ev.pubkey);
     return { name, picture: (p && p.picture) || "" };
   }
 
@@ -1081,7 +1094,7 @@ function rememberSignIn(yes) {
   /** kind 0 — the profile card (rendered purely from the event, no server-side numbers). */
   function profileCard(ev) {
     const p = parseProfile(ev);
-    const name = p.name || p.display_name || shortKey(ev.pubkey);
+    const name = displayName(p) || shortKey(ev.pubkey);
     const props = [];
     if (p.nip05) props.push(["nip05", esc(p.nip05)]);
     if (p.website) props.push(["website", `<a href="${esc(p.website)}" target="_blank" rel="noopener noreferrer">${esc(p.website)}</a>`]);
@@ -1093,7 +1106,7 @@ function rememberSignIn(yes) {
           ${avatarHtml(p.picture, ev.pubkey)}
           <div class="who">
             <h2 class="result-name"><a href="${njump(ev.pubkey)}" target="_blank" rel="noopener noreferrer">${esc(name)}</a></h2>
-            ${p.display_name && p.display_name !== p.name ? `<div class="result-display">${esc(p.display_name)}</div>` : ""}
+            ${(p.name || "").trim() && (p.name || "").trim() !== name ? `<div class="result-display">${esc(p.name)}</div>` : ""}
           </div>
           ${badgeHtml(ev)}
         </div>
@@ -1148,7 +1161,7 @@ function rememberSignIn(yes) {
     let pic, name, sub;
     if (ev.kind === 0) {
       const p = parseProfile(ev);
-      pic = p.picture; name = p.name || p.display_name || shortKey(ev.pubkey); sub = p.about;
+      pic = p.picture; name = displayName(p) || shortKey(ev.pubkey); sub = p.about;
     } else {
       const a = authorOf(ev);
       pic = a.picture; name = titleOf(ev) || clip(ev.content, 60) || a.name; sub = titleOf(ev) ? (summaryOf(ev) || clip(ev.content, 60)) : a.name;
@@ -1178,7 +1191,7 @@ function rememberSignIn(yes) {
   /** The avatar in the field: your picture signed in, a neutral mark signed out. */
   function renderMe() {
     const p = me ? profiles.get(me) : null;
-    const nm = p && (p.display_name || p.name);
+    const nm = displayName(p);
     $me.classList.toggle("in", !!me);
     if (me && p && p.picture) {
       $me.innerHTML = `<img src="${esc(p.picture)}" alt="" onerror="this.remove()"/>`;

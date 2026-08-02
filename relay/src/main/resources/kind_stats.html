@@ -207,6 +207,13 @@ const profiles = new Map();
 
 const fmt = (n) => n.toLocaleString();
 
+/**
+ * The one name to show: `display_name` first, `name` as the fallback, and blank
+ * means blank so a profile carrying only whitespace falls through rather than
+ * rendering a gap. Same rule as the search page.
+ */
+const displayName = (c) => ((c && c.display_name) || "").trim() || ((c && c.name) || "").trim() || "";
+
 function cell(v) {
   if (v === undefined) return '<span class="pending">…</span>';
   if (v === null) return '<span class="none">no reply</span>';
@@ -271,7 +278,7 @@ async function loadObservers(ws) {
   for (let i = 0; i < keys.length; i += 200) {
     for (const ev of await ws.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
       let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-      profiles.set(ev.pubkey, { name: c.display_name || c.name || "", picture: c.picture || "", nip05: c.nip05 || "" });
+      profiles.set(ev.pubkey, { name: displayName(c), picture: c.picture || "", nip05: c.nip05 || "" });
     }
   }
   observers = keys
@@ -503,7 +510,7 @@ meEl.addEventListener("click", async () => {
       await withSocket(async (ws) => {
         for (const ev of await ws.req({ kinds: [0], authors: [me], limit: 1 })) {
           let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-          profiles.set(me, { name: c.display_name || c.name || "", picture: c.picture || "" });
+          profiles.set(me, { name: displayName(c), picture: c.picture || "" });
         }
       });
     }
@@ -529,7 +536,7 @@ renderMe();
     await withSocket(async (ws) => {
       for (const ev of await ws.req({ kinds: [0], authors: [me], limit: 1 })) {
         let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-        profiles.set(me, { name: c.display_name || c.name || "", picture: c.picture || "" });
+        profiles.set(me, { name: displayName(c), picture: c.picture || "" });
       }
     });
   } catch { me = null; }

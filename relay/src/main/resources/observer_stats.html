@@ -142,6 +142,13 @@ const footEl = document.getElementById("foot");
 const runEl = document.getElementById("run");
 const fmt = (n) => n.toLocaleString();
 
+/**
+ * The one name to show: `display_name` first, `name` as the fallback, and blank
+ * means blank so a profile carrying only whitespace falls through rather than
+ * rendering a gap. Same rule as the search page.
+ */
+const displayName = (c) => ((c && c.display_name) || "").trim() || ((c && c.name) || "").trim() || "";
+
 /** A tiny COUNT-only client. `null` means the relay never answered. */
 function client(url) {
   return new Promise((resolve, reject) => {
@@ -292,7 +299,7 @@ async function run() {
     for (const ev of await local.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
       let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
       const o = observers.find((x) => x.pubkey === ev.pubkey);
-      if (o) { o.hasProfile = true; o.name = c.display_name || c.name || ""; o.picture = c.picture || ""; }
+      if (o) { o.hasProfile = true; o.name = displayName(c); o.picture = c.picture || ""; }
     }
   }
   render(observers);
