@@ -90,22 +90,20 @@
 // Override when developing against a remote relay.
 const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 
-// The kinds worth asking about by default. Not exhaustive — the protocol has no
-// registry a client can enumerate, and COUNT needs a kind to ask about, so a
-// fixed list plus the free-text box is the honest shape. Names are for reading,
-// not identity.
+// What this relay is actually for. Ranked search needs profiles to rank, scores
+// to rank them BY, and the two lists that say where to find each — so these five
+// are the ones whose numbers mean something here, and a page that answers in
+// five rows gets read.
+//
+// Anything else goes in the box: COUNT needs a kind to ask about and the
+// protocol has no registry a client can enumerate, so there is no "all kinds"
+// to offer.
 const KINDS = [
-  [0, "profile metadata"], [1, "short note"], [3, "follow list"], [4, "encrypted DM (legacy)"],
-  [5, "deletion request"], [6, "repost"], [7, "reaction"], [9, "chat message"],
-  [40, "channel create"], [42, "channel message"], [1059, "gift wrap"], [1063, "file metadata"],
-  [1111, "comment"], [1984, "report"], [9735, "zap receipt"], [9802, "highlight"],
-  [10000, "mute list"], [10002, "relay list (NIP-65)"], [10040, "trust providers (NIP-85)"],
-  [10050, "DM relay list"], [10063, "blossom servers"],
-  [30000, "follow set"], [30002, "relay set"], [30008, "profile badges"],
-  [30017, "stall"], [30018, "product"], [30023, "long-form article"], [30024, "article draft"],
-  [30166, "relay discovery (NIP-66)"], [30311, "live event"], [30315, "user status"],
-  [30382, "trust assertion (NIP-85)"], [30402, "classified listing"], [31922, "date event"],
-  [31923, "time event"], [31924, "calendar"], [34550, "community"], [39000, "group metadata"],
+  [0, "Profiles"],
+  [1, "Notes"],
+  [10002, "Relay lists (NIP-65)"],
+  [10040, "Observers (NIP-85)"],
+  [30382, "User Scores"],
 ];
 
 const PER_KIND_TIMEOUT_MS = 20000;
