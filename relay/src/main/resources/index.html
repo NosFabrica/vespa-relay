@@ -774,17 +774,64 @@ function rememberSignIn(yes) {
   let viewingAs = null;         // hex pubkey, or null for "as me"
   let observers = null;         // [{pubkey, name}] once loaded
 
+  // npub, never hex. A 64-char hash is not an identifier a person picks from a
+  // list, and it is not what any other Nostr client would show them.
+  const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+  function npub(hex) {
+    const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
+    // 8-bit -> 5-bit regrouping, then bech32's checksum over hrp + payload.
+    const words = [];
+    let acc = 0, bits = 0;
+    for (const b of bytes) {
+      acc = (acc << 8) | b; bits += 8;
+      while (bits >= 5) { bits -= 5; words.push((acc >> bits) & 31); }
+    }
+    if (bits) words.push((acc << (5 - bits)) & 31);
+    const polymod = (v) => {
+      const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+      let chk = 1;
+      for (const x of v) {
+        const top = chk >> 25;
+        chk = ((chk & 0x1ffffff) << 5) ^ x;
+        for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+      }
+      return chk;
+    };
+    const hrp = "npub";
+    const expand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+    const chk = polymod(expand.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
+    const sum = Array.from({ length: 6 }, (_, i) => (chk >> (5 * (5 - i))) & 31);
+    return hrp + "1" + words.concat(sum).map((w) => B32[w]).join("");
+  }
+  const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 10) + "…" + n.slice(-4); };
+
   async function loadObservers() {
     if (observers) return observers;
-    const lists = await relay.req({ kinds: [10040], limit: 2000 });
-    const keys = [...new Set(lists.map(e => e.pubkey))];
-    // Their profiles, so the picker can show names rather than hex.
-    for (let i = 0; i < keys.length; i += 200) {
-      seedProfiles(await relay.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 }));
+    // Read on an ANONYMOUS connection, deliberately.
+    //
+    // The shared `relay` socket is authenticated, and the store gates an
+    // authenticated reader to authors that reader has scored — so asking there
+    // returned only the observers YOU already trust. The one list that must not
+    // be personalised is the list of lenses you could switch to; a picker that
+    // hides everyone you have not met is a picker that can never introduce you
+    // to anyone.
+    const anon = new Relay(RELAY_URL);
+    await anon.connect();
+    let lists, profileEvents = [];
+    try {
+      lists = await anon.req({ kinds: [10040], limit: 2000 });
+      const ks = [...new Set(lists.map((e) => e.pubkey))];
+      for (let i = 0; i < ks.length; i += 200) {
+        profileEvents = profileEvents.concat(await anon.req({ kinds: [0], authors: ks.slice(i, i + 200), limit: 200 }));
+      }
+    } finally {
+      if (anon.ws) anon.ws.close();
     }
+    seedProfiles(profileEvents);
+    const keys = [...new Set(lists.map((e) => e.pubkey))];
     observers = keys.map(pubkey => {
       const p = profiles.get(pubkey);
-      return { pubkey, name: (p?.display_name || p?.name || "").trim() };
+      return { pubkey, name: (p?.display_name || p?.name || "").trim(), nip05: (p?.nip05 || "").trim() };
     }).sort((a, b) => (a.name || "\uffff").localeCompare(b.name || "\uffff"));
     return observers;
   }
@@ -792,12 +839,15 @@ function rememberSignIn(yes) {
   function renderObserverOptions(filterText) {
     const q = filterText.trim().toLowerCase();
     const hits = (observers || []).filter(o =>
-      !q || o.name.toLowerCase().includes(q) || o.pubkey.startsWith(q));
+      !q || o.name.toLowerCase().includes(q) || (o.nip05 || "").toLowerCase().includes(q) ||
+      npub(o.pubkey).startsWith(q) || o.pubkey.startsWith(q));
     $obsList.innerHTML = "";
     for (const o of hits.slice(0, 50)) {
       const li = document.createElement("li");
-      li.textContent = o.name ? `${o.name} · ${o.pubkey.slice(0, 8)}…` : o.pubkey.slice(0, 16) + "…";
-      li.onclick = () => { setViewingAs(o.pubkey, o.name); };
+      // Name, else nip05, else a short npub. Never the hex.
+      li.textContent = o.name || o.nip05 || shortNpub(o.pubkey);
+      li.title = npub(o.pubkey);
+      li.onclick = () => { setViewingAs(o.pubkey, o.name || o.nip05 || shortNpub(o.pubkey)); };
       $obsList.appendChild(li);
     }
     if (!hits.length) {
@@ -811,7 +861,7 @@ function rememberSignIn(yes) {
   function setViewingAs(pubkey, name) {
     viewingAs = pubkey;
     $obsBox.classList.toggle("active", !!pubkey);
-    $obsCurrent.textContent = pubkey ? (name || pubkey.slice(0, 12) + "…") : "me";
+    $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : "me";
     $obsList.innerHTML = "";
     $obsFilter.value = "";
     rerun();

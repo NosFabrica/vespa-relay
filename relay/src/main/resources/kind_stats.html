@@ -227,6 +227,35 @@ function render(results) {
   }
 }
 
+const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function npub(hex) {
+  const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
+  // 8-bit -> 5-bit regrouping, then bech32's checksum over hrp + payload.
+  const words = [];
+  let acc = 0, bits = 0;
+  for (const b of bytes) {
+    acc = (acc << 8) | b; bits += 8;
+    while (bits >= 5) { bits -= 5; words.push((acc >> bits) & 31); }
+  }
+  if (bits) words.push((acc << (5 - bits)) & 31);
+  const polymod = (v) => {
+    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let chk = 1;
+    for (const x of v) {
+      const top = chk >> 25;
+      chk = ((chk & 0x1ffffff) << 5) ^ x;
+      for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+    }
+    return chk;
+  };
+  const hrp = "npub";
+  const expand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+  const chk = polymod(expand.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
+  const sum = Array.from({ length: 6 }, (_, i) => (chk >> (5 * (5 - i))) & 31);
+  return hrp + "1" + words.concat(sum).map((w) => B32[w]).join("");
+}
+const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 10) + "…" + n.slice(-4); };
+
 /**
  * Every pubkey that published a kind 10040 — the only ones whose scores the
  * store projects, so the only ones worth offering as a lens.
@@ -242,23 +271,28 @@ async function loadObservers(ws) {
   for (let i = 0; i < keys.length; i += 200) {
     for (const ev of await ws.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
       let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-      profiles.set(ev.pubkey, { name: c.display_name || c.name || "", picture: c.picture || "" });
+      profiles.set(ev.pubkey, { name: c.display_name || c.name || "", picture: c.picture || "", nip05: c.nip05 || "" });
     }
   }
   observers = keys
-    .map((pubkey) => ({ pubkey, name: profiles.get(pubkey)?.name || "" }))
+    .map((pubkey) => ({ pubkey, name: profiles.get(pubkey)?.name || "", nip05: profiles.get(pubkey)?.nip05 || "" }))
     .sort((a, b) => (a.name || "\uffff").localeCompare(b.name || "\uffff"));
   return observers;
 }
 
 function renderObserverOptions(q) {
   const t = q.trim().toLowerCase();
-  const hits = (observers || []).filter((o) => !t || o.name.toLowerCase().includes(t) || o.pubkey.startsWith(t));
+  const hits = (observers || []).filter((o) =>
+    !t || o.name.toLowerCase().includes(t) || (o.nip05 || "").toLowerCase().includes(t) ||
+    npub(o.pubkey).startsWith(t) || o.pubkey.startsWith(t));
   obsListEl.innerHTML = "";
   for (const o of hits.slice(0, 50)) {
     const li = document.createElement("li");
-    li.textContent = o.name ? `${o.name} · ${o.pubkey.slice(0, 8)}…` : o.pubkey.slice(0, 16) + "…";
-    li.onclick = () => setViewingAs(o.pubkey, o.name);
+    // Name, else nip05, else a short npub. Never the hex.
+    const label = o.name || o.nip05 || shortNpub(o.pubkey);
+    li.textContent = label;
+    li.title = npub(o.pubkey);
+    li.onclick = () => setViewingAs(o.pubkey, label);
     obsListEl.appendChild(li);
   }
   if (!hits.length) {
@@ -272,8 +306,8 @@ function renderObserverOptions(q) {
 function setViewingAs(pubkey, name) {
   viewingAs = pubkey;
   obsBoxEl.classList.toggle("active", !!pubkey);
-  obsCurrentEl.textContent = pubkey ? (name || pubkey.slice(0, 12) + "…") : "nobody";
-  thirdHeadEl.textContent = pubkey ? `As ${name || pubkey.slice(0, 8) + "…"}` : "As a named observer";
+  obsCurrentEl.textContent = pubkey ? (name || shortNpub(pubkey)) : "nobody";
+  thirdHeadEl.textContent = pubkey ? `As ${name || shortNpub(pubkey)}` : "As a named observer";
   obsListEl.innerHTML = "";
   obsFilterEl.value = "";
 }
