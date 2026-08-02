@@ -10,14 +10,18 @@
   The SearchOverTrust UI: one file, no build step, and NO http API — this page is
   a tiny Nostr client. It opens a WebSocket to the very server that serves it,
   searches with NIP-50 REQs (so the filter chips are literal `kinds` filters
-  and the sort menu appends NIP-50 `sort:`/`include:spam` extensions), logs in
-  with NIP-07 by signing the relay's NIP-42 AUTH challenge — which both ranks
-  every search by YOUR web of trust and enrolls you as a sync observer. Signed
-  out, results are the whole corpus with no web of trust applied at all; there
-  is no house lens standing in for you. The "as" control ranks through somebody
-  ELSE's trust (NIP-50 `observer:`), choosing among the pubkeys that published a
-  kind 10040 — the only ones whose scores the store projects, 271 of them here
-  against 12.28M profiles. And
+  and the sort menu appends NIP-50 `sort:`/`include:spam` extensions), signs in
+  automatically with NIP-07 against the relay's NIP-42 challenge — which ranks
+  every search by YOUR web of trust and enrols you as a sync observer. Without
+  an extension it stays anonymous and shows the whole corpus, unranked; there is
+  no house lens standing in for you.
+
+  ONE control decides whose trust ranks the page: "ranking as", defaulting to
+  you and offering the pubkeys that published a kind 10040 (the only ones whose
+  scores the store projects — 271 here against 12.28M profiles), applied with
+  NIP-50 `observer:`. It replaced a login toggle sitting beside a lens picker,
+  a pair whose off-plus-somebody combination was legal and did nothing at all.
+  And
   renders every kind the index holds as a card: profiles, notes, articles,
   media, code, listings, and a generic card for the rest.
 
@@ -1161,6 +1165,11 @@
   $spam.addEventListener("change", rerun);
 
   renderChips();
+  renderWhoami();
+  // On load, not on the first keystroke: the lens picker is only meaningful once
+  // there is an authenticated reader, and an idle page should not sit on
+  // "signing in…" until somebody types.
+  ensureLogin().then(renderWhoami).catch(() => renderWhoami());
 })();
 </script>
 </body>
