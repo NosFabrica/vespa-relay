@@ -148,6 +148,21 @@
 // Override when developing against a remote relay.
 const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 
+// ---- signed-in preference, shared across the relay's pages ----------------
+// A cookie rather than localStorage: same-origin, survives a page switch, and
+// the pages are served by the relay itself so there is nothing cross-site about
+// it. Default is SIGNED IN — an unset cookie means "not chosen yet", and the
+// useful default is the one that makes ranking work.
+const AUTH_COOKIE = "sot_signedin";
+function wantsSignIn() {
+const m = document.cookie.match(/(?:^|;\s*)sot_signedin=([01])/);
+return m ? m[1] === "1" : true;
+}
+function rememberSignIn(yes) {
+document.cookie = `${AUTH_COOKIE}=${yes ? 1 : 0}; path=/; max-age=31536000; SameSite=Lax`;
+}
+
+
 // What this relay is actually for. Ranked search needs profiles to rank, scores
 // to rank them BY, and the two lists that say where to find each — so these five
 // are the ones whose numbers mean something here, and a page that answers in
@@ -446,7 +461,8 @@ obsResetEl.addEventListener("click", () => setViewingAs(null, null));
 meEl.addEventListener("click", async () => {
   meEl.classList.add("busy");
   try {
-    if (me) { me = null; } else {
+    if (me) { rememberSignIn(false); me = null; } else {
+      rememberSignIn(true);
       loginTried = true;
       me = await withSocket((ws) => signIn(ws));
       // Its own profile, so the avatar is a face rather than initials.
@@ -473,6 +489,7 @@ renderMe();
 // what an anonymous caller sees, which the page already says.
 (async () => {
   loginTried = true;
+  if (!wantsSignIn()) { renderMe(); run(); return; }
   try {
     me = await withSocket((ws) => signIn(ws));
     await withSocket(async (ws) => {

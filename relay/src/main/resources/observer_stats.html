@@ -27,6 +27,12 @@
   alone tells you nothing, because "3,197 scores" reads as healthy right up
   until you learn the relay serving them holds 145,968.
 
+  Counted ANONYMOUSLY on purpose, whatever your signed-in preference elsewhere.
+  An authenticated reader is trust-gated by the store — it counts only authors
+  that reader has scored — and this page's entire question is "how many exist",
+  not "how many can I see". Gating here would silently answer a different
+  question with the same-looking number.
+
   Two honest limitations, both shown rather than hidden:
 
   * NIP-45 COUNT is optional and widely unimplemented. A relay that does not
@@ -90,7 +96,8 @@
 <main>
   <h1>Observer stats</h1>
   <p class="sub">Every kind-10040 observer that names a <code>30382:rank</code> service, and whether the
-     scores they trust actually reached this relay.
+     scores they trust actually reached this relay. Counted anonymously on purpose — an authenticated
+     reader is trust-gated, which would answer a different question.
      <strong>here</strong> is this store; <strong>there</strong> is the relay their 10040 names.
      Equal means synced; short means the sync has not finished.</p>
 

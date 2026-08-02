@@ -615,6 +615,20 @@
     }
   }
 
+// ---- signed-in preference, shared across the relay's pages ----------------
+// A cookie rather than localStorage: same-origin, survives a page switch, and
+// the pages are served by the relay itself so there is nothing cross-site about
+// it. Default is SIGNED IN — an unset cookie means "not chosen yet", and the
+// useful default is the one that makes ranking work.
+const AUTH_COOKIE = "sot_signedin";
+function wantsSignIn() {
+  const m = document.cookie.match(/(?:^|;\s*)sot_signedin=([01])/);
+  return m ? m[1] === "1" : true;
+}
+function rememberSignIn(yes) {
+  document.cookie = `${AUTH_COOKIE}=${yes ? 1 : 0}; path=/; max-age=31536000; SameSite=Lax`;
+}
+
   const relay = new Relay(RELAY_URL);
 
   // ---- NIP-07 login -> NIP-42 auth -----------------------------------------
@@ -692,6 +706,9 @@
     await relay.connect();
     if (!loginTried) {
       loginTried = true;
+      // A remembered "signed out" is a decision, not an absence — respect it
+      // rather than prompting the extension on every page load.
+      if (!wantsSignIn()) { $obsBox.classList.add("anon"); renderWhoami(); return; }
       if (!(window.nostr && window.nostr.signEvent)) {
         $obsBox.classList.add("anon");
         renderWhoami();
@@ -1019,12 +1036,14 @@
     $me.classList.add("busy");
     try {
       if (me) {
+        rememberSignIn(false);
         me = null;
         viewingAs = null;
         setViewingAs(null, null);
         if (relay.ws) relay.ws.close();
         await relay.connect();
       } else {
+        rememberSignIn(true);
         loginTried = true;
         await login();
       }
@@ -1058,17 +1077,15 @@
   let debounceTimer = null;
   let activeKey = null;
 
+  /**
+   * The avatar says who you are; the "ranking as" control says whose trust is
+   * applied. A sentence repeating both was noise, so this slot now carries only
+   * what neither widget can show: an error, or the fact that you are signed out
+   * BY CHOICE rather than because signing in failed.
+   */
   function renderWhoami() {
     renderMe();
-    if (!loginTried) { $whoami.textContent = "signing in…"; return; }
-    if (!me) {
-      $whoami.innerHTML = "not signed in — the whole corpus, unranked";
-      return;
-    }
-    const nameOf = (k) => { const p = profiles.get(k); return (p && (p.display_name || p.name)) || shortKey(k); };
-    $whoami.innerHTML = viewingAs
-      ? `ranking by <b>${esc(nameOf(viewingAs))}</b>'s web of trust — you are signed in as ${esc(nameOf(me))}`
-      : `ranking by <b>${esc(nameOf(me))}</b>'s web of trust — the relay is now syncing it`;
+    $whoami.textContent = loginTried && !me && !wantsSignIn() ? "signed out — the whole corpus, unranked" : "";
   }
 
   function renderChips() {
