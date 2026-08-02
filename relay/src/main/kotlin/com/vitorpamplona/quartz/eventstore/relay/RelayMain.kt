@@ -286,6 +286,7 @@ fun main() {
         admin = admin,
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = webUi(),
+        statsPage = kindStatsUi(),
     )
 }
 
@@ -392,3 +393,6 @@ private fun String.httpFromWs(): String =
 
 /** The bundled search UI (`resources/index.html`), or null if it isn't on the classpath. */
 private fun webUi(): String? = object {}.javaClass.getResource("/index.html")?.readText()
+
+/** The bundled per-kind COUNT page (`resources/kind_stats.html`). */
+private fun kindStatsUi(): String? = object {}.javaClass.getResource("/kind_stats.html")?.readText()

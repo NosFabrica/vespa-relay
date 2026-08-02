@@ -405,6 +405,15 @@ docker compose up --build
 Leave `ROUTER_CONFIG_FILE` unset (the default) and the relay serves without
 mirroring.
 
+## Kind stats
+
+`GET /kind_stats.html` — how many events of each kind the store holds, one
+NIP-45 `COUNT` per kind over the relay's own WebSocket. Asked the way a client
+would rather than through an http endpoint, so the page also *tests* NIP-45: a
+kind that comes back `no reply` is a finding about the relay, not a blank cell.
+Signs the NIP-42 challenge with a NIP-07 extension when one is present, for
+relays that gate reads behind auth.
+
 ## Supported NIPs
 
 | NIP | | In this relay |
