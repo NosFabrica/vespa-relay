@@ -110,7 +110,7 @@
   }
   #q {
     width: 100%;
-    padding: 13px 42px 13px 44px;
+    padding: 13px 52px 13px 44px;
     font: inherit;
     font-size: 16px;
     color: var(--fg);
@@ -132,7 +132,23 @@
     color: var(--faint); font-size: 17px; line-height: 1; cursor: pointer;
   }
   #clear:hover { background: var(--surface-2); color: var(--fg); }
-  body.has-query #clear { display: flex; }
+  body.has-query #clear { display: flex; right: 44px; }
+
+  /* Who you are, in the field. Signed in shows your picture; signed out shows a
+     neutral mark. Clicking toggles — and signing OUT means a new connection,
+     because NIP-42 auth belongs to the socket, not to the page. */
+  .me {
+    position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
+    width: 30px; height: 30px; padding: 0; border: 1px solid var(--border);
+    border-radius: 50%; background: var(--surface-2); cursor: pointer;
+    display: grid; place-items: center; overflow: hidden;
+    color: var(--faint); font-size: 12px; font-weight: 700; line-height: 1;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .me:hover { border-color: var(--accent); }
+  .me img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .me.in { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .me.busy { opacity: .55; pointer-events: none; }
 
   /* ---- the control bar --------------------------------------------------- */
   .bar {
@@ -431,6 +447,7 @@
       <input id="q" type="text" autocomplete="off" spellcheck="false" placeholder="Search Nostr&hellip;" autofocus
              role="combobox" aria-expanded="false" aria-controls="popup" aria-autocomplete="list" aria-label="Search" />
       <button id="clear" type="button" aria-label="Clear search" title="Clear">&times;</button>
+      <button id="me" type="button" class="me" aria-label="Sign in"></button>
       <div id="popup" class="popup" role="listbox" aria-label="Quick results"></div>
     </div>
 
@@ -975,6 +992,52 @@
   const $sort = document.getElementById("sort");
   const $spam = document.getElementById("spam");
   const $whoami = document.getElementById("whoami");
+  const $me = document.getElementById("me");
+
+  /** The avatar in the field: your picture signed in, a neutral mark signed out. */
+  function renderMe() {
+    const p = me ? profiles.get(me) : null;
+    const nm = p && (p.display_name || p.name);
+    $me.classList.toggle("in", !!me);
+    if (me && p && p.picture) {
+      $me.innerHTML = `<img src="${esc(p.picture)}" alt="" onerror="this.remove()"/>`;
+    } else {
+      $me.textContent = me ? (nm || me).slice(0, 2).toUpperCase() : "\u00b7\u00b7";
+    }
+    $me.title = me
+      ? `Signed in as ${nm || shortKey(me)} — click to sign out (reconnects)`
+      : loginTried
+        ? "Signed out — click to sign in with your Nostr extension"
+        : "Signing in…";
+    $me.setAttribute("aria-label", me ? "Sign out" : "Sign in");
+  }
+
+  // NIP-42 auth belongs to the SOCKET, so signing out is a reconnect, not a
+  // flag. Anything less would leave the relay still treating the connection as
+  // authenticated while the page claimed otherwise.
+  $me.addEventListener("click", async () => {
+    $me.classList.add("busy");
+    try {
+      if (me) {
+        me = null;
+        viewingAs = null;
+        setViewingAs(null, null);
+        if (relay.ws) relay.ws.close();
+        await relay.connect();
+      } else {
+        loginTried = true;
+        await login();
+      }
+    } catch (e) {
+      me = null;
+      $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))}</span>`;
+    } finally {
+      $me.classList.remove("busy");
+      renderMe();
+      renderWhoami();
+      rerun();
+    }
+  });
   const $obsBox = document.getElementById("obsbox");
   const $obsCurrent = document.getElementById("obscurrent");
   const $obsFilter = document.getElementById("obsfilter");
@@ -996,6 +1059,7 @@
   let activeKey = null;
 
   function renderWhoami() {
+    renderMe();
     if (!loginTried) { $whoami.textContent = "signing in…"; return; }
     if (!me) {
       $whoami.innerHTML = "not signed in — the whole corpus, unranked";
