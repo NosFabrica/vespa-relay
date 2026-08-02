@@ -279,6 +279,13 @@
     .result.revealed { animation: none; box-shadow: 0 0 0 2px var(--accent); }
   }
 
+  .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
+  .export {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    border-radius: 7px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .export:hover { border-color: var(--accent); color: var(--accent); }
+
   /* The raw event, for whoever needs it, invisible to whoever does not. */
   .raw { margin-top: 10px; }
   .raw-toggle {
@@ -1199,6 +1206,65 @@ function rememberSignIn(yes) {
    * Filled on demand rather than inlined into every card, so a page of results
    * does not carry a second copy of itself in the DOM.
    */
+  /**
+   * The whole search, written out so somebody else can argue with it.
+   *
+   * The point is not a backup — it is handing a ranked list to a reader who was
+   * not here and letting them judge the ORDER. That takes more than the titles:
+   * what was asked, whose web of trust was applied, what each author scores
+   * under that lens, and how old each result is. Rank without the inputs is
+   * just a list.
+   *
+   * Text, not JSON: the intended reader is a person or a model reasoning about
+   * whether position 7 deserves to be above position 3, and prose beats a
+   * structure they have to re-derive. The raw event stays one click away.
+   */
+  function exportText() {
+    const lens = viewingAs || me;
+    const nameOf = (k) => displayName(profiles.get(k)) || "";
+    const L = [];
+    L.push("SEARCH-OVER-TRUST EXPORT");
+    L.push(`taken           ${new Date().toISOString()}`);
+    L.push(`relay           ${RELAY_URL}`);
+    L.push("");
+    L.push("QUERY AS CONFIGURED");
+    L.push(`  terms         ${JSON.stringify($q.value.trim())}`);
+    L.push(`  tab           ${tab.label}${tab.kinds ? ` (kinds ${tab.kinds.join(", ")})` : " (all kinds)"}`);
+    L.push(`  sort          ${$sort.value || "(relevance — NIP-50 default)"}`);
+    L.push(`  include spam  ${$spam.checked ? "yes — unranked authors included" : "no — trust floor applied"}`);
+    L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
+    L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
+    L.push(`  search string ${JSON.stringify(searchString($q.value.trim()))}`);
+    L.push(`  full filter   ${JSON.stringify({ search: searchString($q.value.trim()), limit: FULL_LIMIT, ...(tab.kinds ? { kinds: tab.kinds } : {}) })}`);
+    L.push("");
+    L.push(`RESULTS  ${s.hits.length} in ${s.lastMs ?? "?"} ms, in the order the relay returned them`);
+    L.push("");
+    s.hits.forEach((ev, i) => {
+      const p = ev.kind === 0 ? parseProfile(ev) : null;
+      const author = p || profiles.get(ev.pubkey) || null;
+      const sc = scores.get(ev.pubkey);
+      const title = titleOf(ev) || "";
+      const body = clip((ev.content || "").replace(/\s+/g, " "), 240);
+      L.push(`#${String(i + 1).padStart(3)}  kind ${ev.kind}  ${new Date(ev.created_at * 1000).toISOString()}`);
+      L.push(`      author      ${displayName(author) || "(no profile)"}  ${npub(ev.pubkey)}`);
+      L.push(`      trust score ${sc == null ? "(none under this lens)" : sc}`);
+      if (author && author.nip05) {
+        const v = nip05Cache.get(`${author.nip05}|${ev.pubkey}`);
+        L.push(`      nip05       ${author.nip05}${v ? `  [${v === "ok" ? "verified" : v === "bad" ? "MISMATCH" : "unchecked"}]` : ""}`);
+      }
+      if (title) L.push(`      title       ${clip(title, 160)}`);
+      if (body) L.push(`      content     ${body}`);
+      L.push(`      id          ${noteId(ev.id)}`);
+      L.push("");
+    });
+    L.push("QUESTION FOR THE READER");
+    L.push("  Is this order defensible? The relay ranks by the trust score above,");
+    L.push("  under the stated lens — not by recency or text relevance alone.");
+    L.push("  A result placed above another with a higher score, or a low-scoring");
+    L.push("  result near the top, is worth challenging.");
+    return L.join("\n");
+  }
+
   const jsonHtml = (ev) =>
     `<div class="raw"><button type="button" class="raw-toggle" data-id="${esc(ev.id)}">json</button>` +
     `<pre class="raw-body" hidden></pre></div>`;
@@ -1453,7 +1519,9 @@ function rememberSignIn(yes) {
 
   function renderResults() {
     const stats = s.error ? "" : `${s.hits.length} result${s.hits.length === 1 ? "" : "s"} · ${s.lastMs ?? "?"} ms`;
-    const head = `<div class="list-head"><div class="list-title">${esc(tab.label)}</div><div class="list-stats">${stats}</div></div>`;
+    const head = `<div class="list-head"><div class="list-title">${esc(tab.label)}</div>` +
+      `<div class="list-right"><span class="list-stats">${stats}</span>` +
+      `<button type="button" id="export" class="export" title="Download this search and its results as text">Export</button></div></div>`;
     const body = statusBody(skelCards(4)) ?? s.hits.map(card).join("");
     $results.innerHTML = head + body;
     paintScores();
@@ -1596,6 +1664,16 @@ function rememberSignIn(yes) {
   $q.addEventListener("focus", () => { if (s.hits.length && $q.value.trim() && $results.hidden) openPopup(); });
 
   $results.addEventListener("click", (e) => {
+    if (e.target.closest("#export")) {
+      const blob = new Blob([exportText()], { type: "text/plain;charset=utf-8" });
+      const a = document.createElement("a");
+      const slug = ($q.value.trim().replace(/[^a-z0-9]+/gi, "-").replace(/^-|-$/g, "") || "search").slice(0, 40);
+      a.href = URL.createObjectURL(blob);
+      a.download = `sot-${slug}-${new Date().toISOString().slice(0, 19).replace(/[:T]/g, "")}.txt`;
+      a.click();
+      setTimeout(() => URL.revokeObjectURL(a.href), 10000);
+      return;
+    }
     const btn = e.target.closest(".raw-toggle");
     if (!btn) return;
     const box = btn.parentElement.querySelector(".raw-body");
