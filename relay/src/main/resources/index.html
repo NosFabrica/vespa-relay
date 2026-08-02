@@ -178,6 +178,7 @@
   .obslabel { color: var(--muted); font-size: 13px; }
   .obscurrent { font-size: 13px; font-weight: 600; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .obsbox.active .obscurrent { color: var(--accent); }
+  .obsbox.anon .obsfilter { opacity: .5; pointer-events: none; }
   .obsfilter { width: 8rem; font: inherit; font-size: 13px; padding: 3px 7px; border-radius: 8px;
                border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
   .obsfilter:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
@@ -439,8 +440,8 @@
           <option value="followers">Followers</option>
           <option value="text">Text only</option>
         </select>
-        <span id="obsbox" class="obsbox" title="Rank these results through somebody else's web of trust (NIP-50 observer:). Only pubkeys with a kind 10040 can rank anything.">
-          <span class="obslabel">as</span>
+        <span id="obsbox" class="obsbox" title="Whose web of trust ranks these results. You are signed in automatically; pick somebody else to read the index through their eyes. Only pubkeys with a kind 10040 can rank anything.">
+          <span class="obslabel">ranking as</span>
           <span id="obscurrent" class="obscurrent">me</span>
           <input id="obsfilter" class="obsfilter" placeholder="view as…" autocomplete="off" />
           <button id="obsreset" class="obsreset" type="button" title="Back to your own web of trust">×</button>
@@ -451,11 +452,7 @@
           <span class="toggle-track"><span class="toggle-thumb"></span></span>
           <span class="toggle-text">unranked too</span>
         </label>
-        <label class="toggle" title="Sign the relay's NIP-42 challenge with your NIP-07 extension: searches rank by YOUR web of trust, and the relay starts syncing it">
-          <input id="asme" type="checkbox" />
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          <span class="toggle-text">Search as me</span>
-        </label>
+
       </div>
     </div>
 
@@ -657,9 +654,36 @@
     enrichProfiles([me]).then(renderWhoami).catch(() => {});
   }
 
+  // Signed in automatically, once, best effort.
+  //
+  // There used to be an "as me" toggle next to this that meant "authenticate",
+  // and a separate picker that meant "rank as somebody". Off + somebody was a
+  // legal combination that did NOTHING: the lens needs an authenticated reader,
+  // so the picker silently had no effect. One thing you choose (whose trust) and
+  // one thing that just happens (being signed in) is the same feature without
+  // the inert corner.
+  //
+  // A relay read is still fine without an extension — it is the whole corpus,
+  // unranked — so a failure here downgrades rather than blocks, and says so.
+  let loginTried = false;
   async function ensureLogin() {
-    if (!$asme.checked) return;
+    if (loginTried) { if (!me) return; }
     await relay.connect();
+    if (!loginTried) {
+      loginTried = true;
+      if (!(window.nostr && window.nostr.signEvent)) {
+        $obsBox.classList.add("anon");
+        renderWhoami();
+        return;
+      }
+      try { await login(); } catch (e) {
+        me = null;
+        $obsBox.classList.add("anon");
+        $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))} — showing the whole corpus, unranked</span>`;
+        return;
+      }
+    }
+    if (!me) return;
     // Keyed on the CONNECTION's auth state, not on whether we remember a
     // pubkey: a reconnect leaves `me` set but the new socket unauthenticated,
     // and searching then really would rank by nobody — there is no default
@@ -946,7 +970,6 @@
   const $chips = document.getElementById("chips");
   const $sort = document.getElementById("sort");
   const $spam = document.getElementById("spam");
-  const $asme = document.getElementById("asme");
   const $whoami = document.getElementById("whoami");
   const $obsBox = document.getElementById("obsbox");
   const $obsCurrent = document.getElementById("obscurrent");
@@ -969,11 +992,15 @@
   let activeKey = null;
 
   function renderWhoami() {
-    if (!$asme.checked) { $whoami.textContent = ""; return; }
-    if (!me) { $whoami.textContent = "signing in…"; return; }
-    const p = profiles.get(me);
-    const who = (p && (p.name || p.display_name)) || shortKey(me);
-    $whoami.innerHTML = `ranking by <b>${esc(who)}</b>'s web of trust — the relay is now syncing it`;
+    if (!loginTried) { $whoami.textContent = "signing in…"; return; }
+    if (!me) {
+      $whoami.innerHTML = "not signed in — the whole corpus, unranked";
+      return;
+    }
+    const nameOf = (k) => { const p = profiles.get(k); return (p && (p.display_name || p.name)) || shortKey(k); };
+    $whoami.innerHTML = viewingAs
+      ? `ranking by <b>${esc(nameOf(viewingAs))}</b>'s web of trust — you are signed in as ${esc(nameOf(me))}`
+      : `ranking by <b>${esc(nameOf(me))}</b>'s web of trust — the relay is now syncing it`;
   }
 
   function renderChips() {
@@ -1132,27 +1159,6 @@
 
   $sort.addEventListener("change", rerun);
   $spam.addEventListener("change", rerun);
-
-  $asme.addEventListener("change", async () => {
-    if ($asme.checked) {
-      renderWhoami();
-      try {
-        await login();
-      } catch (e) {
-        $asme.checked = false;
-        me = null;
-        $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))}</span>`;
-        return;
-      }
-      rerun();
-    } else {
-      // NIP-42 auth is per-connection: dropping it means a fresh connection.
-      me = null;
-      if (relay.ws) relay.ws.close();
-      renderWhoami();
-      rerun();
-    }
-  });
 
   renderChips();
 })();
