@@ -110,7 +110,7 @@
   }
   #q {
     width: 100%;
-    padding: 13px 52px 13px 44px;
+    padding: 13px 50px 13px 44px;
     font: inherit;
     font-size: 16px;
     color: var(--fg);
@@ -132,14 +132,17 @@
     color: var(--faint); font-size: 17px; line-height: 1; cursor: pointer;
   }
   #clear:hover { background: var(--surface-2); color: var(--fg); }
-  body.has-query #clear { display: flex; right: 44px; }
+  body.has-query #clear { display: flex; right: 46px; }
 
   /* Who you are, in the field. Signed in shows your picture; signed out shows a
      neutral mark. Clicking toggles — and signing OUT means a new connection,
      because NIP-42 auth belongs to the socket, not to the page. */
   .me {
-    position: absolute; right: 9px; top: 50%; transform: translateY(-50%);
-    width: 30px; height: 30px; padding: 0; border: 1px solid var(--border);
+    /* Pinned to the field's own box rather than sized in pixels: top, bottom and
+       right are the same gap by construction, and stay equal if the font or the
+       field padding ever changes. */
+    position: absolute; right: 6px; top: 6px; bottom: 6px;
+    width: auto; aspect-ratio: 1 / 1; padding: 0; border: 1px solid var(--border);
     border-radius: 50%; background: var(--surface-2); cursor: pointer;
     display: grid; place-items: center; overflow: hidden;
     color: var(--faint); font-size: 12px; font-weight: 700; line-height: 1;
@@ -708,8 +711,14 @@ function rememberSignIn(yes) {
     await relay.connect();
     me = await signAndAuth();
     renderWhoami();
-    // Show the observer's own profile name next to the toggle when we have it.
-    enrichProfiles([me]).then(renderWhoami).catch(() => {});
+    // Our own face, fetched fresh and AWAITED. enrichProfiles skips a pubkey it
+    // has already seen — including one recorded as `null` by a lookup that ran
+    // before this account was on screen — so a cached miss survived signing in
+    // and the avatar kept the old face until a reload. Deleting first forces
+    // the re-read; awaiting means the caller can rely on it being done.
+    profiles.delete(me);
+    try { await enrichProfiles([me]); } catch (e) {}
+    renderWhoami();
   }
 
   // Signed in automatically, once, best effort.
@@ -1287,7 +1296,11 @@ function rememberSignIn(yes) {
     const body = statusBody(skelCards(4)) ?? s.hits.map(card).join("");
     $results.innerHTML = head + body;
     paintScores();
-    revealPending();
+    // Only once there is something to reveal. run() renders TWICE — a skeleton
+    // the instant the search starts, then the results — and the first pass was
+    // consuming the pending id against a list of placeholders, so the real
+    // render had nothing left to scroll to.
+    if (!s.loading && !s.error) revealPending();
   }
 
   async function run(text, mode, render) {
@@ -1342,6 +1355,9 @@ function rememberSignIn(yes) {
   function revealPending() {
     if (!pendingReveal) return;
     const el = $results.querySelector(`.result[data-id="${CSS.escape(pendingReveal)}"]`);
+    // Cleared either way: the results ARE rendered by now, so if the clicked
+    // event is not among them (the full query can return a different set than
+    // the popup's preview) there is nothing to wait for.
     pendingReveal = null;
     if (!el) return;
     el.scrollIntoView({ behavior: "smooth", block: "center" });
