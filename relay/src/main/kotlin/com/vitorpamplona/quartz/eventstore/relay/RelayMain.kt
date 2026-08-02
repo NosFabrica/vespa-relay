@@ -234,10 +234,43 @@ fun main() {
             // this line was received. Null rather than a guess if it fails: an
             // unknown denominator is better than a wrong one.
             val expected = runCatching { store.count(Filter()) }.getOrNull()?.toLong()
+            // Where the walk got to, on disk. The store's API is resumable by
+            // design — the cursor is an opaque token meant to be persisted and
+            // handed back — and holding it only in memory threw away 12,254,483
+            // events the first time a page failed. Beside the sync cursors, for
+            // the same reason those are there.
+            val cursorFile = env["FTS_CURSOR_FILE"] ?: "/var/lib/vespa-relay/fts-cursor.txt"
+            cursor =
+                runCatching {
+                    java.io
+                        .File(cursorFile)
+                        .takeIf { it.isFile }
+                        ?.readText()
+                        ?.trim()
+                        ?.ifBlank { null }
+                }.getOrNull()
+            if (cursor != null) println("fts: resuming from a saved cursor")
             try {
                 do {
-                    val p = store.reindexFullTextSearch(cursor)
+                    // A page can fail for reasons that are nothing to do with
+                    // this page: Vespa answered one with an HTML error body
+                    // ("Unexpected character ('<')") while under memory
+                    // pressure, and the whole walk died on it. Retry the SAME
+                    // cursor a few times before giving up, so a busy engine
+                    // costs seconds rather than hours of redone work.
+                    var p: com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress? = null
+                    var attempt = 0
+                    while (p == null) {
+                        p =
+                            runCatching { store.reindexFullTextSearch(cursor) }
+                                .onFailure { e ->
+                                    if (++attempt > FTS_PAGE_RETRIES) throw e
+                                    System.err.println("fts: page failed (${e.message?.take(80)}) — retry $attempt/$FTS_PAGE_RETRIES in ${attempt * 5}s")
+                                }.getOrNull()
+                        if (p == null) delay(attempt * 5_000L)
+                    }
                     cursor = p.cursor
+                    runCatching { java.io.File(cursorFile).writeText(cursor ?: "") }
                     total += p.processedThisBatch
                     // Every page would be a flood; never would be silence.
                     if (++pages % 50 == 0) {
@@ -256,11 +289,17 @@ fun main() {
                         )
                     }
                 } while (!p.done)
-                println("fts: reindex complete — $total event(s) in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+                println("fts: reindex complete — $total event(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}")
+                // Done means done: leaving the cursor would resume a finished
+                // walk from its tail on the next boot with the flag still set.
+                runCatching { java.io.File(cursorFile).delete() }
             } catch (e: Exception) {
                 // Resumable by design, so say where it stopped rather than only
                 // that it did.
-                System.err.println("fts: reindex FAILED after $total event(s): ${e.message}")
+                System.err.println(
+                    "fts: reindex FAILED after $total event(s): ${e.message}" +
+                        " — the cursor is saved, so restarting with REINDEX_FTS_ON_START resumes here",
+                )
             }
         }
     }
@@ -501,3 +540,12 @@ private fun kindStatsUi(): String? = object {}.javaClass.getResource("/kind_stat
 
 /** The bundled observer sync-check page (`resources/observer_stats.html`). */
 private fun observerStatsUi(): String? = object {}.javaClass.getResource("/observer_stats.html")?.readText()
+
+/**
+ * Retries for ONE page of the full-text reindex before the walk gives up.
+ *
+ * A page can fail for reasons unrelated to its contents — Vespa answered one
+ * with an HTML error body under memory pressure, and the walk died 12.2M events
+ * in. Five attempts with a widening gap turns that into a pause.
+ */
+private const val FTS_PAGE_RETRIES = 5

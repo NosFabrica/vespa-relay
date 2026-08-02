@@ -126,6 +126,11 @@ services:
       # cannot. Walks the whole corpus; leave off except for the one boot that
       # performs the migration.
       REINDEX_FTS_ON_START: ${REINDEX_FTS_ON_START:-}
+      # Where the reindex walk saves its position. In the mounted volume, so a
+      # restart resumes instead of redoing the corpus — the store's cursor is
+      # resumable by design and holding it only in memory cost 12.2M events
+      # when one page failed.
+      FTS_CURSOR_FILE: ${FTS_CURSOR_FILE:-/var/lib/vespa-relay/fts-cursor.txt}
       # How many engine queries the store's bulk stages keep in flight. The
       # store's default is 4, measured on heavy bulk-stage queries; the dedup
       # preload is an id-only lookup and far lighter, so this is worth sweeping
