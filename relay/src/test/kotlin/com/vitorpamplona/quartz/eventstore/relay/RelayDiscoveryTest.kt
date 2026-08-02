@@ -307,14 +307,17 @@ class RelayDiscoveryTest {
                     store,
                     dynamic(source(10002, selects = listOf(select(tag = "r", where = marker("write"))))),
                 )
+            // Every named relay, once each. The reference count that used to
+            // order these went with the switch to the store's tags-only
+            // projection, which answers with a set — see RelayDiscovery.
             assertEquals(
-                listOf("wss://popular.example/" to 3, "wss://quiet.example/" to 2, "wss://lonely.example/" to 1),
-                all.map { it.url.url to it.references },
+                listOf("wss://lonely.example/", "wss://popular.example/", "wss://quiet.example/"),
+                all.map { it.url.url },
             )
         }
 
     @Test
-    fun `one scan feeds several selects, and their counts add up`() =
+    fun `one scan feeds several selects, and their relays are unioned`() =
         runBlocking {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
             store.insert(event(10002, arrayOf("r", "wss://shared.example", "write")))
@@ -341,10 +344,11 @@ class RelayDiscoveryTest {
                     ),
                 )
 
-            // A relay two events name outranks one only a single event names.
+            // Both selects contribute, and a relay named by several is present
+            // once — the union is the point, not the tally.
             assertEquals(
-                listOf("wss://shared.example/" to 2, "wss://dm.example/" to 1),
-                found.map { it.url.url to it.references },
+                listOf("wss://dm.example/", "wss://shared.example/"),
+                found.map { it.url.url },
             )
         }
 
@@ -414,7 +418,11 @@ class RelayDiscoveryTest {
                     pageSize = 2,
                 )
             assertEquals(12, found.size, "every event must be seen exactly once, whatever the page size")
-            assertEquals(List(12) { 1 }, found.map { it.references }, "no event counted twice across a page boundary")
+            assertEquals(
+                12,
+                found.map { it.url.url }.distinct().size,
+                "no relay repeated across a page boundary",
+            )
         }
 
     @Test

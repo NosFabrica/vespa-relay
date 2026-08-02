@@ -20,16 +20,16 @@
  */
 package com.vitorpamplona.quartz.eventstore.relay
 
+import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 
-/** One relay a [DynamicRelayList] found, and how many tags across it named the relay. */
+/** One relay a [DynamicRelayList] found. */
 data class DiscoveredRelay(
     val url: NormalizedRelayUrl,
-    val references: Int,
 )
 
 /**
@@ -47,9 +47,22 @@ data class DiscoveredRelay(
  * pull from relay lists and hints at once.
  *
  * Nothing truncates that set. Every relay any source names is returned; the only
- * ones left out are [DynamicRelayList.exclude] and the caller's [skip] set. The
- * reference count rides along to order the fan-out (relays the most tags agree
- * on go first) and to make the logs legible.
+ * ones left out are [DynamicRelayList.exclude] and the caller's [skip] set.
+ *
+ * ## Why there is no reference count any more
+ *
+ * The set used to carry how many tags named each relay, and the fan-out went
+ * most-referenced first. Getting that number meant materializing every matching
+ * event — content, tags, sig — to read one tag off each: 2.6M kind-10002 events
+ * per cycle on this deployment, ~265 pages, on a 6-hour timer, for a set that
+ * barely moves.
+ *
+ * The store now answers the question directly ([NostrSemanticsStore.distinctTagValues],
+ * a tags-only visit projection), and it returns a SET — the count is not
+ * recoverable from it. The ordering was a heuristic, not correctness: every
+ * discovered relay is synced in the cycle either way, and [DynamicRelayList.concurrency]
+ * decides how many at once, not which. Trading it for a walk that reads one
+ * field instead of whole documents is the deal on offer.
  */
 object RelayDiscovery {
     /**
@@ -62,28 +75,50 @@ object RelayDiscovery {
         skip: Set<NormalizedRelayUrl> = emptySet(),
         pageSize: Int = SCAN_PAGE,
     ): List<DiscoveredRelay> {
-        val counts = HashMap<NormalizedRelayUrl, Int>()
-        // One set reused across the whole walk. Most scanned events name no
-        // relay at all — a kind-1 hint scan is overwhelmingly hintless — and a
-        // fresh set per event was the scan's dominant allocation.
-        val perEvent = LinkedHashSet<NormalizedRelayUrl>()
+        val found = LinkedHashSet<NormalizedRelayUrl>()
         for (source in dynamic.sources) {
-            // One scan per source, every select applied to what it returns — a
-            // shelf of relay-list kinds costs one scan, not one scan each.
-            scan(store, source.filter, pageSize) { event ->
-                // One event counts a relay once, however many tags — or selects —
-                // repeat it.
-                perEvent.clear()
-                urlsIn(event, source.selects, perEvent)
-                for (url in perEvent) counts.merge(url, 1, Int::plus)
+            // A NAMED tag goes to the store's projection: it streams the tags
+            // field alone, where paging events materialized all of each one.
+            val named = source.selects.filter { it.tag != null }
+            val anyTag = source.selects.filter { it.tag == null }
+            val semantics = (store as? VespaEventStore)?.store
+            if (semantics != null) {
+                for (select in named) {
+                    // A select naming a kind narrows the scan to it; the source
+                    // filter already carries the rest.
+                    val filter = select.kind?.let { source.filter.copy(kinds = listOf(it)) } ?: source.filter
+                    val raw =
+                        semantics.distinctTagValues(
+                            filter = filter,
+                            tagName = select.tag!!,
+                            valueIndex = select.index,
+                            // The whole tag, so a positional condition on another
+                            // element still applies — NIP-65's marker at 2.
+                            where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
+                        )
+                    for (v in raw) normalize(v, requireScheme = false)?.let(found::add)
+                }
+            }
+            // A select with NO tag name can match anything in an event, which the
+            // projection cannot express — it needs a tag to ask about. Those keep
+            // the paging scan, and it is the rare shape: relay hints on ordinary
+            // e/p/a/q tags.
+            val stillPaged = if (semantics == null) source.selects else anyTag
+            if (stillPaged.isNotEmpty()) {
+                val perEvent = LinkedHashSet<NormalizedRelayUrl>()
+                scan(store, source.filter, pageSize) { event ->
+                    perEvent.clear()
+                    urlsIn(event, stillPaged, perEvent)
+                    found += perEvent
+                }
             }
         }
 
-        return counts
+        return found
             .asSequence()
-            .filter { it.key !in dynamic.exclude && it.key !in skip }
-            .map { DiscoveredRelay(it.key, it.value) }
-            .sortedWith(compareByDescending<DiscoveredRelay> { it.references }.thenBy { it.url.url })
+            .filter { it !in dynamic.exclude && it !in skip }
+            .map { DiscoveredRelay(it) }
+            .sortedBy { it.url.url }
             .toList()
     }
 

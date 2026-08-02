@@ -1275,7 +1275,7 @@ class MirrorRouter(
         System.err.println(
             "router: ${stream.name} syncing ${relays.size} relay(s) from [$sourceNames]" +
                 " against ${local.size} local id(s)" +
-                " (top: ${relays.take(3).joinToString { "${it.url.url} x${it.references}" }})",
+                " (e.g. ${relays.take(3).joinToString { it.url.url }})",
         )
         val done = AtomicLong()
         val skipped = AtomicLong()
