@@ -58,6 +58,33 @@
   button:disabled { opacity: .5; cursor: default; }
   input { width: 22rem; max-width: 100%; }
   .status { color: var(--muted); font-size: .9rem; }
+  /* Same two widgets as the search page: who you are, and whose trust to ask
+     through. Duplicated rather than shared because these pages are deliberately
+     one file each with no build step — the cost of that choice, paid openly. */
+  .me { width: 30px; height: 30px; padding: 0; border: 1px solid var(--line); border-radius: 50%;
+        background: var(--bg); cursor: pointer; display: grid; place-items: center; overflow: hidden;
+        color: var(--muted); font-size: 12px; font-weight: 700; line-height: 1; }
+  .me:hover { border-color: var(--accent); }
+  .me img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .me.in { border-color: var(--accent); }
+  .me.busy { opacity: .55; pointer-events: none; }
+  .obsbox { position: relative; display: inline-flex; align-items: center; gap: 6px; }
+  .obslabel { color: var(--muted); font-size: .85rem; }
+  .obscurrent { font-size: .85rem; font-weight: 600; max-width: 11rem; overflow: hidden;
+                text-overflow: ellipsis; white-space: nowrap; }
+  .obsbox.active .obscurrent { color: var(--accent); }
+  .obsfilter { width: 9rem; }
+  .obsreset { display: none; border: 0; background: none; color: var(--muted); cursor: pointer;
+              font-size: 15px; line-height: 1; padding: 0 .2rem; }
+  .obsbox.active .obsreset { display: inline; }
+  .obslist { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; margin: 0; padding: 4px;
+             list-style: none; min-width: 16rem; max-height: 15rem; overflow-y: auto;
+             background: var(--surface); border: 1px solid var(--line); border-radius: .5rem;
+             box-shadow: 0 6px 20px rgba(0,0,0,.18); }
+  .obslist:empty { display: none; }
+  .obslist li { padding: 5px 8px; border-radius: 6px; cursor: pointer; font-size: .85rem; white-space: nowrap; }
+  .obslist li:hover { background: var(--bg); }
+  .obslist li.muted { color: var(--muted); cursor: default; }
   .wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; }
   table { border-collapse: collapse; width: 100%; min-width: 34rem; }
   th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
@@ -80,8 +107,15 @@
 
   <div class="bar-row">
     <button id="run">Count</button>
+    <button id="me" type="button" class="me" aria-label="Sign in"></button>
+    <span id="obsbox" class="obsbox" title="Whose web of trust the third column asks through. Only pubkeys with a kind 10040 can rank anything.">
+      <span class="obslabel">third column as</span>
+      <span id="obscurrent" class="obscurrent">nobody</span>
+      <input id="obsfilter" class="obsfilter" placeholder="pick an observer…" autocomplete="off" />
+      <button id="obsreset" class="obsreset" type="button" title="Drop the third column">&times;</button>
+      <ul id="obslist" class="obslist"></ul>
+    </span>
     <input id="extra" placeholder="also count these kinds, comma separated" />
-    <input id="obs" placeholder="observer pubkey (64-hex) for the third column" />
     <span class="status" id="status">idle</span>
   </div>
 
@@ -92,7 +126,7 @@
           <th>Kind</th><th>Name</th>
           <th class="n">Anonymous</th>
           <th class="n">As you</th>
-          <th class="n">As a named observer</th>
+          <th class="n" id="thirdhead">As a named observer</th>
         </tr>
       </thead>
       <tbody id="rows"></tbody>
@@ -132,7 +166,22 @@ const statusEl = document.getElementById("status");
 const footEl = document.getElementById("foot");
 const runEl = document.getElementById("run");
 const extraEl = document.getElementById("extra");
-const obsEl = document.getElementById("obs");
+const meEl = document.getElementById("me");
+const obsBoxEl = document.getElementById("obsbox");
+const obsCurrentEl = document.getElementById("obscurrent");
+const obsFilterEl = document.getElementById("obsfilter");
+const obsListEl = document.getElementById("obslist");
+const obsResetEl = document.getElementById("obsreset");
+const thirdHeadEl = document.getElementById("thirdhead");
+
+// Who this page is, and whose lens the third column asks through. Same two
+// widgets as the search page, and the same rule behind them: signing in is not
+// a choice you make, the lens is.
+let me = null;              // hex pubkey once signed in
+let loginTried = false;
+let viewingAs = null;       // hex pubkey for the third column, or null
+let observers = null;       // [{pubkey,name,picture}] once loaded
+const profiles = new Map();
 
 const fmt = (n) => n.toLocaleString();
 
@@ -157,18 +206,80 @@ function render(results) {
 }
 
 /**
- * The pubkey typed into the observer box, or null.
+ * Every pubkey that published a kind 10040 — the only ones whose scores the
+ * store projects, so the only ones worth offering as a lens.
  *
  * This column used to read the relay's NIP-11 `self` and call it "the house
- * key", which was wrong twice over: `self` is the relay's IDENTITY (NIP-42,
- * NIP-66 signing) and has scored nobody, and the separate DEFAULT_OBSERVER it
- * was standing in for has since been removed — anonymous readers now get the
- * whole corpus rather than someone else's lens. Any lens is now something a
- * caller asks for explicitly, so the page asks explicitly too.
+ * key", wrong twice over: `self` is the relay's signing IDENTITY and has scored
+ * nobody, and the DEFAULT_OBSERVER it stood in for has since been removed.
  */
-function namedObserver() {
-  const v = (obsEl.value || "").trim().toLowerCase();
-  return /^[0-9a-f]{64}$/.test(v) ? v : null;
+async function loadObservers(ws) {
+  if (observers) return observers;
+  const lists = await ws.req({ kinds: [10040], limit: 2000 });
+  const keys = [...new Set(lists.map((e) => e.pubkey))];
+  for (let i = 0; i < keys.length; i += 200) {
+    for (const ev of await ws.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
+      let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
+      profiles.set(ev.pubkey, { name: c.display_name || c.name || "", picture: c.picture || "" });
+    }
+  }
+  observers = keys
+    .map((pubkey) => ({ pubkey, name: profiles.get(pubkey)?.name || "" }))
+    .sort((a, b) => (a.name || "\uffff").localeCompare(b.name || "\uffff"));
+  return observers;
+}
+
+function renderObserverOptions(q) {
+  const t = q.trim().toLowerCase();
+  const hits = (observers || []).filter((o) => !t || o.name.toLowerCase().includes(t) || o.pubkey.startsWith(t));
+  obsListEl.innerHTML = "";
+  for (const o of hits.slice(0, 50)) {
+    const li = document.createElement("li");
+    li.textContent = o.name ? `${o.name} · ${o.pubkey.slice(0, 8)}…` : o.pubkey.slice(0, 16) + "…";
+    li.onclick = () => setViewingAs(o.pubkey, o.name);
+    obsListEl.appendChild(li);
+  }
+  if (!hits.length) {
+    const li = document.createElement("li");
+    li.className = "muted";
+    li.textContent = observers ? "no observer matches" : "loading observers…";
+    obsListEl.appendChild(li);
+  }
+}
+
+function setViewingAs(pubkey, name) {
+  viewingAs = pubkey;
+  obsBoxEl.classList.toggle("active", !!pubkey);
+  obsCurrentEl.textContent = pubkey ? (name || pubkey.slice(0, 12) + "…") : "nobody";
+  thirdHeadEl.textContent = pubkey ? `As ${name || pubkey.slice(0, 8) + "…"}` : "As a named observer";
+  obsListEl.innerHTML = "";
+  obsFilterEl.value = "";
+}
+
+/** The avatar: your picture signed in, a neutral mark signed out. */
+function renderMe() {
+  const p = me ? profiles.get(me) : null;
+  meEl.classList.toggle("in", !!me);
+  if (me && p && p.picture) meEl.innerHTML = `<img src="${p.picture}" alt="" onerror="this.remove()"/>`;
+  else meEl.textContent = me ? ((p && p.name) || me).slice(0, 2).toUpperCase() : "\u00b7\u00b7";
+  meEl.title = me
+    ? `Signed in as ${(p && p.name) || me.slice(0, 12) + "…"} — click to sign out`
+    : loginTried ? "Signed out — click to sign in with your Nostr extension" : "Signing in…";
+}
+
+async function signIn(ws) {
+  if (!(window.nostr && window.nostr.signEvent)) throw new Error("no NIP-07 extension");
+  for (let i = 0; i < 20 && !ws.challenge; i++) await new Promise((r) => setTimeout(r, 100));
+  if (!ws.challenge) throw new Error("relay sent no AUTH challenge");
+  const signed = await window.nostr.signEvent({
+    kind: 22242,
+    created_at: Math.floor(Date.now() / 1000),
+    tags: [["relay", RELAY_URL], ["challenge", ws.challenge]],
+    content: "",
+  });
+  ws.send(JSON.stringify(["AUTH", signed]));
+  await new Promise((r) => setTimeout(r, 300));
+  return signed.pubkey;
 }
 
 // A connection is either authenticated or not for its whole life, so each mode
@@ -185,7 +296,10 @@ function connect(sign, observer) {
     ws.onmessage = (ev) => {
       let msg; try { msg = JSON.parse(ev.data); } catch { return; }
       const [type, id] = msg;
-      if (type === "AUTH") { challenge = id; return; }
+      // Kept on the socket too: signIn() authenticates a connection opened
+      // elsewhere (the avatar's, the picker's), and a local would be invisible
+      // to it.
+      if (type === "AUTH") { challenge = id; ws.challenge = id; return; }
       const p = pending.get(id);
       if (!p) return;
       if (type === "COUNT") { clearTimeout(p.timer); pending.delete(id); p.resolve(msg[2] || null); }
@@ -213,6 +327,29 @@ function connect(sign, observer) {
       }
       resolve(ws);
     };
+    ws.req = (filter) =>
+      new Promise((res) => {
+        const id = "r" + Math.random().toString(36).slice(2, 8);
+        const acc = [];
+        const prev = ws.onmessage;
+        // One exit, however the request ends — a timeout that left the handler
+        // swapped and the subscription open cost the sibling page a table full
+        // of blanks before anyone noticed.
+        const finish = () => {
+          clearTimeout(timer);
+          ws.onmessage = prev;
+          try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
+          res(acc);
+        };
+        const timer = setTimeout(finish, PER_KIND_TIMEOUT_MS);
+        ws.onmessage = (ev) => {
+          let m; try { m = JSON.parse(ev.data); } catch { return; }
+          if (m[1] !== id) return prev(ev);
+          if (m[0] === "EVENT") acc.push(m[2]);
+          else if (m[0] === "EOSE" || m[0] === "CLOSED") finish();
+        };
+        ws.send(JSON.stringify(["REQ", id, filter]));
+      });
     ws.count = (kind) =>
       new Promise((res) => {
         const subId = "k" + kind + "-" + Math.random().toString(36).slice(2, 8);
@@ -234,17 +371,16 @@ async function run() {
   const results = [...KINDS.map(([kind, name]) => ({ kind, name })), ...extra.map((kind) => ({ kind, name: "" }))];
   render(results);
 
-  const house = namedObserver();
   const modes = [
     ["anon", false, null],
     ["you", true, null],
-    ["house", true, house],
+    ["house", true, viewingAs],
   ];
 
   const started = Date.now();
   const notes = [];
   for (const [key, sign, observer] of modes) {
-    if (key === "house" && !house) { notes.push("no observer pubkey given, so that column was skipped"); continue; }
+    if (key === "house" && !viewingAs) { notes.push("no observer picked, so the third column was skipped"); continue; }
     let ws;
     try {
       statusEl.textContent = `connecting (${key})…`;
@@ -274,7 +410,7 @@ async function run() {
   );
   footEl.innerHTML =
     `${answered}/${results.length} kind(s) answered` +
-    (house ? ` · observer <code>${house.slice(0, 12)}…</code>` : "") +
+    (viewingAs ? ` · third column through <code>${viewingAs.slice(0, 12)}…</code>` : "") +
     (impossible.length
       ? ` · <span class="none">kind(s) ${impossible.map((r) => r.kind).join(", ")} count MORE when authenticated than anonymous — gating should only remove</span>`
       : "") +
@@ -285,8 +421,63 @@ async function run() {
   runEl.disabled = false;
 }
 
+// The picker needs a connection to read the 10040s from, and the avatar needs
+// one to authenticate on. One short-lived socket for both, opened on demand.
+async function withSocket(fn) {
+  const ws = await connect(false, null);
+  try { return await fn(ws); } finally { try { ws.close(); } catch {} }
+}
+
+obsFilterEl.addEventListener("focus", async () => {
+  renderObserverOptions(obsFilterEl.value);
+  await withSocket((ws) => loadObservers(ws));
+  renderObserverOptions(obsFilterEl.value);
+});
+obsFilterEl.addEventListener("input", () => renderObserverOptions(obsFilterEl.value));
+obsResetEl.addEventListener("click", () => setViewingAs(null, null));
+
+meEl.addEventListener("click", async () => {
+  meEl.classList.add("busy");
+  try {
+    if (me) { me = null; } else {
+      loginTried = true;
+      me = await withSocket((ws) => signIn(ws));
+      // Its own profile, so the avatar is a face rather than initials.
+      await withSocket(async (ws) => {
+        for (const ev of await ws.req({ kinds: [0], authors: [me], limit: 1 })) {
+          let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
+          profiles.set(me, { name: c.display_name || c.name || "", picture: c.picture || "" });
+        }
+      });
+    }
+  } catch (e) {
+    me = null;
+    statusEl.textContent = e.message || String(e);
+  } finally {
+    meEl.classList.remove("busy");
+    renderMe();
+  }
+});
+
 runEl.addEventListener("click", run);
-run();
+renderMe();
+// Signed in on load, best effort: the "as you" column is the point of the page,
+// and it is empty without a reader. No extension just means that column reports
+// what an anonymous caller sees, which the page already says.
+(async () => {
+  loginTried = true;
+  try {
+    me = await withSocket((ws) => signIn(ws));
+    await withSocket(async (ws) => {
+      for (const ev of await ws.req({ kinds: [0], authors: [me], limit: 1 })) {
+        let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
+        profiles.set(me, { name: c.display_name || c.name || "", picture: c.picture || "" });
+      }
+    });
+  } catch { me = null; }
+  renderMe();
+  run();
+})();
 </script>
 </body>
 </html>
