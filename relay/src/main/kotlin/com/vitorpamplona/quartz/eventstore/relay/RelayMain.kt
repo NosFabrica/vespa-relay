@@ -24,8 +24,12 @@ import com.vitorpamplona.quartz.eventstore.store.SchemaDeployer
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 
 /**
  * Run a standalone trust-ranking Nostr relay against a Vespa. It opens the
@@ -181,8 +185,27 @@ fun main() {
     // its 10040s arrived stays unprojected, and every ranked search comes back
     // empty with nothing logged anywhere. Settling it here costs a few queries
     // when the answer is "nothing to do", which is the normal case.
+    // Started here, AWAITED NOWHERE. This used to be `runBlocking`, sitting
+    // between opening the store and starting the listener, and the store's own
+    // note for it — "a few queries when the answer is nothing to do, which is
+    // the normal case" — stopped being true as the corpus grew. Measured at 12+
+    // minutes on 36M kind-30382 events, with Vespa at 356% CPU and this relay
+    // serving NOTHING: no websocket, no router, no NIP-11. Every restart was an
+    // outage that got longer the better the relay did its job.
+    //
+    // The work is worth doing and none of it needs to happen before the first
+    // client connects. Serving with an unsettled projection degrades one
+    // feature — ranked search returns less until it lands — where blocking
+    // degrades all of them, absolutely, for an unbounded time. So it runs
+    // behind the server and says where it has got to.
+    val trustScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
-        runBlocking { reconcileTrustWithRetry(store) }
+        trustScope.launch {
+            println("trust: reconciling in the background — ranked search may return less until this finishes")
+            val startedMs = System.currentTimeMillis()
+            reconcileTrustWithRetry(store)
+            println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+        }
     }
     // One instance, shared: the relay server measures client reads into it, the
     // router reads it back to decide whether to yield. A relay answers clients
@@ -248,6 +271,11 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
+            // The background reconcile holds the store open and would keep
+            // querying an engine we are about to close. Cancelled first, and NOT
+            // waited for: an unfinished reconcile costs a less complete ranking
+            // until the next start, which is exactly what it costs anyway.
+            trustScope.cancel()
             // Stop mirroring into the store before the relay and store close.
             router?.close()
             // After the router, so the final report includes the last batch.
