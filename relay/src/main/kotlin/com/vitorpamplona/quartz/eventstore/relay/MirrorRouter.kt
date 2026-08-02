@@ -210,7 +210,31 @@ class MirrorRouter(
     private val countUnanswered =
         java.util.concurrent.ConcurrentHashMap
             .newKeySet<NormalizedRelayUrl>()
-    private val inboundCapacity = (ingestBatch * 4).coerceAtLeast(4096)
+
+    /**
+     * How many downloaded events may wait for ingest.
+     *
+     * Bounded at both ends, and the ceiling is the one that matters. This was
+     * `ingestBatch * 4` with only a floor, so raising ROUTER_INGEST_BATCH to
+     * 20000 — to cut per-batch round trips, which it did — silently sized the
+     * queue at 80,000 events. With three streams and 50 relays transferring at
+     * once that filled, and the heap went to 93% and then over:
+     *
+     *     health heap 8043/8608MB (93%) !! AT THE CEILING,
+     *     ingest queue 80000/80000 FULL, 0 ev/s, 50 relay(s) transferring
+     *     FATAL OutOfMemoryError killed thread DefaultDispatcher-worker-67
+     *
+     * Batch size and queue depth are separate concerns that happened to share a
+     * knob: the batch decides how much work each mutex hold amortises, the queue
+     * decides how much memory sits between download and write. Tying them meant
+     * tuning throughput moved the memory ceiling, which is not a trade an
+     * operator agreed to.
+     *
+     * The cap is deliberately below what the heap can hold, because this queue
+     * is not the only claimant — the in-flight batches, the relay sockets and
+     * the negentropy id sets all want the same heap.
+     */
+    private val inboundCapacity = (ingestBatch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
     private val inbound = Channel<Inbound>(inboundCapacity)
 
     // How full [inbound] is. Channel does not expose its depth, and this one
@@ -1876,10 +1900,16 @@ private suspend fun bisect(
 private const val ISOLATION_WRITE_BUDGET = 64
 
 /**
+ * Ceiling on queued-but-not-yet-ingested events, independent of batch size.
+ * 16k events is a few hundred MB at Nostr's event sizes — enough to keep ingest
+ * fed across a stall, far short of what killed the process at 80,000.
+ */
+private const val MAX_INBOUND_QUEUE = 16_384
+
+/**
  * [MirrorRouter.dynamicSyncOne]'s two failure returns, distinct because only one
- * of them is publishable — see [MirrorRouter.provesUnreachable]. Both are
- * negative so `got > 0` (delivered) and `got == 0` (nothing new) keep meaning
- * what they did.
+ * of them is publishable — see [Unreachability]. Both are negative so `got > 0`
+ * (delivered) and `got == 0` (nothing new) keep meaning what they did.
  */
 private const val UNREACHABLE = -1
 
