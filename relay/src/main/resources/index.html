@@ -756,6 +756,18 @@ function rememberSignIn(yes) {
     profiles.delete(me);
     try { await enrichProfiles([me]); } catch (e) {}
     renderWhoami();
+    // The fetch above races page load: the reference socket is opening at the
+    // same time as the main one, and when it loses, `me` is signed in with no
+    // profile and NOTHING retries — the avatar sat on a placeholder until the
+    // user clicked twice, which signed them out and back in again. Retry a
+    // couple of times, quietly, and stop as soon as a face arrives.
+    for (let i = 0; i < 3 && me && !profiles.get(me); i++) {
+      await new Promise((r) => setTimeout(r, 600 * (i + 1)));
+      if (!me) break;
+      profiles.delete(me);
+      try { await enrichProfiles([me]); } catch (e) {}
+      renderWhoami();
+    }
   }
 
   // Signed in automatically, once, best effort.
@@ -1393,8 +1405,16 @@ function rememberSignIn(yes) {
     $me.classList.toggle("in", !!me);
     if (me && p && p.picture) {
       $me.innerHTML = `<img src="${esc(p.picture)}" alt="" onerror="this.remove()"/>`;
+    } else if (me && nm) {
+      $me.textContent = nm.slice(0, 2).toUpperCase();
     } else if (me) {
-      $me.textContent = (nm || npub(me)).slice(0, 2).toUpperCase();
+      // Signed in, profile not (yet) known. Initials off an npub spell "NP" for
+      // every account on earth, which reads as a broken avatar rather than as a
+      // missing profile.
+      $me.innerHTML =
+        `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"` +
+        ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+        `<circle cx="12" cy="12" r="9"/><path d="M12 8v4M12 16h.01"/></svg>`;
     } else {
       // A person outline, not two dots: "no account" should look like an empty
       // seat, and a dot pair looked like something still loading.
