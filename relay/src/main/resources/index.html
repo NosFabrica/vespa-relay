@@ -1237,31 +1237,30 @@ function rememberSignIn(yes) {
     L.push(`  search string ${JSON.stringify(searchString($q.value.trim()))}`);
     L.push(`  full filter   ${JSON.stringify({ search: searchString($q.value.trim()), limit: FULL_LIMIT, ...(tab.kinds ? { kinds: tab.kinds } : {}) })}`);
     L.push("");
-    L.push(`RESULTS  ${s.hits.length} in ${s.lastMs ?? "?"} ms, in the order the relay returned them`);
-    L.push("");
-    s.hits.forEach((ev, i) => {
-      const p = ev.kind === 0 ? parseProfile(ev) : null;
-      const author = p || profiles.get(ev.pubkey) || null;
-      const sc = scores.get(ev.pubkey);
-      const title = titleOf(ev) || "";
-      const body = clip((ev.content || "").replace(/\s+/g, " "), 240);
-      L.push(`#${String(i + 1).padStart(3)}  kind ${ev.kind}  ${new Date(ev.created_at * 1000).toISOString()}`);
-      L.push(`      author      ${displayName(author) || "(no profile)"}  ${npub(ev.pubkey)}`);
-      L.push(`      trust score ${sc == null ? "(none under this lens)" : sc}`);
-      if (author && author.nip05) {
-        const v = nip05Cache.get(`${author.nip05}|${ev.pubkey}`);
-        L.push(`      nip05       ${author.nip05}${v ? `  [${v === "ok" ? "verified" : v === "bad" ? "MISMATCH" : "unchecked"}]` : ""}`);
+    // Whose scores produced this order, listed once rather than repeated per
+    // result — and kept OUT of the events themselves, which are reproduced
+    // exactly as the relay sent them. Annotating an event with a number the
+    // relay never put there would be inventing evidence.
+    const authors = [...new Set(s.hits.map((e) => e.pubkey))];
+    if (lens) {
+      L.push("AUTHOR SCORES UNDER THIS LENS");
+      for (const a of authors) {
+        const sc = scores.get(a);
+        L.push(`  ${npub(a)}  ${sc == null ? "(no score)" : sc}  ${nameOf(a) || ""}`.trimEnd());
       }
-      if (title) L.push(`      title       ${clip(title, 160)}`);
-      if (body) L.push(`      content     ${body}`);
-      L.push(`      id          ${noteId(ev.id)}`);
       L.push("");
-    });
+    }
+    L.push(`RESULTS  ${s.hits.length} event(s) in ${s.lastMs ?? "?"} ms, in the order the relay returned them.`);
+    L.push("Verbatim, unmodified — this is the array the page is rendering.");
+    L.push("");
+    L.push(JSON.stringify(s.hits, null, 2));
+    L.push("");
     L.push("QUESTION FOR THE READER");
-    L.push("  Is this order defensible? The relay ranks by the trust score above,");
-    L.push("  under the stated lens — not by recency or text relevance alone.");
-    L.push("  A result placed above another with a higher score, or a low-scoring");
-    L.push("  result near the top, is worth challenging.");
+    L.push("  Is this order defensible? The relay ranks under the lens named above,");
+    L.push("  by the author scores listed above — not by recency or text relevance");
+    L.push("  alone. A result placed above another whose author scores higher, or a");
+    L.push("  low-scoring author near the top, is worth challenging.");
+    L.push("  The events are verbatim: nothing has been trimmed or annotated.");
     return L.join("\n");
   }
 
