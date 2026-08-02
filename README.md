@@ -46,7 +46,8 @@ All configuration is through environment variables.
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
 | `RELAY_PORT` | port to listen on | `7777` |
 | `DEFAULT_OBSERVER` | the `npub1…` whose web of trust ranks anonymous searches — somebody's public key, usually the NIP-85 provider you trust, not this relay's. Hex parses too, but a bad value stops the relay rather than being ignored | unset ⇒ untrusted |
-| `AUTO_DEPLOY` | deploy the bundled schema on first run | `true` |
+| `AUTO_DEPLOY` | deploy the bundled Vespa schema on **every** boot, so the cluster always matches the schema this build expects. A no-change deploy is a cheap no-op; a failed one is fatal, because feeding a cluster whose schema we disagree with loses events silently | `true` |
+| `VESPA_CONFIG_URL` | Vespa's config server, for the deploy above | `VESPA_URL` on `:19071` |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
 ### Relay identity (NIP-11)
@@ -179,6 +180,18 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   so a stream naming neither backfills the upstream's **whole history**. Bound it
   with `since` when that is not what you want. Upstreams without NIP-77 fall back
   to paged REQ automatically.
+- **`sync`** — how the stream asks for what it is missing: `negentropy`, `fetch`,
+  or `auto` (the default). This is a property of the **data**, not of the relay,
+  and no measurement can infer it:
+
+  | | use when | because |
+  |---|---|---|
+  | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
+  | `fetch` | each relay holds its own events and nobody else's — NIP-85 assertions are per-provider by construction | two providers share essentially nothing, so comparing millions of ids for a near-empty intersection costs more than the fetch, and it would build a huge local id snapshot to do it. The sync cursor already answers "what is new since we last asked" |
+  | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `ROUTER_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
+
+  A `fetch` stream never builds the local id set at all, which is the single most
+  expensive thing the router does.
 - **`trusted`** *(optional)* — skip signature verification for this upstream's
   events. Off by default; every mirrored event is verified and re-checked
   against the stream filter before it enters the store.
