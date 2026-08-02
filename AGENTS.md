@@ -145,8 +145,16 @@ statement about someone else's server.
 ## Operations
 
 `docker-compose.yml` runs Vespa and the relay. Vespa holds ~50M events in this
-deployment; its transaction-log replay means the relay takes a minute to reach
-the router on boot.
+deployment.
+
+**Startup is a barrier, and it is long.** `RelayMain` runs
+`runBlocking { reconcileTrustWithRetry(store) }` between opening the store and
+starting the listener, so there is no websocket, no router and no NIP-11 until
+it finishes — measured at 12+ minutes on this corpus, with Vespa at 356% CPU.
+`TRUST_RECONCILE_ON_START=false` skips it and serves immediately, at the cost of
+ranked search staying unsettled. Do not attribute a slow start to Vespa's
+transaction-log replay without checking this first; that mistake is already in
+this file's history.
 
 The relay **deploys the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
 default true), so the cluster always matches the code talking to it. A no-change
