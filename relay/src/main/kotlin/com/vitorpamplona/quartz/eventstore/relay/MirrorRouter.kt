@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
@@ -39,6 +40,8 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
+import com.vitorpamplona.quartz.utils.Log
+import com.vitorpamplona.quartz.utils.LogLevel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
@@ -108,6 +111,8 @@ class MirrorRouter(
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
     // Null (the default) leaves challenges unanswered. See [RelayIdentity].
     private val signer: NostrSigner? = null,
+    // ROUTER_WIRE_LOG: "" (errors only) / "sent" / "full". See [wireLog].
+    private val wireLogMode: String = "",
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -290,6 +295,53 @@ class MirrorRouter(
 
     /** Time-axis progress for every paged walk in flight, across both paths. */
     private val paging = PagingProgress()
+
+    /**
+     * What actually goes down the wire, when the counters stop making sense.
+     *
+     * Tonight `purplepag.es` returned 3,137,680 events on one build and 601 on
+     * the next, from the same code path and the same filter. Hand-walking the
+     * relay with a throwaway script showed twelve full pages and no sign of
+     * stopping — so the relay was willing and the client stopped, and there was
+     * no way to see which REQ we sent last or what came back with it.
+     *
+     * [RelayLogger] already knew how to answer that and was simply never
+     * constructed. Its error half — NOTICE, CLOSED, failed sends — is
+     * unconditional and worth having on always: those are the relay telling us
+     * why it stopped, and we have been discarding them. `full` adds every
+     * command sent and message received, which is a line per event and belongs
+     * only under a specific investigation.
+     *
+     * `LimitsMessage` is the one to watch: it carries `maxLimit` and
+     * `maxSubscriptions`, the page cap we have been inferring from probes.
+     */
+    private val wireLog =
+        when (wireLogMode) {
+            "full", "sent" -> {
+                // Lower the floor to match, or the switch does nothing. The sent
+                // and received lines are DEBUG, and QUARTZ_LOG_LEVEL is WARN in
+                // every deployment we run (quartz defaults to DEBUG, which logs a
+                // line per malformed upstream profile). So ROUTER_WIRE_LOG=sent
+                // was accepted, constructed its logger, and printed nothing —
+                // a component configured, silent, and doing its job invisibly,
+                // which is the failure this codebase keeps trying to design out.
+                // Announced, because raising quartz's verbosity is not something
+                // to do to an operator quietly.
+                if (Log.minLevel > LogLevel.DEBUG) {
+                    Log.minLevel = LogLevel.DEBUG
+                    System.err.println(
+                        "router: ROUTER_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG (was ${'$'}{LogLevel.WARN}) — this is verbose",
+                    )
+                }
+                RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")
+            }
+
+            // Errors only, which need no floor change: NOTICE, CLOSED and failed
+            // sends are logged at WARN and ERROR by RelayLogger regardless.
+            else -> {
+                RelayLogger(client, debugSending = false, debugReceiving = false)
+            }
+        }
 
     fun start(): MirrorRouter {
         if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {

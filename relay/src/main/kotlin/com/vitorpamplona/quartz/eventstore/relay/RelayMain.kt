@@ -78,6 +78,10 @@ import kotlinx.coroutines.runBlocking
  *                             that a duplicate never reaches (default true)
  *
  *   Parse audit / quartz logging (optional; see ParseAudit):
+ *   ROUTER_WIRE_LOG          "" (default) logs only what the relay complains
+ *                            about — NOTICE, CLOSED, failed sends. "sent" adds
+ *                            every command we send; "full" adds every message
+ *                            received, which is a line per event
  *   QUARTZ_LOG_LEVEL         quartz's log floor: DEBUG/INFO/WARN/ERROR. Quartz
  *                            defaults to DEBUG, so malformed upstream profiles
  *                            log a line per event during a backfill
@@ -179,6 +183,7 @@ fun main() {
                 audit = parseAudit,
                 cursors = cursors,
                 signer = identity,
+                wireLogMode = env["ROUTER_WIRE_LOG"]?.trim()?.lowercase() ?: "",
             ).start()
         }
 
