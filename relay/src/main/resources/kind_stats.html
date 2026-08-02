@@ -324,7 +324,13 @@ function renderMe() {
   const p = me ? profiles.get(me) : null;
   meEl.classList.toggle("in", !!me);
   if (me && p && p.picture) meEl.innerHTML = `<img src="${p.picture}" alt="" onerror="this.remove()"/>`;
-  else meEl.textContent = me ? ((p && p.name) || me).slice(0, 2).toUpperCase() : "\u00b7\u00b7";
+  else if (me) meEl.textContent = ((p && p.name) || npub(me)).slice(0, 2).toUpperCase();
+  // A person outline, not two dots: "no account" should look like an empty seat,
+  // and a dot pair looked like something still loading.
+  else meEl.innerHTML =
+    `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"` +
+    ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+    `<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
   meEl.title = me
     ? `Signed in as ${(p && p.name) || me.slice(0, 12) + "…"} — click to sign out`
     : loginTried ? "Signed out — click to sign in with your Nostr extension" : "Signing in…";
@@ -332,7 +338,10 @@ function renderMe() {
 
 async function signIn(ws) {
   if (!(window.nostr && window.nostr.signEvent)) throw new Error("no NIP-07 extension");
-  for (let i = 0; i < 20 && !ws.challenge; i++) await new Promise((r) => setTimeout(r, 100));
+  // 10s, not 2: the socket may have only just opened and the AUTH challenge is
+  // a message that arrives after the handshake, so a short budget gets spent on
+  // connecting and the first press fails for no visible reason.
+  for (let i = 0; i < 100 && !ws.challenge; i++) await new Promise((r) => setTimeout(r, 100));
   if (!ws.challenge) throw new Error("relay sent no AUTH challenge");
   const signed = await window.nostr.signEvent({
     kind: 22242,

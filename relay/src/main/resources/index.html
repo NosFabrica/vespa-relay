@@ -711,8 +711,8 @@ function rememberSignIn(yes) {
   // heard of, and it answers "invalid: challenge does not match". Re-reading
   // the challenge after signing and retrying against the new one is the whole
   // fix; without it the only recovery is for the user to click again.
-  async function signAndAuth(attempt = 0) {
-    const challenge = await waitForChallenge(3000);
+  async function signAndAuth(attempt = 0, waitMs = 3000) {
+    const challenge = await waitForChallenge(waitMs);
     if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
     const signed = await window.nostr.signEvent({
       kind: 22242,
@@ -734,7 +734,12 @@ function rememberSignIn(yes) {
   async function login() {
     if (!(window.nostr && window.nostr.signEvent)) throw new Error("No Nostr extension found (window.nostr / NIP-07)");
     await relay.connect();
-    me = await signAndAuth();
+    // A CLICK gets a longer wait than a background attempt. The socket may have
+    // only just opened — the page does not connect at all until something needs
+    // it — and the AUTH challenge is a message that arrives after the handshake,
+    // so a 3s budget was being spent on connecting rather than waiting, and the
+    // first press simply failed. That is why it took a few presses.
+    me = await signAndAuth(0, 10000);
     renderWhoami();
     // Our own face, fetched fresh and AWAITED. enrichProfiles skips a pubkey it
     // has already seen — including one recorded as `null` by a lookup that ran
@@ -972,6 +977,7 @@ function rememberSignIn(yes) {
   async function enrichProfiles(pubkeys) {
     const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
     if (!missing.length) return;
+    let asked = false;
     try {
       // Anonymous, like every other reference lookup. A displayed author's name
       // and face are not a personalised question, and the authenticated socket
@@ -981,8 +987,14 @@ function rememberSignIn(yes) {
       const conn = await refConn();
       const found = await conn.req({ kinds: [0], authors: missing, limit: missing.length }, 5000);
       seedProfiles(found);
-    } catch (e) {}
-    for (const p of missing) if (!profiles.has(p)) profiles.set(p, null); // don't re-ask
+      asked = true;
+    } catch (e) { asked = false; }
+    // Cache "no profile" ONLY when the relay actually answered. This used to
+    // record null on failure too, so one dropped lookup meant that pubkey had
+    // no face for the rest of the session — which is what made signing in
+    // appear to need a page refresh: the very first attempt poisoned the entry
+    // for your own key, and every later render read the poison.
+    if (asked) for (const p of missing) if (!profiles.has(p)) profiles.set(p, null);
   }
 
   // ---- rendering ------------------------------------------------------------
@@ -1316,8 +1328,15 @@ function rememberSignIn(yes) {
     $me.classList.toggle("in", !!me);
     if (me && p && p.picture) {
       $me.innerHTML = `<img src="${esc(p.picture)}" alt="" onerror="this.remove()"/>`;
+    } else if (me) {
+      $me.textContent = (nm || npub(me)).slice(0, 2).toUpperCase();
     } else {
-      $me.textContent = me ? (nm || me).slice(0, 2).toUpperCase() : "\u00b7\u00b7";
+      // A person outline, not two dots: "no account" should look like an empty
+      // seat, and a dot pair looked like something still loading.
+      $me.innerHTML =
+        `<svg viewBox="0 0 24 24" width="17" height="17" fill="none" stroke="currentColor"` +
+        ` stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">` +
+        `<path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>`;
     }
     $me.title = me
       ? `Signed in as ${nm || shortNpub(me)} — click to sign out (reconnects)`
