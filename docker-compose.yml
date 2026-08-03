@@ -126,6 +126,13 @@ services:
       # cannot. Walks the whole corpus; leave off except for the one boot that
       # performs the migration.
       REINDEX_FTS_ON_START: ${REINDEX_FTS_ON_START:-}
+      # DELETE kind-30382 cards from services no stored 10040 names. A by-kind
+      # 30382 sync pulls every service publishing on an upstream — 87 on
+      # nip85.nosfabrica.com against the handful our 10040s actually name — and
+      # those cards rank nothing and are read by nobody. Anything other than
+      # `true` is a DRY RUN. Reclaims space only until the same by-kind filter
+      # re-downloads it, so it pairs with narrowing that stream.
+      SWEEP_ORPHAN_SCORES_ON_START: ${SWEEP_ORPHAN_SCORES_ON_START:-}
       # Where the reindex walk saves its position. In the mounted volume, so a
       # restart resumes instead of redoing the corpus — the store's cursor is
       # resumable by design and holding it only in memory cost 12.2M events

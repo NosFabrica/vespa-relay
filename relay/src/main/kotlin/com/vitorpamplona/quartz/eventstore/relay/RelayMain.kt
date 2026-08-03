@@ -83,6 +83,13 @@ import kotlinx.coroutines.launch
  *                            background (default false). Needed after a store
  *                            upgrade that changes SearchExtractors or adds fed
  *                            search fields; walks the whole corpus
+ *   SWEEP_ORPHAN_SCORES_ON_START  delete every kind-30382 signed by a service no
+ *                            stored 10040 names — cards that rank nothing and are
+ *                            read by nobody, which a by-kind 30382 sync accrues by
+ *                            the million. Any value other than `true` is a DRY RUN
+ *                            (one grouping query, no writes); unset ⇒ off. An
+ *                            operator action: pair it with narrowing the sync, or
+ *                            the next walk re-downloads what it freed
  *   TRUST_RECONCILE_ON_START  at startup, re-derive any service whose scores are
  *                             not projected under its current observer. Needed
  *                             because the view is maintained by write triggers
@@ -300,6 +307,74 @@ fun main() {
                     "fts: reindex FAILED after $total event(s): ${e.message}" +
                         " — the cursor is saved, so restarting with REINDEX_FTS_ON_START resumes here",
                 )
+            }
+        }
+    }
+    // DELETE every kind-30382 signed by a service no stored 10040 names.
+    //
+    // This relay is exactly the case the store wrote the sweep for: the
+    // `nosfabricaScores` stream asks for kind 30382 with no author narrowing, so
+    // it pulls every service publishing on that relay — 87 of them — where the
+    // 10040s we hold name a few. Those cards can never become a tensor cell for
+    // any observer, so they rank nothing and are read by nobody, and on this
+    // machine they are the difference between Vespa fitting in its 34g and
+    // sitting on the ceiling at 99% with ingest wedged behind it.
+    //
+    // A deletion is not a tombstone: the same by-kind stream re-downloads what
+    // this frees on its next walk. Reclaiming space here and narrowing that
+    // filter are one job, not two.
+    //
+    // Dry run by default when the value is not `true` — "which services, how
+    // many cards" costs one grouping query and no writes, and a sweep that
+    // deletes on a typo is not a sweep anyone should have to think twice about.
+    env["SWEEP_ORPHAN_SCORES_ON_START"]?.trim()?.takeIf { it.isNotEmpty() }?.let { setting ->
+        val dryRun = setting.toBooleanStrictOrNull() != true
+        trustScope.launch {
+            val startedMs = System.currentTimeMillis()
+            println(
+                "sweep: ${if (dryRun) "DRY RUN — no writes" else "DELETING orphan scores"}" +
+                    " — kind 30382 from services no stored 10040 names",
+            )
+            var lastReport = 0L
+            runCatching {
+                store.sweepOrphanScores(dryRun) { done, totalServices, swept, totalScores ->
+                    // Paced, because the callback fires per page and this walks
+                    // millions of cards. The totals come from the store's own
+                    // grouping query, so this is a real fraction rather than the
+                    // downloaded/downloaded shape that once printed 100% for
+                    // hours.
+                    val now = System.currentTimeMillis()
+                    if (now - lastReport >= 15_000) {
+                        lastReport = now
+                        val pct = if (totalScores > 0) " (${swept * 100L / totalScores}%)" else ""
+                        println("sweep: $done/$totalServices service(s), $swept/$totalScores score(s)$pct")
+                    }
+                }
+            }.onSuccess { report ->
+                val secs = (System.currentTimeMillis() - startedMs) / 1000
+                // Counts and three examples, NOT the report's own toString: that
+                // carries every orphan pubkey and printed a 38,920-character log
+                // line, which is a wall rather than a number. `orphans` is
+                // deliberately complete so a caller can act on it — a log line
+                // is not that caller.
+                if (report.refused) {
+                    println(
+                        "sweep: REFUSED — no readable 10040 attribution, so every score would look orphaned." +
+                            " Nothing was touched; mirror a provider list first",
+                    )
+                } else {
+                    val eg = report.orphans.take(3).joinToString { it.take(8) + "…" }
+                    println(
+                        "sweep: ${if (dryRun) "would delete" else "deleted"} ${report.scoresSwept} score(s)" +
+                            " from ${report.orphans.size} orphan service(s) of ${report.servicesSeen} seen" +
+                            (if (report.remapped.isNotEmpty()) ", ${report.remapped.size} remapped mid-sweep and left alone" else "") +
+                            " in ${secs}s" +
+                            (if (eg.isNotEmpty()) " (e.g. $eg)" else "") +
+                            if (dryRun) " — set SWEEP_ORPHAN_SCORES_ON_START=true to apply" else "",
+                    )
+                }
+            }.onFailure { e ->
+                println("sweep: FAILED after ${(System.currentTimeMillis() - startedMs) / 1000}s: ${e.message}")
             }
         }
     }
