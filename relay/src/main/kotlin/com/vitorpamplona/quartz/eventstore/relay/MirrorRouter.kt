@@ -812,8 +812,9 @@ class MirrorRouter(
                                                                 pagedDone.incrementAndGet(),
                                                                 pagers.size,
                                                                 eventsEarly.get(),
-                                                                paging.fraction(),
-                                                                paging.etaMs(),
+                                                                paging.fraction(name),
+                                                                paging.etaMs(name),
+                                                                paging.reached(name),
                                                             ),
                                                         )
                                                     }
