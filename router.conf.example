@@ -73,12 +73,24 @@ streams {
         # own scores that provider is the source of truth, so absence is a
         # retraction and we drop it too.
         #
-        # Nothing is published upstream to learn this. Absence has innocent causes
-        # (retention, an AUTH gate, a half-served reconcile), so the router refuses
-        # to act on a relay that served nothing for the ask, and refuses to delete
-        # more than half of one in a cycle. Starting as a dry run: it reports what
-        # it would drop and drops nothing.
-        deleteMissing = "dryRun"
+        # Nothing is published upstream to learn this — the diff is read and acted
+        # on locally, never pushed back.
+        #
+        # The licence to delete is a COMPLETED reconcile, not a small number.
+        # quartz never silently falls back: it throws when a window cannot be
+        # reconciled over NIP-77 at all, so a normal return means every window was
+        # compared and an empty answer is the relay's answer rather than its
+        # silence. A relay that cannot reconcile is paged instead and never
+        # deleted against.
+        #
+        # There is deliberately no size guard. A provider retracts a subject when
+        # that subject turns out to be a scammer, and a mass retraction is exactly
+        # when the whole set goes — so refusing on volume would block the case
+        # that matters most. If a 10040 names a relay that never carried these
+        # scores, it reconciles empty and we drop them: a misconfigured provider
+        # list costs a re-download, where a stale score on a scammer costs a
+        # reader.
+        deleteMissing = true
         # 30382 ONLY, and that is load-bearing rather than tidy. deleteMissing
         # applies to the whole ask, and the provider's relay is the source of
         # truth for its SCORES — not for its operator's profile or relay list.
