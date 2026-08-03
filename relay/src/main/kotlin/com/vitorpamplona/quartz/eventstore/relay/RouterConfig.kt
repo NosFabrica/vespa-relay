@@ -184,6 +184,25 @@ data class DynamicRelayList(
     val refreshSeconds: Long,
     val concurrency: Int,
     val exclude: Set<NormalizedRelayUrl>,
+    /**
+     * How many bound `authors` go into ONE ask, and therefore into one cursor
+     * band. Null keeps them all in a single filter.
+     *
+     * This is a stream knob rather than a select field because the right answer
+     * comes from the shape of the fan-out, not from the tag being read. A band
+     * is keyed on its filter, so an author set that changes invalidates it and
+     * re-walks that relay's history:
+     *
+     *  - `assertions` pairs 24 relays with 247 services, 256 pairs. At 1 the
+     *    band is `(relay, one service)` and stays valid forever — a new 10040
+     *    ADDS a band instead of invalidating 143 others. Measured, a per-author
+     *    ask on nip85.nosfabrica.com EOSEs in 1.4s, where the by-kind ask
+     *    streams 100,000 events and never EOSEs at all.
+     *  - an outbox stream pairs millions of authors across ~16,500 relays. One
+     *    band each is not a fan-out anyone can run; those have to chunk, and
+     *    accept that a chunk re-walks when its membership shifts.
+     */
+    val authorsPerLeg: Int? = null,
 )
 
 /**
@@ -252,7 +271,43 @@ data class RelaySelect(
     val tag: String?,
     val index: Int,
     val where: List<TagCondition> = emptyList(),
+    /**
+     * Extra NIP-01 filter fields read out of the SAME tag, so the relay this
+     * select found is asked only for what that tag paired it with.
+     *
+     * Keyed by destination — `authors`, `ids`, `kinds`, or a `#x` tag filter —
+     * and the whole point is that a value is read per TAG OCCURRENCE, not
+     * gathered into a global set. A NIP-85 provider list tags
+     * `["30382:rank", service, relay]`, so `relay = 2, authors = 1` keeps rank's
+     * service with rank's relay. Collecting the two independently would produce
+     * the cross product instead: measured on this store, 247 services and 24
+     * relays is 5,928 asks standing in for the 256 pairs that exist, ~96% of
+     * them empty.
+     */
+    val bindings: Map<String, Slot> = emptyMap(),
 )
+
+/**
+ * Where one value of a binding comes from.
+ *
+ * Usually a slot in the tag being read, but not always: NIP-65's outbox model
+ * is "fetch THIS AUTHOR's events from the relays their own 10002 marks write",
+ * and that author is the scanned event's `pubkey` rather than anything in the
+ * tag. Without [EventPubkey] the outbox stream can only discover relays and
+ * must then ask every one of them for everybody.
+ */
+sealed interface Slot {
+    /** Element [index] of the tag this select matched. */
+    data class OfTag(
+        val index: Int,
+    ) : Slot
+
+    /** The scanned event's own author. */
+    data object EventPubkey : Slot
+
+    /** The scanned event's own id. */
+    data object EventId : Slot
+}
 
 /**
  * One alternative in a select's `where` list. The list is NIP-01's own boolean
@@ -490,6 +545,7 @@ object RouterConfigLoader {
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
             exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
+            authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
         )
     }
 
@@ -525,7 +581,18 @@ object RouterConfigLoader {
         stream: String,
         s: Config,
     ): RelaySelect {
-        val index = if (s.hasPath("index")) s.getInt("index") else 1
+        require(!(s.hasPath("index") && s.hasPath("relay"))) {
+            "router: stream '$stream' has a select with both `index` and `relay` — they name the same slot, write one"
+        }
+        // `relay = N` is the name to use once a select binds more than one field;
+        // `index = N` is what every config wrote when the url was the only thing
+        // a select could produce, and it keeps working unchanged.
+        val index =
+            when {
+                s.hasPath("relay") -> s.getInt("relay")
+                s.hasPath("index") -> s.getInt("index")
+                else -> 1
+            }
         require(index >= 1) {
             "router: stream '$stream' has a select with index $index — element 0 is the tag name, so the url is at 1 or later"
         }
@@ -544,7 +611,68 @@ object RouterConfigLoader {
             tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
             index = index,
             where = where,
+            bindings = parseBindings(stream, s),
         )
+    }
+
+    /**
+     * The destination fields a select may bind, beyond the relay url itself.
+     *
+     * A closed list on purpose. These are NIP-01 filter fields, and a typo that
+     * silently bound nothing would show up as a stream quietly syncing the wrong
+     * thing — the failure mode this config format exists to avoid. `#x` tag
+     * filters are accepted for any single letter, which is what NIP-01 allows.
+     */
+    private val BINDABLE = setOf("authors", "ids", "kinds")
+
+    private fun isBindable(key: String) = key in BINDABLE || (key.length == 2 && key[0] == '#' && key[1].isLetter())
+
+    /**
+     * `{ tag = "30382:rank", relay = 2, authors = 1 }` — which tag slot feeds
+     * which filter field.
+     *
+     * A value is either an Int (that element of the tag) or one of two names
+     * for something outside it: `"pubkey"` and `"id"`, the scanned event's own.
+     * `"pubkey"` is what makes the outbox model expressible at all.
+     */
+    private fun parseBindings(
+        stream: String,
+        s: Config,
+    ): Map<String, Slot> {
+        val out = LinkedHashMap<String, Slot>()
+        for (entry in s.root().keys) {
+            if (!isBindable(entry)) continue
+            // Quoted: a `#p` key is a HOCON path expression otherwise, and `#`
+            // starts a comment there — the same reason parseFilter quotes its
+            // own `"#p" = [...]` lookups.
+            val v = s.getValue(quote(entry)).unwrapped()
+            val slot =
+                when (v) {
+                    is Number -> {
+                        val i = v.toInt()
+                        require(i >= 1) {
+                            "router: stream '$stream' binds `$entry` to tag element $i — element 0 is the tag name, so a value is at 1 or later"
+                        }
+                        Slot.OfTag(i)
+                    }
+
+                    "pubkey" -> {
+                        Slot.EventPubkey
+                    }
+
+                    "id" -> {
+                        Slot.EventId
+                    }
+
+                    else -> {
+                        throw IllegalArgumentException(
+                            "router: stream '$stream' binds `$entry` to '$v' — expected a tag element number, or \"pubkey\"/\"id\" for the scanned event's own",
+                        )
+                    }
+                }
+            out[entry] = slot
+        }
+        return out
     }
 
     /**

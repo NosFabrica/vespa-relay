@@ -333,13 +333,60 @@ url at a fixed offset, so a select is just that shape:
 |---|---|
 | `kind` | apply this select only to that kind; **omit to apply it to everything the filter collected**. A kind the scan never returns simply never matches |
 | `tag` | the tag name to read; **omit for any tag** — that's how you take a whole family like NIP-85's `<kind>:<type>` service tags without naming each one |
-| `index` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first |
+| `relay` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first. `index` is the older name for the same slot and still works |
+| `authors`, `ids`, `kinds`, `#p`, `#e`, … | **narrow what this relay is asked for**, reading the value out of the *same tag* that named the url. The value is a tag element number, or `"pubkey"` / `"id"` for the scanned event's own — see below |
 | `where` | conditions on the rest of the tag, shaped like NIP-01 filters: entries in the list **OR** together, the fields inside one entry **AND**. Each entry states any of `index` + `equals` (the element at that position is exactly that string — case-sensitive and untrimmed, and a missing element matches nothing, not even `""`), `minSize`, and `maxSize` (bounds on the tag's length). Omit to keep every tag |
 | `marker` | sugar for NIP-65's rule: `write` / `read` expand to the `where` that keeps that side *plus* unmarked tags — with the url at 1, `[ { index = 2, equals = "write" }, { index = 2, equals = "" }, { maxSize = 2 } ]`, the slots following the select's own `index` — and `any` to no conditions. A select states `marker` or `where`, not both |
 
 The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`,
 `until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:
 `{ "kinds": [1], "authors": [...] }` harvests hints from your WoT's notes only.
+
+### Binding filter fields to a relay
+
+Without a binding, every relay a source names is asked for the stream's whole
+filter. That is right for a relay list and wrong for a *provider* list: asking
+`{ "kinds": [30382] }` of a NIP-85 relay pulls the scores of every service
+publishing there, not the ones your 10040s name. Measured on a real store, 757
+services, of which 587 were named by no stored 10040 — 33.8M cards that rank
+nothing and nobody reads.
+
+A binding reads a second slot out of the **same tag occurrence**, so the pair
+stays together:
+
+```hocon
+select = [
+  { tag = "30382:rank",      relay = 2, authors = 1 }   # ["30382:rank", service, relay]
+  { tag = "30382:followers", relay = 2, authors = 1 }
+]
+```
+
+Reading the two into separate lists instead would give the cross product — every
+relay asked for every service, ~96% of those asks empty on the store above. The
+tag is the unit, not the value.
+
+A value may also come from outside the tag. `"pubkey"` is the scanned event's own
+author, which is what makes NIP-65's outbox model expressible — *fetch this
+author's events from the relays their own 10002 marks write*:
+
+```hocon
+{ kind = 10002, tag = "r", marker = "write", relay = 1, authors = "pubkey" }
+```
+
+Two things to know before using one:
+
+- **A bound select cannot use the store's tag projection.** That projection
+  answers with the distinct values at one index — a set, with the tag each came
+  from already discarded, which is exactly the pairing a binding exists to keep.
+  So a bound select pages the events instead. Scanning kind 10040 is nothing;
+  scanning millions of kind-10002s is the walk the projection was introduced to
+  replace. Narrow the small sources first.
+- **`authorsPerLeg` decides how often a cursor band survives.** A band is keyed
+  on its filter, so a changing author set invalidates it and re-walks that
+  relay's history. `authorsPerLeg = 1` gives one band per (relay, author), which
+  never invalidates — a new provider list adds a band instead. Leave it out and
+  all of a relay's authors go in one ask, which is the only workable choice when
+  the fan-out is millions of authors wide.
 
 Three things worth knowing:
 

@@ -27,10 +27,43 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 
-/** One relay a [DynamicRelayList] found. */
+/**
+ * One relay a [DynamicRelayList] found, and what the tags that named it paired
+ * it with.
+ *
+ * [narrow] is empty for a select that binds nothing but the url — every config
+ * written before bindings existed — and the stream then asks this relay for its
+ * whole filter, as it always has. When a select DOES bind, the values are the
+ * ones read from the same tag occurrences that produced this url, so the ask is
+ * narrowed to what that relay was actually advertised as holding.
+ */
 data class DiscoveredRelay(
     val url: NormalizedRelayUrl,
-)
+    val narrow: Map<String, Set<String>> = emptyMap(),
+) {
+    /**
+     * [base] narrowed by everything this relay was paired with.
+     *
+     * Sorted, because a cursor band is keyed on the filter's serialized form and
+     * an unordered set would key the same ask two different ways on two runs —
+     * which reads to [SyncCursors] as a changed filter and re-walks history for
+     * nothing.
+     */
+    fun narrowed(base: Filter): Filter {
+        if (narrow.isEmpty()) return base
+        var f = base
+        narrow["authors"]?.let { f = f.copy(authors = it.sorted()) }
+        narrow["ids"]?.let { f = f.copy(ids = it.sorted()) }
+        narrow["kinds"]?.let { v -> f = f.copy(kinds = v.mapNotNull { it.toIntOrNull() }.sorted()) }
+        // Filter.tags keys drop the '#' — `#p` on the wire is `p` in the map,
+        // the same shape parseFilter builds from a config's own `"#p" = [...]`.
+        val tags = narrow.filterKeys { it.startsWith("#") }
+        if (tags.isNotEmpty()) {
+            f = f.copy(tags = (f.tags ?: emptyMap()) + tags.map { (k, v) -> k.substring(1) to v.sorted() })
+        }
+        return f
+    }
+}
 
 /**
  * Reads a dynamic stream's relay list out of the store. Every relay list in the
@@ -76,11 +109,22 @@ object RelayDiscovery {
         pageSize: Int = SCAN_PAGE,
     ): List<DiscoveredRelay> {
         val found = LinkedHashSet<NormalizedRelayUrl>()
+        // url -> destination -> values, unioned across every select and source.
+        val narrowing = HashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
         for (source in dynamic.sources) {
             // A NAMED tag goes to the store's projection: it streams the tags
             // field alone, where paging events materialized all of each one.
-            val named = source.selects.filter { it.tag != null }
-            val anyTag = source.selects.filter { it.tag == null }
+            //
+            // Only when the select binds NOTHING but the url. The projection
+            // answers "the distinct values at index N", which is a set — the tag
+            // each value came from is gone by the time it returns, and with it
+            // the pairing a binding exists to keep. A binding select therefore
+            // pays the paging scan, and that is a real cost to weigh per stream:
+            // `assertions` scans kind 10040 (271 events here, nothing), while
+            // `dataViaOutbox` scans 2.6M kind-10002s, which is the ~13-minute
+            // walk the projection replaced. Narrow the small ones first.
+            val named = source.selects.filter { it.tag != null && it.bindings.isEmpty() }
+            val anyTag = source.selects.filter { it.tag == null || it.bindings.isNotEmpty() }
             val semantics = (store as? VespaEventStore)?.store
             if (semantics != null) {
                 for (select in named) {
@@ -105,11 +149,18 @@ object RelayDiscovery {
             // e/p/a/q tags.
             val stillPaged = if (semantics == null) source.selects else anyTag
             if (stillPaged.isNotEmpty()) {
-                val perEvent = LinkedHashSet<NormalizedRelayUrl>()
                 scan(store, source.filter, pageSize) { event ->
-                    perEvent.clear()
-                    urlsIn(event, stillPaged, perEvent)
-                    found += perEvent
+                    for (select in stillPaged) {
+                        // A select with no kind applies to everything the scan collected.
+                        if (select.kind != null && select.kind != event.kind) continue
+                        bindingsIn(event, select) { url, bound ->
+                            found += url
+                            if (bound.isNotEmpty()) {
+                                val per = narrowing.getOrPut(url) { HashMap() }
+                                for ((dest, value) in bound) per.getOrPut(dest) { HashSet() }.add(value)
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -117,8 +168,9 @@ object RelayDiscovery {
         return found
             .asSequence()
             .filter { it !in dynamic.exclude && it !in skip }
-            .map { DiscoveredRelay(it) }
-            .sortedBy { it.url.url }
+            .map { url ->
+                DiscoveredRelay(url, narrowing[url]?.mapValues { (_, v) -> v.toSet() }.orEmpty())
+            }.sortedBy { it.url.url }
             .toList()
     }
 
@@ -235,6 +287,21 @@ object RelayDiscovery {
         event: Event,
         select: RelaySelect,
         into: MutableSet<NormalizedRelayUrl>,
+    ) = bindingsIn(event, select) { url, _ -> into.add(url) }
+
+    /**
+     * Every (url, bound values) pair one event yields for one select.
+     *
+     * The TAG is the unit, not the value. Each matching tag calls [onMatch] once
+     * with the url it names and the values its own slots hold, so a caller can
+     * keep them together — which is the whole reason bindings exist. Gathering
+     * the slots into separate sets and pairing them afterwards produces the cross
+     * product, and there is no way to recover the pairing once it is gone.
+     */
+    private inline fun bindingsIn(
+        event: Event,
+        select: RelaySelect,
+        onMatch: (NormalizedRelayUrl, Map<String, String>) -> Unit,
     ) {
         for (tag in event.tags) {
             if (tag.size <= select.index) continue
@@ -245,9 +312,55 @@ object RelayDiscovery {
             if (select.where.isNotEmpty() && select.where.none { it.matches(tag) }) continue
             // With no tag name to go on, anything in the event could land here, so
             // only take values that already say they are a relay.
-            normalize(tag[select.index], requireScheme = select.tag == null)?.let { into.add(it) }
+            val url = normalize(tag[select.index], requireScheme = select.tag == null) ?: continue
+            if (select.bindings.isEmpty()) {
+                onMatch(url, emptyMap())
+                continue
+            }
+            val bound = HashMap<String, String>(select.bindings.size)
+            var complete = true
+            for ((dest, slot) in select.bindings) {
+                val raw =
+                    when (slot) {
+                        is Slot.OfTag -> tag.getOrNull(slot.index)
+                        Slot.EventPubkey -> event.pubKey
+                        Slot.EventId -> event.id
+                    }
+                // A slot that is not there contributes nothing, and a tag that
+                // cannot fill a binding is dropped WHOLE rather than half-applied:
+                // a `["30382:rank", relay]` missing its service would otherwise
+                // widen the ask back to every author on that relay, which is the
+                // opposite of what binding it was for.
+                val ok = raw?.takeIf { it.isNotBlank() }?.takeIf { valid(dest, it) }
+                if (ok == null) {
+                    complete = false
+                    break
+                }
+                bound[dest] = ok
+            }
+            if (complete) onMatch(url, bound)
         }
     }
+
+    /**
+     * Whether a value can be what the destination says it is.
+     *
+     * These come off strangers' events, so a malformed one is expected traffic
+     * rather than an incident — it is skipped, not fatal. But it has to be
+     * checked: an `authors` entry that is not a key makes a filter no relay can
+     * answer, and it would be indistinguishable from an upstream with nothing.
+     */
+    private fun valid(
+        dest: String,
+        value: String,
+    ): Boolean =
+        when {
+            dest == "kinds" -> value.toIntOrNull() != null
+            dest == "authors" || dest == "ids" || dest == "#p" || dest == "#e" -> isHex64(value)
+            else -> true
+        }
+
+    private fun isHex64(v: String): Boolean = v.length == 64 && v.all { it in '0'..'9' || it in 'a'..'f' || it in 'A'..'F' }
 
     /**
      * Relay lists in the wild carry prose and pet names where a url belongs. The

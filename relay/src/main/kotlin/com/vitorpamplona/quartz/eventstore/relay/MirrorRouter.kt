@@ -1383,7 +1383,12 @@ class MirrorRouter(
                             }
                             gate.withPermit {
                                 val got =
-                                    dynamicSyncOne(stream, relay.url, window, local) { reason ->
+                                    // The relay's OWN filter, narrowed by what the
+                                    // tags that named it paired it with. Identical to
+                                    // `window` for a select that binds only the url,
+                                    // which is every config written before bindings
+                                    // existed — so nothing changes for those.
+                                    dynamicSyncOne(stream, relay.url, relay.narrowed(window), local) { reason ->
                                         reasons.merge(reason, 1L, Long::plus)
                                     }
                                 when {
@@ -1472,56 +1477,8 @@ class MirrorRouter(
             // but a slot held by one that is delivering is a slot doing its job.
             // Silence is what costs us, and [NEG_IDLE_MS] already answers that.
             var downloaded = 0
-            for (leg in cursors.legs(url, window)) {
-                var seenMin: Long? = null
-                var seenMax: Long? = null
-                val syncStartedAt = System.currentTimeMillis() / 1000
-                val onEvent: (Event) -> Unit = { event ->
-                    if (stream.filter.match(event)) {
-                        if (SyncCursors.isPlausible(event.createdAt)) {
-                            seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                            seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
-                        }
-                        offer(event, stream.trusted)
-                    }
-                }
-                // Fetch-only: the leg came off the cursor band, so this asks for
-                // what is outside what we already walked and nothing else. That
-                // band IS the mechanism here — there is no id set to fall back on.
-                val fetched = stream.sync == SyncMode.FETCH
-                val result =
-                    if (fetched) {
-                        null.also {
-                            val walk = "${stream.name}|${url.url}"
-                            paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCursors.PLAUSIBLE_FLOOR)
-                            downloaded +=
-                                client.fetchAllPages(
-                                    url,
-                                    listOf(leg),
-                                    NEG_IDLE_MS,
-                                    onNewPage = { until -> paging.mark(walk, until) },
-                                    onEvent = onEvent,
-                                )
-                            paging.finish(walk)
-                        }
-                    } else {
-                        client
-                            .negentropySyncOrFetch(
-                                relay = url,
-                                filter = leg,
-                                idleTimeoutMs = NEG_IDLE_MS,
-                                localEntries = local,
-                                onEvent = onEvent,
-                            ).also { downloaded += it.downloaded }
-                    }
-                cursors.record(
-                    url,
-                    window,
-                    seenMin,
-                    seenMax,
-                    paged = fetched || result?.pagedFallback == true,
-                    reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
-                )
+            for (ask in splitByAuthors(window, stream.dynamic?.authorsPerLeg)) {
+                downloaded += syncOneFilter(stream, url, ask, local)
             }
             downloaded
         } catch (e: Exception) {
@@ -1535,6 +1492,91 @@ class MirrorRouter(
             transferring.decrementAndGet()
             releaseSocket(url)
         }
+    }
+
+    /**
+     * One relay, one filter: walk what the cursor says is outside its band.
+     *
+     * Split out of [dynamicSyncOne] because a narrowed stream asks the same
+     * relay several times — once per author chunk — and each of those is its own
+     * band. The socket is acquired once around all of them.
+     */
+    private suspend fun syncOneFilter(
+        stream: MirrorStream,
+        url: NormalizedRelayUrl,
+        window: Filter,
+        local: List<IdAndTime>,
+    ): Int {
+        var downloaded = 0
+        for (leg in cursors.legs(url, window)) {
+            var seenMin: Long? = null
+            var seenMax: Long? = null
+            val syncStartedAt = System.currentTimeMillis() / 1000
+            val onEvent: (Event) -> Unit = { event ->
+                if (stream.filter.match(event)) {
+                    if (SyncCursors.isPlausible(event.createdAt)) {
+                        seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                        seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                    }
+                    offer(event, stream.trusted)
+                }
+            }
+            // Fetch-only: the leg came off the cursor band, so this asks for
+            // what is outside what we already walked and nothing else. That
+            // band IS the mechanism here — there is no id set to fall back on.
+            val fetched = stream.sync == SyncMode.FETCH
+            val result =
+                if (fetched) {
+                    null.also {
+                        val walk = "${stream.name}|${url.url}"
+                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCursors.PLAUSIBLE_FLOOR)
+                        downloaded +=
+                            client.fetchAllPages(
+                                url,
+                                listOf(leg),
+                                NEG_IDLE_MS,
+                                onNewPage = { until -> paging.mark(walk, until) },
+                                onEvent = onEvent,
+                            )
+                        paging.finish(walk)
+                    }
+                } else {
+                    client
+                        .negentropySyncOrFetch(
+                            relay = url,
+                            filter = leg,
+                            idleTimeoutMs = NEG_IDLE_MS,
+                            localEntries = local,
+                            onEvent = onEvent,
+                        ).also { downloaded += it.downloaded }
+                }
+            cursors.record(
+                url,
+                window,
+                seenMin,
+                seenMax,
+                paged = fetched || result?.pagedFallback == true,
+                reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
+            )
+        }
+        return downloaded
+    }
+
+    /**
+     * [window] as one ask, or as several with at most [per] authors each.
+     *
+     * A cursor band is keyed on its filter, so the size of these chunks decides
+     * how often a band survives. See [DynamicRelayList.authorsPerLeg] — this
+     * only reshapes what that knob asked for. A filter with no bound authors is
+     * returned untouched, which is every stream that does not narrow.
+     */
+    private fun splitByAuthors(
+        window: Filter,
+        per: Int?,
+    ): List<Filter> {
+        val authors = window.authors
+        if (per == null || authors == null || authors.size <= per) return listOf(window)
+        return authors.chunked(per).map { window.copy(authors = it) }
     }
 
     /**

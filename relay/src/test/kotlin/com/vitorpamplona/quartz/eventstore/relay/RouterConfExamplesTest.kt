@@ -115,6 +115,17 @@ class RouterConfExamplesTest {
         assertTrue(source.selects.any { it.tag == "30382:followers" })
         // Mirroring 30382 is the point: the scores those services publish.
         assertTrue(assertions.filter.kinds?.contains(30382) == true)
+        // ...and only from the services the SAME tag paired with each relay. The
+        // service sits at slot 1 of the tag whose slot 2 named the url, so the
+        // two travel together; binding it from anywhere else would be the cross
+        // product wearing the right shape.
+        assertTrue(
+            source.selects.all { it.bindings["authors"] == Slot.OfTag(1) },
+            "each service tag binds its own provider as the authors to ask for",
+        )
+        // A band per (relay, service) rather than per relay, so a new provider
+        // list does not invalidate the ones already walked.
+        assertEquals(1, assertions.dynamic!!.authorsPerLeg)
     }
 
     @Test

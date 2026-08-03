@@ -432,6 +432,52 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `a select binds filter fields from its own tag`() {
+        fun selectOf(select: String) =
+            RouterConfigLoader
+                .parse(sourced("""{ "kinds": [10040] }""", select))
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .selects
+                .single()
+
+        val nip85 = selectOf("""{ tag = "30382:rank", relay = 2, authors = 1 }""")
+        assertEquals(2, nip85.index, "`relay` names the slot `index` used to")
+        assertEquals(mapOf("authors" to Slot.OfTag(1)), nip85.bindings)
+
+        // The scanned event's own author — the outbox model, where the author is
+        // nowhere in the tag.
+        assertEquals(
+            mapOf("authors" to Slot.EventPubkey),
+            selectOf("""{ tag = "r", relay = 1, authors = "pubkey" }""").bindings,
+        )
+        // Tag filters, for any single letter NIP-01 allows.
+        assertEquals(
+            mapOf("#p" to Slot.OfTag(1)),
+            selectOf("""{ tag = "p", relay = 2, "#p" = 1 }""").bindings,
+        )
+        // No bindings is the shape every config had before they existed.
+        assertEquals(emptyMap(), selectOf("""{ tag = "r", index = 1 }""").bindings)
+    }
+
+    @Test
+    fun `a binding must name a slot that could hold a value`() {
+        fun parse(select: String) = RouterConfigLoader.parse(sourced("""{ "kinds": [10040] }""", select))
+
+        // Element 0 is the tag name, never a value.
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "30382:rank", relay = 2, authors = 0 }""") }
+        // Neither a slot number nor one of the two names for something outside
+        // the tag. Rejected rather than ignored: a binding that silently bound
+        // nothing would show up as a stream quietly syncing the wrong thing.
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "30382:rank", relay = 2, authors = "author" }""") }
+        // `relay` and `index` are the same slot under two names.
+        assertFailsWith<IllegalArgumentException> { parse("""{ tag = "r", relay = 1, index = 1 }""") }
+    }
+
+    @Test
     fun `a relaySource entry needs both a filter with kinds and a select`() {
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(stream("""relaySource = [ { select = [ { tag = "r" } ] } ]"""))

@@ -76,13 +76,23 @@ streams {
         exclude = []               # relays to skip however many sources name them
         relaySource = [
             {
+                # A NIP-85 provider list tags ["30382:rank", service, relay], so
+                # `relay` and `authors` are two slots of ONE tag and have to be
+                # read together: this relay is then asked only for the services
+                # it was advertised as carrying. Read into separate sets they
+                # would give the cross product — every relay asked for every
+                # service, which on a real store is ~96% empty asks.
                 select = [
-                    { tag = "30382:rank", index = 2 }
-                    { tag = "30382:followers",  index = 2 }
+                    { tag = "30382:rank",      relay = 2, authors = 1 }
+                    { tag = "30382:followers", relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
             }
         ]
+        # One service per ask, so a cursor band is (relay, one service) and a new
+        # provider list ADDS a band rather than invalidating every other band on
+        # that relay. Leave it out to put all of a relay's services in one ask.
+        authorsPerLeg = 1
     }
 
     # `sync` picks how a stream asks for what it is missing, and it is about the

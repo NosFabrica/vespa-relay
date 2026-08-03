@@ -289,6 +289,151 @@ class RelayDiscoveryTest {
         assertEquals(listOf("wss://scores.example/"), urls(list, select(index = 2)))
     }
 
+    // ---- bindings ----------------------------------------------------------
+
+    @Test
+    fun `a bound author stays with the relay from its own tag, not every relay`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            val rankSvc = "a".repeat(64)
+            val followSvc = "b".repeat(64)
+            // One observer, two dimensions, two DIFFERENT relays. This is the
+            // case the cross product gets wrong: collecting services and relays
+            // into separate sets says "ask both relays for both services".
+            store.insert(
+                event(
+                    10040,
+                    arrayOf("30382:rank", rankSvc, "wss://rank.example"),
+                    arrayOf("30382:followers", followSvc, "wss://follow.example"),
+                ),
+            )
+
+            val found =
+                RelayDiscovery
+                    .discover(
+                        store,
+                        dynamic(
+                            source(
+                                10040,
+                                selects =
+                                    listOf(
+                                        RelaySelect(kind = null, tag = "30382:rank", index = 2, bindings = mapOf("authors" to Slot.OfTag(1))),
+                                        RelaySelect(kind = null, tag = "30382:followers", index = 2, bindings = mapOf("authors" to Slot.OfTag(1))),
+                                    ),
+                            ),
+                        ),
+                    ).associateBy { it.url.url }
+
+            assertEquals(setOf(rankSvc), found["wss://rank.example/"]?.narrow?.get("authors"))
+            assertEquals(setOf(followSvc), found["wss://follow.example/"]?.narrow?.get("authors"))
+        }
+
+    @Test
+    fun `a relay named by several tags collects every author it was paired with`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            val one = "1".repeat(64)
+            val two = "2".repeat(64)
+            store.insert(event(10040, arrayOf("30382:rank", one, "wss://shared.example")))
+            store.insert(event(10040, arrayOf("30382:rank", two, "wss://shared.example")))
+
+            val found =
+                RelayDiscovery
+                    .discover(
+                        store,
+                        dynamic(
+                            source(
+                                10040,
+                                selects = listOf(RelaySelect(kind = null, tag = "30382:rank", index = 2, bindings = mapOf("authors" to Slot.OfTag(1)))),
+                            ),
+                        ),
+                    ).single()
+
+            assertEquals(setOf(one, two), found.narrow["authors"])
+            // Sorted into the filter, because the cursor band is keyed on the
+            // filter's serialized form — an unordered set would key the same ask
+            // two ways and re-walk history for nothing.
+            assertEquals(listOf(one, two), found.narrowed(Filter(kinds = listOf(30382))).authors)
+        }
+
+    @Test
+    fun `pubkey binds the scanned event's own author, which is the outbox model`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            val list = event(10002, arrayOf("r", "wss://mine.example", "write"))
+            store.insert(list)
+
+            val found =
+                RelayDiscovery
+                    .discover(
+                        store,
+                        dynamic(
+                            source(
+                                10002,
+                                selects =
+                                    listOf(
+                                        RelaySelect(
+                                            kind = 10002,
+                                            tag = "r",
+                                            index = 1,
+                                            where = marker("write"),
+                                            bindings = mapOf("authors" to Slot.EventPubkey),
+                                        ),
+                                    ),
+                            ),
+                        ),
+                    ).single()
+
+            // "fetch THIS author's events from the relays their own 10002 marks
+            // write" — the author is nowhere in the tag.
+            assertEquals(setOf(list.pubKey), found.narrow["authors"])
+        }
+
+    @Test
+    fun `a tag that cannot fill a binding is dropped whole, not half-applied`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // No service slot, and a service that is not a key. Either one, taken
+            // half-applied, would widen the ask back to every author on that
+            // relay — the opposite of what binding it was for.
+            store.insert(event(10040, arrayOf("30382:rank", "wss://short.example")))
+            store.insert(event(10040, arrayOf("30382:rank", "not-a-pubkey", "wss://bogus.example")))
+
+            val found =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(
+                        source(
+                            10040,
+                            selects = listOf(RelaySelect(kind = null, tag = "30382:rank", index = 2, bindings = mapOf("authors" to Slot.OfTag(1)))),
+                        ),
+                    ),
+                )
+
+            assertTrue(found.none { it.url.url.contains("short.example") }, "a tag too short to carry the service names no relay")
+            assertTrue(found.none { it.url.url.contains("bogus.example") }, "a service that is not 64 hex names no relay")
+        }
+
+    @Test
+    fun `a select that binds nothing narrows nothing`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            store.insert(event(10002, arrayOf("r", "wss://plain.example", "write")))
+
+            val found =
+                RelayDiscovery
+                    .discover(
+                        store,
+                        dynamic(source(10002, selects = listOf(select(tag = "r", where = marker("write"))))),
+                    ).single()
+
+            assertTrue(found.narrow.isEmpty())
+            // The stream's own filter, untouched — every config written before
+            // bindings existed behaves exactly as it did.
+            val base = Filter(kinds = listOf(0, 10002))
+            assertEquals(base, found.narrowed(base))
+        }
+
     // ---- discovery ---------------------------------------------------------
 
     @Test
