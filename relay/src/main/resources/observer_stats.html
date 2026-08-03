@@ -298,9 +298,43 @@ async function run() {
     const prev = byPubkey.get(ev.pubkey);
     if (!prev || prev.created_at < ev.created_at) byPubkey.set(ev.pubkey, ev);
   }
+  /**
+   * A relay url as written in a tag, reduced to the relay it means.
+   *
+   * `wss://nip85.brainstorm.world` and `wss://nip85.brainstorm.world/` are one
+   * relay written two ways, and both are in the corpus — measured here, 45
+   * services on the first and 2 on the second. Left raw they group apart, so the
+   * page opens two connections to the same host, asks it the same questions
+   * twice, and prints it as two rows. The router normalizes before it dials; a
+   * page reading the same tags has to do the same or it disagrees with the relay
+   * it is reporting on.
+   *
+   * Null for anything we could not dial anyway:
+   *
+   *  - a non-ws scheme. `http://localhost:7778` is in the corpus, from someone's
+   *    local test leaking a 10040 onto the network.
+   *  - loopback and private hosts. In a tag those mean the AUTHOR's machine;
+   *    from this browser they mean the reader's, and asking it questions on
+   *    their behalf is not something this page should do.
+   */
+  function normalizeRelay(raw) {
+    if (!raw) return null;
+    const t = String(raw).trim();
+    if (!t || /\s/.test(t)) return null;
+    let u;
+    try { u = new URL(/^wss?:\/\//i.test(t) ? t : "wss://" + t); } catch { return null; }
+    if (u.protocol !== "ws:" && u.protocol !== "wss:") return null;
+    if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[::1\]|0\.0\.0\.0)/i.test(u.hostname) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname)) return null;
+    // The URL parser already lowercased scheme and host. A bare "/" path is the
+    // same relay as no path at all, which is the whole duplicate above.
+    const path = u.pathname === "/" ? "" : u.pathname.replace(/\/+$/, "");
+    return `${u.protocol}//${u.host}${path}`;
+  }
+
   const pick = (ev, tag) => {
     const t = (ev.tags || []).find((x) => x[0] === tag);
-    return { service: t?.[1] || null, relay: t?.[2] || null };
+    return { service: t?.[1] || null, relay: normalizeRelay(t?.[2]) };
   };
   // Only observers that name a `30382:rank` service. The rank dimension is what
   // ranking actually reads; a 10040 declaring only `30382:followers` cannot rank
