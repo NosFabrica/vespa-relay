@@ -702,6 +702,45 @@ function rememberSignIn(yes) {
   // corpus with no trust applied, not someone else's ranking of it.
   relay.onclose = () => { renderWhoami(); };
 
+  // ---- the back/forward cache -------------------------------------------
+  //
+  // Navigating away does not unload this page: the browser FREEZES it into the
+  // back-forward cache so going back is instant. An open WebSocket cannot be
+  // frozen, so the browser closes ours and logs
+  //
+  //     WebSocket connection to 'ws://localhost:7777/' failed:
+  //     Page entered Back-Forward Cache.
+  //
+  // — once per socket, which is where those repeated console lines came from.
+  // They are the browser reporting what it did, not an error in the connection.
+  //
+  // What actually broke is the RESTORE. Coming back ran no code, so `me` was
+  // still set and the field still showed a face, while `relay.ws` was null and
+  // nothing was authenticated: a page that looked signed in and ranked nothing.
+  // That is the same "it doesn't log me in again" shape as the reload path.
+  //
+  // Closing them ourselves on the way out is also what makes the page eligible
+  // for the cache in the first place — a live socket can keep it out entirely,
+  // trading the instant back-navigation for nothing.
+  window.addEventListener("pagehide", () => {
+    for (const r of [relay, refRelay]) {
+      if (r && r.ws) { try { r.ws.close(); } catch (e) {} }
+    }
+  });
+
+  window.addEventListener("pageshow", (ev) => {
+    // Only a restore FROM the cache needs this; a normal load already connects
+    // on its own path and re-running it would open a second socket.
+    if (!ev.persisted) return;
+    // Re-authenticate rather than merely reconnect: NIP-42 belongs to the
+    // connection, so the identity survived the freeze but the proof did not.
+    loginTried = false;
+    scores.clear();
+    scoreLensKey = null;
+    renderWhoami();
+    ensureLogin().then(paintScores).catch(() => {});
+  });
+
   async function waitForChallenge(ms) {
     const t0 = Date.now();
     while (!relay.challenge && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 100));
