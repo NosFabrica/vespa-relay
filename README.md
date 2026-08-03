@@ -50,6 +50,10 @@ All configuration is through environment variables.
 | `TRUST_RECONCILE_ON_START` | reconcile the trust projection at startup, in the **background** — the relay serves immediately and ranked search returns less until it finishes. `false` skips it entirely | `true` |
 | `AUTO_DEPLOY` | deploy the bundled Vespa schema on **every** boot, so the cluster always matches the schema this build expects. A no-change deploy is a cheap no-op; a failed one is fatal, because feeding a cluster whose schema we disagree with loses events silently | `true` |
 | `VESPA_CONFIG_URL` | Vespa's config server, for the deploy above | `VESPA_URL` on `:19071` |
+| `VESPA_PORT` / `VESPA_CONFIG_PORT` | ports published on the **host** for the two above. Compose only — nothing inside the containers moves | `8080` / `19071` |
+| `VESPA_QUERY_FANOUT` | concurrent queries the store issues per bulk operation. Higher makes ingest faster; lower leaves more of the engine for the people searching | `4` |
+| `JAVA_TOOL_OPTIONS` | the relay JVM's own flags, in practice its heap. Mirroring holds a set of event ids in memory while it reconciles, so this is what decides whether a large sync finishes or dies with `OutOfMemoryError`. The percentage is of `RELAY_MEM_LIMIT`, because `MaxRAMPercentage` reads the cgroup | `-XX:MaxRAMPercentage=70` |
+| `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 names — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
 ### Relay identity (NIP-11)
@@ -92,6 +96,7 @@ All configuration is through environment variables.
 |---|---|---|
 | `ROUTER_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store | unset ⇒ router off |
 | `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
+| `ROUTER_CONFIG_LOCAL` | compose only: the **host** path mounted at `ROUTER_CONFIG_FILE`. Set both, or the relay reads the example rather than your config | `./router.conf.example` |
 | `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
 | `VESPA_MEM_LIMIT` / `RELAY_MEM_LIMIT` | container memory limits. Not cosmetic: `MaxRAMPercentage` reads the **cgroup**, so without a limit the relay's JVM sizes its heap against the whole host — 45% of 47 GiB — while the engine independently grows to 32 GiB, entitling both to more than the machine has. Bounding the relay also makes ingest backpressure work instead of letting it grow into the engine's memory | `34g` / `12g` |
 | `RELAY_NSEC` | this relay's own keypair (`nsec1…` or 64 hex), used everywhere it acts as itself: the NIP-11 `self` it advertises (**derived**, so it is provable rather than merely asserted), the NIP-42 challenges it answers, and the NIP-66 kind-30166 liveness records it signs. Relays that gate reads behind AUTH are indistinguishable from empty ones without it. Unset ⇒ anonymous — reading other monitors' 30166s still works and needs no key. Malformed ⇒ startup fails | unset ⇒ anonymous |
@@ -122,6 +127,7 @@ event, which buries the router's own logging:
 | var | meaning | default |
 |---|---|---|
 | `PARSE_AUDIT_FILE` | collect those failures into a JSON report at this path instead of logging each one. Unset ⇒ off | unset |
+| `PARSE_AUDIT_LOCAL_DIR` | compose only: a **host** directory to mount so the report can be read. Without it the file is written inside the container, which is the one place it is no use | unset |
 | `PARSE_AUDIT_SAMPLES` | raw events kept per distinct failure, for a quartz regression test | `5` |
 | `PARSE_AUDIT_INTERVAL_SECONDS` | how often the report is rewritten while running | `60` |
 | `QUARTZ_LOG_LEVEL` | quartz's own log floor — `DEBUG` / `INFO` / `WARN` / `ERROR`. Quartz defaults to `DEBUG`, which is why the parse reports are so loud. Works with or without the audit | quartz's default |
@@ -190,14 +196,29 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   | | use when | because |
   |---|---|---|
   | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
-  | `fetch` | each relay holds its own events and nobody else's — NIP-85 assertions are per-provider by construction | two providers share essentially nothing, so comparing millions of ids for a near-empty intersection costs more than the fetch, and it would build a huge local id snapshot to do it. The sync cursor already answers "what is new since we last asked" |
+  | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A cursor band answers "what is new since we last asked" instead |
   | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `ROUTER_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
 
   A `fetch` stream never builds the local id set at all, which is the single most
   expensive thing the router does.
+
+  NIP-85 assertions used to be the example of `fetch` here, and they are worth
+  keeping as a caution: the answer depends on **how the stream asks**, not on the
+  kind. Asked by kind alone, a provider relay serves every provider publishing on
+  it and overlap with our store is poor. Asked per (relay, provider) — see
+  [Binding filter fields to a relay](#binding-filter-fields-to-a-relay) — the two
+  sides hold the same data and `negentropy` becomes the right answer. Narrowing
+  the ask inverted the choice.
 - **`trusted`** *(optional)* — skip signature verification for this upstream's
   events. Off by default; every mirrored event is verified and re-checked
   against the stream filter before it enters the store.
+- **`deleteMissing`** *(optional, DELETES DATA)* — drop records this relay holds
+  that the upstream no longer serves. Only for a stream whose upstream owns the
+  records in the ask, and only with `sync = "negentropy"`. See
+  [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
+- **`authorsPerLeg`** *(optional)* — how many bound `authors` go into one ask, and
+  therefore into one cursor band. See
+  [Binding filter fields to a relay](#binding-filter-fields-to-a-relay).
 
 The router shares the relay's Vespa store, so mirrored events are immediately
 searchable. It runs one outbound connection per upstream (reconnect and
