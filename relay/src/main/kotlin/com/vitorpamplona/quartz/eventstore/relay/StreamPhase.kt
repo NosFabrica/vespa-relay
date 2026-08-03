@@ -32,6 +32,20 @@ internal fun fmtDuration(ms: Long): String {
 }
 
 /**
+ * A `created_at` as a UTC day, for saying how far back a walk has reached.
+ *
+ * Day resolution on purpose: this answers "is it moving, and roughly where is
+ * it" over minutes of walking, and a timestamp to the second would change on
+ * every line without making either answer clearer.
+ */
+internal fun fmtDay(seconds: Long): String =
+    java.time.Instant
+        .ofEpochSecond(seconds)
+        .atZone(java.time.ZoneOffset.UTC)
+        .toLocalDate()
+        .toString()
+
+/**
  * What each stream is doing right now, so an operator can tell a stream that is
  * working from one that never started.
  *
@@ -109,6 +123,15 @@ class StreamPhases {
             /** Time-axis progress of the relays still walking — see [PagingProgress]. */
             val fraction: Double? = null,
             val etaMs: Long? = null,
+            /**
+             * Oldest `created_at` the walk has reached, in seconds.
+             *
+             * The percentage alone cannot show a deep walk moving: a paged fetch
+             * with no `since` runs back to [SyncCursors.PLAUSIBLE_FLOOR], so days
+             * of real progress round to `0%` and the line looks identical to a
+             * stalled one. The date moves every page.
+             */
+            val reachedSeconds: Long? = null,
         ) : Phase
 
         /** Fanning out. */
@@ -206,7 +229,8 @@ class StreamPhases {
 
             is Phase.Fetching -> {
                 "fetching ${phase.done}/${phase.total} relay(s), ${phase.events} event(s)${rate(phase.events, elapsedMs)}" +
-                    (phase.fraction?.let { " — %.0f%% through the window".format(it * 100) } ?: "") +
+                    (phase.reachedSeconds?.let { " — back to ${fmtDay(it)}" } ?: "") +
+                    (phase.fraction?.let { ", %.1f%% through the window".format(it * 100) } ?: "") +
                     (phase.etaMs?.let { ", ETA ~${fmtDuration(it)}" } ?: "") +
                     " ($elapsed elapsed)"
             }
@@ -309,7 +333,17 @@ class PagingProgress {
         key: String,
         until: Long,
     ) {
-        walks[key]?.let { if (until < it.current) it.current = until }
+        walks[key]?.let {
+            // Clamped to the walk's own floor. A page cursor comes from the
+            // oldest `created_at` a relay returned, and relays serve events
+            // stamped 0 — one of those dragged the cursor to epoch and the line
+            // read `back to 1969-12-31` while the walk was in fact somewhere in
+            // 2026. The floor is the oldest second this walk can legitimately
+            // reach, so anything below it means the walk is done, not that it
+            // has travelled to 1969.
+            val reached = until.coerceAtLeast(it.bottom)
+            if (reached < it.current) it.current = reached
+        }
     }
 
     fun finish(key: String) {
@@ -323,8 +357,8 @@ class PagingProgress {
      * own span, so "half the relays are done and half are at zero" is 50% — the
      * thing an operator actually wants to know.
      */
-    fun fraction(): Double? {
-        val live = walks.values.toList()
+    fun fraction(stream: String? = null): Double? {
+        val live = live(stream)
         if (live.isEmpty()) return null
         return live.sumOf { w ->
             val span = (w.top - w.bottom).coerceAtLeast(1)
@@ -332,13 +366,32 @@ class PagingProgress {
         } / live.size
     }
 
+    /**
+     * The walks belonging to [stream], or every walk when it is null.
+     *
+     * One PagingProgress serves the whole router, so an unscoped question is
+     * answered over every stream at once: both streams printed the SAME `33.4%`
+     * and the same `back to …` date while one was walking 2026 and the other had
+     * bottomed out at the floor. A key is `"stream|url"`, so the stream name
+     * scopes it.
+     */
+    private fun live(stream: String?): List<Walk> =
+        if (stream == null) {
+            walks.values.toList()
+        } else {
+            walks.entries.filter { it.key.startsWith("$stream|") }.map { it.value }
+        }
+
+    /** The oldest second [stream] has reached, or null when it is not walking. */
+    fun reached(stream: String? = null): Long? = live(stream).minOfOrNull { it.current }
+
     /** Milliseconds left at the rate achieved so far, or null before it means anything. */
-    fun etaMs(): Long? {
-        val f = fraction() ?: return null
+    fun etaMs(stream: String? = null): Long? {
+        val f = fraction(stream) ?: return null
         // Under a few percent the extrapolation is dominated by connect time and
         // produces numbers like "ETA 9 days" that are worse than saying nothing.
         if (f < 0.02) return null
-        val oldestStart = walks.values.minOfOrNull { it.startedMs } ?: return null
+        val oldestStart = live(stream).minOfOrNull { it.startedMs } ?: return null
         val elapsed = System.currentTimeMillis() - oldestStart
         if (elapsed < 5_000) return null
         return ((elapsed / f) - elapsed).toLong()

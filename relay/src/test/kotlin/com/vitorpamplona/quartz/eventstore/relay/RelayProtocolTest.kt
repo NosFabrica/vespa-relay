@@ -22,6 +22,7 @@ package com.vitorpamplona.quartz.eventstore.relay
 
 import com.vitorpamplona.quartz.eventstore.store.NostrSemanticsStore
 import com.vitorpamplona.quartz.eventstore.store.mapping.DEFAULT_MIN_RANK
+import com.vitorpamplona.quartz.eventstore.store.mapping.INCLUDE_SPAM_MIN_RANK
 import com.vitorpamplona.quartz.eventstore.vespa.InMemoryEventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.client.EventIndex
 import com.vitorpamplona.quartz.eventstore.vespa.doc.EventDoc
@@ -47,7 +48,6 @@ import kotlin.test.fail
  * what the websocket route feeds them.
  */
 class RelayProtocolTest {
-    private val defaultObserver = "d".repeat(64)
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
 
     /** Records each SEARCH query's ranking context (observer, profile, trust floor). */
@@ -79,7 +79,7 @@ class RelayProtocolTest {
 
     private val index = RecordingIndex()
     private val store = NostrSemanticsStore(index, relay = relayUrl)
-    private val server = NostrRelayServer(store, defaultObserver, relayUrl)
+    private val server = NostrRelayServer(store, relayUrl)
     private val signer = NostrSignerSync()
 
     @AfterTest
@@ -143,7 +143,7 @@ class RelayProtocolTest {
         }
 
     @Test
-    fun `NIP-42 auth switches the ranking observer`() =
+    fun `an anonymous search has no observer and NIP-42 auth supplies one`() =
         runBlocking {
             // A searchable profile in the store (search_text derives from the typed event).
             store.insert(MetadataEvent("4".repeat(64), "a1".repeat(32), 1_700_000_000L, emptyArray(), """{"name":"alice"}""", ""))
@@ -154,11 +154,20 @@ class RelayProtocolTest {
                 // The relay advertises NIP-42 on connect.
                 val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
 
-                // Unauthenticated search: ranked by the operator's DEFAULT observer.
+                // Unauthenticated search: NO observer at all.
+                //
+                // This used to assert the operator's DEFAULT_OBSERVER, which was
+                // right while the observer only reordered results and wrong once
+                // the store began treating it as a filter: an anonymous visitor
+                // would have been gated to the ~2.7% of profiles anyone has
+                // scored, silently. Anonymous now means the whole corpus.
                 session.receive("""["REQ","s1",{"kinds":[0],"search":"ali","limit":10}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","s1"]""") }
                 assertTrue(out.any { it.startsWith("""["EVENT","s1",""") && "alice" in it }, "the stored kind-0 streams back: $out")
-                assertEquals(listOf(defaultObserver), index.searchObservers.toList())
+                assertTrue(
+                    index.searchObservers.filterNotNull().isEmpty(),
+                    "an anonymous search carries no observer: ${index.searchObservers}",
+                )
 
                 // Authenticate with a real signed kind-22242, then search again.
                 val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
@@ -199,7 +208,17 @@ class RelayProtocolTest {
 
                 session.receive("""["REQ","x2",{"search":"ali include:spam","limit":5}]""")
                 awaitMessage(out) { it.startsWith("""["EOSE","x2"]""") }
-                assertEquals(null, index.searchQueries.last().minRank, "include:spam lifts the default floor")
+                // include:spam SENDS a floor of 0 rather than omitting one. The
+                // floor is also the anchor of the default profile's trust boost
+                // — log(1 + user_score - min_rank) — and the schema's fail-open
+                // default for that feature is -1e9, so leaving it out would not
+                // "no floor", it would wreck the ordering. 0 keeps every hit,
+                // which is what the extension promises.
+                assertEquals(
+                    INCLUDE_SPAM_MIN_RANK,
+                    index.searchQueries.last().minRank,
+                    "include:spam keeps every hit, and still sends the floor the boost anchors on",
+                )
                 assertEquals("ali", index.searchQueries.last().search, "the extension itself never becomes a term")
 
                 session.receive("""["REQ","x3",{"search":"ali sort:rank filter:rank:gte:7","limit":5}]""")
@@ -215,7 +234,7 @@ class RelayProtocolTest {
     fun `an authenticated search enrolls the observer through the hook`() =
         runBlocking {
             val enrolled = Collections.synchronizedList(mutableListOf<String>())
-            val hooked = NostrRelayServer(store, defaultObserver, relayUrl, onObserver = { enrolled.add(it) })
+            val hooked = NostrRelayServer(store, relayUrl, onObserver = { enrolled.add(it) })
             try {
                 val out = Collections.synchronizedList(mutableListOf<String>())
                 val session = hooked.connect { out.add(it) }

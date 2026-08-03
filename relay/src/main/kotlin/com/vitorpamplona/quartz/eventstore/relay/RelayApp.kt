@@ -60,6 +60,10 @@ data class Nip11Info(
  *   WS   /  -> the NIP-50 relay ([nostrRelay]: full filters, search, COUNT, NIP-77)
  *   GET  /  -> the NIP-11 doc on Accept: application/nostr+json, else [landingPage]
  *              (e.g. a web UI) — or a plain notice when it is null.
+ *   GET  /kind_stats.html -> [statsPage], how many events of each kind the
+ *              store holds, counted with one NIP-45 COUNT per kind.
+ *   GET  /observer_stats.html -> [observerStatsPage], every kind-10040 observer
+ *              with its score counts here and on the relay its 10040 names.
  *   POST /  -> the NIP-86 relay-management RPC, when [admin] is configured.
  *
  * The NIP-11 doc is built from [nip11], [limits] (its `limitation` block) and
@@ -81,6 +85,13 @@ fun serveRelay(
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
     admin: Nip86Admin? = null,
     landingPage: String? = null,
+    // Served at GET /kind_stats.html. A separate page rather than a section of
+    // the landing page: it asks one NIP-45 COUNT per kind, which is a diagnostic
+    // an operator runs deliberately, not something a search UI should do on load.
+    statsPage: String? = null,
+    // Served at GET /observer_stats.html — every NIP-85 observer, with their
+    // score counts here and on the relay their 10040 names, side by side.
+    observerStatsPage: String? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     // NIP-86 advertises itself in supported_nips only when an admin is wired.
@@ -99,6 +110,12 @@ fun serveRelay(
                     landingPage?.let { call.respondText(it, ContentType.Text.Html) }
                         ?: call.respondText("${nip11.name} - a NIP-50 search relay; connect a WebSocket here.")
                 }
+            }
+            statsPage?.let { page ->
+                get("/kind_stats.html") { call.respondText(page, ContentType.Text.Html) }
+            }
+            observerStatsPage?.let { page ->
+                get("/observer_stats.html") { call.respondText(page, ContentType.Text.Html) }
             }
             admin?.let { nip86Admin(it, info) }
         }

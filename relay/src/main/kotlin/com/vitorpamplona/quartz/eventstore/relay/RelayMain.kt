@@ -22,10 +22,15 @@ package com.vitorpamplona.quartz.eventstore.relay
 
 import com.vitorpamplona.quartz.eventstore.store.SchemaDeployer
 import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
-import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.launch
 import java.net.URI
 
 /**
@@ -41,12 +46,11 @@ import java.net.URI
  *   RELAY_PORT          the port to listen on             (default 7777)
  *   RELAY_URL           this relay's own ws url — its NIP-42 identity and NIP-62
  *                       vanish scope                      (REQUIRED)
- *   DEFAULT_OBSERVER    64-hex pubkey whose web of trust ranks anonymous searches;
- *                       unset ⇒ anonymous searches are untrusted
- *   AUTO_DEPLOY         deploy the bundled schema on every boot — first run and
- *                       upgrades alike (default true)
- *   VESPA_CONFIG_URL    the config server that deploy goes to
- *                       (default: VESPA_URL's host on :19071)
+ *   AUTO_DEPLOY         deploy the bundled schema on EVERY boot (default true),
+ *                        so the cluster always matches the schema this build
+ *                        expects. A no-change deploy is a cheap no-op; a failed
+ *                        one is fatal only when Vespa has no schema to fall back on
+ *   VESPA_CONFIG_URL     Vespa's config server (default: VESPA_URL's host on :19071)
  *
  *   NIP-11 identity:
  *   RELAY_NAME / RELAY_DESCRIPTION / RELAY_ICON / RELAY_BANNER /
@@ -77,12 +81,30 @@ import java.net.URI
  *                            rather than configured (see RelaySource)
  *
  *   Trust view (see TrustProjection.reconcile):
+ *   REINDEX_FTS_ON_START     re-derive every event's search fields once, in the
+ *                            background (default false). Needed after a store
+ *                            upgrade that changes SearchExtractors or adds fed
+ *                            search fields; walks the whole corpus
+ *   SWEEP_ORPHAN_SCORES_ON_START  delete every kind-30382 signed by a service no
+ *                            stored 10040 names — cards that rank nothing and are
+ *                            read by nobody, which a by-kind 30382 sync accrues by
+ *                            the million. Any value other than `true` is a DRY RUN
+ *                            (one grouping query, no writes); unset ⇒ off. An
+ *                            operator action: pair it with narrowing the sync, or
+ *                            the next walk re-downloads what it freed
  *   TRUST_RECONCILE_ON_START  at startup, re-derive any service whose scores are
  *                             not projected under its current observer. Needed
  *                             because the view is maintained by write triggers
  *                             that a duplicate never reaches (default true)
  *
  *   Parse audit / quartz logging (optional; see ParseAudit):
+ *   SERVING_PRESSURE_THRESHOLD_MS  mean client-read latency (default 2000) above
+ *                            which the mirror yields between batches, so a sync
+ *                            cannot starve the clients this relay exists for
+ *   ROUTER_WIRE_LOG          "" (default) logs only what the relay complains
+ *                            about — NOTICE, CLOSED, failed sends. "sent" adds
+ *                            every command we send; "full" adds every message
+ *                            received, which is a line per event
  *   QUARTZ_LOG_LEVEL         quartz's log floor: DEBUG/INFO/WARN/ERROR. Quartz
  *                            defaults to DEBUG, so malformed upstream profiles
  *                            log a line per event during a backfill
@@ -133,31 +155,238 @@ fun main() {
             RelayServerListener.None
         }
 
-    // Deploy the bundled schema on EVERY boot, not only when Vespa serves
-    // nothing yet. The store's own autoDeploy is first-run-only by design ("a
-    // schema upgrade is an explicit deploy") — which turned a routine relay
-    // upgrade into a store that rejects writes: the upgraded code fed fields
-    // the still-serving old schema had never heard of, and Vespa refused every
-    // kind 0 with "Field 'name_parts' is not defined in document type 'event'".
-    // Redeploying an unchanged package is a no-op and field additions apply
-    // live, so the relay owns the explicit deploy here.
+    // Deploy the schema this build EXPECTS, every boot — not only when Vespa has
+    // no application at all.
+    //
+    // VespaEventStore.open's own autoDeploy is deployIfAbsent: a fresh cluster
+    // gets the schema, one already serving is left alone. That is safe for a
+    // first run and wrong for an upgrade, because the schema travels with the
+    // store jar while the cluster keeps whatever it was given months ago. When
+    // the two drift, Vespa answers every write with
+    //
+    //   Status 400 ... Field 'name_parts' is not defined in document type 'event'
+    //
+    // and the router counts it, drops the event and carries on. That cost
+    // 2,336,288 events in one run before anybody noticed, and they are not
+    // recoverable — a 400 is permanent and nothing re-offers them.
+    //
+    // Deploying unconditionally makes the running cluster match the code that is
+    // talking to it. Vespa handles a no-change deploy as a cheap no-op (a new
+    // session that activates with no configChangeActions), so the cost of the
+    // common case is one request at startup.
+    val configUrl = env["VESPA_CONFIG_URL"] ?: configUrlFor(vespaUrl)
     if (autoDeploy) {
-        deployBundledSchema(vespaUrl, env["VESPA_CONFIG_URL"] ?: configUrlFor(vespaUrl))
+        System.err.println("schema: deploying the bundled application package to $configUrl")
+        deployBundledSchema(vespaUrl, configUrl)
+        System.err.println("schema: deployed and serving")
     }
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false)
+
+    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl)
 
     // The trust view is derived on WRITE, and dedup drops an event the store
     // already holds before the projection sees it — so a corpus mirrored before
     // its 10040s arrived stays unprojected, and every ranked search comes back
     // empty with nothing logged anywhere. Settling it here costs a few queries
     // when the answer is "nothing to do", which is the normal case.
-    if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
-        runBlocking { reconcileTrustWithRetry(store) }
+    // Started here, AWAITED NOWHERE. This used to be `runBlocking`, sitting
+    // between opening the store and starting the listener, and the store's own
+    // note for it — "a few queries when the answer is nothing to do, which is
+    // the normal case" — stopped being true as the corpus grew. Measured at 12+
+    // minutes on 36M kind-30382 events, with Vespa at 356% CPU and this relay
+    // serving NOTHING: no websocket, no router, no NIP-11. Every restart was an
+    // outage that got longer the better the relay did its job.
+    //
+    // The work is worth doing and none of it needs to happen before the first
+    // client connects. Serving with an unsettled projection degrades one
+    // feature — ranked search returns less until it lands — where blocking
+    // degrades all of them, absolutely, for an unbounded time. So it runs
+    // behind the server and says where it has got to.
+    val trustScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
+
+    // A one-off migration, not a boot step — hence opt-in and off by default.
+    //
+    // Which kinds are searchable, and how SearchExtractors decomposes them, is
+    // baked into the build. A store fed by older code can be stale or missing
+    // from search entirely until this re-derives it, and it is also the RE-FEED
+    // that backfills the near-tier prefix/fuzzy arrays: those are fed fields, so
+    // a Vespa reindex cannot produce them — only a put can.
+    //
+    // In the background and NOT awaited, like the trust reconcile. It walks the
+    // whole corpus (54M events here) taking the writer lock a page at a time, so
+    // as a startup barrier it would be an outage measured in hours. Progress is
+    // printed because a silent hours-long job is indistinguishable from a hung
+    // one — this router has already taught that lesson twice.
+    //
+    // Ordering is already correct by construction: the schema deploy above runs
+    // before the store opens, and the store's own note requires exactly that —
+    // the backfill re-puts docs carrying the near fields, and a serving schema
+    // that predates them rejects those puts outright.
+    if (env["REINDEX_FTS_ON_START"]?.toBooleanStrictOrNull() == true) {
+        trustScope.launch {
+            val startedMs = System.currentTimeMillis()
+            println("fts: reindexing the whole corpus in the background — search results may be incomplete until it finishes")
+            var cursor: String? = null
+            var total = 0L
+            var pages = 0
+            // The denominator, asked for once. A rising count with nothing to
+            // measure it against does not read as progress — it reads as
+            // something repeating, which is exactly how the first version of
+            // this line was received. Null rather than a guess if it fails: an
+            // unknown denominator is better than a wrong one.
+            val expected = runCatching { store.count(Filter()) }.getOrNull()?.toLong()
+            // Where the walk got to, on disk. The store's API is resumable by
+            // design — the cursor is an opaque token meant to be persisted and
+            // handed back — and holding it only in memory threw away 12,254,483
+            // events the first time a page failed. Beside the sync cursors, for
+            // the same reason those are there.
+            val cursorFile = env["FTS_CURSOR_FILE"] ?: "/var/lib/vespa-relay/fts-cursor.txt"
+            cursor =
+                runCatching {
+                    java.io
+                        .File(cursorFile)
+                        .takeIf { it.isFile }
+                        ?.readText()
+                        ?.trim()
+                        ?.ifBlank { null }
+                }.getOrNull()
+            if (cursor != null) println("fts: resuming from a saved cursor")
+            try {
+                do {
+                    // A page can fail for reasons that are nothing to do with
+                    // this page: Vespa answered one with an HTML error body
+                    // ("Unexpected character ('<')") while under memory
+                    // pressure, and the whole walk died on it. Retry the SAME
+                    // cursor a few times before giving up, so a busy engine
+                    // costs seconds rather than hours of redone work.
+                    var p: com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress? = null
+                    var attempt = 0
+                    while (p == null) {
+                        p =
+                            runCatching { store.reindexFullTextSearch(cursor) }
+                                .onFailure { e ->
+                                    if (++attempt > FTS_PAGE_RETRIES) throw e
+                                    System.err.println("fts: page failed (${e.message?.take(80)}) — retry $attempt/$FTS_PAGE_RETRIES in ${attempt * 5}s")
+                                }.getOrNull()
+                        if (p == null) delay(attempt * 5_000L)
+                    }
+                    cursor = p.cursor
+                    runCatching { java.io.File(cursorFile).writeText(cursor ?: "") }
+                    total += p.processedThisBatch
+                    // Every page would be a flood; never would be silence.
+                    if (++pages % 50 == 0) {
+                        val secs = (System.currentTimeMillis() - startedMs) / 1000
+                        val rate = if (secs > 0) total / secs else 0
+                        val pct = expected?.takeIf { it > 0 }?.let { " (${total * 100 / it}%)" } ?: ""
+                        val eta =
+                            if (expected != null && rate > 0 && expected > total) {
+                                ", ETA ~${fmtDuration((expected - total) / rate * 1000)}"
+                            } else {
+                                ""
+                            }
+                        println(
+                            "fts: reindexed ${total}${expected?.let { "/$it" } ?: ""} event(s)$pct" +
+                                " in ${fmtDuration(secs * 1000)}, $rate/s$eta",
+                        )
+                    }
+                } while (!p.done)
+                println("fts: reindex complete — $total event(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}")
+                // Done means done: leaving the cursor would resume a finished
+                // walk from its tail on the next boot with the flag still set.
+                runCatching { java.io.File(cursorFile).delete() }
+            } catch (e: Exception) {
+                // Resumable by design, so say where it stopped rather than only
+                // that it did.
+                System.err.println(
+                    "fts: reindex FAILED after $total event(s): ${e.message}" +
+                        " — the cursor is saved, so restarting with REINDEX_FTS_ON_START resumes here",
+                )
+            }
+        }
     }
+    // DELETE every kind-30382 signed by a service no stored 10040 names.
+    //
+    // This relay is exactly the case the store wrote the sweep for: the
+    // `nosfabricaScores` stream asks for kind 30382 with no author narrowing, so
+    // it pulls every service publishing on that relay — 87 of them — where the
+    // 10040s we hold name a few. Those cards can never become a tensor cell for
+    // any observer, so they rank nothing and are read by nobody, and on this
+    // machine they are the difference between Vespa fitting in its 34g and
+    // sitting on the ceiling at 99% with ingest wedged behind it.
+    //
+    // A deletion is not a tombstone: the same by-kind stream re-downloads what
+    // this frees on its next walk. Reclaiming space here and narrowing that
+    // filter are one job, not two.
+    //
+    // Dry run by default when the value is not `true` — "which services, how
+    // many cards" costs one grouping query and no writes, and a sweep that
+    // deletes on a typo is not a sweep anyone should have to think twice about.
+    env["SWEEP_ORPHAN_SCORES_ON_START"]?.trim()?.takeIf { it.isNotEmpty() }?.let { setting ->
+        val dryRun = setting.toBooleanStrictOrNull() != true
+        trustScope.launch {
+            val startedMs = System.currentTimeMillis()
+            println(
+                "sweep: ${if (dryRun) "DRY RUN — no writes" else "DELETING orphan scores"}" +
+                    " — kind 30382 from services no stored 10040 names",
+            )
+            var lastReport = 0L
+            runCatching {
+                store.sweepOrphanScores(dryRun) { done, totalServices, swept, totalScores ->
+                    // Paced, because the callback fires per page and this walks
+                    // millions of cards. The totals come from the store's own
+                    // grouping query, so this is a real fraction rather than the
+                    // downloaded/downloaded shape that once printed 100% for
+                    // hours.
+                    val now = System.currentTimeMillis()
+                    if (now - lastReport >= 15_000) {
+                        lastReport = now
+                        val pct = if (totalScores > 0) " (${swept * 100L / totalScores}%)" else ""
+                        println("sweep: $done/$totalServices service(s), $swept/$totalScores score(s)$pct")
+                    }
+                }
+            }.onSuccess { report ->
+                val secs = (System.currentTimeMillis() - startedMs) / 1000
+                // Counts and three examples, NOT the report's own toString: that
+                // carries every orphan pubkey and printed a 38,920-character log
+                // line, which is a wall rather than a number. `orphans` is
+                // deliberately complete so a caller can act on it — a log line
+                // is not that caller.
+                if (report.refused) {
+                    println(
+                        "sweep: REFUSED — no readable 10040 attribution, so every score would look orphaned." +
+                            " Nothing was touched; mirror a provider list first",
+                    )
+                } else {
+                    val eg = report.orphans.take(3).joinToString { it.take(8) + "…" }
+                    println(
+                        "sweep: ${if (dryRun) "would delete" else "deleted"} ${report.scoresSwept} score(s)" +
+                            " from ${report.orphans.size} orphan service(s) of ${report.servicesSeen} seen" +
+                            (if (report.remapped.isNotEmpty()) ", ${report.remapped.size} remapped mid-sweep and left alone" else "") +
+                            " in ${secs}s" +
+                            (if (eg.isNotEmpty()) " (e.g. $eg)" else "") +
+                            if (dryRun) " — set SWEEP_ORPHAN_SCORES_ON_START=true to apply" else "",
+                    )
+                }
+            }.onFailure { e ->
+                println("sweep: FAILED after ${(System.currentTimeMillis() - startedMs) / 1000}s: ${e.message}")
+            }
+        }
+    }
+    if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
+        trustScope.launch {
+            println("trust: reconciling in the background — ranked search may return less until this finishes")
+            val startedMs = System.currentTimeMillis()
+            reconcileTrustWithRetry(store)
+            println("trust: background reconcile finished in ${(System.currentTimeMillis() - startedMs) / 1000}s")
+        }
+    }
+    // One instance, shared: the relay server measures client reads into it, the
+    // router reads it back to decide whether to yield. A relay answers clients
+    // first and mirrors with what is left.
+    val servingPressure = ServingPressure(thresholdMs = env["SERVING_PRESSURE_THRESHOLD_MS"]?.trim()?.toLongOrNull()?.coerceAtLeast(100) ?: 2_000)
     val relay =
         NostrRelayServer(
             store = store,
-            defaultObserver = PubKeys.decodeOrNull(env["DEFAULT_OBSERVER"], "DEFAULT_OBSERVER"),
+            servingPressure = servingPressure,
             relayUrl = relayUrl,
             listener = listener,
             limits = limits,
@@ -195,6 +424,8 @@ fun main() {
                 audit = parseAudit,
                 cursors = cursors,
                 signer = identity,
+                wireLogMode = env["ROUTER_WIRE_LOG"]?.trim()?.lowercase() ?: "",
+                servingPressure = servingPressure,
             ).start()
         }
 
@@ -211,6 +442,11 @@ fun main() {
 
     Runtime.getRuntime().addShutdownHook(
         Thread {
+            // The background reconcile holds the store open and would keep
+            // querying an engine we are about to close. Cancelled first, and NOT
+            // waited for: an unfinished reconcile costs a less complete ranking
+            // until the next start, which is exactly what it costs anyway.
+            trustScope.cancel()
             // Stop mirroring into the store before the relay and store close.
             router?.close()
             // After the router, so the final report includes the last batch.
@@ -258,6 +494,8 @@ fun main() {
         admin = admin,
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = webUi(),
+        statsPage = kindStatsUi(),
+        observerStatsPage = observerStatsUi(),
     )
 }
 
@@ -396,3 +634,18 @@ private fun String.httpFromWs(): String =
 
 /** The bundled search UI (`resources/index.html`), or null if it isn't on the classpath. */
 private fun webUi(): String? = object {}.javaClass.getResource("/index.html")?.readText()
+
+/** The bundled per-kind COUNT page (`resources/kind_stats.html`). */
+private fun kindStatsUi(): String? = object {}.javaClass.getResource("/kind_stats.html")?.readText()
+
+/** The bundled observer sync-check page (`resources/observer_stats.html`). */
+private fun observerStatsUi(): String? = object {}.javaClass.getResource("/observer_stats.html")?.readText()
+
+/**
+ * Retries for ONE page of the full-text reindex before the walk gives up.
+ *
+ * A page can fail for reasons unrelated to its contents — Vespa answered one
+ * with an HTML error body under memory pressure, and the walk died 12.2M events
+ * in. Five attempts with a widening gap turns that into a pause.
+ */
+private const val FTS_PAGE_RETRIES = 5

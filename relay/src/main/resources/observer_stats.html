@@ -1,0 +1,537 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="Every NIP-85 observer, and whether their scores actually reached this relay." />
+<title>Observer stats</title>
+<!--
+  Every kind-10040 observer WITH A RANK SERVICE, and whether their scores got here.
+     ────────────────────────────────────────────────────────────────────────────
+
+  Filtered to `30382:rank`: that dimension is what ranking reads, so a 10040
+  declaring only `30382:followers` cannot rank anything and its row would be a
+  name beside four dashes. The count of what was dropped is in the footer.
+
+  A 10040 names, per dimension, a SERVICE pubkey and the RELAY that serves its
+  scores:
+
+      ["30382:rank",      "<service pubkey>", "wss://…"]
+      ["30382:followers", "<service pubkey>", "wss://…"]
+
+  So for each observer there are four numbers worth having: how many kind-30382
+  events that service has published, counted HERE and counted THERE, for each
+  of the two dimensions. Equal means synced. Short means we have not finished
+  fetching. That comparison is the whole point of the page — a local number
+  alone tells you nothing, because "3,197 scores" reads as healthy right up
+  until you learn the relay serving them holds 145,968.
+
+  One query per DISTINCT question. A 10040 usually names the same service for
+  both dimensions — 225 of 259 observers here — so asking per row asked
+  everything twice, at twice the wait and twice the load on relays that never
+  volunteered to be polled by a status page.
+
+  Counted ANONYMOUSLY on purpose, whatever your signed-in preference elsewhere.
+  An authenticated reader is trust-gated by the store — it counts only authors
+  that reader has scored — and this page's entire question is "how many exist",
+  not "how many can I see". Gating here would silently answer a different
+  question with the same-looking number.
+
+  Two honest limitations, both shown rather than hidden:
+
+  * NIP-45 COUNT is optional and widely unimplemented. A relay that does not
+    answer gets "no COUNT", not a zero — the distinction matters, since zero is
+    a claim and silence is not.
+  * A relay applying a default page size to COUNT reports that size instead of
+    a count. Any value that lands exactly on a suspiciously round cap is
+    flagged, because 500 looks like data.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #fff; --text: #14171a; --muted: #6b7580;
+    --line: #e3e6ea; --accent: #4a5fd9; --warn: #a8611a; --bad: #b3261e; --ok: #1a7f4b;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --surface: #1c1f24; --text: #e8eaed; --muted: #9aa3ad;
+      --line: #2b3038; --accent: #8b9cf0; --warn: #d99b56; --bad: #f2b8b5; --ok: #6dd39b;
+    }
+  }
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 1.5rem; background: var(--bg); color: var(--text);
+         font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif; }
+  main { max-width: 78rem; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; max-width: 60rem; }
+  .bar { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  button { font: inherit; padding: .4rem .8rem; border-radius: .4rem; cursor: pointer;
+           border: 1px solid var(--line); background: var(--surface); color: var(--text); }
+  button:disabled { opacity: .5; cursor: default; }
+  .status { color: var(--muted); font-size: .9rem; }
+  .wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; }
+  table { border-collapse: collapse; width: 100%; min-width: 62rem; }
+  th, td { text-align: left; padding: .45rem .7rem; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  th.grp { text-align: center; border-left: 1px solid var(--line); }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.first { border-left: 1px solid var(--line); }
+  tr:last-child td { border-bottom: 0; }
+  .who { display: flex; align-items: center; gap: .5rem; min-width: 14rem; }
+  .who img, .who .ph { width: 26px; height: 26px; border-radius: 50%; flex: 0 0 auto; }
+  .who img { object-fit: cover; background: var(--line); }
+  .who .ph { display: grid; place-items: center; background: var(--line); color: var(--muted);
+             font-size: .68rem; font-weight: 700; letter-spacing: .02em; }
+  .who .ph.broken { outline: 1px dashed var(--warn); }
+  .who .ph.missing { color: var(--warn); }
+  .who .nm { font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; max-width: 12rem; }
+  .key { color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums; }
+  .pending { color: var(--muted); font-style: italic; }
+  .none { color: var(--warn); font-size: .82rem; }
+  .short { color: var(--bad); font-weight: 600; }
+  .synced { color: var(--ok); }
+  .capped { color: var(--warn); }
+  .relay { color: var(--muted); font-size: .78rem; white-space: nowrap; overflow: hidden;
+           text-overflow: ellipsis; max-width: 13rem; display: block; }
+  footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; max-width: 60rem; }
+  code { background: var(--line); padding: .1rem .3rem; border-radius: .25rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Observer stats</h1>
+  <p class="sub">Every kind-10040 observer that names a <code>30382:rank</code> service, and whether the
+     scores they trust actually reached this relay. Counted anonymously on purpose — an authenticated
+     reader is trust-gated, which would answer a different question.
+     <strong>here</strong> is this store; <strong>there</strong> is the relay their 10040 names.
+     Equal means synced; short means the sync has not finished.</p>
+
+  <div class="bar">
+    <button id="run">Check every observer</button>
+    <span class="status" id="status">idle</span>
+  </div>
+
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr>
+          <th>Observer</th>
+          <th class="grp" colspan="3">30382:rank</th>
+          <th class="grp" colspan="3">30382:followers</th>
+        </tr>
+        <tr>
+          <th></th>
+          <th class="grp">relay</th><th class="n">here</th><th class="n">there</th>
+          <th class="grp">relay</th><th class="n">here</th><th class="n">there</th>
+        </tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <footer id="foot"></footer>
+</main>
+
+<script>
+const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+/**
+ * IDLE time — silence, not elapsed time.
+ *
+ * Reset by every message on the connection, so a relay working through a queue
+ * is never cut off however deep the queue, and only a relay that has stopped
+ * talking is. Measured against nip85.nosfabrica.com, 146 services, 4 in flight:
+ *
+ *     15s deadline    55 answered, 91 timed out   (0 refused — none, ever)
+ *     40s deadline   146 answered,  0 timed out   median 13.5s, max 32.7s
+ *     20s idle       134 answered, 12 timed out   max answer 47.6s
+ *
+ * The deadline had to cover QUEUE + SERVICE, which grows with the number of
+ * services and is unbounded as this page scales. Idle only has to cover the
+ * longest single SILENCE — but that is bounded by the slowest single COUNT, not
+ * by zero, because the relay answers serially: while it computes one expensive
+ * count nothing arrives, and 20s could not tell that from a dead socket. Hence
+ * 60s, above the 47.6s worst answer observed, and still independent of how many
+ * services this page ends up asking about.
+ */
+const IDLE_TIMEOUT_MS = 60000;
+
+/**
+ * Why a cell has no number, kept apart on purpose.
+ *
+ * The page's whole claim is that zero is a claim and silence is not — so
+ * "we stopped waiting" and "the relay declined" must not render as one thing.
+ * They lead to different conclusions: the first is our budget, the second is
+ * the relay telling us something about itself.
+ */
+const TIMED_OUT = { state: "timeout" };
+const REFUSED = { state: "refused" };
+// Remote relays are other people's servers. A handful at a time, never a burst.
+const REMOTE_CONCURRENCY = 4;
+// ...and a handful of COUNTs at a time WITHIN one relay, which is where the
+// wait actually was. The work is not spread evenly across relays — measured
+// here, 24 relays hold 256 (relay, service) pairs and ONE of them holds 144 of
+// them:
+//
+//   nip85.nosfabrica.com     144 pairs   4.22s per COUNT   ~10 min serially
+//   nip85.brainstorm.world    45 pairs   0.20s (no NIP-45, answers NOTICE)
+//   nip85-staging…            38 pairs   0.25s
+//   the other 21 relays       29 pairs   seconds
+//
+// REMOTE_CONCURRENCY parallelises across RELAYS, so it did nothing for the one
+// relay holding 56% of the work — the other 23 finished in under a minute and
+// the page then spent ten more waiting on a single socket that was asking one
+// question at a time. NIP-01 allows concurrent subscriptions and the client
+// below already keys replies by subscription id, so only the await was
+// serialising them.
+//
+// Four, not more: this is a status page pointed at somebody else's server, and
+// four concurrent COUNTs is the same courtesy REMOTE_CONCURRENCY extends to
+// four concurrent relays.
+const PER_RELAY_CONCURRENCY = 4;
+// A COUNT landing exactly on one of these is far more likely to be a relay's
+// default page size reported as a count than a real total. Flagged, not hidden.
+const SUSPICIOUS = new Set([100, 500, 1000, 5000]);
+
+const rowsEl = document.getElementById("rows");
+const statusEl = document.getElementById("status");
+const footEl = document.getElementById("foot");
+const runEl = document.getElementById("run");
+const fmt = (n) => n.toLocaleString();
+
+/**
+ * The one name to show: `display_name` first, `name` as the fallback, and blank
+ * means blank so a profile carrying only whitespace falls through rather than
+ * rendering a gap. Same rule as the search page.
+ */
+const displayName = (c) => ((c && c.display_name) || "").trim() || ((c && c.name) || "").trim() || "";
+
+/** A tiny COUNT-only client. `null` means the relay never answered. */
+function client(url) {
+  return new Promise((resolve, reject) => {
+    let ws;
+    try { ws = new WebSocket(url); } catch (e) { return reject(e); }
+    const pending = new Map();
+    const fail = (reason) => { for (const [, p] of pending) p.resolve(reason); pending.clear(); };
+
+    // ONE idle watchdog for the connection, reset by ANY message.
+    //
+    // Per-request deadlines started at send, which is the wrong clock: this page
+    // asks a relay for many services at once and the relay works through them,
+    // so a cheap COUNT queued behind an expensive one expired while the socket
+    // was busy delivering somebody else's answer. Measured on
+    // nip85.nosfabrica.com — 146 services, 4 in flight — that scored 55 answered
+    // and 91 "timed out", with a MEDIAN answer time of 75ms. Almost none of
+    // those were slow; they were waiting in line.
+    //
+    // Idle asks the question that actually matters: is the relay still talking
+    // to us at all? While answers keep arriving nothing is wrong, however long
+    // the queue takes. Only real silence ends it. (Same correction quartz made
+    // to its accessory timeouts in 1622bd7109.)
+    let idle = null;
+    const stopIdle = () => { if (idle) { clearTimeout(idle); idle = null; } };
+    const bumpIdle = () => {
+      stopIdle();
+      // Armed only while something is outstanding, so a connection sitting
+      // between batches is not "idle" in a way that means anything.
+      if (pending.size) idle = setTimeout(() => fail(TIMED_OUT), IDLE_TIMEOUT_MS);
+    };
+
+    ws.onerror = () => { stopIdle(); fail(REFUSED); reject(new Error("unreachable")); };
+    ws.onclose = () => { stopIdle(); fail(REFUSED); };
+    ws.onopen = () => resolve(ws);
+    ws.onmessage = (ev) => {
+      // Bumped before parsing and whatever the message was: traffic of any kind
+      // is proof the relay is still working, including a NOTICE about something
+      // else entirely.
+      bumpIdle();
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      const p = pending.get(m[1]);
+      if (!p) return;
+      pending.delete(m[1]);
+      if (m[0] === "COUNT") p.resolve(m[2] || REFUSED);
+      else if (m[0] === "CLOSED" || m[0] === "NOTICE") p.resolve(REFUSED);
+      else pending.set(m[1], p);
+      bumpIdle();
+    };
+    ws.count = (author) =>
+      new Promise((res) => {
+        const id = "c" + Math.random().toString(36).slice(2, 9);
+        pending.set(id, { resolve: res });
+        bumpIdle();
+        try { ws.send(JSON.stringify(["COUNT", id, { kinds: [30382], authors: [author] }])); }
+        catch { pending.delete(id); res(REFUSED); }
+      });
+    ws.req = (filter) =>
+      new Promise((res) => {
+        const id = "r" + Math.random().toString(36).slice(2, 9);
+        const acc = [];
+        const prev = ws.onmessage;
+        // ONE exit, restoring the handler and closing the subscription however we
+        // leave. The first version only did that on EOSE, so a timed-out REQ left
+        // a stale handler chained in front of the real one and a subscription open
+        // on the relay — which caps them, so enough timeouts and every later REQ
+        // is rejected for a reason nothing on the page would have shown.
+        const finish = () => {
+          clearTimeout(timer);
+          ws.onmessage = prev;
+          try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
+          res(acc);
+        };
+        // Idle here too. A REQ that is streaming thousands of profiles is
+        // working, not stuck, and a fixed deadline would cut it off mid-page and
+        // return a SHORT list — which this page would then render as missing
+        // profiles rather than as an interrupted read.
+        let timer = setTimeout(finish, IDLE_TIMEOUT_MS);
+        ws.onmessage = (ev) => {
+          clearTimeout(timer);
+          timer = setTimeout(finish, IDLE_TIMEOUT_MS);
+          // The CONNECTION's watchdog too, not just this REQ's. While a REQ
+          // streams, its own messages never reached `prev`, so a COUNT waiting
+          // on the same socket saw silence and expired on a connection that was
+          // in fact busy — the same mistake the per-request deadlines made, one
+          // level down. Reqs and counts do not currently overlap here; this is
+          // so that they can.
+          bumpIdle();
+          let m; try { m = JSON.parse(ev.data); } catch { return; }
+          if (m[1] !== id) return prev(ev);
+          if (m[0] === "EVENT") acc.push(m[2]);
+          else if (m[0] === "EOSE" || m[0] === "CLOSED") finish();
+        };
+        ws.send(JSON.stringify(["REQ", id, filter]));
+      });
+  });
+}
+
+function num(v) {
+  if (v === undefined) return '<span class="pending">…</span>';
+  if (v === TIMED_OUT) {
+    return `<span class="none" title="the relay went silent for ${IDLE_TIMEOUT_MS / 1000}s with this ask outstanding — it stopped talking, it did not decline">timed out</span>`;
+  }
+  if (v === REFUSED || v === null || v.count === undefined) {
+    return '<span class="none" title="the relay answered something other than a count, or closed the subscription — it does not serve NIP-45 for this ask">no COUNT</span>';
+  }
+  const cap = SUSPICIOUS.has(v.count) ? ' <span class="capped" title="exactly a common page-size cap — the relay may be reporting its default limit instead of a count">⚠</span>' : "";
+  return fmt(v.count) + cap;
+}
+
+/**
+ * A real count, as opposed to a reason there isn't one.
+ *
+ * The no-answer sentinels are objects, so they are TRUTHY — every comparison
+ * that used to read `if (there)` would now happily take `TIMED_OUT.count`,
+ * which is undefined, and quietly produce `NaN%` or a false "in sync" tick.
+ */
+const counted = (v) => !!v && typeof v.count === "number";
+
+/** here vs there, once both are known. */
+function verdict(here, there) {
+  if (!counted(here) || !counted(there)) return "";
+  if (here.count >= there.count) return ' <span class="synced">✓</span>';
+  const pct = there.count ? Math.round((here.count / there.count) * 100) : 0;
+  return ` <span class="short">${pct}%</span>`;
+}
+
+function render(list) {
+  rowsEl.innerHTML = "";
+  for (const o of list) {
+    const tr = document.createElement("tr");
+    // A grey circle used to mean three different things — no kind 0 in the
+    // store, a kind 0 with no `picture`, and a picture whose URL failed — and
+    // they read as one bug. Measured here: of 200 observers, 11 have no profile
+    // at all and 65 of the remaining 189 publish no picture, so most empty
+    // circles are the network being itself, not the relay missing data.
+    const initials = (o.name || o.pubkey).slice(0, 2).toUpperCase();
+    const avatar = o.picture
+      ? `<img src="${o.picture}" alt="" loading="lazy" ` +
+        `onerror="this.replaceWith(Object.assign(document.createElement('div'),` +
+        `{className:'ph broken',textContent:'${initials}',title:'picture URL failed to load'}))"/>`
+      : o.hasProfile
+        ? `<div class="ph" title="profile has no picture field">${initials}</div>`
+        : `<div class="ph missing" title="no kind 0 for this pubkey in this store">?</div>`;
+    const who =
+      `<div class="who">${avatar}` +
+      `<div><div class="nm">${o.name || (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
+      `<div class="key">${o.pubkey.slice(0, 12)}…</div></div></div>`;
+    const dim = (d) =>
+      `<td class="first"><span class="relay" title="${d.relay || ""}">${d.relay ? d.relay.replace(/^wss?:\/\//, "") : "—"}</span></td>` +
+      `<td class="n">${d.service ? num(d.here) : "—"}</td>` +
+      `<td class="n">${d.service ? num(d.there) + verdict(d.here, d.there) : "—"}</td>`;
+    tr.innerHTML = `<td>${who}</td>` + dim(o.rank) + dim(o.followers);
+    rowsEl.appendChild(tr);
+  }
+}
+
+/** Run [tasks] with at most [n] in flight. */
+async function bounded(n, tasks) {
+  let i = 0;
+  await Promise.all(Array.from({ length: Math.min(n, tasks.length) }, async () => {
+    while (i < tasks.length) await tasks[i++]();
+  }));
+}
+
+async function run() {
+  runEl.disabled = true;
+  statusEl.textContent = "connecting…";
+  let local;
+  try { local = await client(RELAY_URL); }
+  catch { statusEl.textContent = "could not connect to this relay"; runEl.disabled = false; return; }
+
+  statusEl.textContent = "loading 10040s…";
+  const lists = await local.req({ kinds: [10040], limit: 2000 });
+
+  // One row per observer, newest 10040 wins — it is a replaceable kind, but a
+  // relay may still hand us more than one.
+  const byPubkey = new Map();
+  for (const ev of lists) {
+    const prev = byPubkey.get(ev.pubkey);
+    if (!prev || prev.created_at < ev.created_at) byPubkey.set(ev.pubkey, ev);
+  }
+  /**
+   * A relay url as written in a tag, reduced to the relay it means.
+   *
+   * `wss://nip85.brainstorm.world` and `wss://nip85.brainstorm.world/` are one
+   * relay written two ways, and both are in the corpus — measured here, 45
+   * services on the first and 2 on the second. Left raw they group apart, so the
+   * page opens two connections to the same host, asks it the same questions
+   * twice, and prints it as two rows. The router normalizes before it dials; a
+   * page reading the same tags has to do the same or it disagrees with the relay
+   * it is reporting on.
+   *
+   * Null for anything we could not dial anyway:
+   *
+   *  - a non-ws scheme. `http://localhost:7778` is in the corpus, from someone's
+   *    local test leaking a 10040 onto the network.
+   *  - loopback and private hosts. In a tag those mean the AUTHOR's machine;
+   *    from this browser they mean the reader's, and asking it questions on
+   *    their behalf is not something this page should do.
+   */
+  function normalizeRelay(raw) {
+    if (!raw) return null;
+    const t = String(raw).trim();
+    if (!t || /\s/.test(t)) return null;
+    let u;
+    try { u = new URL(/^wss?:\/\//i.test(t) ? t : "wss://" + t); } catch { return null; }
+    if (u.protocol !== "ws:" && u.protocol !== "wss:") return null;
+    // Mixed content: an https page cannot open a plain ws:// socket at all —
+    // the browser refuses it before a packet moves, and the page would print
+    // "no COUNT", which reads as "the relay did not answer" when the truth is
+    // that we were never allowed to ask. Dropped here so the row says "—", the
+    // same as any other undialable url. On an http page (dev, localhost) ws://
+    // is fine and stays.
+    if (location.protocol === "https:" && u.protocol === "ws:") return null;
+    if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[::1\]|0\.0\.0\.0)/i.test(u.hostname) ||
+        /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname)) return null;
+    // The URL parser already lowercased scheme and host. A bare "/" path is the
+    // same relay as no path at all, which is the whole duplicate above.
+    const path = u.pathname === "/" ? "" : u.pathname.replace(/\/+$/, "");
+    return `${u.protocol}//${u.host}${path}`;
+  }
+
+  const pick = (ev, tag) => {
+    const t = (ev.tags || []).find((x) => x[0] === tag);
+    return { service: t?.[1] || null, relay: normalizeRelay(t?.[2]) };
+  };
+  // Only observers that name a `30382:rank` service. The rank dimension is what
+  // ranking actually reads; a 10040 declaring only `30382:followers` cannot rank
+  // anything, so its row would be a name and four dashes. Counted below so the
+  // page says how many it dropped rather than quietly showing a shorter list.
+  const all = [...byPubkey.values()].map((ev) => ({
+    pubkey: ev.pubkey,
+    name: "",
+    picture: "",
+    hasProfile: false,
+    rank: pick(ev, "30382:rank"),
+    followers: pick(ev, "30382:followers"),
+  }));
+  const withoutRank = all.length - all.filter((o) => o.rank.service).length;
+  const observers = all.filter((o) => o.rank.service);
+  render(observers);
+
+  // Names and pictures, batched.
+  statusEl.textContent = `loading ${observers.length} profile(s)…`;
+  const keys = observers.map((o) => o.pubkey);
+  for (let i = 0; i < keys.length; i += 200) {
+    for (const ev of await local.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
+      let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
+      const o = observers.find((x) => x.pubkey === ev.pubkey);
+      if (o) { o.hasProfile = true; o.name = displayName(c); o.picture = c.picture || ""; }
+    }
+  }
+  render(observers);
+
+  const dims = observers.flatMap((o) => [o.rank, o.followers].filter((d) => d.service));
+
+  // ONE query per distinct question, not one per row.
+  //
+  // A 10040 usually names the same service for both dimensions — measured here,
+  // 225 of 259 observers do — so asking per row asked everything twice: 486
+  // queries for 247 distinct services locally, and 486 for 251 distinct
+  // (relay, service) pairs remotely. Same answer, twice the wait, and twice the
+  // load on relays that did not ask to be polled by a status page.
+  const localBySvc = new Map();
+  const svcs = [...new Set(dims.map((d) => d.service))];
+  let done = 0;
+  for (const svc of svcs) {
+    statusEl.textContent = `counting here ${++done}/${svcs.length}…`;
+    localBySvc.set(svc, await local.count(svc));
+    for (const d of dims) if (d.service === svc) d.here = localBySvc.get(svc);
+    render(observers);
+  }
+
+  // Then the remote relays — other people's servers, a few at a time. Grouped
+  // by url so one connection answers every dimension it serves.
+  // Same deduplication remotely, and grouped so one connection answers every
+  // distinct service that relay serves.
+  const byRelay = new Map();
+  for (const d of dims) {
+    if (!d.relay) { d.there = null; continue; }
+    if (!byRelay.has(d.relay)) byRelay.set(d.relay, new Set());
+    byRelay.get(d.relay).add(d.service);
+  }
+  let rdone = 0;
+  await bounded(REMOTE_CONCURRENCY, [...byRelay.entries()].map(([url, svcSet]) => async () => {
+    statusEl.textContent = `asking ${++rdone}/${byRelay.size} relay(s)…`;
+    const rows = (svc) => dims.filter((d) => d.relay === url && d.service === svc);
+    let ws = null;
+    try { ws = await client(url); } catch {
+      for (const svc of svcSet) for (const d of rows(svc)) d.there = null;
+      render(observers);
+      return;
+    }
+    await bounded(PER_RELAY_CONCURRENCY, [...svcSet].map((svc) => async () => {
+      const answer = await ws.count(svc);
+      for (const d of rows(svc)) d.there = answer;
+      render(observers);
+    }));
+    try { ws.close(); } catch {}
+  }));
+
+  local.close();
+
+  const withBoth = dims.filter((d) => counted(d.here) && counted(d.there));
+  const short = withBoth.filter((d) => d.here.count < d.there.count);
+  const missing = short.reduce((n, d) => n + (d.there.count - d.here.count), 0);
+  const noCount = dims.filter((d) => d.there === REFUSED || d.there === null).length;
+  const timedOut = dims.filter((d) => d.there === TIMED_OUT).length;
+  statusEl.textContent = "done";
+  footEl.innerHTML =
+    `${observers.length} observer(s) with a 30382:rank service, ` +
+    `${svcs.length} distinct service(s) asked (${dims.length} dimension row(s))` +
+    (withoutRank ? ` (${withoutRank} more declare no rank service and are not shown)` : "") +
+    ` (${observers.filter((o) => !o.hasProfile).length} with no kind 0 here, ` +
+    `${observers.filter((o) => o.hasProfile && !o.picture).length} publishing no picture), ${dims.length} dimension(s) · ` +
+    `${withBoth.length} comparable · ` +
+    (short.length
+      ? `<span class="short">${short.length} short by ${fmt(missing)} score(s)</span>`
+      : `<span class="synced">none short</span>`) +
+    (noCount ? ` · ${noCount} answered no COUNT, so those cannot be compared` : "") +
+    (timedOut ? ` · ${timedOut} went silent for ${IDLE_TIMEOUT_MS / 1000}s with the ask outstanding` : "") +
+    ` · a <span class="capped">⚠</span> marks a count landing exactly on a common page-size cap, which usually means the relay reported its default limit rather than a total`;
+  runEl.disabled = false;
+}
+
+runEl.addEventListener("click", run);
+run();
+</script>
+</body>
+</html>

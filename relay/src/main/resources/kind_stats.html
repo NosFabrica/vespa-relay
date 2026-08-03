@@ -1,0 +1,221 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1" />
+<meta name="color-scheme" content="light dark" />
+<meta name="description" content="How many events of each kind this relay holds." />
+<title>Kind stats</title>
+<!--
+  One NIP-45 COUNT per kind. Anonymous, always.
+
+  This page asks "how many of these does the relay hold", and that has ONE true
+  answer. An authenticated reader would get a different, smaller number — the
+  store gates a reader carrying a lens to authors that lens has scored — which
+  is worth knowing and is a different question. The page used to ask three ways
+  at once, and three columns of plausible numbers made the simple question
+  harder to read rather than richer.
+
+  Deliberately not an http endpoint: COUNT is a protocol feature, so asking for
+  it the way a client would means this page also TESTS it. A kind that comes
+  back "no reply" is a finding about the relay, not a blank cell — zero is a
+  claim, silence is not.
+
+  Counts come from the store's index rather than a walk over events, so this
+  stays cheap against a 50M-event corpus.
+-->
+<style>
+  :root {
+    --bg: #f6f7f9; --surface: #fff; --text: #14171a; --muted: #6b7580;
+    --line: #e3e6ea; --accent: #4a5fd9; --warn: #a8611a; --bar: #d9def7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #14161a; --surface: #1c1f24; --text: #e8eaed; --muted: #9aa3ad;
+      --line: #2b3038; --accent: #8b9cf0; --warn: #d99b56; --bar: #2c3350;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 1.5rem; background: var(--bg); color: var(--text);
+    font: 15px/1.5 system-ui, -apple-system, "Segoe UI", sans-serif;
+  }
+  main { max-width: 46rem; margin: 0 auto; }
+  h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
+  .sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; }
+  .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: 1rem; }
+  button, input {
+    font: inherit; padding: .4rem .7rem; border-radius: .4rem;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text);
+  }
+  button { cursor: pointer; }
+  button:disabled { opacity: .5; cursor: default; }
+  input { width: 20rem; max-width: 100%; }
+  .status { color: var(--muted); font-size: .9rem; }
+  .wrap { overflow-x: auto; background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; }
+  table { border-collapse: collapse; width: 100%; min-width: 28rem; }
+  th, td { text-align: left; padding: .5rem .75rem; border-bottom: 1px solid var(--line); }
+  th { font-weight: 600; font-size: .82rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  td.kind { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
+  .name { color: var(--muted); }
+  .pending { color: var(--muted); font-style: italic; }
+  .none { color: var(--warn); }
+  .capped { color: var(--warn); }
+  footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
+  code { background: var(--bar); padding: .1rem .3rem; border-radius: .25rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Kind stats</h1>
+  <p class="sub">One NIP-45 <code>COUNT</code> per kind, asked anonymously — totals for the whole store,
+     not for any one reader's web of trust.</p>
+
+  <div class="bar-row">
+    <button id="run">Count</button>
+    <input id="extra" placeholder="also count these kinds, comma separated" />
+    <span class="status" id="status">idle</span>
+  </div>
+
+  <div class="wrap">
+    <table>
+      <thead>
+        <tr><th>Kind</th><th>Name</th><th class="n">Count</th></tr>
+      </thead>
+      <tbody id="rows"></tbody>
+    </table>
+  </div>
+
+  <footer id="foot"></footer>
+</main>
+
+<script>
+// Same origin as the page, so this works wherever the relay is served from.
+const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
+
+// What this relay is actually for. Ranked search needs profiles to rank, scores
+// to rank them BY, and the two lists that say where to find each — so these are
+// the kinds whose numbers mean something here, and a page that answers in five
+// rows gets read.
+//
+// Anything else goes in the box: COUNT needs a kind to ask about and the
+// protocol has no registry a client can enumerate, so there is no "all kinds"
+// to offer.
+const KINDS = [
+  [0, "Profiles"],
+  [1, "Notes"],
+  [10002, "Relay lists (NIP-65)"],
+  [10040, "Observers (NIP-85)"],
+  [30382, "User Scores"],
+];
+
+const PER_KIND_TIMEOUT_MS = 20000;
+// A COUNT landing exactly on one of these is more likely a relay reporting its
+// default page size than a real total. Flagged rather than hidden: this relay
+// did exactly that until quartz stopped applying defaultLimit to COUNT, and 500
+// looks like data.
+const SUSPICIOUS = new Set([100, 500, 1000, 5000]);
+
+const rowsEl = document.getElementById("rows");
+const statusEl = document.getElementById("status");
+const footEl = document.getElementById("foot");
+const runEl = document.getElementById("run");
+const extraEl = document.getElementById("extra");
+
+const fmt = (n) => n.toLocaleString();
+
+function render(results) {
+  rowsEl.innerHTML = "";
+  for (const r of results) {
+    const v = r.count;
+    const cell =
+      v === undefined ? '<span class="pending">…</span>'
+      : v === null ? '<span class="none">no reply</span>'
+      : fmt(v.count) +
+        (v.approximate ? ' <span class="name">≈</span>' : "") +
+        (SUSPICIOUS.has(v.count)
+          ? ' <span class="capped" title="exactly a common page-size cap — the relay may be reporting its default limit instead of a count">⚠</span>'
+          : "");
+    const tr = document.createElement("tr");
+    tr.innerHTML =
+      `<td class="kind">${r.kind}</td><td class="name">${r.name || ""}</td><td class="n">${cell}</td>`;
+    rowsEl.appendChild(tr);
+  }
+}
+
+/** A COUNT-only client that never authenticates — see the note at the top. */
+function connect() {
+  return new Promise((resolve, reject) => {
+    const ws = new WebSocket(RELAY_URL);
+    const pending = new Map();
+    const failAll = () => { for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); } pending.clear(); };
+    ws.onopen = () => resolve(ws);
+    ws.onerror = () => { failAll(); reject(new Error("could not connect to " + RELAY_URL)); };
+    ws.onclose = failAll;
+    ws.onmessage = (ev) => {
+      let m; try { m = JSON.parse(ev.data); } catch { return; }
+      // An AUTH challenge is ignored on purpose: answering it would turn every
+      // number below into "what this reader is allowed to see".
+      const p = pending.get(m[1]);
+      if (!p) return;
+      if (m[0] === "COUNT") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(m[2] || null); }
+      else if (m[0] === "CLOSED" || m[0] === "NOTICE") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(null); }
+    };
+    ws.count = (kind) =>
+      new Promise((res) => {
+        const id = "k" + kind + "-" + Math.random().toString(36).slice(2, 8);
+        const timer = setTimeout(() => { pending.delete(id); res(null); }, PER_KIND_TIMEOUT_MS);
+        pending.set(id, { resolve: res, timer });
+        ws.send(JSON.stringify(["COUNT", id, { kinds: [kind] }]));
+      });
+  });
+}
+
+async function run() {
+  runEl.disabled = true;
+  footEl.textContent = "";
+  const extra = extraEl.value
+    .split(",").map((s) => parseInt(s.trim(), 10))
+    .filter((n) => Number.isInteger(n) && n >= 0 && !KINDS.some(([k]) => k === n));
+  const results = [...KINDS.map(([kind, name]) => ({ kind, name })), ...extra.map((kind) => ({ kind, name: "" }))];
+  render(results);
+
+  let ws;
+  try {
+    statusEl.textContent = "connecting…";
+    ws = await connect();
+  } catch (e) {
+    statusEl.textContent = e.message;
+    runEl.disabled = false;
+    return;
+  }
+
+  const started = Date.now();
+  let done = 0;
+  // One at a time: this is a status page, not a load generator, and a busy relay
+  // should degrade to slow rather than to a burst of stalled queries.
+  for (const r of results) {
+    statusEl.textContent = `counting ${++done}/${results.length} (kind ${r.kind})…`;
+    r.count = await ws.count(r.kind);
+    render(results);
+  }
+  ws.close();
+
+  const answered = results.filter((r) => r.count).length;
+  const total = results.reduce((n, r) => n + (r.count ? r.count.count : 0), 0);
+  statusEl.textContent = `done in ${((Date.now() - started) / 1000).toFixed(1)}s`;
+  footEl.innerHTML =
+    `${answered}/${results.length} kind(s) answered · ${fmt(total)} event(s) counted` +
+    (answered === 0
+      ? ' · <span class="none">the relay answered no COUNT at all — it advertises NIP-45, so this is worth chasing</span>'
+      : "");
+  runEl.disabled = false;
+}
+
+runEl.addEventListener("click", run);
+run();
+</script>
+</body>
+</html>

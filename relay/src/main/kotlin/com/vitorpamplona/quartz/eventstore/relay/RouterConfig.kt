@@ -119,7 +119,40 @@ data class MirrorStream(
     val dynamic: DynamicRelayList? = null,
     // Whether this stream's relays share events with each other — see [SyncMode].
     val sync: SyncMode = SyncMode.AUTO,
+    // Whether an upstream dropping a record means we drop it too — see [DeleteMissing].
+    val deleteMissing: DeleteMissing = DeleteMissing.OFF,
 )
+
+/**
+ * What to do with records WE hold that the upstream no longer serves.
+ *
+ * Only meaningful for a stream whose upstream is the source of truth for the
+ * records it carries — a NIP-85 provider's own relay for its own scores. For a
+ * general mirror, "this relay does not have it" means almost nothing: relays
+ * hold different subsets by design, and treating absence as retraction would
+ * delete everything the busiest upstream happens not to carry.
+ *
+ * Absence, not NIP-09. This deliberately does NOT use the kind:5 propagation in
+ * quartz's `NegentropyStoreSync`, because arming that path requires uploading
+ * our residual events to the upstream and reading its rejections — publishing to
+ * somebody else's relay to learn what they deleted. This asks and deletes; it
+ * never writes upstream.
+ *
+ * The cost of that choice is that absence has innocent causes — a retention
+ * window, a relay that gates reads behind AUTH, a partial outage — and each of
+ * them looks exactly like "they deleted everything". [DRY_RUN] and the
+ * guardrails in [MirrorRouter] are the answer to that, not the reconcile.
+ */
+enum class DeleteMissing {
+    /** Never delete. The default, and correct for every ordinary mirror stream. */
+    OFF,
+
+    /** Report what would be deleted, delete nothing. */
+    DRY_RUN,
+
+    /** Delete. */
+    ON,
+}
 
 /**
  * A stream's relay list, read from events our own store already holds instead of
@@ -184,6 +217,25 @@ data class DynamicRelayList(
     val refreshSeconds: Long,
     val concurrency: Int,
     val exclude: Set<NormalizedRelayUrl>,
+    /**
+     * How many bound `authors` go into ONE ask, and therefore into one cursor
+     * band. Null keeps them all in a single filter.
+     *
+     * This is a stream knob rather than a select field because the right answer
+     * comes from the shape of the fan-out, not from the tag being read. A band
+     * is keyed on its filter, so an author set that changes invalidates it and
+     * re-walks that relay's history:
+     *
+     *  - `assertions` pairs 24 relays with 247 services, 256 pairs. At 1 the
+     *    band is `(relay, one service)` and stays valid forever — a new 10040
+     *    ADDS a band instead of invalidating 143 others. Measured, a per-author
+     *    ask on nip85.nosfabrica.com EOSEs in 1.4s, where the by-kind ask
+     *    streams 100,000 events and never EOSEs at all.
+     *  - an outbox stream pairs millions of authors across ~16,500 relays. One
+     *    band each is not a fan-out anyone can run; those have to chunk, and
+     *    accept that a chunk re-walks when its membership shifts.
+     */
+    val authorsPerLeg: Int? = null,
 )
 
 /**
@@ -252,7 +304,43 @@ data class RelaySelect(
     val tag: String?,
     val index: Int,
     val where: List<TagCondition> = emptyList(),
+    /**
+     * Extra NIP-01 filter fields read out of the SAME tag, so the relay this
+     * select found is asked only for what that tag paired it with.
+     *
+     * Keyed by destination — `authors`, `ids`, `kinds`, or a `#x` tag filter —
+     * and the whole point is that a value is read per TAG OCCURRENCE, not
+     * gathered into a global set. A NIP-85 provider list tags
+     * `["30382:rank", service, relay]`, so `relay = 2, authors = 1` keeps rank's
+     * service with rank's relay. Collecting the two independently would produce
+     * the cross product instead: measured on this store, 247 services and 24
+     * relays is 5,928 asks standing in for the 256 pairs that exist, ~96% of
+     * them empty.
+     */
+    val bindings: Map<String, Slot> = emptyMap(),
 )
+
+/**
+ * Where one value of a binding comes from.
+ *
+ * Usually a slot in the tag being read, but not always: NIP-65's outbox model
+ * is "fetch THIS AUTHOR's events from the relays their own 10002 marks write",
+ * and that author is the scanned event's `pubkey` rather than anything in the
+ * tag. Without [EventPubkey] the outbox stream can only discover relays and
+ * must then ask every one of them for everybody.
+ */
+sealed interface Slot {
+    /** Element [index] of the tag this select matched. */
+    data class OfTag(
+        val index: Int,
+    ) : Slot
+
+    /** The scanned event's own author. */
+    data object EventPubkey : Slot
+
+    /** The scanned event's own id. */
+    data object EventId : Slot
+}
 
 /**
  * One alternative in a select's `where` list. The list is NIP-01's own boolean
@@ -354,13 +442,16 @@ enum class MirrorDirection(
 /**
  * Loads [RouterConfig] from the environment. `ROUTER_CONFIG` holds the HOCON
  * inline; `ROUTER_CONFIG_FILE` points at a file holding it. Neither set ⇒ no
- * router (returns null; the relay serves without mirroring). `ROUTER_BACKFILL_SECONDS`
- * sets the default backfill window for streams that don't state their own;
+ * router (returns null; the relay serves without mirroring).
  * `ROUTER_UP_INTERVAL_SECONDS` sets how often up/both streams re-reconcile.
  *
- * `ROUTER_DYNAMIC_REFRESH_SECONDS`, `ROUTER_DYNAMIC_CONCURRENCY` and
- * do the same for dynamic streams — the
- * per-stream keys of the same name override each of them.
+ * `ROUTER_DYNAMIC_REFRESH_SECONDS` and `ROUTER_DYNAMIC_CONCURRENCY` are the
+ * defaults for dynamic streams — the per-stream keys of the same name override
+ * each of them.
+ *
+ * Ingest is `ROUTER_INGEST_BATCH` and `ROUTER_INGEST_CONCURRENCY`; a stream left
+ * on `sync = "auto"` is decided by `ROUTER_NEG_MIN_EVENTS` and
+ * `ROUTER_COUNT_TIMEOUT_MS`.
  *
  * `ROUTER_STREAMS` narrows the run to a comma-separated subset of the config's
  * streams — see [select].
@@ -461,6 +552,7 @@ object RouterConfigLoader {
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     dynamic = dynamic,
                     sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO,
+                    deleteMissing = parseDeleteMissing(name, s),
                 )
             }
         return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents, countTimeoutMs)
@@ -476,6 +568,51 @@ object RouterConfigLoader {
             }
         }
 
+    /**
+     * `deleteMissing = false | "dryRun" | true`.
+     *
+     * Refused outright on a `fetch` stream. A paged fetch asks only OUTSIDE its
+     * cursor band, so what it does not see is mostly "we did not ask" — reading
+     * that as retraction would delete the entire history below the band. Only a
+     * reconcile compares whole sets, so only a reconcile can support this.
+     */
+    private fun parseDeleteMissing(
+        stream: String,
+        s: Config,
+    ): DeleteMissing {
+        if (!s.hasPath("deleteMissing")) return DeleteMissing.OFF
+        val raw = s.getValue("deleteMissing").unwrapped()
+        val mode =
+            when (raw) {
+                false -> {
+                    DeleteMissing.OFF
+                }
+
+                true -> {
+                    DeleteMissing.ON
+                }
+
+                "dryRun", "dryrun" -> {
+                    DeleteMissing.DRY_RUN
+                }
+
+                else -> {
+                    throw IllegalArgumentException(
+                        "router: stream '$stream' has deleteMissing = '$raw' — expected true, false, or \"dryRun\"",
+                    )
+                }
+            }
+        if (mode != DeleteMissing.OFF) {
+            val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
+            require(sync == SyncMode.NEGENTROPY) {
+                "router: stream '$stream' sets deleteMissing with sync = \"${sync.name.lowercase()}\" — it needs sync = \"negentropy\". " +
+                    "A paged fetch asks only outside its cursor band, so \"not seen\" there means \"not asked for\", " +
+                    "and deleting on it would take the whole history below the band"
+            }
+        }
+        return mode
+    }
+
     /** The `relaySource = [ ... ]` list plus the stream-level knobs pacing its cycle. */
     private fun parseDynamic(
         stream: String,
@@ -490,6 +627,7 @@ object RouterConfigLoader {
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
             exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
+            authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
         )
     }
 
@@ -525,7 +663,18 @@ object RouterConfigLoader {
         stream: String,
         s: Config,
     ): RelaySelect {
-        val index = if (s.hasPath("index")) s.getInt("index") else 1
+        require(!(s.hasPath("index") && s.hasPath("relay"))) {
+            "router: stream '$stream' has a select with both `index` and `relay` — they name the same slot, write one"
+        }
+        // `relay = N` is the name to use once a select binds more than one field;
+        // `index = N` is what every config wrote when the url was the only thing
+        // a select could produce, and it keeps working unchanged.
+        val index =
+            when {
+                s.hasPath("relay") -> s.getInt("relay")
+                s.hasPath("index") -> s.getInt("index")
+                else -> 1
+            }
         require(index >= 1) {
             "router: stream '$stream' has a select with index $index — element 0 is the tag name, so the url is at 1 or later"
         }
@@ -544,7 +693,68 @@ object RouterConfigLoader {
             tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
             index = index,
             where = where,
+            bindings = parseBindings(stream, s),
         )
+    }
+
+    /**
+     * The destination fields a select may bind, beyond the relay url itself.
+     *
+     * A closed list on purpose. These are NIP-01 filter fields, and a typo that
+     * silently bound nothing would show up as a stream quietly syncing the wrong
+     * thing — the failure mode this config format exists to avoid. `#x` tag
+     * filters are accepted for any single letter, which is what NIP-01 allows.
+     */
+    private val BINDABLE = setOf("authors", "ids", "kinds")
+
+    private fun isBindable(key: String) = key in BINDABLE || (key.length == 2 && key[0] == '#' && key[1].isLetter())
+
+    /**
+     * `{ tag = "30382:rank", relay = 2, authors = 1 }` — which tag slot feeds
+     * which filter field.
+     *
+     * A value is either an Int (that element of the tag) or one of two names
+     * for something outside it: `"pubkey"` and `"id"`, the scanned event's own.
+     * `"pubkey"` is what makes the outbox model expressible at all.
+     */
+    private fun parseBindings(
+        stream: String,
+        s: Config,
+    ): Map<String, Slot> {
+        val out = LinkedHashMap<String, Slot>()
+        for (entry in s.root().keys) {
+            if (!isBindable(entry)) continue
+            // Quoted: a `#p` key is a HOCON path expression otherwise, and `#`
+            // starts a comment there — the same reason parseFilter quotes its
+            // own `"#p" = [...]` lookups.
+            val v = s.getValue(quote(entry)).unwrapped()
+            val slot =
+                when (v) {
+                    is Number -> {
+                        val i = v.toInt()
+                        require(i >= 1) {
+                            "router: stream '$stream' binds `$entry` to tag element $i — element 0 is the tag name, so a value is at 1 or later"
+                        }
+                        Slot.OfTag(i)
+                    }
+
+                    "pubkey" -> {
+                        Slot.EventPubkey
+                    }
+
+                    "id" -> {
+                        Slot.EventId
+                    }
+
+                    else -> {
+                        throw IllegalArgumentException(
+                            "router: stream '$stream' binds `$entry` to '$v' — expected a tag element number, or \"pubkey\"/\"id\" for the scanned event's own",
+                        )
+                    }
+                }
+            out[entry] = slot
+        }
+        return out
     }
 
     /**

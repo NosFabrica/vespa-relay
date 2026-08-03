@@ -25,9 +25,13 @@ import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
@@ -39,10 +43,13 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
+import com.vitorpamplona.quartz.utils.Log
+import com.vitorpamplona.quartz.utils.LogLevel
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.cancel
@@ -108,6 +115,11 @@ class MirrorRouter(
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
     // Null (the default) leaves challenges unanswered. See [RelayIdentity].
     private val signer: NostrSigner? = null,
+    // ROUTER_WIRE_LOG: "" (errors only) / "sent" / "full". See [wireLog].
+    private val wireLogMode: String = "",
+    // Shared with the relay server: how slow client reads have become. Ingest
+    // yields to them — see [ServingPressure].
+    private val servingPressure: ServingPressure? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -190,7 +202,51 @@ class MirrorRouter(
     // Workers and batch come from config; the buffer is sized to a few batches
     // so producers block (backpressure) rather than pile events onto the heap.
     private val ingestWorkers = config.ingestConcurrency
-    private val ingestBatch = config.ingestBatch
+
+    /**
+     * How many downloaded events may wait for ingest.
+     *
+     * Bounded at both ends, and the ceiling is the one that matters. This was
+     * `ingestBatch * 4` with only a floor, so raising ROUTER_INGEST_BATCH to
+     * 20000 — to cut per-batch round trips, which it did — silently sized the
+     * queue at 80,000 events. With three streams and 50 relays transferring at
+     * once that filled, and the heap went to 93% and then over:
+     *
+     *     health heap 8043/8608MB (93%) !! AT THE CEILING,
+     *     ingest queue 80000/80000 FULL, 0 ev/s, 50 relay(s) transferring
+     *     FATAL OutOfMemoryError killed thread DefaultDispatcher-worker-67
+     *
+     * Batch size and queue depth are separate concerns that happened to share a
+     * knob: the batch decides how much work each mutex hold amortises, the queue
+     * decides how much memory sits between download and write. Tying them meant
+     * tuning throughput moved the memory ceiling, which is not a trade an
+     * operator agreed to.
+     *
+     * The cap is deliberately below what the heap can hold, because this queue
+     * is not the only claimant — the in-flight batches, the relay sockets and
+     * the negentropy id sets all want the same heap.
+     */
+    private val inboundCapacity = (config.ingestBatch * 4).coerceIn(4_096, MAX_INBOUND_QUEUE)
+
+    /**
+     * How many events one worker takes per pass — capped so the workers can
+     * actually share the queue.
+     *
+     * [ingestLoop] drains up to this many from [inbound] per pass. If it exceeds
+     * what the channel can hold, the first worker takes EVERYTHING and the rest
+     * find an empty channel and idle: ingest concurrency collapses to one, and
+     * that single worker then grinds the whole queue through the store's dedup
+     * in one serial stall.
+     *
+     * Which is exactly what happened. ROUTER_INGEST_BATCH=20000 against a 16,384
+     * capacity produced minutes of `queue 16384/16384 FULL … 0 ev/s` broken by
+     * short bursts — an ingest that looked saturated and was mostly one thread
+     * waiting on a very long batch.
+     *
+     * A worker may take at most its fair share of the channel, so every worker
+     * can fill a batch from a full queue.
+     */
+    private val ingestBatch = config.ingestBatch.coerceAtMost((inboundCapacity / ingestWorkers).coerceAtLeast(1))
     private val negMinEvents = config.negMinEvents
     private val countTimeoutMs = config.countTimeoutMs
 
@@ -205,8 +261,38 @@ class MirrorRouter(
     private val countUnanswered =
         java.util.concurrent.ConcurrentHashMap
             .newKeySet<NormalizedRelayUrl>()
-    private val inboundCapacity = (ingestBatch * 4).coerceAtLeast(4096)
+
     private val inbound = Channel<Inbound>(inboundCapacity)
+
+    /**
+     * Threads the ingest workers own outright, which no producer can occupy.
+     *
+     * [offer] parks its caller when the channel is full — deliberate
+     * backpressure — but it parks a thread from the SAME pool [ingestLoop] runs
+     * on ([scope] is Dispatchers.IO, whose workers are the shared
+     * `DefaultDispatcher` scheduler). Backpressure only works if the parked
+     * thread is not the one that has to make room. It is not, until enough
+     * producers park at once, and then it is a deadlock: every thread is waiting
+     * for space that only a thread can create.
+     *
+     * That is not hypothetical. With 12-15 relays delivering concurrently:
+     *
+     *     ingest queue 8000/8000 FULL, 0 ev/s   (for minutes, permanently)
+     *     ingested 1 accepted, 4 rejected       (five events, total)
+     *
+     * and a thread dump showing DefaultDispatcher workers parked in
+     * BlockingCoroutine.joinBlocking — trySendBlocking's runBlocking, waiting on
+     * a drain that could never be scheduled.
+     *
+     * A dedicated pool sized to the worker count is the smallest fix that makes
+     * the invariant true rather than probable: however many producers park,
+     * these threads are still free to drain.
+     */
+    private val ingestPool =
+        java.util.concurrent.Executors
+            .newFixedThreadPool(ingestWorkers) { r ->
+                Thread(r, "vespa-relay-ingest").apply { isDaemon = true }
+            }.asCoroutineDispatcher()
 
     // How full [inbound] is. Channel does not expose its depth, and this one
     // number decides whether the pipeline is starved or backpressured — the
@@ -291,6 +377,70 @@ class MirrorRouter(
     /** Time-axis progress for every paged walk in flight, across both paths. */
     private val paging = PagingProgress()
 
+    /**
+     * Good events the store refused for structural reasons, and which nothing
+     * will re-offer. Distinct from [rejected], most of which is the protocol
+     * working: duplicates we already hold and signatures that were never valid.
+     */
+    private val lostToStore = AtomicLong()
+
+    /**
+     * Records dropped because an upstream that owns them stopped serving them.
+     *
+     * Counted separately and reported on the health line, because this is the
+     * only number in the router that goes DOWN. Everything else it prints is
+     * work done; this is data gone, and it should never be legible as a rounding
+     * detail of a sync.
+     */
+    private val deleted = AtomicLong()
+
+    /**
+     * What actually goes down the wire, when the counters stop making sense.
+     *
+     * Tonight `purplepag.es` returned 3,137,680 events on one build and 601 on
+     * the next, from the same code path and the same filter. Hand-walking the
+     * relay with a throwaway script showed twelve full pages and no sign of
+     * stopping — so the relay was willing and the client stopped, and there was
+     * no way to see which REQ we sent last or what came back with it.
+     *
+     * [RelayLogger] already knew how to answer that and was simply never
+     * constructed. Its error half — NOTICE, CLOSED, failed sends — is
+     * unconditional and worth having on always: those are the relay telling us
+     * why it stopped, and we have been discarding them. `full` adds every
+     * command sent and message received, which is a line per event and belongs
+     * only under a specific investigation.
+     *
+     * `LimitsMessage` is the one to watch: it carries `maxLimit` and
+     * `maxSubscriptions`, the page cap we have been inferring from probes.
+     */
+    private val wireLog =
+        when (wireLogMode) {
+            "full", "sent" -> {
+                // Lower the floor to match, or the switch does nothing. The sent
+                // and received lines are DEBUG, and QUARTZ_LOG_LEVEL is WARN in
+                // every deployment we run (quartz defaults to DEBUG, which logs a
+                // line per malformed upstream profile). So ROUTER_WIRE_LOG=sent
+                // was accepted, constructed its logger, and printed nothing —
+                // a component configured, silent, and doing its job invisibly,
+                // which is the failure this codebase keeps trying to design out.
+                // Announced, because raising quartz's verbosity is not something
+                // to do to an operator quietly.
+                if (Log.minLevel > LogLevel.DEBUG) {
+                    Log.minLevel = LogLevel.DEBUG
+                    System.err.println(
+                        "router: ROUTER_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG (was ${'$'}{LogLevel.WARN}) — this is verbose",
+                    )
+                }
+                RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")
+            }
+
+            // Errors only, which need no floor change: NOTICE, CLOSED and failed
+            // sends are logged at WARN and ERROR by RelayLogger regardless.
+            else -> {
+                RelayLogger(client, debugSending = false, debugReceiving = false)
+            }
+        }
+
     fun start(): MirrorRouter {
         if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
@@ -301,7 +451,17 @@ class MirrorRouter(
         // through the store's bulk path (batchInsert -> parallel Vespa feed), which
         // is what actually exploits the store's ingest parallelism. Feeding it one
         // event at a time — the old path — left that parallelism unused.
-        repeat(ingestWorkers) { scope.launch { ingestLoop() } }
+        // Said out loud when it bites: an operator who set ROUTER_INGEST_BATCH
+        // and silently got a different number would be tuning a knob that is not
+        // connected, which is the failure this repo keeps producing.
+        if (ingestBatch < config.ingestBatch) {
+            System.err.println(
+                "router: ROUTER_INGEST_BATCH=${config.ingestBatch} capped to $ingestBatch — " +
+                    "$ingestWorkers worker(s) share a $inboundCapacity-event queue, and a batch bigger than " +
+                    "one worker's share collapses ingest to a single thread",
+            )
+        }
+        repeat(ingestWorkers) { scope.launch(ingestPool) { ingestLoop() } }
 
         // An OutOfMemoryError kills the thread that happens to allocate next and
         // is caught by nobody — not by `catch (e: Exception)`, which is what most
@@ -396,6 +556,11 @@ class MirrorRouter(
     private suspend fun ingestLoop() {
         val batch = ArrayList<Inbound>(ingestBatch)
         while (scope.isActive) {
+            // Clients first. A batch's dedup and projection queries land in the
+            // same engine a REQ does, and there is no way to reorder that queue
+            // from here — only to stop adding to it. Zero while reads are
+            // healthy, so the common case costs nothing.
+            servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
             val first = inbound.receiveCatching().getOrNull() ?: break
             queued.decrementAndGet()
             batch.clear()
@@ -480,6 +645,16 @@ class MirrorRouter(
                 // reading them as one number hides a store-wide outage.
                 rejected.addAndGet(batch.size.toLong())
                 rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
+                // These are LOST, not merely rejected. A bad signature is the
+                // event's fault and dropping it is correct; a whole batch failing
+                // structurally is the store's or the schema's fault, the events
+                // were perfectly good, and nothing will ever offer them again.
+                //
+                // A schema drift dropped 2,336,288 events this way in one run
+                // while every phase line read healthy — the total sat inside a
+                // reason string in a stats line nobody was reading. Surfaced on
+                // the health line so it cannot accumulate quietly again.
+                lostToStore.addAndGet(batch.size.toLong())
             },
         )
 
@@ -619,8 +794,9 @@ class MirrorRouter(
                                                             pagedDone.get(),
                                                             pagers.size,
                                                             eventsEarly.get(),
-                                                            paging.fraction(),
-                                                            paging.etaMs(),
+                                                            paging.fraction(name),
+                                                            paging.etaMs(name),
+                                                            paging.reached(name),
                                                         ),
                                                     )
                                                 }
@@ -636,7 +812,12 @@ class MirrorRouter(
                                         coroutineScope {
                                             pagers.forEach { (idx, up) ->
                                                 launch {
-                                                    eventsEarly.addAndGet(pageOne(idx, up).toLong())
+                                                    // pageOne feeds [eventsEarly] as events land, so the
+                                                    // ticker below has a number that moves. Adding its
+                                                    // return value here instead left the line reading
+                                                    // `0 event(s)` until the walk ENDED — for a walk that
+                                                    // ran 17 minutes and took 7.5M events off one relay.
+                                                    pageOne(idx, up, eventsEarly)
                                                     if (pagersReport) {
                                                         phases.set(
                                                             name,
@@ -644,8 +825,9 @@ class MirrorRouter(
                                                                 pagedDone.incrementAndGet(),
                                                                 pagers.size,
                                                                 eventsEarly.get(),
-                                                                paging.fraction(),
-                                                                paging.etaMs(),
+                                                                paging.fraction(name),
+                                                                paging.etaMs(name),
+                                                                paging.reached(name),
                                                             ),
                                                         )
                                                     }
@@ -751,6 +933,7 @@ class MirrorRouter(
     private suspend fun pageOne(
         idx: Int,
         up: MirrorUpstream,
+        live: AtomicLong,
     ): Int {
         val legs = cursors.legs(up.url, up.filter)
         if (legs.isEmpty()) {
@@ -764,6 +947,12 @@ class MirrorRouter(
                 var seenMin: Long? = null
                 var seenMax: Long? = null
                 val walk = "${up.streamName}|${up.url.url}"
+                // Counted HERE, as events arrive — not from [downloaded], which
+                // fetchAllPages only assigns on return. Reporting that one from
+                // inside the callback printed `0 event(s)` for the whole of a
+                // walk that took 7,503,018 events off one relay, which is the
+                // status line lying about the only thing it exists to say.
+                var seenSoFar = 0
                 paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCursors.PLAUSIBLE_FLOOR)
                 downloaded +=
                     client.fetchAllPages(
@@ -779,7 +968,9 @@ class MirrorRouter(
                             }
                             offer(event, up.trusted)
                         }
-                        progress.update(idx, downloaded, downloaded)
+                        seenSoFar++
+                        live.incrementAndGet()
+                        progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
                     }
                 // paged = true: this walked a span, it did not reconcile a range,
                 // so the band it earns is the span it saw and nothing more.
@@ -1094,6 +1285,15 @@ class MirrorRouter(
             if (stream.sync == SyncMode.FETCH) {
                 System.err.println("router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot")
                 emptyList()
+            } else if (stream.deleteMissing != DeleteMissing.OFF) {
+                // [reconcileAndDelete] reads its OWN ids, per ask, and must: the
+                // shared snapshot spans every service on the stream, and handing
+                // it to a one-service reconcile would report every other
+                // service's cards as retracted. So this stream never touches it —
+                // and building it anyway cost a full walk of the corpus per
+                // cycle, 18.8M ids on this deployment, materialized and dropped.
+                System.err.println("router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot")
+                emptyList()
             } else {
                 val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
                 phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
@@ -1113,7 +1313,7 @@ class MirrorRouter(
         System.err.println(
             "router: ${stream.name} syncing ${relays.size} relay(s) from [$sourceNames]" +
                 " against ${local.size} local id(s)" +
-                " (top: ${relays.take(3).joinToString { "${it.url.url} x${it.references}" }})",
+                " (e.g. ${relays.take(3).joinToString { it.url.url }})",
         )
         val done = AtomicLong()
         val skipped = AtomicLong()
@@ -1141,8 +1341,9 @@ class MirrorRouter(
                                     done = finished.toInt(),
                                     total = relays.size,
                                     events = downloaded.get(),
-                                    fraction = paging.fraction(),
-                                    etaMs = paging.etaMs(),
+                                    fraction = paging.fraction(stream.name),
+                                    etaMs = paging.etaMs(stream.name),
+                                    reachedSeconds = paging.reached(stream.name),
                                 ),
                             )
                             continue
@@ -1179,6 +1380,13 @@ class MirrorRouter(
                             // acted on: a TCP handshake proves a socket, never a
                             // relay, so success still goes the long way round.
                             if (!tcpReachable(relay.url)) {
+                                // Counted AND named. This path produced most of the
+                                // "N unreachable" totals and never wrote a reason,
+                                // so the cycle line printed the count with the
+                                // explanation list empty — a number with no cause,
+                                // which is what sent this investigation down two
+                                // wrong paths.
+                                reasons.merge("tcp: no route or refused", 1L, Long::plus)
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
                                 publishStrike(health, relay.url)
@@ -1190,19 +1398,36 @@ class MirrorRouter(
                             // should not still be dialled. Skipping costs nothing
                             // and frees the permit for a relay that might answer.
                             if (health.isDead(relay.url)) {
+                                reasons.merge("skipped: authority already struck out", 1L, Long::plus)
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
                                 return@launch
                             }
                             gate.withPermit {
                                 val got =
-                                    dynamicSyncOne(stream, relay.url, window, local) { reason ->
+                                    // The relay's OWN filter, narrowed by what the
+                                    // tags that named it paired it with. Identical to
+                                    // `window` for a select that binds only the url,
+                                    // which is every config written before bindings
+                                    // existed — so nothing changes for those.
+                                    dynamicSyncOne(stream, relay.url, relay.narrowed(window), local) { reason ->
                                         reasons.merge(reason, 1L, Long::plus)
                                     }
                                 when {
-                                    got < 0 -> {
+                                    // Could not reach it. Strike the authority and
+                                    // publish, which is the finding NIP-66 exists for.
+                                    got == UNREACHABLE -> {
                                         failed.incrementAndGet()
                                         publishStrike(health, relay.url)
+                                    }
+
+                                    // Reached it; the transfer broke. Counted as a
+                                    // failure for this cycle, but NOT struck and NOT
+                                    // published: the relay answered our handshake, so
+                                    // telling the network it is unreachable would be
+                                    // a false statement about someone else's server.
+                                    got == TRANSFER_FAILED -> {
+                                        failed.incrementAndGet()
                                     }
 
                                     // Delivered. Its whole authority is alive, which
@@ -1274,11 +1499,230 @@ class MirrorRouter(
             // but a slot held by one that is delivering is a slot doing its job.
             // Silence is what costs us, and [NEG_IDLE_MS] already answers that.
             var downloaded = 0
-            for (leg in cursors.legs(url, window)) {
-                var seenMin: Long? = null
-                var seenMax: Long? = null
-                val syncStartedAt = System.currentTimeMillis() / 1000
-                val onEvent: (Event) -> Unit = { event ->
+            for (ask in splitByAuthors(window, stream.dynamic?.authorsPerLeg)) {
+                downloaded += syncOneFilter(stream, url, ask, local)
+            }
+            downloaded
+        } catch (e: Exception) {
+            // A dead host in a relay list is the common case, not an incident:
+            // tally it and move on — one line per cycle carries the totals.
+            onFailure("${e.javaClass.simpleName}: ${e.message?.take(50) ?: ""}".trim(':', ' '))
+            // -1 says "this relay is unreachable" and costs it a signed NIP-66
+            // record. Only say that when it is true. See [provesUnreachable].
+            if (Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
+        } finally {
+            transferring.decrementAndGet()
+            releaseSocket(url)
+        }
+    }
+
+    /**
+     * One relay, one filter: walk what the cursor says is outside its band.
+     *
+     * Split out of [dynamicSyncOne] because a narrowed stream asks the same
+     * relay several times — once per author chunk — and each of those is its own
+     * band. The socket is acquired once around all of them.
+     */
+    private suspend fun syncOneFilter(
+        stream: MirrorStream,
+        url: NormalizedRelayUrl,
+        window: Filter,
+        local: List<IdAndTime>,
+    ): Int {
+        if (stream.deleteMissing != DeleteMissing.OFF) return reconcileAndDelete(stream, url, window)
+        var downloaded = 0
+        for (leg in cursors.legs(url, window)) {
+            var seenMin: Long? = null
+            var seenMax: Long? = null
+            val syncStartedAt = System.currentTimeMillis() / 1000
+            val onEvent: (Event) -> Unit = { event ->
+                if (stream.filter.match(event)) {
+                    if (SyncCursors.isPlausible(event.createdAt)) {
+                        seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                        seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                    }
+                    offer(event, stream.trusted)
+                }
+            }
+            // Fetch-only: the leg came off the cursor band, so this asks for
+            // what is outside what we already walked and nothing else. That
+            // band IS the mechanism here — there is no id set to fall back on.
+            val fetched = stream.sync == SyncMode.FETCH
+            val result =
+                if (fetched) {
+                    null.also {
+                        val walk = "${stream.name}|${url.url}"
+                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCursors.PLAUSIBLE_FLOOR)
+                        downloaded +=
+                            client.fetchAllPages(
+                                url,
+                                listOf(leg),
+                                NEG_IDLE_MS,
+                                onNewPage = { until -> paging.mark(walk, until) },
+                                onEvent = onEvent,
+                            )
+                        paging.finish(walk)
+                    }
+                } else {
+                    client
+                        .negentropySyncOrFetch(
+                            relay = url,
+                            filter = leg,
+                            idleTimeoutMs = NEG_IDLE_MS,
+                            localEntries = local,
+                            onEvent = onEvent,
+                        ).also { downloaded += it.downloaded }
+                }
+            cursors.record(
+                url,
+                window,
+                seenMin,
+                seenMax,
+                paged = fetched || result?.pagedFallback == true,
+                reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
+            )
+        }
+        return downloaded
+    }
+
+    /**
+     * Reconcile one narrow ask BOTH ways: download what the upstream has and we
+     * lack, delete what we have and it no longer serves.
+     *
+     * The upstream is the source of truth for these records — a provider's own
+     * relay for its own scores — so its set is the answer, not a contribution to
+     * one. Nothing is published: the diff is read and acted on locally, never
+     * pushed. (quartz's `NegentropyStoreSync` can propagate real NIP-09
+     * retractions instead, which is strictly safer, but arming it means
+     * uploading our events to somebody else's relay and reading the rejections.)
+     *
+     * Absence has innocent causes, so this refuses far more often than it acts.
+     */
+    private suspend fun reconcileAndDelete(
+        stream: MirrorStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+    ): Int {
+        // Read for THIS ask, never the cycle's shared snapshot. quartz says it
+        // plainly: "entries outside the filter would show up as false have ids".
+        // The shared snapshot spans every service on the stream, so handing it to
+        // a one-service reconcile would report every OTHER service's cards as
+        // missing upstream — and delete almost the whole corpus. This is the one
+        // place in the router where getting a filter wrong destroys data rather
+        // than wasting time, so the ids are derived from the ask itself and there
+        // is no parameter to pass the wrong thing in.
+        val mine = store.snapshotIdsForNegentropy(listOf(ask))
+        // NOT an early return when we hold nothing. That was a bug: an ask we
+        // have no records for is exactly a service we have never fetched — a new
+        // 10040, or one the orphan sweep emptied — and returning here meant it
+        // was never fetched again either. Reconciling against an empty local set
+        // is well defined and is precisely "give me everything you have"; the
+        // delete side then no-ops on its own, because haveIds is a subset of a
+        // set that is empty.
+
+        // A COMPLETED reconcile is the whole licence to delete. quartz never
+        // silently falls back: it throws when a window cannot be reconciled over
+        // NIP-77 at all — including "this relay does not speak it" — so a normal
+        // return means every `created_at` window was compared end to end, and an
+        // empty answer is the relay's real answer rather than its silence.
+        //
+        // Failing that, page the ask anyway so the mirror still fills, and delete
+        // nothing: the set was never compared, so nothing about it is known.
+        val diff =
+            try {
+                client.negentropyReconcileIds(url, ask, mine, idleTimeoutMs = NEG_IDLE_MS)
+            } catch (e: NegentropySyncException) {
+                System.err.println(
+                    "router: ${stream.name} ${url.url} could not reconcile (${e.reason}) — paging instead, deleting nothing",
+                )
+                return pageAsk(stream, url, ask)
+            }
+
+        // fetchAll, not fetchAllPages. An id set is not a time range: paging it
+        // by a `until` cursor asks a second time for events it just received,
+        // then a third for the boundary second, to discover there is nothing
+        // older — a round trip and a half per chunk to page something that was
+        // never ordered. One REQ per chunk, collected to EOSE.
+        var downloaded = 0
+        for (chunk in diff.needIds.chunked(ID_FETCH_CHUNK)) {
+            for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
+                if (stream.filter.match(event)) {
+                    offer(event, stream.trusted)
+                    downloaded++
+                }
+            }
+        }
+        if (diff.haveIds.isEmpty()) return downloaded
+
+        // A reconcile that split into no windows compared no range. It cannot
+        // have returned a meaningful diff, whatever it says.
+        if (diff.windows < 1) {
+            System.err.println(
+                "router: ${stream.name} ${url.url} reconciled 0 window(s) — nothing was compared, deleting nothing",
+            )
+            return downloaded
+        }
+
+        // NO SIZE GUARD, deliberately, and this is the sharp end of the feature.
+        //
+        // An earlier version refused when the relay served nothing, and again
+        // when a cycle would drop over half of an ask. Both fired constantly and
+        // both were WRONG about the risk they were managing: they protect stored
+        // records from a bad answer, when the thing actually worth protecting is
+        // a reader from a stale score. A provider that retracts a subject usually
+        // does it because the subject turned out to be a scammer — exactly the
+        // score that must not survive — and a mass retraction is precisely when
+        // the whole set goes. Guarding on volume blocks the case that matters
+        // most while the harmless cases sail through.
+        //
+        // If a 10040 names a relay that never carried these scores, the relay
+        // reconciles empty and we drop them. That is a misconfigured provider
+        // list costing us a re-download, against the alternative of serving a
+        // retracted score forever. The completed reconcile above is what makes
+        // "empty" trustworthy enough to act on.
+        val share = diff.haveIds.size.toDouble() / mine.size
+        if (stream.deleteMissing == DeleteMissing.DRY_RUN) {
+            System.err.println(
+                "router: ${stream.name} would delete ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%)" +
+                    " for ${url.url} after a clean ${diff.windows}-window reconcile — set deleteMissing = true to apply",
+            )
+            return downloaded
+        }
+        // Deleted BY ID and inside the ask: the filter that found them is the
+        // filter that removes them, so a delete can never reach past the records
+        // this reconcile actually compared.
+        for (chunk in diff.haveIds.chunked(ID_FETCH_CHUNK)) {
+            store.delete(ask.copy(ids = chunk, since = null, until = null, limit = null))
+        }
+        deleted.addAndGet(diff.haveIds.size.toLong())
+        System.err.println(
+            "router: ${stream.name} deleted ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%)" +
+                " ${url.url} no longer serves, after a clean ${diff.windows}-window reconcile",
+        )
+        return downloaded
+    }
+
+    /**
+     * Page one ask, for a relay that could not reconcile it.
+     *
+     * The mirror still wants these events; only the DELETE side needs a
+     * reconcile, because only a reconcile compares whole sets.
+     */
+    private suspend fun pageAsk(
+        stream: MirrorStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+    ): Int {
+        // Walk only what the band leaves, and record what this saw — the same
+        // bookkeeping every other paged path does. Without it a relay that
+        // cannot reconcile re-walked its whole history on every cycle, forever,
+        // which is the one cost cursor bands exist to remove.
+        var downloaded = 0
+        for (leg in cursors.legs(url, ask)) {
+            var seenMin: Long? = null
+            var seenMax: Long? = null
+            downloaded +=
+                client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS) { event ->
                     if (stream.filter.match(event)) {
                         if (SyncCursors.isPlausible(event.createdAt)) {
                             seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -1287,54 +1731,26 @@ class MirrorRouter(
                         offer(event, stream.trusted)
                     }
                 }
-                // Fetch-only: the leg came off the cursor band, so this asks for
-                // what is outside what we already walked and nothing else. That
-                // band IS the mechanism here — there is no id set to fall back on.
-                val fetched = stream.sync == SyncMode.FETCH
-                val result =
-                    if (fetched) {
-                        null.also {
-                            val walk = "${stream.name}|${url.url}"
-                            paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCursors.PLAUSIBLE_FLOOR)
-                            downloaded +=
-                                client.fetchAllPages(
-                                    url,
-                                    listOf(leg),
-                                    NEG_IDLE_MS,
-                                    onNewPage = { until -> paging.mark(walk, until) },
-                                    onEvent = onEvent,
-                                )
-                            paging.finish(walk)
-                        }
-                    } else {
-                        client
-                            .negentropySyncOrFetch(
-                                relay = url,
-                                filter = leg,
-                                idleTimeoutMs = NEG_IDLE_MS,
-                                localEntries = local,
-                                onEvent = onEvent,
-                            ).also { downloaded += it.downloaded }
-                    }
-                cursors.record(
-                    url,
-                    window,
-                    seenMin,
-                    seenMax,
-                    paged = fetched || result?.pagedFallback == true,
-                    reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
-                )
-            }
-            downloaded
-        } catch (e: Exception) {
-            // A dead host in a relay list is the common case, not an incident:
-            // tally it and move on — one line per cycle carries the totals.
-            onFailure(e.message?.take(60) ?: e.javaClass.simpleName)
-            -1
-        } finally {
-            transferring.decrementAndGet()
-            releaseSocket(url)
+            cursors.record(url, ask, seenMin, seenMax, paged = true)
         }
+        return downloaded
+    }
+
+    /**
+     * [window] as one ask, or as several with at most [per] authors each.
+     *
+     * A cursor band is keyed on its filter, so the size of these chunks decides
+     * how often a band survives. See [DynamicRelayList.authorsPerLeg] — this
+     * only reshapes what that knob asked for. A filter with no bound authors is
+     * returned untouched, which is every stream that does not narrow.
+     */
+    private fun splitByAuthors(
+        window: Filter,
+        per: Int?,
+    ): List<Filter> {
+        val authors = window.authors
+        if (per == null || authors == null || authors.size <= per) return listOf(window)
+        return authors.chunked(per).map { window.copy(authors = it) }
     }
 
     /**
@@ -1535,7 +1951,16 @@ class MirrorRouter(
                     ", $rate ev/s" +
                     ", ${transferring.get()} relay(s) transferring" +
                     ", ${client.connectedRelaysFlow().value.size} connected" +
-                    (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else ""),
+                    (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
+                    (deleted.get().takeIf { it > 0 }?.let { ", $it record(s) DELETED as retracted upstream" } ?: "") +
+                    (servingPressure?.describe()?.let { ", $it" } ?: "") +
+                    (
+                        if (lostToStore.get() > 0) {
+                            ", ${lostToStore.get()} event(s) LOST to store errors (good events, gone — check the schema)"
+                        } else {
+                            ""
+                        }
+                    ),
             )
             // Named, because "16,248 skipped" says nothing about which corner of
             // the network we stopped looking at, or whether the reason still
@@ -1618,6 +2043,9 @@ class MirrorRouter(
         runCatching { client.close() }
         inbound.close()
         scope.cancel()
+        // After the scope, so a worker mid-batch is cancelled rather than
+        // stranded on a pool that has stopped accepting work.
+        runCatching { ingestPool.close() }
         runCatching {
             okhttp.dispatcher.executorService.shutdown()
             okhttp.connectionPool.evictAll()
@@ -1715,7 +2143,36 @@ class MirrorRouter(
         /** How long a shutdown will wait on that last write before giving up. */
         private const val SHUTDOWN_FLUSH_MS = 5_000L
 
+        /**
+         * Idle time a transfer may sit silent before it is abandoned.
+         *
+         * IDLE, not a deadline — the clock resets on every message, so a relay
+         * that is still delivering is never cut off however long its history
+         * takes. That is a property of quartz's accessory APIs, and briefly it
+         * was not: `fetchAllPages` treated this as a hard budget for the whole
+         * page, and a page only finishes once EOSE has been PROCESSED — behind
+         * every event ahead of it in the socket buffer, each going through
+         * [offer], which blocks while the ingest queue is full. Measured against
+         * nip85.nosfabrica.com, which answers a page with 100,000 events and an
+         * EOSE in 4.3s:
+         *
+         * ```
+         * a full page reaches back   23.8h
+         * the router advanced only    4.4h   (~18% of the page)
+         * ```
+         *
+         * The other 82% was cut off, re-requested and cut off again, so a walk's
+         * depth depended on how congested ingest happened to be — 3,284 events
+         * on one run and 38,530 on the next, same relay, same filter. This file
+         * carried a 5-minute PAGE_BUDGET_MS to work around it; quartz 1622bd7109
+         * made every accessory timeout an idle window, which fixes it properly
+         * and for every caller, so the workaround is gone. Under idle semantics
+         * a large value would only mean "hold a silent socket for longer".
+         */
         private const val NEG_IDLE_MS = 30_000L
+
+        /** Ids per by-id REQ, and per delete. The store's own bulk chunk. */
+        private const val ID_FETCH_CHUNK = 500
 
         // Distinct store failures to dump a raw event for. A handful names every
         // defect a real corpus carries; past that it is a stuck loop, not news.
@@ -1803,6 +2260,22 @@ private suspend fun bisect(
 private const val ISOLATION_WRITE_BUDGET = 64
 
 /**
+ * Ceiling on queued-but-not-yet-ingested events, independent of batch size.
+ * 16k events is a few hundred MB at Nostr's event sizes — enough to keep ingest
+ * fed across a stall, far short of what killed the process at 80,000.
+ */
+private const val MAX_INBOUND_QUEUE = 16_384
+
+/**
+ * [MirrorRouter.dynamicSyncOne]'s two failure returns, distinct because only one
+ * of them is publishable — see [Unreachability]. Both are negative so `got > 0`
+ * (delivered) and `got == 0` (nothing new) keep meaning what they did.
+ */
+private const val UNREACHABLE = -1
+
+private const val TRANSFER_FAILED = -2
+
+/**
  * [List.partition] where the predicate suspends, evaluated concurrently.
  *
  * Concurrency is the point, not a bonus: the predicate this exists for is a
@@ -1819,3 +2292,43 @@ private suspend fun <T> List<T>.partitionSuspend(predicate: suspend (T) -> Boole
 
 /** Wall-clock seconds, the unit every `created_at` in the protocol is in. */
 private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+
+/**
+ * Whether a failure may be published as "this relay is unreachable".
+ *
+ * The distinction matters because the answer is PUBLISHED. A negative NIP-66
+ * record is a signed, public statement about someone else's server, and this
+ * router was making it for every failure of any kind.
+ *
+ * Two things were being libelled. A relay that completes a websocket handshake
+ * — `nip85.nosfabrica.com` answered in 50ms — and then sends EOFException
+ * part-way through a large page is emphatically reachable; it hung up on a
+ * query it did not want to finish, which is a different fact and arguably ours
+ * to fix. And an exception thrown by OUR code inside the fan-out (a
+ * ConcurrentModificationException cost a relay a record in a real cycle) says
+ * nothing whatever about the relay.
+ *
+ * So this asks only about the connection itself: name resolution, routing,
+ * refusal, TLS. Anything after a socket is open is a transfer failure, and
+ * anything that looks like our own bug is never the relay's fault.
+ *
+ * Unknown failures stay quiet — the conservative direction, because the cost of
+ * silence is one retry next cycle and the cost of being wrong is a false record
+ * carrying our signature.
+ *
+ * Top-level and pure so the rule can be tested without a live client. The rule
+ * is the part worth testing.
+ */
+object Unreachability {
+    fun proves(e: Exception): Boolean =
+        when (e) {
+            is java.net.UnknownHostException,
+            is java.net.ConnectException,
+            is java.net.NoRouteToHostException,
+            is java.net.PortUnreachableException,
+            is javax.net.ssl.SSLHandshakeException,
+            -> true
+
+            else -> false
+        }
+}

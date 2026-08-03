@@ -1,27 +1,52 @@
-# Example router config — a strfry-style `streams` mirror.
+# Example router config — mirror events from other relays into this one.
 #
-# Copy to router.conf and enable it with:
+# Copy it and switch it on:
+#   cp router.conf.example router.conf
 #   ROUTER_CONFIG_LOCAL=./router.conf \
 #   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
 #   docker compose up --build
 #
-# Without Docker, point the relay straight at it:
+# Running without Docker, set ROUTER_CONFIG_FILE to the path of your copy.
 #
-# Each named stream mirrors a NIP-01 `filter` from a set of `urls` in a `dir`
-# (down = pull into our store, up = push ours upstream, both). Optional per
-# verification for that upstream — leave off for public relays).
+# This file as it stands is what we run. You can use it unchanged.
 #
-# A stream can also drop `urls` entirely and take its relay list from the store,
-# with a `relaySource = [ ... ]` list — see the last two streams below.
+#
+# HOW A STREAM WORKS
+#
+# Each entry under `streams` mirrors one NIP-01 `filter` from a set of relays:
+#
+#   dir      "down" pulls into this relay, "up" pushes ours out, "both" does each
+#   filter   the NIP-01 filter to mirror — kinds, authors, tags, since/until
+#   urls     the relays to talk to
+#   sync     how to ask for what we are missing (see below)
+#
+# Instead of a fixed `urls` list, a stream can find its relays in the events this
+# relay already holds — a `relaySource`. That is how the last two streams reach
+# tens of thousands of relays without naming any of them.
+#
+#
+# CHOOSING `sync`
+#
+#   negentropy  the relays hold much the same events we do. Compares the two sets
+#               and transfers only the difference. Right for common kinds.
+#   fetch       the relays hold events nobody else has. Comparing two sets that
+#               barely overlap costs more than just downloading. Right for a
+#               first fill, and for per-publisher data like NIP-85 scores.
+#   auto        decide by size (the default). Prefer saying which you mean.
 
 connectionTimeout = 20
 
 streams {
 
-    # Loads a seed of users from popular relays
-    indexersAndPopularRelays {
+    # Seed the store from relays that specialise in profiles and relay lists.
+    #
+    # Everything below depends on this: a `relaySource` reads relay urls out of
+    # events we already hold, so on an empty store there is nothing to read.
+    indexers {
         dir = "down"
-        filter = { "kinds": [0, 10002] }
+        # `fetch`, because an empty store has nothing to compare against.
+        sync = "fetch"
+        filter = { "kinds": [0, 10002, 10040] }
         urls = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",
@@ -33,167 +58,105 @@ streams {
             "wss://relay.damus.io",
             "wss://nos.lol",
             "wss://nostr.mom",
-            "wss://nostr-pub.wellorder.net"
+            "wss://nostr-pub.wellorder.net",
             "wss://relay.ditto.pub",
             "wss://wot.grapevine.network"
         ]
     }
 
+    # Follow everyone's NIP-65 relay lists out to the rest of the network.
+    #
+    # `relaySource` scans the kind-10002 events we hold and takes the write
+    # relays out of them, so this stream's relay list grows as the store does —
+    # tens of thousands of relays, none of them named here.
     dataViaOutbox {
         dir = "down"
-        # Every relay mirrors these kinds, so by the time this sweep runs the
-        # indexers above have already given us most of what each of the 20,000
-        # relays holds. Reconciling id sets moves almost nothing; fetching moves
+        # These kinds are on every relay, so the overlap with what we already
+        # hold is large. Reconciling moves the difference; fetching would move
         # all of it again.
         sync = "negentropy"
-        filter = { "kinds": [0, 3, 10002, 10040] }
-        refreshSeconds = 21600     # re-read the sources and re-sync every 6h
-        concurrency = 100          # relays synced at the same time
-        exclude = []               # relays to skip however many sources name them
+        filter = { "kinds": [0, 10002, 10040] }   # add other kinds here
+        refreshSeconds = 21600   # re-read the sources and re-sync every 6h
+        concurrency = 100        # relays synced at the same time
+        # The seed relays above already cover these; skip them here.
+        exclude = [
+            "wss://purplepag.es",
+            "wss://profiles.nostr1.com",
+            "wss://indexer.coracle.social",
+            "wss://user.kindpag.es",
+            "wss://directory.yabu.me",
+
+            "wss://relay.primal.net",
+            "wss://relay.damus.io",
+            "wss://nos.lol",
+            "wss://nostr.mom",
+            "wss://nostr-pub.wellorder.net",
+            "wss://relay.ditto.pub",
+            "wss://wot.grapevine.network"
+        ]
         relaySource = [
             {
+                # Scan kind 10002, take the url from each `r` tag marked write.
+                filter = { "kinds": [10002] }
                 select = [
                     { kind = 10002, tag = "r", marker = "write" }
                 ]
-                filter = { "kinds": [10002] }
             }
         ]
     }
 
+    # NIP-85 trust scores, from the providers people actually named.
+    #
+    # A kind-10040 says "I trust this provider, and you can find its scores on
+    # this relay". This stream reads those lists and asks each relay only for
+    # the providers it was named for.
     assertions {
         dir = "down"
-        # The opposite case, and the reason `sync` is declared rather than
-        # measured. NIP-85 assertions are per-provider by construction: every
-        # provider authors its own, so two provider relays share essentially
-        # nothing even though both hold millions. Comparing millions of ids
-        # against millions for a near-empty intersection is the expensive way to
-        # learn that — and it would build a 24.8M-id local snapshot to do it.
-        # The sync cursor already answers "what is new since we last asked".
-        sync = "fetch"
-        filter = { "kinds": [0, 10002, 30382] }
-        refreshSeconds = 21600     # re-read the sources and re-sync every 6h
-        concurrency = 100          # relays synced at the same time
-        exclude = []               # relays to skip however many sources name them
+        sync = "negentropy"
+        filter = { "kinds": [30382] }
+        refreshSeconds = 21600
+        concurrency = 8
+        exclude = []
         relaySource = [
             {
-                select = [
-                    { tag = "30382:rank", index = 2 }
-                    { tag = "30382:followers",  index = 2 }
-                ]
                 filter = { "kinds": [10040] }
+                # A provider list tags ["30382:rank", provider, relay] — the
+                # provider and its relay are in the SAME tag, so read both from
+                # it: `relay` is which relay to ask, `authors` is who to ask for.
+                #
+                # Without the `authors` binding, every relay here is asked for
+                # every provider on the network, and answers mostly nothing.
+                select = [
+                    { tag = "30382:rank",      relay = 2, authors = 1 }
+                    { tag = "30382:followers", relay = 2, authors = 1 }
+                ]
             }
         ]
+        # Ask about one provider at a time. Slower to start, but each provider
+        # then keeps its own resume point, so adding a new provider list does not
+        # make the others re-sync from scratch.
+        authorsPerLeg = 1
+
+        # DELETES DATA. Off unless you set it.
+        #
+        # When a provider's own relay no longer has a score we hold, drop it. A
+        # provider is the source of truth for its own scores, and it usually
+        # withdraws one because the person it rated turned out to be a scammer —
+        # so keeping a withdrawn score is worse than losing it.
+        #
+        # Only safe here because:
+        #   * this filter is kind 30382 alone. Widen it and a relay that simply
+        #     does not carry kind 0 would delete that provider's profile.
+        #   * it needs `sync = "negentropy"`. Only a reconcile compares whole
+        #     sets; a fetch would read "we never asked" as "it is gone".
+        #
+        # A relay that cannot reconcile is downloaded from as usual and never
+        # deleted against. Nothing is ever published to the upstream.
+        #
+        # Note: if someone's 10040 names a relay that never carried their
+        # provider's scores, those scores are dropped and fetched again from
+        # wherever they are. Set it to "dryRun" to see what it would delete.
+        deleteMissing = true
     }
 
-    # `sync` picks how a stream asks for what it is missing, and it is about the
-    # DATA, not the relay:
-    #   negentropy  the same event lives on many relays (profiles, relay lists,
-    #               follow lists) — reconcile id sets and transfer only the diff
-    #   fetch       each relay holds its own events and nobody else's (NIP-85
-    #               assertions) — reconciling compares huge sets for no match, so
-    #               page from the sync cursor instead
-    #   auto        (default) decide by size: reconcile only when both our store
-    #               and the relay hold more than ROUTER_NEG_MIN_EVENTS for the
-    #               filter. Correct only where overlap tracks volume — say which
-    #               you mean when you know.
-    #
-    # ---- Dynamic relay lists ------------------------------------------------
-    #
-    # No `urls`: these two take their relays from events the streams above mirror
-    # into our store. `relaySource` is a LIST of places to read urls from, all
-    # merged into one fan-out. Every `refreshSeconds` the router re-reads them and
-    # negentropy-syncs its `filter` against every relay they name — the whole set,
-    # however far it has grown — `concurrency` at a time. Relays without NIP-77
-    # fall back to a paged REQ fetch automatically, and unreachable ones are
-    # tallied and skipped.
-    #
-    # `concurrency` is per stream, and the router's socket budget has to fit the
-    # sum of them plus every `urls` upstream above: an open websocket occupies one
-    # OkHttp dispatcher slot for its whole life, so the ceiling is real. An outbox
-    # list on a mature store reaches five figures of relays, most of them long
-    # dead, so this wants to be in the hundreds, not the single digits.
-    #
-    # Relay liveness is remembered too, as NIP-66 kind 30166 in this same store,
-    # so a cycle stops re-dialling hosts that a previous one proved gone. Within a
-    # cycle, failures are counted per HOST rather than per url — a filtering relay
-    # is advertised as hundreds of per-user path urls, and a per-url counter never
-    # adds up to a verdict on any of them. A host that ever delivers is never shed.
-    #
-    # Urls that could never work are dropped at discovery rather than dialled:
-    # .onion (no Tor transport here) and loopback/private hosts (someone else's
-    # `ws://localhost:4869` means THEIR machine). A relay that cannot be reached
-    # in principle is worse than one that is merely down — it would burn a connect
-    # timeout and a permit every cycle forever, and be recorded as unreachable
-    # when the truth is we were never in a position to ask.
-    #
-    # The cheapest win here is a filter that includes kind 30166: those records are
-    # ordinary events published by monitors like nostr.watch, so mirroring them
-    # inherits the network's whole relay census before this relay dials anything.
-    # Publishing our own findings back needs ROUTER_MONITOR_NSEC; reading does not.
-    #
-    # A finished sync is REMEMBERED per (relay, filter): a negentropy reconcile
-    # compares the whole range, so the next cycle asks that relay only for what
-    # arrived since — which is also what keeps the local id snapshot this fan-out
-    # shares from being the entire corpus. Every ROUTER_FULL_RESYNC_SECONDS
-    # (default 7 days) the whole filter is walked again, so a relay that gained
-    # older events is not invisible forever. Nothing is capped; the full pass is
-    # periodic rather than never.
-    #
-    # Each source entry is one scan: a `select` list saying which relay urls to
-    # pull out, and the `filter` saying which events to pull them from. The filter
-    # runs ONCE and every select is applied to what comes back, so a whole shelf
-    # of relay-list kinds costs one query rather than one each.
-    #
-    # Each `select` entry is:
-    #
-    #   kind    apply this select only to that kind; omit to apply it to
-    #           everything the filter collected. A kind the filter never returns
-    #           simply never matches, so an unused select is harmless.
-    #   tag     the tag name to read; omit for ANY tag, which is how you take a
-    #           whole family (NIP-85's <kind>:<type> service tags) without naming
-    #           each one. Omitting it also demands the value already start with
-    #           ws:// or wss://, since with no tag name to go on anything in the
-    #           event could otherwise land here.
-    #   index   which element of the tag holds the url (default 1; use 2 for
-    #           NIP-85 service tags and for e/p/a/q hints, which put an id or a
-    #           pubkey first)
-    #   where   conditions on the rest of the tag, shaped like NIP-01 filters:
-    #           entries in the list OR together, the fields inside one entry
-    #           AND. Omit to keep every tag. Each entry states any of:
-    #
-    #             index + equals   the element at that position (0 is the tag
-    #                              name) is exactly that string — case-sensitive
-    #                              and untrimmed, and a missing element matches
-    #                              nothing, not even ""
-    #             minSize          the tag has at least this many elements
-    #             maxSize          the tag has at most this many elements
-    #
-    #           e.g. keep only root/reply e-tag hints:
-    #             where = [ { index = 3, equals = "root" }
-    #                       { index = 3, equals = "reply" } ]
-    #   marker  sugar for NIP-65's rule: "write" / "read" expand to the where
-    #           that keeps that side plus unmarked tags — with the url at 1,
-    #             where = [ { index = 2, equals = "write" }
-    #                       { index = 2, equals = "" }
-    #                       { maxSize = 2 } ]
-    #           (the slots follow the select's own index) — and "any" to no
-    #           conditions at all. A select states `marker` or `where`, not both.
-    #
-    # `filter` is an ordinary NIP-01 filter — kinds, authors, since, until, limit,
-    # "#t"-style tag filters. `since`/`until` are absolute unix seconds as always;
-    # on a repeating cycle `limit` is the bound that stays meaningful, since a
-    # fixed `since` only ages. A regular kind must narrow itself with `limit`,
-    # `since` or `authors` — scanning one whole would load every matching event in
-    # the store at once.
-    #
-    # Careful with the two tag notions: `tag = "e"` is the tag urls are READ FROM,
-    # while `"#e" = [...]` in the filter narrows which events are scanned at all.
-    #
-    # These need events to fan out over, so keep at least one static `down` stream
-    # above: that is what makes the first cycle non-empty.
-    #
-    # comfortably longer than `refreshSeconds` so consecutive cycles overlap
-    # instead of leaving a gap between them. Drop it and every cycle reconciles
-    # the filter's whole history — fine over negentropy, but a relay without
-    # NIP-77 then re-pages its entire history on every single cycle.
 }
