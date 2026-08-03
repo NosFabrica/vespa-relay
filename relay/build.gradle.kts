@@ -46,7 +46,7 @@ kotlin {
 }
 
 application {
-    mainClass = "com.vitorpamplona.quartz.eventstore.relay.RelayMainKt"
+    mainClass = "com.nosfabrica.vespa.relay.RelayMainKt"
     applicationName = "vespa-relay"
 }
 

@@ -27,7 +27,7 @@ run `spotlessApply` first.
 ## Layout
 
 ```
-relay/src/main/kotlin/com/vitorpamplona/quartz/eventstore/relay/
+relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   RelayMain.kt        entrypoint; reads env, deploys the schema, wires everything
   RelayApp.kt         Ktor server + routes
   NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext

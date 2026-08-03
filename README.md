@@ -605,4 +605,4 @@ store come from JitPack, pinned by commit in `gradle/libs.versions.toml`.
 
 ## License
 
-MIT © Vitor Pamplona
+MIT © NosFabrica

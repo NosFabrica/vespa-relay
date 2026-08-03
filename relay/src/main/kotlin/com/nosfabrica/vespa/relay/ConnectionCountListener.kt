@@ -18,3 +18,31 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
+package com.nosfabrica.vespa.relay
+
+import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
+import java.util.concurrent.atomic.AtomicInteger
+
+/**
+ * A minimal observability hook: tracks the live websocket connection count and
+ * (when [log] is on) prints it on each connect/disconnect. [count] is readable
+ * for tests or a future metrics endpoint. This replaces the default
+ * [RelayServerListener.None] only when the operator opts in (`LOG_CONNECTIONS`).
+ */
+class ConnectionCountListener(
+    private val log: Boolean = true,
+) : RelayServerListener {
+    private val active = AtomicInteger(0)
+
+    override fun onConnect(connectionId: Long) {
+        val now = active.incrementAndGet()
+        if (log) println("relay connections: $now (+)")
+    }
+
+    override fun onDisconnect(connectionId: Long) {
+        val now = active.decrementAndGet()
+        if (log) println("relay connections: $now (-)")
+    }
+
+    fun count(): Int = active.get()
+}
