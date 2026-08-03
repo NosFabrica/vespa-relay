@@ -31,6 +31,7 @@ import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import java.net.URI
 
 /**
  * Run a standalone trust-ranking Nostr relay against a Vespa. It opens the
@@ -47,8 +48,9 @@ import kotlinx.coroutines.launch
  *                       vanish scope                      (REQUIRED)
  *   AUTO_DEPLOY         deploy the bundled schema on EVERY boot (default true),
  *                        so the cluster always matches the schema this build
- *                        expects. A no-change deploy is a cheap no-op
- *   VESPA_CONFIG_URL     Vespa's config server (default: VESPA_URL on :19071)
+ *                        expects. A no-change deploy is a cheap no-op; a failed
+ *                        one is fatal only when Vespa has no schema to fall back on
+ *   VESPA_CONFIG_URL     Vespa's config server (default: VESPA_URL's host on :19071)
  *
  *   NIP-11 identity:
  *   RELAY_NAME / RELAY_DESCRIPTION / RELAY_ICON / RELAY_BANNER /
@@ -172,19 +174,10 @@ fun main() {
     // talking to it. Vespa handles a no-change deploy as a cheap no-op (a new
     // session that activates with no configChangeActions), so the cost of the
     // common case is one request at startup.
-    val configUrl = env["VESPA_CONFIG_URL"] ?: vespaUrl.replace(":8080", ":19071")
+    val configUrl = env["VESPA_CONFIG_URL"] ?: configUrlFor(vespaUrl)
     if (autoDeploy) {
-        val deployer = SchemaDeployer(configUrl)
         System.err.println("schema: deploying the bundled application package to $configUrl")
-        runCatching {
-            deployer.deploy()
-            deployer.awaitServing(vespaUrl)
-        }.onFailure {
-            // Loud and fatal. Continuing means feeding a cluster whose schema we
-            // know we disagree with, which is the silent-data-loss path above.
-            System.err.println("schema: DEPLOY FAILED — ${it.message}")
-            throw it
-        }
+        deployBundledSchema(vespaUrl, configUrl)
         System.err.println("schema: deployed and serving")
     }
 
@@ -598,6 +591,38 @@ private suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
 // minutes, and each attempt is a real query.
 private const val TRUST_RECONCILE_RETRY_MS = 5_000L
 private const val TRUST_RECONCILE_MAX_WAIT_MS = 10 * 60 * 1000L
+
+/**
+ * Deploy the bundled application package and wait until Vespa serves it.
+ *
+ * A deploy failure against a Vespa that is already serving keeps the relay up
+ * on the schema it has (with a warning naming the cost: fields the schema
+ * lacks stay rejected) — a config server that is unreachable, say, must not
+ * take down a relay that ran fine yesterday. On a fresh Vespa the failure
+ * rethrows: there is no schema to fall back to, so nothing could serve anyway.
+ */
+private fun deployBundledSchema(
+    vespaUrl: String,
+    configUrl: String,
+) {
+    val deployer = SchemaDeployer(configUrl)
+    try {
+        deployer.deploy()
+    } catch (e: Exception) {
+        if (!deployer.isServing(vespaUrl)) throw e
+        System.err.println(
+            "relay: schema deploy to $configUrl failed (${e.message?.take(200)}); " +
+                "serving on the schema Vespa already has — writes carrying fields it lacks will be rejected until a deploy succeeds",
+        )
+    }
+    deployer.awaitServing(vespaUrl)
+}
+
+/** The config server sits on :19071 by convention, on the same host as the query endpoint. */
+private fun configUrlFor(queryUrl: String): String {
+    val u = URI.create(queryUrl)
+    return URI(u.scheme, null, u.host, 19071, null, null, null).toString()
+}
 
 /** Map a ws/wss url to its http/https origin for NIP-98's `u` tag. */
 private fun String.httpFromWs(): String =

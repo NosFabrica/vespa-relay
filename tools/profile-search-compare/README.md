@@ -70,8 +70,11 @@ sort:rank"` — but see the caveat below.
 ## What "match" means here, and the WoT caveat
 
 vespa-relay ranks profile search by the **searcher's web of trust**, built from
-`kind:3` contact lists in the store, seen from an observer (a NIP-42 login, or
-`DEFAULT_OBSERVER`). brainstorm ranks by *its* web of trust. Two things follow:
+`kind:3` contact lists in the store, seen from an observer — a NIP-42 login, or
+an `observer:` term in the search itself. Anonymous searches are untrusted: the
+relay dropped its operator-wide default observer, so with no observer there is
+no lens and the whole corpus ranks flat. brainstorm ranks by *its* web of trust.
+Two things follow:
 
 1. **Finding the same people** (coverage + recall on text relevance) is a fair,
    sandbox-scale comparison. This is the default the harness runs.

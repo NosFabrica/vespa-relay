@@ -22,7 +22,9 @@ docker compose up --build
 # relay + web UI on ws://localhost:7777
 ```
 
-On first run the relay deploys the bundled Vespa schema, then serves. Open
+On every start the relay deploys the bundled Vespa schema — so a fresh Vespa
+becomes queryable and an upgraded relay carries its schema changes with it — then
+serves. Open
 `http://localhost:7777` for the search UI, or connect a Nostr client to the websocket.
 
 To run against an existing Vespa, without Docker:
@@ -48,7 +50,7 @@ All configuration is through environment variables.
 | `FTS_CURSOR_FILE` | where the reindex saves its position, so a restart resumes rather than redoing the corpus | `/var/lib/vespa-relay/fts-cursor.txt` |
 | `REINDEX_FTS_ON_START` | re-derive every event's search fields once, in the background. Needed after a store upgrade that changes `SearchExtractors` or adds *fed* search fields — a Vespa reindex cannot produce those, only a re-put can. Walks the whole corpus, so leave it off except for the boot that performs the migration | `false` |
 | `TRUST_RECONCILE_ON_START` | reconcile the trust projection at startup, in the **background** — the relay serves immediately and ranked search returns less until it finishes. `false` skips it entirely | `true` |
-| `AUTO_DEPLOY` | deploy the bundled Vespa schema on **every** boot, so the cluster always matches the schema this build expects. A no-change deploy is a cheap no-op; a failed one is fatal, because feeding a cluster whose schema we disagree with loses events silently | `true` |
+| `AUTO_DEPLOY` | deploy the bundled Vespa schema on **every** boot, so the cluster always matches the schema this build expects. A no-change deploy is a cheap no-op. If the deploy fails while Vespa is already serving a schema, the relay warns and keeps serving on it — an unreachable config server must not take down a relay that ran fine yesterday — and writes carrying fields that schema lacks stay rejected until a deploy succeeds. On a fresh Vespa there is nothing to fall back to, so it is fatal | `true` |
 | `VESPA_CONFIG_URL` | Vespa's config server, for the deploy above | `VESPA_URL` on `:19071` |
 | `VESPA_PORT` / `VESPA_CONFIG_PORT` | ports published on the **host** for the two above. Compose only — nothing inside the containers moves | `8080` / `19071` |
 | `VESPA_QUERY_FANOUT` | concurrent queries the store issues per bulk operation. Higher makes ingest faster; lower leaves more of the engine for the people searching | `4` |
