@@ -442,13 +442,16 @@ enum class MirrorDirection(
 /**
  * Loads [RouterConfig] from the environment. `ROUTER_CONFIG` holds the HOCON
  * inline; `ROUTER_CONFIG_FILE` points at a file holding it. Neither set ⇒ no
- * router (returns null; the relay serves without mirroring). `ROUTER_BACKFILL_SECONDS`
- * sets the default backfill window for streams that don't state their own;
+ * router (returns null; the relay serves without mirroring).
  * `ROUTER_UP_INTERVAL_SECONDS` sets how often up/both streams re-reconcile.
  *
- * `ROUTER_DYNAMIC_REFRESH_SECONDS`, `ROUTER_DYNAMIC_CONCURRENCY` and
- * do the same for dynamic streams — the
- * per-stream keys of the same name override each of them.
+ * `ROUTER_DYNAMIC_REFRESH_SECONDS` and `ROUTER_DYNAMIC_CONCURRENCY` are the
+ * defaults for dynamic streams — the per-stream keys of the same name override
+ * each of them.
+ *
+ * Ingest is `ROUTER_INGEST_BATCH` and `ROUTER_INGEST_CONCURRENCY`; a stream left
+ * on `sync = "auto"` is decided by `ROUTER_NEG_MIN_EVENTS` and
+ * `ROUTER_COUNT_TIMEOUT_MS`.
  *
  * `ROUTER_STREAMS` narrows the run to a comma-separated subset of the config's
  * streams — see [select].
