@@ -137,13 +137,23 @@ const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + locati
 /**
  * IDLE time — silence, not elapsed time.
  *
- * Reset by every message on the connection, so a relay steadily working through
- * a queue is never cut off however long that takes, and only a relay that has
- * genuinely stopped talking is. A deadline measured from send reported 91 of 146
- * services on nip85.nosfabrica.com as failures whose median answer time was
- * 75ms — they were queued, not slow, and none of them was ever refused.
+ * Reset by every message on the connection, so a relay working through a queue
+ * is never cut off however deep the queue, and only a relay that has stopped
+ * talking is. Measured against nip85.nosfabrica.com, 146 services, 4 in flight:
+ *
+ *     15s deadline    55 answered, 91 timed out   (0 refused — none, ever)
+ *     40s deadline   146 answered,  0 timed out   median 13.5s, max 32.7s
+ *     20s idle       134 answered, 12 timed out   max answer 47.6s
+ *
+ * The deadline had to cover QUEUE + SERVICE, which grows with the number of
+ * services and is unbounded as this page scales. Idle only has to cover the
+ * longest single SILENCE — but that is bounded by the slowest single COUNT, not
+ * by zero, because the relay answers serially: while it computes one expensive
+ * count nothing arrives, and 20s could not tell that from a dead socket. Hence
+ * 60s, above the 47.6s worst answer observed, and still independent of how many
+ * services this page ends up asking about.
  */
-const IDLE_TIMEOUT_MS = 20000;
+const IDLE_TIMEOUT_MS = 60000;
 
 /**
  * Why a cell has no number, kept apart on purpose.
