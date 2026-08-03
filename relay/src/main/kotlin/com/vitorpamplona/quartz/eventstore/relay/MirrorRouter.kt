@@ -781,9 +781,9 @@ class MirrorRouter(
                                                             pagedDone.get(),
                                                             pagers.size,
                                                             eventsEarly.get(),
-                                                            paging.fraction(),
-                                                            paging.etaMs(),
-                                                            paging.reached(),
+                                                            paging.fraction(name),
+                                                            paging.etaMs(name),
+                                                            paging.reached(name),
                                                         ),
                                                     )
                                                 }
@@ -1318,9 +1318,9 @@ class MirrorRouter(
                                     done = finished.toInt(),
                                     total = relays.size,
                                     events = downloaded.get(),
-                                    fraction = paging.fraction(),
-                                    etaMs = paging.etaMs(),
-                                    reachedSeconds = paging.reached(),
+                                    fraction = paging.fraction(stream.name),
+                                    etaMs = paging.etaMs(stream.name),
+                                    reachedSeconds = paging.reached(stream.name),
                                 ),
                             )
                             continue

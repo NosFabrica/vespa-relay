@@ -357,8 +357,8 @@ class PagingProgress {
      * own span, so "half the relays are done and half are at zero" is 50% — the
      * thing an operator actually wants to know.
      */
-    fun fraction(): Double? {
-        val live = walks.values.toList()
+    fun fraction(stream: String? = null): Double? {
+        val live = live(stream)
         if (live.isEmpty()) return null
         return live.sumOf { w ->
             val span = (w.top - w.bottom).coerceAtLeast(1)
@@ -366,16 +366,32 @@ class PagingProgress {
         } / live.size
     }
 
-    /** The oldest second any walk has reached, or null when none is running. */
-    fun reached(): Long? = walks.values.minOfOrNull { it.current }
+    /**
+     * The walks belonging to [stream], or every walk when it is null.
+     *
+     * One PagingProgress serves the whole router, so an unscoped question is
+     * answered over every stream at once: both streams printed the SAME `33.4%`
+     * and the same `back to …` date while one was walking 2026 and the other had
+     * bottomed out at the floor. A key is `"stream|url"`, so the stream name
+     * scopes it.
+     */
+    private fun live(stream: String?): List<Walk> =
+        if (stream == null) {
+            walks.values.toList()
+        } else {
+            walks.entries.filter { it.key.startsWith("$stream|") }.map { it.value }
+        }
+
+    /** The oldest second [stream] has reached, or null when it is not walking. */
+    fun reached(stream: String? = null): Long? = live(stream).minOfOrNull { it.current }
 
     /** Milliseconds left at the rate achieved so far, or null before it means anything. */
-    fun etaMs(): Long? {
-        val f = fraction() ?: return null
+    fun etaMs(stream: String? = null): Long? {
+        val f = fraction(stream) ?: return null
         // Under a few percent the extrapolation is dominated by connect time and
         // produces numbers like "ETA 9 days" that are worse than saying nothing.
         if (f < 0.02) return null
-        val oldestStart = walks.values.minOfOrNull { it.startedMs } ?: return null
+        val oldestStart = live(stream).minOfOrNull { it.startedMs } ?: return null
         val elapsed = System.currentTimeMillis() - oldestStart
         if (elapsed < 5_000) return null
         return ((elapsed / f) - elapsed).toLong()
