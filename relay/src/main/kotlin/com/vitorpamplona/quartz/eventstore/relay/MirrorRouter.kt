@@ -1284,6 +1284,15 @@ class MirrorRouter(
             if (stream.sync == SyncMode.FETCH) {
                 System.err.println("router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot")
                 emptyList()
+            } else if (stream.deleteMissing != DeleteMissing.OFF) {
+                // [reconcileAndDelete] reads its OWN ids, per ask, and must: the
+                // shared snapshot spans every service on the stream, and handing
+                // it to a one-service reconcile would report every other
+                // service's cards as retracted. So this stream never touches it —
+                // and building it anyway cost a full walk of the corpus per
+                // cycle, 18.8M ids on this deployment, materialized and dropped.
+                System.err.println("router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot")
+                emptyList()
             } else {
                 val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
                 phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
