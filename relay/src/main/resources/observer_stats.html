@@ -285,6 +285,13 @@ function client(url) {
         ws.onmessage = (ev) => {
           clearTimeout(timer);
           timer = setTimeout(finish, IDLE_TIMEOUT_MS);
+          // The CONNECTION's watchdog too, not just this REQ's. While a REQ
+          // streams, its own messages never reached `prev`, so a COUNT waiting
+          // on the same socket saw silence and expired on a connection that was
+          // in fact busy — the same mistake the per-request deadlines made, one
+          // level down. Reqs and counts do not currently overlap here; this is
+          // so that they can.
+          bumpIdle();
           let m; try { m = JSON.parse(ev.data); } catch { return; }
           if (m[1] !== id) return prev(ev);
           if (m[0] === "EVENT") acc.push(m[2]);

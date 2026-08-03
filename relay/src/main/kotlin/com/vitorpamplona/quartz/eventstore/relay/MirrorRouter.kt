@@ -28,6 +28,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
@@ -1637,12 +1638,19 @@ class MirrorRouter(
                 return pageAsk(stream, url, ask)
             }
 
+        // fetchAll, not fetchAllPages. An id set is not a time range: paging it
+        // by a `until` cursor asks a second time for events it just received,
+        // then a third for the boundary second, to discover there is nothing
+        // older — a round trip and a half per chunk to page something that was
+        // never ordered. One REQ per chunk, collected to EOSE.
         var downloaded = 0
         for (chunk in diff.needIds.chunked(ID_FETCH_CHUNK)) {
-            downloaded +=
-                client.fetchAllPages(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS) { event ->
-                    if (stream.filter.match(event)) offer(event, stream.trusted)
+            for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
+                if (stream.filter.match(event)) {
+                    offer(event, stream.trusted)
+                    downloaded++
                 }
+            }
         }
         if (diff.haveIds.isEmpty()) return downloaded
 
