@@ -1611,7 +1611,13 @@ class MirrorRouter(
         // than wasting time, so the ids are derived from the ask itself and there
         // is no parameter to pass the wrong thing in.
         val mine = store.snapshotIdsForNegentropy(listOf(ask))
-        if (mine.isEmpty()) return 0
+        // NOT an early return when we hold nothing. That was a bug: an ask we
+        // have no records for is exactly a service we have never fetched — a new
+        // 10040, or one the orphan sweep emptied — and returning here meant it
+        // was never fetched again either. Reconciling against an empty local set
+        // is well defined and is precisely "give me everything you have"; the
+        // delete side then no-ops on its own, because haveIds is a subset of a
+        // set that is empty.
 
         // A COMPLETED reconcile is the whole licence to delete. quartz never
         // silently falls back: it throws when a window cannot be reconciled over
@@ -1698,10 +1704,29 @@ class MirrorRouter(
         stream: MirrorStream,
         url: NormalizedRelayUrl,
         ask: Filter,
-    ): Int =
-        client.fetchAllPages(url, listOf(ask), NEG_IDLE_MS) { event ->
-            if (stream.filter.match(event)) offer(event, stream.trusted)
+    ): Int {
+        // Walk only what the band leaves, and record what this saw — the same
+        // bookkeeping every other paged path does. Without it a relay that
+        // cannot reconcile re-walked its whole history on every cycle, forever,
+        // which is the one cost cursor bands exist to remove.
+        var downloaded = 0
+        for (leg in cursors.legs(url, ask)) {
+            var seenMin: Long? = null
+            var seenMax: Long? = null
+            downloaded +=
+                client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS) { event ->
+                    if (stream.filter.match(event)) {
+                        if (SyncCursors.isPlausible(event.createdAt)) {
+                            seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                            seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                        }
+                        offer(event, stream.trusted)
+                    }
+                }
+            cursors.record(url, ask, seenMin, seenMax, paged = true)
         }
+        return downloaded
+    }
 
     /**
      * [window] as one ask, or as several with at most [per] authors each.
