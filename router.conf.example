@@ -62,15 +62,30 @@ streams {
 
     assertions {
         dir = "down"
-        # The opposite case, and the reason `sync` is declared rather than
-        # measured. NIP-85 assertions are per-provider by construction: every
-        # provider authors its own, so two provider relays share essentially
-        # nothing even though both hold millions. Comparing millions of ids
-        # against millions for a near-empty intersection is the expensive way to
-        # learn that — and it would build a 24.8M-id local snapshot to do it.
-        # The sync cursor already answers "what is new since we last asked".
-        sync = "fetch"
-        filter = { "kinds": [0, 10002, 30382] }
+        sync   = "negentropy"
+        # The relay is asked per (relay, service) now, so its set and ours are the
+        # SAME data — near-total overlap, which is what negentropy is for. The old
+        # `fetch` reasoning ("millions each, no overlap") was about the un-narrowed
+        # ask; binding the service to its relay inverted it.
+        #
+        # And a reconcile compares WHOLE sets, which a paged fetch never does — so
+        # it can also see what we hold and the provider no longer serves. For its
+        # own scores that provider is the source of truth, so absence is a
+        # retraction and we drop it too.
+        #
+        # Nothing is published upstream to learn this. Absence has innocent causes
+        # (retention, an AUTH gate, a half-served reconcile), so the router refuses
+        # to act on a relay that served nothing for the ask, and refuses to delete
+        # more than half of one in a cycle. Starting as a dry run: it reports what
+        # it would drop and drops nothing.
+        deleteMissing = "dryRun"
+        # 30382 ONLY, and that is load-bearing rather than tidy. deleteMissing
+        # applies to the whole ask, and the provider's relay is the source of
+        # truth for its SCORES — not for its operator's profile or relay list.
+        # Leaving kinds 0/10002 here would let a provider relay that simply does
+        # not carry kind 0 retract that service's profile. Those two kinds are
+        # mirrored by the other streams, which is where they belong.
+        filter = { "kinds": [30382] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 100          # relays synced at the same time
         exclude = []               # relays to skip however many sources name them

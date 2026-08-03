@@ -29,6 +29,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
@@ -380,6 +381,16 @@ class MirrorRouter(
      * working: duplicates we already hold and signatures that were never valid.
      */
     private val lostToStore = AtomicLong()
+
+    /**
+     * Records dropped because an upstream that owns them stopped serving them.
+     *
+     * Counted separately and reported on the health line, because this is the
+     * only number in the router that goes DOWN. Everything else it prints is
+     * work done; this is data gone, and it should never be legible as a rounding
+     * detail of a sync.
+     */
+    private val deleted = AtomicLong()
 
     /**
      * What actually goes down the wire, when the counters stop making sense.
@@ -1507,6 +1518,7 @@ class MirrorRouter(
         window: Filter,
         local: List<IdAndTime>,
     ): Int {
+        if (stream.deleteMissing != DeleteMissing.OFF) return reconcileAndDelete(stream, url, window)
         var downloaded = 0
         for (leg in cursors.legs(url, window)) {
             var seenMin: Long? = null
@@ -1559,6 +1571,87 @@ class MirrorRouter(
                 reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
             )
         }
+        return downloaded
+    }
+
+    /**
+     * Reconcile one narrow ask BOTH ways: download what the upstream has and we
+     * lack, delete what we have and it no longer serves.
+     *
+     * The upstream is the source of truth for these records — a provider's own
+     * relay for its own scores — so its set is the answer, not a contribution to
+     * one. Nothing is published: the diff is read and acted on locally, never
+     * pushed. (quartz's `NegentropyStoreSync` can propagate real NIP-09
+     * retractions instead, which is strictly safer, but arming it means
+     * uploading our events to somebody else's relay and reading the rejections.)
+     *
+     * Absence has innocent causes, so this refuses far more often than it acts.
+     */
+    private suspend fun reconcileAndDelete(
+        stream: MirrorStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+    ): Int {
+        // Read for THIS ask, never the cycle's shared snapshot. quartz says it
+        // plainly: "entries outside the filter would show up as false have ids".
+        // The shared snapshot spans every service on the stream, so handing it to
+        // a one-service reconcile would report every OTHER service's cards as
+        // missing upstream — and delete almost the whole corpus. This is the one
+        // place in the router where getting a filter wrong destroys data rather
+        // than wasting time, so the ids are derived from the ask itself and there
+        // is no parameter to pass the wrong thing in.
+        val mine = store.snapshotIdsForNegentropy(listOf(ask))
+        if (mine.isEmpty()) return 0
+
+        val diff = client.negentropyReconcileIds(url, ask, mine, idleTimeoutMs = NEG_IDLE_MS)
+
+        var downloaded = 0
+        for (chunk in diff.needIds.chunked(ID_FETCH_CHUNK)) {
+            downloaded +=
+                client.fetchAllPages(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS) { event ->
+                    if (stream.filter.match(event)) offer(event, stream.trusted)
+                }
+        }
+        if (diff.haveIds.isEmpty()) return downloaded
+
+        // What the relay actually holds for this ask. Zero means it answered with
+        // nothing — indistinguishable from a relay that is gated behind AUTH,
+        // half-migrated, or simply broken — and "they have nothing" is the one
+        // shape of this answer that would delete everything we hold for it.
+        val theirs = mine.size - diff.haveIds.size + diff.needIds.size
+        if (theirs <= 0) {
+            System.err.println(
+                "router: ${stream.name} REFUSED to delete ${diff.haveIds.size} record(s) for ${url.url}" +
+                    " — the relay served nothing for this ask, which is not the same as having retracted it",
+            )
+            return downloaded
+        }
+        // A retraction is a trickle. Losing over half of what we hold in one
+        // cycle is a claim about the relay, not about the records, and it is
+        // exactly what a truncated or partially-served reconcile looks like.
+        val share = diff.haveIds.size.toDouble() / mine.size
+        if (share > MAX_DELETE_SHARE) {
+            System.err.println(
+                "router: ${stream.name} REFUSED to delete ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%) for ${url.url}" +
+                    " — over ${(MAX_DELETE_SHARE * 100).toInt()}% in one cycle reads as a bad reconcile, not a retraction",
+            )
+            return downloaded
+        }
+        if (stream.deleteMissing == DeleteMissing.DRY_RUN) {
+            System.err.println(
+                "router: ${stream.name} would delete ${diff.haveIds.size}/${mine.size} record(s) for ${url.url}" +
+                    " — set deleteMissing = true to apply",
+            )
+            return downloaded
+        }
+        // Deleted BY ID and inside the ask: the filter that found them is the
+        // filter that removes them, so a delete can never reach past the records
+        // this reconcile actually compared.
+        for (chunk in diff.haveIds.chunked(ID_FETCH_CHUNK)) {
+            store.delete(ask.copy(ids = chunk, since = null, until = null, limit = null))
+        }
+        deleted.addAndGet(diff.haveIds.size.toLong())
+        System.err.println("router: ${stream.name} deleted ${diff.haveIds.size} record(s) ${url.url} no longer serves")
         return downloaded
     }
 
@@ -1778,6 +1871,7 @@ class MirrorRouter(
                     ", ${transferring.get()} relay(s) transferring" +
                     ", ${client.connectedRelaysFlow().value.size} connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
+                    (deleted.get().takeIf { it > 0 }?.let { ", $it record(s) DELETED as retracted upstream" } ?: "") +
                     (servingPressure?.describe()?.let { ", $it" } ?: "") +
                     (
                         if (lostToStore.get() > 0) {
@@ -1995,6 +2089,20 @@ class MirrorRouter(
          * a large value would only mean "hold a silent socket for longer".
          */
         private const val NEG_IDLE_MS = 30_000L
+
+        /** Ids per by-id REQ, and per delete. The store's own bulk chunk. */
+        private const val ID_FETCH_CHUNK = 500
+
+        /**
+         * Most of one ask that a single cycle may delete before it refuses.
+         *
+         * A provider retiring a subject is a trickle. Half of a service's cards
+         * vanishing at once is a statement about the RELAY — truncated reconcile,
+         * partial serve, an auth gate we did not notice — and the whole risk of
+         * deleting on absence lives in not being able to tell those apart from
+         * the inside. Refusing costs a cycle; being wrong costs the records.
+         */
+        private const val MAX_DELETE_SHARE = 0.5
 
         // Distinct store failures to dump a raw event for. A handful names every
         // defect a real corpus carries; past that it is a stuck loop, not news.

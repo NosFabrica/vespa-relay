@@ -342,6 +342,45 @@ The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`
 `until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:
 `{ "kinds": [1], "authors": [...] }` harvests hints from your WoT's notes only.
 
+### Deleting what an upstream retracted
+
+`deleteMissing` makes a stream drop records **we** hold that the upstream no
+longer serves:
+
+```hocon
+sync = "negentropy"
+deleteMissing = "dryRun"        # false (default) | "dryRun" | true
+```
+
+Only correct when that upstream is the *source of truth* for the records in the
+ask — a NIP-85 provider's own relay for its own scores. For a general mirror,
+"this relay does not have it" means nothing at all: relays hold different subsets
+by design.
+
+It is **absence-based**, not NIP-09. Nothing is published upstream to learn it —
+quartz's `NegentropyStoreSync` can propagate real kind:5 retractions instead, and
+that is strictly safer, but arming it means uploading your events to someone
+else's relay and reading the rejections.
+
+The cost of that choice is that absence has innocent causes — a retention window,
+a relay gating reads behind AUTH, a half-served reconcile — and each looks exactly
+like "they retracted everything". So:
+
+| guard | behaviour |
+|---|---|
+| `sync` must be `negentropy` | refused at parse time on `fetch`/`auto`. A paged fetch asks only *outside* its cursor band, so "not seen" there means "not asked for", and deleting on it would take the entire history below the band |
+| the relay served nothing for the ask | refuses, and says so. Empty is indistinguishable from gated or broken |
+| over 50% of one ask in a cycle | refuses, and says so. A retraction is a trickle; half a service vanishing at once is a claim about the relay |
+| local ids | read from the *ask itself*, never the cycle's shared snapshot — quartz's own warning is that entries outside the filter come back as false "have" ids, and the shared snapshot spans every service on the stream |
+| deletes | issued by id, inside the ask, so they cannot reach past what the reconcile compared |
+
+Keep the ask to kinds that upstream actually owns. `assertions` mirrors kind 30382
+alone for this reason: with kinds 0 and 10002 in the same filter, a provider relay
+that simply does not carry kind 0 would retract that provider's profile.
+
+Deletions are counted separately on the health line — it is the only number the
+router prints that goes down.
+
 ### Binding filter fields to a relay
 
 Without a binding, every relay a source names is asked for the stream's whole

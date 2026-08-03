@@ -119,7 +119,40 @@ data class MirrorStream(
     val dynamic: DynamicRelayList? = null,
     // Whether this stream's relays share events with each other — see [SyncMode].
     val sync: SyncMode = SyncMode.AUTO,
+    // Whether an upstream dropping a record means we drop it too — see [DeleteMissing].
+    val deleteMissing: DeleteMissing = DeleteMissing.OFF,
 )
+
+/**
+ * What to do with records WE hold that the upstream no longer serves.
+ *
+ * Only meaningful for a stream whose upstream is the source of truth for the
+ * records it carries — a NIP-85 provider's own relay for its own scores. For a
+ * general mirror, "this relay does not have it" means almost nothing: relays
+ * hold different subsets by design, and treating absence as retraction would
+ * delete everything the busiest upstream happens not to carry.
+ *
+ * Absence, not NIP-09. This deliberately does NOT use the kind:5 propagation in
+ * quartz's `NegentropyStoreSync`, because arming that path requires uploading
+ * our residual events to the upstream and reading its rejections — publishing to
+ * somebody else's relay to learn what they deleted. This asks and deletes; it
+ * never writes upstream.
+ *
+ * The cost of that choice is that absence has innocent causes — a retention
+ * window, a relay that gates reads behind AUTH, a partial outage — and each of
+ * them looks exactly like "they deleted everything". [DRY_RUN] and the
+ * guardrails in [MirrorRouter] are the answer to that, not the reconcile.
+ */
+enum class DeleteMissing {
+    /** Never delete. The default, and correct for every ordinary mirror stream. */
+    OFF,
+
+    /** Report what would be deleted, delete nothing. */
+    DRY_RUN,
+
+    /** Delete. */
+    ON,
+}
 
 /**
  * A stream's relay list, read from events our own store already holds instead of
@@ -516,6 +549,7 @@ object RouterConfigLoader {
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     dynamic = dynamic,
                     sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO,
+                    deleteMissing = parseDeleteMissing(name, s),
                 )
             }
         return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents, countTimeoutMs)
@@ -530,6 +564,51 @@ object RouterConfigLoader {
                 if (it == null) System.err.println("router: stream '$stream' skips invalid url '$url'")
             }
         }
+
+    /**
+     * `deleteMissing = false | "dryRun" | true`.
+     *
+     * Refused outright on a `fetch` stream. A paged fetch asks only OUTSIDE its
+     * cursor band, so what it does not see is mostly "we did not ask" — reading
+     * that as retraction would delete the entire history below the band. Only a
+     * reconcile compares whole sets, so only a reconcile can support this.
+     */
+    private fun parseDeleteMissing(
+        stream: String,
+        s: Config,
+    ): DeleteMissing {
+        if (!s.hasPath("deleteMissing")) return DeleteMissing.OFF
+        val raw = s.getValue("deleteMissing").unwrapped()
+        val mode =
+            when (raw) {
+                false -> {
+                    DeleteMissing.OFF
+                }
+
+                true -> {
+                    DeleteMissing.ON
+                }
+
+                "dryRun", "dryrun" -> {
+                    DeleteMissing.DRY_RUN
+                }
+
+                else -> {
+                    throw IllegalArgumentException(
+                        "router: stream '$stream' has deleteMissing = '$raw' — expected true, false, or \"dryRun\"",
+                    )
+                }
+            }
+        if (mode != DeleteMissing.OFF) {
+            val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
+            require(sync == SyncMode.NEGENTROPY) {
+                "router: stream '$stream' sets deleteMissing with sync = \"${sync.name.lowercase()}\" — it needs sync = \"negentropy\". " +
+                    "A paged fetch asks only outside its cursor band, so \"not seen\" there means \"not asked for\", " +
+                    "and deleting on it would take the whole history below the band"
+            }
+        }
+        return mode
+    }
 
     /** The `relaySource = [ ... ]` list plus the stream-level knobs pacing its cycle. */
     private fun parseDynamic(

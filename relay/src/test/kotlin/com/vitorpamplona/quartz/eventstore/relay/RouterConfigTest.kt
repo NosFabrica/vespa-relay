@@ -432,6 +432,59 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `deleteMissing needs a reconcile, because a fetch never asks inside its band`() {
+        fun stream(extra: String) =
+            RouterConfigLoader
+                .parse(
+                    """
+                    streams {
+                      s {
+                        dir = "down"
+                        filter = { "kinds": [30382] }
+                        urls = [ "wss://a.example" ]
+                        $extra
+                      }
+                    }
+                    """.trimIndent(),
+                ).streams
+                .single()
+
+        assertEquals(DeleteMissing.OFF, stream("""sync = "negentropy"""").deleteMissing)
+        assertEquals(
+            DeleteMissing.ON,
+            stream(
+                """sync = "negentropy"
+                deleteMissing = true""",
+            ).deleteMissing,
+        )
+        assertEquals(
+            DeleteMissing.DRY_RUN,
+            stream(
+                """sync = "negentropy"
+                deleteMissing = "dryRun"""",
+            ).deleteMissing,
+        )
+
+        // A paged fetch asks only OUTSIDE its cursor band, so everything below
+        // the band is "not asked for" rather than "not there" — deleting on that
+        // would take the whole history the band already covers.
+        assertFailsWith<IllegalArgumentException> {
+            stream(
+                """sync = "fetch"
+                deleteMissing = true""",
+            )
+        }
+        // auto can silently BE a fetch, so it is refused for the same reason.
+        assertFailsWith<IllegalArgumentException> { stream("""deleteMissing = true""") }
+        assertFailsWith<IllegalArgumentException> {
+            stream(
+                """sync = "negentropy"
+                deleteMissing = "sometimes"""",
+            )
+        }
+    }
+
+    @Test
     fun `a select binds filter fields from its own tag`() {
         fun selectOf(select: String) =
             RouterConfigLoader
