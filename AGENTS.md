@@ -39,6 +39,17 @@ relay/src/main/kotlin/com/vitorpamplona/quartz/eventstore/relay/
   RelayDiscovery.kt   pulling relay urls out of stored events
   RelayIdentity.kt    RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor
   ParseAudit.kt       what quartz could not parse, grouped to a JSON report
+  RelayConfig.kt      NIP-11 limits from env, via `env.intOr(...)` rather than
+                      `env["..."]` — grep for both or you will conclude a
+                      working setting is dead
+  ServingPressure.kt  EWMA of client read latency; the router yields to it
+  RelayState.kt       bans and other state that outlives the container
+  RelayInfo.kt        the NIP-11 document
+  RelayRoute.kt       ws + http routes
+  Nip86Route.kt       the management API
+  ExpirationSweeper.kt  NIP-40
+  PubKeys.kt          npub/hex parsing for every pubkey setting
+  ConnectionCountListener.kt  LOG_CONNECTIONS
 ```
 
 `README.md` documents every environment variable and the router config format.
@@ -57,12 +68,15 @@ Each stream declares **how** it asks for what it is missing, via `sync`:
 | mode | when | why |
 |---|---|---|
 | `negentropy` | the same event lives on many relays (kinds 0/3/10002) | reconcile id sets, transfer only the difference |
-| `fetch` | each relay holds its own events (NIP-85 kind 30382) | comparing huge disjoint sets costs more than the fetch; the cursor answers "what is new" |
+| `fetch` | the two sides barely overlap, or the store is empty and there is nothing to compare against | comparing disjoint sets costs more than downloading, and builds a huge local id snapshot to do it |
 | `auto` | unknown | decide by size — reconcile only when both sides hold more than `ROUTER_NEG_MIN_EVENTS` |
 
-**This is a property of the data, not of the relay, and it cannot be measured
-from counts.** The `assertions` and `dataViaOutbox` streams both put millions of
-events on each side; only one of them overlaps. Declare it.
+**It is a property of the data AND of how the stream asks — not of the relay,
+and not measurable from counts.** NIP-85 assertions were the standing example of
+`fetch` here: per-provider, millions each, no overlap. Asked per (relay,
+provider) instead of by kind, the same data overlaps almost entirely and
+`negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
+when a stream's filter changes shape rather than trusting the label.
 
 **Cursor bands** (`SyncCursors`) record the `created_at` span already walked for
 a `(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
@@ -73,7 +87,9 @@ only a finished negentropy reconcile records `complete = true`.
 **Known open bug:** a band holds one span for every kind in the filter, so a
 long-lived kind (0) vouches for a short-lived one (30382) and `legs()` skips the
 interior. The fix is per-kind spans *inside* the filter-keyed band — not
-per-kind keys, which would break the invalidation property above.
+per-kind keys, which would break the invalidation property above. Still
+unfixed; it stopped biting only because `assertions` narrowed to a single kind,
+so any multi-kind filter can walk into it again.
 
 ## Instrumentation — use it before theorising
 
@@ -135,6 +151,13 @@ statement about someone else's server.
   large files. Use `/usr/bin/grep` when a search "finds nothing" implausibly.
 - **`\n` inside a Kotlin raw string is literal**, which breaks HOCON fixtures in
   tests. Use real line breaks.
+- **A timeout is an idle window, not a deadline.** quartz's accessory APIs
+  reset their clock on every message (`1622bd7109`); code here must match. A
+  deadline measured from send counts time spent QUEUED behind other work, so a
+  relay steadily answering looks like one that refused. Measured on one relay,
+  146 asks: a 15s deadline scored 55 answered and 91 "timed out" with a median
+  answer of 75ms — and **zero** of those 91 were ever refused. Size an idle
+  window by the slowest SINGLE answer, not by the queue.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*
@@ -167,3 +190,19 @@ run, unrecoverable, while every status line read healthy.
 Structural rejections are surfaced separately from ordinary ones on the health
 line (`N event(s) LOST to store errors`), because a bad signature is the event's
 fault and dropping it is correct, whereas a batch failing structurally is ours.
+
+**Two levers delete data.** Both default to a dry run that reports and removes
+nothing; run that first, and read the number before believing it.
+
+- `SWEEP_ORPHAN_SCORES_ON_START` — kind-30382 cards from providers no stored
+  10040 names. On this deployment that was 33.8M of 51.9M, and the dry run
+  predicted the figure exactly.
+- `deleteMissing` on a stream — records the upstream no longer serves. The
+  licence is a COMPLETED reconcile, never a volume: quartz throws rather than
+  falling back, so a normal return means every window was compared and an empty
+  answer is the relay's answer rather than its silence. There is deliberately no
+  size guard, because a mass retraction is exactly the case that matters.
+
+The counterpart to both: a deletion is not a tombstone. A stream that still asks
+by kind re-downloads whatever was freed on its next walk, so reclaiming space and
+narrowing the ask are one job.
