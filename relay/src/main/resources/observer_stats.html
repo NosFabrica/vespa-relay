@@ -137,6 +137,27 @@ const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + locati
 const COUNT_TIMEOUT_MS = 15000;
 // Remote relays are other people's servers. A handful at a time, never a burst.
 const REMOTE_CONCURRENCY = 4;
+// ...and a handful of COUNTs at a time WITHIN one relay, which is where the
+// wait actually was. The work is not spread evenly across relays — measured
+// here, 24 relays hold 256 (relay, service) pairs and ONE of them holds 144 of
+// them:
+//
+//   nip85.nosfabrica.com     144 pairs   4.22s per COUNT   ~10 min serially
+//   nip85.brainstorm.world    45 pairs   0.20s (no NIP-45, answers NOTICE)
+//   nip85-staging…            38 pairs   0.25s
+//   the other 21 relays       29 pairs   seconds
+//
+// REMOTE_CONCURRENCY parallelises across RELAYS, so it did nothing for the one
+// relay holding 56% of the work — the other 23 finished in under a minute and
+// the page then spent ten more waiting on a single socket that was asking one
+// question at a time. NIP-01 allows concurrent subscriptions and the client
+// below already keys replies by subscription id, so only the await was
+// serialising them.
+//
+// Four, not more: this is a status page pointed at somebody else's server, and
+// four concurrent COUNTs is the same courtesy REMOTE_CONCURRENCY extends to
+// four concurrent relays.
+const PER_RELAY_CONCURRENCY = 4;
 // A COUNT landing exactly on one of these is far more likely to be a relay's
 // default page size reported as a count than a real total. Flagged, not hidden.
 const SUSPICIOUS = new Set([100, 500, 1000, 5000]);
@@ -348,11 +369,11 @@ async function run() {
       render(observers);
       return;
     }
-    for (const svc of svcSet) {
+    await bounded(PER_RELAY_CONCURRENCY, [...svcSet].map((svc) => async () => {
       const answer = await ws.count(svc);
       for (const d of rows(svc)) d.there = answer;
       render(observers);
-    }
+    }));
     try { ws.close(); } catch {}
   }));
 

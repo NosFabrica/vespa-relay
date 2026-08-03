@@ -333,7 +333,17 @@ class PagingProgress {
         key: String,
         until: Long,
     ) {
-        walks[key]?.let { if (until < it.current) it.current = until }
+        walks[key]?.let {
+            // Clamped to the walk's own floor. A page cursor comes from the
+            // oldest `created_at` a relay returned, and relays serve events
+            // stamped 0 — one of those dragged the cursor to epoch and the line
+            // read `back to 1969-12-31` while the walk was in fact somewhere in
+            // 2026. The floor is the oldest second this walk can legitimately
+            // reach, so anything below it means the walk is done, not that it
+            // has travelled to 1969.
+            val reached = until.coerceAtLeast(it.bottom)
+            if (reached < it.current) it.current = reached
+        }
     }
 
     fun finish(key: String) {
