@@ -783,6 +783,7 @@ class MirrorRouter(
                                                             eventsEarly.get(),
                                                             paging.fraction(),
                                                             paging.etaMs(),
+                                                            paging.reached(),
                                                         ),
                                                     )
                                                 }
@@ -798,7 +799,12 @@ class MirrorRouter(
                                         coroutineScope {
                                             pagers.forEach { (idx, up) ->
                                                 launch {
-                                                    eventsEarly.addAndGet(pageOne(idx, up).toLong())
+                                                    // pageOne feeds [eventsEarly] as events land, so the
+                                                    // ticker below has a number that moves. Adding its
+                                                    // return value here instead left the line reading
+                                                    // `0 event(s)` until the walk ENDED — for a walk that
+                                                    // ran 17 minutes and took 7.5M events off one relay.
+                                                    pageOne(idx, up, eventsEarly)
                                                     if (pagersReport) {
                                                         phases.set(
                                                             name,
@@ -913,6 +919,7 @@ class MirrorRouter(
     private suspend fun pageOne(
         idx: Int,
         up: MirrorUpstream,
+        live: AtomicLong,
     ): Int {
         val legs = cursors.legs(up.url, up.filter)
         if (legs.isEmpty()) {
@@ -926,12 +933,18 @@ class MirrorRouter(
                 var seenMin: Long? = null
                 var seenMax: Long? = null
                 val walk = "${up.streamName}|${up.url.url}"
+                // Counted HERE, as events arrive — not from [downloaded], which
+                // fetchAllPages only assigns on return. Reporting that one from
+                // inside the callback printed `0 event(s)` for the whole of a
+                // walk that took 7,503,018 events off one relay, which is the
+                // status line lying about the only thing it exists to say.
+                var seenSoFar = 0
                 paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCursors.PLAUSIBLE_FLOOR)
                 downloaded +=
                     client.fetchAllPages(
                         up.url,
                         listOf(window),
-                        NEG_IDLE_MS,
+                        PAGE_BUDGET_MS,
                         onNewPage = { until -> paging.mark(walk, until) },
                     ) { event ->
                         if (up.filter.match(event)) {
@@ -941,7 +954,9 @@ class MirrorRouter(
                             }
                             offer(event, up.trusted)
                         }
-                        progress.update(idx, downloaded, downloaded)
+                        seenSoFar++
+                        live.incrementAndGet()
+                        progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
                     }
                 // paged = true: this walked a span, it did not reconcile a range,
                 // so the band it earns is the span it saw and nothing more.
@@ -1305,6 +1320,7 @@ class MirrorRouter(
                                     events = downloaded.get(),
                                     fraction = paging.fraction(),
                                     etaMs = paging.etaMs(),
+                                    reachedSeconds = paging.reached(),
                                 ),
                             )
                             continue
@@ -1481,7 +1497,7 @@ class MirrorRouter(
                                 client.fetchAllPages(
                                     url,
                                     listOf(leg),
-                                    NEG_IDLE_MS,
+                                    PAGE_BUDGET_MS,
                                     onNewPage = { until -> paging.mark(walk, until) },
                                     onEvent = onEvent,
                                 )
@@ -1910,6 +1926,39 @@ class MirrorRouter(
         private const val SHUTDOWN_FLUSH_MS = 5_000L
 
         private const val NEG_IDLE_MS = 30_000L
+
+        /**
+         * How long ONE page of a paged fetch may take, end to end.
+         *
+         * Not [NEG_IDLE_MS]. `fetchAllPages` treats its timeout as a hard
+         * deadline for the whole page — not as idle time — and a page is only
+         * finished when EOSE has been *processed*, which happens behind every
+         * event ahead of it in the socket buffer. Each of those events goes
+         * through [offer], which blocks while the ingest queue is full. So the
+         * budget is really "how long to drain a page through ingest", and
+         * NEG_IDLE_MS was answering a different question.
+         *
+         * Measured against nip85.nosfabrica.com, which answers a page with
+         * 100,000 events and an EOSE in 4.3s:
+         *
+         * ```
+         * a full page reaches back   23.8h
+         * the router advanced only    4.4h   (~18% of the page)
+         * ```
+         *
+         * The other 82% was cut off at 30s, re-requested on the next page, and
+         * cut off again — so the walk crawled and its depth depended on how
+         * congested ingest happened to be (3,284 events on one run, 38,530 on
+         * the next, from the same relay and the same filter). Kind 30382 history
+         * below the first few hours was never reached at all.
+         *
+         * Five minutes is ~1.2M events at the ingest rates this relay sustains,
+         * far past any page a relay will answer with. A relay that connects and
+         * then goes silent holds its slot for that long — acceptable because a
+         * relay that is actually dead completes the page immediately through
+         * `onClosed`/`onCannotConnect`, and silence with a live socket is rare.
+         */
+        private const val PAGE_BUDGET_MS = 300_000L
 
         // Distinct store failures to dump a raw event for. A handful names every
         // defect a real corpus carries; past that it is a stuck loop, not news.

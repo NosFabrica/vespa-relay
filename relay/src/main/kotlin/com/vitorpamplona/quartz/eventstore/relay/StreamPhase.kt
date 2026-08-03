@@ -32,6 +32,20 @@ internal fun fmtDuration(ms: Long): String {
 }
 
 /**
+ * A `created_at` as a UTC day, for saying how far back a walk has reached.
+ *
+ * Day resolution on purpose: this answers "is it moving, and roughly where is
+ * it" over minutes of walking, and a timestamp to the second would change on
+ * every line without making either answer clearer.
+ */
+internal fun fmtDay(seconds: Long): String =
+    java.time.Instant
+        .ofEpochSecond(seconds)
+        .atZone(java.time.ZoneOffset.UTC)
+        .toLocalDate()
+        .toString()
+
+/**
  * What each stream is doing right now, so an operator can tell a stream that is
  * working from one that never started.
  *
@@ -109,6 +123,15 @@ class StreamPhases {
             /** Time-axis progress of the relays still walking — see [PagingProgress]. */
             val fraction: Double? = null,
             val etaMs: Long? = null,
+            /**
+             * Oldest `created_at` the walk has reached, in seconds.
+             *
+             * The percentage alone cannot show a deep walk moving: a paged fetch
+             * with no `since` runs back to [SyncCursors.PLAUSIBLE_FLOOR], so days
+             * of real progress round to `0%` and the line looks identical to a
+             * stalled one. The date moves every page.
+             */
+            val reachedSeconds: Long? = null,
         ) : Phase
 
         /** Fanning out. */
@@ -206,7 +229,8 @@ class StreamPhases {
 
             is Phase.Fetching -> {
                 "fetching ${phase.done}/${phase.total} relay(s), ${phase.events} event(s)${rate(phase.events, elapsedMs)}" +
-                    (phase.fraction?.let { " — %.0f%% through the window".format(it * 100) } ?: "") +
+                    (phase.reachedSeconds?.let { " — back to ${fmtDay(it)}" } ?: "") +
+                    (phase.fraction?.let { ", %.1f%% through the window".format(it * 100) } ?: "") +
                     (phase.etaMs?.let { ", ETA ~${fmtDuration(it)}" } ?: "") +
                     " ($elapsed elapsed)"
             }
@@ -331,6 +355,9 @@ class PagingProgress {
             ((w.top - w.current).toDouble() / span).coerceIn(0.0, 1.0)
         } / live.size
     }
+
+    /** The oldest second any walk has reached, or null when none is running. */
+    fun reached(): Long? = walks.values.minOfOrNull { it.current }
 
     /** Milliseconds left at the rate achieved so far, or null before it means anything. */
     fun etaMs(): Long? {
