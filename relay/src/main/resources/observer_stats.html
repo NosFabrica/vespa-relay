@@ -134,11 +134,16 @@
 
 <script>
 const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
-// Measured against nip85.nosfabrica.com, which holds most of the services on
-// this page: one COUNT there takes 3-7s, and four run at once. 15s left almost
-// no margin, and a COUNT that merely ran long was reported the same way as a
-// relay that refused to answer.
-const COUNT_TIMEOUT_MS = 40000;
+/**
+ * IDLE time — silence, not elapsed time.
+ *
+ * Reset by every message on the connection, so a relay steadily working through
+ * a queue is never cut off however long that takes, and only a relay that has
+ * genuinely stopped talking is. A deadline measured from send reported 91 of 146
+ * services on nip85.nosfabrica.com as failures whose median answer time was
+ * 75ms — they were queued, not slow, and none of them was ever refused.
+ */
+const IDLE_TIMEOUT_MS = 20000;
 
 /**
  * Why a cell has no number, kept apart on purpose.
@@ -196,24 +201,55 @@ function client(url) {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return reject(e); }
     const pending = new Map();
-    const fail = () => { for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(REFUSED); } pending.clear(); };
-    ws.onerror = () => { fail(); reject(new Error("unreachable")); };
-    ws.onclose = fail;
+    const fail = (reason) => { for (const [, p] of pending) p.resolve(reason); pending.clear(); };
+
+    // ONE idle watchdog for the connection, reset by ANY message.
+    //
+    // Per-request deadlines started at send, which is the wrong clock: this page
+    // asks a relay for many services at once and the relay works through them,
+    // so a cheap COUNT queued behind an expensive one expired while the socket
+    // was busy delivering somebody else's answer. Measured on
+    // nip85.nosfabrica.com — 146 services, 4 in flight — that scored 55 answered
+    // and 91 "timed out", with a MEDIAN answer time of 75ms. Almost none of
+    // those were slow; they were waiting in line.
+    //
+    // Idle asks the question that actually matters: is the relay still talking
+    // to us at all? While answers keep arriving nothing is wrong, however long
+    // the queue takes. Only real silence ends it. (Same correction quartz made
+    // to its accessory timeouts in 1622bd7109.)
+    let idle = null;
+    const stopIdle = () => { if (idle) { clearTimeout(idle); idle = null; } };
+    const bumpIdle = () => {
+      stopIdle();
+      // Armed only while something is outstanding, so a connection sitting
+      // between batches is not "idle" in a way that means anything.
+      if (pending.size) idle = setTimeout(() => fail(TIMED_OUT), IDLE_TIMEOUT_MS);
+    };
+
+    ws.onerror = () => { stopIdle(); fail(REFUSED); reject(new Error("unreachable")); };
+    ws.onclose = () => { stopIdle(); fail(REFUSED); };
     ws.onopen = () => resolve(ws);
     ws.onmessage = (ev) => {
+      // Bumped before parsing and whatever the message was: traffic of any kind
+      // is proof the relay is still working, including a NOTICE about something
+      // else entirely.
+      bumpIdle();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       const p = pending.get(m[1]);
       if (!p) return;
-      if (m[0] === "COUNT") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(m[2] || REFUSED); }
-      else if (m[0] === "CLOSED" || m[0] === "NOTICE") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(REFUSED); }
+      pending.delete(m[1]);
+      if (m[0] === "COUNT") p.resolve(m[2] || REFUSED);
+      else if (m[0] === "CLOSED" || m[0] === "NOTICE") p.resolve(REFUSED);
+      else pending.set(m[1], p);
+      bumpIdle();
     };
     ws.count = (author) =>
       new Promise((res) => {
         const id = "c" + Math.random().toString(36).slice(2, 9);
-        const timer = setTimeout(() => { pending.delete(id); res(TIMED_OUT); }, COUNT_TIMEOUT_MS);
-        pending.set(id, { resolve: res, timer });
+        pending.set(id, { resolve: res });
+        bumpIdle();
         try { ws.send(JSON.stringify(["COUNT", id, { kinds: [30382], authors: [author] }])); }
-        catch { clearTimeout(timer); pending.delete(id); res(REFUSED); }
+        catch { pending.delete(id); res(REFUSED); }
       });
     ws.req = (filter) =>
       new Promise((res) => {
@@ -231,8 +267,14 @@ function client(url) {
           try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
           res(acc);
         };
-        const timer = setTimeout(finish, COUNT_TIMEOUT_MS);
+        // Idle here too. A REQ that is streaming thousands of profiles is
+        // working, not stuck, and a fixed deadline would cut it off mid-page and
+        // return a SHORT list — which this page would then render as missing
+        // profiles rather than as an interrupted read.
+        let timer = setTimeout(finish, IDLE_TIMEOUT_MS);
         ws.onmessage = (ev) => {
+          clearTimeout(timer);
+          timer = setTimeout(finish, IDLE_TIMEOUT_MS);
           let m; try { m = JSON.parse(ev.data); } catch { return; }
           if (m[1] !== id) return prev(ev);
           if (m[0] === "EVENT") acc.push(m[2]);
@@ -246,7 +288,7 @@ function client(url) {
 function num(v) {
   if (v === undefined) return '<span class="pending">…</span>';
   if (v === TIMED_OUT) {
-    return `<span class="none" title="the relay was still working after ${COUNT_TIMEOUT_MS / 1000}s — this is our budget running out, not an answer">timed out</span>`;
+    return `<span class="none" title="the relay went silent for ${IDLE_TIMEOUT_MS / 1000}s with this ask outstanding — it stopped talking, it did not decline">timed out</span>`;
   }
   if (v === REFUSED || v === null || v.count === undefined) {
     return '<span class="none" title="the relay answered something other than a count, or closed the subscription — it does not serve NIP-45 for this ask">no COUNT</span>';
@@ -466,7 +508,7 @@ async function run() {
       ? `<span class="short">${short.length} short by ${fmt(missing)} score(s)</span>`
       : `<span class="synced">none short</span>`) +
     (noCount ? ` · ${noCount} answered no COUNT, so those cannot be compared` : "") +
-    (timedOut ? ` · ${timedOut} still working after ${COUNT_TIMEOUT_MS / 1000}s — our budget, not their answer` : "") +
+    (timedOut ? ` · ${timedOut} went silent for ${IDLE_TIMEOUT_MS / 1000}s with the ask outstanding` : "") +
     ` · a <span class="capped">⚠</span> marks a count landing exactly on a common page-size cap, which usually means the relay reported its default limit rather than a total`;
   runEl.disabled = false;
 }
