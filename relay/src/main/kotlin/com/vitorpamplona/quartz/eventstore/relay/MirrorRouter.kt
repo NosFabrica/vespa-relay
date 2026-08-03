@@ -25,6 +25,7 @@ import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
@@ -1603,7 +1604,23 @@ class MirrorRouter(
         val mine = store.snapshotIdsForNegentropy(listOf(ask))
         if (mine.isEmpty()) return 0
 
-        val diff = client.negentropyReconcileIds(url, ask, mine, idleTimeoutMs = NEG_IDLE_MS)
+        // A COMPLETED reconcile is the whole licence to delete. quartz never
+        // silently falls back: it throws when a window cannot be reconciled over
+        // NIP-77 at all — including "this relay does not speak it" — so a normal
+        // return means every `created_at` window was compared end to end, and an
+        // empty answer is the relay's real answer rather than its silence.
+        //
+        // Failing that, page the ask anyway so the mirror still fills, and delete
+        // nothing: the set was never compared, so nothing about it is known.
+        val diff =
+            try {
+                client.negentropyReconcileIds(url, ask, mine, idleTimeoutMs = NEG_IDLE_MS)
+            } catch (e: NegentropySyncException) {
+                System.err.println(
+                    "router: ${stream.name} ${url.url} could not reconcile (${e.reason}) — paging instead, deleting nothing",
+                )
+                return pageAsk(stream, url, ask)
+            }
 
         var downloaded = 0
         for (chunk in diff.needIds.chunked(ID_FETCH_CHUNK)) {
@@ -1614,33 +1631,37 @@ class MirrorRouter(
         }
         if (diff.haveIds.isEmpty()) return downloaded
 
-        // What the relay actually holds for this ask. Zero means it answered with
-        // nothing — indistinguishable from a relay that is gated behind AUTH,
-        // half-migrated, or simply broken — and "they have nothing" is the one
-        // shape of this answer that would delete everything we hold for it.
-        val theirs = mine.size - diff.haveIds.size + diff.needIds.size
-        if (theirs <= 0) {
+        // A reconcile that split into no windows compared no range. It cannot
+        // have returned a meaningful diff, whatever it says.
+        if (diff.windows < 1) {
             System.err.println(
-                "router: ${stream.name} REFUSED to delete ${diff.haveIds.size} record(s) for ${url.url}" +
-                    " — the relay served nothing for this ask, which is not the same as having retracted it",
+                "router: ${stream.name} ${url.url} reconciled 0 window(s) — nothing was compared, deleting nothing",
             )
             return downloaded
         }
-        // A retraction is a trickle. Losing over half of what we hold in one
-        // cycle is a claim about the relay, not about the records, and it is
-        // exactly what a truncated or partially-served reconcile looks like.
+
+        // NO SIZE GUARD, deliberately, and this is the sharp end of the feature.
+        //
+        // An earlier version refused when the relay served nothing, and again
+        // when a cycle would drop over half of an ask. Both fired constantly and
+        // both were WRONG about the risk they were managing: they protect stored
+        // records from a bad answer, when the thing actually worth protecting is
+        // a reader from a stale score. A provider that retracts a subject usually
+        // does it because the subject turned out to be a scammer — exactly the
+        // score that must not survive — and a mass retraction is precisely when
+        // the whole set goes. Guarding on volume blocks the case that matters
+        // most while the harmless cases sail through.
+        //
+        // If a 10040 names a relay that never carried these scores, the relay
+        // reconciles empty and we drop them. That is a misconfigured provider
+        // list costing us a re-download, against the alternative of serving a
+        // retracted score forever. The completed reconcile above is what makes
+        // "empty" trustworthy enough to act on.
         val share = diff.haveIds.size.toDouble() / mine.size
-        if (share > MAX_DELETE_SHARE) {
-            System.err.println(
-                "router: ${stream.name} REFUSED to delete ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%) for ${url.url}" +
-                    " — over ${(MAX_DELETE_SHARE * 100).toInt()}% in one cycle reads as a bad reconcile, not a retraction",
-            )
-            return downloaded
-        }
         if (stream.deleteMissing == DeleteMissing.DRY_RUN) {
             System.err.println(
-                "router: ${stream.name} would delete ${diff.haveIds.size}/${mine.size} record(s) for ${url.url}" +
-                    " — set deleteMissing = true to apply",
+                "router: ${stream.name} would delete ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%)" +
+                    " for ${url.url} after a clean ${diff.windows}-window reconcile — set deleteMissing = true to apply",
             )
             return downloaded
         }
@@ -1651,9 +1672,27 @@ class MirrorRouter(
             store.delete(ask.copy(ids = chunk, since = null, until = null, limit = null))
         }
         deleted.addAndGet(diff.haveIds.size.toLong())
-        System.err.println("router: ${stream.name} deleted ${diff.haveIds.size} record(s) ${url.url} no longer serves")
+        System.err.println(
+            "router: ${stream.name} deleted ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%)" +
+                " ${url.url} no longer serves, after a clean ${diff.windows}-window reconcile",
+        )
         return downloaded
     }
+
+    /**
+     * Page one ask, for a relay that could not reconcile it.
+     *
+     * The mirror still wants these events; only the DELETE side needs a
+     * reconcile, because only a reconcile compares whole sets.
+     */
+    private suspend fun pageAsk(
+        stream: MirrorStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+    ): Int =
+        client.fetchAllPages(url, listOf(ask), NEG_IDLE_MS) { event ->
+            if (stream.filter.match(event)) offer(event, stream.trusted)
+        }
 
     /**
      * [window] as one ask, or as several with at most [per] authors each.
@@ -2092,17 +2131,6 @@ class MirrorRouter(
 
         /** Ids per by-id REQ, and per delete. The store's own bulk chunk. */
         private const val ID_FETCH_CHUNK = 500
-
-        /**
-         * Most of one ask that a single cycle may delete before it refuses.
-         *
-         * A provider retiring a subject is a trickle. Half of a service's cards
-         * vanishing at once is a statement about the RELAY — truncated reconcile,
-         * partial serve, an auth gate we did not notice — and the whole risk of
-         * deleting on absence lives in not being able to tell those apart from
-         * the inside. Refusing costs a cycle; being wrong costs the records.
-         */
-        private const val MAX_DELETE_SHARE = 0.5
 
         // Distinct store failures to dump a raw event for. A handful names every
         // defect a real corpus carries; past that it is a stuck loop, not news.

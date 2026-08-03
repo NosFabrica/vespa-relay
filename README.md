@@ -369,10 +369,25 @@ like "they retracted everything". So:
 | guard | behaviour |
 |---|---|
 | `sync` must be `negentropy` | refused at parse time on `fetch`/`auto`. A paged fetch asks only *outside* its cursor band, so "not seen" there means "not asked for", and deleting on it would take the entire history below the band |
-| the relay served nothing for the ask | refuses, and says so. Empty is indistinguishable from gated or broken |
-| over 50% of one ask in a cycle | refuses, and says so. A retraction is a trickle; half a service vanishing at once is a claim about the relay |
+| the reconcile must have **completed** | quartz never silently falls back — it throws when a window cannot be reconciled over NIP-77, including "this relay does not speak it". A normal return therefore means every window was compared end to end. On a throw the ask is paged instead (so the mirror still fills) and nothing is deleted |
+| the reconcile must have covered ≥1 window | zero windows compared zero range |
 | local ids | read from the *ask itself*, never the cycle's shared snapshot — quartz's own warning is that entries outside the filter come back as false "have" ids, and the shared snapshot spans every service on the stream |
 | deletes | issued by id, inside the ask, so they cannot reach past what the reconcile compared |
+
+**There is deliberately no size guard.** An earlier version refused when a relay
+served nothing, and again when a cycle would drop more than half an ask. Both
+fired constantly, and both protected the wrong thing: they protect *stored
+records* from a bad answer, when what needs protecting is a *reader* from a stale
+score. A provider retracts a subject when that subject turns out to be a
+scammer — precisely the score that must not survive — and a mass retraction is
+exactly when the whole set goes. A volume guard blocks the case that matters most
+while the harmless ones sail through.
+
+The consequence is accepted, not overlooked: if a 10040 names a relay that never
+carried those scores, the relay reconciles empty and we drop them. That is a
+misconfigured provider list costing a re-download, weighed against serving a
+retracted score forever. The completed reconcile is what makes "empty"
+trustworthy enough to act on.
 
 Keep the ask to kinds that upstream actually owns. `assertions` mirrors kind 30382
 alone for this reason: with kinds 0 and 10002 in the same filter, a provider relay
