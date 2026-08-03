@@ -3,9 +3,9 @@ kotlin = "2.4.0"
 # The relay application's version (image tag / --version display).
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
-quartz = "bf41e75b78"
+quartz = "1622bd7109"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-vespaEventStore = "5ce0c08918"
+vespaEventStore = "cde5e3687a"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

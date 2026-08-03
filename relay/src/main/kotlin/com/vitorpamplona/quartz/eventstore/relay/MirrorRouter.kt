@@ -945,7 +945,7 @@ class MirrorRouter(
                     client.fetchAllPages(
                         up.url,
                         listOf(window),
-                        PAGE_BUDGET_MS,
+                        NEG_IDLE_MS,
                         onNewPage = { until -> paging.mark(walk, until) },
                     ) { event ->
                         if (up.filter.match(event)) {
@@ -1498,7 +1498,7 @@ class MirrorRouter(
                                 client.fetchAllPages(
                                     url,
                                     listOf(leg),
-                                    PAGE_BUDGET_MS,
+                                    NEG_IDLE_MS,
                                     onNewPage = { until -> paging.mark(walk, until) },
                                     onEvent = onEvent,
                                 )
@@ -1926,40 +1926,33 @@ class MirrorRouter(
         /** How long a shutdown will wait on that last write before giving up. */
         private const val SHUTDOWN_FLUSH_MS = 5_000L
 
-        private const val NEG_IDLE_MS = 30_000L
-
         /**
-         * How long ONE page of a paged fetch may take, end to end.
+         * Idle time a transfer may sit silent before it is abandoned.
          *
-         * Not [NEG_IDLE_MS]. `fetchAllPages` treats its timeout as a hard
-         * deadline for the whole page — not as idle time — and a page is only
-         * finished when EOSE has been *processed*, which happens behind every
-         * event ahead of it in the socket buffer. Each of those events goes
-         * through [offer], which blocks while the ingest queue is full. So the
-         * budget is really "how long to drain a page through ingest", and
-         * NEG_IDLE_MS was answering a different question.
-         *
-         * Measured against nip85.nosfabrica.com, which answers a page with
-         * 100,000 events and an EOSE in 4.3s:
+         * IDLE, not a deadline — the clock resets on every message, so a relay
+         * that is still delivering is never cut off however long its history
+         * takes. That is a property of quartz's accessory APIs, and briefly it
+         * was not: `fetchAllPages` treated this as a hard budget for the whole
+         * page, and a page only finishes once EOSE has been PROCESSED — behind
+         * every event ahead of it in the socket buffer, each going through
+         * [offer], which blocks while the ingest queue is full. Measured against
+         * nip85.nosfabrica.com, which answers a page with 100,000 events and an
+         * EOSE in 4.3s:
          *
          * ```
          * a full page reaches back   23.8h
          * the router advanced only    4.4h   (~18% of the page)
          * ```
          *
-         * The other 82% was cut off at 30s, re-requested on the next page, and
-         * cut off again — so the walk crawled and its depth depended on how
-         * congested ingest happened to be (3,284 events on one run, 38,530 on
-         * the next, from the same relay and the same filter). Kind 30382 history
-         * below the first few hours was never reached at all.
-         *
-         * Five minutes is ~1.2M events at the ingest rates this relay sustains,
-         * far past any page a relay will answer with. A relay that connects and
-         * then goes silent holds its slot for that long — acceptable because a
-         * relay that is actually dead completes the page immediately through
-         * `onClosed`/`onCannotConnect`, and silence with a live socket is rare.
+         * The other 82% was cut off, re-requested and cut off again, so a walk's
+         * depth depended on how congested ingest happened to be — 3,284 events
+         * on one run and 38,530 on the next, same relay, same filter. This file
+         * carried a 5-minute PAGE_BUDGET_MS to work around it; quartz 1622bd7109
+         * made every accessory timeout an idle window, which fixes it properly
+         * and for every caller, so the workaround is gone. Under idle semantics
+         * a large value would only mean "hold a silent socket for longer".
          */
-        private const val PAGE_BUDGET_MS = 300_000L
+        private const val NEG_IDLE_MS = 30_000L
 
         // Distinct store failures to dump a raw event for. A handful names every
         // defect a real corpus carries; past that it is a stuck loop, not news.
