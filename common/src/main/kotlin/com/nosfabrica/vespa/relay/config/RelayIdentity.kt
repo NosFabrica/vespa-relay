@@ -37,8 +37,6 @@ import com.vitorpamplona.quartz.utils.Hex
  * publishes no liveness records, and advertises no `self`.
  */
 object RelayIdentity {
-    private val HEX64 = Regex("^[0-9a-f]{64}$")
-
     const val ENV_VAR = "RELAY_NSEC"
 
     /**
@@ -80,7 +78,7 @@ object RelayIdentity {
         when {
             secret.startsWith("npub1") -> "an npub (that is the public key — this needs the private one)"
             secret.startsWith("nsec") -> "an nsec that would not decode — recopy it"
-            secret.lowercase().matches(HEX64) -> "a bare hex key — this setting takes only nsec1…, which carries the checksum hex lacks"
+            secret.length == 64 -> "a bare hex key — this setting takes only nsec1…, which carries the checksum hex lacks"
             else -> "${secret.length} characters"
         }
 }
