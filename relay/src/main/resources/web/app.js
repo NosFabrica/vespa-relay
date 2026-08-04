@@ -4,7 +4,7 @@
 // stateless client, codec and caches, and cards.js is the rendering.
 
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
-import { npub, shortNpub, pubkeyParam } from "./shared/nip19.js";
+import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
@@ -605,11 +605,6 @@ function renderResults() {
   $results.innerHTML = head + body;
   paintScores();
   watchNip05();
-  // Only once there is something to reveal. run() renders TWICE — a skeleton
-  // the instant the search starts, then the results — and the first pass was
-  // consuming the pending id against a list of placeholders, so the real
-  // render had nothing left to scroll to.
-  if (!s.loading && !s.error) revealPending();
 }
 
 async function run(text, mode, render) {
@@ -645,41 +640,37 @@ function setActive(idx) {
 }
 
 function runPopup(text) { openPopup(); run(text, "popup", renderPopup); }
-// The id of a result clicked in the quick popup, waiting for the full view to
-// render so it can be scrolled to.
-let pendingReveal = null;
 
-function runFull(text, revealId) {
+function runFull(text) {
   clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
   cancelEntity(); // a search launched FROM an entity page must not be painted over by its slow fetch
   document.title = "SearchOverTrust";
   closePopup();
   $results.hidden = false;
   document.body.classList.add("searching");
-  // Every way into the full view converges here — Enter, a popup click, a
-  // chip/sort/spam/lens change via rerun() — so this is the one place the
-  // URL learns about it. Pushed, not replaced: each of those is a state the
-  // user chose and Back should be able to undo. A restore FROM history is
-  // the exception, and syncUrl() itself knows to stand down there.
+  // Every way into the full view converges here — Enter, a chip/sort/spam/
+  // lens change via rerun() — so this is the one place the URL learns about
+  // it. Pushed, not replaced: each of those is a state the user chose and
+  // Back should be able to undo. A restore FROM history is the exception,
+  // and syncUrl() itself knows to stand down there.
   syncUrl();
-  pendingReveal = revealId || null;
   run(text, "full", renderResults);
 }
 
-/** Scroll a just-rendered result into view and flag it for a moment. */
-function revealPending() {
-  if (!pendingReveal) return;
-  const el = $results.querySelector(`.result[data-id="${CSS.escape(pendingReveal)}"]`);
-  // Cleared either way: the results ARE rendered by now, so if the clicked
-  // event is not among them (the full query can return a different set than
-  // the popup's preview) there is nothing to wait for.
-  pendingReveal = null;
-  if (!el) return;
-  el.scrollIntoView({ behavior: "smooth", block: "center" });
-  el.classList.add("revealed");
-  // Removed rather than left on: a highlight that never fades stops meaning
-  // "this is the one you clicked" and starts meaning nothing.
-  setTimeout(() => el.classList.remove("revealed"), 5000);
+/**
+ * A picked popup result opens as its own page — the record itself, full
+ * screen, not the full results list scrolled to it (which is what this used
+ * to do, and readers took as landing "near" the thing instead of ON it). A
+ * profile is named by its key, everything else by its id; the event's KIND
+ * still decides the card, over in entity.js. Routed through the same
+ * pushState + applyUrl() pair as any internal link, so the entity page is a
+ * real history entry and Back undoes the click.
+ */
+function openPicked(ev) {
+  if (!ev) return;
+  const href = ev.kind === 0 ? `/${npub(ev.pubkey)}` : `/${noteId(ev.id)}`;
+  if (location.pathname + location.search !== href) history.pushState(null, "", href);
+  applyUrl();
 }
 function rerun() {
   const text = $q.value.trim();
@@ -721,6 +712,10 @@ $q.addEventListener("input", () => {
 $q.addEventListener("keydown", (e) => {
   if (e.key === "Enter") {
     e.preventDefault();
+    // An arrowed-to row is a selection, same as a click on it: Enter opens
+    // that record. A plain Enter with nothing highlighted stays the full
+    // search — the popup is a preview of it, not a gate in front of it.
+    if ($popup.classList.contains("open") && activeKey != null) { openPicked(s.hits[activeKey]); return; }
     const text = $q.value.trim();
     if (text) runFull(text);
   } else if (e.key === "ArrowDown") {
@@ -747,12 +742,7 @@ $popup.addEventListener("mousedown", (e) => {
   const item = e.target.closest(".popup-item");
   if (!item) return;
   e.preventDefault();
-  // Clicking a quick result should land you ON that result, not merely in a
-  // list that happens to contain it. The popup shows the first few of what
-  // the full view will render, so the id survives the switch — carry it over,
-  // scroll to it, and mark it briefly so the eye finds it without hunting.
-  const picked = s.hits[Number(item.dataset.idx)];
-  runFull($q.value.trim(), picked && picked.id);
+  openPicked(s.hits[Number(item.dataset.idx)]);
 });
 
 document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
