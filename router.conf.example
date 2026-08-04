@@ -159,4 +159,59 @@ streams {
         deleteMissing = true
     }
 
+
+    # NIP-23 long-form articles — blog posts — from the same outbox relays.
+    #
+    # Its OWN stream rather than another kind on dataViaOutbox, and that is a
+    # speed decision. Adding a kind there would change that stream's filter,
+    # which invalidates every cursor band it holds, and would grow its shared id
+    # snapshot (~15M ids, minutes to build) for a kind we hold none of.
+    #
+    # `fetch` for the same reason: there is nothing here to compare against yet,
+    # so a reconcile would exchange id sets to be told "you have none of this".
+    # Switch it to negentropy once the first fill is done.
+    longform {
+        dir = "down"
+        sync = "fetch"
+        filter = { "kinds": [30023] }
+        refreshSeconds = 21600
+        concurrency = 100
+        relaySource = [
+            {
+                filter = { "kinds": [10002] }
+                select = [
+                    { kind = 10002, tag = "r", marker = "write" }
+                ]
+            }
+        ]
+    }
+
+
+    # The same blog posts, from relays we know answer.
+    #
+    # The outbox fan-out above reaches 16,532 relays and only 102 of them are
+    # alive — the rest are dead hosts in old relay lists. It found 110k posts in
+    # five minutes, but the well-known relays where most long-form actually
+    # lives are not in that set at all, because `indexers` only mirrors profiles
+    # and relay lists from them.
+    longformSeed {
+        dir = "down"
+        sync = "fetch"
+        filter = { "kinds": [30023] }
+        urls = [
+            "wss://relay.damus.io",
+            "wss://nos.lol",
+            "wss://relay.primal.net",
+            "wss://relay.nostr.band",
+            "wss://nostr.wine",
+            "wss://relay.snort.social",
+            "wss://nostr.mom",
+            "wss://relay.ditto.pub",
+            "wss://nostr-pub.wellorder.net",
+            "wss://indexer.coracle.social",
+            "wss://profiles.nostr1.com",
+            "wss://wot.grapevine.network"
+        ]
+    }
+
 }

@@ -61,6 +61,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.time.Duration
@@ -1796,9 +1797,56 @@ class MirrorRouter(
         // properly.
         // No rtt either way: a TCP open is not a NIP-01 open, and publishing one
         // as the other misreports the field aggregators rank by.
-        if (!ok) monitor?.observer?.record(url, reachable = false, error = "tcp: unreachable")
+        //
+        // ...and only when we can say WHY. [TcpProber.tcpReachable] answers with a
+        // Boolean, so at this call site a refusal and a timeout are the same
+        // value — and they are not the same claim. A refusal proves nobody is
+        // listening. A timeout is at least as likely to be OUR socket budget,
+        // DNS pressure, or one NAT carrying a 100-wide fan-out.
+        //
+        // Publishing on the Boolean signed 5,001 unreachable records in a single
+        // day. Re-probed one by one afterwards: 3,279 had no socket at all and
+        // 986 answered nothing, but 732 urls across 423 HOSTS answered a REQ
+        // perfectly well — 120 of them by challenging us for NIP-42 AUTH. Those
+        // are signed public statements about other people's servers, and they
+        // were wrong.
+        //
+        // So the failure is re-run once to capture its cause, and the claim is
+        // made only for what [Unreachability] already accepts as proof. A relay
+        // that merely timed out is skipped this cycle and nothing is said about
+        // it. The extra connect is paid only on the failing path.
+        if (!ok) {
+            tcpFailure(url)?.takeIf { Unreachability.proves(it) }?.let { cause ->
+                monitor?.observer?.record(url, reachable = false, error = "tcp: ${cause.javaClass.simpleName}")
+            }
+        }
         return ok
     }
+
+    /**
+     * Re-run the TCP connect, keeping the exception instead of a Boolean.
+     *
+     * Null when it unexpectedly succeeds (the first probe's timeout was tight and
+     * the host was merely slow — which is itself a reason not to have published)
+     * or when the url has no host to dial.
+     */
+    private suspend fun tcpFailure(url: NormalizedRelayUrl): Exception? =
+        withContext(Dispatchers.IO) {
+            val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return@withContext null
+            val host = uri.host ?: return@withContext null
+            val port =
+                when {
+                    uri.port > 0 -> uri.port
+                    url.url.startsWith("wss://", ignoreCase = true) -> 443
+                    else -> 80
+                }
+            try {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress(host, port), CLAIM_PROBE_TIMEOUT_MS) }
+                null
+            } catch (e: java.io.IOException) {
+                e
+            }
+        }
 
     /**
      * Drop a dynamic relay's socket once nothing is using it. Hundreds of relays
@@ -2170,6 +2218,16 @@ class MirrorRouter(
          * a large value would only mean "hold a silent socket for longer".
          */
         private const val NEG_IDLE_MS = 30_000L
+
+        /**
+         * How long the confirming connect waits before we decline to claim.
+         *
+         * Deliberately looser than the pre-probe's tight budget: that one is an
+         * optimisation and may skip a slow host cheaply, while this one decides
+         * whether to sign a public statement about somebody's server. When the
+         * two disagree, the quiet answer wins.
+         */
+        private const val CLAIM_PROBE_TIMEOUT_MS = 5_000
 
         /** Ids per by-id REQ, and per delete. The store's own bulk chunk. */
         private const val ID_FETCH_CHUNK = 500
