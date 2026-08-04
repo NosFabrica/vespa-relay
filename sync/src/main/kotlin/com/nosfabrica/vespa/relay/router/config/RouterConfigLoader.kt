@@ -103,7 +103,7 @@ object RouterConfigLoader {
     }
 
     /**
-     * `SYNC_STREAMS=dataViaOutbox` — run only the named streams, so one part
+     * `SYNC_STREAMS=contentViaOutbox` — run only the named streams, so one part
      * of the sync can be measured without the others competing for the same
      * sockets, heap and ingest queue. A name that matches nothing is a hard
      * error: a typo would otherwise look exactly like a relay that mirrors

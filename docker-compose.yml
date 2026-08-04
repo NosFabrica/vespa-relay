@@ -255,7 +255,7 @@ services:
       # queue. Empty (the default) runs every stream the config defines. The
       # router prints what it is NOT running on every startup, so a leftover
       # setting can't be mistaken for a stream that is failing.
-      #   SYNC_STREAMS=dataViaOutbox docker compose --profile sync up -d sync
+      #   SYNC_STREAMS=contentViaOutbox docker compose --profile sync up -d sync
       SYNC_STREAMS: ${SYNC_STREAMS:-${ROUTER_STREAMS:-}}
       # What goes down the wire to upstream relays. Empty (the default) still
       # logs what the relay COMPLAINS about — NOTICE, CLOSED, failed sends —
