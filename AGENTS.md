@@ -92,8 +92,9 @@ relay/src/main/resources/
   observer_stats.html   on the module graph; each carries its own tiny client
 ```
 
-`README.md` documents every environment variable and the router config format.
-It is the reference; this file is the orientation.
+`docs/configuration.md` documents every environment variable and
+`docs/router.md` the router config format. They are the reference; this file is
+the orientation.
 
 ## The router, in one pass
 
