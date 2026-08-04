@@ -5,12 +5,18 @@
 // hex blob would be the relay failing to explain itself.
 
 import { esc, titleOf } from "../shared/format.js";
-import { shortNpub } from "../shared/nip19.js";
+import { npub, shortNpub } from "../shared/nip19.js";
 import { displayName, profiles } from "../shared/profiles.js";
 import { register, shell, faceStrip, keyHref, tagsOf, tagOf, clipIf } from "./base.js";
 
 const pTags = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
-const nameOf = (pk) => displayName(profiles.get(pk)) || shortNpub(pk);
+
+/** A person, linked: their name when the store knows one, a short npub only
+    as the fallback, the full npub in the hover — and never, anywhere, hex. */
+const personLink = (pk) => {
+  const nm = displayName(profiles.get(pk));
+  return `<a${nm ? "" : ' class="mono"'} href="${keyHref(pk)}" title="${esc(npub(pk))}">${esc(nm || shortNpub(pk))}</a>`;
+};
 
 /** 3 — the follow list: a count and a strip of faces, not 800 rows. */
 function followsCard(ev, opts) {
@@ -60,7 +66,7 @@ function relaySetCard(ev, opts) {
 function observerCard(ev, opts) {
   const dims = (ev.tags || []).filter((t) => /^\d+:/.test(t[0] || "") && t[1]);
   const rows = dims.map((t) =>
-    `<li><span class="mono">${esc(t[0])}</span> → <a class="mono" href="${keyHref(t[1])}" title="the service whose scores this observer trusts">${esc(shortNpub(t[1]))}</a>${t[2] ? ` <span class="muted-note">${esc(t[2].replace(/^wss?:\/\//, ""))}</span>` : ""}</li>`);
+    `<li><span class="mono">${esc(t[0])}</span> → ${personLink(t[1])}${t[2] ? ` <span class="muted-note">${esc(t[2].replace(/^wss?:\/\//, ""))}</span>` : ""}</li>`);
   const inner =
     `<div class="result-body">trusts ${dims.length} score dimension${dims.length === 1 ? "" : "s"}</div>` +
     (rows.length ? `<ul class="relay-list">${rows.join("")}</ul>` : "");
@@ -72,7 +78,7 @@ function scoreCard(ev, opts) {
   const subject = tagOf(ev, "d");
   const rank = tagOf(ev, "rank");
   const subjectLink = subject && /^[0-9a-f]{64}$/.test(subject)
-    ? `<a href="${keyHref(subject)}">${esc(nameOf(subject))}</a>`
+    ? personLink(subject)
     : esc(subject || "(no subject)");
   const extras = (ev.tags || [])
     .filter((t) => t[0] !== "d" && t[0] !== "rank" && t[1] && /^[\d.]+$/.test(t[1]))

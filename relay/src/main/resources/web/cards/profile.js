@@ -18,7 +18,11 @@ function profileCard(ev, opts) {
   }
   if (p.website) props.push(["website", `<a href="${esc(p.website)}" target="_blank" rel="noopener noreferrer">${esc(p.website)}</a>`]);
   if (p.lud16) props.push(["lightning", esc(p.lud16)]);
-  props.push(["pubkey", `<a class="mono" href="${keyHref(ev.pubkey)}" title="${esc(npub(ev.pubkey))}">${esc(shortNpub(ev.pubkey))}</a>`]);
+  // The pubkey row only when the profile carries no name. With one, the name
+  // IS how the person is shown — the npub stays in the page URL and one click
+  // away behind "json", instead of trailing every named human as a hex-shaped
+  // string nobody reads.
+  if (!displayName(p)) props.push(["pubkey", `<a class="mono" href="${keyHref(ev.pubkey)}" title="${esc(npub(ev.pubkey))}">${esc(shortNpub(ev.pubkey))}</a>`]);
   const about = clipIf(opts, p.about, 400);
   return `
     <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}">

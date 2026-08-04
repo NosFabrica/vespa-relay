@@ -85,10 +85,14 @@ export async function showEntity(seg, { paintScores }) {
     const conn = await refConn();
     ev = await fetchEntity(conn, parsed);
     if (ev) {
-      // Names and faces for the byline and any face strip — the author plus
-      // the first handful of p-tags a list kind is about to render.
-      const people = (ev.tags || []).filter((t) => t[0] === "p" && /^[0-9a-f]{64}$/.test(t[1] || "")).slice(0, 24).map((t) => t[1]);
-      await enrichProfiles([ev.pubkey, ...people]);
+      // Names and faces for everyone the card will mention: the author, the
+      // p tags, and any other tag value that IS a pubkey — a 30382's d
+      // subject, a 10040's service column. "Never an npub where a name
+      // exists" only holds if the profiles are actually loaded before the
+      // card renders; the p-tag-only version of this line left score and
+      // observer permalinks showing npubs for people the store knows.
+      const mentioned = [...new Set((ev.tags || []).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
+      await enrichProfiles([ev.pubkey, ...mentioned.slice(0, 50)]);
     }
   } catch (e) { err = e; }
   if (my !== token) return;

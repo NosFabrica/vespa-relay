@@ -4,6 +4,7 @@ globalThis.window = { addEventListener: () => {} };
 
 const { card } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
 const { renderers } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
+const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 const pk2 = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -96,5 +97,27 @@ assert(!hostile.includes("<img src=x"), "content is escaped");
 const note = card(ev(1, [], "hi"));
 assert(note.includes('href="/note1') && note.includes('href="/npub1'), "note links internal");
 assert(!note.includes("njump.me"), "search cards no longer link out");
+
+// Names over npubs, npubs over nothing, hex never.
+// With a profile in the cache, the score and observer cards name the person;
+// the npub survives only in the hover title and the href.
+seedProfiles([
+  ev(0, [], JSON.stringify({ name: "bob", display_name: "Bob Score" }), now),            // pk
+  { ...ev(0, [], JSON.stringify({ name: "olga" }), now), pubkey: pk2 },                  // pk2, the author
+]);
+const scored = card({ ...ev(30382, [["d", pk], ["rank", "42"]]), pubkey: pk2 }, { full: true });
+assert(scored.includes(">Bob Score</a>"), "score subject shows the name");
+assert(!scored.includes(">npub1"), "score subject shows no npub once named");
+const observer = card({ ...ev(10040, [["30382:rank", pk, "wss://x"]]), pubkey: pk2 }, { full: true });
+assert(observer.includes(">Bob Score</a>"), "observer service shows the name");
+// A named profile drops its pubkey row; a nameless one keeps it, as npub.
+assert(!card(ev(0, [], JSON.stringify({ name: "carol" })), { full: true }).includes("<dt>pubkey</dt>"), "named profile: no pubkey row");
+const nameless = card(ev(0, [], "{}"), { full: true });
+assert(nameless.includes("<dt>pubkey</dt>") && nameless.includes(">npub1"), "nameless profile: npub row remains");
+// Rendered TEXT never contains a bare hex pubkey (attributes like data-pk may).
+for (const html of [scored, observer, nameless]) {
+  const text = html.replace(/<[^>]*>/g, " ");
+  assert(!text.includes(pk) && !text.includes(pk2), "hex is a storage format, not display text");
+}
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + generic floor, all assertions passed`);
