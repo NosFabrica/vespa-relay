@@ -205,6 +205,39 @@ const fmt = (n) => n.toLocaleString();
  */
 const displayName = (c) => ((c && c.display_name) || "").trim() || ((c && c.name) || "").trim() || "";
 
+/**
+ * npub, never hex — the same rule the search pages hold. Inlined rather than
+ * imported from /web on purpose: this page is deliberately self-contained
+ * (its own client, its own helpers), and twenty lines of bech32 is the price
+ * of that. Encode-only; nothing here parses identifiers.
+ */
+const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
+function npub(hex) {
+  const bytes = hex.match(/../g).map((h) => parseInt(h, 16));
+  const words = [];
+  let acc = 0, bits = 0;
+  for (const b of bytes) {
+    acc = (acc << 8) | b; bits += 8;
+    while (bits >= 5) { bits -= 5; words.push((acc >> bits) & 31); }
+  }
+  if (bits) words.push((acc << (5 - bits)) & 31);
+  const polymod = (v) => {
+    const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
+    let chk = 1;
+    for (const x of v) {
+      const top = chk >> 25;
+      chk = ((chk & 0x1ffffff) << 5) ^ x;
+      for (let i = 0; i < 5; i++) if ((top >> i) & 1) chk ^= GEN[i];
+    }
+    return chk;
+  };
+  const hrp = "npub";
+  const expand = [...hrp].map((c) => c.charCodeAt(0) >> 5).concat([0], [...hrp].map((c) => c.charCodeAt(0) & 31));
+  const chk = polymod(expand.concat(words, [0, 0, 0, 0, 0, 0])) ^ 1;
+  return hrp + "1" + words.concat(Array.from({ length: 6 }, (_, i) => (chk >> (5 * (5 - i))) & 31)).map((w) => B32[w]).join("");
+}
+const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 12) + "…" + n.slice(-6); };
+
 /** A tiny COUNT-only client. `null` means the relay never answered. */
 function client(url) {
   return new Promise((resolve, reject) => {
@@ -340,7 +373,9 @@ function render(list) {
     // they read as one bug. Measured here: of 200 observers, 11 have no profile
     // at all and 65 of the remaining 189 publish no picture, so most empty
     // circles are the network being itself, not the relay missing data.
-    const initials = (o.name || o.pubkey).slice(0, 2).toUpperCase();
+    // Initials come from the name or nowhere: two hex chars looked like data,
+    // and initials off an npub would spell "NP" for every account on earth.
+    const initials = o.name ? o.name.slice(0, 2).toUpperCase() : "·";
     const avatar = o.picture
       ? `<img src="${o.picture}" alt="" loading="lazy" ` +
         `onerror="this.replaceWith(Object.assign(document.createElement('div'),` +
@@ -348,10 +383,14 @@ function render(list) {
       : o.hasProfile
         ? `<div class="ph" title="profile has no picture field">${initials}</div>`
         : `<div class="ph missing" title="no kind 0 for this pubkey in this store">?</div>`;
+    // The npub line only for observers the store cannot name — with a name,
+    // the name is the identifier shown (the full npub stays in the hover).
+    // Never hex: that is a storage format, not something a person reads.
     const who =
       `<div class="who">${avatar}` +
-      `<div><div class="nm">${o.name || (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
-      `<div class="key">${o.pubkey.slice(0, 12)}…</div></div></div>`;
+      `<div><div class="nm" title="${npub(o.pubkey)}">${o.name || (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
+      (o.name ? "" : `<div class="key" title="${npub(o.pubkey)}">${shortNpub(o.pubkey)}</div>`) +
+      `</div></div>`;
     const dim = (d) =>
       `<td class="first"><span class="relay" title="${d.relay || ""}">${d.relay ? d.relay.replace(/^wss?:\/\//, "") : "—"}</span></td>` +
       `<td class="n">${d.service ? num(d.here) : "—"}</td>` +
@@ -359,6 +398,19 @@ function render(list) {
     tr.innerHTML = `<td>${who}</td>` + dim(o.rank) + dim(o.followers);
     rowsEl.appendChild(tr);
   }
+}
+
+/**
+ * render(), coalesced. Counts stream in and every answered COUNT used to
+ * rebuild the whole table — ~250 rows, re-created hundreds of times per run,
+ * each rebuild also re-creating every avatar <img>. One repaint per 100ms
+ * window is indistinguishable to the eye and removes the churn; anything
+ * still pending when the run finishes paints on the trailing edge.
+ */
+let renderTimer = null;
+function scheduleRender(list) {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => { renderTimer = null; render(list); }, 100);
 }
 
 /** Run [tasks] with at most [n] in flight. */
@@ -475,7 +527,7 @@ async function run() {
     statusEl.textContent = `counting here ${++done}/${svcs.length}…`;
     localBySvc.set(svc, await local.count(svc));
     for (const d of dims) if (d.service === svc) d.here = localBySvc.get(svc);
-    render(observers);
+    scheduleRender(observers);
   }
 
   // Then the remote relays — other people's servers, a few at a time. Grouped
@@ -495,13 +547,13 @@ async function run() {
     let ws = null;
     try { ws = await client(url); } catch {
       for (const svc of svcSet) for (const d of rows(svc)) d.there = null;
-      render(observers);
+      scheduleRender(observers);
       return;
     }
     await bounded(PER_RELAY_CONCURRENCY, [...svcSet].map((svc) => async () => {
       const answer = await ws.count(svc);
       for (const d of rows(svc)) d.there = answer;
-      render(observers);
+      scheduleRender(observers);
     }));
     try { ws.close(); } catch {}
   }));

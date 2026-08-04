@@ -23,15 +23,19 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.relay.config.defaultRelayLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
+import io.ktor.http.CacheControl
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
@@ -61,6 +65,9 @@ data class Nip11Info(
  *
  *   WS   /  -> the NIP-50 relay ([nostrRelay])
  *   GET  /  -> the NIP-11 doc on Accept: application/nostr+json, else [landingPage]
+ *   GET  /web/… -> the landing page's ES modules, straight off the classpath
+ *   GET  /npub1…, /nprofile1…, /note1…, /nevent1…, /naddr1… -> [landingPage],
+ *        which decodes the identifier and renders the entity itself
  *   GET  /kind_stats.html -> [statsPage] (per-kind COUNTs — an operator diagnostic)
  *   GET  /observer_stats.html -> [observerStatsPage]
  *   POST /  -> the NIP-86 management RPC, when [admin] is configured
@@ -116,6 +123,37 @@ fun serveRelay(
                         ?: call.respondText("${nip11.name} - a NIP-50 search relay; connect a WebSocket here.")
                 }
             }
+            // The landing page's behavior lives in native ES modules under
+            // resources/web/ — no build step, so they are served as-is. A
+            // distinct /web prefix rather than a root fallback: the root is
+            // already three-way overloaded (WS upgrade, NIP-11 negotiation,
+            // the landing page), and a wildcard there would have to lose to
+            // all of them by routing subtlety instead of by construction.
+            // A short max-age: without any cache header the modules are
+            // refetched on every full page load (each /npub1… deep link is
+            // one), and jar-served resources carry no validators to
+            // revalidate against. 60s keeps in-session navigation free while
+            // bounding version skew after a deploy — index.html itself is
+            // served uncached, so a stale module can outlive a new page by
+            // at most a minute.
+            staticResources("/web", "web") {
+                cacheControl { listOf(CacheControl.MaxAge(maxAgeSeconds = 60)) }
+            }
+            // Any NIP-19 identifier is a page. The server validates only the
+            // SHAPE and serves the landing page; decoding — checksum, TLV,
+            // what the identifier names — belongs to the page, which already
+            // speaks bech32. Deliberately not a catch-all: /favicon.ico and
+            // typos should stay 404s, not empty search pages. Ktor prefers
+            // literal routes, so /kind_stats.html and /web/… are unaffected.
+            landingPage?.let { page ->
+                get("/{nip19}") {
+                    if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
+                        call.respondText(page, ContentType.Text.Html)
+                    } else {
+                        call.respond(HttpStatusCode.NotFound)
+                    }
+                }
+            }
             statsPage?.let { page ->
                 get("/kind_stats.html") { call.respondText(page, ContentType.Text.Html) }
             }
@@ -129,6 +167,17 @@ fun serveRelay(
 
 /** The NIP-11 content type, parsed once — every client fetches this on connect. */
 private val NOSTR_JSON = ContentType.parse("application/nostr+json")
+
+/**
+ * A path segment that is plausibly a NIP-19 identifier: the five entity
+ * prefixes over the bech32 charset (which excludes 1, b, i and o). Shape
+ * only — no length cap, because identifiers with relay hints legitimately
+ * exceed classic bech32's 90 characters, and no checksum, because the page
+ * verifies it and renders "invalid" with more context than a bare 404.
+ * Case-insensitive: bech32 permits all-uppercase (QR codes emit it), and the
+ * page lowercases before decoding.
+ */
+private val NIP19_PATH = Regex("^(npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np-z]+$", RegexOption.IGNORE_CASE)
 
 /** A mutable holder for the live NIP-11 document, updated by NIP-86 admin RPCs. */
 internal class MutableRelayInfo(
