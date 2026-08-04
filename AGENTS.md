@@ -28,28 +28,44 @@ run `spotlessApply` first.
 
 ```
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
-  RelayMain.kt        entrypoint; reads env, deploys the schema, wires everything
-  RelayApp.kt         Ktor server + routes
-  NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
-  MirrorRouter.kt     the router — the biggest and most-changed file (see below)
-  RouterConfig.kt     HOCON `streams { }` parsing (strfry-shaped)
-  SyncCursors.kt      resume state for paged relays ("bands")
-  StreamPhase.kt      per-stream progress reporting + PagingProgress
-  RelayHealth.kt      per-authority strikes and eviction
-  RelayDiscovery.kt   pulling relay urls out of stored events
-  RelayIdentity.kt    RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor
-  ParseAudit.kt       what quartz could not parse, grouped to a JSON report
-  RelayConfig.kt      NIP-11 limits from env, via `env.intOr(...)` rather than
-                      `env["..."]` — grep for both or you will conclude a
-                      working setting is dead
-  ServingPressure.kt  EWMA of client read latency; the router yields to it
-  RelayState.kt       bans and other state that outlives the container
-  RelayInfo.kt        the NIP-11 document
-  RelayRoute.kt       ws + http routes
-  Nip86Route.kt       the management API
-  ExpirationSweeper.kt  NIP-40
-  PubKeys.kt          npub/hex parsing for every pubkey setting
-  ConnectionCountListener.kt  LOG_CONNECTIONS
+  RelayMain.kt          entrypoint; reads env, deploys the schema, wires everything
+  config/
+    EnvSettings.kt      NIP-11 limits etc. from env, via `env.intOr(...)` rather
+                        than `env["..."]` — grep for both or you will conclude a
+                        working setting is dead
+    PubKeys.kt          npub/hex parsing for every pubkey setting
+    RelayIdentity.kt    RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor
+  server/               the serving side
+    NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
+    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info
+    RelayInfo.kt        the NIP-11 document
+    RelayWebSocket.kt   the ws route
+    Nip86Route.kt       the management API
+    BanListFile.kt      NIP-86 ban state that outlives the container
+    ServingPressure.kt  EWMA of client read latency; the router yields to it
+    ConnectionCountListener.kt  LOG_CONNECTIONS
+  router/               the mirror (see below)
+    MirrorRouter.kt     wiring, live tails, health/stats lines
+    IngestPipeline.kt   bounded queue -> verify -> batchInsert, poison isolation
+    BisectingInsert.kt  the batch-bisecting write
+    StaticBackfill.kt   history catch-up for configured upstreams
+    DynamicSync.kt      relaySource streams: discover, fan out, reconcileAndDelete
+    UpstreamPush.kt     dir = up: reconcile and publish what the upstream lacks
+    RouterConfig.kt     HOCON `streams { }` parsing (strfry-shaped)
+    SyncCursors.kt      resume state for paged relays ("bands")
+    StreamPhases.kt     per-stream progress reporting
+    PagingProgress.kt   time-axis progress for paged walks
+    RelayHealth.kt      per-authority strikes and eviction
+    RelayDiscovery.kt   pulling relay urls out of stored events
+    Unreachability.kt   which failures may be published as NIP-66 records
+  maintenance/          background jobs behind the server
+    ExpirationSweeper.kt  NIP-40
+    ParseAudit.kt       what quartz could not parse, grouped to a JSON report
+    SchemaDeploy.kt     the every-boot Vespa schema deploy
+    TrustReconcile.kt   the startup trust-projection repair
+    FtsReindex.kt       REINDEX_FTS_ON_START
+    OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
+  util/Format.kt        fmtDuration / fmtDay / fmtCount
 ```
 
 `README.md` documents every environment variable and the router config format.

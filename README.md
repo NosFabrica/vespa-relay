@@ -590,7 +590,7 @@ By default a search is trust-gated: results below the floor are hidden unless yo
 
 The relay also runs inside your own JVM/Ktor app. `serveRelay(relay, port, ...)` binds a
 port batteries-included, or `Route.nostrRelay(relay)` and friends mount the pieces in an
-existing server. See `NostrRelayServer` and `RelayApp.kt`.
+existing server. See `server/NostrRelayServer.kt` and `server/HttpServer.kt`.
 
 ## Build
 
