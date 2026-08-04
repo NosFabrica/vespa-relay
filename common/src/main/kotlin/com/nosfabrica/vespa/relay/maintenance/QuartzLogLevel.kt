@@ -18,35 +18,28 @@
  * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
  * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
-package com.nosfabrica.vespa.relay.util
+package com.nosfabrica.vespa.relay.maintenance
 
-/** `h:mm:ss` past an hour, `m:ss` below it. Shared by every progress line. */
-internal fun fmtDuration(ms: Long): String {
-    val s = ms / 1000
-    val h = s / 3600
-    val m = (s % 3600) / 60
-    val sec = s % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
-}
+import com.vitorpamplona.quartz.utils.Log
+import com.vitorpamplona.quartz.utils.LogLevel
 
 /**
- * A `created_at` as a UTC day. Day resolution on purpose: it answers "is the
- * walk moving, and roughly where is it".
+ * `QUARTZ_LOG_LEVEL` — quartz's own log floor (it defaults to DEBUG, which
+ * prints a line per unparseable event a backfill meets).
+ *
+ * The one piece of ParseAudit both processes read, split out when the audit
+ * moved to `:sync`: the relay wants the floor but must NOT install the audit —
+ * nothing on the serving side calls `inspect()`, and an installed-but-unfed
+ * audit is precisely the silently-inert configured component this codebase
+ * forbids.
  */
-internal fun fmtDay(seconds: Long): String =
-    java.time.Instant
-        .ofEpochSecond(seconds)
-        .atZone(java.time.ZoneOffset.UTC)
-        .toLocalDate()
-        .toString()
-
-/** 24.8M rather than 24819118: the magnitude is the point, not the digits. */
-internal fun fmtCount(n: Int): String =
-    when {
-        n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
-        n >= 1_000 -> "%.0fk".format(n / 1_000.0)
-        else -> n.toString()
+fun applyQuartzLogLevel(env: Map<String, String>) {
+    env["QUARTZ_LOG_LEVEL"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }?.let { name ->
+        val level = LogLevel.entries.firstOrNull { it.name == name }
+        if (level == null) {
+            System.err.println("QUARTZ_LOG_LEVEL '$name' is not one of ${LogLevel.entries.joinToString("/") { it.name }} — ignored")
+        } else {
+            Log.minLevel = level
+        }
     }
-
-/** Wall-clock seconds, the unit every `created_at` in the protocol is in. */
-internal fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+}

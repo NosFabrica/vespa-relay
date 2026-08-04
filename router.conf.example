@@ -1,12 +1,16 @@
 # Example router config — mirror events from other relays into this one.
 #
-# Copy it and switch it on:
+# The router runs as its own process (the compose `sync` service; the profile
+# is the on-switch). Copy this file and start it:
 #   cp router.conf.example router.conf
-#   SYNC_CONFIG_LOCAL=./router.conf \
-#   SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf \
-#   docker compose up --build
+#   SYNC_CONFIG_LOCAL=./router.conf docker compose --profile sync up -d --build
 #
-# Running without Docker, set SYNC_CONFIG_FILE to the path of your copy.
+# Edited it? Restart only the mirror — the relay keeps serving:
+#   docker compose --profile sync restart sync
+#
+# Running without Docker, set SYNC_CONFIG_FILE to the path of your copy on the
+# SYNC process (`./gradlew :sync:run` / the vespa-sync binary) — the relay
+# refuses to boot with it set, because it no longer runs the mirror.
 #
 # This file as it stands is what we run. You can use it unchanged.
 #

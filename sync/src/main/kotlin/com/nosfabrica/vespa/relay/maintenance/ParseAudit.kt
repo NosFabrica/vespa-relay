@@ -317,14 +317,7 @@ class ParseAudit(
          *                        floor, which defaults to DEBUG
          */
         fun installFromEnv(env: Map<String, String>): ParseAudit? {
-            env["QUARTZ_LOG_LEVEL"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }?.let { name ->
-                val level = LogLevel.entries.firstOrNull { it.name == name }
-                if (level == null) {
-                    System.err.println("QUARTZ_LOG_LEVEL '$name' is not one of ${LogLevel.entries.joinToString("/") { it.name }} — ignored")
-                } else {
-                    Log.minLevel = level
-                }
-            }
+            applyQuartzLogLevel(env)
 
             val path = env["PARSE_AUDIT_FILE"]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val samples = env["PARSE_AUDIT_SAMPLES"]?.trim()?.toIntOrNull()?.coerceIn(1, 100) ?: 5

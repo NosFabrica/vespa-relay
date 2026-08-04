@@ -324,7 +324,7 @@ class SyncBands(
                     )
             }
         }.onFailure {
-            // A corrupt cursor file costs one re-sync; exiting costs the relay.
+            // A corrupt cursor file costs one re-sync; exiting costs the mirror.
             System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
         }
     }

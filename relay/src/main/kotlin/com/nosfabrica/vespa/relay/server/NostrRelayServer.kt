@@ -64,7 +64,8 @@ import kotlin.coroutines.CoroutineContext
  * enforcement can never disagree.
  *
  * [close] shuts down the connections and the ingest writer, but not the store —
- * the composition root owns that, and the router shares it.
+ * the composition root owns that — and the sync process holds its own handle
+ * to the same cluster, so "done with the store" is per-process anyway.
  */
 class NostrRelayServer(
     store: IEventStore,
@@ -86,7 +87,8 @@ class NostrRelayServer(
     rejectFutureSeconds: Int = 0,
     // Fires with each authenticated pubkey seen on a ranked read.
     onObserver: ((String) -> Unit)? = null,
-    // Shared with the router so mirroring yields when clients start waiting.
+    // Only recorded into here; the consumer is the sync process, which polls
+    // the mean over GET /pressure and yields its ingest on it.
     private val servingPressure: ServingPressure? = null,
 ) : RelayServerBase(
         // Cheap rejections (bans, allow/deny lists, future-dated events) run

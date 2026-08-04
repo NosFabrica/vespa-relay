@@ -1,27 +1,36 @@
 # The whole thing in one command: a single-node Vespa plus the trust-ranking relay.
 #
-#   docker compose up --build
+#   docker compose up --build                  # serve only
+#   docker compose --profile sync up --build   # …plus the mirror (see below)
 #
-# The relay deploys the bundled schema to Vespa on every boot (AUTO_DEPLOY) —
-# first run and schema upgrades alike — then
-# serves the NIP-50 websocket, the NIP-11 doc, and the web UI on RELAY_PORT.
-# Filling the store from the network (crawl / trust-sync) is a separate service —
-# see SoT (github.com/vitorpamplona/sot).
+# Both processes deploy the bundled schema to Vespa on every boot (AUTO_DEPLOY) —
+# first run and schema upgrades alike — then serves the NIP-50 websocket, the
+# NIP-11 doc, and the web UI on RELAY_PORT.
+#
+# Mirroring upstream relays into the same store is the `sync` service — the
+# router — its own process so it can be restarted with a new router.conf,
+# retuned, or lost to an OOM without the relay dropping a client or Vespa
+# replaying a transaction log. It is behind the `sync` profile: the profile IS
+# the on-switch (`docker compose --profile sync up -d`), replacing the old
+# "SYNC_CONFIG_FILE set on the relay" convention. The relay now refuses to
+# boot if a stream config is still aimed at it, so a stale .env fails loud
+# instead of silently not mirroring.
 
 services:
   vespa:
     image: vespaengine/vespa
     container_name: vespa
     hostname: vespa
-    # A LIMIT, not a reservation. Without one both containers see the whole
+    # A LIMIT, not a reservation. Without one every container sees the whole
     # Docker VM and each sizes itself against it: the engine settles around 32
-    # GiB while the relay's MaxRAMPercentage lets its heap take most of it, so
-    # the two are entitled to 55 GiB of a 47 GiB machine. Nothing collides while
-    # the relay is idle, and the workload that would collide — several streams
-    # holding negentropy id snapshots at once — is the normal one.
+    # GiB while the JVMs' MaxRAMPercentage lets their heaps take most of it,
+    # so together they are entitled to more memory than the machine has.
+    # Nothing collides while the JVMs are idle, and the workload that would
+    # collide — the sync process holding a negentropy id snapshot — is its
+    # normal one.
     #
-    # The engine gets the larger share because losing it is worse: the relay can
-    # be restarted in seconds, while a killed content node replays its
+    # The engine gets the larger share because losing it is worse: either JVM
+    # restarts in seconds, while a killed content node replays its
     # transaction log for minutes before it serves anything.
     mem_limit: ${VESPA_MEM_LIMIT:-34g}
     ports:
@@ -62,36 +71,52 @@ services:
 
   relay:
     build: .
+    # Named so the sync service reuses the one image instead of building the
+    # same context twice.
+    image: vespa-relay
     container_name: vespa-relay
-    # Heap becomes MaxRAMPercentage (70% by default, set below) of this. Sized
-    # from what a full fan-out actually uses —
-    # the largest observed snapshot phase peaked around 13 GiB across three
-    # concurrent streams — with room above it rather than room to take the
-    # engine's share.
-    mem_limit: ${RELAY_MEM_LIMIT:-12g}
+    # Serving only, since the mirror moved to the sync service: this heap
+    # carries client REQs, the background trust reconcile, and the optional
+    # FTS reindex — not the negentropy id snapshots, which were what needed
+    # 12g. Those went with the sync process, and this dropped to 6g.
+    mem_limit: ${RELAY_MEM_LIMIT:-6g}
     depends_on:
       vespa:
         condition: service_healthy
     environment:
-      # The negentropy reconciliation holds one local id snapshot per stream IN
-      # MEMORY, and every stream backfills at once — so the heap has to cover the
-      # whole fan-out, not one relay. The JVM default is 25% of the container,
-      # which OOM'd at 8.4 GiB the first time every stream asked for full history.
-      #
-      # 70% because the streams are serialised: the peak is now ONE stream's id
-      # set rather than every stream's sum, and the largest single one — 43.7M
-      # ids for the assertions filter — is about 5.3 GiB. At 45% of a 12 GiB
-      # container the heap was 5.4 GiB, which that set only just fits inside
-      # before anything else is allocated.
-      #
-      # The percentage is of mem_limit below, which is the point of setting one:
-      # MaxRAMPercentage reads the cgroup, and without a limit it reads the HOST,
-      # so this asked for 22.7 GiB of a machine the engine had already claimed 32
-      # GiB of. A bounded heap also makes ingest backpressure do its job instead
-      # of letting the relay grow into the engine's memory.
-      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}
+      # Heap is MaxRAMPercentage of mem_limit above — the percentage reads the
+      # cgroup, and without a limit it reads the HOST, sizing the heap against
+      # memory the engine has already claimed. Per-process override first: the
+      # two JVMs are sized 2x apart, so a bare JAVA_TOOL_OPTIONS tuned for the
+      # sync's reconcile heap would silently retune the serving relay too.
+      JAVA_TOOL_OPTIONS: ${RELAY_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
       VESPA_URL: http://vespa:8080
       RELAY_PORT: 7777
+      # Migration tripwires, not settings: the relay refuses to boot when a
+      # stream config is still aimed at it (the mirror is the sync service
+      # now). Compose only injects what is mapped, so without these
+      # pass-throughs a stale .env would sail past the guard and the mirror
+      # would be silently gone. Value never used — presence alone fires it.
+      SYNC_CONFIG: ${SYNC_CONFIG:-}
+      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-}
+      ROUTER_CONFIG: ${ROUTER_CONFIG:-}
+      ROUTER_CONFIG_FILE: ${ROUTER_CONFIG_FILE:-}
+      # Deploy the bundled schema on boot (default true; see AUTO_DEPLOY docs).
+      AUTO_DEPLOY: ${AUTO_DEPLOY:-}
+      # Write authorization and the NIP-86 management API. Documented in
+      # docs/configuration.md; previously read by the relay but never passed
+      # through, so a .env ban list was silently unenforced under compose.
+      ALLOW_PUBKEYS: ${ALLOW_PUBKEYS:-}
+      DENY_PUBKEYS: ${DENY_PUBKEYS:-}
+      ALLOW_KINDS: ${ALLOW_KINDS:-}
+      DENY_KINDS: ${DENY_KINDS:-}
+      RELAY_ADMIN_PUBKEYS: ${RELAY_ADMIN_PUBKEYS:-}
+      # NIP-86 ban state that must outlive the container — put it in the
+      # mounted volume, e.g. /var/lib/vespa-relay/relay-state.json.
+      RELAY_STATE_FILE: ${RELAY_STATE_FILE:-}
+      REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
+      EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
+      LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # How the relay presents itself in its NIP-11 document. All optional —
@@ -105,25 +130,6 @@ services:
       RELAY_POSTING_POLICY: ${RELAY_POSTING_POLICY:-}
       RELAY_PRIVACY_POLICY: ${RELAY_PRIVACY_POLICY:-}
       RELAY_TERMS_OF_SERVICE: ${RELAY_TERMS_OF_SERVICE:-}
-      # Router (upstream mirror). Off by default. To turn it on, drop a strfry-style
-      # streams config next to this file (see router.conf.example) and start with:
-      #   SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf docker compose up --build
-      # The volume line below mounts ./router.conf when SYNC_CONFIG_FILE is set.
-      # Every SYNC_* line falls back to its pre-rename ROUTER_* spelling: compose
-      # only passes through what is mapped here, so without the nested default a
-      # .env still using the old names would silently turn the router off.
-      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-${ROUTER_CONFIG_FILE:-}}
-      # How often (seconds) up/both streams re-reconcile to push new local events.
-      SYNC_UP_INTERVAL_SECONDS: ${SYNC_UP_INTERVAL_SECONDS:-${ROUTER_UP_INTERVAL_SECONDS:-300}}
-      # Ingest tuning. Throughput comes from the batch size, not the worker count
-      # (the store serializes writes). Lower the batch to cut memory.
-      SYNC_INGEST_BATCH: ${SYNC_INGEST_BATCH:-${ROUTER_INGEST_BATCH:-1000}}
-      SYNC_INGEST_CONCURRENCY: ${SYNC_INGEST_CONCURRENCY:-${ROUTER_INGEST_CONCURRENCY:-2}}
-      # Defaults for `relaySource = [...]` streams, whose relay list is read out of
-      # the store's own events instead of the config (see the `outbox` and
-      # `assertions` streams in router.conf.example). Per-stream keys override these.
-      SYNC_DYNAMIC_REFRESH_SECONDS: ${SYNC_DYNAMIC_REFRESH_SECONDS:-${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}}
-      SYNC_DYNAMIC_CONCURRENCY: ${SYNC_DYNAMIC_CONCURRENCY:-${ROUTER_DYNAMIC_CONCURRENCY:-8}}
       # Settle the trust projection after boot, in the background — the relay
       # serves immediately either way; ranked search may return thin results
       # until the reconcile finishes (12+ minutes at 36M kind-30382 events).
@@ -150,11 +156,95 @@ services:
       # when one page failed.
       FTS_CURSOR_FILE: ${FTS_CURSOR_FILE:-/var/lib/vespa-relay/fts-cursor.txt}
       # How many engine queries the store's bulk stages keep in flight. The
-      # store's default is 4, measured on heavy bulk-stage queries; the dedup
-      # preload is an id-only lookup and far lighter, so this is worth sweeping
-      # on a deployment whose ingest is dedup-bound. Too high 504s the summary
-      # stage ("Summary data is incomplete").
+      # store's default is 4, measured on heavy bulk-stage queries; too high
+      # 504s the summary stage ("Summary data is incomplete").
       VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
+      # Quartz's own log floor (it defaults to DEBUG, which makes malformed
+      QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      # This relay's own keypair: NIP-11 self, NIP-42 auth. The sync service
+      # gets the same key, so upstream AUTH and the NIP-66 monitor speak as
+      # the relay they feed. nsec1… only. Unset ⇒ anonymous. See .env.example.
+      RELAY_NSEC: ${RELAY_NSEC:-}
+    ports:
+      - "${RELAY_PORT:-7777}:7777"
+    volumes:
+      # Where FTS_CURSOR_FILE lands, so the walk's position survives the
+      # container and is readable on the host. Shared with the sync service,
+      # which keeps its own files (sync-cursors.json, the parse audit) there.
+      - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
+    restart: unless-stopped
+
+  # The router, as its own process. Restart it as often as router.conf changes:
+  #   docker compose --profile sync restart sync
+  # The relay keeps serving throughout, and the sync cursors (SYNC_STATE_FILE)
+  # make the re-run resume instead of re-downloading.
+  sync:
+    build: .
+    image: vespa-relay
+    entrypoint: ["/app/sync/bin/vespa-sync"]
+    container_name: vespa-sync
+    profiles: ["sync"]
+    # The negentropy reconciliation holds one local id snapshot per stream IN
+    # MEMORY — the single biggest allocation either JVM makes, and the reason
+    # this limit is the largest. The streams are serialised, so the peak is
+    # ONE stream's id set rather than every stream's sum; the largest single
+    # one — 43.7M ids for the assertions filter — is about 5.3 GiB, and at 70%
+    # of 12g the heap holds it with room to run ingest beside it. (The JVM
+    # default of 25% OOM'd at 8.4 GiB the first time every stream asked for
+    # full history, back when the mirror shared the relay's container.)
+    #
+    # With this profile on, check the machine's total against VESPA_MEM_LIMIT
+    # + RELAY_MEM_LIMIT + this — the defaults sum to 52g, which the 47 GiB
+    # reference box in the docs cannot hold. Trim ~5g from whichever share
+    # your deployment can spare (e.g. VESPA_MEM_LIMIT=30g SYNC_MEM_LIMIT=10g;
+    # 70% of 10g still holds the 5.3 GiB assertions snapshot with margin).
+    mem_limit: ${SYNC_MEM_LIMIT:-12g}
+    depends_on:
+      vespa:
+        condition: service_healthy
+      # Started (not healthy — the relay has no healthcheck): lets the relay's
+      # boot deploy usually land first and the /pressure feed come up close to
+      # ingest. Ordering is best-effort either way; SyncMain retries a lost
+      # deploy race and the pressure poller announces a feed that never
+      # connects, so this is comfort, not correctness.
+      relay:
+        condition: service_started
+    environment:
+      # Heap is MaxRAMPercentage of mem_limit above; see the relay's note.
+      # Per-process override first — this is the JVM the reconcile heap
+      # sizing story belongs to.
+      JAVA_TOOL_OPTIONS: ${SYNC_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
+      VESPA_URL: http://vespa:8080
+      # Deploy the bundled schema on boot (default true) — this process is the
+      # one whose writes a drifted schema silently discards.
+      AUTO_DEPLOY: ${AUTO_DEPLOY:-}
+      # The served relay's ws url — mirrored events are stored as that relay's,
+      # whichever process writes them.
+      RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
+      # The streams to mirror. The profile is the on-switch, so this defaults
+      # to the mounted path instead of empty; SYNC_CONFIG_LOCAL (below) picks
+      # which local file is mounted there. The nested ROUTER_ fallback stays
+      # deliberately: compose only passes through what is mapped here, so
+      # without it a .env still on the old name would silently mirror the
+      # mounted default instead of the file it names.
+      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-${ROUTER_CONFIG_FILE:-/etc/vespa-relay/router.conf}}
+      # Clients first, across the process boundary: the relay serves its mean
+      # read latency on GET /pressure and this process throttles ingest on it.
+      # Unset it to mirror at full speed regardless of readers.
+      SYNC_PRESSURE_URL: ${SYNC_PRESSURE_URL:-http://relay:7777/pressure}
+      # Mean read latency (ms) above which ingest starts yielding.
+      SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
+      # How often (seconds) up/both streams re-reconcile to push new local events.
+      SYNC_UP_INTERVAL_SECONDS: ${SYNC_UP_INTERVAL_SECONDS:-${ROUTER_UP_INTERVAL_SECONDS:-300}}
+      # Ingest tuning. Throughput comes from the batch size, not the worker count
+      # (the store serializes writes). Lower the batch to cut memory.
+      SYNC_INGEST_BATCH: ${SYNC_INGEST_BATCH:-${ROUTER_INGEST_BATCH:-1000}}
+      SYNC_INGEST_CONCURRENCY: ${SYNC_INGEST_CONCURRENCY:-${ROUTER_INGEST_CONCURRENCY:-2}}
+      # Defaults for `relaySource = [...]` streams, whose relay list is read out of
+      # the store's own events instead of the config (see the `outbox` and
+      # `assertions` streams in router.conf.example). Per-stream keys override these.
+      SYNC_DYNAMIC_REFRESH_SECONDS: ${SYNC_DYNAMIC_REFRESH_SECONDS:-${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}}
+      SYNC_DYNAMIC_CONCURRENCY: ${SYNC_DYNAMIC_CONCURRENCY:-${ROUTER_DYNAMIC_CONCURRENCY:-8}}
       # For `sync = "auto"` streams: how many events both we and the relay must
       # hold on the stream's filter before a negentropy reconcile is worth its id
       # exchange, and how long the relay gets to answer the NIP-45 COUNT that
@@ -165,7 +255,7 @@ services:
       # queue. Empty (the default) runs every stream the config defines. The
       # router prints what it is NOT running on every startup, so a leftover
       # setting can't be mistaken for a stream that is failing.
-      #   SYNC_STREAMS=dataViaOutbox docker compose up -d relay
+      #   SYNC_STREAMS=dataViaOutbox docker compose --profile sync up -d sync
       SYNC_STREAMS: ${SYNC_STREAMS:-${ROUTER_STREAMS:-}}
       # What goes down the wire to upstream relays. Empty (the default) still
       # logs what the relay COMPLAINS about — NOTICE, CLOSED, failed sends —
@@ -178,31 +268,34 @@ services:
       # and what came back. A dynamic fan-out is 16k relays wide, so this is a
       # diagnostic run, not a setting to leave on.
       SYNC_DIAGNOSE: ${SYNC_DIAGNOSE:-}
-      # Quartz's own log floor (it defaults to DEBUG, which makes malformed
-      QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
-      # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,
-      # which the volume below maps to PARSE_AUDIT_LOCAL_DIR on the host, so the
-      # report is readable without entering the container. Unset ⇒ off.
       # Where the per-(relay, filter) synced created_at band is kept, so a relay
-      # without NIP-77 resumes instead of re-reading its corpus every restart.
-      # Same mounted volume as the audit below. Unset ⇒ in memory only.
+      # without NIP-77 resumes instead of re-reading its corpus every restart —
+      # and so a `restart sync` after a config edit costs a diff, not a corpus.
       SYNC_STATE_FILE: ${SYNC_STATE_FILE:-${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}}
       # How long a recorded sync window narrows work before the whole filter is
       # walked again. Nothing is capped — the full pass is periodic, not skipped.
       SYNC_FULL_RESYNC_SECONDS: ${SYNC_FULL_RESYNC_SECONDS:-${ROUTER_FULL_RESYNC_SECONDS:-604800}}
-      # This relay's own keypair: NIP-11 self, NIP-42 auth, NIP-66 monitor.
-      # nsec1… only. Unset ⇒ the relay acts anonymously. See .env.example.
+      # How many engine queries the store's bulk stages keep in flight — the
+      # dedup preload on this side is an id-only lookup and far lighter than
+      # the relay's summaries, so this is worth sweeping on a deployment whose
+      # ingest is dedup-bound.
+      VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
+      QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
+      # Same key as the relay: upstream NIP-42 AUTH and the NIP-66 monitor
+      # sign as the relay this process feeds.
       RELAY_NSEC: ${RELAY_NSEC:-}
+      # Opt-in parse audit — it rides ingest, so it lives on this side of the
+      # split. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay, which the
+      # volume below maps to PARSE_AUDIT_LOCAL_DIR on the host, so the report
+      # is readable without entering the container. Unset ⇒ off.
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
       PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}
-    ports:
-      - "${RELAY_PORT:-7777}:7777"
     volumes:
-      # Mounts your local ./router.conf into the container when the router is on.
-      # Harmless when SYNC_CONFIG_FILE is empty (nothing reads the file).
+      # Mounts your local ./router.conf into the container. Copy the bundled
+      # example and point SYNC_CONFIG_LOCAL at your copy.
       - ${SYNC_CONFIG_LOCAL:-${ROUTER_CONFIG_LOCAL:-./router.conf.example}}:/etc/vespa-relay/router.conf:ro
-      # Where PARSE_AUDIT_FILE lands, so the report is readable on the host.
+      # Sync cursors + the parse audit report, shared with the relay's mount.
       - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
     restart: unless-stopped
 

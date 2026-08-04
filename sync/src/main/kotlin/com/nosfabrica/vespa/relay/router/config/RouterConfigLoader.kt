@@ -44,7 +44,9 @@ internal fun Map<String, String>.syncEnv(
 
 /**
  * Loads [RouterConfig] from the environment. `SYNC_CONFIG` holds the HOCON
- * inline; `SYNC_CONFIG_FILE` points at a file. Neither set ⇒ no router.
+ * inline; `SYNC_CONFIG_FILE` points at a file. Neither set ⇒ null, and what
+ * that means is the caller's: SyncMain refuses to start on it — a sync
+ * process with nothing to sync is a misconfiguration, not a mode.
  * `SYNC_DYNAMIC_REFRESH_SECONDS` / `SYNC_DYNAMIC_CONCURRENCY` are the
  * defaults for dynamic streams; `SYNC_STREAMS` narrows the run to a subset
  * of the config's streams (see [select]).
