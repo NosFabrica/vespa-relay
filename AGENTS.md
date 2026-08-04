@@ -28,8 +28,6 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
 
 node tools/webtest/run.mjs         # web UI module tests (plain node, no deps)
-node tools/webtest/navwalk.mjs     # browser walkthrough of URL/backstack/entity
-                                   # navigation (needs playwright + chromium)
 
 docker compose up -d --build relay # the usual dev loop (serving only)
 docker compose --profile sync up -d --build   # …with the mirror
