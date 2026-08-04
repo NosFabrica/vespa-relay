@@ -221,6 +221,17 @@ internal class IngestPipeline(
                             rejected.incrementAndGet()
                             rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
                         }
+
+                        is IEventStore.InsertOutcome.Failed -> {
+                            // The store's fault, attributed per row: the event
+                            // was good and is lost — nothing re-offers it.
+                            // Tallied like onGaveUp's batch case, plus
+                            // lostToStore so the loss is loud on the health
+                            // line instead of blending into the duplicates.
+                            rejected.incrementAndGet()
+                            rejectReasons.merge("store failed: ${outcome.reason.take(40)}", 1L, Long::plus)
+                            lostToStore.incrementAndGet()
+                        }
                     }
                 }
             },

@@ -170,6 +170,11 @@ statement about someone else's server.
   remove it, and check that a pin actually took effect.
 - **JitPack's build-status API lies.** It reported a build `ok` whose log ended
   in `exit code 1`. Only the presence of the artifact file proves anything.
+- **JitPack caches builds per group-spelling.** `com.github.NosFabrica` and
+  `com.github.nosfabrica` are separate cache entries for the same repo; one
+  can permanently hold a failed infra build while the other serves fine. The
+  store coordinate uses lowercase for this reason — check the other spelling
+  before concluding a commit "doesn't build".
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
 - **`grep` may be aliased to `ugrep`**, which silently returns nothing on some
