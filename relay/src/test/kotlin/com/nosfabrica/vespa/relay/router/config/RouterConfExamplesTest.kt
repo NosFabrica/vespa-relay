@@ -78,29 +78,39 @@ class RouterConfExamplesTest {
     }
 
     @Test
-    fun `the outbox stream fans out over NIP-65 write relays`() {
-        val outbox = example.dynamicStreams().first { it.name == "dataViaOutbox" }
-        assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
+    fun `the outbox streams fan out over NIP-65 write relays`() {
+        // Found by SHAPE, not by name. There is more than one outbox stream now
+        // (profiles and content are split so they can sync differently), and
+        // they have been renamed once already — a test that pins the name fails
+        // on a rename while the thing it checks is still correct.
+        val outboxes =
+            example.dynamicStreams().filter { s ->
+                s.dynamic!!.sources.any { it.filter.kinds == listOf(10002) }
+            }
+        assertTrue(outboxes.isNotEmpty(), "no stream discovers relays from NIP-65 lists")
 
-        val source = outbox.dynamic!!.sources.single()
-        assertEquals(listOf(10002), source.filter.kinds, "the scan reads NIP-65 relay lists")
+        for (outbox in outboxes) {
+            assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
+            val source = outbox.dynamic!!.sources.single()
+            assertEquals(listOf(10002), source.filter.kinds, "the scan reads NIP-65 relay lists")
 
-        val nip65 = source.selects.single()
-        assertEquals(10002, nip65.kind)
-        assertEquals("r", nip65.tag)
-        // 10002 puts the url first and its marker after it; only the write side
-        // is where a user's own events land, which is what an outbox mirror wants.
-        // The example says `marker = "write"`, which is sugar for exactly this:
-        // marked write, marked empty, or too short to carry a marker at all.
-        assertEquals(1, nip65.index)
-        assertEquals(
-            listOf(
-                TagCondition(index = 2, equals = "write"),
-                TagCondition(index = 2, equals = ""),
-                TagCondition(maxSize = 2),
-            ),
-            nip65.where,
-        )
+            val nip65 = source.selects.single()
+            assertEquals(10002, nip65.kind)
+            assertEquals("r", nip65.tag)
+            // 10002 puts the url first and its marker after it; only the write side
+            // is where a user's own events land, which is what an outbox mirror wants.
+            // The example says `marker = "write"`, which is sugar for exactly this:
+            // marked write, marked empty, or too short to carry a marker at all.
+            assertEquals(1, nip65.index)
+            assertEquals(
+                listOf(
+                    TagCondition(index = 2, equals = "write"),
+                    TagCondition(index = 2, equals = ""),
+                    TagCondition(maxSize = 2),
+                ),
+                nip65.where,
+            )
+        }
     }
 
     @Test
