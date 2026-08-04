@@ -16,10 +16,7 @@ dependencies {
     // store's deployer — consumers see both in these declarations' signatures.
     api(libs.quartz)
     api(libs.vespa.eventstore.store)
-    // ParseAudit writes its report as JSON.
-    implementation(libs.kotlinx.serialization.json)
     testImplementation(kotlin("test"))
-    testImplementation(libs.kotlinx.serialization.json)
 }
 
 kotlin {

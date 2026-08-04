@@ -33,7 +33,7 @@ import com.nosfabrica.vespa.relay.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
-import com.nosfabrica.vespa.relay.maintenance.ParseAudit
+import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
@@ -175,7 +175,7 @@ fun main() {
 
     // The knob that quiets quartz's own logging. The parse audit itself lives
     // in the sync process — ingest is what feeds it, and nothing here does.
-    ParseAudit.applyQuartzLogLevel(env)
+    applyQuartzLogLevel(env)
 
     val admin =
         banStore?.let {

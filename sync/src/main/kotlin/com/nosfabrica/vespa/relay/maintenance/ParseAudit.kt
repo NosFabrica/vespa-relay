@@ -332,23 +332,5 @@ class ParseAudit(
             System.err.println("parse audit: on — report at $path (up to $samples sample event(s) per issue, flushed every ${flushSec}s)")
             return audit.startPeriodicFlush(flushSec)
         }
-
-        /**
-         * `QUARTZ_LOG_LEVEL` alone, without the audit. The relay process wants
-         * the floor but must NOT install the audit: nothing on the serving
-         * side calls [inspect] since the mirror moved to its own process, and
-         * an installed-but-unfed audit is precisely the silently-inert
-         * configured component this codebase forbids.
-         */
-        fun applyQuartzLogLevel(env: Map<String, String>) {
-            env["QUARTZ_LOG_LEVEL"]?.trim()?.uppercase()?.takeIf { it.isNotEmpty() }?.let { name ->
-                val level = LogLevel.entries.firstOrNull { it.name == name }
-                if (level == null) {
-                    System.err.println("QUARTZ_LOG_LEVEL '$name' is not one of ${LogLevel.entries.joinToString("/") { it.name }} — ignored")
-                } else {
-                    Log.minLevel = level
-                }
-            }
-        }
     }
 }

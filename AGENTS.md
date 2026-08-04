@@ -10,10 +10,11 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 - **`:sync`** — the router, as its own process so it restarts without the
   relay or Vespa noticing. `SyncMain` is its entrypoint; the package keeps the
   `router` name on purpose (see below).
-- **`:common`** — what both need: `RelayIdentity`, `ParseAudit`,
-  `SchemaDeploy`, `Format`, and `ServingPressure` — whose mean crosses the
-  process boundary over the relay's `GET /pressure`, polled by the sync
-  process to yield ingest when client reads slow down.
+- **`:common`** — only what both genuinely read: `RelayIdentity`,
+  `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, and `ServingPressure` —
+  whose mean crosses the process boundary over the relay's `GET /pressure`,
+  polled by the sync process to yield ingest when client reads slow down.
+  Anything one process owns lives in that process's module.
 
 ## Commands
 
@@ -55,11 +56,10 @@ common/src/main/kotlin/com/nosfabrica/vespa/relay/
                             into it and serves it on GET /pressure; the sync
                             process adopt()s the polled mean and yields on it
   maintenance/
-    ParseAudit.kt           what quartz could not parse, grouped to a JSON
-                            report; fed by sync ingest. applyQuartzLogLevel is
-                            the half the relay still uses
+    QuartzLogLevel.kt       QUARTZ_LOG_LEVEL, split from ParseAudit — the one
+                            piece of it both processes read
     SchemaDeploy.kt         the every-boot Vespa schema deploy (both processes)
-  util/Format.kt            fmtDuration / fmtDay / fmtCount / nowSeconds
+  util/Format.kt            fmtDuration — the one formatter both processes print
 
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   RelayMain.kt          entrypoint; reads env, deploys the schema, wires the
@@ -84,28 +84,32 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     FtsReindex.kt       REINDEX_FTS_ON_START
     OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
 
-sync/src/main/kotlin/com/nosfabrica/vespa/relay/router/   the mirror (see below)
-  SyncMain.kt           entrypoint; env, store, engine, block
-  SyncEngine.kt         wiring, live tails, health/stats lines
-  PressurePoller.kt     polls the relay's /pressure into ServingPressure
-  IngestPipeline.kt     bounded queue -> verify -> batchInsert, poison isolation
-  BisectingInsert.kt    the batch-bisecting write
-  StaticBackfill.kt     history catch-up for configured upstreams
-  DynamicSync.kt        relaySource streams: discover, fan out, sync each relay
-  DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
-  UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
-  SyncBands.kt          covered created_at bands per (relay, filter)
-  config/               the declarative side
-    RouterConfig.kt       the stream model (streams, directions, sync modes)
-    RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
-    RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
-  discovery/            which relays to dial, and what to believe about them
-    RelayDiscovery.kt     pulling relay urls out of stored events
-    HostStrikes.kt        per-authority strikes and eviction
-    Unreachability.kt     which failures may be published as NIP-66 records
-  progress/             observability
-    StreamPhases.kt       per-stream progress reporting
-    PagingProgress.kt     time-axis progress for paged walks
+sync/src/main/kotlin/com/nosfabrica/vespa/relay/
+  maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON
+                              report — lives here because ingest is what feeds it
+  util/SyncFormat.kt          fmtDay / fmtCount / nowSeconds, internal again
+  router/               the mirror (see below)
+    SyncMain.kt           entrypoint; env, store, engine, block
+    SyncEngine.kt         wiring, live tails, health/stats lines
+    PressurePoller.kt     polls the relay's /pressure into ServingPressure
+    IngestPipeline.kt     bounded queue -> verify -> batchInsert, poison isolation
+    BisectingInsert.kt    the batch-bisecting write
+    StaticBackfill.kt     history catch-up for configured upstreams
+    DynamicSync.kt        relaySource streams: discover, fan out, sync each relay
+    DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
+    UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
+    SyncBands.kt          covered created_at bands per (relay, filter)
+    config/               the declarative side
+      RouterConfig.kt       the stream model (streams, directions, sync modes)
+      RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
+      RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
+    discovery/            which relays to dial, and what to believe about them
+      RelayDiscovery.kt     pulling relay urls out of stored events
+      HostStrikes.kt        per-authority strikes and eviction
+      Unreachability.kt     which failures may be published as NIP-66 records
+    progress/             observability
+      StreamPhases.kt       per-stream progress reporting
+      PagingProgress.kt     time-axis progress for paged walks
 
 relay/src/main/resources/
   index.html            the search UI's markup + styles; its behavior lives in web/

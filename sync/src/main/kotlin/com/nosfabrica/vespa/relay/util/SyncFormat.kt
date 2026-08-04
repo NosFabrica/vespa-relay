@@ -20,16 +20,32 @@
  */
 package com.nosfabrica.vespa.relay.util
 
-/**
- * `h:mm:ss` past an hour, `m:ss` below it. The one formatter both processes
- * print (the relay's FTS reindex, the sync process's every progress line) —
- * its former siblings (`fmtDay`, `fmtCount`, `nowSeconds`) live in `:sync`'s
- * `SyncFormat.kt`, which is all that reads them.
+/*
+ * The sync process's formatting helpers, `internal` again now that only this
+ * module reads them — `fmtDuration`, the one both processes print, stayed in
+ * `:common`. A distinct file name on purpose: a second `Format.kt` in this
+ * package would compile to the same `FormatKt` facade class as :common's and
+ * collide on the classpath.
  */
-fun fmtDuration(ms: Long): String {
-    val s = ms / 1000
-    val h = s / 3600
-    val m = (s % 3600) / 60
-    val sec = s % 60
-    return if (h > 0) "%d:%02d:%02d".format(h, m, sec) else "%d:%02d".format(m, sec)
-}
+
+/**
+ * A `created_at` as a UTC day. Day resolution on purpose: it answers "is the
+ * walk moving, and roughly where is it".
+ */
+internal fun fmtDay(seconds: Long): String =
+    java.time.Instant
+        .ofEpochSecond(seconds)
+        .atZone(java.time.ZoneOffset.UTC)
+        .toLocalDate()
+        .toString()
+
+/** 24.8M rather than 24819118: the magnitude is the point, not the digits. */
+internal fun fmtCount(n: Int): String =
+    when {
+        n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
+        n >= 1_000 -> "%.0fk".format(n / 1_000.0)
+        else -> n.toString()
+    }
+
+/** Wall-clock seconds, the unit every `created_at` in the protocol is in. */
+internal fun nowSeconds(): Long = System.currentTimeMillis() / 1000
