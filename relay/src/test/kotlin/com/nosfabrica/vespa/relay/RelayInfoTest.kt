@@ -35,6 +35,9 @@ class RelayInfoTest {
         val doc = Json.parseToJsonElement(relayInfoJson(name = "sot v2", selfPubkey = "f".repeat(64))).jsonObject
         assertEquals("sot v2", doc.getValue("name").jsonPrimitive.content)
         assertEquals("f".repeat(64), doc.getValue("self").jsonPrimitive.content)
+        // The one field in this doc that points off the relay. Nothing else fails when it
+        // rots, so the ownership move that retargeted it is the reason it is pinned here.
+        assertEquals("https://github.com/NosFabrica/vespa-relay", doc.getValue("software").jsonPrimitive.content)
         val nips = doc.getValue("supported_nips").jsonArray.map { it.jsonPrimitive.int }
         assertEquals(listOf(1, 9, 11, 40, 42, 45, 50, 62, 77), nips)
         val limitation = doc.getValue("limitation").jsonObject
