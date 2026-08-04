@@ -20,7 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.config
 
+import com.vitorpamplona.quartz.nip19Bech32.toNpub
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
+import com.vitorpamplona.quartz.utils.Hex
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
@@ -72,13 +74,14 @@ class RelayConfigTest {
     }
 
     @Test
-    fun `admin pubkeys are lowercased and deduped`() {
+    fun `admin pubkeys decode to lowercase hex, deduped`() {
         val a = "a".repeat(64)
+        val c = "c".repeat(64)
         val keys =
             adminPubkeysFromEnv(
-                mapOf("RELAY_ADMIN_PUBKEYS" to "${a.uppercase()}, $a, ${"c".repeat(64)}"),
+                mapOf("RELAY_ADMIN_PUBKEYS" to "${Hex.decode(a).toNpub()}, ${Hex.decode(a).toNpub()}, ${Hex.decode(c).toNpub()}"),
             )
-        assertEquals(setOf(a, "c".repeat(64)), keys)
+        assertEquals(setOf(a, c), keys)
     }
 
     @Test
@@ -88,19 +91,26 @@ class RelayConfigTest {
         // the ones it threw away, and the missing admin only finds out when a
         // NIP-86 call is refused. Same for a deny list — a ban that is not
         // enforced looks exactly like a ban that was never configured.
-        listOf("not-hex", "b".repeat(63), "npub1nope").forEach { junk ->
+        val good = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
+        listOf("not-hex", "b".repeat(63), "b".repeat(64), "npub1nope").forEach { junk ->
             assertFailsWith<IllegalArgumentException>("'$junk' must not be silently dropped") {
-                adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to "${"a".repeat(64)}, $junk"))
+                adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to "$good, $junk"))
             }
         }
     }
 
     @Test
-    fun `npub and hex are the same key`() {
-        // The npub of 000…01, so the two spellings must collapse to one entry.
+    fun `bare hex is refused, and the error spells out the npub to use instead`() {
+        // Hex has no checksum, so one mistyped character is a different valid
+        // key. The error carries the correct npub so the fix is a copy-paste.
         val hex = "0000000000000000000000000000000000000000000000000000000000000001"
         val npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
-        assertEquals(setOf(hex), adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to "$hex, $npub")))
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to hex))
+            }
+        assertEquals(true, e.message!!.contains(npub), "got: ${e.message}")
+        assertEquals(setOf(hex), adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to npub)))
     }
 
     @Test
@@ -123,7 +133,7 @@ class RelayConfigTest {
         val b = "b".repeat(64)
         val env =
             mapOf(
-                "ALLOW_PUBKEYS" to "${a.uppercase()} $b",
+                "ALLOW_PUBKEYS" to "${Hex.decode(a).toNpub()} ${Hex.decode(b).toNpub()}",
                 "DENY_PUBKEYS" to "",
                 "ALLOW_KINDS" to "0,1, 30023",
                 "DENY_KINDS" to "4, junk",

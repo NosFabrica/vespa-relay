@@ -79,7 +79,7 @@ All configuration is through environment variables.
 
 | var | meaning | default |
 |---|---|---|
-| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…` or 64-hex, comma/space-separated. An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
+| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…`, comma/space-separated (bare hex is refused — it has no checksum). An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
 | `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
 | `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
 | `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
@@ -88,7 +88,7 @@ All configuration is through environment variables.
 
 | var | meaning | default |
 |---|---|---|
-| `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…` or 64-hex; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
+| `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
 
@@ -101,7 +101,7 @@ All configuration is through environment variables.
 | `SYNC_CONFIG_LOCAL` | compose only: the **host** path mounted at `SYNC_CONFIG_FILE`. Set both, or the relay reads the example rather than your config | `./router.conf.example` |
 | `SYNC_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
 | `VESPA_MEM_LIMIT` / `RELAY_MEM_LIMIT` | container memory limits. Not cosmetic: `MaxRAMPercentage` reads the **cgroup**, so without a limit the relay's JVM sizes its heap against the whole host — 45% of 47 GiB — while the engine independently grows to 32 GiB, entitling both to more than the machine has. Bounding the relay also makes ingest backpressure work instead of letting it grow into the engine's memory | `34g` / `12g` |
-| `RELAY_NSEC` | this relay's own keypair (`nsec1…` or 64 hex), used everywhere it acts as itself: the NIP-11 `self` it advertises (**derived**, so it is provable rather than merely asserted), the NIP-42 challenges it answers, and the NIP-66 kind-30166 liveness records it signs. Relays that gate reads behind AUTH are indistinguishable from empty ones without it. Unset ⇒ anonymous — reading other monitors' 30166s still works and needs no key. Malformed ⇒ startup fails | unset ⇒ anonymous |
+| `RELAY_NSEC` | this relay's own keypair (`nsec1…` only), used everywhere it acts as itself: the NIP-11 `self` it advertises (**derived**, so it is provable rather than merely asserted), the NIP-42 challenges it answers, and the NIP-66 kind-30166 liveness records it signs. Relays that gate reads behind AUTH are indistinguishable from empty ones without it. Unset ⇒ anonymous — reading other monitors' 30166s still works and needs no key. Malformed ⇒ startup fails | unset ⇒ anonymous |
 | `SYNC_FULL_RESYNC_SECONDS` | how long a recorded sync window may narrow work before the router walks the whole filter again. A finished negentropy reconcile covers its filter's entire range, so the next run asks only for what arrived since — which is what keeps a dynamic cycle's shared id snapshot from being the entire corpus. Relays do gain old events, so the claim is re-tested on this period. Nothing is ever capped; the full pass is periodic, not skipped | `604800` (7 days) |
 | `SYNC_STATE_FILE` | where the per-(relay, filter) synced `created_at` band is kept. A relay without NIP-77 has no memory of what it already sent, so without this every restart re-downloads its whole corpus; with it the router asks only for what falls outside the band it already walked. Keyed by filter — edit a stream's filter and that stream starts over | unset ⇒ in memory only |
 | `SYNC_INGEST_BATCH` / `SYNC_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |

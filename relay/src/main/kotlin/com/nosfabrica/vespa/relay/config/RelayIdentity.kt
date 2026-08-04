@@ -42,9 +42,11 @@ object RelayIdentity {
     const val ENV_VAR = "RELAY_NSEC"
 
     /**
-     * The signer built from [ENV_VAR], or null when it is unset or blank. A
-     * value that is neither nsec nor hex throws rather than starting anonymous:
-     * a relay silently serving nothing because it never answered a challenge is
+     * The signer built from [ENV_VAR], or null when it is unset or blank.
+     * Only `nsec1…` is accepted — bare hex has no checksum, and a mistyped
+     * hex key would have the relay sign as a stranger with nothing to
+     * indicate it. Anything else throws rather than starting anonymous: a
+     * relay silently serving nothing because it never answered a challenge is
      * exactly the failure this key exists to fix.
      */
     fun fromEnv(env: (String) -> String? = System::getenv): NostrSignerInternal? {
@@ -55,18 +57,13 @@ object RelayIdentity {
     fun signerFor(secret: String): NostrSignerInternal {
         val trimmed = secret.trim().removeSurrounding("\"")
         val hex =
-            when {
-                // quartz owns the bech32 side, and returns null for an npub
-                // rather than pretending a public key could sign.
-                trimmed.startsWith("n") -> decodePrivateKeyAsHexOrNull(trimmed)
-
-                // Bare hex is checked here: Hex.decode maps characters outside
-                // [0-9a-f] instead of refusing them, so one mistyped digit
-                // would have the relay sign as a stranger from then on.
-                else -> trimmed.lowercase().takeIf { it.matches(HEX64) }
-            }?.takeIf { it.length == 64 }
+            // quartz owns the bech32 side, and returns null for an npub rather
+            // than pretending a public key could sign. Bare hex never reaches
+            // it: this setting takes only nsec1 — see [describe].
+            (if (trimmed.startsWith("n")) decodePrivateKeyAsHexOrNull(trimmed) else null)
+                ?.takeIf { it.length == 64 }
                 ?: throw IllegalArgumentException(
-                    "$ENV_VAR must be an nsec1… or 64 hex characters, got ${describe(secret)}",
+                    "$ENV_VAR must be an nsec1…, got ${describe(trimmed)}",
                 )
         return NostrSignerInternal(KeyPair(privKey = Hex.decode(hex)))
     }
@@ -75,7 +72,8 @@ object RelayIdentity {
     private fun describe(secret: String): String =
         when {
             secret.startsWith("npub1") -> "an npub (that is the public key — this needs the private one)"
-            secret.startsWith("nsec") -> "something starting with nsec but not nsec1"
+            secret.startsWith("nsec") -> "an nsec that would not decode — recopy it"
+            secret.lowercase().matches(HEX64) -> "a bare hex key — this setting takes only nsec1…, which carries the checksum hex lacks"
             else -> "${secret.length} characters"
         }
 }

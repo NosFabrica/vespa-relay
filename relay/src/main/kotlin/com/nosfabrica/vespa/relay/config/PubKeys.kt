@@ -21,9 +21,17 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
+import com.vitorpamplona.quartz.nip19Bech32.toNpub
+import com.vitorpamplona.quartz.utils.Hex
 
 /**
- * Parses every pubkey setting: `npub1…` or 64-hex, converted to lowercase hex.
+ * Parses every pubkey setting: `npub1…` (or another bech32 public-key form),
+ * converted to the lowercase hex the store and filters speak.
+ *
+ * Bare hex is refused on purpose: hex has no checksum, so one mistyped
+ * character is a valid-looking key that simply is not anybody, and nothing
+ * downstream could ever notice. An npub cannot be corrupted silently, and the
+ * error for a hex value spells out its npub so the fix is a copy-paste.
  *
  * A bad value throws instead of being dropped, because a silently dropped
  * entry looks exactly like the feature not working — an admin who cannot
@@ -32,7 +40,7 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
 object PubKeys {
     private val HEX64 = Regex("^[0-9a-f]{64}$")
 
-    /** One key, as 64 lowercase hex. Throws if [raw] is neither npub nor hex. */
+    /** One key, as 64 lowercase hex. Throws unless [raw] is a bech32 public key. */
     fun decode(
         raw: String,
         varName: String,
@@ -48,13 +56,12 @@ object PubKeys {
                 // Bech32 goes to quartz, which knows npub, nprofile and the rest.
                 trimmed.startsWith("n") -> decodePublicKeyAsHexOrNull(trimmed)
 
-                // Bare hex is validated here: Hex.decode maps characters outside
-                // [0-9a-f] instead of refusing them, so one mistyped digit would
-                // come back as a valid — and completely different — key.
-                else -> trimmed.lowercase().takeIf { it.matches(HEX64) }
+                // Anything else — including bare hex — is refused; [describe]
+                // says how to fix it.
+                else -> null
             }
         return hex?.takeIf { it.length == 64 }
-            ?: throw IllegalArgumentException("$varName must be an npub1… or 64 hex characters, got ${describe(trimmed)}")
+            ?: throw IllegalArgumentException("$varName must be an npub1…, got ${describe(trimmed)}")
     }
 
     /** Null or blank stays null; anything else must parse. */
@@ -84,7 +91,13 @@ object PubKeys {
             }
 
             value.startsWith("nprofile") || value.startsWith("nevent") || value.startsWith("note1") -> {
-                "a ${value.takeWhile { it.isLetter() }}, which is not a bare public key"
+                "a ${value.takeWhile { it.isLetter() }} that does not decode to a public key"
+            }
+
+            value.lowercase().matches(HEX64) -> {
+                // The npub is spelled out so the fix is a copy-paste — safe to
+                // echo, this is a public key.
+                "bare hex, which has no checksum — write it as ${Hex.decode(value.lowercase()).toNpub()}"
             }
 
             value.length == 64 -> {

@@ -33,7 +33,7 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     EnvSettings.kt      NIP-11 limits etc. from env, via `env.intOr(...)` rather
                         than `env["..."]` — grep for both or you will conclude a
                         working setting is dead
-    PubKeys.kt          npub/hex parsing for every pubkey setting
+    PubKeys.kt          npub-only parsing for every pubkey setting
     RelayIdentity.kt    RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor
   server/               the serving side
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext

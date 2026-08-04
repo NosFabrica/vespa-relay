@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip19Bech32.toNsec
 import com.vitorpamplona.quartz.utils.Hex
 import kotlin.test.Test
@@ -49,23 +50,27 @@ class RelayIdentityTest {
     }
 
     @Test
-    fun `a hex key is accepted, in either case`() {
-        val a = RelayIdentity.fromEnv(env(RelayIdentity.ENV_VAR to hex))!!
-        val b = RelayIdentity.fromEnv(env(RelayIdentity.ENV_VAR to hex.uppercase()))!!
-        assertEquals(a.pubKey, b.pubKey)
+    fun `a bare hex key is refused — this setting takes only nsec`() {
+        // Hex has no checksum: one mistyped character is a DIFFERENT valid
+        // key, and the relay would sign as a stranger with nothing to show it.
+        val e = assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex) }
+        assertEquals(true, e.message!!.contains("nsec1"), "got: ${e.message}")
+        assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.uppercase()) }
     }
 
     @Test
     fun `surrounding whitespace is forgiven`() {
         // Copy-paste out of a password manager brings a newline along.
-        val signer = RelayIdentity.fromEnv(env(RelayIdentity.ENV_VAR to "  $hex\n"))!!
-        assertEquals(RelayIdentity.signerFor(hex).pubKey, signer.pubKey)
+        val nsec = KeyPair(privKey = Hex.decode(hex)).privKey!!.toNsec()
+        val signer = RelayIdentity.fromEnv(env(RelayIdentity.ENV_VAR to "  $nsec\n"))!!
+        assertEquals(RelayIdentity.signerFor(nsec).pubKey, signer.pubKey)
     }
 
     @Test
-    fun `an nsec and the same key in hex produce the same identity`() {
+    fun `an nsec decodes to exactly the key it encodes`() {
         val nsec = KeyPair(privKey = Hex.decode(hex)).privKey!!.toNsec()
-        assertEquals(RelayIdentity.signerFor(hex).pubKey, RelayIdentity.signerFor(nsec).pubKey)
+        val expected = NostrSignerInternal(KeyPair(privKey = Hex.decode(hex))).pubKey
+        assertEquals(expected, RelayIdentity.signerFor(nsec).pubKey)
     }
 
     @Test
@@ -90,9 +95,7 @@ class RelayIdentityTest {
     @Test
     fun `a typo is rejected loudly rather than starting unauthenticated`() {
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor("not-a-key") }
-        // A character short. Hex.decode tolerates it, so without a length check
-        // this would quietly become a DIFFERENT valid key and the relay would
-        // authenticate as an identity nobody meant to create.
+        // Hex in any shape — valid, truncated, padded — is refused outright.
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.dropLast(1)) }
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex + "ab") }
         assertFailsWith<IllegalArgumentException> { RelayIdentity.signerFor(hex.dropLast(1) + "z") }

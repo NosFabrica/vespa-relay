@@ -177,7 +177,7 @@ services:
       # walked again. Nothing is capped — the full pass is periodic, not skipped.
       SYNC_FULL_RESYNC_SECONDS: ${SYNC_FULL_RESYNC_SECONDS:-604800}
       # This relay's own keypair: NIP-11 self, NIP-42 auth, NIP-66 monitor.
-      # nsec1… or 64 hex. Unset ⇒ the relay acts anonymously. See .env.example.
+      # nsec1… only. Unset ⇒ the relay acts anonymously. See .env.example.
       RELAY_NSEC: ${RELAY_NSEC:-}
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
