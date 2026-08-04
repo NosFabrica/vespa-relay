@@ -79,13 +79,7 @@ object RouterConfigLoader {
                 .syncEnv("SYNC_NEG_MIN_EVENTS", "ROUTER_NEG_MIN_EVENTS")
                 ?.trim()
                 ?.toIntOrNull()
-                ?.coerceAtLeast(0) ?: 100_000
-        val countTimeoutMs =
-            env
-                .syncEnv("SYNC_COUNT_TIMEOUT_MS", "ROUTER_COUNT_TIMEOUT_MS")
-                ?.trim()
-                ?.toLongOrNull()
-                ?.coerceIn(500, 60_000) ?: 5_000
+                ?.coerceAtLeast(0) ?: 5_000
         val fallback = RelaySourceDefaults()
         val only = env.syncEnv("SYNC_STREAMS", "ROUTER_STREAMS")?.trim()?.takeIf { it.isNotBlank() }
         val relaySourceDefaults =
@@ -103,13 +97,13 @@ object RouterConfigLoader {
                         ?.toIntOrNull()
                         ?.coerceIn(1, 256) ?: fallback.concurrency,
             )
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, negMinEvents, countTimeoutMs).let {
+        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, negMinEvents).let {
             if (only == null) it else it.copy(streams = select(it.streams, only))
         }
     }
 
     /**
-     * `SYNC_STREAMS=dataViaOutbox` — run only the named streams, so one part
+     * `SYNC_STREAMS=contentViaOutbox` — run only the named streams, so one part
      * of the sync can be measured without the others competing for the same
      * sockets, heap and ingest queue. A name that matches nothing is a hard
      * error: a typo would otherwise look exactly like a relay that mirrors
@@ -146,8 +140,7 @@ object RouterConfigLoader {
         ingestConcurrency: Int = 2,
         ingestBatch: Int = 1000,
         relaySourceDefaults: RelaySourceDefaults = RelaySourceDefaults(),
-        negMinEvents: Int = 100_000,
-        countTimeoutMs: Long = 5_000,
+        negMinEvents: Int = 5_000,
     ): RouterConfig {
         val cfg = ConfigFactory.parseString(hocon)
         val connTimeout = if (cfg.hasPath("connectionTimeout")) cfg.getLong("connectionTimeout") else 20L
@@ -181,7 +174,7 @@ object RouterConfigLoader {
                     deleteMissing = parseDeleteMissing(name, s),
                 )
             }
-        return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents, countTimeoutMs)
+        return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents)
     }
 
     private fun normalizeUrls(

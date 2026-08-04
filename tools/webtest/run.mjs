@@ -1,9 +1,7 @@
 // The web UI's test suite, plain node — no test framework, no dependencies,
 // matching the pages under test. Run from anywhere:
 //
-//     node tools/webtest/run.mjs           # the three module suites
-//     node tools/webtest/navwalk.mjs       # + the browser walkthrough
-//                                          #   (needs playwright + chromium)
+//     node tools/webtest/run.mjs           # the four module suites
 //
 // nip19.test.mjs   decoder vs an independently written test-side encoder
 // cards.test.mjs   EVERY registered kind renders, preview and permalink —

@@ -250,13 +250,12 @@ services:
       # exchange, and how long the relay gets to answer the NIP-45 COUNT that
       # measures it. Streams that declare `sync` in router.conf ignore both.
       SYNC_NEG_MIN_EVENTS: ${SYNC_NEG_MIN_EVENTS:-${ROUTER_NEG_MIN_EVENTS:-100000}}
-      SYNC_COUNT_TIMEOUT_MS: ${SYNC_COUNT_TIMEOUT_MS:-${ROUTER_COUNT_TIMEOUT_MS:-5000}}
       # Run only these streams (comma-separated), so one part of the sync can be
       # tuned without the rest competing for the same sockets, heap and ingest
       # queue. Empty (the default) runs every stream the config defines. The
       # router prints what it is NOT running on every startup, so a leftover
       # setting can't be mistaken for a stream that is failing.
-      #   SYNC_STREAMS=dataViaOutbox docker compose --profile sync up -d sync
+      #   SYNC_STREAMS=contentViaOutbox docker compose --profile sync up -d sync
       SYNC_STREAMS: ${SYNC_STREAMS:-${ROUTER_STREAMS:-}}
       # What goes down the wire to upstream relays. Empty (the default) still
       # logs what the relay COMPLAINS about — NOTICE, CLOSED, failed sends —

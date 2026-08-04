@@ -35,8 +35,6 @@ import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
  * administer, a ban that is not enforced. A typo must be loud.
  */
 object PubKeys {
-    private val HEX64 = Regex("^[0-9a-f]{64}$")
-
     /** One key, as 64 lowercase hex. Throws unless [raw] is a bech32 public key. */
     fun decode(
         raw: String,
@@ -105,16 +103,8 @@ object PubKeys {
                 "an npub that would not decode — recopy it"
             }
 
-            value.lowercase().matches(HEX64) -> {
-                // NOT echoed back in any form: 64 hex chars might be the
-                // public key the operator meant — or their hex-encoded SECRET
-                // pasted into the wrong slot, byte-identical in shape. An
-                // error log that re-encodes it would publish it.
-                "bare hex, which has no checksum — convert it to its npub form (any nostr key tool does this) and use that"
-            }
-
             value.length == 64 -> {
-                "64 characters that are not all hex"
+                "bare hex, which has no checksum — convert it to its npub form (any nostr key tool does this) and use that"
             }
 
             else -> {

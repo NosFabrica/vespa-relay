@@ -58,9 +58,8 @@ data class RouterConfig(
     val ingestBatch: Int = 1000,
     // How much overlap makes a negentropy reconcile worth its id exchange, and
     // how long a relay gets to answer the NIP-45 COUNT that measures it.
-    // From SYNC_NEG_MIN_EVENTS / SYNC_COUNT_TIMEOUT_MS.
-    val negMinEvents: Int = 100_000,
-    val countTimeoutMs: Long = 5_000,
+    // From SYNC_NEG_MIN_EVENTS.
+    val negMinEvents: Int = 5_000,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.DOWN)

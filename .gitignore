@@ -3,6 +3,10 @@ __pycache__/
 .venv/
 venv/
 .env
+# ...and every variant. A backup called `.env.bak-...` is not matched by `.env`,
+# and one was committed with a live RELAY_NSEC in it exactly that way.
+.env.*
+!.env.example
 *.tgz
 .DS_Store
 
@@ -33,4 +37,3 @@ router.conf
 *.db-wal
 *.db.state.json
 sync-state.json
-audit-2026-08-04/

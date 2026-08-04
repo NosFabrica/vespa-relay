@@ -45,7 +45,7 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   |---|---|---|
   | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
   | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A sync band answers "what is new since we last asked" instead |
-  | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `SYNC_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
+  | `auto` | you genuinely do not know | reconcile once **we** hold more than `SYNC_NEG_MIN_EVENTS` for the filter, otherwise page. A reconcile transfers the difference, so it pays when our set is already most of theirs and loses when we start from nothing — which our own store answers for free. Note it measures the WHOLE filter: on a mixed-kind stream a few large kinds can clear the floor while we hold none of the rest |
 
   A `fetch` stream never builds the local id set at all, which is the single most
   expensive thing the router does.
