@@ -615,6 +615,31 @@
   <div id="results" class="results" hidden aria-live="polite"></div>
 </main>
 
+<!--
+  Every module app.js reaches, preloaded.
+
+  Without these the browser discovers the graph a level at a time: fetch
+  index.html, then app.js, then the 7 it imports, then the 4 behind those —
+  three dependency waves, each costing a full round trip before any code runs.
+  On localhost that is 188ms and invisible; over a Cloudflare tunnel it measured
+  1,513ms, almost all of it waiting rather than transferring.
+
+  A preload hint starts every fetch in the FIRST wave, so the cost becomes one
+  round trip plus the bytes. The list is checked against the real import graph
+  by tools/webtest/preload.test.mjs — a renamed or new module fails there rather
+  than silently falling back to the slow path.
+-->
+<link rel="modulepreload" href="/web/cards.js" />
+<link rel="modulepreload" href="/web/cards/base.js" />
+<link rel="modulepreload" href="/web/cards/generic.js" />
+<link rel="modulepreload" href="/web/entity.js" />
+<link rel="modulepreload" href="/web/shared/conn.js" />
+<link rel="modulepreload" href="/web/shared/format.js" />
+<link rel="modulepreload" href="/web/shared/kinds.js" />
+<link rel="modulepreload" href="/web/shared/nip05.js" />
+<link rel="modulepreload" href="/web/shared/nip19.js" />
+<link rel="modulepreload" href="/web/shared/profiles.js" />
+<link rel="modulepreload" href="/web/shared/relay.js" />
 <script type="module" src="/web/app.js"></script>
 </body>
 </html>
