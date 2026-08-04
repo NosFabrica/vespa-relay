@@ -40,8 +40,8 @@ import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.router.MirrorRouter
-import com.nosfabrica.vespa.relay.router.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.SyncCursors
+import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin

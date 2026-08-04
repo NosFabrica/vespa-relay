@@ -52,15 +52,18 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     DynamicSync.kt      relaySource streams: discover, fan out, sync each relay
     DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
     UpstreamPush.kt     dir = up: reconcile and publish what the upstream lacks
-    RouterConfig.kt     the stream model (streams, directions, sync modes)
-    RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
-    RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
     SyncCursors.kt      resume state for paged relays ("bands")
-    StreamPhases.kt     per-stream progress reporting
-    PagingProgress.kt   time-axis progress for paged walks
-    RelayHealth.kt      per-authority strikes and eviction
-    RelayDiscovery.kt   pulling relay urls out of stored events
-    Unreachability.kt   which failures may be published as NIP-66 records
+    config/             the declarative side
+      RouterConfig.kt     the stream model (streams, directions, sync modes)
+      RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
+      RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
+    discovery/          which relays to dial, and what to believe about them
+      RelayDiscovery.kt   pulling relay urls out of stored events
+      RelayHealth.kt      per-authority strikes and eviction
+      Unreachability.kt   which failures may be published as NIP-66 records
+    progress/           observability
+      StreamPhases.kt     per-stream progress reporting
+      PagingProgress.kt   time-axis progress for paged walks
   maintenance/          background jobs behind the server
     ExpirationSweeper.kt  NIP-40
     ParseAudit.kt       what quartz could not parse, grouped to a JSON report

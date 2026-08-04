@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.relay.router.config.DeleteMissing
+import com.nosfabrica.vespa.relay.router.config.MirrorStream
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll

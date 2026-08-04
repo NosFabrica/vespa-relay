@@ -20,6 +20,11 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.relay.router.config.MirrorUpstream
+import com.nosfabrica.vespa.relay.router.config.RouterConfig
+import com.nosfabrica.vespa.relay.router.config.SyncMode
+import com.nosfabrica.vespa.relay.router.progress.PagingProgress
+import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
