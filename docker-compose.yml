@@ -25,8 +25,15 @@ services:
     # transaction log for minutes before it serves anything.
     mem_limit: ${VESPA_MEM_LIMIT:-34g}
     ports:
-      - "${VESPA_PORT:-8080}:8080" # query / document API
-      - "${VESPA_CONFIG_PORT:-19071}:19071" # config server
+      # LOOPBACK ONLY. Both of these bypass the relay completely: 8080 reads and
+      # DELETES documents through the document API, and 19071 is the config
+      # server that deploys the schema. Bound to all interfaces they are
+      # reachable from the LAN, and from anything tunnelling this host.
+      #
+      # The relay's own port is the only one meant to be public — it serves the
+      # web pages and the NIP-01/NIP-50 websocket, and nothing else.
+      - "127.0.0.1:${VESPA_PORT:-8080}:8080" # query / document API
+      - "127.0.0.1:${VESPA_CONFIG_PORT:-19071}:19071" # config server
     volumes:
       - vespa_var:/opt/vespa/var
     healthcheck:
@@ -167,6 +174,11 @@ services:
       # discarded. "sent" adds every command we send; "full" adds every message
       # received, which is a line per event and is for a specific investigation.
       SYNC_WIRE_LOG: ${SYNC_WIRE_LOG:-${ROUTER_WIRE_LOG:-}}
+      # Name one stream to get a line per relay from it: how many authors it was
+      # paired with, how many asks that became, how many legs the cursor left,
+      # and what came back. A dynamic fan-out is 16k relays wide, so this is a
+      # diagnostic run, not a setting to leave on.
+      SYNC_DIAGNOSE: ${SYNC_DIAGNOSE:-}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,

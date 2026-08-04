@@ -106,7 +106,7 @@ object RelayDiscovery {
                             // another element still applies (NIP-65's marker).
                             where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
                         )
-                    for (v in raw) normalize(v, requireScheme = false)?.let(found::add)
+                    for (v in raw) normalize(v)?.let(found::add)
                 }
             }
             // A select with no tag name can match anything in an event, which
@@ -126,6 +126,25 @@ object RelayDiscovery {
                     }
                 }
             }
+        }
+
+        // DIAGNOSTIC: what the pairing actually built. A bound select is only
+        // worth anything if the authors reach the relays that named them, and
+        // nothing downstream can tell "no authors were paired" from "the relays
+        // had nothing".
+        if (narrowing.isNotEmpty()) {
+            val perRelay = narrowing.values.map { it["authors"]?.size ?: 0 }
+            val distinctAuthors =
+                narrowing.values
+                    .flatMap { it["authors"].orEmpty() }
+                    .toSet()
+                    .size
+            System.err.println(
+                "router: discovery paired ${narrowing.size} relay(s) with $distinctAuthors distinct author(s); " +
+                    "authors per relay min=${perRelay.minOrNull()} median=${perRelay.sorted().getOrNull(perRelay.size / 2)} " +
+                    "max=${perRelay.maxOrNull()} total=${perRelay.sum()}; " +
+                    "${found.size - narrowing.size} relay(s) found with NO authors attached",
+            )
         }
 
         return found
@@ -254,7 +273,7 @@ object RelayDiscovery {
             if (select.where.isNotEmpty() && select.where.none { it.matches(tag) }) continue
             // With no tag name to go on, only take values that already say
             // they are a relay.
-            val url = normalize(tag[select.index], requireScheme = select.tag == null) ?: continue
+            val url = normalize(tag[select.index]) ?: continue
             if (select.bindings.isEmpty()) {
                 onMatch(url, emptyMap())
                 continue
@@ -309,14 +328,34 @@ object RelayDiscovery {
      * here — every dial is a guaranteed timeout) and loopback/private hosts
      * (`ws://localhost` in someone else's relay list means THEIR machine).
      */
-    private fun normalize(
-        raw: String,
-        requireScheme: Boolean,
-    ): NormalizedRelayUrl? {
+    private fun normalize(raw: String): NormalizedRelayUrl? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
-        if (requireScheme && !trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return null
+        // ws:// or wss://, ALWAYS. This used to be required only when the select
+        // did not name a tag, on the reasoning that a named tag makes a bare host
+        // safe to coerce. It does not: the normalizer is forgiving by design, so
+        // anything a relay-list author typed becomes a url, and a dynamic stream
+        // then dials it every cycle.
+        //
+        // Measured on this store's kind-10002s: 1,749 wss, 103 ws, 2 with no
+        // scheme, 0 http/https — so demanding it costs 2 urls in 1,854 and buys
+        // out every http:// entry riding in on OTHER sources, which the 10040s
+        // do carry (a live one names http://localhost:7778).
+        if (!trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return null
         val url = RelayUrlNormalizer.normalizeOrNull(trimmed) ?: return null
+        // ...and check the scheme AGAIN, on what we will actually dial.
+        //
+        // Checking only the raw string is not enough, because the normalizer
+        // repairs as well as canonicalises. 143 urls in this corpus carry a
+        // NESTED scheme — `wss://https//nostr.watch/relay/nostr.21crypto.ch` —
+        // which passes a startsWith("wss://") test and comes out the other side
+        // as `https://nostr.watch/relay/...`: a web page ABOUT a relay, dialled
+        // once a cycle forever, answering nothing.
+        //
+        // That is what a diagnostic run caught us doing — `https://kbin.social/`,
+        // `https://nostr.watch/relays/find`, `//nos.lol/` — 116 live "relays"
+        // returning 0 events between them.
+        if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return null
         if (RelayUrlNormalizer.isOnion(url.url) || RelayUrlNormalizer.isLocalHost(url.url)) return null
         return url
     }

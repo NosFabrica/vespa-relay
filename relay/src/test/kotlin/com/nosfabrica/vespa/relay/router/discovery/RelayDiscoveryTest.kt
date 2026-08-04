@@ -158,7 +158,7 @@ class RelayDiscoveryTest {
     }
 
     @Test
-    fun `a named tag tolerates junk, repeats, and scheme-less hosts`() {
+    fun `a named tag tolerates junk and repeats, and now demands a ws scheme`() {
         val list =
             event(
                 10002,
@@ -166,7 +166,13 @@ class RelayDiscoveryTest {
                 // specifies lowercase. The url survives via its lowercase twin.
                 arrayOf("r", "wss://write.example", "WRITE"),
                 arrayOf("r", "wss://write.example", "write"),
-                arrayOf("r", "relay.example"), // scheme-less: the normalizer fixes it
+                // Scheme-less. The normalizer WOULD coerce this to wss://, and it
+                // used to be allowed here because a named tag was treated as
+                // enough context. It is not: a relay list holds whatever its
+                // author typed, and a dynamic stream dials the result every
+                // cycle. Costs 2 urls in 1,854 on the live store.
+                arrayOf("r", "relay.example"),
+                arrayOf("r", "http://relay.example"), // right host, wrong protocol
                 arrayOf("r"),
                 arrayOf("p", "wss://not-an-r-tag.example"),
                 // The normalizer would turn these into `wss://not/`; we don't let it.
@@ -175,7 +181,7 @@ class RelayDiscoveryTest {
             )
 
         assertEquals(
-            listOf("wss://write.example/", "wss://relay.example/"),
+            listOf("wss://write.example/"),
             urls(list, select(tag = "r", where = marker("write"))),
         )
     }

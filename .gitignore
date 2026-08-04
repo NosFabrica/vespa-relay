@@ -33,3 +33,4 @@ router.conf
 *.db-wal
 *.db.state.json
 sync-state.json
+audit-2026-08-04/

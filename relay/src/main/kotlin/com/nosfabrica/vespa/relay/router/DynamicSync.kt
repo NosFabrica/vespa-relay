@@ -44,12 +44,14 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
@@ -78,6 +80,14 @@ internal class DynamicSync(
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
 ) {
+    /**
+     * `SYNC_DIAGNOSE=<stream>` — log one line per relay for that stream: how many
+     * authors it was paired with, how many asks that became, how many legs the
+     * cursor left, and what came back. Off by default because this fan-out is
+     * 16,000 relays wide.
+     */
+    private val diagnose: String? = System.getenv("SYNC_DIAGNOSE")?.trim()?.takeIf { it.isNotEmpty() }
+
     private val deleteMissingSync = DeleteMissingSync(client, store, bands, ingest, paging)
 
     /** Records dropped because an upstream retracted them — see [DeleteMissingSync]. */
@@ -348,8 +358,19 @@ internal class DynamicSync(
         transferring.incrementAndGet()
         return try {
             var downloaded = 0
-            for (ask in splitByAuthors(window, stream.dynamic?.authorsPerLeg)) {
+            val asks = splitByAuthors(window, stream.dynamic?.authorsPerLeg)
+            for (ask in asks) {
                 downloaded += syncOneFilter(stream, url, ask, local)
+            }
+            // DIAGNOSTIC: what this relay was asked and what came back. Enabled
+            // by SYNC_DIAGNOSE, which names one stream — the fan-out is 16k
+            // relays wide and a line each would be the log.
+            if (diagnose == stream.name) {
+                System.err.println(
+                    "router: [diag] ${url.url} authors=${window.authors?.size ?: 0} " +
+                        "ask(s)=${asks.size} leg(s)=${asks.sumOf { bands.legs(url, it).size }} " +
+                        "downloaded=$downloaded",
+                )
             }
             downloaded
         } catch (e: CancellationException) {
@@ -479,9 +500,55 @@ internal class DynamicSync(
      */
     private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean {
         val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
-        if (!ok) monitor?.observer?.record(url, reachable = false, error = "tcp: unreachable")
+        // Only claim what we can prove. [TcpProber.tcpReachable] answers with a
+        // Boolean, so a refusal and a timeout arrive here as the same value — and
+        // they are not the same claim. A refusal proves nobody is listening. A
+        // timeout is at least as likely to be OUR socket budget, DNS pressure, or
+        // one NAT carrying a 100-wide fan-out.
+        //
+        // Publishing on the Boolean signed 5,001 unreachable records in a single
+        // hour. Re-probed one at a time afterwards: 3,279 had no socket at all
+        // and 986 answered nothing, but 732 urls across 423 HOSTS answered a REQ
+        // perfectly well — 120 of them by challenging us for NIP-42 AUTH. Those
+        // are signed public statements about other people's servers, and they
+        // were wrong.
+        //
+        // So the failure is re-run once to capture its cause, and published only
+        // for what [Unreachability] already accepts as proof. A relay that merely
+        // timed out is skipped this cycle and nothing is said about it. The extra
+        // connect is paid only on the failing path.
+        if (!ok) {
+            tcpFailure(url)?.takeIf { Unreachability.proves(it) }?.let { cause ->
+                monitor?.observer?.record(url, reachable = false, error = "tcp: ${cause.javaClass.simpleName}")
+            }
+        }
         return ok
     }
+
+    /**
+     * Re-run the TCP connect, keeping the exception instead of a Boolean.
+     *
+     * Null when it unexpectedly succeeds — the pre-probe's budget is tight and the
+     * host may merely have been slow, which is itself a reason not to have
+     * published — or when the url has no host to dial.
+     */
+    private suspend fun tcpFailure(url: NormalizedRelayUrl): Exception? =
+        withContext(Dispatchers.IO) {
+            val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return@withContext null
+            val host = uri.host ?: return@withContext null
+            val port =
+                when {
+                    uri.port > 0 -> uri.port
+                    url.url.startsWith("wss://", ignoreCase = true) -> 443
+                    else -> 80
+                }
+            try {
+                java.net.Socket().use { it.connect(java.net.InetSocketAddress(host, port), CLAIM_PROBE_TIMEOUT_MS) }
+                null
+            } catch (e: java.io.IOException) {
+                e
+            }
+        }
 
     /**
      * Drop a dynamic relay's socket once nothing is using it — hundreds of
@@ -503,6 +570,17 @@ internal class DynamicSync(
         // syncRelay's two failure returns, distinct because only one of them
         // is publishable. Both negative so `got > 0` (delivered) and
         // `got == 0` (nothing new) keep meaning what they say.
+
+        /**
+         * How long the confirming connect waits before we decline to claim.
+         *
+         * Looser than the pre-probe's tight budget on purpose: that one is an
+         * optimisation and may skip a slow host cheaply, while this one decides
+         * whether to sign a public statement about somebody's server. When the
+         * two disagree, the quiet answer wins.
+         */
+        private const val CLAIM_PROBE_TIMEOUT_MS = 5_000
+
         private const val UNREACHABLE = -1
         private const val TRANSFER_FAILED = -2
     }

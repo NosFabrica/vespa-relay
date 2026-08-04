@@ -34,6 +34,8 @@ ktor-server-websockets = { module = "io.ktor:ktor-server-websockets", version.re
 # NIP-11 tells relays to serve the info doc with CORS headers, and browser-based
 # NIP-86 admin tools need the Authorization header preflighted.
 ktor-server-cors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
+# gzip/deflate for the pages and ES modules — ~117KB of text over the wire otherwise.
+ktor-server-compression = { module = "io.ktor:ktor-server-compression", version.ref = "ktor" }
 # serveRelay bundles the Netty engine (batteries-included) so a consumer — or the
 # standalone main() — can bind a port without wiring an engine itself.
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
