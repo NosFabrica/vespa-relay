@@ -226,8 +226,10 @@ statement about someone else's server.
 - **JitPack pins are commit hashes, and Gradle resolves conflicts
   lexicographically.** Pinning quartz to `6d518adddb` while the store carried
   `79f198c729` silently resolved to the latter — `'7' > '6'`. Hence
-  `resolutionStrategy { force(libs.quartz) }` in `relay/build.gradle.kts`. Never
-  remove it, and check that a pin actually took effect.
+  `resolutionStrategy { force(libs.quartz) }` in EVERY module's build file —
+  each of `:common`, `:relay` and `:sync` resolves quartz independently, and a
+  new module must add its own force. Never remove one, and check that a pin
+  actually took effect.
 - **JitPack's build-status API lies.** It reported a build `ok` whose log ended
   in `exit code 1`. Only the presence of the artifact file proves anything.
 - **JitPack caches builds per group-spelling.** `com.github.NosFabrica` and
@@ -280,7 +282,7 @@ until the reconcile lands. `TRUST_RECONCILE_ON_START=false` skips it entirely.
 If a start still looks slow, check that before blaming Vespa's transaction-log
 replay — that wrong attribution is already in this file's history.
 
-The relay **deploys the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
+Both processes **deploy the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
 default true), so the cluster always matches the code talking to it. A no-change
 deploy is a cheap no-op. This is not decoration: when the schema drifted, Vespa
 answered every write with `Status 400 ... Field 'name_parts' is not defined` and

@@ -1,7 +1,8 @@
 plugins {
     alias(libs.plugins.kotlin.jvm)
-    // This module IS the app: RelayMain is the entrypoint (`./gradlew :relay:run`,
-    // or the `installDist` scripts the Docker image runs).
+    // This module IS the serving app: RelayMain is the entrypoint
+    // (`./gradlew :relay:run`, or the `installDist` scripts the Docker image
+    // runs). The mirror is :sync's own app.
     application
 }
 

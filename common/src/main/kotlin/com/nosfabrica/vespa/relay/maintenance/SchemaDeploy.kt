@@ -32,9 +32,11 @@ import java.net.URI
  * carried on (2.3M good events lost in one run). A no-change deploy is a
  * cheap no-op.
  *
- * A deploy failure against a Vespa that is already serving keeps the relay up
- * on the schema it has, with a warning naming the cost. On a fresh Vespa the
- * failure rethrows: there is no schema to fall back to.
+ * A deploy failure against a Vespa that is already serving keeps the calling
+ * process up on the schema Vespa has, with a warning naming the cost. On a
+ * fresh Vespa the failure rethrows: there is no schema to fall back to. Both
+ * processes call this at boot — the sync side is the one whose writes a
+ * drifted schema silently discards.
  */
 fun deployBundledSchema(
     vespaUrl: String,
@@ -45,8 +47,10 @@ fun deployBundledSchema(
         deployer.deploy()
     } catch (e: Exception) {
         if (!deployer.isServing(vespaUrl)) throw e
+        // "schema:", not "relay:": both processes deploy since the split, and
+        // a failure in the sync container must not read as the relay's.
         System.err.println(
-            "relay: schema deploy to $configUrl failed (${e.message?.take(200)}); " +
+            "schema: deploy to $configUrl failed (${e.message?.take(200)}); " +
                 "serving on the schema Vespa already has — writes carrying fields it lacks will be rejected until a deploy succeeds",
         )
     }

@@ -180,11 +180,15 @@ fun serveRelay(
             // What the sync process polls to throttle its ingest. Public on
             // purpose, like the stats pages: a mean read latency names no
             // client and no query, and gating it would cost the mirror its
-            // feed the moment an auth config drifts.
+            // feed the moment an auth config drifts. `samples` is capped at
+            // the MIN_SAMPLES gate it exists to answer — uncapped it is a
+            // lifetime query counter, and polling it twice would hand anyone
+            // the relay's queries-per-second, which the throttle never needed.
             pressure?.let { p ->
                 get("/pressure") {
+                    val samples = p.sampleCount().coerceAtMost(ServingPressure.MIN_SAMPLES.toLong())
                     call.respondText(
-                        """{"meanMs":${p.meanMs()},"samples":${p.sampleCount()}}""",
+                        """{"meanMs":${p.meanMs()},"samples":$samples}""",
                         ContentType.Application.Json,
                     )
                 }

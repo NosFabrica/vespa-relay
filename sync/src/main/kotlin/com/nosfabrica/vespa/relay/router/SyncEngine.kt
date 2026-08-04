@@ -60,7 +60,7 @@ import kotlin.coroutines.CoroutineContext
 
 /**
  * The router: a strfry-style mirror. For each configured upstream it moves
- * events between that relay and the store this relay serves.
+ * events between that relay and the served relay's store.
  *
  * Down (`dir = down`/`both`): a live REQ subscription streams new events into
  * the store through [IngestPipeline]; [StaticBackfill] catches up on history
@@ -87,7 +87,9 @@ class SyncEngine(
     signer: NostrSigner? = null,
     // SYNC_WIRE_LOG: "" (errors only) / "sent" / "full".
     wireLogMode: String = "",
-    // Shared with the relay server: ingest yields when client reads slow down.
+    // Fed by PressurePoller from the relay's GET /pressure: ingest yields
+    // when client reads slow down. Null — no feed configured — is the
+    // mirror-at-full-speed mode, and SyncMain says so at boot.
     servingPressure: ServingPressure? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)

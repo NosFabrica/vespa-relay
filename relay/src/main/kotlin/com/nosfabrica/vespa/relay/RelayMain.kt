@@ -79,8 +79,28 @@ fun main() {
         ?.let {
             error(
                 "$it is set, but the relay no longer runs the sync engine — it moved to its own process " +
-                    "(the vespa-sync binary / the `sync` service in docker-compose.yml), which restarts without " +
-                    "taking the relay down. Move the SYNC_* settings there, or unset $it to serve without mirroring.",
+                    "(the vespa-sync binary / the `sync` service in docker-compose.yml, enabled with " +
+                    "`docker compose --profile sync up`). Move the SYNC_* settings there, or unset $it " +
+                    "to serve without mirroring.",
+            )
+        }
+
+    // The rest of the family that moved with the mirror. Not fatal — none of
+    // these starts a subsystem, so nothing is half-running — but a setting
+    // read by nobody must not pass in silence: PARSE_AUDIT_FILE left here
+    // would look exactly like an audit that found nothing.
+    env.keys
+        .filter { key ->
+            (
+                key.startsWith("SYNC_") || key.startsWith("ROUTER_") ||
+                    key.startsWith("PARSE_AUDIT_") || key == "SERVING_PRESSURE_THRESHOLD_MS"
+            ) &&
+                !env[key].isNullOrBlank()
+        }.sorted()
+        .takeIf { it.isNotEmpty() }
+        ?.let {
+            System.err.println(
+                "relay: ${it.joinToString()} — read by the sync process, not the relay; set them on that service or they do nothing",
             )
         }
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
@@ -148,12 +168,11 @@ fun main() {
 
     // The relay server measures client reads into it; the sync process polls
     // the mean over GET /pressure to decide whether its ingest should yield.
-    val servingPressure =
-        ServingPressure(
-            thresholdMs =
-                env["SERVING_PRESSURE_THRESHOLD_MS"]?.trim()?.toLongOrNull()?.coerceAtLeast(100)
-                    ?: ServingPressure.DEFAULT_THRESHOLD_MS,
-        )
+    // No threshold here on purpose: this side only records and serves — the
+    // threshold belongs to the process that yields on it, and reading
+    // SERVING_PRESSURE_THRESHOLD_MS into an instance whose backoffMs() nobody
+    // calls would be a setting that is accepted and does nothing.
+    val servingPressure = ServingPressure()
     val relay =
         NostrRelayServer(
             store = store,

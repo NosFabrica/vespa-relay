@@ -41,7 +41,7 @@ docker compose up --build
 # relay + web UI on ws://localhost:7777
 ```
 
-On every start the relay deploys the bundled Vespa schema — so a fresh Vespa
+On every start both processes deploy the bundled Vespa schema — so a fresh Vespa
 becomes queryable and an upgraded relay carries its schema changes with it — then
 serves. Open `http://localhost:7777` for the search UI, or connect a Nostr
 client to the websocket.

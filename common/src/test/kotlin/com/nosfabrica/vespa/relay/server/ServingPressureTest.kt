@@ -121,6 +121,40 @@ class ServingPressureTest {
     }
 
     @Test
+    fun `an adopted mean replaces rather than smooths`() {
+        // The EWMA already happened on the relay side; re-dampening it here
+        // would make a real spike take several polls to reach ingest.
+        val p = ServingPressure(thresholdMs = 2_000)
+
+        p.adopt(5_000, ServingPressure.MIN_SAMPLES.toLong())
+
+        assertEquals(5_000, p.meanMs())
+        assertTrue(p.backoffMs() > 0, "an adopted slow mean must throttle like a recorded one")
+    }
+
+    @Test
+    fun `adopting zero stops throttling on a number from the past`() {
+        val p = ServingPressure(thresholdMs = 2_000)
+        p.adopt(10_000, 100)
+        assertTrue(p.backoffMs() > 0)
+
+        p.adopt(0, 0)
+
+        assertEquals(0, p.backoffMs(), "a dead feed has no clients to protect")
+    }
+
+    @Test
+    fun `an adopted mean below the sample gate is not yet evidence`() {
+        // Same rule as record(): below MIN_SAMPLES the mean is one client's
+        // first query, not a trend — however it arrived.
+        val p = ServingPressure(thresholdMs = 2_000)
+
+        p.adopt(10_000, (ServingPressure.MIN_SAMPLES - 1).toLong())
+
+        assertEquals(0, p.backoffMs())
+    }
+
+    @Test
     fun `the backoff is bounded however bad it gets`() {
         // Ingest yields; it does not stop. A pause long enough to look like a
         // hang would be a worse failure than the one it is avoiding.

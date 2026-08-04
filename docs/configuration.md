@@ -11,8 +11,8 @@ relays into the same store, as its own container so it can be restarted or
 retuned without the relay dropping a client. The sections below say which
 process reads what: Core and everything through Admin is the relay (the sync
 process also reads `VESPA_URL`, `RELAY_URL`, `RELAY_NSEC`, `AUTO_DEPLOY`,
-`VESPA_QUERY_FANOUT` and `JAVA_TOOL_OPTIONS`); the Router section and the parse
-audit are the sync process. Aiming `SYNC_CONFIG`/`SYNC_CONFIG_FILE` at the
+`VESPA_CONFIG_URL`, `VESPA_QUERY_FANOUT` and `JAVA_TOOL_OPTIONS`); the Router
+section and the parse audit are the sync process. Aiming `SYNC_CONFIG`/`SYNC_CONFIG_FILE` at the
 relay fails its boot on purpose — the setting would once have started the
 mirror there, and accepting-but-ignoring it is the silent inertness this
 codebase forbids.
@@ -31,7 +31,7 @@ codebase forbids.
 | `VESPA_CONFIG_URL` | Vespa's config server, for the deploy above | `VESPA_URL` on `:19071` |
 | `VESPA_PORT` / `VESPA_CONFIG_PORT` | ports published on the **host** for the two above. Compose only — nothing inside the containers moves | `8080` / `19071` |
 | `VESPA_QUERY_FANOUT` | concurrent queries the store issues per bulk operation. Higher makes ingest faster; lower leaves more of the engine for the people searching | `4` |
-| `JAVA_TOOL_OPTIONS` | each JVM's own flags, in practice its heap. For the sync process this is what decides whether a large reconcile finishes or dies with `OutOfMemoryError` — it holds a set of event ids in memory while it reconciles. The percentage is of the container's own mem limit, because `MaxRAMPercentage` reads the cgroup | `-XX:MaxRAMPercentage=70` |
+| `JAVA_TOOL_OPTIONS` / `RELAY_JAVA_TOOL_OPTIONS` / `SYNC_JAVA_TOOL_OPTIONS` | each JVM's own flags, in practice its heap. The bare name reaches **both** containers under compose; the prefixed spellings override per process — the two JVMs are sized 2× apart, so an absolute `-Xmx` tuned for the sync's reconcile heap would kill the smaller relay container. For the sync process this is what decides whether a large reconcile finishes or dies with `OutOfMemoryError`. The percentage is of the container's own mem limit, because `MaxRAMPercentage` reads the cgroup | `-XX:MaxRAMPercentage=70` |
 | `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 names — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](router.md#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 

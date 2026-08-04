@@ -42,8 +42,12 @@ import java.time.Duration
  * A dead feed must not throttle forever on a number from the past: after
  * [MISSES_BEFORE_RESET] consecutive failures the pressure resets to none — a
  * relay that is down has no clients to protect — and says so once, not per
- * miss. Recovery is announced too, so the log shows which regime a slow
- * night's ingest was under.
+ * miss. That announcement fires whether or not the feed EVER connected: a
+ * typo'd url and a relay that died look identical from here, and the boot
+ * line already claimed we would yield, so staying quiet would leave that
+ * claim standing forever — the configured-but-silently-inert failure this
+ * codebase forbids. Reconnection is announced too, so the log shows which
+ * regime a slow night's ingest ran under.
  */
 class PressurePoller(
     private val url: String,
@@ -63,30 +67,45 @@ class PressurePoller(
         poller =
             Thread {
                 var misses = 0
-                var fed = false
+                // Two flags, not one: "the feed has ever worked" decides the
+                // wording, "we have announced it down" decides whether the
+                // next success is news. A single flag conflated them, and a
+                // feed that never connected was never reported at all — while
+                // the start() line above kept claiming the throttle was on.
+                var everFed = false
+                var down = false
                 while (!Thread.currentThread().isInterrupted) {
-                    when (val polled = poll()) {
-                        null -> {
-                            misses++
-                            if (misses == MISSES_BEFORE_RESET) {
-                                pressure.adopt(0, 0)
-                                if (fed) {
-                                    System.err.println(
-                                        "router: pressure feed lost ($url unreachable x$misses) — ingest no longer yielding to relay reads",
-                                    )
-                                }
-                                fed = false
-                            }
+                    val polled = poll()
+                    // poll() restores the interrupt flag instead of counting a
+                    // shutdown as a miss — re-check before reading null as the
+                    // relay's absence, or a restart logs a fabricated loss.
+                    if (Thread.currentThread().isInterrupted) return@Thread
+                    if (polled == null) {
+                        misses++
+                        if (misses == MISSES_BEFORE_RESET) {
+                            pressure.adopt(0, 0)
+                            down = true
+                            System.err.println(
+                                if (everFed) {
+                                    "router: pressure feed lost ($url unreachable x$misses) — ingest no longer yielding to relay reads"
+                                } else {
+                                    "router: pressure feed has not connected ($url unreachable x$misses) — " +
+                                        "ingest is NOT yielding to relay reads; check the url and the relay"
+                                },
+                            )
                         }
-
-                        else -> {
-                            if (!fed && misses >= MISSES_BEFORE_RESET) {
-                                System.err.println("router: pressure feed recovered — relay reads ${polled.first}ms")
-                            }
-                            misses = 0
-                            fed = true
-                            pressure.adopt(polled.first, polled.second)
+                    } else {
+                        // Quiet on an uneventful first connect — the start()
+                        // line already said the feed is on.
+                        if (down) {
+                            System.err.println(
+                                "router: pressure feed ${if (everFed) "recovered" else "connected"} — relay reads ${polled.first}ms",
+                            )
                         }
+                        misses = 0
+                        everFed = true
+                        down = false
+                        pressure.adopt(polled.first, polled.second)
                     }
                     try {
                         Thread.sleep(intervalMs)
@@ -104,7 +123,7 @@ class PressurePoller(
 
     /** One GET: (meanMs, samples), or null for any failure — the loop counts those. */
     private fun poll(): Pair<Long, Long>? =
-        runCatching {
+        try {
             val request =
                 HttpRequest
                     .newBuilder(URI.create(url))
@@ -117,7 +136,16 @@ class PressurePoller(
             val mean = body.getValue("meanMs").jsonPrimitive.long
             val samples = body.getValue("samples").jsonPrimitive.long
             mean to samples
-        }.getOrNull()
+        } catch (e: InterruptedException) {
+            // close() interrupts a send in flight, and the throw CLEARS the
+            // flag — swallowed with the HTTP failures it would count a
+            // shutdown as a miss, sleep the full interval, and leave close()
+            // a no-op. Restore it so the loop sees the shutdown.
+            Thread.currentThread().interrupt()
+            null
+        } catch (_: Exception) {
+            null
+        }
 
     override fun close() {
         poller?.interrupt()

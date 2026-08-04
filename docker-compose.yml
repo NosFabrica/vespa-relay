@@ -3,7 +3,7 @@
 #   docker compose up --build                  # serve only
 #   docker compose --profile sync up --build   # …plus the mirror (see below)
 #
-# The relay deploys the bundled schema to Vespa on every boot (AUTO_DEPLOY) —
+# Both processes deploy the bundled schema to Vespa on every boot (AUTO_DEPLOY) —
 # first run and schema upgrades alike — then serves the NIP-50 websocket, the
 # NIP-11 doc, and the web UI on RELAY_PORT.
 #
@@ -86,10 +86,37 @@ services:
     environment:
       # Heap is MaxRAMPercentage of mem_limit above — the percentage reads the
       # cgroup, and without a limit it reads the HOST, sizing the heap against
-      # memory the engine has already claimed.
-      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}
+      # memory the engine has already claimed. Per-process override first: the
+      # two JVMs are sized 2x apart, so a bare JAVA_TOOL_OPTIONS tuned for the
+      # sync's reconcile heap would silently retune the serving relay too.
+      JAVA_TOOL_OPTIONS: ${RELAY_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
       VESPA_URL: http://vespa:8080
       RELAY_PORT: 7777
+      # Migration tripwires, not settings: the relay refuses to boot when a
+      # stream config is still aimed at it (the mirror is the sync service
+      # now). Compose only injects what is mapped, so without these
+      # pass-throughs a stale .env would sail past the guard and the mirror
+      # would be silently gone. Value never used — presence alone fires it.
+      SYNC_CONFIG: ${SYNC_CONFIG:-}
+      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-}
+      ROUTER_CONFIG: ${ROUTER_CONFIG:-}
+      ROUTER_CONFIG_FILE: ${ROUTER_CONFIG_FILE:-}
+      # Deploy the bundled schema on boot (default true; see AUTO_DEPLOY docs).
+      AUTO_DEPLOY: ${AUTO_DEPLOY:-}
+      # Write authorization and the NIP-86 management API. Documented in
+      # docs/configuration.md; previously read by the relay but never passed
+      # through, so a .env ban list was silently unenforced under compose.
+      ALLOW_PUBKEYS: ${ALLOW_PUBKEYS:-}
+      DENY_PUBKEYS: ${DENY_PUBKEYS:-}
+      ALLOW_KINDS: ${ALLOW_KINDS:-}
+      DENY_KINDS: ${DENY_KINDS:-}
+      RELAY_ADMIN_PUBKEYS: ${RELAY_ADMIN_PUBKEYS:-}
+      # NIP-86 ban state that must outlive the container — put it in the
+      # mounted volume, e.g. /var/lib/vespa-relay/relay-state.json.
+      RELAY_STATE_FILE: ${RELAY_STATE_FILE:-}
+      REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
+      EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
+      LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # How the relay presents itself in its NIP-11 document. All optional —
@@ -167,23 +194,40 @@ services:
     # full history, back when the mirror shared the relay's container.)
     #
     # With this profile on, check the machine's total against VESPA_MEM_LIMIT
-    # + RELAY_MEM_LIMIT + this — the defaults sum to 52g, sized for a box
-    # where something yields; trim whichever share your deployment can spare.
+    # + RELAY_MEM_LIMIT + this — the defaults sum to 52g, which the 47 GiB
+    # reference box in the docs cannot hold. Trim ~5g from whichever share
+    # your deployment can spare (e.g. VESPA_MEM_LIMIT=30g SYNC_MEM_LIMIT=10g;
+    # 70% of 10g still holds the 5.3 GiB assertions snapshot with margin).
     mem_limit: ${SYNC_MEM_LIMIT:-12g}
     depends_on:
       vespa:
         condition: service_healthy
+      # Started (not healthy — the relay has no healthcheck): lets the relay's
+      # boot deploy usually land first and the /pressure feed come up close to
+      # ingest. Ordering is best-effort either way; SyncMain retries a lost
+      # deploy race and the pressure poller announces a feed that never
+      # connects, so this is comfort, not correctness.
+      relay:
+        condition: service_started
     environment:
       # Heap is MaxRAMPercentage of mem_limit above; see the relay's note.
-      JAVA_TOOL_OPTIONS: ${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}
+      # Per-process override first — this is the JVM the reconcile heap
+      # sizing story belongs to.
+      JAVA_TOOL_OPTIONS: ${SYNC_JAVA_TOOL_OPTIONS:-${JAVA_TOOL_OPTIONS:--XX:MaxRAMPercentage=70}}
       VESPA_URL: http://vespa:8080
+      # Deploy the bundled schema on boot (default true) — this process is the
+      # one whose writes a drifted schema silently discards.
+      AUTO_DEPLOY: ${AUTO_DEPLOY:-}
       # The served relay's ws url — mirrored events are stored as that relay's,
       # whichever process writes them.
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # The streams to mirror. The profile is the on-switch, so this defaults
       # to the mounted path instead of empty; SYNC_CONFIG_LOCAL (below) picks
-      # which local file is mounted there.
-      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-/etc/vespa-relay/router.conf}
+      # which local file is mounted there. The nested ROUTER_ fallback stays
+      # deliberately: compose only passes through what is mapped here, so
+      # without it a .env still on the old name would silently mirror the
+      # mounted default instead of the file it names.
+      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-${ROUTER_CONFIG_FILE:-/etc/vespa-relay/router.conf}}
       # Clients first, across the process boundary: the relay serves its mean
       # read latency on GET /pressure and this process throttles ingest on it.
       # Unset it to mirror at full speed regardless of readers.

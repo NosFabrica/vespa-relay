@@ -30,6 +30,11 @@ import com.nosfabrica.vespa.relay.router.config.syncEnv
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
+// The deploy-race retry (see main): enough attempts to outlast the relay's
+// own boot deploy at a pace that stays visible in the log.
+private const val DEPLOY_ATTEMPTS = 5
+private const val DEPLOY_RETRY_SECONDS = 5L
+
 /**
  * Run the sync engine — "the router" — as its own process against a Vespa the
  * serving relay also uses. Its whole point is the split: the mirror can be
@@ -74,12 +79,31 @@ fun main() {
     // process whose writes a drifted schema silently discards — 2.3M events
     // lost in one run while every status line read healthy — and a sync-only
     // deployment has no relay to deploy for it. A no-change deploy is a cheap
-    // no-op; under docker compose the relay usually gets there first and this
-    // one no-ops.
+    // no-op.
     val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
     if (env["AUTO_DEPLOY"]?.toBooleanStrictOrNull() != false) {
         System.err.println("schema: deploying the bundled application package to $configUrl")
-        deployBundledSchema(vespaUrl, configUrl)
+        // Compose starts both processes together and provides no ordering, so
+        // two deploys can race the same config server session — and on a
+        // FRESH Vespa the loser has nothing serving to fall back to, so
+        // deployBundledSchema rethrows and the container crash-loops through
+        // its first boot. The race is transient by nature: retry it here
+        // rather than hand it to `restart: unless-stopped` as a crash.
+        var attempt = 1
+        while (true) {
+            try {
+                deployBundledSchema(vespaUrl, configUrl)
+                break
+            } catch (e: Exception) {
+                if (attempt >= DEPLOY_ATTEMPTS) throw e
+                System.err.println(
+                    "schema: deploy attempt $attempt/$DEPLOY_ATTEMPTS failed (${e.message?.take(160)}); " +
+                        "retrying in ${DEPLOY_RETRY_SECONDS}s — likely racing the relay's own boot deploy",
+                )
+                Thread.sleep(DEPLOY_RETRY_SECONDS * 1_000)
+                attempt++
+            }
+        }
         System.err.println("schema: deployed and serving")
     }
 
