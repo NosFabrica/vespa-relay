@@ -56,13 +56,16 @@ export async function enrichProfiles(pubkeys) {
     const conn = await refConn();
     const found = await conn.req({ kinds: [0], authors: missing, limit: missing.length }, 5000);
     seedProfiles(found);
-    asked = true;
+    // EOSE, not merely "resolved": req() resolves with whatever arrived when
+    // its timeout fires, and a slow read used to count as an answer here.
+    asked = found.complete === true;
   } catch (e) { asked = false; }
   // Cache "no profile" ONLY when the relay actually answered. This used to
   // record null on failure too, so one dropped lookup meant that pubkey had
   // no face for the rest of the session — which is what made signing in
   // appear to need a page refresh: the very first attempt poisoned the entry
-  // for your own key, and every later render read the poison.
+  // for your own key, and every later render read the poison. A timed-out
+  // read is the same mistake in slow motion, hence the `complete` check.
   if (asked) for (const p of missing) if (!profiles.has(p)) profiles.set(p, null);
 }
 

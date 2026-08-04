@@ -14,13 +14,19 @@ const imgEmbed = (url) =>
 const thumbFallback = (url) =>
   url ? `<img class="thumb" src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : "";
 
-/** 20 — picture-first. */
+/**
+ * 20 — picture-first. One body, computed once: the first version of these
+ * two cards composed "embed-or-preview-block" + "full-mode body" as separate
+ * terms, and the corner cases double-rendered — a full-depth video with no
+ * url printed its text twice, and a preview picture with no url printed
+ * nothing at all.
+ */
 function pictureCard(ev, opts) {
   const url = mediaUrl(ev) || imageOf(ev);
-  const full = opts && opts.full;
-  const inner =
-    (url ? (full ? imgEmbed(url) : `<div class="result-main"><div class="text">${bodyHtml(opts, titleOf(ev) || ev.content, 200)}</div>${thumbFallback(url)}</div>`) : "") +
-    (full ? bodyHtml(opts, titleOf(ev) || ev.content, 200) : "");
+  const body = bodyHtml(opts, titleOf(ev) || ev.content, 200);
+  const inner = opts && opts.full
+    ? (url ? imgEmbed(url) : "") + body
+    : `<div class="result-main"><div class="text">${body}</div>${thumbFallback(url)}</div>`;
   return shell(ev, opts, inner);
 }
 
@@ -28,10 +34,10 @@ function pictureCard(ev, opts) {
 function videoCard(ev, opts) {
   const url = mediaUrl(ev);
   const full = opts && opts.full;
-  const embed = full && url
-    ? `<div class="embed"><video controls preload="metadata" src="${esc(url)}"${poster(ev) ? ` poster="${esc(poster(ev))}"` : ""}></video></div>`
-    : `<div class="result-main"><div class="text">${bodyHtml(opts, titleOf(ev) || summaryOf(ev) || ev.content, 300)}</div>${thumbFallback(poster(ev))}</div>`;
-  const inner = embed + (full ? bodyHtml(opts, titleOf(ev) || summaryOf(ev) || ev.content, 300) : "");
+  const body = bodyHtml(opts, titleOf(ev) || summaryOf(ev) || ev.content, 300);
+  const inner = full
+    ? (url ? `<div class="embed"><video controls preload="metadata" src="${esc(url)}"${poster(ev) ? ` poster="${esc(poster(ev))}"` : ""}></video></div>` : "") + body
+    : `<div class="result-main"><div class="text">${body}</div>${thumbFallback(poster(ev))}</div>`;
   return shell(ev, opts, inner, full && url ? [["url", `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`]] : []);
 }
 

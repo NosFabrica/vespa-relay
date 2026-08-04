@@ -231,7 +231,15 @@ async function search(text, limit) {
   if (tab.kinds) filter.kinds = tab.kinds;
   const events = await relay.req(filter);
   seedProfiles(events);
-  await enrichProfiles(events.filter(e => e.kind !== 0).map(e => e.pubkey));
+  // Authors, plus any tag value that IS a pubkey the card will show as a
+  // person — a 30382's d subject, a 10040's service column. The names rule
+  // holds in the results list, not only on permalinks. p tags are excluded
+  // on purpose: list previews draw them as faces without names, and a follow
+  // list can carry thousands.
+  const mentioned = events.flatMap((e) => (e.tags || [])
+    .filter((t) => (t[0] === "d" || /^\d+:/.test(t[0] || "")) && /^[0-9a-f]{64}$/.test(t[1] || ""))
+    .map((t) => t[1]));
+  await enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
   return events;
 }
 
@@ -269,8 +277,7 @@ async function loadObservers() {
     profileEvents = profileEvents.concat(await anon.req({ kinds: [0], authors: ks.slice(i, i + 200), limit: 200 }));
   }
   seedProfiles(profileEvents);
-  const keys = [...new Set(lists.map((e) => e.pubkey))];
-  observers = keys.map(pubkey => {
+  observers = ks.map(pubkey => {
     const p = profiles.get(pubkey);
     return { pubkey, name: displayName(p), nip05: (p?.nip05 || "").trim() };
   }).sort((a, b) => (a.name || "\uffff").localeCompare(b.name || "\uffff"));
@@ -489,8 +496,10 @@ $me.addEventListener("click", async () => {
     if (me) {
       rememberSignIn(false);
       me = null;
-      viewingAs = null;
-      setViewingAs(null, null);
+      // The render-only half: the finally below reruns the search once for
+      // the whole click, and setViewingAs here meant every sign-out searched
+      // twice — two REQs for one action, with the first result thrown away.
+      applyViewingAs(null, null);
       if (relay.ws) relay.ws.close();
       await relay.connect();
     } else {
@@ -899,12 +908,16 @@ document.addEventListener("click", (e) => {
   applyUrl();
 });
 
+// Chips render at boot, not only inside applyUrl's search branch: the entity
+// branch returns before that code, so a direct load of /npub1… used to show
+// an empty chip row until the first Back into a search view.
+renderChips();
 renderWhoami();
-// applyUrl() renders the chips and either restores a deep-linked search or
-// shows the hero. When it restores one, that search's own ensureLogin() is
-// already driving sign-in, so the extra call is skipped as redundant — every
-// caller shares the one login flight now, so a second call would merely be
-// noise rather than the race it used to be.
+// applyUrl() either restores a deep-linked search, shows an entity page, or
+// shows the hero. When it starts a search, that search's own ensureLogin()
+// is already driving sign-in, so the extra call is skipped as redundant —
+// every caller shares the one login flight now, so a second call would
+// merely be noise rather than the race it used to be.
 // On an idle load, sign in eagerly rather than on the first keystroke: the
 // lens picker is only meaningful once there is an authenticated reader, and
 // an idle page should not sit on "signing in…" until somebody types.

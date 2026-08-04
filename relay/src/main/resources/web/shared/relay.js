@@ -77,21 +77,42 @@ export class Relay {
     }
   }
 
-  /** The single send-and-collect attempt behind [req]. */
+  /**
+   * The single send-and-collect attempt behind [req]. The resolved array
+   * carries `complete`: true when the relay said EOSE, false when the
+   * timeout fired first. The two used to be indistinguishable, and a caller
+   * caching "this pubkey has no profile" off a timed-out read was recording
+   * a fact the relay never stated.
+   */
   async reqOnce(filter, timeoutMs) {
     await this.connect();
     const id = "sot" + this.nextId++;
     const events = [];
     return await new Promise((resolve, reject) => {
-      const finish = (err) => {
+      const finish = (err, complete = true) => {
         if (!this.subs.delete(id)) return;
         clearTimeout(timer);
         try { this.ws && this.ws.send(JSON.stringify(["CLOSE", id])); } catch (e) {}
-        err ? reject(err) : resolve(events);
+        if (err) { reject(err); return; }
+        events.complete = complete;
+        resolve(events);
       };
-      const timer = setTimeout(() => finish(null), timeoutMs);
+      const timer = setTimeout(() => finish(null, false), timeoutMs);
       this.subs.set(id, { onEvent: (ev) => events.push(ev), finish });
       this.ws.send(JSON.stringify(["REQ", id, filter]));
+    });
+  }
+
+  /** NIP-01 EVENT submission: send, and wait for the relay's OK verdict. */
+  async publish(ev, timeoutMs = 8000) {
+    await this.connect();
+    return await new Promise((resolve, reject) => {
+      const timer = setTimeout(() => { this.okWaiters.delete(ev.id); reject(new Error("publish timed out")); }, timeoutMs);
+      this.okWaiters.set(ev.id, (msg) => {
+        clearTimeout(timer);
+        if (msg[2]) resolve(); else reject(new Error(msg[3] || "rejected"));
+      });
+      this.ws.send(JSON.stringify(["EVENT", ev]));
     });
   }
 

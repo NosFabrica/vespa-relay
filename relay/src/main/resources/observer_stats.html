@@ -400,6 +400,19 @@ function render(list) {
   }
 }
 
+/**
+ * render(), coalesced. Counts stream in and every answered COUNT used to
+ * rebuild the whole table — ~250 rows, re-created hundreds of times per run,
+ * each rebuild also re-creating every avatar <img>. One repaint per 100ms
+ * window is indistinguishable to the eye and removes the churn; anything
+ * still pending when the run finishes paints on the trailing edge.
+ */
+let renderTimer = null;
+function scheduleRender(list) {
+  if (renderTimer) return;
+  renderTimer = setTimeout(() => { renderTimer = null; render(list); }, 100);
+}
+
 /** Run [tasks] with at most [n] in flight. */
 async function bounded(n, tasks) {
   let i = 0;
@@ -514,7 +527,7 @@ async function run() {
     statusEl.textContent = `counting here ${++done}/${svcs.length}…`;
     localBySvc.set(svc, await local.count(svc));
     for (const d of dims) if (d.service === svc) d.here = localBySvc.get(svc);
-    render(observers);
+    scheduleRender(observers);
   }
 
   // Then the remote relays — other people's servers, a few at a time. Grouped
@@ -534,13 +547,13 @@ async function run() {
     let ws = null;
     try { ws = await client(url); } catch {
       for (const svc of svcSet) for (const d of rows(svc)) d.there = null;
-      render(observers);
+      scheduleRender(observers);
       return;
     }
     await bounded(PER_RELAY_CONCURRENCY, [...svcSet].map((svc) => async () => {
       const answer = await ws.count(svc);
       for (const d of rows(svc)) d.there = answer;
-      render(observers);
+      scheduleRender(observers);
     }));
     try { ws.close(); } catch {}
   }));

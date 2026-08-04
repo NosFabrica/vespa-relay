@@ -99,9 +99,9 @@ export function pubkeyParam(v) {
  *   naddr           -> { type, kind, author, d }    one replaceable address
  *
  * All carry `raw` (the identifier as given, for links that must reproduce
- * it) and TLV forms carry `relays` — parsed but currently unused: this page
- * reads only the relay that serves it, and dialing arbitrary hint relays
- * from a pasted link is a different client than this one means to be.
+ * it) and TLV forms carry `relays` — the hints the entity view falls back to
+ * when this relay does not hold the thing (entity.js normalizes and gates
+ * them before dialing anything).
  */
 export function nip19Parse(input) {
   const v = String(input || "").trim().replace(/^nostr:/i, "").toLowerCase();

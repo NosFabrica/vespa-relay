@@ -44,4 +44,46 @@ t.r.authed = true;
 await assert.rejects(() => t.r.req({}), /auth-required/);
 assert.strictEqual(t.calls, 1);
 
-console.log("auth-required resend: all assertions passed");
+// publish(): the relay's OK verdict decides, and both verdicts surface.
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  const sent = [];
+  r.ws = { send: (m) => sent.push(m) };
+  const accepted = r.publish({ id: "e1" });
+  await new Promise((res) => setTimeout(res, 0)); // publish awaits connect() before arming its waiter
+  r.handle(["OK", "e1", true, ""]);
+  await accepted;
+  assert.strictEqual(sent.length, 1, "publish sends once");
+  assert(sent[0].startsWith('["EVENT"'), "publish sends EVENT");
+}
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  r.ws = { send: () => {} };
+  const rejected = r.publish({ id: "e2" });
+  await new Promise((res) => setTimeout(res, 0));
+  r.handle(["OK", "e2", false, "invalid: bad signature"]);
+  await assert.rejects(() => rejected, /bad signature/, "a rejection carries the relay's reason");
+}
+
+// reqOnce(): EOSE marks the result complete; a timeout marks it partial.
+// enrichProfiles caches "no profile" only off complete reads — a timed-out
+// read is not the relay stating absence.
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  r.ws = { send: () => {} };
+  const p = r.reqOnce({}, 1000);
+  await new Promise((res) => setTimeout(res, 0));
+  r.handle(["EVENT", "sot1", { id: "x" }]);
+  r.handle(["EOSE", "sot1"]);
+  const evs = await p;
+  assert.strictEqual(evs.length, 1);
+  assert.strictEqual(evs.complete, true, "EOSE -> complete");
+
+  const partial = await r.reqOnce({}, 20); // nothing answers; the timer fires
+  assert.strictEqual(partial.complete, false, "timeout -> partial");
+}
+
+console.log("auth-required resend + publish + complete flag: all assertions passed");

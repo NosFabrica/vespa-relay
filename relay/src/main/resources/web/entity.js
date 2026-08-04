@@ -8,11 +8,17 @@
 // stored event by someone outside your web of trust would render as "not
 // found", which is a statement about you dressed up as one about the relay.
 //
+// When this relay does NOT hold it and the identifier carries relay hints,
+// those are dialed as a fallback (gated: ws only, no private hosts, no mixed
+// content) — and a hit is both rendered and handed back to this relay for
+// indexing, so the next visit of the same link is served locally.
+//
 // The identifier decides the QUERY; the fetched event's kind decides the
 // CARD. A note1… id can name an article or a live stream — it renders as
 // what it is, not as what the URL called it.
 
 import { refConn } from "./shared/conn.js";
+import { Relay } from "./shared/relay.js";
 import { enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
@@ -40,16 +46,80 @@ function headHtml(raw) {
 
 const emptyState = (title, body) => `<div class="empty"><b>${esc(title)}</b>${esc(body)}</div>`;
 
-async function fetchEntity(conn, p) {
+async function fetchEntity(conn, p, timeoutMs) {
   // Replaceable kinds can still hand back more than one event; newest wins.
   const newest = (evs) => evs.reduce((a, b) => (!a || b.created_at > a.created_at ? b : a), null);
   if (p.type === "npub" || p.type === "nprofile") {
-    return newest(await conn.req({ kinds: [0], authors: [p.pubkey], limit: 1 }));
+    return newest(await conn.req({ kinds: [0], authors: [p.pubkey], limit: 1 }, timeoutMs));
   }
   if (p.type === "note" || p.type === "nevent") {
-    return (await conn.req({ ids: [p.id], limit: 1 }))[0] || null;
+    return (await conn.req({ ids: [p.id], limit: 1 }, timeoutMs))[0] || null;
   }
-  return newest(await conn.req({ kinds: [p.kind], authors: [p.author], "#d": [p.d], limit: 1 }));
+  return newest(await conn.req({ kinds: [p.kind], authors: [p.author], "#d": [p.d], limit: 1 }, timeoutMs));
+}
+
+/**
+ * A relay hint as written in an identifier, reduced to a url this page will
+ * actually dial — or null. Same rules the observer stats page applies to
+ * 10040 relay tags, for the same reasons: only ws schemes; never loopback or
+ * private ranges (in a hint those mean the MINTER's machine, and from this
+ * browser they would mean the reader's); and never plain ws:// from an https
+ * page, which the browser refuses before a packet moves.
+ */
+function normalizeHint(raw) {
+  if (!raw) return null;
+  const t = String(raw).trim();
+  if (!t || /\s/.test(t)) return null;
+  let u;
+  try { u = new URL(/^wss?:\/\//i.test(t) ? t : "wss://" + t); } catch (e) { return null; }
+  if (u.protocol !== "ws:" && u.protocol !== "wss:") return null;
+  if (location.protocol === "https:" && u.protocol === "ws:") return null;
+  if (/^(localhost|127\.|10\.|192\.168\.|169\.254\.|\[::1\]|0\.0\.0\.0)/i.test(u.hostname) ||
+      /^172\.(1[6-9]|2\d|3[01])\./.test(u.hostname)) return null;
+  const path = u.pathname === "/" ? "" : u.pathname.replace(/\/+$/, "");
+  return `${u.protocol}//${u.host}${path}`;
+}
+
+/**
+ * The hint fallback. nevent/nprofile/naddr carry the relays their minter
+ * believed hold the thing; when THIS relay doesn't, asking them is the
+ * difference between a page and a shrug. Our own relay is always asked
+ * first — the hints only run on a miss. One at a time (hints are nearly
+ * always one or two), a short budget each, first hit wins, and the socket is
+ * closed whatever happens.
+ */
+const HINT_TRIES = 3;
+const HINT_TIMEOUT_MS = 6000;
+async function fetchFromHints(parsed) {
+  const urls = [...new Set((parsed.relays || []).map(normalizeHint).filter(Boolean))].slice(0, HINT_TRIES);
+  for (const url of urls) {
+    const r = new Relay(url);
+    try {
+      const ev = await fetchEntity(r, parsed, HINT_TIMEOUT_MS);
+      if (ev) return { ev, from: url };
+    } catch (e) { /* an unreachable hint is normal; try the next */ }
+    finally { try { r.ws && r.ws.close(); } catch (e) {} }
+  }
+  return { ev: null, from: null };
+}
+
+/**
+ * Hand a hint-fetched event to OUR relay. Two things at once: the index
+ * gains an event it was missing — the whole reason the hint path ran — and
+ * the relay's signature verification passes judgement on a payload this page
+ * took from a third party it had no reason to trust. The verdict is printed
+ * either way; a rejection (bad signature, policy) is a fact worth showing,
+ * not a failure to hide.
+ */
+async function submitForIndexing(ev, host, my) {
+  const note = () => document.getElementById("prov");
+  try {
+    const conn = await refConn();
+    await conn.publish(ev);
+    if (my === token && note()) note().textContent = `was not in this relay's index — fetched from ${host}, and indexed here now (signature verified by this relay)`;
+  } catch (e) {
+    if (my === token && note()) note().textContent = `fetched from ${host} — this relay declined to index it: ${e.message || e}`;
+  }
 }
 
 function titleFor(ev, parsed) {
@@ -80,10 +150,14 @@ export async function showEntity(seg, { paintScores }) {
   $results.innerHTML = headHtml(parsed.raw) +
     `<div class="skel-card"><div class="skel-line" style="width:34%"></div><div class="skel-line" style="width:92%"></div><div class="skel-line" style="width:66%"></div></div>`;
 
-  let ev = null, err = null;
+  let ev = null, err = null, hint = null;
   try {
     const conn = await refConn();
     ev = await fetchEntity(conn, parsed);
+    if (!ev && (parsed.relays || []).length) {
+      ({ ev, from: hint } = await fetchFromHints(parsed));
+      if (my !== token) return;
+    }
     if (ev) {
       // Names and faces for everyone the card will mention: the author, the
       // p tags, and any other tag value that IS a pubkey — a 30382's d
@@ -105,10 +179,20 @@ export async function showEntity(seg, { paintScores }) {
     const what = parsed.type === "npub" || parsed.type === "nprofile"
       ? `No profile event for ${shortNpub(parsed.pubkey)} in this relay's index.`
       : "This event is not in this relay's index.";
-    $results.innerHTML = headHtml(parsed.raw) +
-      emptyState("Not here", `${what} It may exist elsewhere — try njump above.`);
+    const also = (parsed.relays || []).length
+      ? "Its relay hints did not answer with it either — "
+      : "It may exist elsewhere — ";
+    $results.innerHTML = headHtml(parsed.raw) + emptyState("Not here", `${what} ${also}try njump above.`);
   } else {
-    $results.innerHTML = headHtml(parsed.raw) + card(ev, { full: true });
+    // A hint-fetched event renders with its provenance on it, then goes to
+    // this relay for indexing; submitForIndexing rewrites the note with the
+    // relay's verdict.
+    const host = hint ? hint.replace(/^wss?:\/\//, "") : null;
+    const prov = hint
+      ? `<div class="prov" id="prov">not in this relay's index — fetched from its hint <span class="mono">${esc(host)}</span>, submitting here for indexing…</div>`
+      : "";
+    $results.innerHTML = headHtml(parsed.raw) + prov + card(ev, { full: true });
+    if (hint) submitForIndexing(ev, host, my);
   }
   document.title = titleFor(ev, parsed);
   paintScores();

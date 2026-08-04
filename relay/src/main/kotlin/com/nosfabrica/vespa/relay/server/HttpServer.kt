@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.relay.config.defaultRelayLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
+import io.ktor.http.CacheControl
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
@@ -128,7 +129,16 @@ fun serveRelay(
             // already three-way overloaded (WS upgrade, NIP-11 negotiation,
             // the landing page), and a wildcard there would have to lose to
             // all of them by routing subtlety instead of by construction.
-            staticResources("/web", "web")
+            // A short max-age: without any cache header the modules are
+            // refetched on every full page load (each /npub1… deep link is
+            // one), and jar-served resources carry no validators to
+            // revalidate against. 60s keeps in-session navigation free while
+            // bounding version skew after a deploy — index.html itself is
+            // served uncached, so a stale module can outlive a new page by
+            // at most a minute.
+            staticResources("/web", "web") {
+                cacheControl { listOf(CacheControl.MaxAge(maxAgeSeconds = 60)) }
+            }
             // Any NIP-19 identifier is a page. The server validates only the
             // SHAPE and serves the landing page; decoding — checksum, TLV,
             // what the identifier names — belongs to the page, which already
@@ -164,8 +174,10 @@ private val NOSTR_JSON = ContentType.parse("application/nostr+json")
  * only — no length cap, because identifiers with relay hints legitimately
  * exceed classic bech32's 90 characters, and no checksum, because the page
  * verifies it and renders "invalid" with more context than a bare 404.
+ * Case-insensitive: bech32 permits all-uppercase (QR codes emit it), and the
+ * page lowercases before decoding.
  */
-private val NIP19_PATH = Regex("^(npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np-z]+$")
+private val NIP19_PATH = Regex("^(npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np-z]+$", RegexOption.IGNORE_CASE)
 
 /** A mutable holder for the live NIP-11 document, updated by NIP-86 admin RPCs. */
 internal class MutableRelayInfo(

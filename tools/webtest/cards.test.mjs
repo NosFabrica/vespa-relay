@@ -89,6 +89,13 @@ const full = card(ev(1, [], long), { full: true });
 assert(preview.includes("clamp") && preview.includes("…"), "preview clips and clamps");
 assert(!full.includes("clamp") && full.includes(long), "full mode renders every character");
 
+// Media corner cases: a full-depth video with no url renders its text ONCE
+// (the embed-vs-body composition double-rendered it), and a preview picture
+// with no url still shows its text (it used to show nothing).
+const noUrlVideo = card(ev(21, [["title", "the only body line"]]), { full: true });
+assert.strictEqual((noUrlVideo.match(/the only body line/g) || []).length, 1, "video full/no-url: body once");
+assert(card(ev(20, [], "picture text, no url")).includes("picture text, no url"), "picture preview keeps text without a url");
+
 // Escaping holds in every renderer that touches content.
 const hostile = card(ev(1, [], `<img src=x onerror=alert(1)>`), { full: true });
 assert(!hostile.includes("<img src=x"), "content is escaped");
