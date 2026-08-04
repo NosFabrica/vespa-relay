@@ -99,20 +99,20 @@ services:
       RELAY_TERMS_OF_SERVICE: ${RELAY_TERMS_OF_SERVICE:-}
       # Router (upstream mirror). Off by default. To turn it on, drop a strfry-style
       # streams config next to this file (see router.conf.example) and start with:
-      #   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf docker compose up --build
-      # The volume line below mounts ./router.conf when ROUTER_CONFIG_FILE is set.
-      ROUTER_CONFIG_FILE: ${ROUTER_CONFIG_FILE:-}
+      #   SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf docker compose up --build
+      # The volume line below mounts ./router.conf when SYNC_CONFIG_FILE is set.
+      SYNC_CONFIG_FILE: ${SYNC_CONFIG_FILE:-}
       # How often (seconds) up/both streams re-reconcile to push new local events.
-      ROUTER_UP_INTERVAL_SECONDS: ${ROUTER_UP_INTERVAL_SECONDS:-300}
+      SYNC_UP_INTERVAL_SECONDS: ${SYNC_UP_INTERVAL_SECONDS:-300}
       # Ingest tuning. Throughput comes from the batch size, not the worker count
       # (the store serializes writes). Lower the batch to cut memory.
-      ROUTER_INGEST_BATCH: ${ROUTER_INGEST_BATCH:-1000}
-      ROUTER_INGEST_CONCURRENCY: ${ROUTER_INGEST_CONCURRENCY:-2}
+      SYNC_INGEST_BATCH: ${SYNC_INGEST_BATCH:-1000}
+      SYNC_INGEST_CONCURRENCY: ${SYNC_INGEST_CONCURRENCY:-2}
       # Defaults for `relaySource = [...]` streams, whose relay list is read out of
       # the store's own events instead of the config (see the `outbox` and
       # `assertions` streams in router.conf.example). Per-stream keys override these.
-      ROUTER_DYNAMIC_REFRESH_SECONDS: ${ROUTER_DYNAMIC_REFRESH_SECONDS:-21600}
-      ROUTER_DYNAMIC_CONCURRENCY: ${ROUTER_DYNAMIC_CONCURRENCY:-8}
+      SYNC_DYNAMIC_REFRESH_SECONDS: ${SYNC_DYNAMIC_REFRESH_SECONDS:-21600}
+      SYNC_DYNAMIC_CONCURRENCY: ${SYNC_DYNAMIC_CONCURRENCY:-8}
       # Settle the trust projection before serving. Documented in the store as
       # "a few queries when the answer is nothing to do", which held when this
       # corpus was small: at 36M kind-30382 events it ran 12+ minutes with Vespa
@@ -149,21 +149,21 @@ services:
       # hold on the stream's filter before a negentropy reconcile is worth its id
       # exchange, and how long the relay gets to answer the NIP-45 COUNT that
       # measures it. Streams that declare `sync` in router.conf ignore both.
-      ROUTER_NEG_MIN_EVENTS: ${ROUTER_NEG_MIN_EVENTS:-100000}
-      ROUTER_COUNT_TIMEOUT_MS: ${ROUTER_COUNT_TIMEOUT_MS:-5000}
+      SYNC_NEG_MIN_EVENTS: ${SYNC_NEG_MIN_EVENTS:-100000}
+      SYNC_COUNT_TIMEOUT_MS: ${SYNC_COUNT_TIMEOUT_MS:-5000}
       # Run only these streams (comma-separated), so one part of the sync can be
       # tuned without the rest competing for the same sockets, heap and ingest
       # queue. Empty (the default) runs every stream the config defines. The
       # router prints what it is NOT running on every startup, so a leftover
       # setting can't be mistaken for a stream that is failing.
-      #   ROUTER_STREAMS=dataViaOutbox docker compose up -d relay
-      ROUTER_STREAMS: ${ROUTER_STREAMS:-}
+      #   SYNC_STREAMS=dataViaOutbox docker compose up -d relay
+      SYNC_STREAMS: ${SYNC_STREAMS:-}
       # What goes down the wire to upstream relays. Empty (the default) still
       # logs what the relay COMPLAINS about — NOTICE, CLOSED, failed sends —
       # which are the relay telling us why it stopped and were previously
       # discarded. "sent" adds every command we send; "full" adds every message
       # received, which is a line per event and is for a specific investigation.
-      ROUTER_WIRE_LOG: ${ROUTER_WIRE_LOG:-}
+      SYNC_WIRE_LOG: ${SYNC_WIRE_LOG:-}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # Opt-in parse audit. Point PARSE_AUDIT_FILE inside /var/lib/vespa-relay,
@@ -172,10 +172,10 @@ services:
       # Where the per-(relay, filter) synced created_at band is kept, so a relay
       # without NIP-77 resumes instead of re-reading its corpus every restart.
       # Same mounted volume as the audit below. Unset ⇒ in memory only.
-      ROUTER_SYNC_STATE_FILE: ${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}
+      SYNC_STATE_FILE: ${SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}
       # How long a recorded sync window narrows work before the whole filter is
       # walked again. Nothing is capped — the full pass is periodic, not skipped.
-      ROUTER_FULL_RESYNC_SECONDS: ${ROUTER_FULL_RESYNC_SECONDS:-604800}
+      SYNC_FULL_RESYNC_SECONDS: ${SYNC_FULL_RESYNC_SECONDS:-604800}
       # This relay's own keypair: NIP-11 self, NIP-42 auth, NIP-66 monitor.
       # nsec1… or 64 hex. Unset ⇒ the relay acts anonymously. See .env.example.
       RELAY_NSEC: ${RELAY_NSEC:-}
@@ -186,8 +186,8 @@ services:
       - "${RELAY_PORT:-7777}:7777"
     volumes:
       # Mounts your local ./router.conf into the container when the router is on.
-      # Harmless when ROUTER_CONFIG_FILE is empty (nothing reads the file).
-      - ${ROUTER_CONFIG_LOCAL:-./router.conf.example}:/etc/vespa-relay/router.conf:ro
+      # Harmless when SYNC_CONFIG_FILE is empty (nothing reads the file).
+      - ${SYNC_CONFIG_LOCAL:-./router.conf.example}:/etc/vespa-relay/router.conf:ro
       # Where PARSE_AUDIT_FILE lands, so the report is readable on the host.
       - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
     restart: unless-stopped

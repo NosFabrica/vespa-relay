@@ -49,16 +49,16 @@ data class RouterConfig(
     val connectionTimeoutSec: Long,
     val streams: List<SyncStream>,
     // How often (seconds) an `up`/`both` stream re-reconciles to push newly
-    // arrived local events. From ROUTER_UP_INTERVAL_SECONDS.
+    // arrived local events. From SYNC_UP_INTERVAL_SECONDS.
     val upIntervalSec: Long = 300,
     // Ingest tuning. The store serializes writes through one mutex, so
     // throughput comes from the batch size, not the worker count.
-    // From ROUTER_INGEST_CONCURRENCY / ROUTER_INGEST_BATCH.
+    // From SYNC_INGEST_CONCURRENCY / SYNC_INGEST_BATCH.
     val ingestConcurrency: Int = 2,
     val ingestBatch: Int = 1000,
     // How much overlap makes a negentropy reconcile worth its id exchange, and
     // how long a relay gets to answer the NIP-45 COUNT that measures it.
-    // From ROUTER_NEG_MIN_EVENTS / ROUTER_COUNT_TIMEOUT_MS.
+    // From SYNC_NEG_MIN_EVENTS / SYNC_COUNT_TIMEOUT_MS.
     val negMinEvents: Int = 100_000,
     val countTimeoutMs: Long = 5_000,
 ) {

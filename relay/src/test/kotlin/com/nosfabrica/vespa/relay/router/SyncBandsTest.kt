@@ -408,6 +408,6 @@ class SyncBandsTest {
     @Test
     fun `fromEnv is off unless a path is given`() {
         assertEquals(0, SyncBands.fromEnv(emptyMap()).size())
-        assertEquals(0, SyncBands.fromEnv(mapOf("ROUTER_SYNC_STATE_FILE" to "  ")).size())
+        assertEquals(0, SyncBands.fromEnv(mapOf("SYNC_STATE_FILE" to "  ")).size())
     }
 }

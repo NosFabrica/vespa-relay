@@ -80,9 +80,9 @@ It is the reference; this file is the orientation.
 ## The router, in one pass
 
 `SyncEngine` syncs upstream events into the store. Operators know this
-subsystem as **the router** — the `ROUTER_*` env vars, `router.conf` and the
-`router:` log prefix keep that name; in code it lives in the `router` package
-as `SyncEngine`. Two kinds of stream:
+subsystem as **the router** — `router.conf`, the `router:` log prefix and the
+`router` package keep that name. Its env vars are `SYNC_*`; the pre-rename
+`ROUTER_*` spellings still work and warn on boot. Two kinds of stream:
 
 - **static** — relays listed in `urls` in `router.conf`
 - **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
@@ -94,7 +94,7 @@ Each stream declares **how** it asks for what it is missing, via `sync`:
 |---|---|---|
 | `negentropy` | the same event lives on many relays (kinds 0/3/10002) | reconcile id sets, transfer only the difference |
 | `fetch` | the two sides barely overlap, or the store is empty and there is nothing to compare against | comparing disjoint sets costs more than downloading, and builds a huge local id snapshot to do it |
-| `auto` | unknown | decide by size — reconcile only when both sides hold more than `ROUTER_NEG_MIN_EVENTS` |
+| `auto` | unknown | decide by size — reconcile only when both sides hold more than `SYNC_NEG_MIN_EVENTS` |
 
 **It is a property of the data AND of how the stream asks — not of the relay,
 and not measurable from counts.** NIP-85 assertions were the standing example of
@@ -125,11 +125,11 @@ Reach for it first.
   relays transferring, connected, fatal count, events lost to store errors. A
   full queue and an empty queue are opposite diagnoses that look identical
   everywhere else.
-- **`ROUTER_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
+- **`SYNC_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
   received. Empty still logs `NOTICE`, `CLOSED` and failed sends, which are the
   relay explaining itself. It lowers quartz's log floor itself, because
   `QUARTZ_LOG_LEVEL=WARN` would otherwise silently discard its own output.
-- **`ROUTER_STREAMS`** — run one stream alone, so a measurement isn't three
+- **`SYNC_STREAMS`** — run one stream alone, so a measurement isn't three
   streams competing for one socket budget, heap and ingest queue.
 - **`ingest stages`** — per-stage timing (`dedup`, `write`, `proj.fetch`,
   `proj.write`, `versions`). This is what identified a projection read-back as

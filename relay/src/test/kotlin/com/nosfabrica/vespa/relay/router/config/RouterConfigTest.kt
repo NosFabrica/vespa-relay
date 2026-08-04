@@ -548,7 +548,7 @@ class RouterConfigTest {
         val cfg =
             RouterConfigLoader.fromEnv(
                 mapOf(
-                    "ROUTER_CONFIG" to
+                    "SYNC_CONFIG" to
                         """
                         streams {
                             outbox {
@@ -562,8 +562,8 @@ class RouterConfigTest {
                             }
                         }
                         """.trimIndent(),
-                    "ROUTER_DYNAMIC_REFRESH_SECONDS" to "900",
-                    "ROUTER_DYNAMIC_CONCURRENCY" to "16",
+                    "SYNC_DYNAMIC_REFRESH_SECONDS" to "900",
+                    "SYNC_DYNAMIC_CONCURRENCY" to "16",
                 ),
             )
         val dynamic = cfg!!.dynamicStreams().single().dynamic!!
@@ -618,26 +618,42 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `inline ROUTER_CONFIG env is parsed`() {
-        val cfg = RouterConfigLoader.fromEnv(mapOf("ROUTER_CONFIG" to streamsConfig))
+    fun `legacy ROUTER_ spellings still load, and the SYNC_ name wins when both are set`() {
+        // The env vars were renamed; a deployment still exporting the old
+        // names must keep mirroring rather than silently serve-only.
+        val legacy =
+            RouterConfigLoader.fromEnv(
+                mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_INGEST_BATCH" to "77"),
+            )
+        assertEquals(77, legacy?.ingestBatch)
+        val both =
+            RouterConfigLoader.fromEnv(
+                mapOf("ROUTER_INGEST_BATCH" to "77", "SYNC_INGEST_BATCH" to "88", "SYNC_CONFIG" to streamsConfig),
+            )
+        assertEquals(88, both?.ingestBatch)
+    }
+
+    @Test
+    fun `inline SYNC_CONFIG env is parsed`() {
+        val cfg = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig))
         assertEquals(12, cfg!!.downUpstreams().size)
     }
 
     @Test
-    fun `ROUTER_STREAMS runs only the streams it names`() {
+    fun `SYNC_STREAMS runs only the streams it names`() {
         val cfg =
             RouterConfigLoader.fromEnv(
-                mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_STREAMS" to " mirrors "),
+                mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_STREAMS" to " mirrors "),
             )
 
         assertEquals(listOf("mirrors"), cfg!!.streams.map { it.name })
     }
 
     @Test
-    fun `ROUTER_STREAMS naming a stream the config lacks is an error rather than an empty run`() {
+    fun `SYNC_STREAMS naming a stream the config lacks is an error rather than an empty run`() {
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.fromEnv(
-                mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_STREAMS" to "mirrorz"),
+                mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_STREAMS" to "mirrorz"),
             )
         }
     }
@@ -690,8 +706,8 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `no ROUTER_STREAMS runs everything`() {
-        val cfg = RouterConfigLoader.fromEnv(mapOf("ROUTER_CONFIG" to streamsConfig, "ROUTER_STREAMS" to "  "))
+    fun `no SYNC_STREAMS runs everything`() {
+        val cfg = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_STREAMS" to "  "))
 
         assertEquals(2, cfg!!.streams.size)
     }

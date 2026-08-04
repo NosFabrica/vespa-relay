@@ -134,11 +134,11 @@ internal class IngestPipeline(
 
     fun start() {
         // Announced when the batch is capped: an operator who set
-        // ROUTER_INGEST_BATCH and silently got a different number would be
+        // SYNC_INGEST_BATCH and silently got a different number would be
         // tuning a knob that is not connected.
         if (batchSize < configuredBatch) {
             System.err.println(
-                "router: ROUTER_INGEST_BATCH=$configuredBatch capped to $batchSize — " +
+                "router: SYNC_INGEST_BATCH=$configuredBatch capped to $batchSize — " +
                     "$workers worker(s) share a $capacity-event queue, and a batch bigger than " +
                     "one worker's share collapses ingest to a single thread",
             )

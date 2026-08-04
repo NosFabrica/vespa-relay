@@ -85,7 +85,7 @@ class SyncEngine(
     private val bands: SyncBands = SyncBands(null),
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
     signer: NostrSigner? = null,
-    // ROUTER_WIRE_LOG: "" (errors only) / "sent" / "full".
+    // SYNC_WIRE_LOG: "" (errors only) / "sent" / "full".
     wireLogMode: String = "",
     // Shared with the relay server: ingest yields when client reads slow down.
     servingPressure: ServingPressure? = null,
@@ -153,7 +153,7 @@ class SyncEngine(
                 if (Log.minLevel > LogLevel.DEBUG) {
                     Log.minLevel = LogLevel.DEBUG
                     System.err.println(
-                        "router: ROUTER_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG (was ${'$'}{LogLevel.WARN}) — this is verbose",
+                        "router: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG (was ${'$'}{LogLevel.WARN}) — this is verbose",
                     )
                 }
                 RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")

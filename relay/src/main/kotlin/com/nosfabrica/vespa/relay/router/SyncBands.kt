@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.relay.router.config.syncEnv
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.Json
@@ -379,13 +380,21 @@ class SyncBands(
         fun isPlausible(createdAt: Long): Boolean = createdAt in PLAUSIBLE_FLOOR..(nowSeconds() + FUTURE_SKEW_SECONDS)
 
         /**
-         * `ROUTER_SYNC_STATE_FILE` — where the bands live. Unset keeps them
+         * `SYNC_STATE_FILE` — where the bands live. Unset keeps them
          * in memory, which is the same as not having them.
          */
         fun fromEnv(env: Map<String, String>): SyncBands =
             SyncBands(
-                env["ROUTER_SYNC_STATE_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File),
-                env["ROUTER_FULL_RESYNC_SECONDS"]?.trim()?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_FULL_RESYNC_SECONDS,
+                env
+                    .syncEnv("SYNC_STATE_FILE", "ROUTER_SYNC_STATE_FILE")
+                    ?.trim()
+                    ?.takeIf { it.isNotEmpty() }
+                    ?.let(::File),
+                env
+                    .syncEnv("SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
+                    ?.trim()
+                    ?.toLongOrNull()
+                    ?.takeIf { it > 0 } ?: DEFAULT_FULL_RESYNC_SECONDS,
             ).startPeriodicFlush()
     }
 }

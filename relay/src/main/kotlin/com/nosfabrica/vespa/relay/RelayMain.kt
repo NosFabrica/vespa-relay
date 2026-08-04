@@ -42,6 +42,7 @@ import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.router.SyncBands
 import com.nosfabrica.vespa.relay.router.SyncEngine
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
+import com.nosfabrica.vespa.relay.router.config.syncEnv
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
@@ -69,7 +70,7 @@ import kotlinx.coroutines.launch
  *   RELAY_PORT    the port to listen on (default 7777)
  *   RELAY_URL     this relay's own ws url (REQUIRED)
  *   RELAY_NSEC    the relay's identity key (NIP-11 self, NIP-42, NIP-66)
- *   ROUTER_CONFIG / ROUTER_CONFIG_FILE   the mirror's streams (HOCON)
+ *   SYNC_CONFIG / SYNC_CONFIG_FILE   the mirror's streams (HOCON)
  */
 fun main() {
     val env = System.getenv()
@@ -165,7 +166,7 @@ fun main() {
     // restart resumes instead of re-reading the corpus.
     val bands = SyncBands.fromEnv(env)
 
-    // The router: when ROUTER_CONFIG / ROUTER_CONFIG_FILE is set, mirror the
+    // The router: when SYNC_CONFIG / SYNC_CONFIG_FILE is set, mirror the
     // configured upstreams into this same store. Unset ⇒ serve-only.
     val router =
         RouterConfigLoader.fromEnv(env)?.let {
@@ -175,7 +176,7 @@ fun main() {
                 audit = parseAudit,
                 bands = bands,
                 signer = identity,
-                wireLogMode = env["ROUTER_WIRE_LOG"]?.trim()?.lowercase() ?: "",
+                wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
                 servingPressure = servingPressure,
             ).start()
         }

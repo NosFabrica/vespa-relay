@@ -28,28 +28,78 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
 
 /**
- * Loads [RouterConfig] from the environment. `ROUTER_CONFIG` holds the HOCON
- * inline; `ROUTER_CONFIG_FILE` points at a file. Neither set ⇒ no router.
- * `ROUTER_DYNAMIC_REFRESH_SECONDS` / `ROUTER_DYNAMIC_CONCURRENCY` are the
- * defaults for dynamic streams; `ROUTER_STREAMS` narrows the run to a subset
+ * Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling. The old
+ * name still works — a stale compose file must never silently disable the
+ * sync engine — but it announces itself so the config gets updated.
+ */
+internal fun Map<String, String>.syncEnv(
+    name: String,
+    legacy: String,
+): String? {
+    this[name]?.let { return it }
+    val value = this[legacy] ?: return null
+    System.err.println("router: $legacy was renamed to $name — the old name still works; update your config")
+    return value
+}
+
+/**
+ * Loads [RouterConfig] from the environment. `SYNC_CONFIG` holds the HOCON
+ * inline; `SYNC_CONFIG_FILE` points at a file. Neither set ⇒ no router.
+ * `SYNC_DYNAMIC_REFRESH_SECONDS` / `SYNC_DYNAMIC_CONCURRENCY` are the
+ * defaults for dynamic streams; `SYNC_STREAMS` narrows the run to a subset
  * of the config's streams (see [select]).
  */
 object RouterConfigLoader {
     fun fromEnv(env: Map<String, String>): RouterConfig? {
-        val inline = env["ROUTER_CONFIG"]?.takeIf { it.isNotBlank() }
-        val fromFile = env["ROUTER_CONFIG_FILE"]?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
+        val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
+        val fromFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
         val raw = inline ?: fromFile ?: return null
-        val upInterval = env["ROUTER_UP_INTERVAL_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(10L) ?: 300L
-        val ingestConcurrency = env["ROUTER_INGEST_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 64) ?: 2
-        val ingestBatch = env["ROUTER_INGEST_BATCH"]?.trim()?.toIntOrNull()?.coerceIn(1, 20_000) ?: 1000
-        val negMinEvents = env["ROUTER_NEG_MIN_EVENTS"]?.trim()?.toIntOrNull()?.coerceAtLeast(0) ?: 100_000
-        val countTimeoutMs = env["ROUTER_COUNT_TIMEOUT_MS"]?.trim()?.toLongOrNull()?.coerceIn(500, 60_000) ?: 5_000
+        val upInterval =
+            env
+                .syncEnv("SYNC_UP_INTERVAL_SECONDS", "ROUTER_UP_INTERVAL_SECONDS")
+                ?.trim()
+                ?.toLongOrNull()
+                ?.coerceAtLeast(10L) ?: 300L
+        val ingestConcurrency =
+            env
+                .syncEnv("SYNC_INGEST_CONCURRENCY", "ROUTER_INGEST_CONCURRENCY")
+                ?.trim()
+                ?.toIntOrNull()
+                ?.coerceIn(1, 64) ?: 2
+        val ingestBatch =
+            env
+                .syncEnv("SYNC_INGEST_BATCH", "ROUTER_INGEST_BATCH")
+                ?.trim()
+                ?.toIntOrNull()
+                ?.coerceIn(1, 20_000) ?: 1000
+        val negMinEvents =
+            env
+                .syncEnv("SYNC_NEG_MIN_EVENTS", "ROUTER_NEG_MIN_EVENTS")
+                ?.trim()
+                ?.toIntOrNull()
+                ?.coerceAtLeast(0) ?: 100_000
+        val countTimeoutMs =
+            env
+                .syncEnv("SYNC_COUNT_TIMEOUT_MS", "ROUTER_COUNT_TIMEOUT_MS")
+                ?.trim()
+                ?.toLongOrNull()
+                ?.coerceIn(500, 60_000) ?: 5_000
         val fallback = RelaySourceDefaults()
-        val only = env["ROUTER_STREAMS"]?.trim()?.takeIf { it.isNotBlank() }
+        val only = env.syncEnv("SYNC_STREAMS", "ROUTER_STREAMS")?.trim()?.takeIf { it.isNotBlank() }
         val relaySourceDefaults =
             RelaySourceDefaults(
-                refreshSeconds = env["ROUTER_DYNAMIC_REFRESH_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
-                concurrency = env["ROUTER_DYNAMIC_CONCURRENCY"]?.trim()?.toIntOrNull()?.coerceIn(1, 256) ?: fallback.concurrency,
+                refreshSeconds =
+                    env
+                        .syncEnv("SYNC_DYNAMIC_REFRESH_SECONDS", "ROUTER_DYNAMIC_REFRESH_SECONDS")
+                        ?.trim()
+                        ?.toLongOrNull()
+                        ?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
+                concurrency =
+                    env
+                        .syncEnv("SYNC_DYNAMIC_CONCURRENCY", "ROUTER_DYNAMIC_CONCURRENCY")
+                        ?.trim()
+                        ?.toIntOrNull()
+                        ?.coerceIn(1, 256) ?: fallback.concurrency,
             )
         return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, negMinEvents, countTimeoutMs).let {
             if (only == null) it else it.copy(streams = select(it.streams, only))
@@ -57,7 +107,7 @@ object RouterConfigLoader {
     }
 
     /**
-     * `ROUTER_STREAMS=dataViaOutbox` — run only the named streams, so one part
+     * `SYNC_STREAMS=dataViaOutbox` — run only the named streams, so one part
      * of the sync can be measured without the others competing for the same
      * sockets, heap and ingest queue. A name that matches nothing is a hard
      * error: a typo would otherwise look exactly like a relay that mirrors
@@ -76,13 +126,13 @@ object RouterConfigLoader {
         val known = streams.map { it.name }.toSet()
         val unknown = wanted - known
         require(unknown.isEmpty()) {
-            "router: ROUTER_STREAMS names ${unknown.joinToString()}, which the config does not define (has: ${known.joinToString()})"
+            "router: SYNC_STREAMS names ${unknown.joinToString()}, which the config does not define (has: ${known.joinToString()})"
         }
         val (on, off) = streams.partition { it.name in wanted }
         // Said out loud, every startup: a stream that is off because someone
         // was measuring last week must never look like one that is failing.
         System.err.println(
-            "router: ROUTER_STREAMS is set — running ${on.joinToString { it.name }};" +
+            "router: SYNC_STREAMS is set — running ${on.joinToString { it.name }};" +
                 " NOT running ${off.joinToString { it.name }.ifEmpty { "nothing else" }}",
         )
         return on

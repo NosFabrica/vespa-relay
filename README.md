@@ -96,22 +96,22 @@ All configuration is through environment variables.
 
 | var | meaning | default |
 |---|---|---|
-| `ROUTER_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store | unset ⇒ router off |
-| `ROUTER_CONFIG_FILE` | path to a file holding that config, as an alternative to `ROUTER_CONFIG` | — |
-| `ROUTER_CONFIG_LOCAL` | compose only: the **host** path mounted at `ROUTER_CONFIG_FILE`. Set both, or the relay reads the example rather than your config | `./router.conf.example` |
-| `ROUTER_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
+| `SYNC_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store. Every `SYNC_*` variable also accepts its pre-rename `ROUTER_*` spelling, with a warning | unset ⇒ router off |
+| `SYNC_CONFIG_FILE` | path to a file holding that config, as an alternative to `SYNC_CONFIG` | — |
+| `SYNC_CONFIG_LOCAL` | compose only: the **host** path mounted at `SYNC_CONFIG_FILE`. Set both, or the relay reads the example rather than your config | `./router.conf.example` |
+| `SYNC_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
 | `VESPA_MEM_LIMIT` / `RELAY_MEM_LIMIT` | container memory limits. Not cosmetic: `MaxRAMPercentage` reads the **cgroup**, so without a limit the relay's JVM sizes its heap against the whole host — 45% of 47 GiB — while the engine independently grows to 32 GiB, entitling both to more than the machine has. Bounding the relay also makes ingest backpressure work instead of letting it grow into the engine's memory | `34g` / `12g` |
 | `RELAY_NSEC` | this relay's own keypair (`nsec1…` or 64 hex), used everywhere it acts as itself: the NIP-11 `self` it advertises (**derived**, so it is provable rather than merely asserted), the NIP-42 challenges it answers, and the NIP-66 kind-30166 liveness records it signs. Relays that gate reads behind AUTH are indistinguishable from empty ones without it. Unset ⇒ anonymous — reading other monitors' 30166s still works and needs no key. Malformed ⇒ startup fails | unset ⇒ anonymous |
-| `ROUTER_FULL_RESYNC_SECONDS` | how long a recorded sync window may narrow work before the router walks the whole filter again. A finished negentropy reconcile covers its filter's entire range, so the next run asks only for what arrived since — which is what keeps a dynamic cycle's shared id snapshot from being the entire corpus. Relays do gain old events, so the claim is re-tested on this period. Nothing is ever capped; the full pass is periodic, not skipped | `604800` (7 days) |
-| `ROUTER_SYNC_STATE_FILE` | where the per-(relay, filter) synced `created_at` band is kept. A relay without NIP-77 has no memory of what it already sent, so without this every restart re-downloads its whole corpus; with it the router asks only for what falls outside the band it already walked. Keyed by filter — edit a stream's filter and that stream starts over | unset ⇒ in memory only |
-| `ROUTER_INGEST_BATCH` / `ROUTER_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
-| `ROUTER_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
-| `ROUTER_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
+| `SYNC_FULL_RESYNC_SECONDS` | how long a recorded sync window may narrow work before the router walks the whole filter again. A finished negentropy reconcile covers its filter's entire range, so the next run asks only for what arrived since — which is what keeps a dynamic cycle's shared id snapshot from being the entire corpus. Relays do gain old events, so the claim is re-tested on this period. Nothing is ever capped; the full pass is periodic, not skipped | `604800` (7 days) |
+| `SYNC_STATE_FILE` | where the per-(relay, filter) synced `created_at` band is kept. A relay without NIP-77 has no memory of what it already sent, so without this every restart re-downloads its whole corpus; with it the router asks only for what falls outside the band it already walked. Keyed by filter — edit a stream's filter and that stream starts over | unset ⇒ in memory only |
+| `SYNC_INGEST_BATCH` / `SYNC_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
+| `SYNC_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
+| `SYNC_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
 | `SERVING_PRESSURE_THRESHOLD_MS` | mean client-read latency above which the mirror starts yielding to clients. Reads against a 50M-event store run ~400ms healthy; ingest pauses between batches once the mean passes this | `2000` |
-| `ROUTER_WIRE_LOG` | what to log of the upstream conversation. Empty still logs `NOTICE`, `CLOSED` and failed sends — the relay's own account of why it stopped. `sent` adds every command sent; `full` adds every message received (one line per event) | *(errors only)* |
-| `ROUTER_NEG_MIN_EVENTS` | for `sync = "auto"` streams: how many events both we and the relay must hold, on the stream's filter, before a negentropy reconcile is worth its id exchange | `100000` |
-| `ROUTER_COUNT_TIMEOUT_MS` | how long a relay gets to answer the NIP-45 COUNT that measures the above. A relay that never answers is asked once per run, then reconciled | `5000` |
-| `ROUTER_STREAMS` | run only these streams (comma-separated), to tune one part of the sync without the rest competing for the same sockets, heap and ingest queue. The router prints which streams it is *not* running on startup | every stream in the config |
+| `SYNC_WIRE_LOG` | what to log of the upstream conversation. Empty still logs `NOTICE`, `CLOSED` and failed sends — the relay's own account of why it stopped. `sent` adds every command sent; `full` adds every message received (one line per event) | *(errors only)* |
+| `SYNC_NEG_MIN_EVENTS` | for `sync = "auto"` streams: how many events both we and the relay must hold, on the stream's filter, before a negentropy reconcile is worth its id exchange | `100000` |
+| `SYNC_COUNT_TIMEOUT_MS` | how long a relay gets to answer the NIP-45 COUNT that measures the above. A relay that never answers is asked once per run, then reconciled | `5000` |
+| `SYNC_STREAMS` | run only these streams (comma-separated), to tune one part of the sync without the rest competing for the same sockets, heap and ingest queue. The router prints which streams it is *not* running on startup | every stream in the config |
 
 ### Parse audit (what quartz cannot read)
 
@@ -160,7 +160,7 @@ costs one extra parse per mirrored event. See `ParseAudit`.
 
 ## The router: mirror from upstream relays
 
-Point `ROUTER_CONFIG` (or `ROUTER_CONFIG_FILE`) at a strfry-style `streams`
+Point `SYNC_CONFIG` (or `SYNC_CONFIG_FILE`) at a strfry-style `streams`
 config and the relay keeps a live subscription open against each upstream,
 mirroring matching events into the same store it serves:
 
@@ -199,7 +199,7 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   |---|---|---|
   | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
   | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A sync band answers "what is new since we last asked" instead |
-  | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `ROUTER_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
+  | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `SYNC_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
 
   A `fetch` stream never builds the local id set at all, which is the single most
   expensive thing the router does.
@@ -229,7 +229,7 @@ failing — a paused or down relay in the list is skipped, not fatal.
 
 **Down** keeps a live subscription open and first negentropy-reconciles the
 history its filter asks for. **Up** re-reconciles the store against the
-upstream every `ROUTER_UP_INTERVAL_SECONDS` and publishes only what the
+upstream every `SYNC_UP_INTERVAL_SECONDS` and publishes only what the
 upstream is missing — set reconciliation gives echo-suppression for free, so an
 event just pulled *down* from a relay is never pushed back *up* to it.
 
@@ -241,7 +241,7 @@ relays do not speak NIP-77 — in one measured run, seven of nine upstreams fell
 back to paged REQ — and a paged fetch has no such memory. It walks `created_at`
 newest-first and re-reads everything it read last time, every restart.
 
-Set `ROUTER_SYNC_STATE_FILE` and the router remembers the band it has covered per
+Set `SYNC_STATE_FILE` and the router remembers the band it has covered per
 relay and per filter, then asks only for what lies outside it:
 
 ```
@@ -524,12 +524,12 @@ Copy the bundled example, then start with the router on:
 
 ```bash
 cp router.conf.example router.conf   # then edit the relay list / filters
-ROUTER_CONFIG_LOCAL=./router.conf \
-ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
+SYNC_CONFIG_LOCAL=./router.conf \
+SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf \
 docker compose up --build
 ```
 
-Leave `ROUTER_CONFIG_FILE` unset (the default) and the relay serves without
+Leave `SYNC_CONFIG_FILE` unset (the default) and the relay serves without
 mirroring.
 
 ## Observer stats
