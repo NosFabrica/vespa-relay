@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
-import com.nosfabrica.vespa.eventstore.vespa.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
@@ -377,7 +377,7 @@ class SyncEngine(
             )
             // Where the minute actually went, per ingest stage — this is what
             // identified a projection read-back as 90% of ingest.
-            IngestStats.gauge().takeIf { it.isNotEmpty() }?.let { System.err.println("router: ingest $it") }
+            IngestStats.statusLine().takeIf { it.isNotEmpty() }?.let { System.err.println("router: ingest $it") }
         }
     }
 

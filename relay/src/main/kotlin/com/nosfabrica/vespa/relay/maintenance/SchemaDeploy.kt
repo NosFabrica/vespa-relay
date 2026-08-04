@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.maintenance
 
-import com.nosfabrica.vespa.eventstore.store.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.SchemaDeployer
 import java.net.URI
 
 /**

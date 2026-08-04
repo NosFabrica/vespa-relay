@@ -20,14 +20,14 @@
  */
 package com.nosfabrica.vespa.relay.server
 
-import com.nosfabrica.vespa.eventstore.store.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.store.mapping.DEFAULT_MIN_RANK
-import com.nosfabrica.vespa.eventstore.store.mapping.INCLUDE_SPAM_MIN_RANK
-import com.nosfabrica.vespa.eventstore.vespa.InMemoryEventIndex
-import com.nosfabrica.vespa.eventstore.vespa.client.EventIndex
-import com.nosfabrica.vespa.eventstore.vespa.doc.EventDoc
-import com.nosfabrica.vespa.eventstore.vespa.query.EventQuery
-import com.nosfabrica.vespa.eventstore.vespa.query.EventYql
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.EventIndex
+import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
+import com.nosfabrica.vespa.eventstore.engine.query.EventYql
+import com.nosfabrica.vespa.eventstore.mapping.DEFAULT_MIN_RANK
+import com.nosfabrica.vespa.eventstore.mapping.INCLUDE_SPAM_MIN_RANK
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer

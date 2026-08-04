@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
-import com.nosfabrica.vespa.eventstore.store.NostrSemanticsStore
-import com.nosfabrica.vespa.eventstore.vespa.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource

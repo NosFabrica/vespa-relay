@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay
 
-import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.PubKeys
 import com.nosfabrica.vespa.relay.config.RelayIdentity
 import com.nosfabrica.vespa.relay.config.adminPubkeysFromEnv
