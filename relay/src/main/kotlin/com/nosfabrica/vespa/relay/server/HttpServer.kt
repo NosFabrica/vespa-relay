@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
+import io.ktor.http.HttpStatusCode
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -33,6 +34,7 @@ import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.response.respond
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
@@ -63,6 +65,8 @@ data class Nip11Info(
  *   WS   /  -> the NIP-50 relay ([nostrRelay])
  *   GET  /  -> the NIP-11 doc on Accept: application/nostr+json, else [landingPage]
  *   GET  /web/… -> the landing page's ES modules, straight off the classpath
+ *   GET  /npub1…, /nprofile1…, /note1…, /nevent1…, /naddr1… -> [landingPage],
+ *        which decodes the identifier and renders the entity itself
  *   GET  /kind_stats.html -> [statsPage] (per-kind COUNTs — an operator diagnostic)
  *   GET  /observer_stats.html -> [observerStatsPage]
  *   POST /  -> the NIP-86 management RPC, when [admin] is configured
@@ -125,6 +129,21 @@ fun serveRelay(
             // the landing page), and a wildcard there would have to lose to
             // all of them by routing subtlety instead of by construction.
             staticResources("/web", "web")
+            // Any NIP-19 identifier is a page. The server validates only the
+            // SHAPE and serves the landing page; decoding — checksum, TLV,
+            // what the identifier names — belongs to the page, which already
+            // speaks bech32. Deliberately not a catch-all: /favicon.ico and
+            // typos should stay 404s, not empty search pages. Ktor prefers
+            // literal routes, so /kind_stats.html and /web/… are unaffected.
+            landingPage?.let { page ->
+                get("/{nip19}") {
+                    if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
+                        call.respondText(page, ContentType.Text.Html)
+                    } else {
+                        call.respond(HttpStatusCode.NotFound)
+                    }
+                }
+            }
             statsPage?.let { page ->
                 get("/kind_stats.html") { call.respondText(page, ContentType.Text.Html) }
             }
@@ -138,6 +157,15 @@ fun serveRelay(
 
 /** The NIP-11 content type, parsed once — every client fetches this on connect. */
 private val NOSTR_JSON = ContentType.parse("application/nostr+json")
+
+/**
+ * A path segment that is plausibly a NIP-19 identifier: the five entity
+ * prefixes over the bech32 charset (which excludes 1, b, i and o). Shape
+ * only — no length cap, because identifiers with relay hints legitimately
+ * exceed classic bech32's 90 characters, and no checksum, because the page
+ * verifies it and renders "invalid" with more context than a bare 404.
+ */
+private val NIP19_PATH = Regex("^(npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np-z]+$")
 
 /** A mutable holder for the live NIP-11 document, updated by NIP-86 admin RPCs. */
 internal class MutableRelayInfo(

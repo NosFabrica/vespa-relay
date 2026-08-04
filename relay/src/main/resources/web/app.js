@@ -9,6 +9,7 @@ import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { card, popupRow } from "./cards.js";
+import { showEntity, cancelEntity } from "./entity.js";
 
 const POPUP_LIMIT = 8;
 const FULL_LIMIT = 40;
@@ -589,7 +590,9 @@ function renderResults() {
   const head = `<div class="list-head"><div class="list-title">${esc(tab.label)}</div>` +
     `<div class="list-right"><span class="list-stats">${stats}</span>` +
     `<button type="button" id="export" class="export" title="Download this search and its results as text">Export</button></div></div>`;
-  const body = statusBody(skelCards(4)) ?? s.hits.map(card).join("");
+  // Not `.map(card)`: map hands the index as card's second argument, where a
+  // renderer would read it as the opts object.
+  const body = statusBody(skelCards(4)) ?? s.hits.map((ev) => card(ev)).join("");
   $results.innerHTML = head + body;
   paintScores();
   watchNip05();
@@ -639,6 +642,8 @@ let pendingReveal = null;
 
 function runFull(text, revealId) {
   clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
+  cancelEntity(); // a search launched FROM an entity page must not be painted over by its slow fetch
+  document.title = "SearchOverTrust";
   closePopup();
   $results.hidden = false;
   document.body.classList.add("searching");
@@ -678,6 +683,8 @@ function rerun() {
     change only — history restore uses this too, and must not push. */
 function showHero() {
   clearTimeout(debounceTimer);
+  cancelEntity(); // same for "← Search" out of an entity page mid-fetch
+  document.title = "SearchOverTrust";
   s.requestId++; s.hits = []; s.error = null; s.loading = false; s.lastMs = null;
   $q.value = "";
   $results.hidden = true;
@@ -802,12 +809,15 @@ function currentUrl() {
   // chats, and a 64-char hash is not how anyone names a person.
   if (viewingAs) p.set("as", npub(viewingAs));
   const qs = p.toString();
-  return location.pathname + (qs ? "?" + qs : "");
+  // Anchored at "/", not location.pathname: with entity pages the pathname
+  // can be /note1…, and a search launched from one belongs at the root — a
+  // URL like /note1…?q=cats would name two places at once.
+  return "/" + (qs ? "?" + qs : "");
 }
 
 function syncUrl() {
   if (navRestoring) return;
-  const url = $results.hidden ? location.pathname : currentUrl();
+  const url = $results.hidden ? "/" : currentUrl();
   // Re-submitting the same search re-queries the relay but is not a second
   // place; pushing it would make Back appear to do nothing.
   if (url === location.pathname + location.search) return;
@@ -823,6 +833,25 @@ function syncUrl() {
 function applyUrl() {
   navRestoring = true;
   try {
+    // A NIP-19 path is the third view: not the hero, not the results — the
+    // one thing the identifier names. The shape test only routes; whether
+    // the identifier VALIDATES is entity.js's question, so a bad checksum
+    // still lands on a page that explains itself.
+    const seg = location.pathname.slice(1);
+    if (/^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(seg)) {
+      clearTimeout(debounceTimer);
+      s.requestId++; // cancel any in-flight search render
+      s.hits = []; s.error = null; s.loading = false;
+      $q.value = "";
+      document.body.classList.remove("has-query");
+      document.body.classList.add("searching");
+      closePopup();
+      $results.hidden = false;
+      showEntity(seg, { paintScores });
+      return false; // no search running — boot still signs in eagerly
+    }
+    cancelEntity(); // leaving the entity view invalidates its in-flight fetch
+    document.title = "SearchOverTrust";
     const p = new URLSearchParams(location.search);
     const text = (p.get("q") || "").trim();
     tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
@@ -851,13 +880,23 @@ function applyUrl() {
 
 window.addEventListener("popstate", applyUrl);
 
-// The brand is a real link — middle-click and copy-link still work — but a
-// plain click was a full page reload that tore down the socket and the NIP-42
-// auth on it just to show the hero this page can show by itself.
-document.querySelector(".brand").addEventListener("click", (e) => {
+// Internal navigation: every link this app can render itself — the brand's
+// and entity head's "/", and any /npub1…, /note1… a card emits — stays a real
+// <a> (middle-click and copy-link work) but a plain left click becomes a
+// pushState render instead of a full reload that would tear down the socket
+// and the NIP-42 auth on it. One document-level listener rather than wiring
+// per card: cards are HTML strings re-rendered wholesale, so per-element
+// handlers would need re-attachment on every render.
+document.addEventListener("click", (e) => {
   if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+  const a = e.target.closest("a[href^='/']");
+  if (!a) return;
+  const href = a.getAttribute("href");
+  if (href === "/") { e.preventDefault(); reset(); return; }
+  if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
   e.preventDefault();
-  reset();
+  if (location.pathname + location.search !== href) history.pushState(null, "", href);
+  applyUrl();
 });
 
 renderWhoami();
