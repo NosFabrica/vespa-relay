@@ -198,7 +198,7 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   | | use when | because |
   |---|---|---|
   | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
-  | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A cursor band answers "what is new since we last asked" instead |
+  | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A sync band answers "what is new since we last asked" instead |
   | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `ROUTER_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
 
   A `fetch` stream never builds the local id set at all, which is the single most
@@ -219,7 +219,7 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
 - **`authorsPerLeg`** *(optional)* — how many bound `authors` go into one ask, and
-  therefore into one cursor band. See
+  therefore into one sync band. See
   [Binding filter fields to a relay](#binding-filter-fields-to-a-relay).
 
 The router shares the relay's Vespa store, so mirrored events are immediately
@@ -235,7 +235,7 @@ event just pulled *down* from a relay is never pushed back *up* to it.
 
 ### Resuming a paged relay
 
-Negentropy relays need no cursor: reconciliation compares id sets and downloads
+Negentropy relays need no band: reconciliation compares id sets and downloads
 only the difference, so re-running a sync costs the diff and nothing more. Most
 relays do not speak NIP-77 — in one measured run, seven of nine upstreams fell
 back to paged REQ — and a paged fetch has no such memory. It walks `created_at`
@@ -391,7 +391,7 @@ like "they retracted everything". So:
 
 | guard | behaviour |
 |---|---|
-| `sync` must be `negentropy` | refused at parse time on `fetch`/`auto`. A paged fetch asks only *outside* its cursor band, so "not seen" there means "not asked for", and deleting on it would take the entire history below the band |
+| `sync` must be `negentropy` | refused at parse time on `fetch`/`auto`. A paged fetch asks only *outside* its sync band, so "not seen" there means "not asked for", and deleting on it would take the entire history below the band |
 | the reconcile must have **completed** | quartz never silently falls back — it throws when a window cannot be reconciled over NIP-77, including "this relay does not speak it". A normal return therefore means every window was compared end to end. On a throw the ask is paged instead (so the mirror still fills) and nothing is deleted |
 | the reconcile must have covered ≥1 window | zero windows compared zero range |
 | local ids | read from the *ask itself*, never the cycle's shared snapshot — quartz's own warning is that entries outside the filter come back as false "have" ids, and the shared snapshot spans every service on the stream |
@@ -458,7 +458,7 @@ Two things to know before using one:
   So a bound select pages the events instead. Scanning kind 10040 is nothing;
   scanning millions of kind-10002s is the walk the projection was introduced to
   replace. Narrow the small sources first.
-- **`authorsPerLeg` decides how often a cursor band survives.** A band is keyed
+- **`authorsPerLeg` decides how often a sync band survives.** A band is keyed
   on its filter, so a changing author set invalidates it and re-walks that
   relay's history. `authorsPerLeg = 1` gives one band per (relay, author), which
   never invalidates — a new provider list adds a band instead. Leave it out and

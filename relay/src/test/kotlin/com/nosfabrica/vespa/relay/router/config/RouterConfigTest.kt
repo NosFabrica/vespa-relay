@@ -78,7 +78,7 @@ class RouterConfigTest {
         val popular = cfg.streams.first { it.name == "popular" }
         val mirrors = cfg.streams.first { it.name == "mirrors" }
 
-        assertEquals(MirrorDirection.DOWN, popular.dir)
+        assertEquals(SyncDirection.DOWN, popular.dir)
         assertEquals(listOf(0, 3, 5, 1984, 10000, 30000), popular.filter.kinds)
         assertEquals(5, popular.urls.size)
         assertEquals(7, mirrors.urls.size)
@@ -156,7 +156,7 @@ class RouterConfigTest {
             )
         val s = cfg.streams.single()
         assertEquals(20L, cfg.connectionTimeoutSec) // default when unset
-        assertEquals(MirrorDirection.DOWN, s.dir) // default dir
+        assertEquals(SyncDirection.DOWN, s.dir) // default dir
         assertEquals(true, s.trusted)
     }
 
@@ -465,7 +465,7 @@ class RouterConfigTest {
             ).deleteMissing,
         )
 
-        // A paged fetch asks only OUTSIDE its cursor band, so everything below
+        // A paged fetch asks only OUTSIDE its band, so everything below
         // the band is "not asked for" rather than "not there" — deleting on that
         // would take the whole history the band already covers.
         assertFailsWith<IllegalArgumentException> {

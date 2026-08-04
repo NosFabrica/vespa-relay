@@ -64,9 +64,9 @@ object RouterConfigLoader {
      * nothing.
      */
     fun select(
-        streams: List<MirrorStream>,
+        streams: List<SyncStream>,
         only: String,
-    ): List<MirrorStream> {
+    ): List<SyncStream> {
         val wanted =
             only
                 .split(',')
@@ -105,7 +105,7 @@ object RouterConfigLoader {
             streamsCfg.root().keys.map { name ->
                 val s = streamsCfg.getConfig(quote(name))
                 val urls = if (s.hasPath("urls")) normalizeUrls(name, s.getStringList("urls")) else emptyList()
-                val dir = MirrorDirection.parse(if (s.hasPath("dir")) s.getString("dir") else "down")
+                val dir = SyncDirection.parse(if (s.hasPath("dir")) s.getString("dir") else "down")
                 val dynamic = parseDynamic(name, s, relaySourceDefaults)
 
                 require(dynamic != null || s.hasPath("urls")) {
@@ -114,11 +114,11 @@ object RouterConfigLoader {
                 require(dynamic == null || urls.isEmpty()) {
                     "router: stream '$name' cannot mix `relaySource` with static `urls` — split them into two streams"
                 }
-                require(dynamic == null || dir == MirrorDirection.DOWN) {
+                require(dynamic == null || dir == SyncDirection.DOWN) {
                     "router: stream '$name' has a `relaySource`, which only pulls down — set dir = \"down\""
                 }
 
-                MirrorStream(
+                SyncStream(
                     name = name,
                     dir = dir,
                     filter = parseFilter(s.getConfig("filter")),
@@ -146,7 +146,7 @@ object RouterConfigLoader {
      * `deleteMissing = false | "dryRun" | true`.
      *
      * Refused outright on a `fetch` stream: a paged fetch asks only OUTSIDE
-     * its cursor band, so "not seen" there mostly means "not asked for" —
+     * its band, so "not seen" there mostly means "not asked for" —
      * deleting on it would take the whole history below the band. Only a
      * reconcile compares whole sets.
      */
@@ -180,7 +180,7 @@ object RouterConfigLoader {
             val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
             require(sync == SyncMode.NEGENTROPY) {
                 "router: stream '$stream' sets deleteMissing with sync = \"${sync.name.lowercase()}\" — it needs sync = \"negentropy\". " +
-                    "A paged fetch asks only outside its cursor band, so \"not seen\" there means \"not asked for\", " +
+                    "A paged fetch asks only outside its band, so \"not seen\" there means \"not asked for\", " +
                     "and deleting on it would take the whole history below the band"
             }
         }
@@ -192,11 +192,11 @@ object RouterConfigLoader {
         stream: String,
         s: Config,
         defaults: RelaySourceDefaults,
-    ): DynamicRelayList? {
+    ): RelayDiscoveryConfig? {
         if (!s.hasPath("relaySource")) return null
         val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
         require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
-        return DynamicRelayList(
+        return RelayDiscoveryConfig(
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),

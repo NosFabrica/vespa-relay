@@ -35,7 +35,7 @@ import kotlin.test.assertTrue
  * importantly, the cases where a cursor must NOT be used — a stale band silently
  * skips events, which is a worse failure than re-reading them.
  */
-class SyncCursorsTest {
+class SyncBandsTest {
     private val relay = RelayUrlNormalizer.normalize("wss://relay.example")
     private val other = RelayUrlNormalizer.normalize("wss://other.example")
     private val profiles = Filter(kinds = listOf(0))
@@ -43,7 +43,7 @@ class SyncCursorsTest {
     private fun now(): Long = System.currentTimeMillis() / 1000
 
     private fun tempFile(): File {
-        val f = File.createTempFile("sync-cursors", ".json")
+        val f = File.createTempFile("sync-bands", ".json")
         f.delete()
         return f
     }
@@ -52,13 +52,13 @@ class SyncCursorsTest {
 
     @Test
     fun `with nothing recorded the whole filter is fetched`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         assertEquals(listOf(profiles), c.legs(relay, profiles))
     }
 
     @Test
     fun `a recorded band is fetched around, not through`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, observedMin = 1_700_001_000L, observedMax = 1_700_002_000L, paged = true)
 
         val legs = c.legs(relay, profiles)
@@ -74,7 +74,7 @@ class SyncCursorsTest {
         // A paged relay cuts pages by count, so a boundary can fall inside a run
         // of events sharing one created_at. Excluding the edge would strand the
         // rest of that second in no leg at all, while the band called it covered.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
 
         val legs = c.legs(relay, profiles)
@@ -91,7 +91,7 @@ class SyncCursorsTest {
 
     @Test
     fun `successive runs widen the band rather than replacing it`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         // A later run reaches further back and picks up newer events.
         c.record(relay, profiles, 1_700_000_500L, 1_700_002_500L, paged = true)
@@ -105,7 +105,7 @@ class SyncCursorsTest {
     fun `a capped relay walks further back on each run`() {
         // The case that makes this worth having: a relay that only ever answers
         // with its newest N events. Each run starts below the last one's floor.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, 1_700_009_000L, 1_700_010_000L, paged = true)
         assertEquals(1_700_009_000L, c.legs(relay, profiles)[0].until)
 
@@ -119,7 +119,7 @@ class SyncCursorsTest {
     fun `a negentropy sync that reported no outcome records nothing`() {
         // Only a sync that says how far it reconciled earns a band; a bare
         // paged=false call carries no claim to record.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = false)
         assertNull(c.band(relay, profiles))
         assertEquals(listOf(profiles), c.legs(relay, profiles))
@@ -131,7 +131,7 @@ class SyncCursorsTest {
     fun `a finished reconcile is in sync through the instant it started`() {
         // Not through the newest event it happened to see: "the relay had nothing
         // newer" and "we never asked" must not record the same thing.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         val startedAt = now() - 60
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = false, reconciledThrough = startedAt)
 
@@ -144,7 +144,7 @@ class SyncCursorsTest {
     fun `a reconcile that downloaded nothing still records coverage`() {
         // The empty case is the WHOLE point: nothing came back because we already
         // have it, and that is exactly when the next run should ask for a sliver.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         val startedAt = now() - 60
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = startedAt)
 
@@ -155,12 +155,12 @@ class SyncCursorsTest {
 
     @Test
     fun `a complete band drops its older leg, a paged one keeps it`() {
-        val reconciled = SyncCursors(null)
+        val reconciled = SyncBands(null)
         reconciled.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_002_000L)
         val only = reconciled.legs(relay, profiles).single()
         assertEquals(1_700_002_000L, only.since)
 
-        val walked = SyncCursors(null)
+        val walked = SyncBands(null)
         walked.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         assertEquals(2, walked.legs(relay, profiles).size, "a paged walk says nothing about what it never asked for")
     }
@@ -169,13 +169,13 @@ class SyncCursorsTest {
 
     @Test
     fun `a band stops narrowing once it is older than the resync period`() {
-        val c = SyncCursors(null, fullResyncSeconds = 60)
+        val c = SyncBands(null, fullResyncSeconds = 60)
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = now() - 3600)
         // Recorded 'now' whatever the created_at claim, so age it by rewriting.
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = now())
         assertEquals(1, c.legs(relay, profiles).size, "fresh band still narrows")
 
-        val stale = SyncCursors(null, fullResyncSeconds = 0)
+        val stale = SyncBands(null, fullResyncSeconds = 0)
         stale.record(relay, profiles, null, null, paged = false, reconciledThrough = now())
         assertSame(profiles, stale.legs(relay, profiles).single(), "a band past its period re-walks everything")
     }
@@ -184,7 +184,7 @@ class SyncCursorsTest {
     fun `the re-walk replaces the old claim instead of widening it`() {
         // Widening would carry the stale band's floor forward forever and the
         // periodic pass would never actually reset anything.
-        val c = SyncCursors(null, fullResyncSeconds = 0)
+        val c = SyncBands(null, fullResyncSeconds = 0)
         c.record(relay, profiles, 1_700_000_000L, 1_700_001_000L, paged = true)
         c.record(relay, profiles, 1_700_005_000L, 1_700_006_000L, paged = true)
 
@@ -196,7 +196,7 @@ class SyncCursorsTest {
 
     @Test
     fun `covering window collapses to the oldest ceiling once everyone is caught up`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
         c.record(other, profiles, null, null, paged = false, reconciledThrough = 1_700_003_000L)
 
@@ -207,7 +207,7 @@ class SyncCursorsTest {
     fun `one relay that has never synced puts the window back to the whole filter`() {
         // It genuinely needs everything — narrowing the shared snapshot would
         // reconcile it against ids we never looked up.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
 
         // The filter itself, unnarrowed — identity, since Filter has no equals.
@@ -221,7 +221,7 @@ class SyncCursorsTest {
         // backfill takes ONE snapshot for all of them instead of walking the
         // identical range once per relay — 7,683 visit pages against a single
         // selection, on a real store, for byte-identical answers.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         val third = RelayUrlNormalizer.normalize("wss://third.example")
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
         c.record(other, profiles, null, null, paged = false, reconciledThrough = 1_700_003_000L)
@@ -233,7 +233,7 @@ class SyncCursorsTest {
 
     @Test
     fun `a relay with an older gap also widens the shared window`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
         c.record(other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
 
@@ -244,7 +244,7 @@ class SyncCursorsTest {
     fun `an empty fetch records nothing`() {
         // No events says nothing about what the relay holds, only that this
         // window was empty — recording it would fabricate coverage.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, null, null, paged = true)
         assertNull(c.band(relay, profiles))
     }
@@ -254,11 +254,11 @@ class SyncCursorsTest {
         // purplepag.es downloaded 700,767 events and recorded NOTHING, because a
         // single future-dated stamp among them failed a check applied to the
         // aggregate. Screening per event keeps the honest 700,766.
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         val far = System.currentTimeMillis() / 1000 + 400L * 86_400
         val observed = listOf(1_700_001_000L, far, 1_700_002_000L, 0L)
 
-        val plausible = observed.filter { SyncCursors.isPlausible(it) }
+        val plausible = observed.filter { SyncBands.isPlausible(it) }
         c.record(relay, profiles, plausible.min(), plausible.max(), paged = true)
 
         val band = c.band(relay, profiles)!!
@@ -268,7 +268,7 @@ class SyncCursorsTest {
 
     @Test
     fun `changing the filter starts over`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
 
         // Widening the kinds means the old band skipped events it never fetched.
@@ -281,7 +281,7 @@ class SyncCursorsTest {
 
     @Test
     fun `each relay keeps its own band`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         assertEquals(listOf(profiles), c.legs(other, profiles))
     }
@@ -291,7 +291,7 @@ class SyncCursorsTest {
     @Test
     fun `a bounded filter never widens past its own since and until`() {
         val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, bounded, 1_700_002_000L, 1_700_003_000L, paged = true)
 
         val legs = c.legs(relay, bounded)
@@ -309,7 +309,7 @@ class SyncCursorsTest {
         // way to catch a run of same-second events a page boundary cut in half.
         // Two seconds per cycle is the price of not stranding them.
         val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, bounded, 1_700_001_000L, 1_700_005_000L, paged = true)
 
         val legs = c.legs(relay, bounded)
@@ -321,13 +321,13 @@ class SyncCursorsTest {
     @Test
     fun `bands survive a restart`() {
         val f = tempFile()
-        SyncCursors(f).apply {
+        SyncBands(f).apply {
             record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
             flush()
         }
 
         // A fresh instance, as a restart would build.
-        val reopened = SyncCursors(f)
+        val reopened = SyncBands(f)
         assertEquals(1_700_001_000L, reopened.band(relay, profiles)!!.minCreatedAt)
         assertEquals(1_700_002_000L, reopened.band(relay, profiles)!!.maxCreatedAt)
         assertEquals(1_700_001_000L, reopened.legs(relay, profiles)[0].until)
@@ -338,7 +338,7 @@ class SyncCursorsTest {
     fun `a corrupt file starts fresh instead of refusing to start`() {
         val f = tempFile()
         f.writeText("{ this is not json")
-        val c = SyncCursors(f)
+        val c = SyncBands(f)
         assertEquals(0, c.size())
         assertEquals(listOf(profiles), c.legs(relay, profiles), "no band, so fetch everything")
         f.delete()
@@ -346,7 +346,7 @@ class SyncCursorsTest {
 
     @Test
     fun `with no file configured it still works, just not across restarts`() {
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         assertEquals(1_700_001_000L, c.band(relay, profiles)!!.minCreatedAt)
     }
@@ -357,7 +357,7 @@ class SyncCursorsTest {
         // them loses every band the run earned, and the next start re-downloads
         // the corpus. That is the cost this class exists to avoid.
         val f = tempFile()
-        val c = SyncCursors(f).startPeriodicFlush(intervalSec = 1)
+        val c = SyncBands(f).startPeriodicFlush(intervalSec = 1)
         c.record(relay, profiles, 1_700_000_000, 1_785_000_000, paged = true)
 
         val deadline = System.currentTimeMillis() + 15_000
@@ -365,7 +365,7 @@ class SyncCursorsTest {
         assertTrue(f.isFile, "the periodic flush should have written it with no milestone reached")
 
         c.close()
-        assertEquals(1_700_000_000L, SyncCursors(f).band(relay, profiles)?.minCreatedAt)
+        assertEquals(1_700_000_000L, SyncBands(f).band(relay, profiles)?.minCreatedAt)
         f.delete()
     }
 
@@ -374,7 +374,7 @@ class SyncCursorsTest {
         // A dynamic cycle records once per leg per relay. Writing there would
         // serialize the whole map thousands of times per cycle.
         val f = tempFile()
-        val c = SyncCursors(f)
+        val c = SyncBands(f)
         c.record(relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
         assertTrue(!f.exists(), "record() must not touch the file")
 
@@ -393,7 +393,7 @@ class SyncCursorsTest {
         // Filter.toJson() runs to tens of thousands of characters for an
         // author-scoped filter, and the fan-out keys once per relay per cycle.
         val big = Filter(kinds = listOf(30382), authors = (1..500).map { "%064x".format(it) })
-        val c = SyncCursors(null)
+        val c = SyncBands(null)
         c.record(relay, big, 1_700_001_000L, 1_700_002_000L, paged = true)
 
         // Same instance, many lookups: still one band, and cheap.
@@ -407,7 +407,7 @@ class SyncCursorsTest {
 
     @Test
     fun `fromEnv is off unless a path is given`() {
-        assertEquals(0, SyncCursors.fromEnv(emptyMap()).size())
-        assertEquals(0, SyncCursors.fromEnv(mapOf("ROUTER_SYNC_STATE_FILE" to "  ")).size())
+        assertEquals(0, SyncBands.fromEnv(emptyMap()).size())
+        assertEquals(0, SyncBands.fromEnv(mapOf("ROUTER_SYNC_STATE_FILE" to "  ")).size())
     }
 }

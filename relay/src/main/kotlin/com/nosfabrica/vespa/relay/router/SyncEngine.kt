@@ -22,8 +22,8 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.eventstore.vespa.IngestStats
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
-import com.nosfabrica.vespa.relay.router.config.MirrorUpstream
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
+import com.nosfabrica.vespa.relay.router.config.SyncUpstream
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.server.ServingPressure
@@ -74,7 +74,7 @@ import kotlin.coroutines.CoroutineContext
  * those collaborators. [close] stops touching the store before the store
  * closes.
  */
-class MirrorRouter(
+class SyncEngine(
     private val store: IEventStore,
     private val config: RouterConfig,
     parentContext: CoroutineContext = SupervisorJob(),
@@ -82,7 +82,7 @@ class MirrorRouter(
     // search-indexing parse. Off by default — it costs one parse per event.
     audit: ParseAudit? = null,
     // Resume state for paged relays, so a restart is not a re-download.
-    private val cursors: SyncCursors = SyncCursors(null),
+    private val bands: SyncBands = SyncBands(null),
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
     signer: NostrSigner? = null,
     // ROUTER_WIRE_LOG: "" (errors only) / "sent" / "full".
@@ -187,12 +187,12 @@ class MirrorRouter(
     private val phases = StreamPhases()
     private val paging = PagingProgress()
     private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
-    private val backfill = StaticBackfill(client, store, config, cursors, ingest, phases, paging, streamGate, transferring, scope)
-    private val dynamic = DynamicSync(client, store, cursors, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, scope)
+    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, streamGate, transferring, scope)
+    private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, scope)
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, scope)
     private val pressure = servingPressure
 
-    fun start(): MirrorRouter {
+    fun start(): SyncEngine {
         if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
             return this
@@ -259,7 +259,7 @@ class MirrorRouter(
         return this
     }
 
-    private fun downListener(up: MirrorUpstream): SubscriptionListener =
+    private fun downListener(up: SyncUpstream): SubscriptionListener =
         object : SubscriptionListener {
             override fun onEvent(
                 event: Event,
@@ -271,7 +271,7 @@ class MirrorRouter(
                 // broken upstream can't widen what we ingest.
                 if (relay != up.url) return
                 if (!up.filter.match(event)) return
-                ingest.offer(event, up.trusted)
+                ingest.submit(event, up.trusted)
             }
 
             override fun onCannotConnect(
@@ -379,7 +379,7 @@ class MirrorRouter(
 
     override fun close() {
         // First: a backfill killed mid-flight still keeps the ground it gained.
-        runCatching { cursors.flush() }
+        runCatching { bands.flush() }
         // Bounded flush of the monitor's liveness records: the engine being
         // unreachable is a normal way for a relay to be going down, and that
         // client has no read deadline — unbounded would hang exactly when it

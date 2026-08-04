@@ -37,7 +37,7 @@ import java.util.concurrent.ConcurrentHashMap
  * [produced] overrides a strike race: a host that has ever delivered is never
  * treated as dead for the rest of the cycle. Cycle-local; nothing persists.
  */
-class RelayHealth(
+class HostStrikes(
     private val strikeLimit: Int = DEFAULT_STRIKE_LIMIT,
     // Relays a previous run proved unreachable, and still within their TTL.
     private val knownDead: Set<NormalizedRelayUrl> = emptySet(),

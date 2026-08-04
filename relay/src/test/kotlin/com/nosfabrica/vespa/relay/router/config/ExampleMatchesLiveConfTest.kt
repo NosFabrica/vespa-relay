@@ -48,13 +48,13 @@ class ExampleMatchesLiveConfTest {
     /**
      * Everything about a stream that decides what it syncs.
      *
-     * Spelled out rather than comparing [MirrorStream] directly: `Filter` has no
+     * Spelled out rather than comparing [SyncStream] directly: `Filter` has no
      * `equals`, so a data-class comparison falls back to identity and fails on
-     * two filters that are the same filter. Its json is what [SyncCursors]
+     * two filters that are the same filter. Its json is what [SyncBands]
      * already keys bands on, so it is this codebase's own definition of "the
      * same ask".
      */
-    private fun shape(s: MirrorStream) =
+    private fun shape(s: SyncStream) =
         listOf(
             s.name,
             s.dir,

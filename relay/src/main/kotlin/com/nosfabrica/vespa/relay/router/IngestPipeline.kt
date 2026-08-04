@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * The channel is bounded so a fast download (negentropy can deliver >10k/s)
  * cannot outrun Vespa ingest and pile events onto the heap: when it fills,
- * [offer] blocks the producing thread and the upstream throttles to the
+ * [submit] blocks the producing thread and the upstream throttles to the
  * ingest rate — flat memory instead of an OOM.
  */
 internal class IngestPipeline(
@@ -90,7 +90,7 @@ internal class IngestPipeline(
     /**
      * Threads the ingest workers own outright, which no producer can occupy.
      *
-     * [offer] parks its caller when the channel is full — deliberate
+     * [submit] parks its caller when the channel is full — deliberate
      * backpressure — but on a shared dispatcher enough parked producers starve
      * the very workers that must make room, and that is a deadlock (observed:
      * `queue 8000/8000 FULL, 0 ev/s` permanently, workers parked in
@@ -151,7 +151,7 @@ internal class IngestPipeline(
      * The subscription callbacks that call this are not suspending, so a
      * blocking send is how backpressure reaches the download.
      */
-    fun offer(
+    fun submit(
         event: Event,
         skipVerify: Boolean,
     ) {

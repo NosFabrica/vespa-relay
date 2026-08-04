@@ -22,7 +22,7 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.store.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.vespa.InMemoryEventIndex
-import com.nosfabrica.vespa.relay.router.config.DynamicRelayList
+import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.Slot
@@ -71,7 +71,7 @@ class RelayDiscoveryTest {
     private fun dynamic(
         vararg sources: RelaySource,
         exclude: Set<String> = emptySet(),
-    ) = DynamicRelayList(
+    ) = RelayDiscoveryConfig(
         sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
@@ -355,7 +355,7 @@ class RelayDiscoveryTest {
                     ).single()
 
             assertEquals(setOf(one, two), found.narrow["authors"])
-            // Sorted into the filter, because the cursor band is keyed on the
+            // Sorted into the filter, because the band is keyed on the
             // filter's serialized form — an unordered set would key the same ask
             // two ways and re-walk history for nothing.
             assertEquals(listOf(one, two), found.narrowed(Filter(kinds = listOf(30382))).authors)

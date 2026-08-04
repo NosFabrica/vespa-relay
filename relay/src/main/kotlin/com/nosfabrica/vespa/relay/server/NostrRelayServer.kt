@@ -109,7 +109,7 @@ class NostrRelayServer(
     private val ingest = IngestQueue(store = store, parentContext = parentContext, verify = { it.verify() })
 
     override val backend: SessionBackend =
-        ObserverRoutingBackend(LiveEventStore(store, ingest), onObserver, servingPressure)
+        ObserverBackend(LiveEventStore(store, ingest), onObserver, servingPressure)
 
     override fun close() {
         closeConnections()
@@ -130,7 +130,7 @@ class NostrRelayServer(
  * tell them nothing about it. Anonymous means the whole corpus, unranked; a
  * caller who wants a lens asks with NIP-50's `observer:` extension.
  */
-internal class ObserverRoutingBackend(
+internal class ObserverBackend(
     private val inner: LiveEventStore,
     private val onObserver: ((String) -> Unit)? = null,
     // Every read is timed here — the only place that sees serving latency.

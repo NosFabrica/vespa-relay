@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.store.VespaEventStore
-import com.nosfabrica.vespa.relay.router.config.DynamicRelayList
+import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.Slot
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -31,7 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 
 /**
- * One relay a [DynamicRelayList] found, and what the tags that named it paired
+ * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired
  * it with. [narrow] is empty for a select that binds nothing but the url, and
  * the stream then asks this relay for its whole filter.
  */
@@ -41,7 +41,7 @@ data class DiscoveredRelay(
 ) {
     /**
      * [base] narrowed by everything this relay was paired with. Values are
-     * sorted, because a cursor band is keyed on the filter's serialized form —
+     * sorted, because a band is keyed on the filter's serialized form —
      * an unordered set would key the same ask two different ways on two runs
      * and re-walk history for nothing.
      */
@@ -68,14 +68,14 @@ data class DiscoveredRelay(
  * ordinary `e`/`p`/`a`/`q` tags.
  *
  * Every source is read and their relays unioned; nothing truncates the set —
- * the only relays left out are [DynamicRelayList.exclude] and the caller's
+ * the only relays left out are [RelayDiscoveryConfig.exclude] and the caller's
  * [discover] `skip` set.
  */
 object RelayDiscovery {
     /** Every relay [dynamic]'s sources point at right now, sorted by url for a stable fan-out. */
     suspend fun discover(
         store: IEventStore,
-        dynamic: DynamicRelayList,
+        dynamic: RelayDiscoveryConfig,
         skip: Set<NormalizedRelayUrl> = emptySet(),
         pageSize: Int = SCAN_PAGE,
     ): List<DiscoveredRelay> {

@@ -20,15 +20,21 @@
  */
 package com.nosfabrica.vespa.relay.router
 
-/**
- * Idle time a transfer may sit silent before it is abandoned.
- *
- * IDLE, not a deadline: the clock resets on every message, so a relay that is
- * still delivering is never cut off however long its history takes. A
- * wall-clock deadline could only ever fire on the healthy case — one once
- * truncated four working upstreams at exactly its 4h mark.
- */
-internal const val NEG_IDLE_MS = 30_000L
+import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 
-/** How often progress lines and phase reports refresh. */
-internal const val PROGRESS_INTERVAL_MS = 15_000L
+/**
+ * The id walk, reporting its running count when the store can. The progress
+ * overload is a [VespaEventStore] capability, not part of quartz's contract;
+ * any other store still works, just without a count.
+ */
+internal suspend fun IEventStore.snapshotIdsReporting(
+    window: Filter,
+    onProgress: (Int) -> Unit,
+): List<IdAndTime> =
+    when (this) {
+        is VespaEventStore -> snapshotIdsForNegentropy(listOf(window), null, onProgress)
+        else -> snapshotIdsForNegentropy(listOf(window))
+    }

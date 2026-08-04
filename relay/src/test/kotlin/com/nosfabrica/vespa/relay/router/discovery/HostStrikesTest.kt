@@ -35,18 +35,18 @@ import kotlin.test.assertTrue
  * per-user urls never add up to anything), and a host that has ever delivered is
  * never dropped (or a fan-out this wide sheds working relays on a race).
  */
-class RelayHealthTest {
+class HostStrikesTest {
     private fun url(u: String) = RelayUrlNormalizer.normalize(u)
 
     // ---- the authority key --------------------------------------------------
 
     @Test
     fun `per-user path urls on one host share an authority`() {
-        val a = RelayHealth.authorityOf("wss://filter.nostr.wine/npub1aaaa?broadcast=true")
-        val b = RelayHealth.authorityOf("wss://filter.nostr.wine/npub1bbbb")
+        val a = HostStrikes.authorityOf("wss://filter.nostr.wine/npub1aaaa?broadcast=true")
+        val b = HostStrikes.authorityOf("wss://filter.nostr.wine/npub1bbbb")
         assertEquals("filter.nostr.wine", a)
         assertEquals(a, b)
-        assertEquals(a, RelayHealth.authorityOf("wss://filter.nostr.wine"))
+        assertEquals(a, HostStrikes.authorityOf("wss://filter.nostr.wine"))
     }
 
     @Test
@@ -54,16 +54,16 @@ class RelayHealthTest {
         // Different servers. Shedding the filtering one must never take out the
         // bare host, which may be perfectly open.
         assertTrue(
-            RelayHealth.authorityOf("wss://filter.nostr.wine/npub1x") !=
-                RelayHealth.authorityOf("wss://nostr.wine"),
+            HostStrikes.authorityOf("wss://filter.nostr.wine/npub1x") !=
+                HostStrikes.authorityOf("wss://nostr.wine"),
         )
     }
 
     @Test
     fun `the port is part of the authority`() {
-        assertEquals("relay.example.com:443", RelayHealth.authorityOf("wss://relay.example.com:443/npub1z"))
+        assertEquals("relay.example.com:443", HostStrikes.authorityOf("wss://relay.example.com:443/npub1z"))
         assertTrue(
-            RelayHealth.authorityOf("wss://example.com:443") != RelayHealth.authorityOf("wss://example.com:8080"),
+            HostStrikes.authorityOf("wss://example.com:443") != HostStrikes.authorityOf("wss://example.com:8080"),
         )
     }
 
@@ -72,7 +72,7 @@ class RelayHealthTest {
     @Test
     fun `one host is struck out by failures spread across its many urls`() {
         // The whole point: no single url would ever reach the threshold alone.
-        val h = RelayHealth()
+        val h = HostStrikes()
         h.strike(url("wss://filter.example/npub1aaa"))
         h.strike(url("wss://filter.example/npub1bbb"))
         assertFalse(h.isDead(url("wss://filter.example/npub1ccc")), "two strikes is not yet a verdict")
@@ -87,7 +87,7 @@ class RelayHealthTest {
         // urls under this host: from here they are skipped without being dialled,
         // so nothing observes them again. It must surface exactly once — silent
         // would publish nothing, repeated would rewrite the record every strike.
-        val h = RelayHealth()
+        val h = HostStrikes()
         assertNull(h.strike(url("wss://filter.example/npub1")), "one strike is not a verdict")
         assertNull(h.strike(url("wss://filter.example/npub2")), "two is not either")
 
@@ -101,14 +101,14 @@ class RelayHealthTest {
 
     @Test
     fun `a host that has delivered is never evicted, so nothing is published`() {
-        val h = RelayHealth()
+        val h = HostStrikes()
         h.produced(url("wss://busy.example/npubY"))
         repeat(5) { assertNull(h.strike(url("wss://busy.example/npub$it")), "ever-produced outranks any strike") }
     }
 
     @Test
     fun `striking one host leaves every other alone`() {
-        val h = RelayHealth()
+        val h = HostStrikes()
         repeat(5) { h.strike(url("wss://filter.example/npub$it")) }
         assertTrue(h.isDead(url("wss://filter.example/npub1")))
         assertFalse(h.isDead(url("wss://example.com")))
@@ -120,13 +120,13 @@ class RelayHealthTest {
         // At a hundred relays in flight one worker can strike an authority out at
         // the same instant another is receiving from it. Ever-produced must win in
         // both orders, which is why it overrides rather than clearing strikes.
-        val strikeFirst = RelayHealth()
+        val strikeFirst = HostStrikes()
         repeat(3) { strikeFirst.strike(url("wss://busy.example/npub$it")) }
         assertTrue(strikeFirst.isDead(url("wss://busy.example/npubX")))
         strikeFirst.produced(url("wss://busy.example/npubY"))
         assertFalse(strikeFirst.isDead(url("wss://busy.example/npubX")), "a delivery revives the whole host")
 
-        val produceFirst = RelayHealth()
+        val produceFirst = HostStrikes()
         produceFirst.produced(url("wss://busy.example/npubY"))
         repeat(5) { produceFirst.strike(url("wss://busy.example/npub$it")) }
         assertFalse(produceFirst.isDead(url("wss://busy.example/npubX")), "later strikes cannot bury it")
@@ -134,7 +134,7 @@ class RelayHealthTest {
 
     @Test
     fun `a zero strike limit disables eviction entirely`() {
-        val h = RelayHealth(strikeLimit = 0)
+        val h = HostStrikes(strikeLimit = 0)
         repeat(50) { h.strike(url("wss://filter.example/npub$it")) }
         assertFalse(h.isDead(url("wss://filter.example/npub1")))
     }
@@ -144,7 +144,7 @@ class RelayHealthTest {
     @Test
     fun `a relay a previous run proved dead is skipped without dialling`() {
         val gone = url("wss://gone.example")
-        val h = RelayHealth(knownDead = setOf(gone))
+        val h = HostStrikes(knownDead = setOf(gone))
         assertTrue(h.isDead(gone))
         assertFalse(h.isDead(url("wss://alive.example")))
     }
@@ -154,7 +154,7 @@ class RelayHealthTest {
         // Relays come back. A TTL'd record is "not now", never "never again", so a
         // delivery this cycle must beat what an earlier one wrote down.
         val back = url("wss://back.example")
-        val h = RelayHealth(knownDead = setOf(back))
+        val h = HostStrikes(knownDead = setOf(back))
         h.produced(back)
         assertFalse(h.isDead(back))
     }
@@ -163,7 +163,7 @@ class RelayHealthTest {
 
     @Test
     fun `only relays actually dialled are reported, and delivery clears a failure`() {
-        val h = RelayHealth()
+        val h = HostStrikes()
         val good = url("wss://good.example")
         val bad = url("wss://bad.example")
         h.strike(bad)

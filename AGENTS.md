@@ -12,7 +12,7 @@ entrypoint.
 ```bash
 ./gradlew build                    # compile + test + spotless check
 ./gradlew :relay:test              # tests only
-./gradlew :relay:test --tests "*SyncCursors*"
+./gradlew :relay:test --tests "*SyncBands*"
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # run locally (needs a Vespa at VESPA_URL)
 
@@ -45,21 +45,21 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     ServingPressure.kt  EWMA of client read latency; the router yields to it
     ConnectionCountListener.kt  LOG_CONNECTIONS
   router/               the mirror (see below)
-    MirrorRouter.kt     wiring, live tails, health/stats lines
+    SyncEngine.kt       wiring, live tails, health/stats lines
     IngestPipeline.kt   bounded queue -> verify -> batchInsert, poison isolation
     BisectingInsert.kt  the batch-bisecting write
     StaticBackfill.kt   history catch-up for configured upstreams
     DynamicSync.kt      relaySource streams: discover, fan out, sync each relay
     DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
     UpstreamPush.kt     dir = up: reconcile and publish what the upstream lacks
-    SyncCursors.kt      resume state for paged relays ("bands")
+    SyncBands.kt        covered created_at bands per (relay, filter)
     config/             the declarative side
       RouterConfig.kt     the stream model (streams, directions, sync modes)
       RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
       RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
     discovery/          which relays to dial, and what to believe about them
       RelayDiscovery.kt   pulling relay urls out of stored events
-      RelayHealth.kt      per-authority strikes and eviction
+      HostStrikes.kt      per-authority strikes and eviction
       Unreachability.kt   which failures may be published as NIP-66 records
     progress/           observability
       StreamPhases.kt     per-stream progress reporting
@@ -79,7 +79,10 @@ It is the reference; this file is the orientation.
 
 ## The router, in one pass
 
-`MirrorRouter` mirrors upstream events into the store. Two kinds of stream:
+`SyncEngine` syncs upstream events into the store. Operators know this
+subsystem as **the router** — the `ROUTER_*` env vars, `router.conf` and the
+`router:` log prefix keep that name; in code it lives in the `router` package
+as `SyncEngine`. Two kinds of stream:
 
 - **static** — relays listed in `urls` in `router.conf`
 - **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
@@ -100,9 +103,9 @@ provider) instead of by kind, the same data overlaps almost entirely and
 `negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
 when a stream's filter changes shape rather than trusting the label.
 
-**Cursor bands** (`SyncCursors`) record the `created_at` span already walked for
+**Sync bands** (`SyncBands`) record the `created_at` span already walked for
 a `(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
-filter* deliberately: edit a stream's filter and its cursor is invalidated, which
+filter* deliberately: edit a stream's filter and its band is invalidated, which
 is the intended way to force a re-walk. A paged fetch records `complete = false`;
 only a finished negentropy reconcile records `complete = true`.
 

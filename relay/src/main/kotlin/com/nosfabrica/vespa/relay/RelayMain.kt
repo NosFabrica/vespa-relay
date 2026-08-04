@@ -39,8 +39,8 @@ import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
-import com.nosfabrica.vespa.relay.router.MirrorRouter
-import com.nosfabrica.vespa.relay.router.SyncCursors
+import com.nosfabrica.vespa.relay.router.SyncBands
+import com.nosfabrica.vespa.relay.router.SyncEngine
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
@@ -163,17 +163,17 @@ fun main() {
 
     // Where a paged relay's already-walked history is remembered, so a
     // restart resumes instead of re-reading the corpus.
-    val cursors = SyncCursors.fromEnv(env)
+    val bands = SyncBands.fromEnv(env)
 
     // The router: when ROUTER_CONFIG / ROUTER_CONFIG_FILE is set, mirror the
     // configured upstreams into this same store. Unset ⇒ serve-only.
     val router =
         RouterConfigLoader.fromEnv(env)?.let {
-            MirrorRouter(
+            SyncEngine(
                 store,
                 it,
                 audit = parseAudit,
-                cursors = cursors,
+                bands = bands,
                 signer = identity,
                 wireLogMode = env["ROUTER_WIRE_LOG"]?.trim()?.lowercase() ?: "",
                 servingPressure = servingPressure,

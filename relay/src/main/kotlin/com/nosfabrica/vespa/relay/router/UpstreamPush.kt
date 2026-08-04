@@ -20,7 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
-import com.nosfabrica.vespa.relay.router.config.MirrorUpstream
+import com.nosfabrica.vespa.relay.router.config.SyncUpstream
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcile
@@ -49,7 +49,7 @@ internal class UpstreamPush(
 ) {
     val pushed = AtomicLong()
 
-    suspend fun loop(up: MirrorUpstream) {
+    suspend fun loop(up: SyncUpstream) {
         while (scope.isActive) {
             try {
                 var rounds = 0

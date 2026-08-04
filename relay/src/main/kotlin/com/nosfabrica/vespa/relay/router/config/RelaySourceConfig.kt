@@ -55,7 +55,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  *   work the slot exists for.
  * @param exclude relays to skip however many sources name them.
  */
-data class DynamicRelayList(
+data class RelayDiscoveryConfig(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
     val concurrency: Int,

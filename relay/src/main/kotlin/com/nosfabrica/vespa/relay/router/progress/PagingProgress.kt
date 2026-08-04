@@ -28,7 +28,7 @@ import java.util.concurrent.ConcurrentHashMap
  * many events exist is exactly what it is finding out), so every count-based
  * percentage degenerated to `downloaded/downloaded = 100%`. The time axis has
  * both ends before the first request: the filter's `until` (or now) down to
- * its `since` (or [SyncCursors.PLAUSIBLE_FLOOR]), with each page reporting
+ * its `since` (or [SyncBands.PLAUSIBLE_FLOOR]), with each page reporting
  * its new position between them.
  *
  * The estimate assumes events are spread evenly over time, which they are

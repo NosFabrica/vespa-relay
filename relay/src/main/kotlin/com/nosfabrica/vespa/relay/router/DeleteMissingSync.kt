@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.DeleteMissing
-import com.nosfabrica.vespa.relay.router.config.MirrorStream
+import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
@@ -41,7 +41,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal class DeleteMissingSync(
     private val client: NostrClient,
     private val store: IEventStore,
-    private val cursors: SyncCursors,
+    private val bands: SyncBands,
     private val ingest: IngestPipeline,
 ) {
     /**
@@ -62,7 +62,7 @@ internal class DeleteMissingSync(
      * wrong thing in.
      */
     suspend fun reconcileAndDelete(
-        stream: MirrorStream,
+        stream: SyncStream,
         url: NormalizedRelayUrl,
         ask: Filter,
     ): Int {
@@ -93,7 +93,7 @@ internal class DeleteMissingSync(
         for (chunk in diff.needIds.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
                 if (stream.filter.match(event)) {
-                    ingest.offer(event, stream.trusted)
+                    ingest.submit(event, stream.trusted)
                     downloaded++
                 }
             }
@@ -140,29 +140,29 @@ internal class DeleteMissingSync(
     /**
      * Page one ask, for a relay that could not reconcile it — the mirror
      * still wants the events; only the DELETE side needs a reconcile. Same
-     * cursor bookkeeping as every other paged path, or the relay would
+     * band bookkeeping as every other paged path, or the relay would
      * re-walk its whole history every cycle.
      */
     private suspend fun pageAsk(
-        stream: MirrorStream,
+        stream: SyncStream,
         url: NormalizedRelayUrl,
         ask: Filter,
     ): Int {
         var downloaded = 0
-        for (leg in cursors.legs(url, ask)) {
+        for (leg in bands.legs(url, ask)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             downloaded +=
                 client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS) { event ->
                     if (stream.filter.match(event)) {
-                        if (SyncCursors.isPlausible(event.createdAt)) {
+                        if (SyncBands.isPlausible(event.createdAt)) {
                             seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                             seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                         }
-                        ingest.offer(event, stream.trusted)
+                        ingest.submit(event, stream.trusted)
                     }
                 }
-            cursors.record(url, ask, seenMin, seenMax, paged = true)
+            bands.record(url, ask, seenMin, seenMax, paged = true)
         }
         return downloaded
     }

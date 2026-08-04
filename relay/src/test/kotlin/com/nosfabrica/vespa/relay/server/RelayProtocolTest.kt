@@ -43,7 +43,7 @@ import kotlin.test.fail
 
 /**
  * The whole relay stack, driven over the wire protocol: Quartz's engine ->
- * ObserverRoutingBackend -> NostrSemanticsStore -> a recording in-memory index.
+ * ObserverBackend -> NostrSemanticsStore -> a recording in-memory index.
  * Sessions speak raw NIP-01 JSON through [NostrRelayServer.connect], exactly
  * what the websocket route feeds them.
  */

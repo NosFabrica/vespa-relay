@@ -20,9 +20,9 @@
  */
 package com.nosfabrica.vespa.relay.router
 
-import com.nosfabrica.vespa.relay.router.config.MirrorUpstream
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
+import com.nosfabrica.vespa.relay.router.config.SyncUpstream
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.util.fmtCount
@@ -56,14 +56,14 @@ import java.util.concurrent.atomic.AtomicLong
  * ONE local id snapshot (per-relay snapshots walked the identical range once
  * per url), pagers walk their windows with no snapshot at all and start
  * immediately — they never wait for an id walk they will not read. Cursor
- * bands ([SyncCursors]) keep every walk from repeating what a previous run
+ * bands ([SyncBands]) keep every walk from repeating what a previous run
  * already covered.
  */
 internal class StaticBackfill(
     private val client: NostrClient,
     private val store: IEventStore,
     private val config: RouterConfig,
-    private val cursors: SyncCursors,
+    private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val phases: StreamPhases,
     private val paging: PagingProgress,
@@ -88,7 +88,7 @@ internal class StaticBackfill(
     fun begin(totalUpstreams: Int) = progress.begin(totalUpstreams)
 
     /** Backfill every down upstream, grouped by stream (shared filter). */
-    suspend fun run(upstreams: List<MirrorUpstream>) {
+    suspend fun run(upstreams: List<SyncUpstream>) {
         coroutineScope {
             upstreams
                 .withIndex()
@@ -101,7 +101,7 @@ internal class StaticBackfill(
 
     private suspend fun backfillStream(
         filter: Filter,
-        group: List<IndexedValue<MirrorUpstream>>,
+        group: List<IndexedValue<SyncUpstream>>,
     ) {
         val name = group.first().value.streamName
         // Our own count, taken once for the stream — the cheap half of the
@@ -161,7 +161,7 @@ internal class StaticBackfill(
     /** Page every non-reconciling relay, with a ticker refreshing the phase line. */
     private suspend fun pageAll(
         name: String,
-        pagers: List<IndexedValue<MirrorUpstream>>,
+        pagers: List<IndexedValue<SyncUpstream>>,
         eventsEarly: AtomicLong,
         pagedDone: AtomicInteger,
         pagersReport: Boolean,
@@ -210,15 +210,15 @@ internal class StaticBackfill(
 
     /**
      * Page a relay's whole window, with no local id set involved — same leg
-     * walk and cursor bookkeeping as the reconcile path, but it runs while a
+     * walk and band bookkeeping as the reconcile path, but it runs while a
      * snapshot is still being built.
      */
     private suspend fun pageOne(
         idx: Int,
-        upstream: MirrorUpstream,
+        upstream: SyncUpstream,
         live: AtomicLong,
     ): Int {
-        val legs = cursors.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             return 0
@@ -234,7 +234,7 @@ internal class StaticBackfill(
                 // value, which only lands when the walk ends; that once read
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
-                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCursors.PLAUSIBLE_FLOOR)
+                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncBands.PLAUSIBLE_FLOOR)
                 downloaded +=
                     client.fetchAllPages(
                         upstream.url,
@@ -243,11 +243,11 @@ internal class StaticBackfill(
                         onNewPage = { until -> paging.mark(walk, until) },
                     ) { event ->
                         if (upstream.filter.match(event)) {
-                            if (SyncCursors.isPlausible(event.createdAt)) {
+                            if (SyncBands.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                             }
-                            ingest.offer(event, upstream.trusted)
+                            ingest.submit(event, upstream.trusted)
                         }
                         seenSoFar++
                         live.incrementAndGet()
@@ -256,7 +256,7 @@ internal class StaticBackfill(
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
                 paging.finish(walk)
-                cursors.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true)
+                bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true)
             }
             progress.done(idx, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
@@ -292,7 +292,7 @@ internal class StaticBackfill(
      * everything.
      */
     private suspend fun worthReconciling(
-        upstream: MirrorUpstream,
+        upstream: SyncUpstream,
         filter: Filter,
         ours: Int,
     ): Boolean {
@@ -315,13 +315,13 @@ internal class StaticBackfill(
 
     /**
      * The local id set every relay in one stream reconciles against, narrowed
-     * to what the hungriest of them still needs ([SyncCursors.coveringWindow]).
+     * to what the hungriest of them still needs ([SyncBands.coveringWindow]).
      */
     private suspend fun snapshotForStream(
-        group: List<MirrorUpstream>,
+        group: List<SyncUpstream>,
         filter: Filter,
     ): StreamSnapshot {
-        val window = cursors.coveringWindow(group.map { it.url }, filter)
+        val window = bands.coveringWindow(group.map { it.url }, filter)
         val startedMs = System.currentTimeMillis()
         val takenAt = startedMs / 1000
         val name = group.first().streamName
@@ -343,10 +343,10 @@ internal class StaticBackfill(
 
     private suspend fun reconcileOne(
         idx: Int,
-        upstream: MirrorUpstream,
+        upstream: SyncUpstream,
         snapshot: StreamSnapshot,
     ): Int {
-        val legs = cursors.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
@@ -374,11 +374,11 @@ internal class StaticBackfill(
                                 // Only PLAUSIBLE stamps widen the band: one
                                 // future-dated event among 700k once discarded
                                 // a whole upstream's band.
-                                if (SyncCursors.isPlausible(event.createdAt)) {
+                                if (SyncBands.isPlausible(event.createdAt)) {
                                     seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                     seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                                 }
-                                ingest.offer(event, upstream.trusted)
+                                ingest.submit(event, upstream.trusted)
                             }
                         },
                     )
@@ -389,7 +389,7 @@ internal class StaticBackfill(
                 // the SNAPSHOT was read — that is the state the relay was
                 // compared against, and erring early only costs a small
                 // re-fetch, never a gap.
-                cursors.record(
+                bands.record(
                     upstream.url,
                     upstream.filter,
                     seenMin,
@@ -399,7 +399,7 @@ internal class StaticBackfill(
                 )
             }
             progress.done(idx, downloaded)
-            val band = cursors.band(upstream.url, upstream.filter)
+            val band = bands.band(upstream.url, upstream.filter)
             System.err.println(
                 "router: static backfill ${upstream.url.url} downloaded $downloaded" +
                     (if (paged) " (paged REQ fallback — no NIP-77)" else " (negentropy)") +
@@ -422,7 +422,7 @@ internal class StaticBackfill(
             delay(PROGRESS_INTERVAL_MS)
             val s = progress.snapshot()
             if (s.allDone) {
-                cursors.flush()
+                bands.flush()
                 // "backfill complete" must not read as "caught up" while the
                 // dynamic streams — the larger half of the fill — still run.
                 System.err.println(

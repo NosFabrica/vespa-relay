@@ -59,7 +59,7 @@ import java.util.concurrent.ConcurrentHashMap
  * on every restart is a certain daily cost, while both holes are occasional
  * and self-heal on the next filter change or full re-walk.
  */
-class SyncCursors(
+class SyncBands(
     private val file: File?,
     // How long a band may narrow work before the whole filter is walked again.
     // Everything a band claims is a claim about the past; this is how long we
@@ -238,7 +238,7 @@ class SyncCursors(
      * survives a hard kill between the milestone flushes (which are minutes
      * to hours apart). Unchanged intervals write nothing.
      */
-    fun startPeriodicFlush(intervalSec: Long = DEFAULT_FLUSH_SECONDS): SyncCursors {
+    fun startPeriodicFlush(intervalSec: Long = DEFAULT_FLUSH_SECONDS): SyncBands {
         if (file == null) return this
         flusher =
             Thread {
@@ -311,7 +311,7 @@ class SyncCursors(
             }
         }.onFailure {
             // A corrupt cursor file costs one re-sync; exiting costs the relay.
-            System.err.println("router: could not read sync cursors from ${f.path} (${it.message}); starting fresh")
+            System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
         }
     }
 
@@ -339,7 +339,7 @@ class SyncCursors(
             tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
             Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }.onFailure {
-            System.err.println("router: could not write sync cursors to ${f.path}: ${it.message}")
+            System.err.println("router: could not write sync bands to ${f.path}: ${it.message}")
         }
     }
 
@@ -379,11 +379,11 @@ class SyncCursors(
         fun isPlausible(createdAt: Long): Boolean = createdAt in PLAUSIBLE_FLOOR..(nowSeconds() + FUTURE_SKEW_SECONDS)
 
         /**
-         * `ROUTER_SYNC_STATE_FILE` — where the cursors live. Unset keeps them
+         * `ROUTER_SYNC_STATE_FILE` — where the bands live. Unset keeps them
          * in memory, which is the same as not having them.
          */
-        fun fromEnv(env: Map<String, String>): SyncCursors =
-            SyncCursors(
+        fun fromEnv(env: Map<String, String>): SyncBands =
+            SyncBands(
                 env["ROUTER_SYNC_STATE_FILE"]?.trim()?.takeIf { it.isNotEmpty() }?.let(::File),
                 env["ROUTER_FULL_RESYNC_SECONDS"]?.trim()?.toLongOrNull()?.takeIf { it > 0 } ?: DEFAULT_FULL_RESYNC_SECONDS,
             ).startPeriodicFlush()

@@ -39,15 +39,15 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  * `dir` is `down` (mirror upstream events into our store), `up` (publish our
  * matching events upstream), or `both`. Beyond strfry's schema: `trusted`
  * (skip signature verification for this stream), `sync` ([SyncMode]),
- * `deleteMissing` ([DeleteMissing]) and `relaySource` ([DynamicRelayList]).
+ * `deleteMissing` ([DeleteMissing]) and `relaySource` ([RelayDiscoveryConfig]).
  *
- * How far back a stream reaches is the [MirrorStream.filter]'s own
+ * How far back a stream reaches is the [SyncStream.filter]'s own
  * `since`/`until`, exactly as NIP-01 reads them: absent is unbounded. The live
  * tail runs from connect forward but keeps the filter's `until`.
  */
 data class RouterConfig(
     val connectionTimeoutSec: Long,
-    val streams: List<MirrorStream>,
+    val streams: List<SyncStream>,
     // How often (seconds) an `up`/`both` stream re-reconciles to push newly
     // arrived local events. From ROUTER_UP_INTERVAL_SECONDS.
     val upIntervalSec: Long = 300,
@@ -63,22 +63,22 @@ data class RouterConfig(
     val countTimeoutMs: Long = 5_000,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
-    fun downUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.DOWN)
+    fun downUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.DOWN)
 
     /** Every (stream, url) pair whose direction pushes our events up to the upstream. */
-    fun upUpstreams(): List<MirrorUpstream> = upstreamsFor(MirrorDirection.UP)
+    fun upUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.UP)
 
     /** The streams whose relay list is discovered from the store, not configured. */
-    fun dynamicStreams(): List<MirrorStream> = streams.filter { it.dynamic != null }
+    fun dynamicStreams(): List<SyncStream> = streams.filter { it.dynamic != null }
 
-    private fun upstreamsFor(want: MirrorDirection): List<MirrorUpstream> =
+    private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
-            .filter { it.dir == want || it.dir == MirrorDirection.BOTH }
-            .flatMap { s -> s.urls.map { MirrorUpstream(s.name, it, s.filter, s.trusted, s.sync) } }
+            .filter { it.dir == want || it.dir == SyncDirection.BOTH }
+            .flatMap { s -> s.urls.map { SyncUpstream(s.name, it, s.filter, s.trusted, s.sync) } }
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */
-data class MirrorUpstream(
+data class SyncUpstream(
     val streamName: String,
     val url: NormalizedRelayUrl,
     val filter: Filter,
@@ -86,14 +86,14 @@ data class MirrorUpstream(
     val sync: SyncMode = SyncMode.AUTO,
 )
 
-data class MirrorStream(
+data class SyncStream(
     val name: String,
-    val dir: MirrorDirection,
+    val dir: SyncDirection,
     val filter: Filter,
     val urls: List<NormalizedRelayUrl>,
     val trusted: Boolean,
     // Null for an ordinary stream; set when its relays come out of the store.
-    val dynamic: DynamicRelayList? = null,
+    val dynamic: RelayDiscoveryConfig? = null,
     // Whether this stream's relays share events with each other — see [SyncMode].
     val sync: SyncMode = SyncMode.AUTO,
     // Whether an upstream dropping a record means we drop it too.
@@ -154,7 +154,7 @@ enum class SyncMode(
     }
 }
 
-enum class MirrorDirection(
+enum class SyncDirection(
     val wire: String,
 ) {
     DOWN("down"),
@@ -163,7 +163,7 @@ enum class MirrorDirection(
     ;
 
     companion object {
-        fun parse(raw: String): MirrorDirection =
+        fun parse(raw: String): SyncDirection =
             entries.firstOrNull { it.wire.equals(raw.trim(), ignoreCase = true) }
                 ?: error("router: unknown stream dir '$raw' (expected down / up / both)")
     }

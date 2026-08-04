@@ -21,12 +21,12 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.DeleteMissing
-import com.nosfabrica.vespa.relay.router.config.DynamicRelayList
-import com.nosfabrica.vespa.relay.router.config.MirrorStream
+import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
+import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
+import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
-import com.nosfabrica.vespa.relay.router.discovery.RelayHealth
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
@@ -65,7 +65,7 @@ import java.util.concurrent.atomic.AtomicLong
 internal class DynamicSync(
     private val client: NostrClient,
     private val store: IEventStore,
-    private val cursors: SyncCursors,
+    private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val phases: StreamPhases,
     private val paging: PagingProgress,
@@ -78,7 +78,7 @@ internal class DynamicSync(
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
 ) {
-    private val deleteMissingSync = DeleteMissingSync(client, store, cursors, ingest)
+    private val deleteMissingSync = DeleteMissingSync(client, store, bands, ingest)
 
     /** Records dropped because an upstream retracted them — see [DeleteMissingSync]. */
     val deleted: AtomicLong get() = deleteMissingSync.deleted
@@ -92,7 +92,7 @@ internal class DynamicSync(
     private val inFlight = ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
     /** One stream, forever: discover, sync, sleep, repeat. */
-    suspend fun loop(stream: MirrorStream) {
+    suspend fun loop(stream: SyncStream) {
         val dynamic = stream.dynamic ?: return
         val sourceNames =
             dynamic.sources.joinToString { s ->
@@ -136,10 +136,10 @@ internal class DynamicSync(
         }
     }
 
-    /** Sync every discovered relay, [DynamicRelayList.concurrency] of them at a time. */
+    /** Sync every discovered relay, [RelayDiscoveryConfig.concurrency] of them at a time. */
     private suspend fun cycle(
-        stream: MirrorStream,
-        dynamic: DynamicRelayList,
+        stream: SyncStream,
+        dynamic: RelayDiscoveryConfig,
         sourceNames: String,
         relays: List<DiscoveredRelay>,
     ) {
@@ -151,7 +151,7 @@ internal class DynamicSync(
         // What earlier runs already proved unreachable — a policy input loaded
         // once for the fan-out, not a per-dial lookup.
         val knownDead = monitor?.deadSet().orEmpty()
-        val health = RelayHealth(knownDead = knownDead)
+        val strikes = HostStrikes(knownDead = knownDead)
 
         val window = stream.filter
         // ONE snapshot for the whole cycle: every relay reconciles the same
@@ -159,8 +159,8 @@ internal class DynamicSync(
         // scans. A relay synced late compares against the store as it was at
         // the start — already true anyway, since ingest is asynchronous — and
         // the store dedups on insert. Narrowed to what the hungriest relay
-        // still needs ([SyncCursors.coveringWindow]).
-        val snapshotWindow = cursors.coveringWindow(relays.map { it.url }, window)
+        // still needs ([SyncBands.coveringWindow]).
+        val snapshotWindow = bands.coveringWindow(relays.map { it.url }, window)
         val snapStartedMs = System.currentTimeMillis()
 
         val local: List<IdAndTime> =
@@ -253,13 +253,13 @@ internal class DynamicSync(
                                 reasons.merge("tcp: no route or refused", 1L, Long::plus)
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
-                                publishStrike(health, relay.url)
+                                publishStrike(strikes, relay.url)
                                 return@launch
                             }
                             // Re-checked here rather than filtered up front:
                             // an authority struck out while this one waited
                             // for a slot should not still be dialled.
-                            if (health.isDead(relay.url)) {
+                            if (strikes.isDead(relay.url)) {
                                 reasons.merge("skipped: authority already struck out", 1L, Long::plus)
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
@@ -279,7 +279,7 @@ internal class DynamicSync(
                                     // the finding NIP-66 exists for.
                                     got == UNREACHABLE -> {
                                         failed.incrementAndGet()
-                                        publishStrike(health, relay.url)
+                                        publishStrike(strikes, relay.url)
                                     }
 
                                     // Reached it; the transfer broke. NOT
@@ -293,13 +293,13 @@ internal class DynamicSync(
 
                                     got > 0 -> {
                                         downloaded.addAndGet(got.toLong())
-                                        health.produced(relay.url)
+                                        strikes.produced(relay.url)
                                     }
 
                                     // Answered cleanly with nothing new — a
                                     // working relay we are in sync with.
                                     else -> {
-                                        health.produced(relay.url)
+                                        strikes.produced(relay.url)
                                     }
                                 }
                                 done.incrementAndGet()
@@ -317,13 +317,13 @@ internal class DynamicSync(
                 .take(3)
                 .joinToString { "${it.key} x${it.value}" }
         // One write for the whole fan-out, not one per relay.
-        cursors.flush()
+        bands.flush()
         val elapsedMs = System.currentTimeMillis() - startedMs
         System.err.println(
             "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get() - skipped.get()}/${relays.size} relay(s)" +
                 " in ${fmtDuration(elapsedMs)}" +
                 (if (elapsedMs >= 1_000 && downloaded.get() > 0) " (${downloaded.get() * 1000 / elapsedMs}/s)" else "") +
-                "; ${health.summary(relays.size)}" +
+                "; ${strikes.summary(relays.size)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
                 "; next in ${dynamic.refreshSeconds}s",
         )
@@ -336,7 +336,7 @@ internal class DynamicSync(
      * [TRANSFER_FAILED].
      */
     private suspend fun syncRelay(
-        stream: MirrorStream,
+        stream: SyncStream,
         url: NormalizedRelayUrl,
         window: Filter,
         local: List<IdAndTime>,
@@ -369,27 +369,27 @@ internal class DynamicSync(
      * own band; the socket is held once around all of them.
      */
     private suspend fun syncOneFilter(
-        stream: MirrorStream,
+        stream: SyncStream,
         url: NormalizedRelayUrl,
         window: Filter,
         local: List<IdAndTime>,
     ): Int {
         if (stream.deleteMissing != DeleteMissing.OFF) return deleteMissingSync.reconcileAndDelete(stream, url, window)
         var downloaded = 0
-        for (leg in cursors.legs(url, window)) {
+        for (leg in bands.legs(url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             val syncStartedAt = System.currentTimeMillis() / 1000
             val onEvent: (Event) -> Unit = { event ->
                 if (stream.filter.match(event)) {
-                    if (SyncCursors.isPlausible(event.createdAt)) {
+                    if (SyncBands.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
-                    ingest.offer(event, stream.trusted)
+                    ingest.submit(event, stream.trusted)
                 }
             }
-            // Fetch-only: the leg came off the cursor band, so this asks only
+            // Fetch-only: the leg came off the band, so this asks only
             // for what is outside what we already walked — the band IS the
             // mechanism here, there is no id set to fall back on.
             val fetched = stream.sync == SyncMode.FETCH
@@ -397,7 +397,7 @@ internal class DynamicSync(
                 if (fetched) {
                     null.also {
                         val walk = "${stream.name}|${url.url}"
-                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCursors.PLAUSIBLE_FLOOR)
+                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncBands.PLAUSIBLE_FLOOR)
                         downloaded +=
                             client.fetchAllPages(
                                 url,
@@ -418,7 +418,7 @@ internal class DynamicSync(
                             onEvent = onEvent,
                         ).also { downloaded += it.downloaded }
                 }
-            cursors.record(
+            bands.record(
                 url,
                 window,
                 seenMin,
@@ -432,8 +432,8 @@ internal class DynamicSync(
 
     /**
      * [window] as one ask, or as several with at most [per] authors each. A
-     * cursor band is keyed on its filter, so the chunk size decides how often
-     * a band survives — see [DynamicRelayList.authorsPerLeg].
+     * band is keyed on its filter, so the chunk size decides how often
+     * a band survives — see [RelayDiscoveryConfig.authorsPerLeg].
      */
     private fun splitByAuthors(
         window: Filter,
@@ -451,10 +451,10 @@ internal class DynamicSync(
      * ever observe them again.
      */
     private fun publishStrike(
-        health: RelayHealth,
+        strikes: HostStrikes,
         url: NormalizedRelayUrl,
     ) {
-        val evicted = health.strike(url) ?: return
+        val evicted = strikes.strike(url) ?: return
         monitor?.observer?.record(
             url,
             reachable = false,
