@@ -94,6 +94,23 @@ class ServingPressureTest {
     }
 
     @Test
+    fun `a straggler after a run of instant reads is dampened, not adopted`() {
+        // Sub-millisecond reads (COUNT hits, cache hits) record as 0ms. If a
+        // zero could reach the mean, the mean would read as "no samples yet"
+        // and the next straggler would be adopted WHOLESALE — the exact spike
+        // the EWMA exists to dampen.
+        val p = ServingPressure(thresholdMs = 2_000)
+        feed(p, 0, 100)
+
+        p.record(30_000)
+
+        assertTrue(
+            p.meanMs() <= 30_000 / 8 + 1,
+            "the EWMA damping must still apply after instant reads; mean was ${p.meanMs()}ms",
+        )
+    }
+
+    @Test
     fun `a few samples are not yet evidence`() {
         // Below MIN_SAMPLES this is one client's first query, not a trend.
         val p = ServingPressure(thresholdMs = 2_000)

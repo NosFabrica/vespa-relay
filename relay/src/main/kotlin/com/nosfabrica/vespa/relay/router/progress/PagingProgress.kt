@@ -44,13 +44,17 @@ class PagingProgress {
 
     private val walks = ConcurrentHashMap<String, Walk>()
 
-    /** Begin a walk over `[bottom, top]` seconds. Keys are `"stream|url"`. */
+    /**
+     * Begin a walk over `[bottom, top]` seconds. Keys are `"stream|url"`.
+     * An inverted window is not a walk; a single-second one (`top == bottom`)
+     * is — a band's re-read edge leg is exactly that shape.
+     */
     fun begin(
         key: String,
         top: Long,
         bottom: Long,
     ) {
-        if (top > bottom) walks[key] = Walk(top, bottom, System.currentTimeMillis(), top)
+        if (top >= bottom) walks[key] = Walk(top, bottom, System.currentTimeMillis(), top)
     }
 
     /** The walk reached [until]; monotonic, so a page that jumps back cannot un-advance it. */

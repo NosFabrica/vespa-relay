@@ -33,6 +33,7 @@ dependencies {
     // The Ktor server: serveRelay binds a port over the Netty engine.
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.websockets)
+    implementation(libs.ktor.server.cors)
     implementation(libs.ktor.server.netty)
     testImplementation(kotlin("test"))
     // RelayProtocolTest drives the real protocol over InMemoryEventIndex, which is

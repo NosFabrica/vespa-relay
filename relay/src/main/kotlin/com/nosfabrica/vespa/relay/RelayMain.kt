@@ -139,7 +139,12 @@ fun main() {
 
     // One instance, shared: the relay server measures client reads into it,
     // the router reads it back to decide whether to yield.
-    val servingPressure = ServingPressure(thresholdMs = env["SERVING_PRESSURE_THRESHOLD_MS"]?.trim()?.toLongOrNull()?.coerceAtLeast(100) ?: 2_000)
+    val servingPressure =
+        ServingPressure(
+            thresholdMs =
+                env["SERVING_PRESSURE_THRESHOLD_MS"]?.trim()?.toLongOrNull()?.coerceAtLeast(100)
+                    ?: ServingPressure.DEFAULT_THRESHOLD_MS,
+        )
     val relay =
         NostrRelayServer(
             store = store,

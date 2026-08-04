@@ -49,7 +49,14 @@ object BanListFile {
     ) {
         val file = File(path)
         if (!file.exists()) return
-        val root = runCatching { Json.parseToJsonElement(file.readText()).jsonObject }.getOrNull() ?: return
+        val root =
+            runCatching { Json.parseToJsonElement(file.readText()).jsonObject }.getOrElse { e ->
+                // Loud: starting with an empty list because the state file is
+                // corrupt means every ban silently stops being enforced —
+                // the operator must know, not discover it from spam.
+                System.err.println("nip86: could not parse $path (${e.message}) — starting with EMPTY ban lists; the file will be overwritten on the next mutation")
+                return
+            }
         banStore.seedFromSnapshot(
             root.pairs("bannedPubkeys"),
             root.pairs("allowedPubkeys"),
@@ -59,7 +66,14 @@ object BanListFile {
         )
     }
 
-    /** Write [banStore]'s current lists to [path] atomically (temp file + move). */
+    /**
+     * Write [banStore]'s current lists to [path] atomically (temp file +
+     * move). Synchronized: concurrent admin RPCs each trigger a save, and
+     * two unlocked writers would share one `.tmp` path — interleaved writes,
+     * then racing renames, with the loser's truncated JSON possibly landing
+     * as the state file.
+     */
+    @Synchronized
     fun save(
         path: String,
         banStore: BanStore,
@@ -87,6 +101,10 @@ object BanListFile {
         }.recoverCatching {
             // Some filesystems don't support ATOMIC_MOVE; fall back to a plain replace.
             Files.move(tmp.toPath(), target.toPath(), StandardCopyOption.REPLACE_EXISTING)
+        }.onFailure { e ->
+            // A ban that was acknowledged over NIP-86 but not persisted
+            // vanishes on restart — say so instead of swallowing it.
+            System.err.println("nip86: could not persist ban lists to $path: ${e.message}")
         }
     }
 }

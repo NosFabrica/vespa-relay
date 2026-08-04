@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.syncEnv
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.Json
@@ -92,10 +93,12 @@ class SyncBands(
     @Volatile private var flusher: Thread? = null
 
     // filter -> its canonical json. Filter.toJson() runs to tens of thousands
-    // of characters for author-scoped filters, and the dynamic streams key
-    // once per relay per cycle over the SAME handful of filter objects.
-    // Identity equality is right here: a merely-equal filter still keys
-    // correctly, just without the cache.
+    // of characters for author-scoped filters. Identity-keyed, and an identity
+    // cache retains every distinct instance it is handed — which the dynamic
+    // streams mint freshly per relay per cycle (narrowed(), author chunks), so
+    // an unbounded cache is a slow heap leak measured in tens of KB per entry.
+    // Past the cap, fresh instances still key correctly; they just pay the
+    // toJson instead of growing the map.
     private val fingerprints = Collections.synchronizedMap(IdentityHashMap<Filter, String>())
 
     init {
@@ -270,7 +273,10 @@ class SyncBands(
     fun flush() {
         if (!dirty) return
         dirty = false
-        save()
+        // A failed write re-arms the flag: "write anything outstanding" is
+        // this method's contract, and a transiently unwritable disk should be
+        // retried on the next tick, not on the next band mutation.
+        if (!save()) dirty = true
     }
 
     /** What is currently covered, for logging and tests. */
@@ -290,7 +296,14 @@ class SyncBands(
     private fun key(
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): String = "${url.url} ${fingerprints.computeIfAbsent(filter) { it.toJson() }}"
+    ): String {
+        val fingerprint =
+            fingerprints[filter]
+                ?: filter.toJson().also {
+                    if (fingerprints.size < MAX_FINGERPRINTS) fingerprints[filter] = it
+                }
+        return "${url.url} $fingerprint"
+    }
 
     private fun load() {
         val f = file ?: return
@@ -318,9 +331,9 @@ class SyncBands(
 
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
     @Synchronized
-    private fun save() {
-        val f = file ?: return
-        runCatching {
+    private fun save(): Boolean {
+        val f = file ?: return true
+        return runCatching {
             val snapshot: JsonObject =
                 buildJsonObject {
                     bands.forEach { (k, band) ->
@@ -341,7 +354,7 @@ class SyncBands(
             Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
         }.onFailure {
             System.err.println("router: could not write sync bands to ${f.path}: ${it.message}")
-        }
+        }.isSuccess
     }
 
     companion object {
@@ -370,7 +383,9 @@ class SyncBands(
         // Often enough that a kill costs little, rare enough to be free.
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
-        private fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+        // More filter instances than any deliberate configuration holds; only
+        // the fresh-per-cycle dynamic filters ever reach it.
+        private const val MAX_FINGERPRINTS = 1_000
 
         /**
          * Whether a `created_at` can be believed as evidence of coverage.

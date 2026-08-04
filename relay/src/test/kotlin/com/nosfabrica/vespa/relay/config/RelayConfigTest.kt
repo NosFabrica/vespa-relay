@@ -100,17 +100,39 @@ class RelayConfigTest {
     }
 
     @Test
-    fun `bare hex is refused, and the error spells out the npub to use instead`() {
+    fun `bare hex is refused without echoing the value back`() {
         // Hex has no checksum, so one mistyped character is a different valid
-        // key. The error carries the correct npub so the fix is a copy-paste.
+        // key. The error explains the fix but must NOT carry the value in any
+        // form: 64 hex characters might equally be a hex-encoded SECRET pasted
+        // into the wrong slot, and boot logs are shipped to aggregators.
         val hex = "0000000000000000000000000000000000000000000000000000000000000001"
         val npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
         val e =
             assertFailsWith<IllegalArgumentException> {
                 adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to hex))
             }
-        assertEquals(true, e.message!!.contains(npub), "got: ${e.message}")
+        assertEquals(true, e.message!!.contains("bare hex"), "got: ${e.message}")
+        assertEquals(false, e.message!!.contains(npub), "the error must not re-encode the value: ${e.message}")
+        assertEquals(false, e.message!!.contains(hex), "the error must not echo the value: ${e.message}")
         assertEquals(setOf(hex), adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to npub)))
+    }
+
+    @Test
+    fun `an all-uppercase npub is valid bech32 and decodes`() {
+        // BIP-173 allows the all-caps spelling; QR exports produce it.
+        val hex = "0000000000000000000000000000000000000000000000000000000000000001"
+        val npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"
+        assertEquals(setOf(hex), adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to npub.uppercase())))
+    }
+
+    @Test
+    fun `an npub with a typo is called an npub, not a character count`() {
+        val npub = "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w3"
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                adminPubkeysFromEnv(mapOf("RELAY_ADMIN_PUBKEYS" to npub))
+            }
+        assertEquals(true, e.message!!.contains("recopy"), "got: ${e.message}")
     }
 
     @Test
@@ -136,12 +158,24 @@ class RelayConfigTest {
                 "ALLOW_PUBKEYS" to "${Hex.decode(a).toNpub()} ${Hex.decode(b).toNpub()}",
                 "DENY_PUBKEYS" to "",
                 "ALLOW_KINDS" to "0,1, 30023",
-                "DENY_KINDS" to "4, junk",
+                "DENY_KINDS" to "4",
             )
         assertEquals(setOf(a, b), allowPubkeysFromEnv(env))
         assertEquals(emptySet(), denyPubkeysFromEnv(env))
         assertEquals(setOf(0, 1, 30023), allowKindsFromEnv(env))
         assertEquals(setOf(4), denyKindsFromEnv(env))
+    }
+
+    @Test
+    fun `a kind list with junk fails loudly like a pubkey list does`() {
+        // `DENY_KINDS=4;5` silently denying nothing is a ban that is not
+        // enforced — the exact silent-inert failure the pubkey lists refuse.
+        assertFailsWith<IllegalArgumentException> {
+            denyKindsFromEnv(mapOf("DENY_KINDS" to "4, junk"))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            allowKindsFromEnv(mapOf("ALLOW_KINDS" to "4;5"))
+        }
     }
 
     @Test

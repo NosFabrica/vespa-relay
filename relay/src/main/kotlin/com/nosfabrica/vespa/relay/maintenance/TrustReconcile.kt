@@ -41,6 +41,7 @@ import kotlinx.coroutines.delay
 suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
     var waited = 0L
     var attempt = 0
+    var printedFirstFailure = false
     while (true) {
         attempt++
         val result = runCatching { store.reconcileTrust() }
@@ -84,10 +85,14 @@ suspend fun reconcileTrustWithRetry(store: VespaEventStore) {
             cause?.printStackTrace()
             return
         }
-        if (attempt == 1) {
+        if (!printedFirstFailure) {
+            // On the FIRST failure, whichever attempt that is — a success on
+            // attempt 1 followed by a throw on attempt 2 deserves the same
+            // diagnostic, or the loop retries silently for ten minutes. A
+            // deterministic bug and a cold engine look identical from one
+            // message, hence the stack.
+            printedFirstFailure = true
             println("trust: engine not answering yet (${cause?.message?.take(80)}); waiting for it before ranking is usable")
-            // On the FIRST failure too: a deterministic bug and a cold engine
-            // look identical from one message.
             cause?.printStackTrace()
         }
         delay(TRUST_RECONCILE_RETRY_MS)

@@ -24,10 +24,13 @@ import com.nosfabrica.vespa.eventstore.store.VespaEventStore
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.FtsReindexProgress
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import java.io.File
+import java.nio.file.Files
+import java.nio.file.StandardCopyOption
 
 /**
  * Re-derive every event's search fields, in the background — a one-off
@@ -52,7 +55,6 @@ fun launchFtsReindex(
         var pages = 0
         // The denominator, asked for once. Null rather than a guess if it
         // fails: an unknown denominator is better than a wrong one.
-        val expected = runCatching { store.count(Filter()) }.getOrNull()?.toLong()
         var cursor: String? =
             runCatching {
                 File(cursorFile)
@@ -62,6 +64,11 @@ fun launchFtsReindex(
                     ?.ifBlank { null }
             }.getOrNull()
         if (cursor != null) println("fts: resuming from a saved cursor")
+        // On a resumed run the denominator is unknowable: `total` counts only
+        // the remaining walk, so total/corpus would report 3% at completion —
+        // the same misleading instrumentation this class exists to end. An
+        // unknown denominator is better than a wrong one.
+        val expected = if (cursor != null) null else runCatching { store.count(Filter()) }.getOrNull()?.toLong()
         try {
             do {
                 // A page can fail for reasons unrelated to its contents (Vespa
@@ -79,7 +86,17 @@ fun launchFtsReindex(
                     if (progress == null) delay(attempt * 5_000L)
                 }
                 cursor = progress.cursor
-                runCatching { File(cursorFile).writeText(cursor ?: "") }
+                // Temp file + move, like every other state file here: this
+                // cursor's entire job is surviving a crash, and a bare
+                // writeText truncated mid-kill leaves a corrupt token that
+                // fails every resume until someone deletes it by hand.
+                runCatching {
+                    val f = File(cursorFile)
+                    f.absoluteFile.parentFile?.mkdirs()
+                    val tmp = File(f.absoluteFile.parentFile, f.name + ".tmp")
+                    tmp.writeText(cursor ?: "")
+                    Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
+                }
                 total += progress.processedThisBatch
                 // Every page would be a flood; never would be silence.
                 if (++pages % 50 == 0) {
@@ -102,6 +119,10 @@ fun launchFtsReindex(
             // Done means done: a leftover cursor would resume a finished walk
             // from its tail on the next boot with the flag still set.
             runCatching { File(cursorFile).delete() }
+        } catch (e: CancellationException) {
+            // Shutdown mid-walk: the cursor is saved, the next boot resumes.
+            // Not a failure, so the log must not print one.
+            throw e
         } catch (e: Exception) {
             System.err.println(
                 "fts: reindex FAILED after $total event(s): ${e.message}" +

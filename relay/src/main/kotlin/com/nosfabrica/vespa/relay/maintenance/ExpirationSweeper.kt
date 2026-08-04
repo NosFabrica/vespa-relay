@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.maintenance
 
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -56,7 +57,11 @@ class ExpirationSweeper(
     /** One sweep; failures are swallowed so a transient error can't kill the loop. */
     suspend fun sweepOnce() {
         runCatching { store.deleteExpiredEvents() }
-            .onFailure { System.err.println("expiration sweep failed: ${it.message}") }
+            .onFailure {
+                // Cancellation is shutdown doing its job, not a failed sweep.
+                if (it is CancellationException) throw it
+                System.err.println("expiration sweep failed: ${it.message}")
+            }
     }
 
     override fun close() {

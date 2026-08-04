@@ -38,7 +38,7 @@ class ServingPressure(
      * above a healthy read (~400ms against 52M documents) and far below the
      * point a client gives up.
      */
-    private val thresholdMs: Long = 2_000,
+    private val thresholdMs: Long = DEFAULT_THRESHOLD_MS,
     /** Never pause a batch longer than this, however bad it gets. */
     private val maxBackoffMs: Long = 2_000,
 ) {
@@ -50,10 +50,17 @@ class ServingPressure(
 
     /** Record a completed read. Called on the serving path, so it must stay cheap. */
     fun record(durationMs: Long) {
-        val micros = durationMs * 1_000
-        samples.incrementAndGet()
+        // Floored at 1: a sub-millisecond read is a real (fast) sample. If a
+        // zero could reach the mean, a run of cache hits would zero it and
+        // the next call's first-sample check would adopt one straggler
+        // wholesale — the exact spike MIN_SAMPLES and the EWMA exist to
+        // absorb. Negative guards against a non-monotonic caller clock.
+        val micros = durationMs.coerceAtLeast(1) * 1_000
+        // The counter, not a zero mean, says whether this is the first
+        // sample — a mean of zero must stay unreachable.
+        val first = samples.getAndIncrement() == 0L
         meanMicros.updateAndGet { prev ->
-            if (prev == 0L) micros else prev + (micros - prev) / 8
+            if (first) micros else prev + (micros - prev) / 8
         }
     }
 
@@ -82,6 +89,9 @@ class ServingPressure(
     }
 
     companion object {
+        /** One default, referenced by the env fallback too, so they cannot drift. */
+        const val DEFAULT_THRESHOLD_MS = 2_000L
+
         /**
          * Below this, the mean is one client's cold first query rather than a
          * trend, and throttling the mirror on it would be superstition.

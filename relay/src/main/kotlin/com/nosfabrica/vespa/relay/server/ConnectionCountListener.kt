@@ -24,23 +24,19 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * Tracks the live websocket connection count and (when [log] is on) prints it
- * on each connect/disconnect. Installed when `LOG_CONNECTIONS` is set.
+ * Prints the live websocket connection count on each connect/disconnect.
+ * Only installed when `LOG_CONNECTIONS` is set — a quiet mode would be the
+ * same as not installing it. (For the gauge without the log lines, the
+ * engine's own `activeConnections` already exists.)
  */
-class ConnectionCountListener(
-    private val log: Boolean = true,
-) : RelayServerListener {
+class ConnectionCountListener : RelayServerListener {
     private val active = AtomicInteger(0)
 
     override fun onConnect(connectionId: Long) {
-        val now = active.incrementAndGet()
-        if (log) println("relay connections: $now (+)")
+        println("relay connections: ${active.incrementAndGet()} (+)")
     }
 
     override fun onDisconnect(connectionId: Long) {
-        val now = active.decrementAndGet()
-        if (log) println("relay connections: $now (-)")
+        println("relay connections: ${active.decrementAndGet()} (-)")
     }
-
-    fun count(): Int = active.get()
 }

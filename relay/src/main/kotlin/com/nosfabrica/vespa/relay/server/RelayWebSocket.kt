@@ -26,14 +26,22 @@ import io.ktor.websocket.CloseReason
 import io.ktor.websocket.Frame
 import io.ktor.websocket.close
 import io.ktor.websocket.readText
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.withTimeoutOrNull
 
 /**
  * The most frames the outbound queue holds for one connection before the
  * client is treated as a slow consumer. An empty queue costs nothing.
  */
 private const val MAX_OUTGOING_BUFFER = 8192
+
+/**
+ * How long a slow consumer's polite close frame gets before the session is
+ * torn down anyway. Short: the socket is congested by definition here.
+ */
+private const val CLOSE_GRACE_MS = 5_000L
 
 /** Mount the relay websocket on `/`; the composition root serves the NIP-11 doc beside it. */
 fun Route.nostrRelay(server: NostrRelayServer) {
@@ -51,9 +59,18 @@ fun Route.nostrRelay(server: NostrRelayServer) {
                     if (result.isFailure && !result.isClosed) {
                         outCh.close()
                         launch {
+                            // The polite close frame queues behind the very
+                            // congestion that tripped this, so it may never
+                            // leave. Give it a moment, then cancel the whole
+                            // session: that closes the socket even when the
+                            // client never drains, and stops its still-running
+                            // REQs from querying for replies nobody reads.
                             runCatching {
-                                close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "slow consumer: over $MAX_OUTGOING_BUFFER buffered frames"))
+                                withTimeoutOrNull(CLOSE_GRACE_MS) {
+                                    close(CloseReason(CloseReason.Codes.TRY_AGAIN_LATER, "slow consumer: over $MAX_OUTGOING_BUFFER buffered frames"))
+                                }
                             }
+                            this@webSocket.cancel()
                         }
                     }
                 },

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.maintenance
 
 import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
@@ -78,6 +79,9 @@ fun launchOrphanScoreSweep(
                 )
             }
         }.onFailure { e ->
+            // Shutdown cancellation is not a failed sweep; rethrowing keeps
+            // every shutdown log free of a phantom FAILED line.
+            if (e is CancellationException) throw e
             println("sweep: FAILED after ${(System.currentTimeMillis() - startedMs) / 1000}s: ${e.message}")
         }
     }

@@ -153,7 +153,7 @@ class SyncEngine(
                 if (Log.minLevel > LogLevel.DEBUG) {
                     Log.minLevel = LogLevel.DEBUG
                     System.err.println(
-                        "router: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG (was ${'$'}{LogLevel.WARN}) — this is verbose",
+                        "router: SYNC_WIRE_LOG=$wireLogMode lowered the quartz log floor to DEBUG — this is verbose",
                     )
                 }
                 RelayLogger(client, debugSending = true, debugReceiving = wireLogMode == "full")
@@ -189,7 +189,7 @@ class SyncEngine(
     private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, streamGate, transferring, scope)
     private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, scope)
-    private val upPush = UpstreamPush(client, store, config.upIntervalSec, scope)
+    private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
     fun start(): SyncEngine {
@@ -225,6 +225,12 @@ class SyncEngine(
         }
         client.connect()
 
+        // Registered BEFORE anything is launched: a configured stream must
+        // appear in the report from the first tick, so silence can never be
+        // read as "not configured".
+        downUpstreams.map { it.streamName }.distinct().forEach { phases.register(it) }
+        dynamicStreams.forEach { phases.register(it.name) }
+
         if (downUpstreams.isNotEmpty()) {
             backfill.begin(downUpstreams.size)
             scope.launch { backfill.run(downUpstreams) }
@@ -233,13 +239,20 @@ class SyncEngine(
 
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
 
-        // Registered BEFORE anything runs: a configured stream must appear in
-        // the report from the first tick, so silence can never be read as
-        // "not configured".
-        downUpstreams.map { it.streamName }.distinct().forEach { phases.register(it) }
-        dynamicStreams.forEach { phases.register(it.name) }
-
         dynamicStreams.forEach { stream -> scope.launch { dynamic.loop(stream) } }
+
+        // The phase report runs for the life of the engine, not inside the
+        // static backfill's progress loop: a dynamic-only config has no
+        // backfill loop at all, and everyone else's dynamic streams — the
+        // larger half of the fill — outlive it.
+        if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
+            scope.launch {
+                while (scope.isActive) {
+                    delay(PROGRESS_INTERVAL_MS)
+                    phases.report().forEach { System.err.println(it) }
+                }
+            }
+        }
 
         scope.launch { statsLoop() }
 

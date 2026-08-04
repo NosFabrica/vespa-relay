@@ -146,8 +146,10 @@ class ParseAudit(
 
     /**
      * Write the report via a sibling temp file and a move, so a reader never
-     * sees a half file.
+     * sees a half file. Synchronized because the flusher thread and [close]
+     * both write, and both use the SAME temp path.
      */
+    @Synchronized
     fun writeReport() {
         val report =
             buildJsonObject {
@@ -199,6 +201,10 @@ class ParseAudit(
     /** Flush the final report. */
     override fun close() {
         flusher?.interrupt()
+        // Joined, not just interrupted: a flusher caught mid-writeReport()
+        // would race this thread on the same temp file, and the loser's
+        // half-written tmp could be renamed over the report.
+        runCatching { flusher?.join(FLUSHER_JOIN_MS) }
         runCatching { writeReport() }
             .onFailure { System.err.println("parse audit: could not write ${outFile.path}: ${it.message}") }
     }
@@ -261,6 +267,9 @@ class ParseAudit(
 
     companion object {
         private val json = Json { prettyPrint = true }
+
+        // Bounded: shutdown must not hang on a flusher stuck in disk I/O.
+        private const val FLUSHER_JOIN_MS = 5_000L
 
         // Tags whose messages are parse reports rather than relay logging.
         private val PARSE_TAGS =

@@ -155,8 +155,12 @@ internal class IngestPipeline(
         event: Event,
         skipVerify: Boolean,
     ) {
-        inbound.trySendBlocking(Inbound(event, skipVerify))
-        queued.incrementAndGet()
+        // Counted only when the channel actually took it: during shutdown
+        // (closeIntake) the send fails, and counting a dropped event would
+        // leave a phantom queue depth on the final health line.
+        if (inbound.trySendBlocking(Inbound(event, skipVerify)).isSuccess) {
+            queued.incrementAndGet()
+        }
     }
 
     private suspend fun loop() {
@@ -246,8 +250,13 @@ internal class IngestPipeline(
         event: Event,
         error: Throwable,
     ) {
+        // Size checked BEFORE add: store errors embed per-event content in
+        // their messages (a Vespa 400 quotes the document), so past the print
+        // limit the set must stop growing too — 2.3M distinct rejections in
+        // one schema-drift run would otherwise be 2.3M retained strings.
+        if (poisonSeen.size >= POISON_SAMPLE_LIMIT) return
         val signature = "${error.javaClass.name}: ${error.message}"
-        if (!poisonSeen.add(signature) || poisonSeen.size > POISON_SAMPLE_LIMIT) return
+        if (!poisonSeen.add(signature)) return
         System.err.println(
             "router: store rejected event ${event.id} (kind ${event.kind}, pubkey ${event.pubKey}) — " +
                 "${error.javaClass.simpleName}: ${error.message}\n" +

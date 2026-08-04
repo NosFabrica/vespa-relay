@@ -21,8 +21,6 @@
 package com.nosfabrica.vespa.relay.config
 
 import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
-import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.quartz.utils.Hex
 
 /**
  * Parses every pubkey setting: `npub1…` (or another bech32 public-key form),
@@ -30,8 +28,7 @@ import com.vitorpamplona.quartz.utils.Hex
  *
  * Bare hex is refused on purpose: hex has no checksum, so one mistyped
  * character is a valid-looking key that simply is not anybody, and nothing
- * downstream could ever notice. An npub cannot be corrupted silently, and the
- * error for a hex value spells out its npub so the fix is a copy-paste.
+ * downstream could ever notice. An npub cannot be corrupted silently.
  *
  * A bad value throws instead of being dropped, because a silently dropped
  * entry looks exactly like the feature not working — an admin who cannot
@@ -45,7 +42,14 @@ object PubKeys {
         raw: String,
         varName: String,
     ): String {
-        val trimmed = raw.trim().removeSurrounding("\"")
+        // BIP-173 allows the ALL-UPPERCASE spelling (QR exports produce it);
+        // normalizing case first keeps `NPUB1…` valid and — just as important
+        // — keeps the nsec detection below from being sidestepped by case.
+        val trimmed =
+            raw
+                .trim()
+                .removeSurrounding("\"")
+                .let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
         val hex =
             when {
                 // Rejected outright: quartz would accept an nsec and hand back
@@ -94,10 +98,19 @@ object PubKeys {
                 "a ${value.takeWhile { it.isLetter() }} that does not decode to a public key"
             }
 
+            value.startsWith("npub1") -> {
+                // It IS an npub in shape; the checksum failed. Saying "must be
+                // an npub, got 63 characters" would tell the operator the one
+                // thing they already believe.
+                "an npub that would not decode — recopy it"
+            }
+
             value.lowercase().matches(HEX64) -> {
-                // The npub is spelled out so the fix is a copy-paste — safe to
-                // echo, this is a public key.
-                "bare hex, which has no checksum — write it as ${Hex.decode(value.lowercase()).toNpub()}"
+                // NOT echoed back in any form: 64 hex chars might be the
+                // public key the operator meant — or their hex-encoded SECRET
+                // pasted into the wrong slot, byte-identical in shape. An
+                // error log that re-encodes it would publish it.
+                "bare hex, which has no checksum — convert it to its npub form (any nostr key tool does this) and use that"
             }
 
             value.length == 64 -> {

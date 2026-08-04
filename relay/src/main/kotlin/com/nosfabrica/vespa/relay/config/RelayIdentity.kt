@@ -55,7 +55,14 @@ object RelayIdentity {
     }
 
     fun signerFor(secret: String): NostrSignerInternal {
-        val trimmed = secret.trim().removeSurrounding("\"")
+        // BIP-173 allows the ALL-UPPERCASE spelling (QR exports produce it);
+        // without normalizing, `NSEC1…` would die in [describe] as "63
+        // characters" — the one hint that never mentions case.
+        val trimmed =
+            secret
+                .trim()
+                .removeSurrounding("\"")
+                .let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
         val hex =
             // quartz owns the bech32 side, and returns null for an npub rather
             // than pretending a public key could sign. Bare hex never reaches

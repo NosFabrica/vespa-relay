@@ -28,6 +28,9 @@ kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core",
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-websockets = { module = "io.ktor:ktor-server-websockets", version.ref = "ktor" }
+# NIP-11 tells relays to serve the info doc with CORS headers, and browser-based
+# NIP-86 admin tools need the Authorization header preflighted.
+ktor-server-cors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
 # serveRelay bundles the Netty engine (batteries-included) so a consumer — or the
 # standalone main() — can bind a port without wiring an engine itself.
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }

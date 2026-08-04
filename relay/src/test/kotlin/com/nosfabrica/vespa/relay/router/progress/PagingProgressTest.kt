@@ -82,13 +82,26 @@ class PagingProgressTest {
     }
 
     @Test
-    fun `an inverted or empty window is not a walk`() {
+    fun `an inverted window is not a walk`() {
         // A leg whose since is above its until asks for a range nothing can be
         // in. Dividing by that span would produce infinities on the status line.
         val p = PagingProgress()
 
         p.begin("a", top = 100L, bottom = 900L)
 
+        assertNull(p.fraction())
+    }
+
+    @Test
+    fun `a single-second window is a walk`() {
+        // A band's re-read edge leg is exactly this shape: since == until is
+        // a real, one-second range, not an inverted one.
+        val p = PagingProgress()
+
+        p.begin("a", top = 500L, bottom = 500L)
+
+        assertEquals(0.0, p.fraction()!!, 0.001)
+        p.finish("a")
         assertNull(p.fraction())
     }
 

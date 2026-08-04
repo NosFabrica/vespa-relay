@@ -36,6 +36,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
@@ -133,28 +134,42 @@ internal class StaticBackfill(
             return
         }
         phases.set(name, StreamPhases.Phase.Queued(reconcilers.size))
-        streamGate.withPermit {
-            val snapshot = snapshotForStream(reconcilers.map { it.value }, filter)
-            // Awaited inside the permit: the id set stays live until the last
-            // relay is done with it, so releasing at the fan-out would let the
-            // next stream allocate its own on top of this one.
-            val done = AtomicInteger()
-            val events = AtomicLong()
-            phases.set(name, StreamPhases.Phase.Syncing(0, reconcilers.size, 0, 0, 0))
-            coroutineScope {
-                reconcilers.forEach { (idx, upstream) ->
-                    launch {
-                        val got = reconcileOne(idx, upstream, snapshot)
-                        events.addAndGet(got.toLong())
-                        phases.set(
-                            name,
-                            StreamPhases.Phase.Syncing(done.incrementAndGet(), reconcilers.size, events.get(), 0, 0),
-                        )
+        try {
+            streamGate.withPermit {
+                val snapshot = snapshotForStream(reconcilers.map { it.value }, filter)
+                // Awaited inside the permit: the id set stays live until the last
+                // relay is done with it, so releasing at the fan-out would let the
+                // next stream allocate its own on top of this one.
+                val done = AtomicInteger()
+                val events = AtomicLong()
+                phases.set(name, StreamPhases.Phase.Syncing(0, reconcilers.size, 0, 0, 0))
+                coroutineScope {
+                    reconcilers.forEach { (idx, upstream) ->
+                        launch {
+                            val got = reconcileOne(idx, upstream, snapshot)
+                            events.addAndGet(got.toLong())
+                            phases.set(
+                                name,
+                                StreamPhases.Phase.Syncing(done.incrementAndGet(), reconcilers.size, events.get(), 0, 0),
+                            )
+                        }
                     }
                 }
+                early?.join()
+                phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), 0))
             }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            // The snapshot is the one step without its own catch
+            // (reconcileOne contains per-relay failures). Contain a throw to
+            // THIS stream: siblings share run()'s coroutineScope and a
+            // propagating failure would cancel their backfills too, and
+            // relays never marked done would tick the progress loop forever.
+            System.err.println("router: $name backfill failed before reconcile (${e.message}) — ${reconcilers.size} relay(s) skipped until next boot")
+            reconcilers.forEach { (idx, _) -> progress.done(idx, 0) }
             early?.join()
-            phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), 0))
+            phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), 0))
         }
     }
 
@@ -261,6 +276,10 @@ internal class StaticBackfill(
             progress.done(idx, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
             downloaded
+        } catch (e: CancellationException) {
+            // Shutdown: rethrow before the catch below reports it as a failed
+            // fetch and zeroes the relay's real count.
+            throw e
         } catch (e: Exception) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${upstream.url.url} paged fetch failed: ${e.message}")
@@ -407,6 +426,10 @@ internal class StaticBackfill(
                     (if (band != null) " [synced ${band.minCreatedAt}..${band.maxCreatedAt}]" else ""),
             )
             return downloaded
+        } catch (e: CancellationException) {
+            // Shutdown: rethrow before the catch below reports it as a failed
+            // backfill and zeroes the relay's real count.
+            throw e
         } catch (e: Exception) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${upstream.url.url} failed: ${e.message}")
@@ -432,7 +455,6 @@ internal class StaticBackfill(
                 )
                 return
             }
-            phases.report().forEach { System.err.println(it) }
             // ETA from the average rate since start — steadier than an
             // instantaneous window, which flickers to zero between pages.
             val elapsedSec = s.elapsedMs / 1000.0

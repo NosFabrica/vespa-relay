@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.DeleteMissing
 import com.nosfabrica.vespa.relay.router.config.SyncStream
+import com.nosfabrica.vespa.relay.router.progress.PagingProgress
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
@@ -43,6 +45,7 @@ internal class DeleteMissingSync(
     private val store: IEventStore,
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
+    private val paging: PagingProgress,
 ) {
     /**
      * Records dropped because the upstream that owns them stopped serving
@@ -152,16 +155,24 @@ internal class DeleteMissingSync(
         for (leg in bands.legs(url, ask)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
-            downloaded +=
-                client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS) { event ->
-                    if (stream.filter.match(event)) {
-                        if (SyncBands.isPlausible(event.createdAt)) {
-                            seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                            seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+            // Same time-axis reporting as every other paged walk: without it
+            // these walks are the one hole in the stream's fraction/ETA line.
+            val walk = "${stream.name}|${url.url}"
+            paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncBands.PLAUSIBLE_FLOOR)
+            try {
+                downloaded +=
+                    client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS, onNewPage = { until -> paging.mark(walk, until) }) { event ->
+                        if (stream.filter.match(event)) {
+                            if (SyncBands.isPlausible(event.createdAt)) {
+                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                            }
+                            ingest.submit(event, stream.trusted)
                         }
-                        ingest.submit(event, stream.trusted)
                     }
-                }
+            } finally {
+                paging.finish(walk)
+            }
             bands.record(url, ask, seenMin, seenMax, paged = true)
         }
         return downloaded

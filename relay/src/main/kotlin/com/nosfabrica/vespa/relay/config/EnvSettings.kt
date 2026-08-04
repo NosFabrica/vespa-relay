@@ -97,9 +97,9 @@ fun allowPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeS
 fun denyPubkeysFromEnv(env: Map<String, String>): Set<String> = PubKeys.decodeSet(env["DENY_PUBKEYS"], "DENY_PUBKEYS")
 
 /** Static kind authorization: `ALLOW_KINDS` (empty ⇒ all) minus `DENY_KINDS`. */
-fun allowKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["ALLOW_KINDS"])
+fun allowKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["ALLOW_KINDS"], "ALLOW_KINDS")
 
-fun denyKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["DENY_KINDS"])
+fun denyKindsFromEnv(env: Map<String, String>): Set<Int> = parseIntSet(env["DENY_KINDS"], "DENY_KINDS")
 
 /**
  * Reject events dated more than `REJECT_FUTURE_SECONDS` in the future.
@@ -113,12 +113,24 @@ fun rejectFutureSecondsFromEnv(env: Map<String, String>): Int = env["REJECT_FUTU
  */
 fun expirationSweepSecondsFromEnv(env: Map<String, String>): Long = env["EXPIRATION_SWEEP_SECONDS"]?.trim()?.toLongOrNull() ?: 3_600L
 
-/** Split a comma/space/newline list into a deduped set of ints, dropping non-numeric entries. */
-private fun parseIntSet(raw: String?): Set<Int> =
+/**
+ * Split a comma/space/newline list into a deduped set of ints. A
+ * non-numeric entry throws — the same policy [PubKeys] applies to key lists,
+ * for the same reason: `DENY_KINDS=4;5` silently denying nothing looks
+ * exactly like the feature not working, and nothing downstream can notice.
+ */
+private fun parseIntSet(
+    raw: String?,
+    varName: String,
+): Set<Int> =
     raw
         ?.split(',', ' ', '\n')
-        ?.mapNotNull { it.trim().toIntOrNull() }
-        ?.toSet()
+        ?.map { it.trim() }
+        ?.filter { it.isNotEmpty() }
+        ?.map {
+            it.toIntOrNull()
+                ?: throw IllegalArgumentException("$varName must be a list of kind numbers, got \"$it\"")
+        }?.toSet()
         .orEmpty()
 
 /** Parse an env var as Int, keeping [fallback] when absent, blank, or unparseable. */

@@ -74,7 +74,13 @@ class HostStrikes(
         val authority = authorityOf(url.url)
         if (authority in producedHosts || authority in deadHosts) return null
         if (strikes.merge(authority, 1, Int::plus)!! < strikeLimit) return null
-        deadHosts += authority
+        // Concurrent strikers can cross the threshold together; add() is the
+        // atomic exactly-once gate on who publishes. Re-check produced after
+        // winning it — a delivery that landed while this strike was in
+        // flight outranks the verdict, and the verdict becomes a signed
+        // public record.
+        if (!deadHosts.add(authority)) return null
+        if (authority in producedHosts) return null
         return Evicted(authority, strikeLimit)
     }
 

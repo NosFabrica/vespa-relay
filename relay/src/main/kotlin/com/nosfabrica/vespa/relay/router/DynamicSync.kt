@@ -78,7 +78,7 @@ internal class DynamicSync(
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
 ) {
-    private val deleteMissingSync = DeleteMissingSync(client, store, bands, ingest)
+    private val deleteMissingSync = DeleteMissingSync(client, store, bands, ingest, paging)
 
     /** Records dropped because an upstream retracted them — see [DeleteMissingSync]. */
     val deleted: AtomicLong get() = deleteMissingSync.deleted
@@ -256,16 +256,18 @@ internal class DynamicSync(
                                 publishStrike(strikes, relay.url)
                                 return@launch
                             }
-                            // Re-checked here rather than filtered up front:
-                            // an authority struck out while this one waited
-                            // for a slot should not still be dialled.
-                            if (strikes.isDead(relay.url)) {
-                                reasons.merge("skipped: authority already struck out", 1L, Long::plus)
-                                skipped.incrementAndGet()
-                                done.incrementAndGet()
-                                return@launch
-                            }
                             gate.withPermit {
+                                // Re-checked INSIDE the permit: with thousands
+                                // of relays behind a small gate, the wait for
+                                // a slot is exactly when sibling urls strike
+                                // an authority out — checked before the wait,
+                                // a dead host's urls would still be dialled.
+                                if (strikes.isDead(relay.url)) {
+                                    reasons.merge("skipped: authority already struck out", 1L, Long::plus)
+                                    skipped.incrementAndGet()
+                                    done.incrementAndGet()
+                                    return@launch
+                                }
                                 // The relay's own filter, narrowed by what the
                                 // tags that named it paired it with; identical
                                 // to `window` for a select that binds only the
@@ -350,6 +352,9 @@ internal class DynamicSync(
                 downloaded += syncOneFilter(stream, url, ask, local)
             }
             downloaded
+        } catch (e: CancellationException) {
+            // Shutdown, not a dead relay: neither a tally nor a strike.
+            throw e
         } catch (e: Exception) {
             // A dead host in a relay list is the common case, not an incident:
             // tally it and move on.

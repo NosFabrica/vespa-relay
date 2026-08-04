@@ -27,9 +27,12 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyRec
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withPermit
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -45,6 +48,10 @@ internal class UpstreamPush(
     private val client: NostrClient,
     private val store: IEventStore,
     private val intervalSec: Long,
+    // The engine-wide one-snapshot-at-a-time gate, shared with the static
+    // and dynamic streams. An id snapshot of a broad filter is gigabytes;
+    // the gate is what keeps two of them from being resident at once.
+    private val streamGate: Semaphore,
     private val scope: CoroutineScope,
 ) {
     val pushed = AtomicLong()
@@ -53,33 +60,47 @@ internal class UpstreamPush(
         while (scope.isActive) {
             try {
                 var rounds = 0
-                var pushedThisPass: Long
+                var pushedThisPass = 0L
                 var pushedThisWindow = 0L
-                do {
-                    pushedThisPass = 0
+                streamGate.withPermit {
+                    // One snapshot per pass, reused across the rounds: a
+                    // round changes the UPSTREAM's set (it gains what we
+                    // push), never ours — re-reading gigabytes of ids per
+                    // round bought nothing.
                     val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(up.filter))
-                    client.negentropyReconcile(
-                        relay = up.url,
-                        filter = up.filter,
-                        localEntries = local,
-                        idleTimeoutMs = NEG_IDLE_MS,
-                        onHaveIds = { ids ->
-                            val events: List<Event> = store.query(Filter(ids = ids))
-                            for (event in events) {
-                                client.publish(event, setOf(up.url))
-                                pushed.incrementAndGet()
-                                pushedThisPass++
-                                delay(PUBLISH_PACE_MS)
-                            }
-                        },
-                        onNeedIds = { /* up-only: the down tail pulls, not this */ },
-                    )
-                    pushedThisWindow += pushedThisPass
-                    rounds++
-                } while (pushedThisPass > 0 && rounds < MAX_ROUNDS && scope.isActive)
+                    do {
+                        pushedThisPass = 0
+                        client.negentropyReconcile(
+                            relay = up.url,
+                            filter = up.filter,
+                            localEntries = local,
+                            idleTimeoutMs = NEG_IDLE_MS,
+                            onHaveIds = { ids ->
+                                // Chunked: a reconcile diff can be arbitrarily
+                                // large, and the store should not have to
+                                // materialize it as one query.
+                                for (chunk in ids.chunked(ID_FETCH_CHUNK)) {
+                                    val events: List<Event> = store.query(Filter(ids = chunk))
+                                    for (event in events) {
+                                        client.publish(event, setOf(up.url))
+                                        pushed.incrementAndGet()
+                                        pushedThisPass++
+                                        delay(PUBLISH_PACE_MS)
+                                    }
+                                }
+                            },
+                            onNeedIds = { /* up-only: the down tail pulls, not this */ },
+                        )
+                        pushedThisWindow += pushedThisPass
+                        rounds++
+                    } while (pushedThisPass > 0 && rounds < MAX_ROUNDS && scope.isActive)
+                }
                 System.err.println(
                     "router: up ${up.url.url} pushed $pushedThisWindow event(s) upstream ($rounds round(s))",
                 )
+            } catch (e: CancellationException) {
+                // Shutdown, not a failed push — the log must not cry wolf.
+                throw e
             } catch (e: Exception) {
                 System.err.println("router: up ${up.url.url} failed: ${e.message}")
             }
@@ -90,5 +111,6 @@ internal class UpstreamPush(
     companion object {
         private const val PUBLISH_PACE_MS = 40L
         private const val MAX_ROUNDS = 8
+        private const val ID_FETCH_CHUNK = 500
     }
 }

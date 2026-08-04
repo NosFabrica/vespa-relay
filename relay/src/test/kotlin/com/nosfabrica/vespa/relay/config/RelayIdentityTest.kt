@@ -74,6 +74,13 @@ class RelayIdentityTest {
     }
 
     @Test
+    fun `an all-uppercase nsec is valid bech32 and decodes`() {
+        // BIP-173 allows the all-caps spelling; QR exports produce it.
+        val nsec = KeyPair(privKey = Hex.decode(hex)).privKey!!.toNsec()
+        assertEquals(RelayIdentity.signerFor(nsec).pubKey, RelayIdentity.signerFor(nsec.uppercase()).pubKey)
+    }
+
+    @Test
     fun `an nsec-shaped string that is not valid bech32 is rejected`() {
         // The decoder must actually decode. Wrapping the bech32 text as if it
         // were hex yields a keypair derived from nonsense — silently wrong,

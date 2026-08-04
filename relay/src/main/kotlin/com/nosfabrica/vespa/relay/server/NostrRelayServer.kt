@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.server
 
 import com.nosfabrica.vespa.relay.config.defaultRelayLimits
+import com.vitorpamplona.negentropy.storage.IStorage
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.CountResult
@@ -42,6 +43,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.VerifyAuthOnlyPolicy
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip01Core.store.RawEvent
 import com.vitorpamplona.quartz.nip01Core.store.StoreQueryContext
 import com.vitorpamplona.quartz.nip77Negentropy.NegentropySettings
 import com.vitorpamplona.quartz.nip86RelayManagement.server.BanListPolicy
@@ -119,21 +121,33 @@ class NostrRelayServer(
 }
 
 /**
- * Delegates everything to [LiveEventStore], wrapping each read from an
- * authenticated connection in a [StoreQueryContext] carrying that caller's
- * pubkey — the store reads it back out when it builds the Vespa query, and it
- * becomes that caller's web-of-trust ranking lens.
+ * The session-facing wrapper over [LiveEventStore]. Every read path is
+ * delegated — including [queryRaw] (the zero-decode replay splice and the
+ * fanout's shared wire body) and [sealedNegentropyStorage] (the NEG-OPEN
+ * snapshot cache); falling back to the interface defaults on either would
+ * silently rebuild events and snapshots the engine already optimized away.
  *
- * An anonymous caller gets NO observer, deliberately. The store treats the
- * observer as a filter, so a house observer would gate anonymous visitors to
- * the sliver of the corpus that observer has scored (~0.1% measured here) and
- * tell them nothing about it. Anonymous means the whole corpus, unranked; a
- * caller who wants a lens asks with NIP-50's `observer:` extension.
+ * Reads from an authenticated connection run in a [StoreQueryContext]
+ * carrying that caller's pubkey, which the store turns into the caller's
+ * web-of-trust ranking lens. An anonymous caller gets NO observer,
+ * deliberately. The store treats the observer as a filter, so a house
+ * observer would gate anonymous visitors to the sliver of the corpus that
+ * observer has scored (~0.1% measured here) and tell them nothing about it.
+ * Anonymous means the whole corpus, unranked; a caller who wants a lens asks
+ * with NIP-50's `observer:` extension.
  */
 internal class ObserverBackend(
     private val inner: LiveEventStore,
     private val onObserver: ((String) -> Unit)? = null,
-    // Every read is timed here — the only place that sees serving latency.
+    /**
+     * Serving latency is sampled from the start of a read to its EOSE — the
+     * replay is the engine work. The call itself does NOT return at EOSE: a
+     * REQ parks until the client closes it, so timing the whole call would
+     * record subscription lifetimes (minutes, hours) as read latency and pin
+     * the ingest backoff at max forever. Prompt calls (COUNT) are timed
+     * whole, in a finally — a count that timed out is the most important
+     * sample there is.
+     */
     private val pressure: ServingPressure? = null,
 ) : SessionBackend {
     override suspend fun query(
@@ -141,17 +155,25 @@ internal class ObserverBackend(
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.query(ctx, filters, onEach, onEose) }
+    ) = ranked(ctx) { inner.query(ctx, filters, onEach, timedEose(onEose)) }
+
+    override suspend fun queryRaw(
+        ctx: RequestContext,
+        filters: List<Filter>,
+        onEachStored: (RawEvent) -> Unit,
+        onEachLive: (Event, String) -> Unit,
+        onEose: () -> Unit,
+    ) = ranked(ctx) { inner.queryRaw(ctx, filters, onEachStored, onEachLive, timedEose(onEose)) }
 
     override suspend fun count(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): Int = ranked(ctx) { inner.count(ctx, filters) }
+    ): Int = ranked(ctx) { timed { inner.count(ctx, filters) } }
 
     override suspend fun countResult(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): CountResult = ranked(ctx) { inner.countResult(ctx, filters) }
+    ): CountResult = ranked(ctx) { timed { inner.countResult(ctx, filters) } }
 
     override suspend fun submit(
         event: Event,
@@ -163,20 +185,38 @@ internal class ObserverBackend(
         maxEntries: Int?,
     ): List<IdAndTime> = inner.snapshotIdsForNegentropy(filters, maxEntries)
 
+    override suspend fun sealedNegentropyStorage(
+        filters: List<Filter>,
+        maxEntries: Int,
+    ): IStorage? = inner.sealedNegentropyStorage(filters, maxEntries)
+
     private suspend fun <T> ranked(
         ctx: RequestContext,
         block: suspend () -> T,
     ): T {
         val observer = ctx.authenticatedUsers.firstOrNull()
         observer?.let { onObserver?.invoke(it) }
-        val startedMs = System.currentTimeMillis()
+        if (observer == null) return block()
+        return withContext(StoreQueryContext(setOf(observer))) { block() }
+    }
+
+    /** Starts the clock now; the returned EOSE records the replay span once. */
+    private fun timedEose(onEose: () -> Unit): () -> Unit {
+        if (pressure == null) return onEose
+        val startedNs = System.nanoTime()
+        return {
+            pressure.record((System.nanoTime() - startedNs) / 1_000_000)
+            onEose()
+        }
+    }
+
+    private suspend fun <T> timed(block: suspend () -> T): T {
+        if (pressure == null) return block()
+        val startedNs = System.nanoTime()
         try {
-            if (observer == null) return block()
-            return withContext(StoreQueryContext(setOf(observer))) { block() }
+            return block()
         } finally {
-            // In a finally: a read that threw still occupied the engine, and a
-            // read that timed out is the most important sample there is.
-            pressure?.record(System.currentTimeMillis() - startedMs)
+            pressure.record((System.nanoTime() - startedNs) / 1_000_000)
         }
     }
 }
