@@ -24,7 +24,6 @@ import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
-import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -32,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.RelayLogger
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
+import com.vitorpamplona.quartz.nip01Core.relay.client.paging.PagingWindowProgress
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -185,7 +185,7 @@ class SyncEngine(
     private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
 
     private val phases = StreamPhases()
-    private val paging = PagingProgress()
+    private val paging = PagingWindowProgress()
     private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, streamGate, transferring, scope)
     private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, scope)

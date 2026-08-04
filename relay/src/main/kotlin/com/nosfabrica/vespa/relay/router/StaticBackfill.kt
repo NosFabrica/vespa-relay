@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.router
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
-import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.fmtDuration
@@ -32,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
+import com.vitorpamplona.quartz.nip01Core.relay.client.paging.PagingWindowProgress
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -67,7 +67,7 @@ internal class StaticBackfill(
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val phases: StreamPhases,
-    private val paging: PagingProgress,
+    private val paging: PagingWindowProgress,
     // One stream reconciles at a time, across static and dynamic both: a
     // stream holds its whole id set from snapshot start to its last relay, so
     // concurrent streams would hold their sets simultaneously (measured: three

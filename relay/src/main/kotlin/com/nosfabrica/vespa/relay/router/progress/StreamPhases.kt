@@ -74,7 +74,7 @@ class StreamPhases {
             val done: Int,
             val total: Int,
             val events: Long,
-            /** Time-axis progress of the relays still walking — see [PagingProgress]. */
+            /** Time-axis progress of the relays still walking — see [PagingWindowProgress]. */
             val fraction: Double? = null,
             val etaMs: Long? = null,
             /**

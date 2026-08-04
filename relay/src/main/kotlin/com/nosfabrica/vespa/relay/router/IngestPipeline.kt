@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -197,80 +198,75 @@ internal class IngestPipeline(
             // parse report raised inside batchInsert cannot be attributed to
             // one event. Inspecting here keeps the audit's ThreadLocal exact.
             audit?.let { for (event in valid) it.inspect(event) }
-            insertIsolating(valid)
+            insertBatch(valid)
         }
     }
 
     /**
-     * Write a batch through the store's bulk path; if it throws, bisect and
-     * isolate the offending event so one bad event does not silently cost a
-     * whole batch. See [insertBisecting].
+     * Write a batch through the store's bulk path. Per-row attribution is the
+     * store's contract now ([IEventStore.batchInsert]): `Rejected` is the
+     * event's fault and final, `Failed` is the store's — the event was good
+     * and is lost, so it is counted loudly and reported with its raw JSON. A
+     * THROW is environmental (engine unreachable, transaction never started):
+     * no per-event answer exists, so the batch is tallied lost unisolated.
+     * This replaced a bisecting re-try dance the contract made unnecessary.
      */
-    private suspend fun insertIsolating(events: List<Event>) =
-        insertBisecting(
-            events = events,
-            write = { store.batchInsert(it) },
-            onOutcomes = { outcomes ->
-                for (outcome in outcomes) {
-                    when (outcome) {
-                        is IEventStore.InsertOutcome.Accepted -> {
-                            accepted.incrementAndGet()
-                        }
-
-                        is IEventStore.InsertOutcome.Rejected -> {
-                            rejected.incrementAndGet()
-                            rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
-                        }
-
-                        is IEventStore.InsertOutcome.Failed -> {
-                            // The store's fault, attributed per row: the event
-                            // was good and is lost — nothing re-offers it.
-                            // Tallied like onGaveUp's batch case, plus
-                            // lostToStore so the loss is loud on the health
-                            // line instead of blending into the duplicates.
-                            rejected.incrementAndGet()
-                            rejectReasons.merge("store failed: ${outcome.reason.take(40)}", 1L, Long::plus)
-                            lostToStore.incrementAndGet()
-                        }
-                    }
+    private suspend fun insertBatch(events: List<Event>) {
+        val outcomes =
+            try {
+                store.batchInsert(events)
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: Throwable) {
+                rejected.addAndGet(events.size.toLong())
+                rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", events.size.toLong(), Long::plus)
+                // LOST, not merely rejected: the events were good, the
+                // failure is the store's, and nothing re-offers them.
+                lostToStore.addAndGet(events.size.toLong())
+                return
+            }
+        outcomes.forEachIndexed { i, outcome ->
+            when (outcome) {
+                is IEventStore.InsertOutcome.Accepted -> {
+                    accepted.incrementAndGet()
                 }
-            },
-            onPoison = { event, e ->
-                rejected.incrementAndGet()
-                rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L, Long::plus)
-                reportPoison(event, e)
-            },
-            onGaveUp = { batch, e ->
-                // Isolation ran out of budget: counted but unnamed, and
-                // tallied apart from the isolated ones — "we could not say
-                // which" is a different fact from "this event is bad".
-                rejected.addAndGet(batch.size.toLong())
-                rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
-                // These are LOST, not merely rejected: the events were good,
-                // the failure is the store's, and nothing re-offers them.
-                lostToStore.addAndGet(batch.size.toLong())
-            },
-        )
+
+                is IEventStore.InsertOutcome.Rejected -> {
+                    rejected.incrementAndGet()
+                    rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
+                }
+
+                is IEventStore.InsertOutcome.Failed -> {
+                    // The store's fault, attributed per row: the event was
+                    // good and is lost — nothing re-offers it. lostToStore
+                    // keeps the loss loud on the health line instead of
+                    // blending into the duplicates.
+                    rejected.incrementAndGet()
+                    rejectReasons.merge("store failed: ${outcome.reason.take(40)}", 1L, Long::plus)
+                    lostToStore.incrementAndGet()
+                    events.getOrNull(i)?.let { reportPoison(it, outcome.reason) }
+                }
+            }
+        }
+    }
 
     /**
-     * Log an event the store threw on, once per distinct failure, with the
-     * raw JSON — the store-level throw has no other trace, and without the
+     * Log an event the store failed on, once per distinct failure, with the
+     * raw JSON — the per-row Failed has no other trace, and without the
      * raw event the defect cannot be reproduced.
      */
     private fun reportPoison(
         event: Event,
-        error: Throwable,
+        reason: String,
     ) {
         // Size checked BEFORE add: store errors embed per-event content in
         // their messages (a Vespa 400 quotes the document), so past the print
         // limit the set must stop growing too — 2.3M distinct rejections in
         // one schema-drift run would otherwise be 2.3M retained strings.
         if (poisonSeen.size >= POISON_SAMPLE_LIMIT) return
-        val signature = "${error.javaClass.name}: ${error.message}"
-        if (!poisonSeen.add(signature)) return
+        if (!poisonSeen.add(reason)) return
         System.err.println(
-            "router: store rejected event ${event.id} (kind ${event.kind}, pubkey ${event.pubKey}) — " +
-                "${error.javaClass.simpleName}: ${error.message}\n" +
+            "router: store failed on event ${event.id} (kind ${event.kind}, pubkey ${event.pubKey}) — $reason\n" +
                 "router: the event, verbatim: ${event.toJson().take(POISON_JSON_CHARS)}",
         )
     }

@@ -22,13 +22,13 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.DeleteMissing
 import com.nosfabrica.vespa.relay.router.config.SyncStream
-import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
+import com.vitorpamplona.quartz.nip01Core.relay.client.paging.PagingWindowProgress
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
@@ -45,7 +45,7 @@ internal class DeleteMissingSync(
     private val store: IEventStore,
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
-    private val paging: PagingProgress,
+    private val paging: PagingWindowProgress,
 ) {
     /**
      * Records dropped because the upstream that owns them stopped serving

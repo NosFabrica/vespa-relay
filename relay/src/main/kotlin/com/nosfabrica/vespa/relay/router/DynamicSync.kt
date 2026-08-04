@@ -25,10 +25,7 @@ import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
-import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
-import com.nosfabrica.vespa.relay.router.discovery.Unreachability
-import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -36,12 +33,15 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
+import com.vitorpamplona.quartz.nip01Core.relay.client.paging.PagingWindowProgress
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.HostStrikes
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.Unreachability
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.coroutineScope
@@ -68,7 +68,7 @@ internal class DynamicSync(
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val phases: StreamPhases,
-    private val paging: PagingProgress,
+    private val paging: PagingWindowProgress,
     private val streamGate: Semaphore,
     private val transferring: AtomicInteger,
     // NIP-66: publishes strike verdicts and hands back the known-dead set.

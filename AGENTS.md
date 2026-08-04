@@ -46,24 +46,22 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     ConnectionCountListener.kt  LOG_CONNECTIONS
   router/               the mirror (see below)
     SyncEngine.kt       wiring, live tails, health/stats lines
-    IngestPipeline.kt   bounded queue -> verify -> batchInsert, poison isolation
-    BisectingInsert.kt  the batch-bisecting write
+    IngestPipeline.kt   bounded queue -> verify -> batchInsert (per-row outcomes)
     StaticBackfill.kt   history catch-up for configured upstreams
     DynamicSync.kt      relaySource streams: discover, fan out, sync each relay
     DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
     UpstreamPush.kt     dir = up: reconcile and publish what the upstream lacks
-    SyncBands.kt        covered created_at bands per (relay, filter)
+    SyncBands.kt        file persistence over quartz's SyncCoverage bands
     config/             the declarative side
       RouterConfig.kt     the stream model (streams, directions, sync modes)
       RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
       RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
-    discovery/          which relays to dial, and what to believe about them
+    discovery/          which relays to dial
       RelayDiscovery.kt   pulling relay urls out of stored events
-      HostStrikes.kt      per-authority strikes and eviction
-      Unreachability.kt   which failures may be published as NIP-66 records
+      (HostStrikes / Unreachability graduated to quartz's nip66RelayMonitor.reachability)
     progress/           observability
       StreamPhases.kt     per-stream progress reporting
-      PagingProgress.kt   time-axis progress for paged walks
+      (time-axis paging progress is quartz's PagingWindowProgress)
   maintenance/          background jobs behind the server
     ExpirationSweeper.kt  NIP-40
     ParseAudit.kt       what quartz could not parse, grouped to a JSON report
@@ -104,10 +102,12 @@ provider) instead of by kind, the same data overlaps almost entirely and
 when a stream's filter changes shape rather than trusting the label.
 
 **Sync bands** (`SyncBands`) record the `created_at` span already walked for
-a `(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
-filter* deliberately: edit a stream's filter and its band is invalidated, which
-is the intended way to force a re-walk. A paged fetch records `complete = false`;
-only a finished negentropy reconcile records `complete = true`.
+a `(relay, filter)` pair, so a re-run asks only outside it. The arithmetic
+lives in quartz's `SyncCoverage`; `SyncBands` is the file-persistence wrapper
+(`SYNC_STATE_FILE`). Keyed by the *whole filter* deliberately: edit a stream's
+filter and its band is invalidated, which is the intended way to force a
+re-walk. A paged fetch records `complete = false`; only a finished negentropy
+reconcile records `complete = true`.
 
 **Known open bug:** a band holds one span for every kind in the filter, so a
 long-lived kind (0) vouches for a short-lived one (30382) and `legs()` skips the
