@@ -1,17 +1,35 @@
 # vespa-relay
 
-A standalone Nostr relay with trust-ranked search. It serves full-text
-[NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) search, ranked by
-the searcher's web of trust, backed by [Vespa](https://vespa.ai).
+A [Vespa](https://vespa.ai)-backed standalone [Nostr](https://nostr.com) relay
+that filters and ranks everything — REQs, COUNTs, and full-text
+[NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) search —
+through each connecting user's **NIP-85 web of trust**.
 
-Point a [Nostr](https://nostr.com) client at it. It speaks NIP-01 filters and NIP-50
-search over websockets. Log in with NIP-42 to rank results by your own web of trust.
-Anonymous searches use the operator's default. A web search UI ships on the same port.
+Spam is personal here, not a global blocklist: what your network trusts ranks
+high, what it doesn't falls below your floor. And it scales like a search
+engine, because it is one — the store is
+[vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore).
 
-It serves what is in the store. To fill the store from the network, the built-in
-**router** mirrors events from upstream relays — a strfry-style `streams` config
-of live subscriptions plus negentropy backfill (see [The router](#the-router-mirror-from-upstream-relays)).
-Large-scale crawling and trust-sync remain a separate job.
+**What you get:**
+
+- **Trust-ranked search.** Log in with NIP-42 and results are ranked by your own
+  NIP-85 web of trust — relevance × how much *you* trust the author, with
+  below-floor authors dropped as spam. Anonymous searches use the operator's
+  default lens, and any client can pick a lens explicitly with
+  `observer:<pubkey>`.
+- **A relay that fills itself.** The built-in **router** mirrors events from
+  upstream relays: strfry-style `streams` of live subscriptions, NIP-77
+  negentropy backfill where upstreams speak it, resumable paged fetch where they
+  don't — and *dynamic* streams that discover relays from the store itself
+  (NIP-65 outbox lists, NIP-66 monitors, relay hints), so the fan-out widens as
+  the store fills.
+- **A full relay, not just search.** NIP-01 filters and publishes, NIP-09
+  deletions, NIP-40 expirations, NIP-45 counts, NIP-62 right to vanish, NIP-77
+  negentropy for peers, NIP-86 runtime management.
+- **Batteries included.** A web search UI and operator diagnostic pages ship on
+  the same port; the Vespa schema deploys itself on boot, so `docker compose up`
+  is a working relay; the whole thing also embeds as a library in your own
+  Ktor app.
 
 ## Run it
 
@@ -24,8 +42,8 @@ docker compose up --build
 
 On every start the relay deploys the bundled Vespa schema — so a fresh Vespa
 becomes queryable and an upgraded relay carries its schema changes with it — then
-serves. Open
-`http://localhost:7777` for the search UI, or connect a Nostr client to the websocket.
+serves. Open `http://localhost:7777` for the search UI, or connect a Nostr
+client to the websocket.
 
 To run against an existing Vespa, without Docker:
 
@@ -38,489 +56,77 @@ Otherwise point `VESPA_URL` at your own.
 
 ## Configuration
 
-All configuration is through environment variables.
-
-### Core
+All configuration is through environment variables — copy
+[`.env.example`](.env.example) to `.env` and edit; docker compose picks it up
+automatically. The essentials:
 
 | var | meaning | default |
 |---|---|---|
 | `RELAY_URL` | this relay's own ws url — its NIP-42 identity and NIP-62 vanish scope | **required** |
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
 | `RELAY_PORT` | port to listen on | `7777` |
-| `FTS_CURSOR_FILE` | where the reindex saves its position, so a restart resumes rather than redoing the corpus | `/var/lib/vespa-relay/fts-cursor.txt` |
-| `REINDEX_FTS_ON_START` | re-derive every event's search fields once, in the background. Needed after a store upgrade that changes `SearchExtractors` or adds *fed* search fields — a Vespa reindex cannot produce those, only a re-put can. Walks the whole corpus, so leave it off except for the boot that performs the migration | `false` |
-| `TRUST_RECONCILE_ON_START` | reconcile the trust projection at startup, in the **background** — the relay serves immediately and ranked search returns less until it finishes. `false` skips it entirely | `true` |
-| `AUTO_DEPLOY` | deploy the bundled Vespa schema on **every** boot, so the cluster always matches the schema this build expects. A no-change deploy is a cheap no-op. If the deploy fails while Vespa is already serving a schema, the relay warns and keeps serving on it — an unreachable config server must not take down a relay that ran fine yesterday — and writes carrying fields that schema lacks stay rejected until a deploy succeeds. On a fresh Vespa there is nothing to fall back to, so it is fatal | `true` |
-| `VESPA_CONFIG_URL` | Vespa's config server, for the deploy above | `VESPA_URL` on `:19071` |
-| `VESPA_PORT` / `VESPA_CONFIG_PORT` | ports published on the **host** for the two above. Compose only — nothing inside the containers moves | `8080` / `19071` |
-| `VESPA_QUERY_FANOUT` | concurrent queries the store issues per bulk operation. Higher makes ingest faster; lower leaves more of the engine for the people searching | `4` |
-| `JAVA_TOOL_OPTIONS` | the relay JVM's own flags, in practice its heap. Mirroring holds a set of event ids in memory while it reconciles, so this is what decides whether a large sync finishes or dies with `OutOfMemoryError`. The percentage is of `RELAY_MEM_LIMIT`, because `MaxRAMPercentage` reads the cgroup | `-XX:MaxRAMPercentage=70` |
-| `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 names — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
-| `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
+| `RELAY_NAME` / `RELAY_DESCRIPTION` / … | NIP-11 identity | — |
+| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` / `ALLOW_KINDS` / `DENY_KINDS` | write authorization | everyone / all |
+| `RELAY_ADMIN_PUBKEYS` | enables the NIP-86 management API | unset ⇒ off |
+| `SYNC_CONFIG` / `SYNC_CONFIG_FILE` | the router's stream config — see below | unset ⇒ router off |
 
-### Relay identity (NIP-11)
+Every variable — limits, tuning, memory sizing, startup migrations, the parse
+audit — is documented in [`docs/configuration.md`](docs/configuration.md).
 
-| var | meaning | default |
-|---|---|---|
-| `RELAY_NAME` / `RELAY_DESCRIPTION` / `RELAY_ICON` / `RELAY_BANNER` | how the relay presents itself | — |
-| `RELAY_CONTACT` | a human contact | — |
-| `RELAY_CONTACT_PUBKEY` | the human operator's pubkey, for NIP-11 contact. The relay's own `self` is derived from `RELAY_NSEC`, not set here | — |
-| `RELAY_VERSION` | overrides the build version | — |
-| `RELAY_POSTING_POLICY` / `RELAY_PRIVACY_POLICY` / `RELAY_TERMS_OF_SERVICE` | policy urls | — |
+## Search
 
-### Limits
+The `search` field accepts extra tokens beyond the query text. They are stripped
+from the query before matching, so they never become search terms:
 
-| var | meaning | default |
-|---|---|---|
-| `MAX_MESSAGE_LENGTH` / `MAX_SUBSCRIPTIONS` / `MAX_FILTERS` / `MAX_LIMIT` / `DEFAULT_LIMIT` / `MAX_SUBID_LENGTH` / `MAX_EVENT_TAGS` / `MAX_CONTENT_LENGTH` / `MIN_POW_DIFFICULTY` / `CREATED_AT_LOWER_LIMIT` / `CREATED_AT_UPPER_LIMIT` | protection limits, enforced by the engine and shown in the NIP-11 `limitation` block | sane defaults |
-| `NEG_FRAME_SIZE_LIMIT` / `NEG_MAX_SYNC_EVENTS` / `NEG_MAX_SESSIONS_PER_CONNECTION` | NIP-77 negentropy tuning (`NEG_MAX_SYNC_EVENTS` caps how many ids one reconciliation walks) | strfry-parity |
+| token | effect |
+|---|---|
+| `observer:<pubkey>` | rank as seen by that pubkey's web of trust (scores are public, so any client may rank through any lens) |
+| `sort:rank` | order by trust, most trusted first (also `rank:asc`, `followers`, `text`) |
+| `filter:rank:gte:N` | drop results below trust rank `N` (0–100) |
+| `include:spam` | lift the default trust floor and include everything |
+| `-word` / `"exact phrase"` | Google-style exclusions and phrase matching |
 
-### Access control
-
-| var | meaning | default |
-|---|---|---|
-| `ALLOW_PUBKEYS` / `DENY_PUBKEYS` | write authorization by pubkey — allowlist (empty ⇒ everyone) minus denylist. `npub1…`, comma/space-separated (bare hex is refused — it has no checksum). An entry that cannot be read stops the relay instead of being dropped: a ban that is not enforced looks exactly like one that was never configured | — |
-| `ALLOW_KINDS` / `DENY_KINDS` | write authorization by kind — allow (empty ⇒ all) minus deny | — |
-| `REJECT_FUTURE_SECONDS` | reject events dated more than N seconds in the future | `0` (off) |
-| `EXPIRATION_SWEEP_SECONDS` | how often to prune NIP-40 expired events | `3600` (0 ⇒ off) |
-
-### Admin (NIP-86)
-
-| var | meaning | default |
-|---|---|---|
-| `RELAY_ADMIN_PUBKEYS` | comma/space-separated admin keys, `npub1…`; when set, enables the NIP-86 management API (`POST /`, NIP-98 auth). An unreadable entry fails startup rather than yielding an admin who silently cannot administer | unset ⇒ off |
-| `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
-| `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
-
-### Router (upstream mirror)
-
-| var | meaning | default |
-|---|---|---|
-| `SYNC_CONFIG` | the router `streams { }` config, inline (HOCON). When set, the relay mirrors upstream events into its store. Every `SYNC_*` variable also accepts its pre-rename `ROUTER_*` spelling, with a warning | unset ⇒ router off |
-| `SYNC_CONFIG_FILE` | path to a file holding that config, as an alternative to `SYNC_CONFIG` | — |
-| `SYNC_CONFIG_LOCAL` | compose only: the **host** path mounted at `SYNC_CONFIG_FILE`. Set both, or the relay reads the example rather than your config | `./router.conf.example` |
-| `SYNC_UP_INTERVAL_SECONDS` | how often `up`/`both` streams re-reconcile to push newly-arrived local events upstream | `300` |
-| `VESPA_MEM_LIMIT` / `RELAY_MEM_LIMIT` | container memory limits. Not cosmetic: `MaxRAMPercentage` reads the **cgroup**, so without a limit the relay's JVM sizes its heap against the whole host — 70% of 47 GiB — while the engine independently grows to 32 GiB, entitling both to more than the machine has. Bounding the relay also makes ingest backpressure work instead of letting it grow into the engine's memory | `34g` / `12g` |
-| `RELAY_NSEC` | this relay's own keypair (`nsec1…` only), used everywhere it acts as itself: the NIP-11 `self` it advertises (**derived**, so it is provable rather than merely asserted), the NIP-42 challenges it answers, and the NIP-66 kind-30166 liveness records it signs. Relays that gate reads behind AUTH are indistinguishable from empty ones without it. Unset ⇒ anonymous — reading other monitors' 30166s still works and needs no key. Malformed ⇒ startup fails | unset ⇒ anonymous |
-| `SYNC_FULL_RESYNC_SECONDS` | how long a recorded sync window may narrow work before the router walks the whole filter again. A finished negentropy reconcile covers its filter's entire range, so the next run asks only for what arrived since — which is what keeps a dynamic cycle's shared id snapshot from being the entire corpus. Relays do gain old events, so the claim is re-tested on this period. Nothing is ever capped; the full pass is periodic, not skipped | `604800` (7 days) |
-| `SYNC_STATE_FILE` | where the per-(relay, filter) synced `created_at` band is kept. A relay without NIP-77 has no memory of what it already sent, so without this every restart re-downloads its whole corpus; with it the router asks only for what falls outside the band it already walked. Keyed by filter — edit a stream's filter and that stream starts over | unset ⇒ in memory only |
-| `SYNC_INGEST_BATCH` / `SYNC_INGEST_CONCURRENCY` | mirrored events are drained in batches and written through the store's bulk path. The store serializes writes, so throughput comes from the batch size (a sweet spot near the default — much larger stalls on long mutex holds), not the worker count. Lower the batch to cut memory | `1000` / `2` |
-| `SYNC_DYNAMIC_REFRESH_SECONDS` | default period between cycles of a `relaySource = [...]` stream (re-read the sources, re-sync every relay) | `21600` (6h) |
-| `SYNC_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
-| `SERVING_PRESSURE_THRESHOLD_MS` | mean client-read latency above which the mirror starts yielding to clients. Reads against a 50M-event store run ~400ms healthy; ingest pauses between batches once the mean passes this | `2000` |
-| `SYNC_WIRE_LOG` | what to log of the upstream conversation. Empty still logs `NOTICE`, `CLOSED` and failed sends — the relay's own account of why it stopped. `sent` adds every command sent; `full` adds every message received (one line per event) | *(errors only)* |
-| `SYNC_NEG_MIN_EVENTS` | for `sync = "auto"` streams: how many events both we and the relay must hold, on the stream's filter, before a negentropy reconcile is worth its id exchange | `100000` |
-| `SYNC_COUNT_TIMEOUT_MS` | how long a relay gets to answer the NIP-45 COUNT that measures the above. A relay that never answers is asked once per run, then reconciled | `5000` |
-| `SYNC_STREAMS` | run only these streams (comma-separated), to tune one part of the sync without the rest competing for the same sockets, heap and ingest queue. The router prints which streams it is *not* running on startup | every stream in the config |
-
-### Parse audit (what quartz cannot read)
-
-Mirroring profiles replays every malformed kind 0 ever published through quartz's
-`UserMetadata` deserializer, because `SearchableEvent.indexableContent()` is what
-builds the NIP-50 search text. Quartz reports what it cannot read, one line per
-event, which buries the router's own logging:
-
-```
-[MetadataEvent] Content Parse Error: nostr:naddr1… Expected start of the object '{', but had 'EOF' instead
-[TolerantStringSerializer] Ignoring non-primitive string field (JsonObject)
-[BirthdayTolerantSerializer] Ignoring non-object birthday (JsonLiteral)
-```
-
-| var | meaning | default |
-|---|---|---|
-| `PARSE_AUDIT_FILE` | collect those failures into a JSON report at this path instead of logging each one. Unset ⇒ off | unset |
-| `PARSE_AUDIT_LOCAL_DIR` | compose only: a **host** directory to mount so the report can be read. Without it the file is written inside the container, which is the one place it is no use | unset |
-| `PARSE_AUDIT_SAMPLES` | raw events kept per distinct failure, for a quartz regression test | `5` |
-| `PARSE_AUDIT_INTERVAL_SECONDS` | how often the report is rewritten while running | `60` |
-| `QUARTZ_LOG_LEVEL` | quartz's own log floor — `DEBUG` / `INFO` / `WARN` / `ERROR`. Quartz defaults to `DEBUG`, which is why the parse reports are so loud. Works with or without the audit | quartz's default |
-
-The report groups by failure rather than by event, so "the same quartz gap" is one
-entry with a count however many events hit it, each carrying a few whole events:
-
-```json
-{
-  "inspected": 412330, "eventsWithFindings": 1876, "distinctFindings": 4,
-  "findings": [
-    { "tag": "MetadataEvent", "count": 1204,
-      "message": "Content Parse Error: <event> Expected start of the object '{', but had 'EOF' instead at path: $",
-      "samples": [ { "eventId": "…", "pubkey": "…", "event": { "…the whole event…" } } ] }
-  ]
-}
-```
-
-Note the severity split. `MetadataEvent Content Parse Error` means the content was
-not a JSON object at all, so there is no metadata to index and that profile is not
-findable by name. The tolerant-serializer entries mean the parse *succeeded* and one
-wrongly-typed field was skipped by design — noise, unless quartz should be widening
-what it accepts.
-
-The audit runs each parse itself, on the ingest worker, because a `LogSink` receives
-only `(level, tag, message, throwable)` — no event. That is also why it is opt-in: it
-costs one extra parse per mirrored event. See `ParseAudit`.
+A NIP-42 login is an implicit `observer:` on every query: searches rank through
+your web of trust, and even plain NIP-01 filters become trusted-only feeds
+(newest first, below-floor authors dropped — `include:spam` opts a query out).
+By default a search is trust-gated: results below the floor are hidden unless
+you lift it. The full grammar — how the tokens stack, where trust scores come
+from (NIP-85), what falls back when no observer resolves — is documented in
+[vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore), which
+implements it.
 
 ## The router: mirror from upstream relays
 
-Point `SYNC_CONFIG` (or `SYNC_CONFIG_FILE`) at a strfry-style `streams`
-config and the relay keeps a live subscription open against each upstream,
-mirroring matching events into the same store it serves:
+The relay serves what is in the store; the router is how the store gets filled
+from the network. Point `SYNC_CONFIG_FILE` at a strfry-style `streams` config
+and the relay keeps a live subscription open against each upstream, mirroring
+matching events into the same store it serves — immediately searchable:
 
 ```hocon
-connectionTimeout = 20
 streams {
   popular {
-    dir    = "down"
+    dir    = "down"       # down = mirror in; up = publish out; both
     filter = { "kinds": [0, 3, 5, 1984, 10000, 30000] }
     urls   = [ "wss://relay.primal.net", "wss://relay.damus.io", "wss://purplepag.es" ]
   }
-  mirrors {
-    dir    = "down"
-    # since/until are the ordinary NIP-01 fields: this one reaches back a day,
-    # while the stream above names neither and so asks for the whole history.
-    filter = { "kinds": [0, 3, 5, 1984, 10000, 30000], "since": 1785000000 }
-    urls   = [ "wss://profiles.nostr1.com", "wss://directory.yabu.me", "wss://relay.ditto.pub" ]
-  }
 }
 ```
 
-Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
+Each stream backfills the history its filter asks for — negentropy set
+reconciliation where the upstream speaks NIP-77 (only the difference travels),
+resumable paged REQ where it doesn't — then holds a live tail. `up` streams
+publish your matching events upstream, with echo-suppression for free. Signature
+verification is on by default for everything mirrored.
 
-- **`dir`** — `down` mirrors upstream events into our store; `up` publishes our
-  matching events to the upstream; `both` does each on the same relay.
-- **`filter`** — the NIP-01 filter to mirror (kinds, authors, `#tags`, …),
-  including `since` / `until`. They mean what NIP-01 says: absent is unbounded,
-  so a stream naming neither backfills the upstream's **whole history**. Bound it
-  with `since` when that is not what you want. Upstreams without NIP-77 fall back
-  to paged REQ automatically.
-- **`sync`** — how the stream asks for what it is missing: `negentropy`, `fetch`,
-  or `auto` (the default). This is a property of the **data**, not of the relay,
-  and no measurement can infer it:
+A stream can also leave `urls` out and take its relay list **from the store**:
+`relaySource` scans, say, NIP-65 outbox lists, NIP-66 monitor reports, and
+relay hints on notes, unions every relay they name, and syncs against all of
+them on a cycle. That is the outbox model as config — *fetch each author's
+events from the relays their own 10002 marks write* is one line — and it needs
+no per-kind code: any tag that carries a relay url at some offset can be a
+source.
 
-  | | use when | because |
-  |---|---|---|
-  | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
-  | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A sync band answers "what is new since we last asked" instead |
-  | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `SYNC_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
-
-  A `fetch` stream never builds the local id set at all, which is the single most
-  expensive thing the router does.
-
-  NIP-85 assertions used to be the example of `fetch` here, and they are worth
-  keeping as a caution: the answer depends on **how the stream asks**, not on the
-  kind. Asked by kind alone, a provider relay serves every provider publishing on
-  it and overlap with our store is poor. Asked per (relay, provider) — see
-  [Binding filter fields to a relay](#binding-filter-fields-to-a-relay) — the two
-  sides hold the same data and `negentropy` becomes the right answer. Narrowing
-  the ask inverted the choice.
-- **`trusted`** *(optional)* — skip signature verification for this upstream's
-  events. Off by default; every mirrored event is verified and re-checked
-  against the stream filter before it enters the store.
-- **`deleteMissing`** *(optional, DELETES DATA)* — drop records this relay holds
-  that the upstream no longer serves. Only for a stream whose upstream owns the
-  records in the ask, and only with `sync = "negentropy"`. See
-  [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
-- **`authorsPerLeg`** *(optional)* — how many bound `authors` go into one ask, and
-  therefore into one sync band. See
-  [Binding filter fields to a relay](#binding-filter-fields-to-a-relay).
-
-The router shares the relay's Vespa store, so mirrored events are immediately
-searchable. It runs one outbound connection per upstream (reconnect and
-re-subscribe are handled for you) and logs unreachable upstreams rather than
-failing — a paused or down relay in the list is skipped, not fatal.
-
-**Down** keeps a live subscription open and first negentropy-reconciles the
-history its filter asks for. **Up** re-reconciles the store against the
-upstream every `SYNC_UP_INTERVAL_SECONDS` and publishes only what the
-upstream is missing — set reconciliation gives echo-suppression for free, so an
-event just pulled *down* from a relay is never pushed back *up* to it.
-
-### Resuming a paged relay
-
-Negentropy relays need no band: reconciliation compares id sets and downloads
-only the difference, so re-running a sync costs the diff and nothing more. Most
-relays do not speak NIP-77 — in one measured run, seven of nine upstreams fell
-back to paged REQ — and a paged fetch has no such memory. It walks `created_at`
-newest-first and re-reads everything it read last time, every restart.
-
-Set `SYNC_STATE_FILE` and the router remembers the band it has covered per
-relay and per filter, then asks only for what lies outside it:
-
-```
-stored band:        |<-------- covered -------->|
-next fetch:  <------|                           |------>
-             older than min                newer than max
-```
-
-The newer leg catches what was published while the relay was down. The older leg
-keeps walking back into history, which is what makes progress against a relay
-that caps its responses: each run reaches a little further instead of re-reading
-the same newest events forever.
-
-The two boundary seconds are re-read every run, deliberately: a paged relay cuts
-pages by count, so a boundary can fall inside a run of events sharing one
-`created_at`, and asking strictly outside the band would strand the rest of that
-second forever.
-
-One thing it does not promise: Nostr lets an event be published with any
-`created_at`, so one can land inside a band already walked past. The trade is
-deliberate — re-reading a corpus every restart is a certain daily cost, while
-that hole is occasional and clears the next time the filter changes.
-
-The **live tail works against every relay**; the **negentropy backfill depends
-on the upstream**. Some relays advertise NIP-77 but their reconciliation never
-converges. One bound handles that: a session with no protocol frames for 30
-seconds aborts itself, and the upstream leans on its live tail while relays that
-reconcile cleanly backfill in full. There is deliberately no wall-clock deadline —
-every timeout is measured from the last message, so a relay that stops answering
-is already gone, and one still sending is doing the work we asked for. So a
-brand-new store is filled forward from connect universally, and backfilled
-historically for the relays whose NIP-77 cooperates.
-
-While backfilling, the router logs progress and an ETA to "useful" (backfill
-complete), so you can tell how long the initial fill will take:
-
-```
-router: backfill 4/12 upstream(s), 12,340/29,110 events (42%), 851/s, ETA ~0:03:17 to useful
-router: backfill complete — 41,880 events from 12 upstream(s) in 0:04:52; live tail now streaming
-```
-
-### Dynamic relay lists: the outbox, and everything else that names a relay
-
-A stream can leave `urls` out entirely and take its relay list from the store
-instead. `relaySource` is a **list** of places to read urls from, all merged into
-one fan-out:
-
-```hocon
-outbox {
-  dir             = "down"
-  filter          = { "kinds": [0, 3, 10002, 10040] }
-  refreshSeconds  = 21600
-  concurrency     = 8
-  exclude         = []
-  relaySource = [
-    {
-      select = [
-        # NIP-65 outbox
-        {
-          kind = 10002
-          tag = "r"
-          marker = "write"
-        }
-        # NIP-66 monitor reports
-        {
-          kind = 30166
-          tag = "d"
-        }
-        # everything else in the scan
-        {
-          tag = "relay"
-        }
-      ]
-      filter = { "kinds": [10002, 10050, 30002, 30166] }
-    }
-    {
-      select = [
-        # relay hints, thread markers only
-        {
-          tag = "e"
-          index = 2
-          where = [
-            { index = 3, equals = "root" }
-            { index = 3, equals = "reply" }
-          ]
-        }
-      ]
-      filter = { "kinds": [1], "limit": 100000 }
-    }
-  ]
-}
-```
-
-Each entry is one **scan**: a `select` list saying which relay urls to pull out,
-and the `filter` saying which events to pull them from. The filter runs once and
-every select is applied to what comes back, so a whole shelf of relay-list kinds
-costs one query rather than one each.
-
-Each cycle runs every scan, unions the relays they name, and negentropy-syncs the
-stream `filter` against **all** of them, `concurrency` at a time (paged REQ where
-NIP-77 is missing, same as a backfill). Then it sleeps `refreshSeconds` and does
-it again — so the fan-out widens on its own as the store fills.
-
-Nothing truncates that set: no cap on relays synced and no popularity floor.
-`concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
-way to leave a relay out.
-
-**No kind needs its own code.** Every relay list in the protocol is a tag with a
-url at a fixed offset, so a select is just that shape:
-
-| field | meaning |
-|---|---|
-| `kind` | apply this select only to that kind; **omit to apply it to everything the filter collected**. A kind the scan never returns simply never matches |
-| `tag` | the tag name to read; **omit for any tag** — that's how you take a whole family like NIP-85's `<kind>:<type>` service tags without naming each one |
-| `relay` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first. `index` is the older name for the same slot and still works |
-| `authors`, `ids`, `kinds`, `#p`, `#e`, … | **narrow what this relay is asked for**, reading the value out of the *same tag* that named the url. The value is a tag element number, or `"pubkey"` / `"id"` for the scanned event's own — see below |
-| `where` | conditions on the rest of the tag, shaped like NIP-01 filters: entries in the list **OR** together, the fields inside one entry **AND**. Each entry states any of `index` + `equals` (the element at that position is exactly that string — case-sensitive and untrimmed, and a missing element matches nothing, not even `""`), `minSize`, and `maxSize` (bounds on the tag's length). Omit to keep every tag |
-| `marker` | sugar for NIP-65's rule: `write` / `read` expand to the `where` that keeps that side *plus* unmarked tags — with the url at 1, `[ { index = 2, equals = "write" }, { index = 2, equals = "" }, { maxSize = 2 } ]`, the slots following the select's own `index` — and `any` to no conditions. A select states `marker` or `where`, not both |
-
-The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`,
-`until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:
-`{ "kinds": [1], "authors": [...] }` harvests hints from your WoT's notes only.
-
-### Deleting what an upstream retracted
-
-`deleteMissing` makes a stream drop records **we** hold that the upstream no
-longer serves:
-
-```hocon
-sync = "negentropy"
-deleteMissing = "dryRun"        # false (default) | "dryRun" | true
-```
-
-Only correct when that upstream is the *source of truth* for the records in the
-ask — a NIP-85 provider's own relay for its own scores. For a general mirror,
-"this relay does not have it" means nothing at all: relays hold different subsets
-by design.
-
-It is **absence-based**, not NIP-09. Nothing is published upstream to learn it —
-quartz's `NegentropyStoreSync` can propagate real kind:5 retractions instead, and
-that is strictly safer, but arming it means uploading your events to someone
-else's relay and reading the rejections.
-
-The cost of that choice is that absence has innocent causes — a retention window,
-a relay gating reads behind AUTH, a half-served reconcile — and each looks exactly
-like "they retracted everything". So:
-
-| guard | behaviour |
-|---|---|
-| `sync` must be `negentropy` | refused at parse time on `fetch`/`auto`. A paged fetch asks only *outside* its sync band, so "not seen" there means "not asked for", and deleting on it would take the entire history below the band |
-| the reconcile must have **completed** | quartz never silently falls back — it throws when a window cannot be reconciled over NIP-77, including "this relay does not speak it". A normal return therefore means every window was compared end to end. On a throw the ask is paged instead (so the mirror still fills) and nothing is deleted |
-| the reconcile must have covered ≥1 window | zero windows compared zero range |
-| local ids | read from the *ask itself*, never the cycle's shared snapshot — quartz's own warning is that entries outside the filter come back as false "have" ids, and the shared snapshot spans every service on the stream |
-| deletes | issued by id, inside the ask, so they cannot reach past what the reconcile compared |
-
-**There is deliberately no size guard.** An earlier version refused when a relay
-served nothing, and again when a cycle would drop more than half an ask. Both
-fired constantly, and both protected the wrong thing: they protect *stored
-records* from a bad answer, when what needs protecting is a *reader* from a stale
-score. A provider retracts a subject when that subject turns out to be a
-scammer — precisely the score that must not survive — and a mass retraction is
-exactly when the whole set goes. A volume guard blocks the case that matters most
-while the harmless ones sail through.
-
-The consequence is accepted, not overlooked: if a 10040 names a relay that never
-carried those scores, the relay reconciles empty and we drop them. That is a
-misconfigured provider list costing a re-download, weighed against serving a
-retracted score forever. The completed reconcile is what makes "empty"
-trustworthy enough to act on.
-
-Keep the ask to kinds that upstream actually owns. `assertions` mirrors kind 30382
-alone for this reason: with kinds 0 and 10002 in the same filter, a provider relay
-that simply does not carry kind 0 would retract that provider's profile.
-
-Deletions are counted separately on the health line — it is the only number the
-router prints that goes down.
-
-### Binding filter fields to a relay
-
-Without a binding, every relay a source names is asked for the stream's whole
-filter. That is right for a relay list and wrong for a *provider* list: asking
-`{ "kinds": [30382] }` of a NIP-85 relay pulls the scores of every service
-publishing there, not the ones your 10040s name. Measured on a real store, 757
-services, of which 587 were named by no stored 10040 — 33.8M cards that rank
-nothing and nobody reads.
-
-A binding reads a second slot out of the **same tag occurrence**, so the pair
-stays together:
-
-```hocon
-select = [
-  { tag = "30382:rank",      relay = 2, authors = 1 }   # ["30382:rank", service, relay]
-  { tag = "30382:followers", relay = 2, authors = 1 }
-]
-```
-
-Reading the two into separate lists instead would give the cross product — every
-relay asked for every service, ~96% of those asks empty on the store above. The
-tag is the unit, not the value.
-
-A value may also come from outside the tag. `"pubkey"` is the scanned event's own
-author, which is what makes NIP-65's outbox model expressible — *fetch this
-author's events from the relays their own 10002 marks write*:
-
-```hocon
-{ kind = 10002, tag = "r", marker = "write", relay = 1, authors = "pubkey" }
-```
-
-Two things to know before using one:
-
-- **A bound select cannot use the store's tag projection.** That projection
-  answers with the distinct values at one index — a set, with the tag each came
-  from already discarded, which is exactly the pairing a binding exists to keep.
-  So a bound select pages the events instead. Scanning kind 10040 is nothing;
-  scanning millions of kind-10002s is the walk the projection was introduced to
-  replace. Narrow the small sources first.
-- **`authorsPerLeg` decides how often a sync band survives.** A band is keyed
-  on its filter, so a changing author set invalidates it and re-walks that
-  relay's history. `authorsPerLeg = 1` gives one band per (relay, author), which
-  never invalidates — a new provider list adds a band instead. Leave it out and
-  all of a relay's authors go in one ask, which is the only workable choice when
-  the fan-out is millions of authors wide.
-
-Three things worth knowing:
-
-- **`tag` and `"#t"` are unrelated.** `tag = "e"` is the tag urls are *read
-  from*; a `"#e"` entry in the scan's filter narrows *which events are scanned*.
-- **Omitting `tag` demands a scheme.** With no tag name to filter on, anything in
-  the event could land at `index` — a pet name in a `["p", <pubkey>, "bob"]` tag
-  would otherwise normalize to `wss://bob/`. So values must already start with
-  `ws://` or `wss://`. Name a tag and scheme-less hosts work again, which is what
-  NIP-65 lists in the wild need.
-- **Regular kinds must narrow their scan.** Relay hints live on kind 1, and
-  scanning that kind whole would load every note in the store into one list. The
-  replaceable and addressable kinds hold one event per author, which is what makes
-  them safe to scan outright; anything else needs `limit`, `since` or `authors`,
-  and the parser rejects it rather than let you find out in production. Prefer
-  `limit` on a repeating cycle — `since`/`until` are absolute unix seconds, so a
-  fixed `since` only ages, while `until` alone bounds nothing at all.
-
-All of it needs events to fan out over, so pair these with an ordinary `down`
-stream on a few relays — that seed stream is what fills the store. The example
-config's static streams do exactly that, which is why they come first in the file.
-
-Some notes on the other knobs:
-
-- **the filter's `since`** is the history each cycle reconciles. Keep it
-  longer than `refreshSeconds` so consecutive cycles overlap. Leave it unset and
-  every cycle reconciles the filter's whole history — cheap enough over
-  negentropy, which diffs against what we already hold, but a relay *without*
-  NIP-77 falls back to paged REQ, which carries no such state and re-pages its
-  entire history on every cycle.
-- **`concurrency`** is the one dial on cost. The union of every scan on a full
-  store is a large set — plenty of it long-dead hosts that will each burn a
-  connect timeout — so the cycle is as long as it needs to be, and this decides
-  how much of the network it talks to at once.
-- These streams have **no live tail**. Holding hundreds of subscriptions open is
-  what the periodic sync exists to avoid, so each relay's socket is dropped again
-  as soon as its sync returns. `dir` must be `down`, and a `relaySource` stream
-  can't also carry static `urls` — split those into two streams.
-
-Every cycle logs what it did, including why the unreachable relays were
-unreachable (a relay list is full of dead hosts — the tally is how you tell
-"normal" from "the whole cycle is broken") and what the rejections were. Expect
-rejections to *outnumber* accepts on a wide fan-out: a thousand relays asked for
-the same replaceable profiles means the store discards nearly every copy as
-already-held, which is the system working, not failing. The breakdown is there so
-a bad signature or a failing store doesn't hide inside that number:
-
-```
-router: outbox syncing 3184 relay(s) from [kinds 10002/10050/30002/30166 x3 select(s), kinds 1 x1 select(s)] against 88412 local id(s) (top: wss://relay.damus.io/ x8214, ...)
-router: outbox cycle done — 214,880 event(s) from 1102/3184 relay(s) in 1:12:41; unreachable: timeout x938, Connection refused x421; next in 21600s
-router: ingested 214880 accepted, 402113 rejected [duplicate: already have this event x401980]; 14 relay(s) connected, 12 pinned + dynamic
-```
-
-### Enabling it under docker compose
-
-`docker-compose.yml` wires the router env through and mounts `./router.conf`.
-Copy the bundled example, then start with the router on:
+To try it under compose:
 
 ```bash
 cp router.conf.example router.conf   # then edit the relay list / filters
@@ -529,33 +135,23 @@ SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf \
 docker compose up --build
 ```
 
-Leave `SYNC_CONFIG_FILE` unset (the default) and the relay serves without
-mirroring.
+[`docs/router.md`](docs/router.md) is the full guide: choosing `negentropy` vs
+`fetch` per stream, how sync bands make paged relays resumable, dynamic
+`relaySource` scans and bindings (asking each relay only for what its list
+names), and `deleteMissing` — mirroring a provider's retractions, with the
+guards that make absence trustworthy enough to act on.
 
-## Observer stats
+## Operator pages
 
-`GET /observer_stats.html` — every kind-10040 observer by name and picture, with
-the number of kind-30382 scores its `30382:rank` and `30382:followers` services
-have published, counted **here** and **on the relay its 10040 names**, side by
-side. Equal means synced; short shows the percentage and the shortfall.
+Served on the relay's own port, next to the search UI:
 
-This is the page that answers "is the sync actually working", which a local
-count alone cannot: *3,197 scores* reads as healthy until you learn the relay
-serving them holds 145,968.
-
-Honest about two limits, both shown rather than hidden: a relay that does not
-implement NIP-45 gets `no COUNT` rather than a zero, and a count landing exactly
-on a common page-size cap is flagged, because a relay reporting its default
-limit instead of a total looks like data.
-
-## Kind stats
-
-`GET /kind_stats.html` — how many events of each kind the store holds, one
-NIP-45 `COUNT` per kind over the relay's own WebSocket. **Anonymous, always**:
-this asks "how many exist", which has one answer, where an authenticated reader
-would get the smaller "how many can I see". Asked the way a client would rather
-than through an http endpoint, so the page also *tests* NIP-45 — a kind that
-comes back `no reply` is a finding about the relay, not a blank cell.
+- **`/observer_stats.html`** — every kind-10040 observer, with its providers'
+  kind-30382 score counts here and on the relay its 10040 names, side by side.
+  This answers "is the trust sync actually working" — a local count alone reads
+  as healthy until you learn the source holds 45× more.
+- **`/kind_stats.html`** — events per kind, counted over the relay's own
+  websocket with anonymous NIP-45 COUNTs — so the page also *tests* NIP-45 the
+  way a client would.
 
 ## Supported NIPs
 
@@ -571,20 +167,6 @@ comes back `no reply` is a finding about the relay, not a blank cell.
 | [62](https://github.com/nostr-protocol/nips/blob/master/62.md) | Right to vanish | |
 | [77](https://github.com/nostr-protocol/nips/blob/master/77.md) | Negentropy sync | |
 | [86](https://github.com/nostr-protocol/nips/blob/master/86.md) | Relay management | Ban/allow pubkeys, events, kinds; edit identity at runtime. Only when `RELAY_ADMIN_PUBKEYS` is set |
-
-### Search extensions (NIP-50)
-
-The `search` field accepts extra tokens beyond the query text. They are stripped from
-the query before matching, so they never become search terms.
-
-| token | effect |
-|---|---|
-| `sort:rank` | order by trust, most trusted first (also `rank:asc`, `followers`, `text`) |
-| `filter:rank:gte:N` | drop results below trust rank `N` |
-| `include:spam` | lift the default trust floor and include everything |
-| `observer:<pubkey>` | rank as seen by that pubkey's web of trust |
-
-By default a search is trust-gated: results below the floor are hidden unless you lift it.
 
 ## Embed it
 

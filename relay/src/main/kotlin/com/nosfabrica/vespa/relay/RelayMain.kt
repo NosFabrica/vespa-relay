@@ -63,8 +63,8 @@ import kotlinx.coroutines.launch
  * serve the NIP-50 relay + NIP-11 doc, optionally mirror upstream relays into
  * the same store, and block.
  *
- * Configuration is entirely from the environment. `README.md` documents every
- * variable; the essentials:
+ * Configuration is entirely from the environment. `docs/configuration.md`
+ * documents every variable; the essentials:
  *
  *   VESPA_URL     the Vespa query endpoint (default http://localhost:8080)
  *   RELAY_PORT    the port to listen on (default 7777)
