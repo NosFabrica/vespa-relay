@@ -29,6 +29,7 @@ import io.ktor.http.HttpMethod
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
+import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.plugins.cors.routing.CORS
@@ -61,6 +62,7 @@ data class Nip11Info(
  *
  *   WS   /  -> the NIP-50 relay ([nostrRelay])
  *   GET  /  -> the NIP-11 doc on Accept: application/nostr+json, else [landingPage]
+ *   GET  /web/… -> the landing page's ES modules, straight off the classpath
  *   GET  /kind_stats.html -> [statsPage] (per-kind COUNTs — an operator diagnostic)
  *   GET  /observer_stats.html -> [observerStatsPage]
  *   POST /  -> the NIP-86 management RPC, when [admin] is configured
@@ -116,6 +118,13 @@ fun serveRelay(
                         ?: call.respondText("${nip11.name} - a NIP-50 search relay; connect a WebSocket here.")
                 }
             }
+            // The landing page's behavior lives in native ES modules under
+            // resources/web/ — no build step, so they are served as-is. A
+            // distinct /web prefix rather than a root fallback: the root is
+            // already three-way overloaded (WS upgrade, NIP-11 negotiation,
+            // the landing page), and a wildcard there would have to lose to
+            // all of them by routing subtlety instead of by construction.
+            staticResources("/web", "web")
             statsPage?.let { page ->
                 get("/kind_stats.html") { call.respondText(page, ContentType.Text.Html) }
             }

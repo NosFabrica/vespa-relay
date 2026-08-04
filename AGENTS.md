@@ -72,6 +72,16 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     FtsReindex.kt       REINDEX_FTS_ON_START
     OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
   util/Format.kt        fmtDuration / fmtDay / fmtCount
+
+relay/src/main/resources/
+  index.html            the search UI's markup + styles; its behavior lives in web/
+  web/                  the page's native ES modules, served at /web — no build
+                        step, zero dependencies (app.js state + wiring, shared/
+                        client + codec + caches, cards.js renderers, expected to
+                        grow one module per kind). index.html's header comment
+                        records the rules and why "one file" ended.
+  kind_stats.html       self-contained operator diagnostics — deliberately NOT
+  observer_stats.html   on the module graph; each carries its own tiny client
 ```
 
 `README.md` documents every environment variable and the router config format.
