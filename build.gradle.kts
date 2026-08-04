@@ -12,6 +12,10 @@ plugins {
 val ktlintVersion = libs.versions.ktlint.get()
 
 allprojects {
+    // Maven coordinates for anything this build publishes, and the root of the
+    // source package tree — the two are kept the same on purpose.
+    group = "com.nosfabrica.vespa.relay"
+
     apply(plugin = "com.diffplug.spotless")
 
     if (project === rootProject) {
