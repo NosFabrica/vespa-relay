@@ -49,9 +49,12 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     IngestPipeline.kt   bounded queue -> verify -> batchInsert, poison isolation
     BisectingInsert.kt  the batch-bisecting write
     StaticBackfill.kt   history catch-up for configured upstreams
-    DynamicSync.kt      relaySource streams: discover, fan out, reconcileAndDelete
+    DynamicSync.kt      relaySource streams: discover, fan out, sync each relay
+    DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
     UpstreamPush.kt     dir = up: reconcile and publish what the upstream lacks
-    RouterConfig.kt     HOCON `streams { }` parsing (strfry-shaped)
+    RouterConfig.kt     the stream model (streams, directions, sync modes)
+    RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
+    RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
     SyncCursors.kt      resume state for paged relays ("bands")
     StreamPhases.kt     per-stream progress reporting
     PagingProgress.kt   time-axis progress for paged walks
