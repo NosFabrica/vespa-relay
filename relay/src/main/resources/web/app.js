@@ -856,7 +856,7 @@ function applyUrl() {
       document.body.classList.add("searching");
       closePopup();
       $results.hidden = false;
-      showEntity(seg, { paintScores });
+      showEntity(seg, { paintScores, ensureLogin });
       return false; // no search running — boot still signs in eagerly
     }
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch

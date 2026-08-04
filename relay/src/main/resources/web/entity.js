@@ -2,14 +2,18 @@
 // each render the thing they name, with the same cards the search uses — in
 // permalink depth, so the event is whole rather than previewed.
 //
-// Fetched ANONYMOUSLY, on the reference connection, always. A permalink
-// answers "does this relay hold it", and the authenticated socket is
-// trust-gated to authors the reader has scored — through it, a perfectly
-// stored event by someone outside your web of trust would render as "not
-// found", which is a statement about you dressed up as one about the relay.
+// The fetch order is the relay's own philosophy applied to one link. A
+// signed-in reader asks THROUGH THEIR LENS first — the authenticated socket,
+// which the store trust-gates — and only then anonymously. An event the lens
+// held back but the index holds is OFFERED, not shown: a notice that it
+// exists with its author outside the reader's web of trust, and a "show it
+// anyway" that renders it under a persistent warning. The choice to step
+// outside the lens belongs to the reader, and the page never makes it for
+// them in either direction. An anonymous visitor has no lens, so their page
+// is simply the index.
 //
-// When this relay does NOT hold it and the identifier carries relay hints,
-// those are dialed as a fallback (gated: ws only, no private hosts, no mixed
+// When NOBODY here has it and the identifier carries relay hints, those are
+// dialed as the last resort (gated: ws only, no private hosts, no mixed
 // content) — and a hit is both rendered and handed back to this relay for
 // indexing, so the next visit of the same link is served locally.
 //
@@ -17,7 +21,7 @@
 // CARD. A note1… id can name an article or a live stream — it renders as
 // what it is, not as what the URL called it.
 
-import { refConn } from "./shared/conn.js";
+import { refConn, relay } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
 import { enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
@@ -90,9 +94,10 @@ function normalizeHint(raw) {
  */
 const HINT_TRIES = 3;
 const HINT_TIMEOUT_MS = 6000;
-async function fetchFromHints(parsed) {
+async function fetchFromHints(parsed, stage = () => {}) {
   const urls = [...new Set((parsed.relays || []).map(normalizeHint).filter(Boolean))].slice(0, HINT_TRIES);
   for (const url of urls) {
+    stage(`not here — asking its relay hint ${url.replace(/^wss?:\/\//, "")}…`);
     const r = new Relay(url);
     try {
       const ev = await fetchEntity(r, parsed, HINT_TIMEOUT_MS);
@@ -128,11 +133,22 @@ function titleFor(ev, parsed) {
 }
 
 /**
- * Render the entity named by [seg] (the URL path segment) into #results.
- * paintScores arrives as a hook because the lens it paints under is app
- * state; everything else here is anonymous and stateless.
+ * Names and faces for everyone the card will mention: the author, the p
+ * tags, and any other tag value that IS a pubkey — a 30382's d subject, a
+ * 10040's service column. "Never an npub where a name exists" only holds if
+ * the profiles are actually loaded before the card renders.
  */
-export async function showEntity(seg, { paintScores }) {
+async function enrichMentions(ev) {
+  const mentioned = [...new Set((ev.tags || []).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
+  await enrichProfiles([ev.pubkey, ...mentioned.slice(0, 50)]);
+}
+
+/**
+ * Render the entity named by [seg] (the URL path segment) into #results.
+ * paintScores and ensureLogin arrive as hooks because the lens they involve
+ * is app state; everything else here owns itself.
+ */
+export async function showEntity(seg, { paintScores, ensureLogin }) {
   const my = ++token;
   const $results = document.getElementById("results");
   const parsed = nip19Parse(seg);
@@ -147,32 +163,75 @@ export async function showEntity(seg, { paintScores }) {
     return;
   }
 
+  // The wait can be real — sign-in, two asks, up to three hint dials — so
+  // the skeleton narrates which step it is on rather than shimmering mutely
+  // for twenty seconds. The stage line is honest loading UI, same doctrine
+  // as the stats pages' status text.
   $results.innerHTML = headHtml(parsed.raw) +
-    `<div class="skel-card"><div class="skel-line" style="width:34%"></div><div class="skel-line" style="width:92%"></div><div class="skel-line" style="width:66%"></div></div>`;
+    `<div class="skel-card"><div class="skel-line" style="width:34%"></div><div class="skel-line" style="width:92%"></div><div class="skel-line" style="width:66%"></div></div>` +
+    `<div class="entity-stage" id="entity-stage">looking it up…</div>`;
+  const stage = (msg) => {
+    if (my !== token) return;
+    const el = document.getElementById("entity-stage");
+    if (el) el.textContent = msg;
+  };
 
-  let ev = null, err = null, hint = null;
+  let ev = null, err = null, hint = null, gated = null;
   try {
-    const conn = await refConn();
-    ev = await fetchEntity(conn, parsed);
-    if (!ev && (parsed.relays || []).length) {
-      ({ ev, from: hint } = await fetchFromHints(parsed));
+    // Settle sign-in first: whether there is a lens decides who gets asked.
+    stage("signing in…");
+    try { await ensureLogin(); } catch (e) {}
+    if (my !== token) return;
+
+    if (relay.authed) {
+      // Through the reader's web of trust first — the same gate the store
+      // applies to their searches applies to their permalinks.
+      stage("asking this relay, through your web of trust…");
+      ev = await fetchEntity(relay, parsed);
+    }
+    if (!ev) {
+      stage(relay.authed ? "not in your network's view — checking the whole index…" : "asking this relay…");
+      const conn = await refConn();
+      const anon = await fetchEntity(conn, parsed);
+      // Present in the index but held back by the lens: OFFERED, not shown.
+      if (anon && relay.authed) gated = anon;
+      else ev = anon;
+    }
+    if (!ev && !gated && (parsed.relays || []).length) {
+      ({ ev, from: hint } = await fetchFromHints(parsed, stage));
       if (my !== token) return;
     }
-    if (ev) {
-      // Names and faces for everyone the card will mention: the author, the
-      // p tags, and any other tag value that IS a pubkey — a 30382's d
-      // subject, a 10040's service column. "Never an npub where a name
-      // exists" only holds if the profiles are actually loaded before the
-      // card renders; the p-tag-only version of this line left score and
-      // observer permalinks showing npubs for people the store knows.
-      const mentioned = [...new Set((ev.tags || []).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
-      await enrichProfiles([ev.pubkey, ...mentioned.slice(0, 50)]);
+    if (ev || gated) {
+      stage("fetching names…");
+      await enrichMentions(ev || gated);
     }
   } catch (e) { err = e; }
   if (my !== token) return;
 
   if (err) {
     $results.innerHTML = headHtml(parsed.raw) + `<div class="error">${esc(err.message || String(err))}</div>`;
+  } else if (gated) {
+    // The reader's web of trust said no; the index said it exists. Both
+    // facts are shown, and the step outside the lens is the reader's click,
+    // never the page's guess — with the warning staying on the revealed
+    // card so the choice remains visible after it is made.
+    const what = gated.kind === 0 ? "profile" : "event";
+    $results.innerHTML = headHtml(parsed.raw) +
+      `<div class="empty"><b>Outside your web of trust</b>` +
+      `This ${what} is in this relay's index, but its author scores nothing under your lens, so the relay held it back.` +
+      `<div><button type="button" id="reveal" class="reveal-btn">Show it anyway</button></div></div>`;
+    document.title = titleFor(null, parsed);
+    const btn = document.getElementById("reveal");
+    if (btn) btn.onclick = () => {
+      if (my !== token) return;
+      $results.innerHTML = headHtml(parsed.raw) +
+        `<div class="prov warn">⚠ shown from outside your web of trust — the author has no score under your lens</div>` +
+        card(gated, { full: true });
+      document.title = titleFor(gated, parsed);
+      paintScores();
+      watchNip05();
+    };
+    return;
   } else if (!ev) {
     // Absence here is a fact about THIS MIRROR, not about the event — say so,
     // and hand the reader to the wider network instead of a dead end.
