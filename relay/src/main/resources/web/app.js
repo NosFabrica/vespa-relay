@@ -66,7 +66,10 @@ window.addEventListener("pageshow", (ev) => {
   if (!ev.persisted) return;
   // Re-authenticate rather than merely reconnect: NIP-42 belongs to the
   // connection, so the identity survived the freeze but the proof did not.
+  // The settled flight is stale for the same reason — cleared, so the next
+  // ensureLogin() runs a real sign-in instead of awaiting old success.
   loginTried = false;
+  loginFlight = null;
   scores.clear();
   scoreLensKey = null;
   renderWhoami();
@@ -152,27 +155,38 @@ async function login() {
 //
 // A relay read is still fine without an extension — it is the whole corpus,
 // unranked — so a failure here downgrades rather than blocks, and says so.
-let loginTried = false;
+//
+// ONE sign-in, shared as an in-flight promise that every caller awaits. The
+// previous shape used a bare `loginTried` flag, and it raced: while the first
+// caller sat inside login() waiting on the extension popup, the type-ahead
+// fired more searches, each saw the flag already set with `me` still null,
+// returned early, and sent its REQ UNAUTHENTICATED. Those results render from
+// the whole corpus, unranked — and nothing ever corrects them, because a
+// relay does not re-run a subscription it answered under the old auth state;
+// AUTH only changes what later REQs see. Waiting on the shared flight means
+// no REQ is ever sent on this socket before its auth question is settled —
+// stronger than resending after the fact, because nothing wrong renders.
+let loginTried = false;   // the first attempt has SETTLED (labels key on this)
+let loginFlight = null;   // the first attempt itself, awaited by every search
 async function ensureLogin() {
-  if (loginTried) { if (!me) return; }
   await relay.connect();
-  if (!loginTried) {
-    loginTried = true;
-    // A remembered "signed out" is a decision, not an absence — respect it
-    // rather than prompting the extension on every page load.
-    if (!wantsSignIn()) { $obsBox.classList.add("anon"); renderWhoami(); return; }
-    if (!(window.nostr && window.nostr.signEvent)) {
-      $obsBox.classList.add("anon");
-      renderWhoami();
-      return;
-    }
-    try { await login(); } catch (e) {
-      me = null;
-      $obsBox.classList.add("anon");
-      $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))} — showing the whole corpus, unranked</span>`;
-      return;
-    }
+  if (!loginFlight) {
+    loginFlight = (async () => {
+      // A remembered "signed out" is a decision, not an absence — respect it
+      // rather than prompting the extension on every page load.
+      if (!wantsSignIn() || !(window.nostr && window.nostr.signEvent)) {
+        $obsBox.classList.add("anon");
+        renderWhoami();
+        return;
+      }
+      try { await login(); } catch (e) {
+        me = null;
+        $obsBox.classList.add("anon");
+        $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))} — showing the whole corpus, unranked</span>`;
+      }
+    })().finally(() => { loginTried = true; });
   }
+  await loginFlight;
   if (!me) return;
   // Keyed on the CONNECTION's auth state, not on whether we remember a
   // pubkey: a reconnect leaves `me` set but the new socket unauthenticated,
@@ -182,6 +196,13 @@ async function ensureLogin() {
   me = await signAndAuth();
   renderWhoami();
 }
+
+// The resend half of NIP-42, wired to the client: if the store ever answers
+// a REQ with CLOSED "auth-required:" — a reconnect gap, a stricter policy —
+// authenticate through the same shared flow and the client resends that REQ
+// itself. The anonymous reference connection gets no such hook: it must
+// never authenticate, so for it auth-required is a real answer.
+relay.onAuthRequired = () => ensureLogin();
 
 // ---- search over NIP-50 ---------------------------------------------------
 let tab = KIND_TABS[0];
@@ -842,8 +863,9 @@ document.querySelector(".brand").addEventListener("click", (e) => {
 renderWhoami();
 // applyUrl() renders the chips and either restores a deep-linked search or
 // shows the hero. When it restores one, that search's own ensureLogin() is
-// already driving sign-in — a second call here would race it and the loser
-// runs the restored search anonymously, i.e. unranked without saying so.
+// already driving sign-in, so the extra call is skipped as redundant — every
+// caller shares the one login flight now, so a second call would merely be
+// noise rather than the race it used to be.
 // On an idle load, sign in eagerly rather than on the first keystroke: the
 // lens picker is only meaningful once there is an authenticated reader, and
 // an idle page should not sit on "signing in…" until somebody types.

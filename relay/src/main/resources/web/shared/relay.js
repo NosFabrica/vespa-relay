@@ -15,6 +15,7 @@ export class Relay {
     this.authed = false;         // did THIS connection complete NIP-42?
     this.opening = null;
     this.onclose = null;
+    this.onAuthRequired = null;  // async: authenticate this connection, however the page does that
   }
 
   connect() {
@@ -54,6 +55,30 @@ export class Relay {
 
   /** One REQ, collected until EOSE (or timeout: resolve with what arrived). */
   async req(filter, timeoutMs = REQ_TIMEOUT_MS) {
+    try {
+      return await this.reqOnce(filter, timeoutMs);
+    } catch (e) {
+      // NIP-42's second half, the part that is easy to forget: a relay
+      // answers an unauthenticated REQ with CLOSED "auth-required:", and the
+      // AUTH that follows does NOT revive it — a relay never re-runs a
+      // subscription it already answered under the old auth state. The
+      // client must authenticate and ASK AGAIN. `onAuthRequired` is how the
+      // page lends this class its signer without this class knowing NIP-07
+      // exists. One retry only: if the resend is refused too, the refusal is
+      // the answer. The anonymous reference connection installs no hook on
+      // purpose — being unauthenticated is its whole point — so there a
+      // CLOSED still surfaces as the error it is.
+      if (this.onAuthRequired && !this.authed &&
+          String((e && e.message) || "").startsWith("auth-required")) {
+        await this.onAuthRequired();
+        return await this.reqOnce(filter, timeoutMs);
+      }
+      throw e;
+    }
+  }
+
+  /** The single send-and-collect attempt behind [req]. */
+  async reqOnce(filter, timeoutMs) {
     await this.connect();
     const id = "sot" + this.nextId++;
     const events = [];
