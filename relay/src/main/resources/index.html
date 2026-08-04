@@ -290,20 +290,6 @@
   .row-name { font-weight: 550; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-about { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
-  /* A result you arrived at by clicking it in the quick popup. Fades on its own
-     so the mark keeps meaning "this one" rather than becoming decoration. */
-  .result.revealed {
-    animation: reveal-fade 5s ease-out forwards;
-  }
-  @keyframes reveal-fade {
-    0%   { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
-    70%  { background: var(--accent-soft); box-shadow: 0 0 0 2px var(--accent); }
-    100% { background: transparent; box-shadow: 0 0 0 2px transparent; }
-  }
-  @media (prefers-reduced-motion: reduce) {
-    .result.revealed { animation: none; box-shadow: 0 0 0 2px var(--accent); }
-  }
-
   .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
   .export {
     border: 1px solid var(--border); background: var(--surface); color: var(--muted);
