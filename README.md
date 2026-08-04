@@ -600,7 +600,7 @@ existing server. See `NostrRelayServer` and `RelayApp.kt`.
 ./gradlew :relay:installDist # a runnable distribution under relay/build/install/vespa-relay
 ```
 
-Kotlin 2.4 / JDK 21. Quartz and the [vespa-eventstore](https://github.com/vitorpamplona/vespa-eventstore)
+Kotlin 2.4 / JDK 21. Quartz and the [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store come from JitPack, pinned by commit in `gradle/libs.versions.toml`.
 
 ## License

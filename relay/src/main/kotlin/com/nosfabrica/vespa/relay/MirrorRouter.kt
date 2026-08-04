@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.relay
 
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
-import com.vitorpamplona.quartz.eventstore.vespa.IngestStats
+import com.nosfabrica.vespa.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.vespa.IngestStats
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient

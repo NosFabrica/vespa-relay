@@ -20,8 +20,8 @@
  */
 package com.nosfabrica.vespa.relay
 
-import com.vitorpamplona.quartz.eventstore.store.SchemaDeployer
-import com.vitorpamplona.quartz.eventstore.store.VespaEventStore
+import com.nosfabrica.vespa.eventstore.store.SchemaDeployer
+import com.nosfabrica.vespa.eventstore.store.VespaEventStore
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener

@@ -1,7 +1,7 @@
 # Working on vespa-relay
 
 A Nostr relay with trust-ranked NIP-50 search. Quartz's protocol engine
-(`RelayServerBase`) over a [vespa-eventstore](https://github.com/vitorpamplona/vespa-eventstore)
+(`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays.
 
 Single Gradle module, `:relay`, JVM only (toolchain 21). `RelayMain` is the
