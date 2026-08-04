@@ -1,13 +1,14 @@
 # vespa-relay
 
-A standalone [Nostr](https://nostr.com) relay where spam is personal. Every
-search — and, if you log in, every query — is filtered and ranked through *your*
-web of trust, not a global blocklist: what your network trusts ranks high, what
-it doesn't falls below your floor. Full-text
-[NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) search is
-backed by [Vespa](https://vespa.ai) via
-[vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore), so it scales
-like a search engine, because it is one.
+A [Vespa](https://vespa.ai)-backed standalone [Nostr](https://nostr.com) relay
+that filters and ranks everything — REQs, COUNTs, and full-text
+[NIP-50](https://github.com/nostr-protocol/nips/blob/master/50.md) search —
+through each connecting user's **NIP-85 web of trust**.
+
+Spam is personal here, not a global blocklist: what your network trusts ranks
+high, what it doesn't falls below your floor. And it scales like a search
+engine, because it is one — the store is
+[vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore).
 
 **What you get:**
 
