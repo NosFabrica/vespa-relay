@@ -130,7 +130,7 @@ internal class StaticBackfill(
             }
         if (reconcilers.isEmpty()) {
             early?.join()
-            phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), 0))
+            phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), null))
             return
         }
         phases.set(name, StreamPhases.Phase.Queued(reconcilers.size))
@@ -156,7 +156,7 @@ internal class StaticBackfill(
                     }
                 }
                 early?.join()
-                phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), 0))
+                phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), null))
             }
         } catch (e: CancellationException) {
             throw e
@@ -169,7 +169,7 @@ internal class StaticBackfill(
             System.err.println("router: $name backfill failed before reconcile (${e.message}) — ${reconcilers.size} relay(s) skipped until next boot")
             reconcilers.forEach { (idx, _) -> progress.done(idx, 0) }
             early?.join()
-            phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), 0))
+            phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), null))
         }
     }
 

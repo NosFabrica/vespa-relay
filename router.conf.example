@@ -46,7 +46,9 @@ streams {
         dir = "down"
         # `fetch`, because an empty store has nothing to compare against.
         sync = "fetch"
-        filter = { "kinds": [0, 10002, 10040] }
+        # The seed relays carry long-form too — asked by kind, nos.lol alone
+        # returned 96,298 kind-30023 events.
+        filter = { "kinds": [0, 10002, 10040, 30023] }
         urls = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",
@@ -75,7 +77,19 @@ streams {
         # hold is large. Reconciling moves the difference; fetching would move
         # all of it again.
         sync = "negentropy"
-        filter = { "kinds": [0, 10002, 10040] }   # add other kinds here
+        # Every kind worth indexing for search, asked of every relay — NOT
+        # narrowed by author.
+        #
+        # The outbox model can only find (author, relay) pairs somebody
+        # published, and measured here 71.3% of long-form authors publish no
+        # relay list at all. Asked per-author it reached 302 relays for 496
+        # events; asked by kind it reached 102 for 189,189, because the popular
+        # relays hold nearly everything. For a search index a missing document
+        # is a result nobody ever sees, so coverage wins over precision.
+        #
+        # Adding a kind changes this filter and therefore invalidates this
+        # stream's cursor bands — by design, and the cost of widening it.
+        filter = { "kinds": [0, 10002, 10040, 30023] }   # add other kinds here
         refreshSeconds = 21600   # re-read the sources and re-sync every 6h
         concurrency = 100        # relays synced at the same time
         # The seed relays above already cover these; skip them here.
@@ -160,59 +174,9 @@ streams {
     }
 
 
-    # NIP-23 long-form articles — blog posts — from the same outbox relays.
-    #
-    # Its OWN stream rather than another kind on dataViaOutbox, and that is a
-    # speed decision. Adding a kind there would change that stream's filter,
-    # which invalidates every cursor band it holds, and would grow its shared id
-    # snapshot (~15M ids, minutes to build) for a kind we hold none of.
-    #
-    # `fetch` for the same reason: there is nothing here to compare against yet,
-    # so a reconcile would exchange id sets to be told "you have none of this".
-    # Switch it to negentropy once the first fill is done.
-    longform {
-        dir = "down"
-        sync = "fetch"
-        filter = { "kinds": [30023] }
-        refreshSeconds = 21600
-        concurrency = 100
-        relaySource = [
-            {
-                filter = { "kinds": [10002] }
-                select = [
-                    { kind = 10002, tag = "r", marker = "write" }
-                ]
-            }
-        ]
-    }
 
 
 
 
-    # THE OUTBOX MODEL, stated properly: each author's posts from the relays that
-    # author's own kind-10002 marks write.
-    #
-    # `dataViaOutbox` is named for this but does not do it — it discovers relay
-    # urls and then asks every one of them for everybody's events. This binds the
-    # author to the relay from the SAME tag, so a relay is only ever asked for the
-    # people who actually named it.
-    longformOutbox {
-        dir = "down"
-        sync = "fetch"
-        filter = { "kinds": [30023] }
-        refreshSeconds = 21600
-        concurrency = 50
-        # Authors per ask. A popular relay is named by thousands of people, and
-        # one filter listing all of them is a REQ no relay will answer.
-        authorsPerLeg = 200
-        relaySource = [
-            {
-                filter = { "kinds": [10002] }
-                select = [
-                    { kind = 10002, tag = "r", marker = "write", relay = 1, authors = "pubkey" }
-                ]
-            }
-        ]
-    }
 
 }

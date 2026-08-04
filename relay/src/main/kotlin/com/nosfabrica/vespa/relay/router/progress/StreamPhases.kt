@@ -97,7 +97,16 @@ class StreamPhases {
         /** Cycle finished; nothing more until the next refresh. */
         data class Idle(
             val events: Long,
-            val nextInSec: Long,
+            /**
+             * Seconds until the next cycle, or null when there is no next cycle.
+             *
+             * A dynamic stream re-runs on a timer and can say when. A STATIC one
+             * cannot: it backfills once and then live-tails, so there is nothing
+             * to count down to. That case used to pass 0, which rendered as
+             * "next in 0s" — indistinguishable from a stream about to re-run
+             * immediately, and it was read as a busy loop more than once.
+             */
+            val nextInSec: Long?,
         ) : Phase
 
         /** The last attempt threw. */
@@ -194,7 +203,8 @@ class StreamPhases {
             }
 
             is Phase.Idle -> {
-                "idle — ${phase.events} event(s) last cycle, next in ${phase.nextInSec}s"
+                phase.nextInSec?.let { "idle — ${phase.events} event(s) last cycle, next in ${it}s" }
+                    ?: "backfilled ${phase.events} event(s); live tail only — no further cycles"
             }
 
             is Phase.Failed -> {
