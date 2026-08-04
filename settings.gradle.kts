@@ -16,7 +16,14 @@ dependencyResolutionManagement {
 
 rootProject.name = "vespa-relay"
 
-// A ready-to-serve Nostr relay over a vespa-eventstore VespaEventStore, with
-// trust-ranked NIP-50 search. Quartz's protocol engine (RelayServerBase +
-// LiveEventStore) wired to the store, plus a Ktor websocket mount and the NIP-11 doc.
+// Two processes over one Vespa store, split so the mirror can be restarted,
+// retuned, or OOM without touching the serving relay:
+//
+//   :relay  — the serving side: NIP-50 relay + NIP-11 doc + web UI (RelayMain)
+//   :sync   — the mirror: strfry-style streams from upstream relays (SyncMain);
+//             operators know it as "the router", and its package keeps that name
+//   :common — what both need: identity, parse audit, schema deploy, formatting,
+//             and the serving-pressure model the two processes share over HTTP
+include(":common")
 include(":relay")
+include(":sync")

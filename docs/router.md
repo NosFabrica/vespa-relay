@@ -1,8 +1,14 @@
 # The router: mirror from upstream relays
 
+The router is its own process — `vespa-sync`, the `:sync` module — writing
+into the same Vespa store the relay serves. The split is the point: restart it
+with a new config, retune it, or lose it to an OOM and the relay never drops a
+client, Vespa never replays a transaction log, and the id snapshots a
+reconcile holds live in a heap the serving side does not share.
+
 Point `SYNC_CONFIG` (or `SYNC_CONFIG_FILE`) at a strfry-style `streams`
-config and the relay keeps a live subscription open against each upstream,
-mirroring matching events into the same store it serves:
+config and the sync process keeps a live subscription open against each
+upstream, mirroring matching events into the relay's store:
 
 ```hocon
 connectionTimeout = 20
@@ -66,6 +72,13 @@ The router shares the relay's Vespa store, so mirrored events are immediately
 searchable. It runs one outbound connection per upstream (reconnect and
 re-subscribe are handled for you) and logs unreachable upstreams rather than
 failing — a paused or down relay in the list is skipped, not fatal.
+
+Clients still come first across the process boundary: the relay serves its
+mean read latency on `GET /pressure`, and the sync process polls it
+(`SYNC_PRESSURE_URL`) to yield ingest between batches when searches slow down —
+the two share one Vespa, and a mirror batch's queries queue in the same engine
+a client's REQ does. Leave the url unset to mirror at full speed; the boot log
+says which regime you are in.
 
 **Down** keeps a live subscription open and first negentropy-reconciles the
 history its filter asks for. **Up** re-reconciles the store against the
@@ -359,15 +372,22 @@ router: ingested 214880 accepted, 402113 rejected [duplicate: already have this 
 
 ## Enabling it under docker compose
 
-`docker-compose.yml` wires the router env through and mounts `./router.conf`.
-Copy the bundled example, then start with the router on:
+The router is the `sync` service, behind the `sync` profile — the profile is
+the on-switch. Copy the bundled example, then start with the mirror on:
 
 ```bash
 cp router.conf.example router.conf   # then edit the relay list / filters
-SYNC_CONFIG_LOCAL=./router.conf \
-SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf \
-docker compose up --build
+SYNC_CONFIG_LOCAL=./router.conf docker compose --profile sync up -d --build
 ```
 
-Leave `SYNC_CONFIG_FILE` unset (the default) and the relay serves without
-mirroring.
+Plain `docker compose up` serves without mirroring. Edited `router.conf`?
+Restart only the mirror — the relay keeps serving, and the sync cursors make
+the re-run cost a diff, not a corpus:
+
+```bash
+docker compose --profile sync restart sync
+```
+
+Setting `SYNC_CONFIG` / `SYNC_CONFIG_FILE` on the **relay** fails its boot
+deliberately: it once meant "run the mirror in-process", and a config that is
+read, accepted and does nothing is how a mirror quietly stops mirroring.

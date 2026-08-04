@@ -21,15 +21,13 @@ configurations.all {
 
 dependencies {
     // The relay is Quartz's protocol engine (RelayServerBase) over a vespa-eventstore store.
+    // The router lives in :sync and runs as its own process — nothing here dials out.
+    api(project(":common"))
     api(libs.quartz)
     api(libs.vespa.eventstore.store)
     implementation(libs.kotlinx.coroutines)
     // NIP-86 ban-list state is persisted to a JSON file (RelayStateStore).
     implementation(libs.kotlinx.serialization.json)
-    // The router mirrors kinds from upstream relays: OkHttp for the outbound
-    // websockets quartz's NostrClient dials, typesafe-config for the streams HOCON.
-    implementation(libs.okhttp)
-    implementation(libs.typesafe.config)
     // The Ktor server: serveRelay binds a port over the Netty engine.
     implementation(libs.ktor.server.core)
     implementation(libs.ktor.server.websockets)

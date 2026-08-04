@@ -91,6 +91,10 @@ fun serveRelay(
     landingPage: String? = null,
     statsPage: String? = null,
     observerStatsPage: String? = null,
+    // When set, GET /pressure serves the relay's mean client-read latency, so
+    // the sync process — its own container since the split — can keep yielding
+    // ingest to slow reads the way it did when both shared a JVM.
+    pressure: ServingPressure? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     // NIP-86 advertises itself in supported_nips only when an admin is wired.
@@ -171,6 +175,18 @@ fun serveRelay(
                     } else {
                         call.respond(HttpStatusCode.NotFound)
                     }
+                }
+            }
+            // What the sync process polls to throttle its ingest. Public on
+            // purpose, like the stats pages: a mean read latency names no
+            // client and no query, and gating it would cost the mirror its
+            // feed the moment an auth config drifts.
+            pressure?.let { p ->
+                get("/pressure") {
+                    call.respondText(
+                        """{"meanMs":${p.meanMs()},"samples":${p.sampleCount()}}""",
+                        ContentType.Application.Json,
+                    )
                 }
             }
             statsPage?.let { page ->

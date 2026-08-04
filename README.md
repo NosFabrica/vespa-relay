@@ -17,12 +17,13 @@ engine, because it is one — the store is
   below-floor authors dropped as spam. Anonymous searches use the operator's
   default lens, and any client can pick a lens explicitly with
   `observer:<pubkey>`.
-- **A relay that fills itself.** The built-in **router** mirrors events from
-  upstream relays: strfry-style `streams` of live subscriptions, NIP-77
-  negentropy backfill where upstreams speak it, resumable paged fetch where they
-  don't — and *dynamic* streams that discover relays from the store itself
-  (NIP-65 outbox lists, NIP-66 monitors, relay hints), so the fan-out widens as
-  the store fills.
+- **A relay that fills itself.** The **router** — a sibling process sharing the
+  same store — mirrors events from upstream relays: strfry-style `streams` of
+  live subscriptions, NIP-77 negentropy backfill where upstreams speak it,
+  resumable paged fetch where they don't — and *dynamic* streams that discover
+  relays from the store itself (NIP-65 outbox lists, NIP-66 monitors, relay
+  hints), so the fan-out widens as the store fills. Its own process on purpose:
+  restart or retune the mirror and the relay never drops a client.
 - **A full relay, not just search.** NIP-01 filters and publishes, NIP-09
   deletions, NIP-40 expirations, NIP-45 counts, NIP-62 right to vanish, NIP-77
   negentropy for peers, NIP-86 runtime management.
@@ -68,7 +69,7 @@ automatically. The essentials:
 | `RELAY_NAME` / `RELAY_DESCRIPTION` / … | NIP-11 identity | — |
 | `ALLOW_PUBKEYS` / `DENY_PUBKEYS` / `ALLOW_KINDS` / `DENY_KINDS` | write authorization | everyone / all |
 | `RELAY_ADMIN_PUBKEYS` | enables the NIP-86 management API | unset ⇒ off |
-| `SYNC_CONFIG` / `SYNC_CONFIG_FILE` | the router's stream config — see below | unset ⇒ router off |
+| `SYNC_CONFIG` / `SYNC_CONFIG_FILE` | the router's stream config, read by the **sync process** — see below | — |
 
 Every variable — limits, tuning, memory sizing, startup migrations, the parse
 audit — is documented in [`docs/configuration.md`](docs/configuration.md).
@@ -98,9 +99,11 @@ implements it.
 ## The router: mirror from upstream relays
 
 The relay serves what is in the store; the router is how the store gets filled
-from the network. Point `SYNC_CONFIG_FILE` at a strfry-style `streams` config
-and the relay keeps a live subscription open against each upstream, mirroring
-matching events into the same store it serves — immediately searchable:
+from the network. It runs as its own process (`vespa-sync`) against the same
+Vespa, so mirroring can be restarted, reconfigured, or OOM without the relay
+noticing. Point `SYNC_CONFIG_FILE` at a strfry-style `streams` config and it
+keeps a live subscription open against each upstream, mirroring matching
+events into the relay's store — immediately searchable:
 
 ```hocon
 streams {
@@ -126,13 +129,14 @@ events from the relays their own 10002 marks write* is one line — and it needs
 no per-kind code: any tag that carries a relay url at some offset can be a
 source.
 
-To try it under compose:
+To try it under compose — the `sync` profile is the on-switch:
 
 ```bash
 cp router.conf.example router.conf   # then edit the relay list / filters
-SYNC_CONFIG_LOCAL=./router.conf \
-SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf \
-docker compose up --build
+SYNC_CONFIG_LOCAL=./router.conf docker compose --profile sync up -d --build
+
+# after editing router.conf: bounce only the mirror, the relay keeps serving
+docker compose --profile sync restart sync
 ```
 
 [`docs/router.md`](docs/router.md) is the full guide: choosing `negentropy` vs
@@ -177,9 +181,11 @@ existing server. See `server/NostrRelayServer.kt` and `server/HttpServer.kt`.
 ## Build
 
 ```bash
-./gradlew build              # compile + tests + spotlessCheck
-./gradlew :relay:run         # run against VESPA_URL / RELAY_URL from the environment
-./gradlew :relay:installDist # a runnable distribution under relay/build/install/vespa-relay
+./gradlew build              # compile + tests + spotlessCheck, all modules
+./gradlew :relay:run         # the serving relay (VESPA_URL / RELAY_URL from the environment)
+./gradlew :sync:run          # the mirror (adds SYNC_CONFIG_FILE=…)
+./gradlew :relay:installDist # runnable distributions under relay/build/install/vespa-relay
+./gradlew :sync:installDist  #   …and sync/build/install/vespa-sync
 ```
 
 Kotlin 2.4 / JDK 21. Quartz and the [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)

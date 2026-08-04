@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.relay.util
 
 /** `h:mm:ss` past an hour, `m:ss` below it. Shared by every progress line. */
-internal fun fmtDuration(ms: Long): String {
+fun fmtDuration(ms: Long): String {
     val s = ms / 1000
     val h = s / 3600
     val m = (s % 3600) / 60
@@ -33,7 +33,7 @@ internal fun fmtDuration(ms: Long): String {
  * A `created_at` as a UTC day. Day resolution on purpose: it answers "is the
  * walk moving, and roughly where is it".
  */
-internal fun fmtDay(seconds: Long): String =
+fun fmtDay(seconds: Long): String =
     java.time.Instant
         .ofEpochSecond(seconds)
         .atZone(java.time.ZoneOffset.UTC)
@@ -41,7 +41,7 @@ internal fun fmtDay(seconds: Long): String =
         .toString()
 
 /** 24.8M rather than 24819118: the magnitude is the point, not the digits. */
-internal fun fmtCount(n: Int): String =
+fun fmtCount(n: Int): String =
     when {
         n >= 1_000_000 -> "%.1fM".format(n / 1_000_000.0)
         n >= 1_000 -> "%.0fk".format(n / 1_000.0)
@@ -49,4 +49,4 @@ internal fun fmtCount(n: Int): String =
     }
 
 /** Wall-clock seconds, the unit every `created_at` in the protocol is in. */
-internal fun nowSeconds(): Long = System.currentTimeMillis() / 1000
+fun nowSeconds(): Long = System.currentTimeMillis() / 1000

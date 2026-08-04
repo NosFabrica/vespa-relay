@@ -70,6 +70,26 @@ class ServingPressure(
     fun sampleCount(): Long = samples.get()
 
     /**
+     * Overwrite the mean with one measured somewhere else. The sync process
+     * runs in its own container and cannot [record] the relay's reads, so it
+     * polls them over HTTP and adopts what the relay reports — the EWMA
+     * already happened on the relay side, so this replaces rather than
+     * smooths. An instance is either recorded into or adopted into, never
+     * both: mixing them would interleave two unrelated distributions.
+     *
+     * `adopt(0, 0)` is the reset: below [MIN_SAMPLES], [backoffMs] is zero,
+     * which is how a poller says "the feed is gone, stop throttling on a
+     * number from the past".
+     */
+    fun adopt(
+        meanMs: Long,
+        sampleCount: Long,
+    ) {
+        meanMicros.set(meanMs.coerceAtLeast(0) * 1_000)
+        samples.set(sampleCount.coerceAtLeast(0))
+    }
+
+    /**
      * How long ingest should wait before its next batch, in milliseconds. Zero
      * while reads are healthy or before there are enough samples to mean
      * anything — a relay nobody is querying must mirror at full speed. Past
