@@ -187,30 +187,31 @@ streams {
     }
 
 
-    # The same blog posts, from relays we know answer.
+
+
+    # THE OUTBOX MODEL, stated properly: each author's posts from the relays that
+    # author's own kind-10002 marks write.
     #
-    # The outbox fan-out above reaches 16,532 relays and only 102 of them are
-    # alive — the rest are dead hosts in old relay lists. It found 110k posts in
-    # five minutes, but the well-known relays where most long-form actually
-    # lives are not in that set at all, because `indexers` only mirrors profiles
-    # and relay lists from them.
-    longformSeed {
+    # `dataViaOutbox` is named for this but does not do it — it discovers relay
+    # urls and then asks every one of them for everybody's events. This binds the
+    # author to the relay from the SAME tag, so a relay is only ever asked for the
+    # people who actually named it.
+    longformOutbox {
         dir = "down"
         sync = "fetch"
         filter = { "kinds": [30023] }
-        urls = [
-            "wss://relay.damus.io",
-            "wss://nos.lol",
-            "wss://relay.primal.net",
-            "wss://relay.nostr.band",
-            "wss://nostr.wine",
-            "wss://relay.snort.social",
-            "wss://nostr.mom",
-            "wss://relay.ditto.pub",
-            "wss://nostr-pub.wellorder.net",
-            "wss://indexer.coracle.social",
-            "wss://profiles.nostr1.com",
-            "wss://wot.grapevine.network"
+        refreshSeconds = 21600
+        concurrency = 50
+        # Authors per ask. A popular relay is named by thousands of people, and
+        # one filter listing all of them is a REQ no relay will answer.
+        authorsPerLeg = 200
+        relaySource = [
+            {
+                filter = { "kinds": [10002] }
+                select = [
+                    { kind = 10002, tag = "r", marker = "write", relay = 1, authors = "pubkey" }
+                ]
+            }
         ]
     }
 
