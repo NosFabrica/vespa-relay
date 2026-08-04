@@ -2,11 +2,11 @@
 #
 # Copy it and switch it on:
 #   cp router.conf.example router.conf
-#   ROUTER_CONFIG_LOCAL=./router.conf \
-#   ROUTER_CONFIG_FILE=/etc/vespa-relay/router.conf \
+#   SYNC_CONFIG_LOCAL=./router.conf \
+#   SYNC_CONFIG_FILE=/etc/vespa-relay/router.conf \
 #   docker compose up --build
 #
-# Running without Docker, set ROUTER_CONFIG_FILE to the path of your copy.
+# Running without Docker, set SYNC_CONFIG_FILE to the path of your copy.
 #
 # This file as it stands is what we run. You can use it unchanged.
 #

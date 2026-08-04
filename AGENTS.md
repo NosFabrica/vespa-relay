@@ -12,7 +12,7 @@ entrypoint.
 ```bash
 ./gradlew build                    # compile + test + spotless check
 ./gradlew :relay:test              # tests only
-./gradlew :relay:test --tests "*SyncCursors*"
+./gradlew :relay:test --tests "*SyncBands*"
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # run locally (needs a Vespa at VESPA_URL)
 
@@ -28,28 +28,50 @@ run `spotlessApply` first.
 
 ```
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
-  RelayMain.kt        entrypoint; reads env, deploys the schema, wires everything
-  RelayApp.kt         Ktor server + routes
-  NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
-  MirrorRouter.kt     the router — the biggest and most-changed file (see below)
-  RouterConfig.kt     HOCON `streams { }` parsing (strfry-shaped)
-  SyncCursors.kt      resume state for paged relays ("bands")
-  StreamPhase.kt      per-stream progress reporting + PagingProgress
-  RelayHealth.kt      per-authority strikes and eviction
-  RelayDiscovery.kt   pulling relay urls out of stored events
-  RelayIdentity.kt    RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor
-  ParseAudit.kt       what quartz could not parse, grouped to a JSON report
-  RelayConfig.kt      NIP-11 limits from env, via `env.intOr(...)` rather than
-                      `env["..."]` — grep for both or you will conclude a
-                      working setting is dead
-  ServingPressure.kt  EWMA of client read latency; the router yields to it
-  RelayState.kt       bans and other state that outlives the container
-  RelayInfo.kt        the NIP-11 document
-  RelayRoute.kt       ws + http routes
-  Nip86Route.kt       the management API
-  ExpirationSweeper.kt  NIP-40
-  PubKeys.kt          npub/hex parsing for every pubkey setting
-  ConnectionCountListener.kt  LOG_CONNECTIONS
+  RelayMain.kt          entrypoint; reads env, deploys the schema, wires everything
+  config/
+    EnvSettings.kt      NIP-11 limits etc. from env, via `env.intOr(...)` rather
+                        than `env["..."]` — grep for both or you will conclude a
+                        working setting is dead
+    PubKeys.kt          npub-only parsing for every pubkey setting
+    RelayIdentity.kt    RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor
+  server/               the serving side
+    NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
+    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info
+    RelayInfo.kt        the NIP-11 document
+    RelayWebSocket.kt   the ws route
+    Nip86Route.kt       the management API
+    BanListFile.kt      NIP-86 ban state that outlives the container
+    ServingPressure.kt  EWMA of client read latency; the router yields to it
+    ConnectionCountListener.kt  LOG_CONNECTIONS
+  router/               the mirror (see below)
+    SyncEngine.kt       wiring, live tails, health/stats lines
+    IngestPipeline.kt   bounded queue -> verify -> batchInsert, poison isolation
+    BisectingInsert.kt  the batch-bisecting write
+    StaticBackfill.kt   history catch-up for configured upstreams
+    DynamicSync.kt      relaySource streams: discover, fan out, sync each relay
+    DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
+    UpstreamPush.kt     dir = up: reconcile and publish what the upstream lacks
+    SyncBands.kt        covered created_at bands per (relay, filter)
+    config/             the declarative side
+      RouterConfig.kt     the stream model (streams, directions, sync modes)
+      RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
+      RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
+    discovery/          which relays to dial, and what to believe about them
+      RelayDiscovery.kt   pulling relay urls out of stored events
+      HostStrikes.kt      per-authority strikes and eviction
+      Unreachability.kt   which failures may be published as NIP-66 records
+    progress/           observability
+      StreamPhases.kt     per-stream progress reporting
+      PagingProgress.kt   time-axis progress for paged walks
+  maintenance/          background jobs behind the server
+    ExpirationSweeper.kt  NIP-40
+    ParseAudit.kt       what quartz could not parse, grouped to a JSON report
+    SchemaDeploy.kt     the every-boot Vespa schema deploy
+    TrustReconcile.kt   the startup trust-projection repair
+    FtsReindex.kt       REINDEX_FTS_ON_START
+    OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
+  util/Format.kt        fmtDuration / fmtDay / fmtCount
 ```
 
 `README.md` documents every environment variable and the router config format.
@@ -57,7 +79,10 @@ It is the reference; this file is the orientation.
 
 ## The router, in one pass
 
-`MirrorRouter` mirrors upstream events into the store. Two kinds of stream:
+`SyncEngine` syncs upstream events into the store. Operators know this
+subsystem as **the router** — `router.conf`, the `router:` log prefix and the
+`router` package keep that name. Its env vars are `SYNC_*`; the pre-rename
+`ROUTER_*` spellings still work and warn on boot. Two kinds of stream:
 
 - **static** — relays listed in `urls` in `router.conf`
 - **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
@@ -69,7 +94,7 @@ Each stream declares **how** it asks for what it is missing, via `sync`:
 |---|---|---|
 | `negentropy` | the same event lives on many relays (kinds 0/3/10002) | reconcile id sets, transfer only the difference |
 | `fetch` | the two sides barely overlap, or the store is empty and there is nothing to compare against | comparing disjoint sets costs more than downloading, and builds a huge local id snapshot to do it |
-| `auto` | unknown | decide by size — reconcile only when both sides hold more than `ROUTER_NEG_MIN_EVENTS` |
+| `auto` | unknown | decide by size — reconcile only when both sides hold more than `SYNC_NEG_MIN_EVENTS` |
 
 **It is a property of the data AND of how the stream asks — not of the relay,
 and not measurable from counts.** NIP-85 assertions were the standing example of
@@ -78,9 +103,9 @@ provider) instead of by kind, the same data overlaps almost entirely and
 `negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
 when a stream's filter changes shape rather than trusting the label.
 
-**Cursor bands** (`SyncCursors`) record the `created_at` span already walked for
+**Sync bands** (`SyncBands`) record the `created_at` span already walked for
 a `(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
-filter* deliberately: edit a stream's filter and its cursor is invalidated, which
+filter* deliberately: edit a stream's filter and its band is invalidated, which
 is the intended way to force a re-walk. A paged fetch records `complete = false`;
 only a finished negentropy reconcile records `complete = true`.
 
@@ -100,11 +125,11 @@ Reach for it first.
   relays transferring, connected, fatal count, events lost to store errors. A
   full queue and an empty queue are opposite diagnoses that look identical
   everywhere else.
-- **`ROUTER_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
+- **`SYNC_WIRE_LOG`** — `sent` logs every REQ/CLOSE; `full` adds every message
   received. Empty still logs `NOTICE`, `CLOSED` and failed sends, which are the
   relay explaining itself. It lowers quartz's log floor itself, because
   `QUARTZ_LOG_LEVEL=WARN` would otherwise silently discard its own output.
-- **`ROUTER_STREAMS`** — run one stream alone, so a measurement isn't three
+- **`SYNC_STREAMS`** — run one stream alone, so a measurement isn't three
   streams competing for one socket budget, heap and ingest queue.
 - **`ingest stages`** — per-stage timing (`dedup`, `write`, `proj.fetch`,
   `proj.write`, `versions`). This is what identified a projection read-back as
@@ -145,6 +170,11 @@ statement about someone else's server.
   remove it, and check that a pin actually took effect.
 - **JitPack's build-status API lies.** It reported a build `ok` whose log ended
   in `exit code 1`. Only the presence of the artifact file proves anything.
+- **JitPack caches builds per group-spelling.** `com.github.NosFabrica` and
+  `com.github.nosfabrica` are separate cache entries for the same repo; one
+  can permanently hold a failed infra build while the other serves fine. The
+  store coordinate uses lowercase for this reason — check the other spelling
+  before concluding a commit "doesn't build".
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
 - **`grep` may be aliased to `ugrep`**, which silently returns nothing on some

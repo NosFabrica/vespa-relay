@@ -3,9 +3,9 @@ kotlin = "2.4.0"
 # The relay application's version (image tag / --version display).
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
-quartz = "1622bd7109"
+quartz = "1a25557bdb"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-vespaEventStore = "7cdb9ba189"
+vespaEventStore = "2ac4f5488d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
@@ -23,11 +23,17 @@ quartz = { module = "com.github.vitorpamplona.amethyst:quartz", version.ref = "q
 # The event store, from JitPack. `store` is the IEventStore + open() front door + the
 # ObserverContext/OriginalFilters this relay stamps; it api-exposes the `vespa` engine
 # jar transitively (InMemoryEventIndex, EventYql — used by the relay's protocol test).
-vespa-eventstore-store = { module = "com.github.NosFabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
+# Lowercase group on purpose: JitPack caches builds per-spelling, and the
+# capitalized `NosFabrica` entry for this commit permanently caches a failed
+# infra build. Same repo, same artifacts — different cache key.
+vespa-eventstore-store = { module = "com.github.nosfabrica.vespa-eventstore:store", version.ref = "vespaEventStore" }
 kotlinx-coroutines = { module = "org.jetbrains.kotlinx:kotlinx-coroutines-core", version.ref = "coroutines" }
 kotlinx-serialization-json = { module = "org.jetbrains.kotlinx:kotlinx-serialization-json", version.ref = "serialization" }
 ktor-server-core = { module = "io.ktor:ktor-server-core", version.ref = "ktor" }
 ktor-server-websockets = { module = "io.ktor:ktor-server-websockets", version.ref = "ktor" }
+# NIP-11 tells relays to serve the info doc with CORS headers, and browser-based
+# NIP-86 admin tools need the Authorization header preflighted.
+ktor-server-cors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
 # serveRelay bundles the Netty engine (batteries-included) so a consumer — or the
 # standalone main() — can bind a port without wiring an engine itself.
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
