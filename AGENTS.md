@@ -16,6 +16,10 @@ entrypoint.
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # run locally (needs a Vespa at VESPA_URL)
 
+node tools/webtest/run.mjs         # web UI module tests (plain node, no deps)
+node tools/webtest/navwalk.mjs     # browser walkthrough of URL/backstack/entity
+                                   # navigation (needs playwright + chromium)
+
 docker compose up -d --build relay # the usual dev loop
 docker compose logs relay --since 5m
 ```
@@ -72,6 +76,20 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     FtsReindex.kt       REINDEX_FTS_ON_START
     OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
   util/Format.kt        fmtDuration / fmtDay / fmtCount
+
+relay/src/main/resources/
+  index.html            the search UI's markup + styles; its behavior lives in web/
+  web/                  the page's native ES modules, served at /web — no build
+                        step, zero dependencies. app.js is state + wiring;
+                        shared/ is the client + codec + caches; entity.js
+                        renders /npub1…//note1…//naddr1… paths; cards/ is the
+                        kind registry — one renderer module per family, a
+                        generic floor for the rest, and a render test that
+                        FAILS if a kind registers without a fixture.
+                        index.html's header records the rules and why "one
+                        file" ended.
+  kind_stats.html       self-contained operator diagnostics — deliberately NOT
+  observer_stats.html   on the module graph; each carries its own tiny client
 ```
 
 `README.md` documents every environment variable and the router config format.
