@@ -179,6 +179,13 @@ async function run() {
   const extra = extraEl.value
     .split(",").map((s) => parseInt(s.trim(), 10))
     .filter((n) => Number.isInteger(n) && n >= 0 && !KINDS.some(([k]) => k === n));
+  // The counted set is the page's one piece of state, so it lives in the URL:
+  // reload repeats the same question, and the link can be handed to whoever
+  // should see the answer. replaceState, not pushState — pressing Count again
+  // is the same page asked again, not a new place, and a history entry per
+  // press would put N recounts between Back and wherever the reader came from.
+  const qs = extra.length ? "?kinds=" + extra.join(",") : "";
+  if (location.search !== qs) history.replaceState(null, "", location.pathname + qs);
   const results = [...KINDS.map(([kind, name]) => ({ kind, name })), ...extra.map((kind) => ({ kind, name: "" }))];
   render(results);
 
@@ -213,6 +220,11 @@ async function run() {
       : "");
   runEl.disabled = false;
 }
+
+// `?kinds=1063,9735` pre-fills the box before the auto-run below, so a pasted
+// link answers the question it was copied to ask instead of the default five.
+const urlKinds = new URLSearchParams(location.search).get("kinds");
+if (urlKinds) extraEl.value = urlKinds;
 
 runEl.addEventListener("click", run);
 run();

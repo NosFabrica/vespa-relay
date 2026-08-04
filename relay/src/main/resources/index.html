@@ -25,6 +25,14 @@
   renders every kind the index holds as a card: profiles, notes, articles,
   media, code, listings, and a generic card for the rest.
 
+  The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
+  whole results view on load, every submitted search and every filter change
+  pushes a history entry, and Back walks them in order down to the hero. The
+  type-ahead popup deliberately never touches the URL — a keystroke is not a
+  place. Before this, the page held all of that in JS only: Back left the
+  site from the middle of a search, reload emptied it, and a result list
+  could not be handed to anyone.
+
   To develop against a remote server, set RELAY_URL below to its ws:// url.
 -->
 <style>
@@ -554,14 +562,17 @@
   const REQ_TIMEOUT_MS = 10000;
 
   // ---- the filter chips are literal NIP-01 `kinds` filters ----------------
+  // `slug` is the tab's name in the URL (`?tab=notes`). A slug, not the label
+  // ("Code & git" percent-encodes into line noise) and not the kinds list
+  // (which this page is free to tune without breaking every bookmarked URL).
   const KIND_TABS = [
-    { label: "Everything", kinds: null },
-    { label: "People", kinds: [0] },
-    { label: "Notes", kinds: [1, 11] },
-    { label: "Articles", kinds: [30023, 30024, 30818] },
-    { label: "Media", kinds: [20, 21, 22, 1063, 31922, 34235, 34236] },
-    { label: "Code & git", kinds: [1337, 1617, 1621, 30617] },
-    { label: "Live", kinds: [30311] },
+    { label: "Everything", slug: "all", kinds: null },
+    { label: "People", slug: "people", kinds: [0] },
+    { label: "Notes", slug: "notes", kinds: [1, 11] },
+    { label: "Articles", slug: "articles", kinds: [30023, 30024, 30818] },
+    { label: "Media", slug: "media", kinds: [20, 21, 22, 1063, 31922, 34235, 34236] },
+    { label: "Code & git", slug: "code", kinds: [1337, 1617, 1621, 30617] },
+    { label: "Live", slug: "live", kinds: [30311] },
   ];
 
   // Badge names for the kinds the index carries; anything else says "kind N".
@@ -931,6 +942,31 @@ function rememberSignIn(yes) {
   const shortNpub = (hex) => shortB32(npub(hex));
   const shortNote = (hex) => shortB32(noteId(hex));
 
+  /**
+   * The inverse, for reading `as=` out of the URL: an npub back to hex. Bare
+   * hex is accepted too, because a URL is typed and pasted by hand. The
+   * checksum is verified by re-encoding through the one encoder above rather
+   * than by a second polymod path — a corrupted npub becomes null (ignored, so
+   * the page falls back to ranking as you) instead of a lens that silently
+   * ranks nothing.
+   */
+  function pubkeyParam(v) {
+    v = String(v || "").trim().toLowerCase();
+    if (/^[0-9a-f]{64}$/.test(v)) return v;
+    if (!/^npub1[a-z0-9]{58}$/.test(v)) return null;
+    const words = [...v.slice(5)].map((c) => B32.indexOf(c));
+    if (words.includes(-1)) return null;
+    let acc = 0, bits = 0;
+    const bytes = [];
+    for (const w of words.slice(0, -6)) {
+      acc = (acc << 5) | w; bits += 5;
+      if (bits >= 8) { bits -= 8; bytes.push((acc >> bits) & 255); }
+    }
+    if (bytes.length !== 32) return null;
+    const hex = bytes.map((b) => b.toString(16).padStart(2, "0")).join("");
+    return npub(hex) === v ? hex : null;
+  }
+
   async function loadObservers() {
     if (observers) return observers;
     // Read on an ANONYMOUS connection, deliberately.
@@ -982,12 +1018,18 @@ function rememberSignIn(yes) {
     }
   }
 
-  function setViewingAs(pubkey, name) {
+  /** The lens state and its widget, with no search behind it — what a history
+      restore needs, since the restore runs its own search exactly once. */
+  function applyViewingAs(pubkey, name) {
     viewingAs = pubkey;
     $obsBox.classList.toggle("active", !!pubkey);
     $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : "me";
     $obsList.innerHTML = "";
     $obsFilter.value = "";
+  }
+
+  function setViewingAs(pubkey, name) {
+    applyViewingAs(pubkey, name);
     rerun();
   }
 
@@ -1648,8 +1690,12 @@ function rememberSignIn(yes) {
     closePopup();
     $results.hidden = false;
     document.body.classList.add("searching");
-    // The reveal waits for the results to exist. run() renders when the search
-    // resolves, so hand the id forward rather than trying to scroll now.
+    // Every way into the full view converges here — Enter, a popup click, a
+    // chip/sort/spam/lens change via rerun() — so this is the one place the
+    // URL learns about it. Pushed, not replaced: each of those is a state the
+    // user chose and Back should be able to undo. A restore FROM history is
+    // the exception, and syncUrl() itself knows to stand down there.
+    syncUrl();
     pendingReveal = revealId || null;
     run(text, "full", renderResults);
   }
@@ -1676,8 +1722,9 @@ function rememberSignIn(yes) {
     else if ($popup.classList.contains("open")) runPopup(text);
   }
 
-  /** Back to the landing hero: no query, no results, nothing sticky. */
-  function reset() {
+  /** Back to the landing hero: no query, no results, nothing sticky. The view
+      change only — history restore uses this too, and must not push. */
+  function showHero() {
     clearTimeout(debounceTimer);
     s.requestId++; s.hits = []; s.error = null; s.loading = false; s.lastMs = null;
     $q.value = "";
@@ -1685,6 +1732,13 @@ function rememberSignIn(yes) {
     $results.innerHTML = "";
     document.body.classList.remove("searching", "has-query");
     closePopup();
+  }
+
+  /** The hero as a NAVIGATION — clear button, brand click. Pushed, so Back
+      returns to the search that was just cleared instead of losing it. */
+  function reset() {
+    showHero();
+    syncUrl();
     $q.focus();
   }
 
@@ -1769,12 +1823,100 @@ function rememberSignIn(yes) {
   $sort.addEventListener("change", rerun);
   $spam.addEventListener("change", rerun);
 
-  renderChips();
+  // ---- the URL is the search ------------------------------------------------
+  //
+  // Everything the results view shows is derived from five inputs — q, tab,
+  // sort, spam, lens — so those five ARE the location: `/?q=…&tab=notes&
+  // sort=rank&spam=1&as=npub…`. Sign-in state is deliberately not among them;
+  // auth belongs to the socket and to the person holding the extension, and a
+  // shared URL must not try to carry it.
+  //
+  // The hero is the clean path with no params, which gives Back a floor to
+  // land on. The popup preview never appears here: it is keystroke feedback,
+  // and pushing an entry per keystroke is how Back buttons become useless.
+
+  // A restore must not re-push what it is restoring — popstate would otherwise
+  // truncate the forward stack it is trying to walk.
+  let navRestoring = false;
+
+  function currentUrl() {
+    const p = new URLSearchParams();
+    const text = $q.value.trim();
+    if (!$results.hidden && text) p.set("q", text);
+    if (tab.slug !== KIND_TABS[0].slug) p.set("tab", tab.slug);
+    if ($sort.value) p.set("sort", $sort.value);
+    if ($spam.checked) p.set("spam", "1");
+    // npub, like everywhere else on the page — this string gets pasted into
+    // chats, and a 64-char hash is not how anyone names a person.
+    if (viewingAs) p.set("as", npub(viewingAs));
+    const qs = p.toString();
+    return location.pathname + (qs ? "?" + qs : "");
+  }
+
+  function syncUrl() {
+    if (navRestoring) return;
+    const url = $results.hidden ? location.pathname : currentUrl();
+    // Re-submitting the same search re-queries the relay but is not a second
+    // place; pushing it would make Back appear to do nothing.
+    if (url === location.pathname + location.search) return;
+    history.pushState(null, "", url);
+  }
+
+  /**
+   * URL -> page, the single restore path: initial load, Back, and Forward all
+   * come through here. Returns whether it started a search, so the boot path
+   * knows whether sign-in is already being driven by that search or needs its
+   * own kick.
+   */
+  function applyUrl() {
+    navRestoring = true;
+    try {
+      const p = new URLSearchParams(location.search);
+      const text = (p.get("q") || "").trim();
+      tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
+      renderChips();
+      $sort.value = p.get("sort") || "";
+      if ($sort.selectedIndex < 0) $sort.value = ""; // an unknown sort is no sort
+      $spam.checked = p.get("spam") === "1";
+      const as = pubkeyParam(p.get("as"));
+      applyViewingAs(as, null);
+      if (as) {
+        // The URL carries the key; the label wants the name. Filled in after
+        // the fact so the restore itself never waits on a profile lookup.
+        enrichProfiles([as]).then(() => {
+          const nm = displayName(profiles.get(as));
+          if (nm && viewingAs === as) $obsCurrent.textContent = nm;
+        }).catch(() => {});
+      }
+      $q.value = text;
+      document.body.classList.toggle("has-query", !!text);
+      if (text) runFull(text); else showHero();
+      return !!text;
+    } finally {
+      navRestoring = false;
+    }
+  }
+
+  window.addEventListener("popstate", applyUrl);
+
+  // The brand is a real link — middle-click and copy-link still work — but a
+  // plain click was a full page reload that tore down the socket and the NIP-42
+  // auth on it just to show the hero this page can show by itself.
+  document.querySelector(".brand").addEventListener("click", (e) => {
+    if (e.button !== 0 || e.metaKey || e.ctrlKey || e.shiftKey || e.altKey) return;
+    e.preventDefault();
+    reset();
+  });
+
   renderWhoami();
-  // On load, not on the first keystroke: the lens picker is only meaningful once
-  // there is an authenticated reader, and an idle page should not sit on
-  // "signing in…" until somebody types.
-  ensureLogin().then(renderWhoami).catch(() => renderWhoami());
+  // applyUrl() renders the chips and either restores a deep-linked search or
+  // shows the hero. When it restores one, that search's own ensureLogin() is
+  // already driving sign-in — a second call here would race it and the loser
+  // runs the restored search anonymously, i.e. unranked without saying so.
+  // On an idle load, sign in eagerly rather than on the first keystroke: the
+  // lens picker is only meaningful once there is an authenticated reader, and
+  // an idle page should not sit on "signing in…" until somebody types.
+  if (!applyUrl()) ensureLogin().then(renderWhoami).catch(() => renderWhoami());
 })();
 </script>
 </body>
