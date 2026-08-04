@@ -80,6 +80,14 @@ internal class DynamicSync(
     private val pinnedUrls: Set<NormalizedRelayUrl>,
     private val scope: CoroutineScope,
 ) {
+    /**
+     * `SYNC_DIAGNOSE=<stream>` — log one line per relay for that stream: how many
+     * authors it was paired with, how many asks that became, how many legs the
+     * cursor left, and what came back. Off by default because this fan-out is
+     * 16,000 relays wide.
+     */
+    private val diagnose: String? = System.getenv("SYNC_DIAGNOSE")?.trim()?.takeIf { it.isNotEmpty() }
+
     private val deleteMissingSync = DeleteMissingSync(client, store, bands, ingest, paging)
 
     /** Records dropped because an upstream retracted them — see [DeleteMissingSync]. */
@@ -350,8 +358,19 @@ internal class DynamicSync(
         transferring.incrementAndGet()
         return try {
             var downloaded = 0
-            for (ask in splitByAuthors(window, stream.dynamic?.authorsPerLeg)) {
+            val asks = splitByAuthors(window, stream.dynamic?.authorsPerLeg)
+            for (ask in asks) {
                 downloaded += syncOneFilter(stream, url, ask, local)
+            }
+            // DIAGNOSTIC: what this relay was asked and what came back. Enabled
+            // by SYNC_DIAGNOSE, which names one stream — the fan-out is 16k
+            // relays wide and a line each would be the log.
+            if (diagnose == stream.name) {
+                System.err.println(
+                    "router: [diag] ${url.url} authors=${window.authors?.size ?: 0} " +
+                        "ask(s)=${asks.size} leg(s)=${asks.sumOf { bands.legs(url, it).size }} " +
+                        "downloaded=$downloaded",
+                )
             }
             downloaded
         } catch (e: CancellationException) {

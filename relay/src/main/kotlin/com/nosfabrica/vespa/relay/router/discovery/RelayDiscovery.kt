@@ -128,6 +128,25 @@ object RelayDiscovery {
             }
         }
 
+        // DIAGNOSTIC: what the pairing actually built. A bound select is only
+        // worth anything if the authors reach the relays that named them, and
+        // nothing downstream can tell "no authors were paired" from "the relays
+        // had nothing".
+        if (narrowing.isNotEmpty()) {
+            val perRelay = narrowing.values.map { it["authors"]?.size ?: 0 }
+            val distinctAuthors =
+                narrowing.values
+                    .flatMap { it["authors"].orEmpty() }
+                    .toSet()
+                    .size
+            System.err.println(
+                "router: discovery paired ${narrowing.size} relay(s) with $distinctAuthors distinct author(s); " +
+                    "authors per relay min=${perRelay.minOrNull()} median=${perRelay.sorted().getOrNull(perRelay.size / 2)} " +
+                    "max=${perRelay.maxOrNull()} total=${perRelay.sum()}; " +
+                    "${found.size - narrowing.size} relay(s) found with NO authors attached",
+            )
+        }
+
         return found
             .asSequence()
             .filter { it !in dynamic.exclude && it !in skip }
@@ -324,6 +343,19 @@ object RelayDiscovery {
         // do carry (a live one names http://localhost:7778).
         if (!trimmed.startsWith("ws://", true) && !trimmed.startsWith("wss://", true)) return null
         val url = RelayUrlNormalizer.normalizeOrNull(trimmed) ?: return null
+        // ...and check the scheme AGAIN, on what we will actually dial.
+        //
+        // Checking only the raw string is not enough, because the normalizer
+        // repairs as well as canonicalises. 143 urls in this corpus carry a
+        // NESTED scheme — `wss://https//nostr.watch/relay/nostr.21crypto.ch` —
+        // which passes a startsWith("wss://") test and comes out the other side
+        // as `https://nostr.watch/relay/...`: a web page ABOUT a relay, dialled
+        // once a cycle forever, answering nothing.
+        //
+        // That is what a diagnostic run caught us doing — `https://kbin.social/`,
+        // `https://nostr.watch/relays/find`, `//nos.lol/` — 116 live "relays"
+        // returning 0 events between them.
+        if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return null
         if (RelayUrlNormalizer.isOnion(url.url) || RelayUrlNormalizer.isLocalHost(url.url)) return null
         return url
     }
