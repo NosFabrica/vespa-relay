@@ -32,7 +32,8 @@
 #   fetch       the relays hold events nobody else has. Comparing two sets that
 #               barely overlap costs more than just downloading. Right for a
 #               first fill, and for per-publisher data like NIP-85 scores.
-#   auto        decide by size (the default). Prefer saying which you mean.
+#   auto        reconcile once we already hold a lot of the filter, else fetch
+#               (the default). Prefer saying which you mean.
 
 connectionTimeout = 20
 

@@ -109,8 +109,7 @@ All configuration is through environment variables.
 | `SYNC_DYNAMIC_CONCURRENCY` | default number of discovered relays synced at the same time | `8` |
 | `SERVING_PRESSURE_THRESHOLD_MS` | mean client-read latency above which the mirror starts yielding to clients. Reads against a 50M-event store run ~400ms healthy; ingest pauses between batches once the mean passes this | `2000` |
 | `SYNC_WIRE_LOG` | what to log of the upstream conversation. Empty still logs `NOTICE`, `CLOSED` and failed sends — the relay's own account of why it stopped. `sent` adds every command sent; `full` adds every message received (one line per event) | *(errors only)* |
-| `SYNC_NEG_MIN_EVENTS` | for `sync = "auto"` streams: how many events both we and the relay must hold, on the stream's filter, before a negentropy reconcile is worth its id exchange | `100000` |
-| `SYNC_COUNT_TIMEOUT_MS` | how long a relay gets to answer the NIP-45 COUNT that measures the above. A relay that never answers is asked once per run, then reconciled | `5000` |
+| `SYNC_NEG_MIN_EVENTS` | for streams on `sync = "auto"`: reconcile once **we** hold at least this many events matching the filter, otherwise page. Only our own count decides — a reconcile transfers the difference, so it wins when our set is already most of theirs, and that is answerable from our own store for free. Asking the relay as well cost a NIP-45 COUNT per relay per cycle for a worse answer, since COUNT is optional and slow where implemented | `5000` |
 | `SYNC_STREAMS` | run only these streams (comma-separated), to tune one part of the sync without the rest competing for the same sockets, heap and ingest queue. The router prints which streams it is *not* running on startup | every stream in the config |
 
 ### Parse audit (what quartz cannot read)
@@ -199,7 +198,7 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   |---|---|---|
   | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
   | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A sync band answers "what is new since we last asked" instead |
-  | `auto` | you genuinely do not know | decides by size: reconcile only when both our store and the relay hold more than `SYNC_NEG_MIN_EVENTS` for the filter, measured with a NIP-45 `COUNT`. Correct only where overlap tracks volume — say which you mean when you know |
+  | `auto` | you genuinely do not know | reconcile once **we** hold more than `SYNC_NEG_MIN_EVENTS` for the filter, otherwise page. A reconcile transfers the difference, so it pays when our set is already most of theirs and loses when we start from nothing — which our own store can answer for free. Say which you mean when you know |
 
   A `fetch` stream never builds the local id set at all, which is the single most
   expensive thing the router does.

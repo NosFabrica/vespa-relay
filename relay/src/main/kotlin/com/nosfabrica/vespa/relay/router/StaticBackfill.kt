@@ -33,7 +33,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
-import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import kotlinx.coroutines.CancellationException
@@ -78,13 +77,6 @@ internal class StaticBackfill(
     private val scope: CoroutineScope,
 ) {
     private val progress = BackfillProgress()
-
-    /**
-     * Relays that did not answer a NIP-45 COUNT, so we stop asking this run —
-     * a relay without COUNT is indistinguishable from a slow one, and asking
-     * it every cycle is a dead wait per cycle.
-     */
-    private val countUnanswered = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
     fun begin(totalUpstreams: Int) = progress.begin(totalUpstreams)
 
@@ -321,15 +313,23 @@ internal class StaticBackfill(
             SyncMode.FETCH -> return false
             SyncMode.AUTO -> Unit
         }
-        val url = upstream.url
-        if (ours < config.negMinEvents) return false
-        if (url in countUnanswered) return true
-        val theirs = runCatching { client.count(url, filter, config.countTimeoutMs)?.count }.getOrNull()
-        if (theirs == null) {
-            countUnanswered.add(url)
-            return true
-        }
-        return theirs >= config.negMinEvents
+        // OUR count decides it, and nothing else.
+        //
+        // This used to ask the relay for a NIP-45 COUNT too, and reconcile only
+        // when both sides cleared the floor. That cost a round trip per relay
+        // per cycle across a 16,000-relay fan-out, and bought a worse answer:
+        // COUNT is optional and widely unimplemented (one upstream here replies
+        // `unknown cmd`), and where it IS implemented it can be slow — measured
+        // at a 13.5s median on a loaded relay, against a 5s budget. A relay that
+        // did not answer was assumed reconcilable anyway, so most of that
+        // waiting changed nothing.
+        //
+        // What actually decides whether reconciling pays is how much WE hold: a
+        // reconcile transfers the difference, so it wins when our set is already
+        // most of theirs, and loses when we are starting from nothing and the
+        // difference is everything. That is answerable from our own store, for
+        // free, without asking anyone.
+        return ours >= config.negMinEvents
     }
 
     /**

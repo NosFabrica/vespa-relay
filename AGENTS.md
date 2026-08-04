@@ -112,7 +112,7 @@ Each stream declares **how** it asks for what it is missing, via `sync`:
 |---|---|---|
 | `negentropy` | the same event lives on many relays (kinds 0/3/10002) | reconcile id sets, transfer only the difference |
 | `fetch` | the two sides barely overlap, or the store is empty and there is nothing to compare against | comparing disjoint sets costs more than downloading, and builds a huge local id snapshot to do it |
-| `auto` | unknown | decide by size — reconcile only when both sides hold more than `SYNC_NEG_MIN_EVENTS` |
+| `auto` | unknown | reconcile once WE hold more than `SYNC_NEG_MIN_EVENTS` for the filter, else page. Only our own count — asking the relay too meant a NIP-45 COUNT per relay per cycle, and COUNT is optional, widely unimplemented, and slow where it exists |
 
 **It is a property of the data AND of how the stream asks — not of the relay,
 and not measurable from counts.** NIP-85 assertions were the standing example of
