@@ -114,7 +114,10 @@ object BanListFile {
  * on boot and rewrites it on every mutation. With no path, purely in-memory.
  */
 fun openBanStore(stateFile: String?): BanStore {
-    if (stateFile == null) return BanStore {}
+    // Blank as well as null: docker compose can only pass a variable through
+    // with a `${RELAY_STATE_FILE:-}` default, which delivers "" for unset —
+    // and persisting bans to a file literally named "" is not a mode.
+    if (stateFile.isNullOrBlank()) return BanStore {}
     // The onChange callback needs the store it belongs to; wire it after
     // construction through a nullable holder.
     var store: BanStore? = null

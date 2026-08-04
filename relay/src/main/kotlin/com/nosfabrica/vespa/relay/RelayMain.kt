@@ -33,16 +33,12 @@ import com.nosfabrica.vespa.relay.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
-import com.nosfabrica.vespa.relay.maintenance.ParseAudit
+import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
-import com.nosfabrica.vespa.relay.router.SyncBands
-import com.nosfabrica.vespa.relay.router.SyncEngine
-import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
-import com.nosfabrica.vespa.relay.router.config.syncEnv
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
@@ -60,8 +56,8 @@ import kotlinx.coroutines.launch
 
 /**
  * Run a standalone trust-ranking Nostr relay against a Vespa: open the store,
- * serve the NIP-50 relay + NIP-11 doc, optionally mirror upstream relays into
- * the same store, and block.
+ * serve the NIP-50 relay + NIP-11 doc, and block. Mirroring upstream relays
+ * into the same store is `:sync`'s job, as its own process — see SyncMain.
  *
  * Configuration is entirely from the environment. `docs/configuration.md`
  * documents every variable; the essentials:
@@ -70,10 +66,43 @@ import kotlinx.coroutines.launch
  *   RELAY_PORT    the port to listen on (default 7777)
  *   RELAY_URL     this relay's own ws url (REQUIRED)
  *   RELAY_NSEC    the relay's identity key (NIP-11 self, NIP-42, NIP-66)
- *   SYNC_CONFIG / SYNC_CONFIG_FILE   the mirror's streams (HOCON)
  */
 fun main() {
     val env = System.getenv()
+
+    // The router moved to its own process; a stream config aimed here would
+    // once have started the mirror and now starts nothing. Refusing to boot is
+    // the migration notice — a configured component must never be silently
+    // inert, and "the mirror stopped mirroring" is the worst spelling of it.
+    listOf("SYNC_CONFIG", "SYNC_CONFIG_FILE", "ROUTER_CONFIG", "ROUTER_CONFIG_FILE")
+        .firstOrNull { !env[it].isNullOrBlank() }
+        ?.let {
+            error(
+                "$it is set, but the relay no longer runs the sync engine — it moved to its own process " +
+                    "(the vespa-sync binary / the `sync` service in docker-compose.yml, enabled with " +
+                    "`docker compose --profile sync up`). Move the SYNC_* settings there, or unset $it " +
+                    "to serve without mirroring.",
+            )
+        }
+
+    // The rest of the family that moved with the mirror. Not fatal — none of
+    // these starts a subsystem, so nothing is half-running — but a setting
+    // read by nobody must not pass in silence: PARSE_AUDIT_FILE left here
+    // would look exactly like an audit that found nothing.
+    env.keys
+        .filter { key ->
+            (
+                key.startsWith("SYNC_") || key.startsWith("ROUTER_") ||
+                    key.startsWith("PARSE_AUDIT_") || key == "SERVING_PRESSURE_THRESHOLD_MS"
+            ) &&
+                !env[key].isNullOrBlank()
+        }.sorted()
+        .takeIf { it.isNotEmpty() }
+        ?.let {
+            System.err.println(
+                "relay: ${it.joinToString()} — read by the sync process, not the relay; set them on that service or they do nothing",
+            )
+        }
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
     val port = env["RELAY_PORT"]?.toIntOrNull() ?: 7777
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — this relay's own ws url (NIP-42 identity / NIP-62 vanish scope).")
@@ -137,14 +166,13 @@ fun main() {
         }
     }
 
-    // One instance, shared: the relay server measures client reads into it,
-    // the router reads it back to decide whether to yield.
-    val servingPressure =
-        ServingPressure(
-            thresholdMs =
-                env["SERVING_PRESSURE_THRESHOLD_MS"]?.trim()?.toLongOrNull()?.coerceAtLeast(100)
-                    ?: ServingPressure.DEFAULT_THRESHOLD_MS,
-        )
+    // The relay server measures client reads into it; the sync process polls
+    // the mean over GET /pressure to decide whether its ingest should yield.
+    // No threshold here on purpose: this side only records and serves — the
+    // threshold belongs to the process that yields on it, and reading
+    // SERVING_PRESSURE_THRESHOLD_MS into an instance whose backoffMs() nobody
+    // calls would be a setting that is accepted and does nothing.
+    val servingPressure = ServingPressure()
     val relay =
         NostrRelayServer(
             store = store,
@@ -164,27 +192,9 @@ fun main() {
     // Prune NIP-40 expired events on a schedule (the store schedules nothing itself).
     val sweeper = ExpirationSweeper(store, expirationSweepSecondsFromEnv(env)).start()
 
-    // Opt-in diagnostic; also the knob that quiets quartz's own logging.
-    val parseAudit = ParseAudit.installFromEnv(env)
-
-    // Where a paged relay's already-walked history is remembered, so a
-    // restart resumes instead of re-reading the corpus.
-    val bands = SyncBands.fromEnv(env)
-
-    // The router: when SYNC_CONFIG / SYNC_CONFIG_FILE is set, mirror the
-    // configured upstreams into this same store. Unset ⇒ serve-only.
-    val router =
-        RouterConfigLoader.fromEnv(env)?.let {
-            SyncEngine(
-                store,
-                it,
-                audit = parseAudit,
-                bands = bands,
-                signer = identity,
-                wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
-                servingPressure = servingPressure,
-            ).start()
-        }
+    // The knob that quiets quartz's own logging. The parse audit itself lives
+    // in the sync process — ingest is what feeds it, and nothing here does.
+    applyQuartzLogLevel(env)
 
     val admin =
         banStore?.let {
@@ -203,10 +213,6 @@ fun main() {
             // costs a less complete ranking until the next start, which is
             // exactly what it costs anyway.
             maintenanceScope.cancel()
-            // Stop mirroring into the store before the relay and store close.
-            router?.close()
-            // After the router, so the final report includes the last batch.
-            parseAudit?.close()
             sweeper.close()
             relay.close()
             store.close()
@@ -215,16 +221,7 @@ fun main() {
 
     println(
         "vespa-relay listening on :$port  (vespa $vespaUrl, relay $relayUrl)" +
-            (if (admin != null) "  [NIP-86 admin: ${adminPubkeys.size} key(s)]" else "") +
-            (
-                if (router != null) {
-                    "  [router: mirroring ${router.upstreamCount()} relay(s)" +
-                        (if (router.dynamicStreamCount() > 0) " + ${router.dynamicStreamCount()} dynamic stream(s)" else "") +
-                        "]"
-                } else {
-                    ""
-                }
-            ),
+            (if (admin != null) "  [NIP-86 admin: ${adminPubkeys.size} key(s)]" else ""),
     )
     serveRelay(
         relay = relay,
@@ -248,6 +245,7 @@ fun main() {
             ),
         limits = limits,
         admin = admin,
+        pressure = servingPressure,
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = resourceText("/index.html"),
         statsPage = resourceText("/kind_stats.html"),

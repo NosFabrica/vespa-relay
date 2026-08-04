@@ -4,24 +4,38 @@ A Nostr relay with trust-ranked NIP-50 search. Quartz's protocol engine
 (`RelayServerBase`) over a [vespa-eventstore](https://github.com/NosFabrica/vespa-eventstore)
 store, plus a router that mirrors events from upstream relays.
 
-Single Gradle module, `:relay`, JVM only (toolchain 21). `RelayMain` is the
-entrypoint.
+Three Gradle modules, JVM only (toolchain 21), two processes over one store:
+
+- **`:relay`** — the serving side. `RelayMain` is its entrypoint.
+- **`:sync`** — the router, as its own process so it restarts without the
+  relay or Vespa noticing. `SyncMain` is its entrypoint; the package keeps the
+  `router` name on purpose (see below).
+- **`:common`** — only what both genuinely read: `RelayIdentity`,
+  `SchemaDeploy`, `QuartzLogLevel`, `fmtDuration`, and `ServingPressure` —
+  whose mean crosses the process boundary over the relay's `GET /pressure`,
+  polled by the sync process to yield ingest when client reads slow down.
+  Anything one process owns lives in that process's module.
 
 ## Commands
 
 ```bash
-./gradlew build                    # compile + test + spotless check
-./gradlew :relay:test              # tests only
-./gradlew :relay:test --tests "*SyncBands*"
+./gradlew build                    # compile + test + spotless check, all modules
+./gradlew :relay:test              # serving-side tests
+./gradlew :sync:test               # router tests (moved with the module)
+./gradlew :sync:test --tests "*SyncBands*"
 ./gradlew spotlessApply            # fix formatting — do this before committing
-./gradlew :relay:run               # run locally (needs a Vespa at VESPA_URL)
+./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
+./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
 
 node tools/webtest/run.mjs         # web UI module tests (plain node, no deps)
 node tools/webtest/navwalk.mjs     # browser walkthrough of URL/backstack/entity
                                    # navigation (needs playwright + chromium)
 
-docker compose up -d --build relay # the usual dev loop
+docker compose up -d --build relay # the usual dev loop (serving only)
+docker compose --profile sync up -d --build   # …with the mirror
+docker compose --profile sync restart sync    # new router.conf, relay untouched
 docker compose logs relay --since 5m
+docker compose logs sync --since 5m
 ```
 
 Git hooks are installed by the build: **pre-commit runs `spotlessCheck`,
@@ -30,52 +44,72 @@ run `spotlessApply` first.
 
 ## Layout
 
+All three modules share the `com.nosfabrica.vespa.relay` package root — files
+moved between modules in the process split without renaming packages, so
+history and imports stayed put.
+
 ```
+common/src/main/kotlin/com/nosfabrica/vespa/relay/
+  config/RelayIdentity.kt   RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor;
+                            both processes read it (same key on purpose)
+  server/ServingPressure.kt EWMA of client read latency. The relay record()s
+                            into it and serves it on GET /pressure; the sync
+                            process adopt()s the polled mean and yields on it
+  maintenance/
+    QuartzLogLevel.kt       QUARTZ_LOG_LEVEL, split from ParseAudit — the one
+                            piece of it both processes read
+    SchemaDeploy.kt         the every-boot Vespa schema deploy (both processes)
+  util/Format.kt            fmtDuration — the one formatter both processes print
+
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
-  RelayMain.kt          entrypoint; reads env, deploys the schema, wires everything
+  RelayMain.kt          entrypoint; reads env, deploys the schema, wires the
+                        serving side. REFUSES to boot if SYNC_CONFIG* is set —
+                        the mirror is :sync's process now
   config/
     EnvSettings.kt      NIP-11 limits etc. from env, via `env.intOr(...)` rather
                         than `env["..."]` — grep for both or you will conclude a
                         working setting is dead
     PubKeys.kt          npub-only parsing for every pubkey setting
-    RelayIdentity.kt    RELAY_NSEC — NIP-11 self, NIP-42, NIP-66 monitor
   server/               the serving side
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
-    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info
+    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
     Nip86Route.kt       the management API
     BanListFile.kt      NIP-86 ban state that outlives the container
-    ServingPressure.kt  EWMA of client read latency; the router yields to it
     ConnectionCountListener.kt  LOG_CONNECTIONS
-  router/               the mirror (see below)
-    SyncEngine.kt       wiring, live tails, health/stats lines
-    IngestPipeline.kt   bounded queue -> verify -> batchInsert, poison isolation
-    BisectingInsert.kt  the batch-bisecting write
-    StaticBackfill.kt   history catch-up for configured upstreams
-    DynamicSync.kt      relaySource streams: discover, fan out, sync each relay
-    DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
-    UpstreamPush.kt     dir = up: reconcile and publish what the upstream lacks
-    SyncBands.kt        covered created_at bands per (relay, filter)
-    config/             the declarative side
-      RouterConfig.kt     the stream model (streams, directions, sync modes)
-      RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
-      RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
-    discovery/          which relays to dial, and what to believe about them
-      RelayDiscovery.kt   pulling relay urls out of stored events
-      HostStrikes.kt      per-authority strikes and eviction
-      Unreachability.kt   which failures may be published as NIP-66 records
-    progress/           observability
-      StreamPhases.kt     per-stream progress reporting
-      PagingProgress.kt   time-axis progress for paged walks
   maintenance/          background jobs behind the server
     ExpirationSweeper.kt  NIP-40
-    ParseAudit.kt       what quartz could not parse, grouped to a JSON report
-    SchemaDeploy.kt     the every-boot Vespa schema deploy
     TrustReconcile.kt   the startup trust-projection repair
     FtsReindex.kt       REINDEX_FTS_ON_START
     OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
-  util/Format.kt        fmtDuration / fmtDay / fmtCount
+
+sync/src/main/kotlin/com/nosfabrica/vespa/relay/
+  maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON
+                              report — lives here because ingest is what feeds it
+  util/SyncFormat.kt          fmtDay / fmtCount / nowSeconds, internal again
+  router/               the mirror (see below)
+    SyncMain.kt           entrypoint; env, store, engine, block
+    SyncEngine.kt         wiring, live tails, health/stats lines
+    PressurePoller.kt     polls the relay's /pressure into ServingPressure
+    IngestPipeline.kt     bounded queue -> verify -> batchInsert, poison isolation
+    BisectingInsert.kt    the batch-bisecting write
+    StaticBackfill.kt     history catch-up for configured upstreams
+    DynamicSync.kt        relaySource streams: discover, fan out, sync each relay
+    DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
+    UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
+    SyncBands.kt          covered created_at bands per (relay, filter)
+    config/               the declarative side
+      RouterConfig.kt       the stream model (streams, directions, sync modes)
+      RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
+      RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
+    discovery/            which relays to dial, and what to believe about them
+      RelayDiscovery.kt     pulling relay urls out of stored events
+      HostStrikes.kt        per-authority strikes and eviction
+      Unreachability.kt     which failures may be published as NIP-66 records
+    progress/             observability
+      StreamPhases.kt       per-stream progress reporting
+      PagingProgress.kt     time-axis progress for paged walks
 
 relay/src/main/resources/
   index.html            the search UI's markup + styles; its behavior lives in web/
@@ -101,7 +135,14 @@ the orientation.
 `SyncEngine` syncs upstream events into the store. Operators know this
 subsystem as **the router** — `router.conf`, the `router:` log prefix and the
 `router` package keep that name. Its env vars are `SYNC_*`; the pre-rename
-`ROUTER_*` spellings still work and warn on boot. Two kinds of stream:
+`ROUTER_*` spellings still work and warn on boot.
+
+It is its own process (`SyncMain`, the compose `sync` service behind
+`--profile sync`), so a `router.conf` change is a `restart sync`, never a
+relay outage — and the sync bands make the re-run resume rather than
+re-download. The relay hard-errors if `SYNC_CONFIG*` is aimed at it: that
+setting used to start the mirror in-process, and accepting-but-ignoring it
+would be a mirror that quietly stopped mirroring. Two kinds of stream:
 
 - **static** — relays listed in `urls` in `router.conf`
 - **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
@@ -185,8 +226,10 @@ statement about someone else's server.
 - **JitPack pins are commit hashes, and Gradle resolves conflicts
   lexicographically.** Pinning quartz to `6d518adddb` while the store carried
   `79f198c729` silently resolved to the latter — `'7' > '6'`. Hence
-  `resolutionStrategy { force(libs.quartz) }` in `relay/build.gradle.kts`. Never
-  remove it, and check that a pin actually took effect.
+  `resolutionStrategy { force(libs.quartz) }` in EVERY module's build file —
+  each of `:common`, `:relay` and `:sync` resolves quartz independently, and a
+  new module must add its own force. Never remove one, and check that a pin
+  actually took effect.
 - **JitPack's build-status API lies.** It reported a build `ok` whose log ended
   in `exit code 1`. Only the presence of the artifact file proves anything.
 - **JitPack caches builds per group-spelling.** `com.github.NosFabrica` and
@@ -216,8 +259,18 @@ statement about someone else's server.
 
 ## Operations
 
-`docker-compose.yml` runs Vespa and the relay. Vespa holds ~50M events in this
-deployment.
+`docker-compose.yml` runs Vespa, the relay, and (behind `--profile sync`) the
+sync process — three containers, one store. Vespa holds ~50M events in this
+deployment. The JVM memory budget is per process: the sync container carries
+the large limit because the negentropy id snapshots live there; check the
+machine's total against all three limits when the profile is on.
+
+**Clients-first crosses the process boundary by HTTP.** The relay measures
+client read latency into `ServingPressure` and serves the mean on
+`GET /pressure`; the sync process polls it (`SYNC_PRESSURE_URL`) and yields
+ingest between batches past the threshold. Three failed polls reset the
+throttle — a relay that is down has no clients to protect — and both the feed
+being off and the feed being lost are said out loud in the sync log.
 
 **The trust reconcile runs in the background.** It used to be
 `runBlocking { reconcileTrustWithRetry(store) }` between opening the store and
@@ -229,7 +282,7 @@ until the reconcile lands. `TRUST_RECONCILE_ON_START=false` skips it entirely.
 If a start still looks slow, check that before blaming Vespa's transaction-log
 replay — that wrong attribution is already in this file's history.
 
-The relay **deploys the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
+Both processes **deploy the bundled Vespa schema on every boot** (`AUTO_DEPLOY`,
 default true), so the cluster always matches the code talking to it. A no-change
 deploy is a cheap no-op. This is not decoration: when the schema drifted, Vespa
 answered every write with `Status 400 ... Field 'name_parts' is not defined` and

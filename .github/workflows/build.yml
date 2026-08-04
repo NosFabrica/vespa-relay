@@ -40,3 +40,9 @@ jobs:
           cache-read-only: ${{ github.ref != 'refs/heads/main' }}
       - name: Build and test
         run: ./gradlew build
+      # The Docker image runs these two dist trees by exact path
+      # (/app/relay/bin/vespa-relay, /app/sync/bin/vespa-sync); `build` alone
+      # never assembles them, so a renamed applicationName would stay green
+      # here and die at `docker compose up`.
+      - name: Assemble both distributions
+        run: ./gradlew :relay:installDist :sync:installDist

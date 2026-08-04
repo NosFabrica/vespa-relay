@@ -1,5 +1,13 @@
+# Keep secrets and runtime state OUT of the build context. The Dockerfile is
+# COPY . . — anything missing here lands in the build-stage layer: .env holds
+# RELAY_NSEC, and .audit/ is the compose state mount, whose every cursor flush
+# would invalidate the COPY layer and force a cold Gradle rebuild.
 .git
 **/build
 .gradle
 .kotlin
 *.log
+.env
+.env.*
+.audit
+router.conf
