@@ -605,6 +605,47 @@ class RelayDiscoveryTest {
             assertEquals(4, found.size, "the limit bounds the scan across pages, it does not multiply by them")
         }
 
+    /**
+     * A relay list naming a hidden service is only worth keeping when
+     * something can dial one. Without a Tor transport the url is not merely
+     * useless: dialling it asks the local resolver for a name only Tor can
+     * answer, which both fails and tells the resolver who we sync with.
+     */
+    @Test
+    fun `an onion relay is kept only when a Tor transport exists`() {
+        val list =
+            event(
+                10002,
+                arrayOf("r", "wss://clearnet.example"),
+                arrayOf("r", "ws://vespa7iexampleonionaddressthatisnotreal7abcdefghijklmn.onion"),
+            )
+        val select = select(tag = "r")
+
+        assertEquals(
+            listOf("wss://clearnet.example/"),
+            RelayDiscovery.urlsIn(list, select).map { it.url },
+        )
+        assertEquals(
+            listOf(
+                "wss://clearnet.example/",
+                "ws://vespa7iexampleonionaddressthatisnotreal7abcdefghijklmn.onion/",
+            ),
+            RelayDiscovery.urlsIn(list, select, allowOnion = true).map { it.url },
+            "with Tor configured the onion url is an ordinary upstream",
+        )
+    }
+
+    /**
+     * Loopback is dropped whichever transport exists: `ws://localhost` in
+     * someone else's relay list names THEIR machine, and Tor changes nothing
+     * about that.
+     */
+    @Test
+    fun `a Tor transport does not make loopback dialable`() {
+        val list = event(10002, arrayOf("r", "ws://localhost:7777"))
+        assertTrue(RelayDiscovery.urlsIn(list, select(tag = "r"), allowOnion = true).isEmpty())
+    }
+
     @Test
     fun `an empty store discovers nothing`() =
         runBlocking {

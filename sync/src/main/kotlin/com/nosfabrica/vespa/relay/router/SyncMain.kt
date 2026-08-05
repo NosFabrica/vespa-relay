@@ -53,6 +53,9 @@ private const val DEPLOY_RETRY_SECONDS = 5L
  *   SYNC_CONFIG / SYNC_CONFIG_FILE   the streams to mirror (REQUIRED)
  *   SYNC_PRESSURE_URL  the relay's /pressure endpoint; unset ⇒ ingest never
  *                      yields to client reads, and the boot log says so
+ *   SYNC_TOR_SOCKS     a Tor SOCKS5 proxy (host:port); unset ⇒ no transport
+ *                      can reach a .onion, so discovery drops them and a
+ *                      configured one refuses to boot
  */
 fun main() {
     val env = System.getenv()
@@ -67,6 +70,21 @@ fun main() {
     val config =
         RouterConfigLoader.fromEnv(env)
             ?: error("SYNC_CONFIG or SYNC_CONFIG_FILE is required — this process only mirrors; without streams it has no job.")
+
+    // Read before anything slow, so a malformed value stops the process with
+    // a clear message rather than as upstreams that mysteriously serve
+    // nothing. A `.onion` in a stream's `urls` with no transport to reach it
+    // is that same failure typed by hand: the dial would time out every
+    // cycle, and a stream mirroring nothing looks exactly like one that is
+    // failing. Say which urls and what to set.
+    val torSettings = TorSettings.fromEnv(env)
+    val onion = onionUpstreams(config.streams)
+    if (torSettings == null && onion.isNotEmpty()) {
+        error(
+            "SYNC_TOR_SOCKS is unset, but ${onion.size} configured upstream(s) are hidden services " +
+                "(${onion.joinToString()}) — point it at a Tor SOCKS proxy (e.g. tor:9050) or remove them.",
+        )
+    }
 
     // Read before anything slow, so a malformed key stops the process with a
     // clear message rather than as upstreams that mysteriously serve nothing.
@@ -144,6 +162,7 @@ fun main() {
             signer = identity,
             wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
+            torSettings = torSettings,
         ).start()
 
     Runtime.getRuntime().addShutdownHook(

@@ -209,6 +209,13 @@ services:
       # connects, so this is comfort, not correctness.
       relay:
         condition: service_started
+      # Started, NOT healthy. A Tor that never comes up must not hold the
+      # clearnet mirror hostage — most of what this process syncs needs no
+      # circuit at all. The router probes the SOCKS port itself before each
+      # cycle that would dial a hidden service, says which way it answered,
+      # and skips those relays without publishing anything about them.
+      tor:
+        condition: service_started
     environment:
       # Heap is MaxRAMPercentage of mem_limit above; see the relay's note.
       # Per-process override first — this is the JVM the reconcile heap
@@ -291,12 +298,65 @@ services:
       PARSE_AUDIT_FILE: ${PARSE_AUDIT_FILE:-}
       PARSE_AUDIT_SAMPLES: ${PARSE_AUDIT_SAMPLES:-5}
       PARSE_AUDIT_INTERVAL_SECONDS: ${PARSE_AUDIT_INTERVAL_SECONDS:-60}
+      # Where .onion upstreams are dialled. Defaults to the `tor` service
+      # below, which the same profile starts — a .onion relay is unreachable
+      # without it, and the router refuses to boot on one it cannot dial
+      # rather than timing out on it every cycle. Set it empty for a
+      # clearnet-only deployment; discovery then drops .onion urls.
+      SYNC_TOR_SOCKS: ${SYNC_TOR_SOCKS-tor:9050}
+      # Send EVERY upstream through Tor, not only the hidden services. A
+      # different deployment, not a stronger default: a 20k-relay cycle over
+      # Tor is a fraction of the throughput and some large relays refuse exit
+      # traffic outright.
+      SYNC_TOR_ALL: ${SYNC_TOR_ALL:-}
+      # A circuit and a rendezvous, not a TCP handshake — the clearnet
+      # `connectionTimeout = 20` in router.conf is far too short to size this.
+      SYNC_TOR_CONNECT_TIMEOUT_SECONDS: ${SYNC_TOR_CONNECT_TIMEOUT_SECONDS:-}
+      # Tor builds a circuit per stream; this is not the 1024-socket clearnet
+      # budget, and it is deliberately its own dispatcher so onion dials
+      # cannot draw the fan-out's slots down.
+      SYNC_TOR_MAX_SOCKETS: ${SYNC_TOR_MAX_SOCKETS:-}
     volumes:
       # Mounts your local ./router.conf into the container. Copy the bundled
       # example and point SYNC_CONFIG_LOCAL at your copy.
       - ${SYNC_CONFIG_LOCAL:-${ROUTER_CONFIG_LOCAL:-./router.conf.example}}:/etc/vespa-relay/router.conf:ro
       # Sync cursors + the parse audit report, shared with the relay's mount.
       - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
+    restart: unless-stopped
+
+  # The Tor transport for .onion upstreams. Its own container, not a daemon
+  # inside the sync image: that image carries BOTH processes, so installing Tor
+  # in it would put it in the serving relay too, and `restart sync` — a
+  # router.conf edit, meant to be cheap — would drop every circuit and
+  # re-bootstrap. Here, the router reconnects and Tor never notices.
+  #
+  # No published port. An open SOCKS proxy on a public interface is an open
+  # proxy; this one exists for the sync container and the torrc's SocksPolicy
+  # says so a second time.
+  tor:
+    build: ./tor
+    image: vespa-relay-tor
+    container_name: vespa-tor
+    profiles: ["sync"]
+    # A client-only Tor is small — this is a ceiling against a runaway, not a
+    # reservation. Count it with the other three when checking the machine's
+    # total; it is the only one that rounds to nothing.
+    mem_limit: ${TOR_MEM_LIMIT:-256m}
+    healthcheck:
+      # The SOCKS port LISTENING is what the router probes before it dials any
+      # hidden service, so it is what the healthcheck should mean too. It does
+      # NOT prove Tor has bootstrapped — `docker compose logs tor` and its
+      # "Bootstrapped 100%" line is the check for that.
+      #
+      # netstat, not `nc -z`: both come from busybox in this image, but the -z
+      # scan flag is a build option busybox is not guaranteed to carry, and a
+      # healthcheck that fails on a missing flag reports a working Tor as
+      # broken. Reading the listening set needs no flag anyone can omit.
+      test: ["CMD-SHELL", "netstat -lnt | grep -q ':9050 '"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
     restart: unless-stopped
 
 volumes:

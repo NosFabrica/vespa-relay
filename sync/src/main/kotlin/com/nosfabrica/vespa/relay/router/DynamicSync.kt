@@ -57,6 +57,29 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * Is the cheap TCP pre-probe able to answer anything about this relay?
+ *
+ * Only when the dial it precedes takes the same route it does. [TcpProber]
+ * opens a plain socket to `InetSocketAddress(host, port)` — a DNS lookup and a
+ * direct connection from this box's own address — so for anything the router
+ * reaches THROUGH Tor it measures a path the transfer will never use.
+ *
+ * For a `.onion` that is a wrong answer: no resolver can answer the name, so
+ * the probe reports `UnknownHostException` for a service that is up, and
+ * [Unreachability] accepts that as proof and publishes it, signed, about
+ * someone else's server. Under `SYNC_TOR_ALL` it is worse than wrong — the
+ * probe would resolve and connect to every discovered relay directly, which is
+ * precisely the exposure that setting exists to remove.
+ *
+ * There is nothing to replace it with: reachability through Tor is exactly
+ * what the websocket dial measures, so the dial is the only verdict.
+ */
+internal fun shouldPreProbe(
+    url: NormalizedRelayUrl,
+    tor: TorTransport?,
+): Boolean = tor?.routes(url) != true
+
+/**
  * The dynamic streams: no configured relays — every refresh reads the relay
  * lists our own store holds ([RelayDiscovery]), syncs the stream's filter
  * against every relay they name, sleeps, repeats. The discovery is inside the
@@ -78,6 +101,9 @@ internal class DynamicSync(
     // Relays with a live static subscription, whose sockets must never be
     // dropped out from under their tail.
     private val pinnedUrls: Set<NormalizedRelayUrl>,
+    // The Tor transport, when configured: what makes discovered .onion urls
+    // dialable at all, and what decides whether they may be dialled today.
+    private val tor: TorTransport?,
     private val scope: CoroutineScope,
 ) {
     /**
@@ -117,7 +143,15 @@ internal class DynamicSync(
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
                 phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
-                val relays = RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay))
+                val relays =
+                    RelayDiscovery.discover(
+                        store,
+                        dynamic,
+                        skip = setOfNotNull(store.relay),
+                        // A relay list full of .onion urls is only worth
+                        // reading when something can dial them.
+                        allowOnion = tor != null,
+                    )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {
@@ -257,6 +291,12 @@ internal class DynamicSync(
         // failures tells an operator whether that is normal churn or a broken
         // cycle.
         val reasons = ConcurrentHashMap<String, Long>()
+
+        // Relays skipped because OUR proxy was not answering. Counted apart
+        // from `reasons`, which prints its top three under "unreachable:" — a
+        // failure of this router's own transport must never be filed as, or
+        // crowded out by, other people's relays being unreachable.
+        val torless = AtomicLong()
         System.err.println(
             "router: ${stream.name} syncing ${relays.size} relay(s) from [$sourceNames]" +
                 " against ${local.size} local id(s)" +
@@ -308,6 +348,25 @@ internal class DynamicSync(
                 coroutineScope {
                     relays.forEach { relay ->
                         launch {
+                            // Our own transport, before anything is said about
+                            // theirs. A Tor that is down, restarting or renamed
+                            // fails every dial it carries in a way that reads
+                            // exactly like the relay being gone — so ask our
+                            // SOCKS port instead, and skip rather than dial.
+                            //
+                            // Per relay, not once per cycle: the answer is
+                            // cached for [TorSettings.PROBE_TTL_MS], so this
+                            // costs one connect per 30s, and a Tor that comes
+                            // back is picked up inside the running cycle. Held
+                            // to the cycle boundary it would have cost a full
+                            // refresh interval — six hours, by default — to
+                            // notice a container that restarted in seconds.
+                            if (tor?.routes(relay.url) == true && !tor.socksAnswers()) {
+                                torless.incrementAndGet()
+                                skipped.incrementAndGet()
+                                done.incrementAndGet()
+                                return@launch
+                            }
                             // A TCP connect before the websocket handshake: a
                             // refused connection or unresolvable host answers
                             // in milliseconds, where each of ~20k corpses
@@ -390,6 +449,13 @@ internal class DynamicSync(
                 (if (elapsedMs >= 1_000 && downloaded.get() > 0) " (${downloaded.get() * 1000 / elapsedMs}/s)" else "") +
                 "; ${strikes.summary(relays.size)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
+                (
+                    if (torless.get() > 0) {
+                        "; ${torless.get()} skipped — tor SOCKS ${tor?.settings?.socksAddress} not answering, nothing published about them"
+                    } else {
+                        ""
+                    }
+                ) +
                 "; next in ${dynamic.refreshSeconds}s",
         )
         phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.refreshSeconds))
@@ -436,7 +502,17 @@ internal class DynamicSync(
             onFailure("${e.javaClass.simpleName}: ${e.message?.take(50) ?: ""}".trim(':', ' '))
             // UNREACHABLE costs the relay a signed NIP-66 record — only say it
             // when it is true. See [Unreachability].
-            if (Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
+            //
+            // Never for anything dialled through Tor. What arrives here from
+            // a SOCKS dial is the PROXY's report — "host unreachable" from a
+            // failed rendezvous, or an UnknownHostException from a Tor that is
+            // not there — and none of it separates their server being down
+            // from our circuit not being built. Under SYNC_TOR_ALL that covers
+            // every relay, which is the case this guard exists for: a proxy
+            // that stops answering would otherwise sign a false record about
+            // every clearnet relay in the fan-out. The verdict costs one
+            // skipped relay per cycle, which is the price of not guessing.
+            if (tor?.routes(url) != true && Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
         } finally {
             transferring.decrementAndGet()
             releaseSocket(url)
@@ -538,6 +614,16 @@ internal class DynamicSync(
         url: NormalizedRelayUrl,
     ) {
         val evicted = strikes.strike(url) ?: return
+        // Struck locally either way — a host that answers nothing should stop
+        // costing the cycle sockets — but nothing we reach THROUGH Tor is ever
+        // published on this evidence. The verdict is built from silence, and
+        // silence arriving through three relays and a rendezvous is at least as
+        // likely to be our circuit as their server. The test is the transport,
+        // not the address: under SYNC_TOR_ALL an ordinary wss:// relay is
+        // behind exactly the same circuit and the claim is exactly as weak.
+        // quartz's own observer still records what a failed connection said;
+        // this is the claim we synthesise, and we cannot support it.
+        if (tor?.routes(url) == true) return
         monitor?.observer?.record(
             url,
             reachable = false,
@@ -556,6 +642,7 @@ internal class DynamicSync(
      * will ever look at most of these relays.
      */
     private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean {
+        if (!shouldPreProbe(url, tor)) return true
         val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
         // Only claim what we can prove. [TcpProber.tcpReachable] answers with a
         // Boolean, so a refusal and a timeout arrive here as the same value — and
