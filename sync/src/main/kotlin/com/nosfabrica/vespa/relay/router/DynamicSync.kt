@@ -120,12 +120,22 @@ internal class DynamicSync(
                 val relays = RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay))
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
-                } else {
+                } else if (holdsIdSet(stream)) {
                     // Serialised with every other stream: this holds its id
                     // set for the whole fan-out, and two large sets resident
                     // at once is what pushed the heap to its ceiling.
                     phases.set(stream.name, StreamPhases.Phase.Queued(relays.size))
                     streamGate.withPermit { cycle(stream, dynamic, sourceNames, relays) }
+                    ran = true
+                } else {
+                    // No id set, so nothing to serialise for. Taking the permit
+                    // anyway is not free caution: measured, a 50-minute
+                    // assertions cycle that downloaded 46 events held the only
+                    // slot while two fetch streams sat on 15,458 discovered
+                    // relays each, for a heap cost neither of them can incur.
+                    // StaticBackfill has always gated this way — it takes the
+                    // permit only when it has reconcilers to snapshot for.
+                    cycle(stream, dynamic, sourceNames, relays)
                     ran = true
                 }
             } catch (e: CancellationException) {
@@ -145,6 +155,16 @@ internal class DynamicSync(
             }
         }
     }
+
+    /**
+     * Does a cycle of this stream build the one big local id set?
+     *
+     * That set — every id we hold for the stream's filter — is what the stream
+     * gate serialises, because two of them resident at once is what pushed the
+     * heap to its ceiling. A stream that never builds one has nothing to
+     * serialise for, and must not queue behind a stream that does.
+     */
+    private fun holdsIdSet(stream: SyncStream): Boolean = stream.sync != SyncMode.FETCH && stream.deleteMissing == DeleteMissing.OFF
 
     /** Sync every discovered relay, [RelayDiscoveryConfig.concurrency] of them at a time. */
     private suspend fun cycle(
@@ -174,18 +194,26 @@ internal class DynamicSync(
         val snapStartedMs = System.currentTimeMillis()
 
         val local: List<IdAndTime> =
-            if (stream.sync == SyncMode.FETCH) {
-                // A fetch-only stream never reads the id set, and building one
-                // is the most expensive thing this router does (24.8M ids and
-                // gigabytes held live, measured).
-                System.err.println("router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot")
-                emptyList()
-            } else if (stream.deleteMissing != DeleteMissing.OFF) {
-                // [DeleteMissingSync] reads its OWN ids per ask, and must:
-                // the shared snapshot spans every service on the stream, and
-                // handing it to a one-service reconcile would report every
-                // other service's records as retracted.
-                System.err.println("router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot")
+            if (!holdsIdSet(stream)) {
+                // The same predicate that decided whether to hold the stream
+                // gate decides whether to build the set it exists to protect.
+                // Split in two, they drift, and the drift is invisible: a
+                // stream queues behind a slot it never needed.
+                System.err.println(
+                    if (stream.sync == SyncMode.FETCH) {
+                        // A fetch-only stream never reads the id set, and
+                        // building one is the most expensive thing this router
+                        // does (24.8M ids and gigabytes held live, measured).
+                        "router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot"
+                    } else {
+                        // [DeleteMissingSync] reads its OWN ids per ask, and
+                        // must: the shared snapshot spans every service on the
+                        // stream, and handing it to a one-service reconcile
+                        // would report every other service's records as
+                        // retracted.
+                        "router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot"
+                    },
+                )
                 emptyList()
             } else {
                 val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
