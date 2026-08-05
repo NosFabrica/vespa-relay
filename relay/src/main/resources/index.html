@@ -68,6 +68,15 @@
   was written down under is not something a reader searching for `#nostr`
   should have to know.
 
+  Two things the union has to get right, both asserted by
+  RelayProtocolTest."the search page's hashtag union": tag values compare CASED
+  here (the engine schema says so), so the ask carries the spellings —
+  `nostr`, `Nostr`, `NOSTR` — or every note tagged in mixed case is invisible;
+  and `#I` must stay uppercase all the way through Quartz's REQ parse, or the
+  root-scope filter would quietly match the wrong events. `limit` is per FILTER,
+  so the `t` filter keeps the view's limit and the other three ride at a quarter
+  of it rather than multiplying the page by four.
+
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
   pushes a history entry, and Back walks them in order down to the hero. The

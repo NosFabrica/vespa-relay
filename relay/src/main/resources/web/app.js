@@ -8,7 +8,7 @@ import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
-import { parseQuery } from "./shared/query.js";
+import { parseQuery, buildFilters as filtersFor } from "./shared/query.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { mountSearchField } from "./searchfield.js";
@@ -235,103 +235,20 @@ function searchString(text) {
   return s;
 }
 
-// A NIP-22 comment (kind 1111) says what it is about in `I` — the thread's
-// ROOT scope — and in `i`, its immediate parent's. A top-level comment on a
-// topic carries both; a reply further down the thread carries `I` for the topic
-// and `e` for the comment above it, so it has no `i` naming the topic at all.
-// Hence one filter per tag: both in one filter would AND them and drop exactly
-// those replies, and separate filters is the only way NIP-01 spells "or".
-const COMMENT_KIND = 1111;
-const COMMENT_SCOPE_TAGS = ["#I", "#i"];
-
 /**
- * The NIP-73 external ids a hashtag is written as, for a comment's `i`/`I`.
+ * The filters this page's REQ carries, from what the person typed.
  *
- * NIP-73 spells the id `#topic`, lowercase — the `#` is part of the value, and
- * the `k`/`K` beside it is the bare `"#"`. The unprefixed form goes in the same
- * list because a tag filter is an OR and one extra string is cheaper than
- * missing every comment written by something that reused the `t` value here.
- */
-const hashtagIds = (tags) => tags.flatMap((t) => [`#${t}`, t]);
-
-/**
- * The typed string as the REQ this page sends — one or more NIP-01 filters,
- * ORed inside a single subscription.
- *
- * `from:npub…` and `to:npub…` leave the NIP-50 search entirely and become the
- * NIP-01 filter fields they are — `authors` and `#p`. Those are indexed on
- * every relay and compose with the ranking rather than competing with it,
- * whereas leaving them in `search` would have the full-text index hunting for
- * the literal string "from:npub1…" and a narrowed search would look like an
- * empty one.
- *
- * `#hashtag` leaves for the same reason, and becomes THREE questions, because
- * Nostr writes a topic down three ways and none of them is a superset of the
- * others:
- *
- *   - the event is about the topic          -> `t`             (NIP-01, NIP-24)
- *   - it is a comment ON the topic          -> `i`/`I`         (NIP-22, NIP-73)
- *   - it is LABELLED with the topic         -> `l`             (NIP-32)
- *
- * A note tagging `t` need carry no label; a self-labelled note need carry no
- * `t`; a comment on a topic carries neither. Any one filter answers a third of
- * the question — and which third depends on the convention the writer's client
- * follows, which is not something a reader searching for `#nostr` should have
- * to know. (Four filters for three questions: `i` and `I` in one filter would
- * AND, so the comment question needs one each.)
- *
- * The person filters ride on EVERY filter — they narrow the same search, and
- * leaving them off the comment half would make `from:alice #nostr` return
- * everybody's comments alongside alice's notes. So do the tab's kinds, except on
- * the comment filters, which name their own kind and are therefore GATED on it
- * instead: a tab that excludes 1111 sends the other filters alone rather than
- * two that can only come back empty. The label filter needs no such gate — a
- * label rides on an event of any kind, so under Notes it finds self-labelled
- * notes, and under Everything it also finds the kind 1985 that labelled one.
- *
- * `limit` is NIP-01's per-filter limit, and it is left that way: a hashtag
- * search can therefore come back with more rows than a word search. Trimming
- * the union back down would cut whichever half the relay happened to send
- * last, and that is the half the reader had no other way to reach.
- *
- * With a person or hashtag filter and no words left, `search` is omitted rather
- * than sent empty: a filter carrying only the sort/spam/observer extensions is
- * a text query for nothing, and what the reader asked for — everything this
- * person wrote, everything tagged this topic — is an ordinary NIP-01 read. The
- * trade is real and worth saying out loud: no `search` means no NIP-50, so the
- * trust ranking and the extensions do not apply to that one shape. Add a word
- * and they are back.
+ * The construction itself lives in shared/query.js — pure, and tested there
+ * against the whole of the box's language. What is HERE is the page state it
+ * needs: which tab is on, how many rows this view wants, and the NIP-50
+ * extension string the sort menu, the spam toggle and the "ranking as" lens
+ * build between them.
  *
  * Shared with exportText() so the filters a reader is shown are the filters
  * that were sent, byte for byte, rather than a second construction of them.
  */
 function buildFilters(text, limit) {
-  const q = parseQuery(text);
-  const base = {};
-  if (q.terms || !(q.authors.length || q.mentions.length || q.hashtags.length)) base.search = searchString(q.terms);
-  if (tab.kinds) base.kinds = tab.kinds;
-  if (q.authors.length) base.authors = q.authors;
-  if (q.mentions.length) base["#p"] = q.mentions;
-  if (!q.hashtags.length) return [{ ...base, limit }];
-
-  const filters = [
-    { ...base, "#t": q.hashtags, limit },
-    // The label, WITHOUT pinning `L` to the `#t` namespace: NIP-32 only
-    // RECOMMENDS the `L` tag, so requiring it would silently drop every event
-    // that labelled itself with `l` alone — and the mark that would say which
-    // vocabulary it meant is the tag's SECOND value, which NIP-01 does not
-    // index and no filter can reach. The value is what is askable, so the value
-    // is what is asked.
-    { ...base, "#l": q.hashtags, limit },
-  ];
-  // "Everything" (no kinds) and any tab listing 1111 — Notes — get the comment
-  // half; People, Articles and the rest do not, because kind 1111 is not theirs
-  // to show and the filter could only come back empty.
-  if (!tab.kinds || tab.kinds.includes(COMMENT_KIND)) {
-    const ids = hashtagIds(q.hashtags);
-    for (const tag of COMMENT_SCOPE_TAGS) filters.push({ ...base, kinds: [COMMENT_KIND], [tag]: ids, limit });
-  }
-  return filters;
+  return filtersFor(text, { kinds: tab.kinds, limit, searchString });
 }
 
 /**
@@ -339,11 +256,15 @@ function buildFilters(text, limit) {
  *
  * A hashtag search is four filters in one REQ, and one event can answer several
  * of them: a top-level comment on the topic carries it in both `i` and `I`, and
- * a note that tags `t` and also labels itself answers two. NIP-01 does not
- * say whether a relay dedupes across the filters of one subscription, so the
- * page cannot assume it does; the same note rendering twice is a visible bug,
- * and this is cheaper than finding out per relay. Arrival order is kept: it is
- * the relay's ranking, and the export claims the list is in it.
+ * a note that tags `t` and also labels itself answers two.
+ *
+ * THIS relay's store already dedupes across the filters of a subscription
+ * (NostrSemanticsStore.recallOrdered — `distinctBy(idOf)` whenever there is
+ * more than one query), so this is belt and braces rather than the fix for a
+ * known duplicate. It stays because NIP-01 does not require that of a relay and
+ * the same note rendering twice is a visible bug; it is a Set and one pass over
+ * a list the page is about to render anyway. Arrival order is kept — see
+ * exportText on what that order actually is once there is more than one filter.
  */
 function uniqueById(events) {
   const seen = new Set();
@@ -561,6 +482,11 @@ function exportText() {
   const typed = $q.value.trim();
   const q = parseQuery(typed);
   const full = buildFilters(typed, FULL_LIMIT);
+  // Several filters AND a search string: the shape whose order is a sequence of
+  // runs rather than one ranking (see the caveat at the end). With no search
+  // string every filter is plain recall, and the store merges those and sorts
+  // the union newest-first — one order, and a true one.
+  const multiRun = full.length > 1 && full.some((f) => f.search);
   const people = (keys) => keys.map((k) => `${npub(k)}${nameOf(k) ? `  (${nameOf(k)})` : ""}`).join(", ");
   L.push("QUERY AS CONFIGURED");
   L.push(`  typed         ${JSON.stringify(typed)}`);
@@ -580,7 +506,7 @@ function exportText() {
   L.push(`  include spam  ${$spam.checked ? "yes — unranked authors included" : "no — trust floor applied"}`);
   L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
   L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
-  L.push(`  search string ${full[0].search == null ? "(none — a person or hashtag filter with no words is a plain NIP-01 read)" : JSON.stringify(full[0].search)}`);
+  L.push(`  search string ${full[0].search == null ? "(none — no words and no sort/spam/lens to carry, so this is a plain NIP-01 read)" : JSON.stringify(full[0].search)}`);
   // Every filter of the REQ, one per line: they are ORed in one subscription,
   // and a reader shown only the first would think the comments came from
   // nowhere. The label stays singular for the ordinary one-filter search.
@@ -611,6 +537,19 @@ function exportText() {
   L.push("  alone. A result placed above another whose author scores higher, or a");
   L.push("  low-scoring author near the top, is worth challenging.");
   L.push("  The events are verbatim: nothing has been trimmed or annotated.");
+  // The union's honest caveat. A ranked multi-filter REQ comes back as each
+  // filter's ranked run, one after another, not as one ranking of the union —
+  // the store concatenates them (NostrSemanticsStore.recallOrdered: only the
+  // all-plain case is merged and re-sorted globally). Without this line the
+  // question above invites a reader to challenge a seam that is not a ranking
+  // mistake, and to trust an order across filters that was never claimed.
+  if (multiRun) {
+    L.push("");
+    L.push(`  CAVEAT: this search sent ${full.length} filters in one REQ, and a ranked read`);
+    L.push("  returns each filter's ranked run end to end — not one ranking of the");
+    L.push("  union. Compare positions WITHIN a run; a jump back up the trust scale");
+    L.push("  is where the next filter's results begin, and is not a misranking.");
+  }
   return L.join("\n");
 }
 
