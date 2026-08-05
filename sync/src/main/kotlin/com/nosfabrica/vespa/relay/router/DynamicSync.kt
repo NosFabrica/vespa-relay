@@ -539,7 +539,7 @@ internal class DynamicSync(
             var seenMin: Long? = null
             var seenMax: Long? = null
             val syncStartedAt = System.currentTimeMillis() / 1000
-            val onEvent: (Event) -> Unit = { event ->
+            val onEvent: suspend (Event) -> Unit = { event ->
                 if (stream.filter.match(event)) {
                     if (SyncBands.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
