@@ -46,12 +46,17 @@ import java.nio.file.Paths
  * hour after boot is picked up by the next client instead of waiting for a
  * relay restart nobody knew to perform.
  *
- * "On demand" is once per websocket connect, and it costs one `stat`: the file
- * is only re-read when its timestamp moves. `File.lastModified()` rather than
- * `Files.readString` in a `runCatching` for exactly that reason — a missing
- * path answers 0 instead of building a `NoSuchFileException` with a stack
- * trace, and MISSING IS THE DEFAULT: compose sets the path on every relay,
- * including the ones with no hidden service at all.
+ * "On demand" is bounded: at most one `stat` per [LOOK_INTERVAL_MS], however
+ * many connections and http responses ask. Both numbers are measured on this
+ * box, and both drove a decision — `File.lastModified()` costs 1.1µs on a
+ * missing path and 1.8µs on one that is there, while the `Files.readString` in
+ * a `runCatching` it replaced costs **37µs**, because a missing path there
+ * means building a `NoSuchFileException` with a stack trace. MISSING IS THE
+ * DEFAULT: compose sets the path on every relay, including every one with no
+ * hidden service. The interval is what keeps the cost independent of traffic
+ * — the `Onion-Location` header put this on every response, not just every
+ * connect — and one second of staleness is invisible against an address that
+ * appears once in a deployment's life.
  *
  * Watching the timestamp rather than reading once is also what makes a
  * ROTATED address land. Delete the key volume and Tor mints a new .onion; a
@@ -63,6 +68,14 @@ class RelayAddresses(
     private val declared: Set<NormalizedRelayUrl> = emptySet(),
     private val hostnameFile: Path? = null,
     private val announce: (String) -> Unit = { System.err.println(it) },
+    // Whether the clearnet endpoint may NAME the hidden service. Separate from
+    // knowing it: a relay always accepts AUTH for an address it answers at,
+    // while telling the clearnet about it is a public act — an operator running
+    // an unlisted onion should not have it published by a default.
+    private val advertise: Boolean = true,
+    // Injected so the tests can move it: they assert what happens ACROSS
+    // looks, which is otherwise a sleep in a unit test.
+    private val nanoTime: () -> Long = System::nanoTime,
 ) {
     @Volatile
     private var addresses: Set<NormalizedRelayUrl> = declared
@@ -83,6 +96,20 @@ class RelayAddresses(
     /** The published file's mtime, or 0 while there is no file; -1 before the first look. */
     @Volatile
     private var seenStamp: Long = -1L
+
+    /**
+     * When the file may be looked at again — seeded from the clock so the
+     * FIRST look is always due, and compared as a difference because
+     * `System.nanoTime()` has no fixed origin, may be negative, and wraps.
+     *
+     * Seeded rather than sentinelled: this was `Long.MIN_VALUE`, meaning "due
+     * since forever", and `now - Long.MIN_VALUE` overflows to a negative number
+     * for any positive reading — so the first look was always SKIPPED and an
+     * address Tor had already published stayed invisible until the second ask.
+     * Two tests caught it; the arithmetic reads fine.
+     */
+    @Volatile
+    private var nextLook: Long = nanoTime()
 
     init {
         declared.forEach(::announceAddress)
@@ -105,12 +132,16 @@ class RelayAddresses(
      * Null when we have no address to name.
      */
     fun onionLocation(): String? {
+        if (!advertise) return null
         refresh()
         return advertised
     }
 
     private fun refresh() {
         val file = hostnameFile ?: return
+        val now = nanoTime()
+        if (now - nextLook < 0) return
+        nextLook = now + LOOK_INTERVAL_MS * 1_000_000
         val stamp = file.toFile().lastModified()
         if (stamp != seenStamp) adopt(file, stamp)
     }
@@ -168,6 +199,13 @@ class RelayAddresses(
 }
 
 /**
+ * How long a look at the published hostname file is good for. One second: long
+ * enough that the cost does not scale with traffic, short enough that nobody
+ * waiting for their hidden service to come up notices.
+ */
+private const val LOOK_INTERVAL_MS = 1_000L
+
+/**
  * `RELAY_ONION_URL` — a second address this relay answers at, declared by hand;
  * for a hidden service run outside this repo's compose file, where nothing
  * publishes a hostname file. Malformed is fatal, like `RELAY_URL`: an address
@@ -177,6 +215,13 @@ class RelayAddresses(
  * `RELAY_ONION_HOSTNAME_FILE` — where the hidden service's container writes its
  * hostname (`/var/lib/onion/hostname` under compose). Absent is normal; see
  * [RelayAddresses].
+ *
+ * `RELAY_ONION_ADVERTISE` — whether the clearnet endpoint names the hidden
+ * service in `Onion-Location`. Default true, which is the point of running one.
+ * `false` for an onion that is deliberately unlisted: the relay still
+ * authenticates clients that dial it, it just does not hand the address to
+ * everyone who connects the ordinary way — and clients cache what they are
+ * told for a day, so this is a decision worth being able to make once.
  */
 fun relayAddressesFromEnv(env: Map<String, String>): RelayAddresses {
     val declared =
@@ -196,5 +241,9 @@ fun relayAddressesFromEnv(env: Map<String, String>): RelayAddresses {
             ?.takeIf { it.isNotEmpty() }
             ?.let { Paths.get(it) }
 
-    return RelayAddresses(declared, hostnameFile)
+    return RelayAddresses(
+        declared = declared,
+        hostnameFile = hostnameFile,
+        advertise = env["RELAY_ONION_ADVERTISE"]?.trim()?.toBooleanStrictOrNull() ?: true,
+    )
 }

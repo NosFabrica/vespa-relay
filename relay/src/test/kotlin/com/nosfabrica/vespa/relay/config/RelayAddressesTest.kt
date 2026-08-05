@@ -40,6 +40,23 @@ import kotlin.test.assertTrue
 class RelayAddressesTest {
     private val hostname = "${"q".repeat(56)}.onion"
 
+    /**
+     * The file is looked at once a second at most, so every assertion about
+     * what a LATER look sees has to move the clock rather than sleep through
+     * it. Starts at a negative reading on purpose: `System.nanoTime()` has no
+     * origin, and code that only works on positive readings is code that works
+     * on this machine.
+     */
+    private class MovableClock(
+        var nanos: Long = -5_000_000_000L,
+    ) : () -> Long {
+        override fun invoke() = nanos
+
+        fun advanceASecond() {
+            nanos += 1_100_000_000L
+        }
+    }
+
     @Test
     fun `no configuration means no second address`() {
         assertEquals(emptySet(), relayAddressesFromEnv(emptyMap()).alternates())
@@ -68,12 +85,14 @@ class RelayAddressesTest {
         val dir = createTempDirectory("onion")
         val file = dir.resolve("hostname")
         val said = mutableListOf<String>()
-        val addresses = RelayAddresses(hostnameFile = file, announce = { said += it })
+        val clock = MovableClock()
+        val addresses = RelayAddresses(hostnameFile = file, announce = { said += it }, nanoTime = clock)
 
         assertEquals(emptySet(), addresses.alternates(), "nothing to report before Tor writes the file")
         assertTrue(said.isEmpty(), "a missing file is the normal state of a relay with no hidden service: $said")
 
         file.writeText("$hostname\n")
+        clock.advanceASecond()
 
         assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
         assertEquals(1, said.size, "the address is announced exactly once, when it appears: $said")
@@ -95,13 +114,15 @@ class RelayAddressesTest {
     fun `a rotated address replaces the one it replaced`() {
         val dir = createTempDirectory("onion")
         val file = dir.resolve("hostname")
-        val addresses = RelayAddresses(hostnameFile = file, announce = {})
+        val clock = MovableClock()
+        val addresses = RelayAddresses(hostnameFile = file, announce = {}, nanoTime = clock)
 
         file.writeText(hostname)
         assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
 
         val rotated = "${"r".repeat(56)}.onion"
         file.writeText(rotated)
+        clock.advanceASecond()
         // Explicit, so the assertion does not depend on the filesystem's
         // timestamp resolution: two writes in the same second can share an
         // mtime, and the re-read is keyed on the mtime moving.
@@ -115,12 +136,14 @@ class RelayAddressesTest {
     fun `a hostname file that disappears leaves the address in place`() {
         val dir = createTempDirectory("onion")
         val file = dir.resolve("hostname")
-        val addresses = RelayAddresses(hostnameFile = file, announce = {})
+        val clock = MovableClock()
+        val addresses = RelayAddresses(hostnameFile = file, announce = {}, nanoTime = clock)
 
         file.writeText(hostname)
         assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
 
         file.deleteExisting()
+        clock.advanceASecond()
         assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
     }
 
@@ -129,14 +152,57 @@ class RelayAddressesTest {
         val dir = createTempDirectory("onion")
         val file = dir.resolve("hostname")
         val said = mutableListOf<String>()
-        val addresses = RelayAddresses(hostnameFile = file, announce = { said += it })
+        val clock = MovableClock()
+        val addresses = RelayAddresses(hostnameFile = file, announce = { said += it }, nanoTime = clock)
 
         file.writeText("Nov 05 12:00:00 [warn] Something went wrong")
 
         assertEquals(emptySet(), addresses.alternates())
         assertEquals(1, said.size, "said once…: $said")
+        clock.advanceASecond()
         addresses.alternates()
         assertEquals(1, said.size, "…and not again for the same content: $said")
+    }
+
+    /**
+     * The first ask always looks, whatever the clock happens to read. The
+     * rate limit was seeded with `Long.MIN_VALUE` — "due since forever" — and
+     * `now - Long.MIN_VALUE` overflows negative for any positive reading, so
+     * the first look was skipped and an already-published address stayed
+     * invisible until something asked a second time.
+     */
+    @Test
+    fun `an address published before the relay started is seen on the first ask`() {
+        val dir = createTempDirectory("onion")
+        val file = dir.resolve("hostname")
+        file.writeText(hostname)
+
+        listOf(-5_000_000_000L, 0L, 4_000_000_000_000L).forEach { reading ->
+            val addresses = RelayAddresses(hostnameFile = file, announce = {}, nanoTime = MovableClock(reading))
+            assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet(), "clock at $reading")
+        }
+    }
+
+    /**
+     * The look is rate-limited, so the cost of asking does not scale with
+     * traffic — the header put this question on every http response, not just
+     * every websocket connect.
+     */
+    @Test
+    fun `the file is not re-read on every ask`() {
+        val dir = createTempDirectory("onion")
+        val file = dir.resolve("hostname")
+        val clock = MovableClock()
+        val addresses = RelayAddresses(hostnameFile = file, announce = {}, nanoTime = clock)
+
+        assertEquals(emptySet(), addresses.alternates(), "the first look is eager")
+
+        file.writeText(hostname)
+        repeat(100) { addresses.alternates() }
+        assertEquals(emptySet(), addresses.alternates(), "a hundred asks inside one interval are one look")
+
+        clock.advanceASecond()
+        assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
     }
 
     /**
@@ -160,6 +226,23 @@ class RelayAddressesTest {
     fun `a second clearnet address is accepted for auth but never advertised`() {
         val addresses = relayAddressesFromEnv(mapOf("RELAY_ONION_URL" to "wss://relay2.example.com"))
         assertEquals(setOf("wss://relay2.example.com/"), addresses.alternates().map { it.url }.toSet())
+        assertNull(addresses.onionLocation())
+    }
+
+    /**
+     * Knowing an address and publishing it are different decisions. An
+     * unlisted onion still has to authenticate the clients that dial it —
+     * turning off the advertisement must not turn off the AUTH that made the
+     * endpoint worth having.
+     */
+    @Test
+    fun `an unlisted onion still authenticates, it is just not named`() {
+        val addresses =
+            relayAddressesFromEnv(
+                mapOf("RELAY_ONION_URL" to hostname, "RELAY_ONION_ADVERTISE" to "false"),
+            )
+
+        assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
         assertNull(addresses.onionLocation())
     }
 

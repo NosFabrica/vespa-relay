@@ -56,12 +56,21 @@ class RelayOnionLocationTest {
 
     private fun <T> serving(
         advertise: () -> String?,
+        landingPage: String? = null,
         block: (port: Int) -> T,
     ): T {
         val relay = NostrRelayServer(NostrSemanticsStore(InMemoryEventIndex(), relay = clearnet), clearnet)
         // Port 0: the OS picks a free one, so tests never collide with a
         // developer's running relay.
-        val server = serveRelay(relay = relay, port = 0, nip11 = Nip11Info(), onionLocation = advertise, wait = false)
+        val server =
+            serveRelay(
+                relay = relay,
+                port = 0,
+                nip11 = Nip11Info(),
+                landingPage = landingPage,
+                onionLocation = advertise,
+                wait = false,
+            )
         return try {
             block(
                 runBlocking {
@@ -86,6 +95,7 @@ class RelayOnionLocationTest {
         port: Int,
         host: String,
         upgrade: Boolean,
+        acceptGzip: Boolean = false,
     ): List<String> =
         Socket().use { socket ->
             socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
@@ -100,7 +110,11 @@ class RelayOnionLocationTest {
                         append("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n")
                         append("Sec-WebSocket-Version: 13\r\n")
                     } else {
-                        append("Accept: application/nostr+json\r\n")
+                        if (acceptGzip) {
+                            append("Accept-Encoding: gzip\r\n")
+                        } else {
+                            append("Accept: application/nostr+json\r\n")
+                        }
                         append("Connection: close\r\n")
                     }
                     append("\r\n")
@@ -150,6 +164,37 @@ class RelayOnionLocationTest {
         serving({ onion }) { port ->
             val headers = headersOf(port, "${"n".repeat(56)}.onion", upgrade = false)
             assertNull(headers.header("Onion-Location"))
+        }
+    }
+
+    /**
+     * The same request, with the port spelled out. `Host: …onion:80` is what a
+     * client that was configured with the port sends, and the skip above has to
+     * see through it — a header naming the host back to itself is exactly the
+     * self-referential cache entry it exists to avoid.
+     */
+    @Test
+    fun `a request on the onion with an explicit port is not told about it either`() {
+        serving({ onion }) { port ->
+            val headers = headersOf(port, "${"n".repeat(56)}.onion:80", upgrade = false)
+            assertNull(headers.header("Onion-Location"))
+        }
+    }
+
+    /**
+     * The compressed page, which is the one Tor Browser loads and turns into
+     * the ".onion available" button. Compression replaces the body; a header
+     * set before the handler ran has to survive that, and "has to" is not
+     * evidence.
+     */
+    @Test
+    fun `a gzipped page still carries the header`() {
+        // Over the plugin's 1KB floor, or there is nothing to compress.
+        val page = "<html><body>" + "search ".repeat(500) + "</body></html>"
+        serving({ onion }, landingPage = page) { port ->
+            val headers = headersOf(port, "localhost:$port", upgrade = false, acceptGzip = true)
+            assertEquals("gzip", headers.header("Content-Encoding"), "the body is compressed: $headers")
+            assertEquals(onion, headers.header("Onion-Location"))
         }
     }
 

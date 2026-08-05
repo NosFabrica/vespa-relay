@@ -98,8 +98,10 @@ echo "HiddenServicePort 80 $(as_target "$target"):$TARGET_PORT" >> "$GENERATED"
 #
 # Comments and blank lines do not count as content: the example file is mounted
 # by DEFAULT, and "appended 40 lines" on a deployment that changed nothing is a
-# log line that trains operators to ignore this one.
-if [ -s "$EXTRA" ] && grep -qv '^[[:space:]]*\(#.*\)\?$' "$EXTRA"; then
+# log line that trains operators to ignore this one. The test is "a line whose
+# first non-blank character is not #" — plain POSIX BRE, because `\?` and
+# friends are GNU extensions and the grep in this image is busybox's.
+if [ -s "$EXTRA" ] && grep -q '^[[:space:]]*[^[:space:]#]' "$EXTRA"; then
     printf '\n# --- from %s ---\n' "$EXTRA" >> "$GENERATED"
     cat "$EXTRA" >> "$GENERATED"
     echo "onion: appended $(wc -l < "$EXTRA") line(s) of extra config from $EXTRA"

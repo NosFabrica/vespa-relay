@@ -128,6 +128,12 @@ services:
       # outside this compose file, where no container publishes a hostname.
       RELAY_ONION_HOSTNAME_FILE: ${RELAY_ONION_HOSTNAME_FILE-/var/lib/onion/hostname}
       RELAY_ONION_URL: ${RELAY_ONION_URL:-}
+      # The clearnet endpoint NAMES the hidden service in `Onion-Location` on
+      # every response, so Tor-capable clients move themselves inside the
+      # network and Tor Browser offers the ".onion available" button. `false`
+      # for an onion meant to stay unlisted — the relay still authenticates
+      # whoever dials it, it just stops handing the address out.
+      RELAY_ONION_ADVERTISE: ${RELAY_ONION_ADVERTISE:-}
       # How the relay presents itself in its NIP-11 document. All optional —
       # empty values are omitted from the doc. See .env.example.
       RELAY_NAME: ${RELAY_NAME:-vespa-relay}

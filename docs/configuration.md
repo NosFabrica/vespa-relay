@@ -98,13 +98,14 @@ so there is no `wss://` to offer.
 
 | var | meaning | default |
 |---|---|---|
-| `RELAY_ONION_HOSTNAME_FILE` | file the hidden service's container writes its hostname into. The relay reads it to accept NIP-42 from Tor clients, who sign the address they dialled and have never heard of `RELAY_URL` — without it those clients still read and publish, but every AUTH fails and their search silently loses its web-of-trust lens. Read on demand, not once at boot, so an address minted after the relay started is picked up by the next connection; absent is normal and says nothing | compose: `/var/lib/onion/hostname`; bare: unset |
+| `RELAY_ONION_HOSTNAME_FILE` | file the hidden service's container writes its hostname into. The relay reads it to accept NIP-42 from Tor clients, who sign the address they dialled and have never heard of `RELAY_URL` — without it those clients still read and publish, but every AUTH fails and their search silently loses its web-of-trust lens. Looked at on demand rather than once at boot, so an address minted after the relay started is picked up within a second of the next connection; absent is normal and says nothing | compose: `/var/lib/onion/hostname`; bare: unset |
+| `RELAY_ONION_ADVERTISE` | whether the clearnet endpoint names the hidden service in `Onion-Location` (below). `false` keeps an onion unlisted — the relay still authenticates clients that dial it, it just stops handing out the address, which clients cache for a day | `true` |
 | `RELAY_ONION_URL` | the same thing declared by hand, for a hidden service run outside this compose file. Malformed ⇒ startup fails, rather than costing Tor clients their ranking lens for a reason nothing reports | unset |
 
 Both may be set; the relay answers to `RELAY_URL` and to every address either
-one names. The relay re-reads the published file when its timestamp moves, so
-an address minted after boot — or rotated by a new key — lands on the next
-connection rather than at the next restart.
+one names. The published file is re-read when its timestamp moves, at most once
+a second however much traffic asks, so an address minted after boot — or
+rotated by a new key — lands within a second rather than at the next restart.
 
 ### Telling clients the address exists
 
@@ -121,7 +122,9 @@ instead, so the connection never crosses an exit node. The value is an `http`
 url rather than `ws` because both parse it with an http url parser; a `ws://`
 value parses to null in okhttp and the advertisement would vanish silently.
 
-A request that already arrived over the hidden service is not told about it.
+A request that already arrived over the hidden service is not told about it,
+and `RELAY_ONION_ADVERTISE=false` turns the whole advertisement off for an
+onion meant to stay unlisted.
 
 Clients that move a connection this way keep signing NIP-42 with the address
 they were configured with — Amethyst rewrites the host at the transport layer,
