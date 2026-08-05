@@ -9,7 +9,7 @@
 // is asserted here rather than any particular arrangement of the DOM.
 import assert from "assert";
 
-const { tokenize, parseQuery, mentionAt, isKey, tagValues, buildFilters } =
+const { tokenize, parseQuery, mentionAt, isKey, tagValues, buildFilters, drawable } =
   await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 
 // Real npubs, minted by the page's own encoder from these hex keys.
@@ -124,6 +124,44 @@ assert.strictEqual(parseQuery("(#nostr)").terms, "", "…and the brackets go wit
 
 assert.deepStrictEqual(parseQuery("#🔥 fire").hashtags, ["🔥"], "an emoji hashtag is a hashtag");
 assert.strictEqual(parseQuery("🔥 alone").terms, "🔥 alone", "…while a bare emoji stays a term");
+
+// ---- drawable: which tokens the FIELD may pill ----------------------------
+//
+// A hashtag is a token one character in — `#n` already is one — so a field that
+// pilled every tag would re-render itself on every keystroke of one, fighting
+// the browser over the caret, the undo stack and IME composition. An npub only
+// crosses that line once, at its 63rd character. So the tag under the caret
+// stays text and pills when the caret leaves, which is the same rule the people
+// picker follows: a token being built is not yet a token.
+
+const drawn = (t, at) => drawable(t, at).map((s) => (s.type === "text" ? s.text : `[${s.raw}]`)).join("");
+
+assert.strictEqual(drawn("cats #nostr", 11), "cats #nostr", "the tag under the caret is still being typed");
+assert.strictEqual(drawn("cats #nostr", 8), "cats #nostr", "…anywhere inside it");
+assert.strictEqual(drawn("cats #nostr", 6), "cats #nostr", "…including just after the #");
+assert.strictEqual(drawn("cats #nostr", 5), "cats [#nostr]", "the caret before the # is not inside it");
+assert.strictEqual(drawn("cats #nostr", 0), "cats [#nostr]", "…nor is one further back");
+assert.strictEqual(drawn("cats #nostr", null), "cats [#nostr]", "a paste, a restore or a blur draws them all");
+assert.strictEqual(drawn("#a #b", 2), "#a [#b]", "only the tag under the caret is held back");
+assert.strictEqual(drawn("#a #b", 5), "[#a] #b", "…so moving to the second one pills the first");
+assert.strictEqual(drawn("#a #b", 3), "[#a] [#b]", "a caret between them is inside neither");
+
+// A key is NEVER held back: an npub is unreadable, so hiding the chip while the
+// caret sits in it would show 63 characters of bech32 exactly when the field is
+// narrowest. It also cannot be mid-typed into existence one character at a time.
+assert.strictEqual(drawable(`from:${A}`, 5).filter((s) => s.type === "key").length, 1, "a person chip draws under the caret too");
+
+// THE caret invariant, and the reason any of this is safe: whatever is drawn,
+// the raw text of the segments IS the value, character for character. Every
+// offset this feature passes around — the caret, a splice, a drop point — is an
+// index into that string, so a segmentation that lost or added a character
+// would move the caret by exactly that much.
+for (const typed of ["cats #nostr dogs", `#a from:${A} #b!`, "#covid-19, x", "(#nostr)", "#🔥 fire", `hi from:${A}`]) {
+  for (const at of [null, 0, 1, 3, 7, typed.length]) {
+    const back = drawable(typed, at).map((s) => (s.type === "text" ? s.text : s.raw)).join("");
+    assert.strictEqual(back, typed, `the segments put ${JSON.stringify(typed)} back verbatim at caret ${at}`);
+  }
+}
 
 // ---- tagValues: the ask has to cover what was written ---------------------
 //

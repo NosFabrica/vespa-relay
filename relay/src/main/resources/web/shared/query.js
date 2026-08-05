@@ -74,21 +74,6 @@ const ORPHAN = new RegExp(`(^|\\s)[^${WORD}${EMOJI}#"-]+(?=\\s|$)`, "gu");
 const tidyTerms = (s) => s.replace(ORPHAN, "$1").replace(/\s+/g, " ").trim();
 
 /**
- * Lift every hashtag out of `text` into `into`, and give back what is left.
- *
- * `#` dropped and lowercased, which is the value a `t` tag carries — NIP-24
- * says a `t` tag SHOULD be lowercase. SHOULD, not MUST, is why [tagValues]
- * exists: the ask has to cover the tags that ignored it.
- */
-function liftHashtags(text, into) {
-  return String(text).replace(HASHTAG, (_m, lead, tag) => {
-    const t = tag.replace(/-+$/, "").toLowerCase();
-    if (t && !into.includes(t)) into.push(t);
-    return lead;
-  });
-}
-
-/**
  * Every spelling of `tag` worth asking a tag filter for, best first.
  *
  * The store matches tag values CASED — its schema says so in as many words:
@@ -122,18 +107,46 @@ export function tagValues(tag) {
  */
 export const isKey = (v) => WHOLE.test(String(v ?? "").trim()) && !!pubkeyParam(v);
 
+/** The hashtags inside one stretch of plain text, as segments in place. */
+function tagSegments(chunk, out) {
+  let at = 0;
+  HASHTAG.lastIndex = 0;
+  for (let m; (m = HASHTAG.exec(chunk)); ) {
+    const start = m.index + m[1].length;
+    const raw = chunk.slice(start, HASHTAG.lastIndex);
+    const tag = m[2].replace(/-+$/, "").toLowerCase();
+    // A tag that is nothing but hyphens normalizes to empty and is not a tag.
+    if (!tag) continue;
+    if (start > at) out.push({ type: "text", text: chunk.slice(at, start) });
+    // `raw` is what the field draws over and measures; the trailing hyphen the
+    // NORMALIZED tag drops is part of the token all the same, or the pill would
+    // cover fewer characters than it stands for and the caret would shift.
+    out.push({ type: "tag", raw, tag });
+    at = HASHTAG.lastIndex;
+  }
+  if (at < chunk.length) out.push({ type: "text", text: chunk.slice(at) });
+}
+
 /**
- * The typed string as a list of segments: plain text, and the keys inside it.
+ * The typed string as a list of segments: plain text, and the tokens in it.
  *
  *   { type: "text", text }
  *   { type: "key", raw, field: "from" | "to" | null, pubkey }
+ *   { type: "tag", raw, tag }
  *
  * `raw` is the token exactly as typed, so a renderer can put it back verbatim
- * and a caret measured in characters stays measured in characters.
+ * and a caret measured in characters stays measured in characters. For a tag,
+ * `tag` is the normalized value the filters ask for — `#Nostr` draws as typed
+ * and is asked for as `nostr`, which is exactly the split a `from:npub1…` chip
+ * already makes between what it shows and what it means.
  *
  * An npub whose CHECKSUM fails stays text. A corrupted identifier must not
  * become a chip naming a plausible stranger — the same rule nip19.js's decoder
  * states for entity pages, applied one layer up.
+ *
+ * Hashtags are only ever found in the TEXT between the person tokens: a `#`
+ * cannot occur inside an npub — bech32 has no such character — so scanning the
+ * keys for one would be looking where it cannot be.
  */
 export function tokenize(text) {
   const s = String(text ?? "");
@@ -144,7 +157,7 @@ export function tokenize(text) {
     const start = m.index + m[1].length;
     const pubkey = pubkeyParam(m[3]);
     if (!pubkey) continue;
-    if (start > at) out.push({ type: "text", text: s.slice(at, start) });
+    if (start > at) tagSegments(s.slice(at, start), out);
     out.push({
       type: "key",
       raw: s.slice(start, TOKEN.lastIndex),
@@ -153,8 +166,37 @@ export function tokenize(text) {
     });
     at = TOKEN.lastIndex;
   }
-  if (at < s.length) out.push({ type: "text", text: s.slice(at) });
+  if (at < s.length) tagSegments(s.slice(at), out);
   return out;
+}
+
+/**
+ * The segments to DRAW: [tokenize]'s, minus the tag the caret is inside.
+ *
+ * A hashtag becomes a token one character in — `#n` is already a tag — so
+ * drawing every tag would re-render the field on EVERY keystroke of one,
+ * which is exactly what structureChanged() exists to avoid: it fights the
+ * browser over the caret, the undo stack and IME composition, and an npub
+ * only ever crosses that line once, at its 63rd character.
+ *
+ * So a tag under the caret stays text, and pills the moment the caret leaves
+ * it. That is the same rule the people picker follows — a token being built
+ * is not yet a token — and it means the pill's appearance is the field
+ * saying "this one is finished, and it is a filter now".
+ *
+ * `typingAt` null draws everything: a paste, a URL restore or a blur is not
+ * somebody midway through typing a word.
+ */
+export function drawable(text, typingAt) {
+  const segs = tokenize(text);
+  if (typingAt == null) return segs;
+  let at = 0;
+  return segs.map((seg) => {
+    const start = at;
+    at += seg.type === "text" ? seg.text.length : seg.raw.length;
+    if (seg.type !== "tag" || typingAt <= start || typingAt > at) return seg;
+    return { type: "text", text: seg.raw };
+  });
 }
 
 /**
@@ -185,10 +227,10 @@ export function parseQuery(text) {
   const hashtags = [];
   let terms = "";
   for (const seg of tokenize(text)) {
-    // Only the TEXT between the person tokens is scanned for hashtags — a `#`
-    // cannot occur inside an npub (bech32 has no such character), and running
-    // the scan over `raw` would be looking for it there anyway.
-    if (seg.type === "text") { terms += liftHashtags(seg.text, hashtags); continue; }
+    if (seg.type === "text") { terms += seg.text; continue; }
+    // `#Nostr` asks for `nostr`: the segment already carries both, so the field
+    // and the filters cannot disagree about which is which.
+    if (seg.type === "tag") { if (!hashtags.includes(seg.tag)) hashtags.push(seg.tag); continue; }
     const into = seg.field === "from" ? authors : seg.field === "to" ? mentions : null;
     if (!into) { terms += seg.raw; continue; }
     if (!into.includes(seg.pubkey)) into.push(seg.pubkey);

@@ -56,6 +56,13 @@
   arrow keys. On submit the tokens leave the NIP-50 search entirely and become
   the NIP-01 filter fields they are, `authors` and `#p`.
 
+  A `#hashtag` draws as a pill in the same field, for a different reason: it is
+  already the word it means, so nothing is being hidden — the pill is the box
+  saying that word left the search string and became a tag filter. Quieter than
+  a person (an outline, no face, no lookup) and it appears only when the caret
+  leaves the tag, because a hashtag is a token one character in and a pill that
+  formed at `#n` would re-render the field on every keystroke.
+
   `#hashtag` leaves the search string too, and becomes a union, because Nostr
   writes a topic down three ways: `#t` for the events that TAG it, kind 1111
   with the NIP-73 external id in `i` or `I` for the NIP-22 comments written ON
@@ -366,6 +373,29 @@
   .mention .avatar { width: 1.5em; height: 1.5em; border: 0; }
   .mention-kind { opacity: .65; font-weight: 700; }
   .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ---- a hashtag, inside the text field ----------------------------------
+     Deliberately NOT a .mention. A person chip replaces something unreadable
+     with a face; `#nostr` is already the word it means, so the pill is not
+     hiding anything — it is the field saying this word LEFT the search string
+     and became a tag filter. So: no avatar, no lookup, no repaint, and quieter
+     than a person — an outline rather than a filled chip, because it marks a
+     word rather than standing in for one. Same em sizing for the same reason
+     the person chip has it: the field shrinks in the sticky toolbar. */
+  .hashtag {
+    display: inline-flex; align-items: center;
+    vertical-align: middle;
+    max-width: 15em;
+    padding: .1em .55em;
+    border-radius: 999px;
+    border: 1px solid var(--accent-soft);
+    background: transparent;
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+    user-select: none;
+  }
 
   .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
   .export {
