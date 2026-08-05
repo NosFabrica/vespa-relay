@@ -344,13 +344,13 @@
   /* The card avatar, at field scale — same generated face, no border. */
   .mention .avatar { width: 1.5em; height: 1.5em; border: 0; }
   /* …and the same score chip, sized down with it: the card's 15px badge over
-     a 20px face IS the face. The ring is the chip's own background, not the
-     card surface it is cut out of everywhere else. */
+     a 20px face IS the face. It hangs further off the corner than elsewhere
+     so the digits clear the name beside them, and its ring is cut out of the
+     pill's own background rather than the card surface. */
+  .mention .av-wrap { --chip: 10px; --chip-text: 7.5px; }
   .mention .score-chip {
-    right: -.35em; bottom: -.3em;
-    min-width: 1.3em; height: 1.3em; padding: 0 .22em;
-    border-radius: .65em; font-size: .55em; line-height: 1.3em;
-    box-shadow: 0 0 0 .16em var(--accent-soft);
+    right: calc(var(--chip) * -.45); bottom: calc(var(--chip) * -.3);
+    box-shadow: 0 0 0 calc(var(--chip) * .16) var(--accent-soft);
   }
   /* The pill's own left padding is cut for a FACE, which is round and fills a
      rounded corner by itself. `from` / `to` is square text and needs the room
@@ -392,13 +392,25 @@
   .n5chip.unknown { background: var(--surface-2); color: var(--muted); }
 
   /* ---- avatars ------------------------------------------------------------ */
-  .av-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+  /* The score badge is sized from two numbers set beside every face that is
+     resized — `--chip` (the badge) and `--chip-text` (its digits); padding,
+     radius, the ring and how far it hangs off the corner all follow --chip.
+     One 15px badge for every face was right on a 34px result face and nearly
+     the whole of a 22px byline one.
+
+     The text shrinks LESS than the badge on purpose: strictly proportional
+     digits are 6px by the time the face is 22px, which is a smudge. The
+     badge is in px like the nip05 chip and unlike everything else drawn
+     inside the search field — it is a fixed affordance on a face, not part
+     of the running text, and it should not follow the type down. */
+  .av-wrap { position: relative; display: inline-flex; flex: 0 0 auto; --chip: 15px; --chip-text: 9px; }
   .score-chip {
-    position: absolute; right: -3px; bottom: -3px; display: none;
-    min-width: 15px; height: 15px; padding: 0 3px;
-    border-radius: 8px; background: var(--accent); color: var(--accent-fg);
-    font-size: 9px; font-weight: 800; line-height: 15px; text-align: center;
-    box-shadow: 0 0 0 2px var(--surface);
+    position: absolute; display: none;
+    right: calc(var(--chip) * -.2); bottom: calc(var(--chip) * -.2);
+    min-width: var(--chip); height: var(--chip); padding: 0 calc(var(--chip) * .2);
+    border-radius: calc(var(--chip) / 2); background: var(--accent); color: var(--accent-fg);
+    font-size: var(--chip-text); font-weight: 800; line-height: var(--chip); text-align: center;
+    box-shadow: 0 0 0 calc(var(--chip) * .14) var(--surface);
   }
   .score-chip.on { display: block; }
   .avatar {
@@ -468,6 +480,7 @@
 
   .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
   .result-header .avatar { width: 46px; height: 46px; }
+  .result-header .av-wrap { --chip: 18px; --chip-text: 10.5px; }
   .result-header .who { flex: 1; min-width: 0; }
   .result-name { font-size: 16.5px; font-weight: 650; letter-spacing: -.012em; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .result-name a { color: inherit; text-decoration: none; }
@@ -477,6 +490,7 @@
   .byline { display: flex; gap: 7px; align-items: center; margin-bottom: 8px; }
   .byline .dot { margin: 0 -2px; }
   .byline .avatar { width: 22px; height: 22px; }
+  .byline .av-wrap { --chip: 11px; --chip-text: 7.5px; }
   .byline .by-name { font-size: 12.5px; font-weight: 550; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .byline .by-date { font-size: 12px; color: var(--faint); flex-shrink: 0; }
   .byline .dot { color: var(--border-strong); }
@@ -554,6 +568,7 @@
   .face-strip { display: flex; align-items: center; margin-top: 8px; }
   .face-strip .av-wrap + .av-wrap { margin-left: -9px; }
   .face-strip .avatar { width: 30px; height: 30px; box-shadow: 0 0 0 2px var(--surface); }
+  .face-strip .av-wrap { --chip: 13px; --chip-text: 8.5px; }
   .face-strip .face-more { margin-left: 8px; font-size: 12px; color: var(--faint); }
   .relay-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
   .relay-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -646,6 +661,7 @@
     body.searching .hero-inner { grid-template-columns: minmax(0, 1fr); }
     body.searching .brand { display: none; }
     .result-header .avatar { width: 40px; height: 40px; }
+    .result-header .av-wrap { --chip: 16px; --chip-text: 10px; }
     .thumb { width: 72px; height: 72px; }
     .props { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
     .props dt { margin-top: 6px; font-size: 11px; }
