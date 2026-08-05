@@ -25,7 +25,7 @@ class FakeWS {
 }
 globalThis.WebSocket = FakeWS;
 
-const { replyTarget, replyAuthor, replyPerson, unknownParents, loadParentAuthors } =
+const { replyTarget, replyAuthor, replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } =
   await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
 
 const hex = (c) => c.repeat(64);
@@ -61,6 +61,16 @@ const wanted = ev(1, [["e", parent]]);
 assert.deepStrictEqual(unknownParents([wanted]), [parent], "an unhinted parent is a question");
 assert.deepStrictEqual(unknownParents([ev(1, [["e", parent, "", "reply", bob]])]), [],
   "a hinted one is not — the answer is already on the event");
+
+// An event in hand IS the answer for its own id. A thread in a result page
+// carries its own parents, so seeding from what already arrived removes those
+// ids from the ask entirely — a round trip for a fact already in memory.
+const inHand = hex("3");
+seedParentAuthors([{ id: inHand, pubkey: alice, kind: 1, created_at: 1, tags: [] }]);
+assert.deepStrictEqual(unknownParents([ev(1, [["e", inHand]])]), [], "a parent already on the page is not a question");
+assert.strictEqual(replyAuthor(ev(1, [["e", inHand]])), alice, "…and it names its author with no lookup at all");
+seedParentAuthors([null, {}, { id: "junk", pubkey: alice }]);   // must not throw or record rubbish
+assert.strictEqual(replyAuthor(ev(1, [["e", hex("4")]])), null);
 
 answer = () => {};                                  // the relay never answers
 assert.strictEqual(await loadParentAuthors([parent]), 0);

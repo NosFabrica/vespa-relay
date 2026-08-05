@@ -9,7 +9,7 @@ import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery } from "./shared/query.js";
-import { unknownParents, loadParentAuthors } from "./shared/parents.js";
+import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
@@ -290,29 +290,36 @@ async function search(text, limit, deep) {
   // round trip; it was just on the other side of the render.
   const mentioned = events.flatMap(namedPubkeys);
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
-  return { events, names: deep ? withParents(events, names) : names };
+  // Free, and it removes most of the asks below: a thread in the results
+  // carries its own parents, and an event is ground truth about who wrote it.
+  seedParentAuthors(events);
+  return { events, names, parents: deep ? replyParents(events) : null };
 }
 
 /**
- * The reply lines' second and third round trips, chained BEHIND the names.
+ * The reply lines' own lookups, as a SEPARATE promise from the names.
  *
  * "In reply to <person>" needs a person, and most `e` tags name only an event
  * — so an unhinted parent is a lookup by id to learn its author, and then that
- * author's profile. Three asks deep is why this runs after the authors of the
- * results themselves have landed: those are what most of the page is waiting
- * on, and a reply line that fills in a beat later is the same trade the score
- * chips already make. The counted total is what decides whether the list
- * repaints, so a parent learned WITHOUT a profile still counts — the line goes
- * from a note id to an npub, which is a different sentence.
+ * author's profile. Two more round trips behind the one the names already
+ * cost, which is why they are not chained onto it: this began as `await names`
+ * followed by the rest, and that made every author name in the list wait for
+ * the parent lookup to finish — a repaint that used to land in one round trip
+ * arrived in three, or after the 5s timeout when a parent was missing. The two
+ * are independent facts and now repaint independently.
  *
- * Full renders only (the `deep` flag): the type-ahead popup shows a name and a
+ * Only the parent AUTHORS are enriched here, not namedPubkeys again: the names
+ * promise is asking for that set concurrently, and enrichProfiles dedupes
+ * against the cache rather than against what is in flight, so the overlap
+ * would be a second REQ for pubkeys already being fetched.
+ *
+ * Full renders only (the `deep` flag): the type-ahead popup draws a name and a
  * line of text per row, no reply lines, so a debounced keystroke has nothing
  * to spend two round trips on.
  */
-async function withParents(events, names) {
-  const before = await names;
+async function replyParents(events) {
   const learned = await loadParentAuthors(unknownParents(events));
-  return before + learned + await enrichProfiles(events.flatMap(namedPubkeys));
+  return learned + await enrichProfiles(events.map(replyPerson).filter(Boolean));
 }
 
 // ---- viewing as somebody else -------------------------------------------
@@ -765,23 +772,25 @@ async function run(text, mode, render) {
   if (mode === "full") { s.hits = []; s.hitsFor = null; }
   render();
   const t0 = performance.now();
-  let names = null;
+  let late = [];
   try {
     const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT, mode === "full");
     if (myId !== s.requestId) return;
-    s.hits = found.events; s.hitsFor = text; names = found.names;
+    s.hits = found.events; s.hitsFor = text; late = [found.names, found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== s.requestId) return;
     s.error = e.message || String(e); s.hits = []; s.hitsFor = text;
   }
   s.lastMs = Math.round(performance.now() - t0); s.loading = false;
   render();
-  // The names land after the list does, so paint them when they arrive —
-  // once, and only if the lookup actually learned something. Skipped while a
-  // raw event is expanded: a re-render would collapse a panel the reader
-  // opened, and a name appearing is not worth taking that away.
-  if (names) {
-    names.then((learned) => {
+  // The names land after the list does, and the reply parents after them, so
+  // paint each when it arrives — and only if that lookup actually learned
+  // something. Independently, because they are: chaining them meant the names
+  // could not repaint until the parents had also answered. Skipped while a raw
+  // event is expanded: a re-render would collapse a panel the reader opened,
+  // and a name appearing is not worth taking that away.
+  for (const lookup of late) {
+    lookup.then((learned) => {
       if (!learned || myId !== s.requestId) return;
       // The field's own chips are named from the same cache, and a `from:`
       // whose profile arrived on THIS lookup would otherwise sit on a short
@@ -985,7 +994,10 @@ $results.addEventListener("click", (e) => {
   // an expanded raw event is somebody reading it, and navigating away would
   // close the panel they just opened.
   if (e.target.closest("a, button, input, textarea, select, label, audio, video, summary, .raw")) return;
-  if (String(window.getSelection ? window.getSelection() : "").trim()) return;
+  // `getSelection()` may return null, and String(null) is "null" — truthy,
+  // which would have made every card unclickable wherever that happens.
+  const sel = window.getSelection && window.getSelection();
+  if (sel && String(sel).trim()) return;
   const art = e.target.closest(".result[data-href]");
   if (art) { e.preventDefault(); navigate(art.dataset.href); }
 });

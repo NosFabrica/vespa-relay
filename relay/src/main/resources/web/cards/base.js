@@ -59,10 +59,12 @@ export const eventHref = (id, hints = {}) => {
  * must not become a card that navigates to "/".
  */
 export const selfHref = (ev) => {
-  const hex = /^[0-9a-f]{64}$/;
-  if (ev && ev.kind === 0 && hex.test(ev.pubkey || "")) return keyHref(ev.pubkey);
-  return ev && hex.test(ev.id || "") ? noteHref(ev.id) : null;
+  if (ev && ev.kind === 0 && HEX64.test(ev.pubkey || "")) return keyHref(ev.pubkey);
+  return ev && HEX64.test(ev.id || "") ? noteHref(ev.id) : null;
 };
+// Module scope, because a literal inside the function allocates a RegExp on
+// every evaluation and this one runs twice per card, per render.
+const HEX64 = /^[0-9a-f]{64}$/;
 
 // ---- tag access -----------------------------------------------------------
 // `Array.isArray` on every entry, for the same reason format.js's firstTag

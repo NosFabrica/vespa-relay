@@ -37,7 +37,7 @@ const hex64 = (v) => {
  * its card already says "source". Reactive kinds are absent for the same
  * reason — "liked <note>" is a relation this line would say twice.
  */
-const REPLY_KINDS = new Set([1, 9, 11, 42, 1311, 1111, 1222, 1244, 1622]);
+export const REPLY_KINDS = new Set([1, 9, 11, 42, 1311, 1111, 1222, 1244, 1622]);
 
 /**
  * A relay hint as an `e` tag wrote it, or null. Only shape is checked here —
@@ -76,7 +76,23 @@ function authorHint(ev, t) {
  * have not asked yet".
  */
 export function replyTarget(ev) {
-  if (!ev || !REPLY_KINDS.has(ev.kind)) return null;
+  if (!ev || typeof ev !== "object") return null;
+  // Memoised per EVENT, not per id: one card render asks three times over
+  // (the line, the link's author, namedPubkeys), a repaint asks again, and
+  // each ask walked and filtered the tag array. Events are immutable here and
+  // the same objects survive every re-render of a result list, so a WeakMap
+  // keyed on the event turns "parse the tags per question" into "parse once,
+  // ever", and drops the entry with the event.
+  if (targets.has(ev)) return targets.get(ev);
+  const t = findTarget(ev);
+  targets.set(ev, t);
+  return t;
+}
+
+const targets = new WeakMap();
+
+function findTarget(ev) {
+  if (!REPLY_KINDS.has(ev.kind)) return null;
   const es = ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && t[0] === "e" && hex64(t[1]));
   if (!es.length) return null;
   const marker = (t) => String(t[3] || "").toLowerCase();
@@ -114,6 +130,22 @@ export function replyAddr(ev) {
 
 // event id -> pubkey, or null once this relay has answered without it.
 const authors = new Map();
+
+/**
+ * Record who wrote the events already in hand.
+ *
+ * An event IS the answer for its own id, and a result page routinely holds
+ * the parent it is asking about — a thread, a search that matches several
+ * posts in one conversation, anything sorted by time. Seeding from what
+ * arrived costs a walk over a list already in memory and removes those ids
+ * from the lookup below entirely.
+ */
+export function seedParentAuthors(events) {
+  for (const ev of events || []) {
+    const id = hex64(ev && ev.id), pk = hex64(ev && ev.pubkey);
+    if (id && pk && !authors.get(id)) authors.set(id, pk);
+  }
+}
 
 /** The parent's author if anything knows it: the tag's hint, else the lookup. */
 export function replyAuthor(ev) {

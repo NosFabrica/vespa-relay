@@ -151,12 +151,19 @@ function titleFor(ev, parsed) {
  */
 async function enrichMentions(ev) {
   const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
-  // Before the names, not after: on a reply whose `e` tag names no author, WHO
-  // the parent is only becomes a question once the parent event is looked up,
-  // and namedPubkeys cannot declare a pubkey nothing here has learned yet.
-  // This page renders once — there is no second paint to fix it up in.
-  await loadParentAuthors(unknownParents([ev]));
-  await enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]);
+  // The parent lookup runs ALONGSIDE the mentions, not before them: they ask
+  // different questions of the same relay, and this page renders once — every
+  // round trip it serialises is dead time on a blank card. It cannot be
+  // skipped entirely, though: on a reply whose `e` tag names no author, WHO
+  // the parent is only becomes answerable once the parent event has been
+  // fetched, and namedPubkeys cannot declare a pubkey nothing here knows yet.
+  await Promise.all([
+    loadParentAuthors(unknownParents([ev])),
+    enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]),
+  ]);
+  // Which is what this second pass is for — the parent's own profile, and a
+  // no-op when the lookup above learned nobody new.
+  await enrichProfiles(namedPubkeys(ev));
 }
 
 /**

@@ -8,6 +8,7 @@ const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../re
 const { renderers } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
+const { REPLY_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 const pk2 = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -332,6 +333,21 @@ assert(lineOf(onArticle).includes(">olga</a>") && /href="\/naddr1/.test(lineOf(o
 assert.strictEqual(lineOf(card(ev(42, [["e", rootId, "", "root"]], "hi all"), { full: true })), "", "a channel is not a parent");
 assert.strictEqual(linkedTo(card(ev(42, [["e", rootId, "", "root"], ["e", parentId, "", "reply", pk2]], "hi"), { full: true })).id, parentId,
   "…but a reply inside one is");
+
+// REPLY_KINDS is a claim about the RENDERERS — "these kinds lead with who they
+// answer" — and it is read by namedPubkeys to decide whose profile to load.
+// One list, so the two cannot cover different sets: a kind in it whose card
+// never calls replyLine is a profile fetched for a line nobody draws, and a
+// card drawing the line for a kind outside it renders an npub where a name
+// belongs. Asserted as an identity, the same way KNOWN_KINDS is.
+for (const kind of REPLY_KINDS) {
+  const html = card(ev(kind, [["e", parentId, "", "reply", pk2]], "answering"), { full: true });
+  assert(lineOf(html).includes(">olga</a>"), `kind ${kind} is declared reply-shaped, but its card names no parent`);
+}
+for (const kind of [...renderers.keys()].filter((k) => !REPLY_KINDS.has(k))) {
+  assert.strictEqual(lineOf(card(ev(kind, [["e", parentId, "", "reply", pk2]], "x"), { full: true })), "",
+    `kind ${kind} draws a reply line without being declared reply-shaped, so its parent's profile is never loaded`);
+}
 
 // The enrichment claim, for the one person no scan of the tags would find on
 // its own: whoever the line names, namedPubkeys must declare.
