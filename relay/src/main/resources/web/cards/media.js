@@ -4,7 +4,7 @@
 // URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { register, shell, bodyHtml, imetaField, tagOf, tagsOf, clipIf } from "./base.js";
+import { register, shell, bodyHtml, emojiGrid, imetaField, tagOf, tagsOf, clipIf } from "./base.js";
 
 const mediaUrl = (ev) => imetaField(ev, "url") || tagOf(ev, "url");
 const poster = (ev) => imetaField(ev, "image") || imageOf(ev);
@@ -84,20 +84,19 @@ function videoSetCard(ev, opts) {
 
 /** 30030 — an emoji pack: the emoji, visible, which is the whole point of one. */
 function emojiPackCard(ev, opts) {
-  const emoji = tagsOf(ev, "emoji").filter((t) => t[1] && t[2]);
-  const shown = opts && opts.full ? emoji : emoji.slice(0, 16);
+  const emoji = tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]);
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
     `<div class="result-body">${emoji.length} emoji</div>` +
-    (shown.length
-      ? `<div class="emoji-grid">${shown.map((t) => `<img src="${esc(t[2])}" alt=":${esc(t[1])}:" title=":${esc(t[1])}:" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`).join("")}</div>`
-      : "");
+    emojiGrid(emoji, opts);
   return shell(ev, opts, inner);
 }
 
 register([20], pictureCard);
 register([21, 22, 34235, 34236], videoCard);
 register([1063], fileCard);
-register([1986], audioCard);
+// 1222/1244 are NIP-A0 voice messages and their replies: an imeta audio url
+// with the spoken words nowhere in the event, so the player IS the content.
+register([1986, 1222, 1244], audioCard);
 register([30005], videoSetCard);
 register([30030], emojiPackCard);

@@ -117,7 +117,10 @@ relay/src/main/resources/
                         renders /npub1…//note1…//naddr1… paths; cards/ is the
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that
-                        FAILS if a kind registers without a fixture.
+                        FAILS if a kind registers without a fixture, a badge
+                        label or a family tone. The NIP-51 lists and sets are
+                        one table in cards/lists.js rather than one renderer
+                        each: they differ only in which tags carry their items.
                         index.html's header records the rules and why "one
                         file" ended.
   kind_stats.html       self-contained operator diagnostics — deliberately NOT

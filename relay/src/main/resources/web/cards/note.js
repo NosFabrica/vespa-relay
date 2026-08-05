@@ -1,9 +1,10 @@
-// The text family: notes and threads (1, 11), highlights (9802), and channel
-// metadata (40/41, whose payload is a profile-shaped JSON content).
+// The text family: notes, threads and chat messages (1, 11, 9, 42, 1311),
+// highlights (9802), and channel metadata (40/41, whose payload is a
+// profile-shaped JSON content).
 
 import { esc } from "../shared/format.js";
 import { noteId, shortNote } from "../shared/nip19.js";
-import { register, shell, bodyHtml, noteHref, keyHref, tagOf, jsonContent, avatarHtml, clipIf } from "./base.js";
+import { register, shell, bodyHtml, noteHref, tagOf, jsonContent, avatarHtml, clipIf } from "./base.js";
 
 function noteCard(ev, opts) {
   const inner = bodyHtml(opts, ev.content, 500);
@@ -40,6 +41,9 @@ function channelCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-register([1, 11], noteCard);
+// 9, 42 and 1311 are chat messages — NIP-C7 rooms, NIP-28 channels, NIP-53
+// live streams. Three transports, one shape: a line of text whose context is
+// the room it was said in, which the byline and the json toggle already carry.
+register([1, 11, 9, 42, 1311], noteCard);
 register([9802], highlightCard);
 register([40, 41], channelCard);

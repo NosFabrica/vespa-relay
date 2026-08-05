@@ -13,12 +13,15 @@ import { genericCard } from "./cards/generic.js";
 import "./cards/profile.js";
 import "./cards/note.js";
 import "./cards/people.js";
+import "./cards/social.js";
+import "./cards/lists.js";
 import "./cards/article.js";
 import "./cards/media.js";
 import "./cards/code.js";
 import "./cards/live.js";
 import "./cards/market.js";
 import "./cards/apps.js";
+import "./cards/relays.js";
 
 /**
  * One event to one card. `opts.full` is the permalink depth — nothing

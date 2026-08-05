@@ -5,18 +5,10 @@
 // hex blob would be the relay failing to explain itself.
 
 import { esc, titleOf } from "../shared/format.js";
-import { npub, shortNpub } from "../shared/nip19.js";
-import { displayName, profiles } from "../shared/profiles.js";
-import { register, shell, faceStrip, keyHref, tagsOf, tagOf, clipIf } from "./base.js";
+import { shortNote, shortAddr } from "../shared/nip19.js";
+import { register, shell, faceStrip, personLink, noteHref, addrHref, relayRows, tagsOf, tagOf, clipIf } from "./base.js";
 
 const pTags = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
-
-/** A person, linked: their name when the store knows one, a short npub only
-    as the fallback, the full npub in the hover — and never, anywhere, hex. */
-const personLink = (pk) => {
-  const nm = displayName(profiles.get(pk));
-  return `<a${nm ? "" : ' class="mono"'} href="${keyHref(pk)}" title="${esc(npub(pk))}">${esc(nm || shortNpub(pk))}</a>`;
-};
 
 /** 3 — the follow list: a count and a strip of faces, not 800 rows. */
 function followsCard(ev, opts) {
@@ -36,13 +28,6 @@ function followSetCard(ev, opts) {
     `<div class="result-body">${pks.length.toLocaleString()} ${pks.length === 1 ? "member" : "members"}</div>` +
     faceStrip(pks, opts && opts.full ? 24 : 12);
   return shell(ev, opts, inner);
-}
-
-/** A list of relay rows; full mode shows all, preview the first few. */
-function relayRows(rows, opts) {
-  const shown = opts && opts.full ? rows : rows.slice(0, 6);
-  const more = rows.length - shown.length;
-  return `<ul class="relay-list">${shown.map((r) => `<li><span class="mono">${esc(r.url)}</span>${r.note ? ` <span class="muted-note">${esc(r.note)}</span>` : ""}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
 /** 10002 — NIP-65: r tags, each optionally marked read or write. */
@@ -73,13 +58,17 @@ function observerCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 30382 — one score: WHO it is about, and the rank under this service's lens. */
+/**
+ * 30382/30383/30384 — NIP-85 assertions. One renderer, because only the `d`
+ * changes meaning: a pubkey for 30382, an event id for 30383, an `a` address
+ * for 30384. Reading all three as a pubkey — which the pubkey-only version of
+ * this card did — turns an event id into a link to a person who does not
+ * exist, so the subject is resolved by KIND, not by shape.
+ */
 function scoreCard(ev, opts) {
   const subject = tagOf(ev, "d");
   const rank = tagOf(ev, "rank");
-  const subjectLink = subject && /^[0-9a-f]{64}$/.test(subject)
-    ? personLink(subject)
-    : esc(subject || "(no subject)");
+  const subjectLink = subjectLinkFor(ev.kind, subject);
   const extras = (ev.tags || [])
     .filter((t) => t[0] !== "d" && t[0] !== "rank" && t[1] && /^[\d.]+$/.test(t[1]))
     .map((t) => [t[0], esc(t[1])]);
@@ -89,9 +78,24 @@ function scoreCard(ev, opts) {
   return shell(ev, opts, inner, extras);
 }
 
+/** The thing an assertion is about, named the way its kind defines it. */
+function subjectLinkFor(kind, subject) {
+  if (!subject) return "(no subject)";
+  if (kind === 30383 && /^[0-9a-f]{64}$/.test(subject)) {
+    return `<a class="mono" href="${noteHref(subject)}">${esc(shortNote(subject))}</a>`;
+  }
+  if (kind === 30384) {
+    const href = addrHref(subject);
+    return href ? `<a href="${href}">${esc(shortAddr(subject))}</a>` : esc(subject);
+  }
+  return /^[0-9a-f]{64}$/.test(subject) ? personLink(subject) : esc(subject);
+}
+
 register([3], followsCard);
-register([30000], followSetCard);
+// 39089/39092 are follow sets under another name — a named group of pubkeys
+// meant to be followed together. Same tags, same card, no second template.
+register([30000, 39089, 39092], followSetCard);
 register([10002], relayListCard);
 register([30002], relaySetCard);
 register([10040], observerCard);
-register([30382], scoreCard);
+register([30382, 30383, 30384], scoreCard);

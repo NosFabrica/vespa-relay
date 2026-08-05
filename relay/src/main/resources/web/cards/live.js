@@ -3,7 +3,8 @@
 // "live" versus "ended" is the entire question a person clicking one has.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { register, shell, bodyHtml, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
+import { shortAddr } from "../shared/nip19.js";
+import { register, shell, bodyHtml, addrHref, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
 
 /** 30311 — a live event: status, the stream, who is watching. */
 function liveCard(ev, opts) {
@@ -51,6 +52,27 @@ function calendarCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-register([30311], liveCard);
+/**
+ * 31925 — an RSVP. `status` is the answer (accepted/declined/tentative) and it
+ * is the entire event; the `a` tag names what is being answered, so both ride
+ * on the same line as the pill.
+ */
+function rsvpCard(ev, opts) {
+  const status = (tagOf(ev, "status") || "").toLowerCase();
+  const target = tagOf(ev, "a");
+  const href = target ? addrHref(target) : null;
+  const inner =
+    `<div class="result-body">${status ? `<span class="status-pill ${esc(status)}">${esc(status)}</span> ` : ""}` +
+    `${target ? `for ${href ? `<a href="${href}">${esc(shortAddr(target))}</a>` : esc(shortAddr(target))}` : "rsvp"}</div>` +
+    bodyHtml(opts, ev.content, 300);
+  return shell(ev, opts, inner, [
+    ["free/busy", tagOf(ev, "fb") ? esc(tagOf(ev, "fb")) : null],
+  ]);
+}
+
+// 30312/30313 are NIP-53's interactive rooms and conference events: the same
+// title/summary/status/streaming vocabulary as a live event, so the same card.
+register([30311, 30312, 30313], liveCard);
 register([31922, 31923], calendarEventCard);
 register([31924], calendarCard);
+register([31925], rsvpCard);

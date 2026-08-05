@@ -1,5 +1,5 @@
 import assert from 'assert';
-const { npub, noteId, pubkeyParam, nip19Parse } =
+const { npub, noteId, naddr: mintAddr, shortAddr, pubkeyParam, nip19Parse } =
   await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 
 // A test-side bech32+TLV ENCODER, written independently from the page's
@@ -66,6 +66,41 @@ assert.strictEqual(nip19Parse(encode("naddr", tlv([[0, utf8("d")], [3, [0,0,0,3]
 assert.strictEqual(nip19Parse(encode("nsec", hexBytes(pk))), null, "nsec is not a page");
 assert.strictEqual(nip19Parse(""), null);
 assert.strictEqual(nip19Parse("npub1"), null);
+
+// ---- minting naddr from an `a` tag --------------------------------------
+// The property that matters is the ROUND TRIP: every card that links a set's
+// contents mints one of these, and the entity page parses it back into the
+// filter it fetches with. A mint that does not survive the page's own decoder
+// is a link to a permanent "not found".
+for (const [tag, kind, d] of [
+  [`30023:${pk}:my-article`, 30023, "my-article"],
+  [`3:${pk}:`, 3, ""],                                   // a d-less replaceable
+  [`30030:${pk}:emoji ünïcode`, 30030, "emoji ünïcode"], // multibyte d
+  [`0:${pk}:`, 0, ""],
+]) {
+  const minted = mintAddr(tag);
+  p = nip19Parse(minted);
+  assert.deepStrictEqual({ type: p.type, kind: p.kind, author: p.author, d: p.d },
+    { type: "naddr", kind, author: pk, d }, `naddr round trip for ${tag}`);
+}
+// Malformed `a` tags mint NOTHING — the card falls back to plain text, which
+// is honest, where a best-effort naddr would be a link that never resolves.
+assert.strictEqual(mintAddr("not-an-address"), null);
+assert.strictEqual(mintAddr(`30023:${pk.slice(0, 63)}:x`), null, "short pubkey");
+assert.strictEqual(mintAddr(`30023:${pk.toUpperCase()}:x`), null, "hex is lowercase");
+assert.strictEqual(mintAddr(""), null);
+assert.strictEqual(mintAddr(null), null);
+// The TLV length prefix is one byte, so an over-long `d` has no encoding.
+assert.strictEqual(mintAddr(`30023:${pk}:${"x".repeat(256)}`), null, "256-byte d has no legal TLV");
+assert.strictEqual(typeof mintAddr(`30023:${pk}:${"x".repeat(255)}`), "string", "255 bytes still fits");
+// …and the boundary is BYTES, not characters: a 200-character multibyte d
+// overruns the same one-byte prefix that 200 ascii characters fit inside.
+assert.strictEqual(mintAddr(`30023:${pk}:${"ü".repeat(200)}`), null, "the limit counts utf-8 bytes");
+
+// shortAddr shows the d, and names the author when there is no d to show
+assert.strictEqual(shortAddr(`30023:${pk}:my-article`), "my-article");
+assert.strictEqual(shortAddr(`3:${pk}:`), npub(pk).slice(0, 12) + "…" + npub(pk).slice(-6));
+assert.strictEqual(shortAddr("garbage"), "garbage");
 
 // pubkeyParam still behaves (regression from the rewrite)
 assert.strictEqual(pubkeyParam(npub(pk)), pk);

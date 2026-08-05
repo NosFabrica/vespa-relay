@@ -18,7 +18,13 @@ while (queue.length) {
   reached.add(u);
   const f = path.join(RES, u);
   if (!existsSync(f)) continue;
-  for (const m of readFileSync(f, "utf8").matchAll(/from\s+["']([^"']+)["']/g)) {
+  // Both import forms. Matching only `from "…"` missed every side-effect
+  // import — which is precisely how cards.js pulls in the kind registry, so
+  // the family modules were invisible to this crawler and unhinted in
+  // index.html while it reported the graph as matching "exactly". The modules
+  // that must load before a single result can render were the ones left on
+  // the slow path.
+  for (const m of readFileSync(f, "utf8").matchAll(/(?:from|import)\s+["']([^"']+)["']/g)) {
     if (!m[1].startsWith(".")) continue;
     const abs = path.posix.normalize(path.posix.join(path.posix.dirname(u), m[1]));
     if (abs.endsWith(".js")) queue.push(abs);

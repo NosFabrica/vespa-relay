@@ -11,8 +11,8 @@
 
 import { esc, clip, fullDate, when } from "../shared/format.js";
 import { kindLabel, kindTone } from "../shared/kinds.js";
-import { npub, noteId } from "../shared/nip19.js";
-import { authorOf } from "../shared/profiles.js";
+import { npub, noteId, naddr, shortAddr, shortNote, shortNpub } from "../shared/nip19.js";
+import { authorOf, displayName, profiles } from "../shared/profiles.js";
 
 // ---- the registry ---------------------------------------------------------
 export const renderers = new Map(); // kind -> (ev, opts) -> html
@@ -26,6 +26,8 @@ export function register(kinds, fn) { for (const k of kinds) renderers.set(k, fn
 export const keyHref = (hex) => `/${esc(npub(hex))}`;
 export const noteHref = (hex) => `/${esc(noteId(hex))}`;
 export const njumpFor = (bech) => `https://njump.me/${esc(bech)}`;
+/** An `a` tag as a link to its entity page — null when it cannot be encoded. */
+export const addrHref = (a) => { const n = naddr(a); return n ? `/${esc(n)}` : null; };
 
 // ---- tag access -----------------------------------------------------------
 export const tagsOf = (ev, name) => (ev.tags || []).filter((t) => t[0] === name);
@@ -127,6 +129,79 @@ export const bodyHtml = (opts, text, n = 400, muted = false) => {
   const s = clipIf(opts, text, n);
   return s ? `<div class="result-body${clampCls(opts)}${muted ? " muted" : ""}">${esc(s)}</div>` : "";
 };
+
+/**
+ * A person, linked: their name when the store knows one, a short npub only as
+ * the fallback, the full npub in the hover — and never, anywhere, hex. Three
+ * families name people now (the graph cards, the social cards, the NIP-85
+ * assertions), so the rule lives here rather than in whichever one wrote it
+ * down first.
+ */
+export const personLink = (pk) => {
+  const nm = displayName(profiles.get(pk));
+  return `<a${nm ? "" : ' class="mono"'} href="${keyHref(pk)}" title="${esc(npub(pk))}">${esc(nm || shortNpub(pk))}</a>`;
+};
+
+/**
+ * A heading, at either depth, optionally linking somewhere. `href` goes in
+ * RAW — pass keyHref/noteHref/addrHref, which escape, and never a url taken
+ * straight off an event.
+ */
+export const titleHtml = (opts, text, n = 140, href = null) => {
+  const t = text ? clipIf(opts, text, n) : "";
+  if (!t) return "";
+  return `<h2 class="result-title">${href ? `<a href="${href}">${esc(t)}</a>` : esc(t)}</h2>`;
+};
+
+export const extLink = (url, label) =>
+  url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>` : null;
+
+/**
+ * A list of relay rows; full mode shows all, preview the first few. Lives here
+ * rather than in people.js because relay urls are carried by NIP-65 lists,
+ * NIP-51 relay sets, DM relay lists, blossom server lists and NIP-66 discovery
+ * records alike — five families, one row.
+ */
+export function relayRows(rows, opts) {
+  const shown = opts && opts.full ? rows : rows.slice(0, 6);
+  const more = rows.length - shown.length;
+  return `<ul class="relay-list">${shown.map((r) => `<li><span class="mono">${esc(r.url)}</span>${r.note ? ` <span class="muted-note">${esc(r.note)}</span>` : ""}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
+}
+
+/** Hashtags, words, mime types — short values that read as chips, not rows. */
+export function chipRow(values, opts) {
+  const shown = opts && opts.full ? values : values.slice(0, 12);
+  const more = values.length - shown.length;
+  if (!shown.length) return "";
+  return `<div class="chip-row">${shown.map((v) => `<span class="chip">${esc(clip(v, 40))}</span>`).join("")}${more > 0 ? `<span class="chip more">+${more}</span>` : ""}</div>`;
+}
+
+/** The emoji themselves — shared by the 30030 set and the 10030 user list. */
+export function emojiGrid(pairs, opts) {
+  const shown = opts && opts.full ? pairs : pairs.slice(0, 16);
+  if (!shown.length) return "";
+  return `<div class="emoji-grid">${shown.map(([name, url]) => `<img src="${esc(url)}" alt=":${esc(name)}:" title=":${esc(name)}:" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`).join("")}</div>`;
+}
+
+/**
+ * What a list points AT, as links: `e` tags to /note1…, `a` tags to /naddr1….
+ * A set that only counts its members is a card that says "12" and shows
+ * nothing, which is what 30003 rendered as before these existed.
+ */
+export function refRows(refs, opts) {
+  const shown = opts && opts.full ? refs : refs.slice(0, 8);
+  const more = refs.length - shown.length;
+  if (!shown.length) return "";
+  const row = (r) => {
+    if (r.kind === "e") return /^[0-9a-f]{64}$/.test(r.value)
+      ? `<a class="mono" href="${noteHref(r.value)}">${esc(shortNote(r.value))}</a>`
+      : `<span class="mono">${esc(clip(r.value, 40))}</span>`;
+    const href = addrHref(r.value);
+    const label = shortAddr(r.value);
+    return href ? `<a href="${href}">${esc(clip(label, 60))}</a>` : `<span class="mono">${esc(clip(label, 60))}</span>`;
+  };
+  return `<ul class="ref-list">${shown.map((r) => `<li>${row(r)}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
+}
 
 /** A strip of faces for list kinds — stable generated faces even before any profile loads. */
 export function faceStrip(pubkeys, max = 12) {

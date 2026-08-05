@@ -19,14 +19,22 @@ const DEBOUNCE_MS = 150;
 // `slug` is the tab's name in the URL (`?tab=notes`). A slug, not the label
 // ("Code & git" percent-encodes into line noise) and not the kinds list
 // (which this page is free to tune without breaking every bookmarked URL).
+//
+// A tab's kinds must be the ones the matching FAMILY renders, and were not:
+// Media asked for 31922 — a NIP-52 date-based calendar event, which renders
+// under Live — while leaving out 1986 audio, so the audio tab kind was
+// unreachable from any chip and every "Media" result set could contain a
+// conference date. Kept in sync with shared/kinds.js by hand; the tone table
+// there is the reference for which family a kind belongs to.
 const KIND_TABS = [
   { label: "Everything", slug: "all", kinds: null },
   { label: "People", slug: "people", kinds: [0] },
-  { label: "Notes", slug: "notes", kinds: [1, 11] },
-  { label: "Articles", slug: "articles", kinds: [30023, 30024, 30818] },
-  { label: "Media", slug: "media", kinds: [20, 21, 22, 1063, 31922, 34235, 34236] },
-  { label: "Code & git", slug: "code", kinds: [1337, 1617, 1621, 30617] },
-  { label: "Live", slug: "live", kinds: [30311] },
+  { label: "Notes", slug: "notes", kinds: [1, 11, 1111] },
+  { label: "Articles", slug: "articles", kinds: [30023, 30024, 30818, 30040, 30041] },
+  { label: "Media", slug: "media", kinds: [20, 21, 22, 1063, 1986, 1222, 34235, 34236] },
+  { label: "Code & git", slug: "code", kinds: [1337, 1617, 1618, 1621, 30617] },
+  { label: "Live", slug: "live", kinds: [30311, 30312, 30313, 31922, 31923, 31924] },
+  { label: "Lists", slug: "lists", kinds: [10003, 10015, 30001, 30003, 30015, 30267, 39701] },
 ];
 
 // ---- signed-in preference, shared across the relay's pages ----------------

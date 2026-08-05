@@ -69,8 +69,13 @@ function badgeCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-register([30402], listingCard);
-register([30018], productCard);
+// 30403 is the draft of a 30402 and carries the identical tags; 30020 is a
+// product sold at auction, whose JSON content is a product's plus a starting
+// bid. Neither is a different card — a draft that rendered as "kind 30403"
+// while its published twin rendered as a listing was the registry's gap, not
+// the event's.
+register([30402, 30403], listingCard);
+register([30018, 30020], productCard);
 register([30017], stallCard);
 register([9041], goalCard);
 register([30009], badgeCard);
