@@ -95,7 +95,11 @@ class RelayOnionLocationTest {
         port: Int,
         host: String,
         upgrade: Boolean,
+        // Null asks for the PAGE; the default asks for the NIP-11 doc, which
+        // the same route serves by content negotiation.
+        accept: String? = "application/nostr+json",
         acceptGzip: Boolean = false,
+        ifNoneMatch: String? = null,
     ): List<String> =
         Socket().use { socket ->
             socket.connect(InetSocketAddress("127.0.0.1", port), 5_000)
@@ -110,11 +114,9 @@ class RelayOnionLocationTest {
                         append("Sec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\n")
                         append("Sec-WebSocket-Version: 13\r\n")
                     } else {
-                        if (acceptGzip) {
-                            append("Accept-Encoding: gzip\r\n")
-                        } else {
-                            append("Accept: application/nostr+json\r\n")
-                        }
+                        accept?.let { append("Accept: $it\r\n") }
+                        if (acceptGzip) append("Accept-Encoding: gzip\r\n")
+                        ifNoneMatch?.let { append("If-None-Match: $it\r\n") }
                         append("Connection: close\r\n")
                     }
                     append("\r\n")
@@ -192,9 +194,30 @@ class RelayOnionLocationTest {
         // Over the plugin's 1KB floor, or there is nothing to compress.
         val page = "<html><body>" + "search ".repeat(500) + "</body></html>"
         serving({ onion }, landingPage = page) { port ->
-            val headers = headersOf(port, "localhost:$port", upgrade = false, acceptGzip = true)
+            val headers = headersOf(port, "localhost:$port", upgrade = false, accept = null, acceptGzip = true)
             assertEquals("gzip", headers.header("Content-Encoding"), "the body is compressed: $headers")
             assertEquals(onion, headers.header("Onion-Location"))
+        }
+    }
+
+    /**
+     * The pages revalidate with an ETag, so a returning visitor's request ends
+     * in `304 Not Modified` — a response with no body and a trimmed header set.
+     * That is the ordinary case for anyone who has been here before, and the
+     * advertisement has to survive it or the ".onion available" button appears
+     * only on a cold load.
+     */
+    @Test
+    fun `a 304 still carries the header`() {
+        val page = "<html><body>search</body></html>"
+        serving({ onion }, landingPage = page) { port ->
+            val fresh = headersOf(port, "localhost:$port", upgrade = false, accept = null)
+            val etag = fresh.header("ETag")
+            assertTrue(etag != null, "the page revalidates with an ETag: $fresh")
+
+            val revalidated = headersOf(port, "localhost:$port", upgrade = false, accept = null, ifNoneMatch = etag)
+            assertTrue(revalidated.first().contains("304"), "the second visit revalidates: ${revalidated.first()}")
+            assertEquals(onion, revalidated.header("Onion-Location"), "…and is still told about the hidden service")
         }
     }
 
