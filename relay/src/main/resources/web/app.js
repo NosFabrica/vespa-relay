@@ -664,7 +664,12 @@ function onQueryEdit() {
 
 const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit });
 
-const s = { requestId: 0, hits: [], lastMs: null, loading: false, error: null };
+// `hitsFor` is the text `hits` actually answers. They outlive each other:
+// results stay on screen while the box is edited, and a debounce can be
+// abandoned before it ever runs — so "there are hits" is not "these hits are
+// about what the box says", and reopening the popup on that assumption showed
+// one query's answers under another query's words.
+const s = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null };
 let debounceTimer = null;
 let activeKey = null;
 
@@ -733,17 +738,17 @@ function renderResults() {
 async function run(text, mode, render) {
   const myId = ++s.requestId;
   s.loading = true; s.error = null;
-  if (mode === "full") s.hits = [];
+  if (mode === "full") { s.hits = []; s.hitsFor = null; }
   render();
   const t0 = performance.now();
   let names = null;
   try {
     const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
     if (myId !== s.requestId) return;
-    s.hits = found.events; names = found.names;
+    s.hits = found.events; s.hitsFor = text; names = found.names;
   } catch (e) {
     if (myId !== s.requestId) return;
-    s.error = e.message || String(e); s.hits = [];
+    s.error = e.message || String(e); s.hits = []; s.hitsFor = text;
   }
   s.lastMs = Math.round(performance.now() - t0); s.loading = false;
   render();
@@ -827,7 +832,7 @@ function showHero() {
   clearTimeout(debounceTimer);
   cancelEntity(); // same for "← Search" out of an entity page mid-fetch
   document.title = "SearchOverTrust";
-  s.requestId++; s.hits = []; s.error = null; s.loading = false; s.lastMs = null;
+  s.requestId++; s.hits = []; s.hitsFor = null; s.error = null; s.loading = false; s.lastMs = null;
   $q.value = "";
   $results.hidden = true;
   $results.innerHTML = "";
@@ -890,8 +895,11 @@ $popup.addEventListener("mousedown", (e) => {
 
 document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
 $q.addEventListener("focus", () => {
+  // Never over a half-written `from:`/`to:` — the picker owns that box, and
+  // it may be shut simply because the blur that took focus away closed it.
   if (field.mentioning) return;
-  if (s.hits.length && $q.value.trim() && $results.hidden) openPopup();
+  const text = $q.value.trim();
+  if (s.hits.length && s.hitsFor === text && text && $results.hidden) openPopup();
 });
 
 $results.addEventListener("click", (e) => {
@@ -986,7 +994,7 @@ function applyUrl() {
     if (/^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(seg)) {
       clearTimeout(debounceTimer);
       s.requestId++; // cancel any in-flight search render
-      s.hits = []; s.error = null; s.loading = false;
+      s.hits = []; s.hitsFor = null; s.error = null; s.loading = false;
       $q.value = "";
       document.body.classList.remove("has-query");
       document.body.classList.add("searching");

@@ -255,6 +255,26 @@ export function mountSearchField(el, list, { lookup, onEdit }) {
   }
 
   /**
+   * The UNFINISHED `from:`/`to:` token the caret sits in, or null.
+   *
+   * Derived from the text every time rather than remembered, because the
+   * picker being shut is not the same thing as the token being done — blur
+   * closes the list, and the half-written `from:al` is still sitting there
+   * waiting to be finished. With `mentioning` keyed on the open list, coming
+   * back to the field opened the RESULTS popup over that token: the one thing
+   * this feature promises will not happen.
+   *
+   * With no selection in the field (nothing focused, or focus elsewhere) the
+   * caret reads as the end of the value, which is the right answer for the
+   * question app.js asks: a box ENDING in a half-written token is not a box
+   * to show text results for.
+   */
+  function pendingMention() {
+    const m = mentionAt(readValue(), caretIndex());
+    return m && !m.complete ? m : null;
+  }
+
+  /**
    * Re-read the token under the caret and keep the picker in step.
    *
    * Idempotent by design: an unchanged token returns early rather than
@@ -262,8 +282,7 @@ export function mountSearchField(el, list, { lookup, onEdit }) {
    * every edit AND every caret move.
    */
   function updateMention() {
-    const found = mentionAt(readValue(), caretIndex());
-    const next = found && !found.complete ? found : null;
+    const next = pendingMention();
     if (!next) { if (mention) closeList(); return; }
     if (mention && mention.field === next.field && mention.start === next.start && mention.partial === next.partial) return;
     mention = next;
@@ -330,6 +349,11 @@ export function mountSearchField(el, list, { lookup, onEdit }) {
   // that the picker is using are excluded — they move the highlight, not the
   // caret, and re-reading here would reset it on every press.
   el.addEventListener("click", updateMention);
+  // Coming BACK to a half-written token has to pick up where it left off. Blur
+  // shut the picker, and without this the only way to see it again was to type
+  // another character — so tabbing away and back, or leaving the window and
+  // returning, stranded `from:al` with no way to finish it but by hand.
+  el.addEventListener("focus", updateMention);
   el.addEventListener("keyup", (e) => {
     if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") updateMention();
   });
@@ -374,8 +398,16 @@ export function mountSearchField(el, list, { lookup, onEdit }) {
   };
 
   return {
-    /** Is a from:/to: token being built right now? */
-    get mentioning() { return listOpen(); },
+    /**
+     * Is a from:/to: token being built right now?
+     *
+     * The open list OR an unfinished token under the caret — the second half
+     * matters because the list closes on blur and on Escape while the token
+     * stays half-written, and app.js uses this to decide whether the results
+     * popup may open. Answering "no" in that window is how a stale result
+     * list ended up over `from:al`.
+     */
+    get mentioning() { return listOpen() || !!pendingMention(); },
     /**
      * The keys the picker owns while it is open, consumed here so app.js's
      * own handler can return. Called BY app.js rather than racing it in the
