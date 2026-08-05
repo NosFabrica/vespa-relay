@@ -407,14 +407,24 @@ async function rankServiceOf(observer) {
   return svc;
 }
 
-/** Fill in any score chips currently on the page. */
+/**
+ * Fill in any score chips currently on the page.
+ *
+ * Every exit paints, including the ones that have nothing to say. Most chips
+ * live inside HTML that is rebuilt per search, so a lens with no scores used
+ * to clear itself simply by being re-rendered — but the SEARCH FIELD's chips
+ * outlive every search, and returning early there left one lens's numbers
+ * sitting on a face under the next lens, or after signing out.
+ */
 async function paintScores() {
   const lens = viewingAs || me;
   if (scoreLensKey !== lens) { scores.clear(); scoreLensKey = lens; }
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
-  if (!lens || !chips.length) return;
-  const svc = await rankServiceOf(lens);
-  if (!svc) return;                     // this lens ranks nothing; no chips
+  if (!chips.length) return;
+  const svc = lens ? await rankServiceOf(lens) : null;
+  // Nobody to rank by, or a lens that ranks nothing: the chips are not stale,
+  // they are ANSWERED — with no number.
+  if (!svc) { paintChips(chips); return; }
   const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
   for (let i = 0; i < need.length; i += 100) {
     const batch = need.slice(i, i + 100);
@@ -423,6 +433,13 @@ async function paintScores() {
       const conn = await refConn();
       evs = await conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length });
     } catch (e) { /* leave them unknown rather than wrong */ }
+    // The lens can change WHILE this is in flight — the reader picks another
+    // observer, or signs out — and `scores` was cleared and re-keyed to the
+    // new one by the paint that followed them. Writing this batch into it then
+    // files one lens's numbers under another's name, and the `null`s below are
+    // worse: they are cached as "this lens gives them no score", which nothing
+    // re-asks. The answer is simply stale; drop it.
+    if (scoreLensKey !== lens) return;
     const seen = new Set();
     for (const ev of evs) {
       const d = (ev.tags || []).find(t => t?.[0] === "d")?.[1];
@@ -438,9 +455,14 @@ async function paintScores() {
     // consulted before every repaint, so that null is permanent for the lens.
     if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
+  paintChips(chips);
+}
+
+/** The chips themselves, from whatever `scores` now knows. */
+function paintChips(chips) {
   for (const c of chips) {
     const v = scores.get(c.dataset.pk);
-    if (v == null || Number.isNaN(v)) { c.textContent = ""; c.classList.remove("on"); continue; }
+    if (v == null || Number.isNaN(v)) { c.textContent = ""; c.classList.remove("on"); c.removeAttribute("title"); continue; }
     c.textContent = v;
     c.classList.add("on");
     c.title = `trust ${v} — as ${viewingAs ? "the observer you are viewing as" : "you"} rank them`;
