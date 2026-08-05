@@ -79,7 +79,11 @@ export const clampCls = (opts) => (opts && opts.full ? "" : " clamp");
 // ---- shared chrome --------------------------------------------------------
 /** A pubkey-derived hue, so a missing picture is still a stable, distinct face. */
 export const hueOf = (seed) => (parseInt(String(seed || "").slice(0, 4), 16) || 0) % 360;
-const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
+// Exported because the search field's mention chips fall back the same way: a
+// broken picture becomes the SAME generated face there as in a card, and one
+// answer to "what does this person look like when their host is down" is worth
+// more than a second copy of a data uri.
+export const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
 
 /** A broken picture falls back to the same generated face, in place. */
 export function avatarHtml(pic, seed) {
