@@ -170,14 +170,26 @@ internal class IngestPipeline(
         event: Event,
         skipVerify: Boolean,
     ) {
-        // Counted only when the channel actually took it: during shutdown
-        // (closeIntake) the send fails, and counting a dropped event would
-        // leave a phantom queue depth on the final health line.
+        // Counted BEFORE the send, and taken back if the send fails. The
+        // event is in the channel the instant `send` returns, so a worker can
+        // take it and decrement before a post-send increment ever runs — which
+        // drove the depth NEGATIVE (`ingest queue -1/4096` on the health line).
+        // Harmless to ingest, but that depth is the number every stall
+        // diagnosis in this repo starts from, and a wrong one sends the next
+        // reader the wrong way.
+        queued.incrementAndGet()
+        var handedOff = false
         try {
             inbound.send(Inbound(event, skipVerify))
-            queued.incrementAndGet()
-        } catch (e: ClosedSendChannelException) {
-            // Shutdown raced this event in. Not an error, and not counted.
+            handedOff = true
+        } catch (_: ClosedSendChannelException) {
+            // Shutdown (closeIntake) raced this event in. Not an error.
+        } finally {
+            // In a finally, not just the catch: `send` also throws
+            // CancellationException on shutdown, and a catch that named only
+            // the closed-channel case would leak the count on every event in
+            // flight when the router stops.
+            if (!handedOff) queued.decrementAndGet()
         }
     }
 
