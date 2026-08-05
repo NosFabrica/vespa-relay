@@ -3,7 +3,7 @@
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
-import { register, shell, bodyHtml, noteHref, extLink, tagOf, tagsOf, tagsWhere, clipIf, chipRow } from "./base.js";
+import { register, shell, bodyHtml, extLink, noteHref, tagOf, tagsOf, tagsWhere, clipIf, chipRow } from "./base.js";
 
 const preBlock = (opts, text, n = 2000) =>
   text ? `<pre class="codeblock">${esc(clipIf(opts, text, n))}</pre>` : "";

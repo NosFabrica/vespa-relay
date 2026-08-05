@@ -23,15 +23,16 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.relay.config.defaultRelayLimits
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RelayLimits
 import com.vitorpamplona.quartz.nip11RelayInfo.Nip11RelayInformation
-import io.ktor.http.CacheControl
 import io.ktor.http.ContentType
 import io.ktor.http.HttpHeaders
 import io.ktor.http.HttpMethod
 import io.ktor.http.HttpStatusCode
+import io.ktor.http.defaultForFilePath
+import io.ktor.http.withCharset
+import io.ktor.server.application.ApplicationCall
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
-import io.ktor.server.http.content.staticResources
 import io.ktor.server.netty.Netty
 import io.ktor.server.netty.NettyApplicationEngine
 import io.ktor.server.plugins.compression.Compression
@@ -39,11 +40,16 @@ import io.ktor.server.plugins.compression.deflate
 import io.ktor.server.plugins.compression.gzip
 import io.ktor.server.plugins.compression.minimumSize
 import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.response.header
 import io.ktor.server.response.respond
+import io.ktor.server.response.respondBytes
 import io.ktor.server.response.respondText
+import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
 import io.ktor.server.routing.routing
 import io.ktor.server.websocket.WebSockets
+import java.security.MessageDigest
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The NIP-11 relay identity served on `GET /` (Accept: application/nostr+json).
@@ -100,6 +106,11 @@ fun serveRelay(
     // NIP-86 advertises itself in supported_nips only when an admin is wired.
     val effectiveNips = if (admin != null) supportedNips + 86 else supportedNips
     val info = MutableRelayInfo(buildRelayInfo(nip11, limits, effectiveNips))
+    // Hashed once at boot rather than per request: these strings are read off
+    // the classpath at startup and never change while the process lives.
+    val landing = landingPage?.let(::CachedPage)
+    val stats = statsPage?.let(::CachedPage)
+    val observerStats = observerStatsPage?.let(::CachedPage)
 
     return embeddedServer(Netty, port = port) {
         // The pages are ~117KB of text — html, ES modules, css — and none of it
@@ -142,36 +153,21 @@ fun serveRelay(
                 if (accept.contains("application/nostr+json")) {
                     call.respondText(info.nip11Json(), NOSTR_JSON)
                 } else {
-                    landingPage?.let { call.respondText(it, ContentType.Text.Html) }
+                    landing?.let { call.respondPage(it) }
                         ?: call.respondText("${nip11.name} - a NIP-50 search relay; connect a WebSocket here.")
                 }
             }
-            // The landing page's behavior lives in native ES modules under
-            // resources/web/ — no build step, so they are served as-is. A
-            // distinct /web prefix rather than a root fallback: the root is
-            // already three-way overloaded (WS upgrade, NIP-11 negotiation,
-            // the landing page), and a wildcard there would have to lose to
-            // all of them by routing subtlety instead of by construction.
-            // A short max-age: without any cache header the modules are
-            // refetched on every full page load (each /npub1… deep link is
-            // one), and jar-served resources carry no validators to
-            // revalidate against. 60s keeps in-session navigation free while
-            // bounding version skew after a deploy — index.html itself is
-            // served uncached, so a stale module can outlive a new page by
-            // at most a minute.
-            staticResources("/web", "web") {
-                cacheControl { listOf(CacheControl.MaxAge(maxAgeSeconds = 60)) }
-            }
+            webModules()
             // Any NIP-19 identifier is a page. The server validates only the
             // SHAPE and serves the landing page; decoding — checksum, TLV,
             // what the identifier names — belongs to the page, which already
             // speaks bech32. Deliberately not a catch-all: /favicon.ico and
             // typos should stay 404s, not empty search pages. Ktor prefers
             // literal routes, so /kind_stats.html and /web/… are unaffected.
-            landingPage?.let { page ->
+            landing?.let { page ->
                 get("/{nip19}") {
                     if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
-                        call.respondText(page, ContentType.Text.Html)
+                        call.respondPage(page)
                     } else {
                         call.respond(HttpStatusCode.NotFound)
                     }
@@ -193,11 +189,11 @@ fun serveRelay(
                     )
                 }
             }
-            statsPage?.let { page ->
-                get("/kind_stats.html") { call.respondText(page, ContentType.Text.Html) }
+            stats?.let { page ->
+                get("/kind_stats.html") { call.respondPage(page) }
             }
-            observerStatsPage?.let { page ->
-                get("/observer_stats.html") { call.respondText(page, ContentType.Text.Html) }
+            observerStats?.let { page ->
+                get("/observer_stats.html") { call.respondPage(page) }
             }
             admin?.let { nip86Admin(it, info) }
         }
@@ -206,6 +202,146 @@ fun serveRelay(
 
 /** The NIP-11 content type, parsed once — every client fetches this on connect. */
 private val NOSTR_JSON = ContentType.parse("application/nostr+json")
+
+/**
+ * `GET /web/…` — the landing page's native ES modules, straight off the
+ * classpath, no build step.
+ *
+ * A distinct /web prefix rather than a root fallback: the root is already
+ * three-way overloaded (WS upgrade, NIP-11 negotiation, the landing page), and
+ * a wildcard there would have to lose to all of them by routing subtlety
+ * instead of by construction.
+ *
+ * Served from [WebAssets] rather than Ktor's `staticResources` for the
+ * validator. A short max-age is the freshness bound the page wants — index.html
+ * is revalidated every time, so a stale module can outlive a new page by at most
+ * a minute — but on its own it means every load past that minute re-downloads
+ * all 23 modules in full, and a deep link IS a full load. The classpath carries
+ * no validators to revalidate against, so this mints one from the content: a
+ * returning reader gets 23 empty 304s instead of ~40KB. The read and the hash
+ * happen once per module for the life of the process; before this, every request
+ * re-opened the classpath entry and re-gzipped it.
+ *
+ * Its own function so a test can mount it alone — the module directory is the
+ * whole page, and a broken route here is a blank site.
+ */
+internal fun Route.webModules() {
+    get("/web/{path...}") {
+        val rel =
+            call.parameters
+                .getAll("path")
+                .orEmpty()
+                .joinToString("/")
+        val asset = WebAssets.get(rel)
+        if (asset == null) {
+            call.respond(HttpStatusCode.NotFound)
+        } else {
+            call.respondAsset(asset)
+        }
+    }
+}
+
+/**
+ * A strong ETag over [bytes] — the first 16 hex of its SHA-256.
+ *
+ * Content-derived rather than a timestamp on purpose: a jar entry's mtime is
+ * the build's, not the file's, so two deploys of an unchanged module would
+ * still miss. A hash makes "unchanged" mean unchanged.
+ */
+private fun etagOf(bytes: ByteArray): String =
+    MessageDigest
+        .getInstance("SHA-256")
+        .digest(bytes)
+        .take(8)
+        .joinToString("") { "%02x".format(it) }
+        .let { "\"$it\"" }
+
+/** One of the three HTML pages, with the validator that saves re-sending it. */
+internal class CachedPage(
+    val html: String,
+) {
+    val etag: String = etagOf(html.toByteArray(Charsets.UTF_8))
+}
+
+/**
+ * The landing/stats pages, revalidated every time but re-sent only when they
+ * changed.
+ *
+ * `no-cache` is NOT "do not store": it means the browser must ask before
+ * reusing, which is exactly the property these pages need — a deploy is picked
+ * up on the next load, and the modules under /web can never outlive their page
+ * by more than their own max-age. What it adds is the 304: reloading a page
+ * that has not changed since the last deploy costs a header exchange instead of
+ * 25KB of markup and inline CSS re-gzipped from scratch.
+ */
+private suspend fun ApplicationCall.respondPage(page: CachedPage) {
+    response.header(HttpHeaders.ETag, page.etag)
+    response.header(HttpHeaders.CacheControl, "no-cache")
+    if (matchesEtag(page.etag)) {
+        respond(HttpStatusCode.NotModified)
+    } else {
+        respondText(page.html, ContentType.Text.Html)
+    }
+}
+
+/** The same exchange for a /web module, which additionally may be reused for a minute. */
+private suspend fun ApplicationCall.respondAsset(asset: WebAssets.Asset) {
+    response.header(HttpHeaders.ETag, asset.etag)
+    response.header(HttpHeaders.CacheControl, "max-age=60")
+    if (matchesEtag(asset.etag)) {
+        respond(HttpStatusCode.NotModified)
+    } else {
+        respondBytes(asset.bytes, asset.contentType)
+    }
+}
+
+/**
+ * Does the request already hold this exact version?
+ *
+ * `If-None-Match` is a comma-separated list, and a proxy may hand back a weak
+ * form (`W/"…"`) of a tag we minted strong. Both are the same content by
+ * construction here — one immutable resource, one hash — so the weak prefix is
+ * stripped rather than treated as a mismatch that would re-send the body.
+ */
+private fun ApplicationCall.matchesEtag(etag: String): Boolean =
+    request.headers[HttpHeaders.IfNoneMatch]
+        ?.split(',')
+        ?.any { it.trim().removePrefix("W/") == etag } == true
+
+/**
+ * The page's ES modules, read off the classpath once each and held.
+ *
+ * Lazily, not enumerated at boot: the resources live inside the jar in a
+ * deployment and inside a build directory in a test, and walking either is
+ * more machinery than a map that fills itself on first use. The safety comes
+ * from the path check rather than from the enumeration — [WEB_PATH] admits only
+ * plain segment names, and `..` is rejected outright, so a request can only
+ * ever name a file under `web/`.
+ */
+internal object WebAssets {
+    class Asset(
+        val bytes: ByteArray,
+        val contentType: ContentType,
+        val etag: String,
+    )
+
+    private val cache = ConcurrentHashMap<String, Asset>()
+    private val WEB_PATH = Regex("^[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*(?:/[A-Za-z0-9_-]+(?:\\.[A-Za-z0-9_-]+)*)*$")
+
+    fun get(rel: String): Asset? {
+        if (rel.isEmpty() || rel.contains("..") || !WEB_PATH.matches(rel)) return null
+        cache[rel]?.let { return it }
+        val bytes = javaClass.getResourceAsStream("/web/$rel")?.use { it.readBytes() } ?: return null
+        // The modules are UTF-8 source and carry non-ASCII (the "…" in every
+        // clipped label), so the charset has to be stated. Anything that is not
+        // text keeps the type Ktor derives from its extension, unannotated.
+        val base = ContentType.defaultForFilePath(rel)
+        val type = if (base.contentType == "text" || base.contentSubtype in TEXTUAL) base.withCharset(Charsets.UTF_8) else base
+        return cache.computeIfAbsent(rel) { Asset(bytes, type, etagOf(bytes)) }
+    }
+
+    private val TEXTUAL = setOf("javascript", "json", "xml", "svg+xml")
+}
 
 /**
  * A path segment that is plausibly a NIP-19 identifier: the five entity

@@ -188,6 +188,15 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
 
   let ev = null, err = null, hint = null, gated = null;
   try {
+    // The anonymous socket is opened ALONGSIDE sign-in, not after the lens has
+    // already missed. Every path below reaches it — the whole-index fallback,
+    // the names, the score chips — and opening a WebSocket is a round trip
+    // before a single byte of question moves. A signed-in reader got this for
+    // free (login() fetches their own face over it); a signed-out one, or one
+    // whose lens holds the event, was paying the handshake in the middle of
+    // the lookup. refConn() dedupes its own opening, so this is a warm-up, not
+    // a second connection.
+    const warming = refConn().catch(() => null);
     // Settle sign-in first: whether there is a lens decides who gets asked.
     stage("signing in…");
     try { await ensureLogin(); } catch (e) {}
@@ -201,7 +210,7 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
     }
     if (!ev) {
       stage(relay.authed ? "not in your network's view — checking the whole index…" : "asking this relay…");
-      const conn = await refConn();
+      const conn = (await warming) || (await refConn());
       const anon = await fetchEntity(conn, parsed);
       // Present in the index but held back by the lens: OFFERED, not shown.
       if (anon && relay.authed) gated = anon;

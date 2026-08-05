@@ -108,7 +108,18 @@ export function bylineHtml(ev, opts) {
     </div>`;
 }
 
-/** A props table, skipping rows whose value came up empty. */
+/**
+ * A props table, skipping rows whose value came up empty.
+ *
+ * The VALUE goes in as raw HTML — that is what lets a row be a link — so every
+ * value derived from an event must arrive already escaped. This is not a
+ * theoretical rule: four cards passed `fmtTs(tagOf(ev, …))` straight in, and
+ * fmtTs hands back its argument verbatim when it is not a number, so
+ * `["endsAt", "<img src=x onerror=…>"]` on a kind 1068 executed in the page.
+ * tools/webtest/cards.test.mjs now renders every registered kind with a payload
+ * in every tag and fails if it survives, so the next one is caught here rather
+ * than in the wild.
+ */
 export const propsHtml = (props) => {
   const rows = props.filter(([, v]) => v != null && v !== "");
   return rows.length ? `<dl class="props">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>` : "";
@@ -155,33 +166,38 @@ export const titleHtml = (opts, text, n = 140, href = null) => {
 };
 
 /**
- * A url out of an EVENT, safe to put in an href — or null.
+ * A url off an event, reduced to one this page will put in an `href` — or null.
  *
- * esc() stops the attribute being broken out of; it does not stop the SCHEME,
- * and `javascript:` in an href runs on click in this page's origin — the
- * origin holding an authenticated NIP-42 socket. Every one of these urls is a
- * string a stranger published. Only what a card's link is actually for gets
- * through: a web page.
+ * `esc()` makes a url safe to SIT in an attribute; it says nothing about what
+ * the browser does when the link is clicked, and `javascript:` or
+ * `data:text/html` in an href is a script the reader runs on themselves. Every
+ * link here carries `target="_blank"`, which current browsers refuse to follow
+ * for both schemes — but that is a browser's behaviour, not this page's, and
+ * every one of these urls came from a stranger's event.
+ *
+ * Absolute http/https only. A relative url would resolve against this origin,
+ * which is never what an event meant.
  */
-export const webUrl = (url) => {
-  const t = String(url ?? "").trim();
-  // The parser strips tabs and newlines and lowercases the scheme, so
-  // "Java\nSCRIPT:…" is caught here rather than by the regex it defeats.
-  try { return /^https?:$/.test(new URL(t).protocol) ? t : null; } catch (e) { return null; }
+export const safeUrl = (u) => {
+  const s = String(u || "").trim();
+  if (!s) return null;
+  try {
+    const p = new URL(s).protocol;   // throws on anything not absolute
+    return p === "http:" || p === "https:" ? s : null;
+  } catch (e) { return null; }
 };
 
 /**
- * A url on a card: a link when it can be one, the plain text when it cannot.
- *
- * Not dropped — a `website` the page refuses to link is still a claim the
- * profile makes, and the reader is better served seeing it than wondering
- * where it went. Every family renders these identically (five had their own
- * copy of this anchor, and each of those was one of the href holes above).
+ * The one external link. Unlinkable urls render as their own text rather than
+ * disappearing: the reader can still see what the event claimed, which is the
+ * point of showing the field at all.
  */
 export const extLink = (url, label) => {
-  const safe = webUrl(url);
-  if (safe) return `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>`;
-  return url ? `<span class="mono">${esc(label || url)}</span>` : null;
+  if (!url) return null;
+  const safe = safeUrl(url);
+  return safe
+    ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(label || safe)}</a>`
+    : `<span class="mono">${esc(clip(String(url), 120))}</span>`;
 };
 
 /**

@@ -52,7 +52,11 @@ export function avatarHtml(pic, pubkey, size = "lg") {
   if (!SIZES.includes(size)) throw new Error(`unknown avatar size: ${size}`);
   const style = `style="--h:${hueOf(pubkey)}"`;
   const face = pic
-    ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+    // decoding="async" as well as loading="lazy": lazy decides WHEN the bytes
+    // are fetched, not who decodes them. A full results page lands forty faces
+    // at once, and decoding them synchronously blocks the same main thread that
+    // is rendering the list they belong to.
+    ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"
          onerror="this.classList.add('gen');this.src='${BLANK}'" />`
     : `<div class="avatar gen" ${style}></div>`;
   return `<span class="av-wrap av-${size}">${face}<span class="score-chip" data-pk="${esc(pubkey || "")}"></span></span>`;

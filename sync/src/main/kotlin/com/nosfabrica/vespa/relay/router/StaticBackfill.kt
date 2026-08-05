@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
@@ -236,12 +237,15 @@ internal class StaticBackfill(
             for (window in legs) {
                 var seenMin: Long? = null
                 var seenMax: Long? = null
+                // Per-kind spans, which quartz's SyncCoverage requires before it
+                // will record a band for a multi-kind filter at all.
+                val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
                 val walk = "${upstream.streamName}|${upstream.url.url}"
                 // Counted as events arrive — not from fetchAllPages' return
                 // value, which only lands when the walk ends; that once read
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
-                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncBands.PLAUSIBLE_FLOOR)
+                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                 downloaded +=
                     client.fetchAllPages(
                         upstream.url,
@@ -250,10 +254,17 @@ internal class StaticBackfill(
                         onNewPage = { until -> paging.mark(walk, until) },
                     ) { event ->
                         if (upstream.filter.match(event)) {
-                            if (SyncBands.isPlausible(event.createdAt)) {
+                            if (SyncCoverage.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                             }
+                            // Per KIND too: a band holding one interval for a
+                            // multi-kind filter lets a long-lived kind vouch
+                            // for a short-lived one, and quartz now declines to
+                            // record such a band at all rather than over-claim.
+                            // Without this, every multi-kind stream here would
+                            // stop resuming.
+                            SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                             ingest.submit(event, upstream.trusted)
                         }
                         seenSoFar++
@@ -263,7 +274,7 @@ internal class StaticBackfill(
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
                 paging.finish(walk)
-                bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true)
+                bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
             }
             progress.done(idx, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
@@ -340,7 +351,21 @@ internal class StaticBackfill(
         group: List<SyncUpstream>,
         filter: Filter,
     ): StreamSnapshot {
-        val window = bands.coveringWindow(group.map { it.url }, filter)
+        val urls = group.map { it.url }
+        // Nobody in this group has anything outside its band, so every
+        // reconcileOne below returns at its own `legs.isEmpty()` check without
+        // ever reading the snapshot. Build it anyway and the cycle pays the
+        // most expensive thing this router does for no work at all —
+        // coveringWindow cannot help here, because once no relay needs anything
+        // there is no window to narrow TO and it correctly hands back the whole
+        // filter. Asking first is the only place the saving exists.
+        if (!bands.anyOutstanding(urls, filter)) {
+            System.err.println(
+                "router: static backfill ${group.first().streamName} — all ${group.size} relay(s) already cover the filter, skipping the snapshot",
+            )
+            return StreamSnapshot(emptyList(), nowSeconds())
+        }
+        val window = bands.coveringWindow(urls, filter)
         val startedMs = System.currentTimeMillis()
         val takenAt = startedMs / 1000
         val name = group.first().streamName
@@ -380,6 +405,9 @@ internal class StaticBackfill(
                 // many events came back, not when they were from.
                 var seenMin: Long? = null
                 var seenMax: Long? = null
+                // Per-kind spans, which quartz's SyncCoverage requires before it
+                // will record a band for a multi-kind filter at all.
+                val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
                 // No wall-clock deadline anywhere here — see [NEG_IDLE_MS].
                 val result =
                     client.negentropySyncOrFetch(
@@ -393,10 +421,11 @@ internal class StaticBackfill(
                                 // Only PLAUSIBLE stamps widen the band: one
                                 // future-dated event among 700k once discarded
                                 // a whole upstream's band.
-                                if (SyncBands.isPlausible(event.createdAt)) {
+                                if (SyncCoverage.isPlausible(event.createdAt)) {
                                     seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                     seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                                 }
+                                SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                                 ingest.submit(event, upstream.trusted)
                             }
                         },
@@ -415,6 +444,10 @@ internal class StaticBackfill(
                     seenMax,
                     result.pagedFallback,
                     reconciledThrough = snapshot.takenAt.takeUnless { result.pagedFallback },
+                    // Only read on the paged-fallback branch; a finished
+                    // reconcile compares the whole filter at once and earns the
+                    // same span for every kind in it.
+                    observedByKind = seenByKind,
                 )
             }
             progress.done(idx, downloaded)

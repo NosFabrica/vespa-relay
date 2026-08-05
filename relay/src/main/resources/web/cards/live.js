@@ -19,7 +19,7 @@ function liveCard(ev, opts) {
   return shell(ev, opts, inner, [
     ["stream", extLink(tagOf(ev, "streaming"))],
     ["recording", extLink(tagOf(ev, "recording"))],
-    ["starts", tagOf(ev, "starts") ? fmtTs(tagOf(ev, "starts")) : null],
+    ["starts", tagOf(ev, "starts") ? esc(fmtTs(tagOf(ev, "starts"))) : null],
     ["watching", participants ? esc(participants) : null],
   ]);
 }

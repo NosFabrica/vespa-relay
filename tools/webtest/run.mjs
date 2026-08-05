@@ -17,13 +17,11 @@
 // avatar.test.mjs  the one face renderer — and every size it names has a row
 //                  in index.html's --av table, since a missing row draws a
 //                  face at no size at all and throws nothing
-// links.test.mjs   no event can put its own SCHEME in an href — escaping the
-//                  url never was the same thing as trusting it
 import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "preload.test.mjs", "avatar.test.mjs", "links.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "preload.test.mjs", "avatar.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

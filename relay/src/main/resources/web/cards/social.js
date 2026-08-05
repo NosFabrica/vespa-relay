@@ -130,7 +130,7 @@ function pollCard(ev, opts) {
     (options.length ? `<ul class="ref-list">${(opts && opts.full ? options : options.slice(0, 6)).map((o) => `<li>${esc(clip(o, 120))}</li>`).join("")}</ul>` : "");
   return shell(ev, opts, inner, [
     ["choices", options.length ? String(options.length) : null],
-    ["closes", ends ? fmtTs(ends) : null],
+    ["closes", ends ? esc(fmtTs(ends)) : null],
   ]);
 }
 
@@ -240,7 +240,7 @@ function statusCard(ev, opts) {
   return shell(ev, opts, inner, [
     ["status", kindOfStatus ? esc(kindOfStatus) : null],
     ["link", extLink(link)],
-    ["expires", expiry ? fmtTs(expiry) : null],
+    ["expires", expiry ? esc(fmtTs(expiry)) : null],
   ]);
 }
 
