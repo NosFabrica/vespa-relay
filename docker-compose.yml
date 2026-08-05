@@ -343,11 +343,16 @@ services:
     # total; it is the only one that rounds to nothing.
     mem_limit: ${TOR_MEM_LIMIT:-256m}
     healthcheck:
-      # The SOCKS port answering is what the router probes before it dials any
+      # The SOCKS port LISTENING is what the router probes before it dials any
       # hidden service, so it is what the healthcheck should mean too. It does
       # NOT prove Tor has bootstrapped — `docker compose logs tor` and its
       # "Bootstrapped 100%" line is the check for that.
-      test: ["CMD-SHELL", "nc -z 127.0.0.1 9050 || exit 1"]
+      #
+      # netstat, not `nc -z`: both come from busybox in this image, but the -z
+      # scan flag is a build option busybox is not guaranteed to carry, and a
+      # healthcheck that fails on a missing flag reports a working Tor as
+      # broken. Reading the listening set needs no flag anyone can omit.
+      test: ["CMD-SHELL", "netstat -lnt | grep -q ':9050 '"]
       interval: 10s
       timeout: 5s
       retries: 12

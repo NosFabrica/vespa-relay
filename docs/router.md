@@ -467,12 +467,21 @@ the setting. Discovered ones are dropped instead, and counted in the log: a
 relay list is not something you typed, so the fix is a setting rather than an
 edit.
 
-**Nothing negative is published about a hidden service.** Reaching one depends
-on our circuit as much as on their server, and a NIP-66 record is a signed
-public statement. The router also probes its own SOCKS port before each cycle
-that would dial one: if our Tor is down, those relays are skipped with a log
-line rather than dialled into failures that read exactly like the services
-being gone.
+**No verdict of ours is published about anything reached through Tor.** The
+router synthesises two — a host struck out for silence, and "unreachable" from
+a failed transfer — and both are suppressed for a proxied relay, because
+silence arriving through three relays and a rendezvous is as likely to be our
+circuit as their server. Under `SYNC_TOR_ALL` that covers every relay: the
+weakness is the transport, not the address.
+
+What still gets published is quartz's own connection-level observation: a dial
+that fails is recorded as unreachable whatever the transport. That is the
+reason the router probes its **own** SOCKS port before dialling anything it
+routes through Tor — a proxy that is down or restarting would otherwise turn a
+whole fan-out into signed claims about other people's servers. Those relays are
+skipped instead, counted on the cycle line. The answer is cached for 30s rather
+than taken once per cycle, so a Tor container that restarts is picked up inside
+the running cycle instead of at the next refresh, six hours later.
 
 Onion relays are slow to dial — seconds, not milliseconds — so give them their
 own stream first, and measure it alone:

@@ -66,10 +66,16 @@ class TorTransportTest {
         val port: Int get() = server.localPort
         val asked = ArrayBlockingQueue<String>(8)
 
+        /** How many connections this proxy has accepted, of any kind. */
+        val accepted =
+            java.util.concurrent.atomic
+                .AtomicInteger()
+
         init {
             thread(isDaemon = true) {
                 while (!server.isClosed) {
                     val socket = runCatching { server.accept() }.getOrNull() ?: return@thread
+                    accepted.incrementAndGet()
                     thread(isDaemon = true) { runCatching { serve(socket) } }
                 }
             }
@@ -242,6 +248,31 @@ class TorTransportTest {
         }
     }
 
+    /**
+     * The gate is asked once per relay, and a dynamic fan-out launches a
+     * coroutine per discovered relay — so when the TTL expires, every runnable
+     * thread arrives at the check together. Each opening its own connection
+     * would answer "is our proxy healthy?" with a burst of load on it.
+     */
+    @Test
+    fun `a fan-out asking at once costs one probe, not one per caller`() {
+        FakeSocks().use { socks ->
+            val transport = TorTransport(settings(port = socks.port), OkHttpClient())
+            val start = java.util.concurrent.CountDownLatch(1)
+            val done = java.util.concurrent.CountDownLatch(32)
+            repeat(32) {
+                thread(isDaemon = true) {
+                    start.await()
+                    transport.socksAnswers()
+                    done.countDown()
+                }
+            }
+            start.countDown()
+            assertTrue(done.await(20, TimeUnit.SECONDS), "the callers should not be blocked behind each other")
+            assertEquals(1, socks.accepted.get(), "32 callers opened ${socks.accepted.get()} connections to the proxy")
+        }
+    }
+
     @Test
     fun `SYNC_TOR_SOCKS parses host and port, with or without a scheme`() {
         val plain = assertNotNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "tor:9050")))
@@ -253,6 +284,13 @@ class TorTransportTest {
         val scheme = assertNotNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "socks5://127.0.0.1:9150")))
         assertEquals("127.0.0.1", scheme.socksHost)
         assertEquals(9150, scheme.socksPort)
+
+        // The brackets are there to keep an IPv6 literal's colons apart from
+        // the port's; InetSocketAddress wants the address without them, and a
+        // host that keeps them never resolves while looking correct in a log.
+        val v6 = assertNotNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "[::1]:9050")))
+        assertEquals("::1", v6.socksHost)
+        assertEquals(9050, v6.socksPort)
     }
 
     @Test
@@ -275,13 +313,35 @@ class TorTransportTest {
 
     /**
      * The pre-probe is a plain socket to a resolved address, so it cannot say
-     * anything about a hidden service — and asking would both fail and hand
-     * the name to the local resolver.
+     * anything about a relay the dial will reach through Tor — and asking
+     * would both fail and hand the name to the local resolver.
      */
     @Test
     fun `the TCP pre-probe is skipped for onion relays and kept for everything else`() {
-        assertFalse(shouldPreProbe(onion))
-        assertTrue(shouldPreProbe(clearnet))
+        val tor = TorTransport(settings(port = 9050), OkHttpClient())
+        assertFalse(shouldPreProbe(onion, tor))
+        assertTrue(shouldPreProbe(clearnet, tor))
+        // No transport: the probe is the only thing that will ever look at
+        // most of these relays, so it stays on for every clearnet url.
+        assertTrue(shouldPreProbe(clearnet, null))
+    }
+
+    /**
+     * `SYNC_TOR_ALL` puts CLEARNET relays behind the same circuit, and every
+     * rule that protects a hidden service has to follow them there.
+     *
+     * The pre-probe is the sharp one: it resolves the name and opens a socket
+     * from this box's own address. Left on under `SYNC_TOR_ALL` it would do
+     * that for all ~20,000 discovered relays — announcing to each of them, and
+     * to the local resolver, exactly what the setting was turned on to hide,
+     * while measuring a path no transfer would use.
+     */
+    @Test
+    fun `SYNC_TOR_ALL takes the onion rules with it to clearnet relays`() {
+        val all = TorTransport(settings(port = 9050, everything = true), OkHttpClient())
+        assertFalse(shouldPreProbe(clearnet, all), "SYNC_TOR_ALL must not leave a direct probe of every relay running")
+        assertFalse(shouldPreProbe(onion, all))
+        assertTrue(all.routes(clearnet), "the strike and UNREACHABLE guards key on this")
     }
 
     /**

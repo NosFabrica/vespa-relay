@@ -91,7 +91,16 @@ data class TorSettings(
         fun fromEnv(env: Map<String, String>): TorSettings? {
             val raw = env["SYNC_TOR_SOCKS"]?.trim()?.takeIf { it.isNotEmpty() } ?: return null
             val hostPort = raw.substringAfter("://")
-            val host = hostPort.substringBeforeLast(':', "").takeIf { it.isNotEmpty() }
+            // `[::1]:9050` — the brackets exist to separate the colons of an
+            // IPv6 literal from the port's, and only the port parse needs
+            // them. InetSocketAddress wants the address without: left on, the
+            // host never resolves and every dial fails on a value that looks
+            // exactly right in the log.
+            val host =
+                hostPort
+                    .substringBeforeLast(':', "")
+                    .removeSurrounding("[", "]")
+                    .takeIf { it.isNotEmpty() }
             val port = hostPort.substringAfterLast(':', "").toIntOrNull()?.takeIf { it in 1..65_535 }
             require(host != null && port != null) {
                 "router: SYNC_TOR_SOCKS='$raw' is not host:port (e.g. tor:9050)"
@@ -179,6 +188,20 @@ internal class TorTransport(
     @Volatile private var probeSaid = false
 
     /**
+     * One prober at a time. The gate is asked once per relay in a fan-out that
+     * launches a coroutine per discovered relay, so the moment the TTL expires
+     * every runnable thread reaches the check together — without this, each of
+     * them opens its own connection and the answer to "is our proxy healthy?"
+     * is a burst of connections to it. The loser of the race takes the
+     * previous answer rather than waiting: it is at most [TorSettings.PROBE_TTL_MS]
+     * stale, and the alternative is blocking IO threads on someone else's
+     * connect timeout.
+     */
+    private val probing =
+        java.util.concurrent.atomic
+            .AtomicBoolean(false)
+
+    /**
      * Is our own proxy answering? Asked before a cycle dials any hidden
      * service, and it is a question about US.
      *
@@ -196,17 +219,25 @@ internal class TorTransport(
      */
     fun socksAnswers(nowMs: Long = System.currentTimeMillis()): Boolean {
         if (nowMs - probedAt < TorSettings.PROBE_TTL_MS) return probeSaid
-        probeSaid =
-            runCatching {
-                java.net.Socket().use {
-                    it.connect(
-                        InetSocketAddress(settings.socksHost, settings.socksPort),
-                        TorSettings.PROBE_TIMEOUT_MS,
-                    )
-                }
-                true
-            }.getOrDefault(false)
-        probedAt = nowMs
+        if (!probing.compareAndSet(false, true)) return probeSaid
+        try {
+            probeSaid =
+                runCatching {
+                    java.net.Socket().use {
+                        it.connect(
+                            InetSocketAddress(settings.socksHost, settings.socksPort),
+                            TorSettings.PROBE_TIMEOUT_MS,
+                        )
+                    }
+                    true
+                }.getOrDefault(false)
+            // After the answer, never before: a reader that saw the new
+            // timestamp with the old verdict would hold a stale answer for a
+            // whole TTL, which is the one outcome the probe exists to avoid.
+            probedAt = nowMs
+        } finally {
+            probing.set(false)
+        }
         return probeSaid
     }
 }
