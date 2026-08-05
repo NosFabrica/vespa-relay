@@ -55,6 +55,23 @@ RELAY_URL=wss://relay.example.com VESPA_URL=http://localhost:8080 ./gradlew :rel
 Vespa is a prerequisite, like a database. `docker compose up` stands one up for you.
 Otherwise point `VESPA_URL` at your own.
 
+### …on Tor as well
+
+One profile puts the same relay behind a `.onion` address, so clients that speak
+Tor can reach it without the clearnet name, a certificate or a public IP:
+
+```bash
+docker compose --profile onion up -d
+docker compose logs tor-onion | grep 'reachable at'
+# onion: this relay is reachable at ws://<56 chars>.onion
+```
+
+Clients dial `ws://<address>.onion`. The address is a key the Tor container
+generates once and keeps in a volume, so it survives restarts; hand it to
+clients yourself, nothing publishes it for you. The relay reads it too, because
+NIP-42 auth events are signed against the address the client dialled — see
+[Serving over Tor](docs/configuration.md#serving-over-tor-a-onion-endpoint).
+
 ## Configuration
 
 All configuration is through environment variables — copy
@@ -70,6 +87,7 @@ automatically. The essentials:
 | `ALLOW_PUBKEYS` / `DENY_PUBKEYS` / `ALLOW_KINDS` / `DENY_KINDS` | write authorization | everyone / all |
 | `RELAY_ADMIN_PUBKEYS` | enables the NIP-86 management API | unset ⇒ off |
 | `SYNC_CONFIG` / `SYNC_CONFIG_FILE` | the router's stream config, read by the **sync process** — see below | — |
+| `RELAY_ONION_URL` / `RELAY_ONION_HOSTNAME_FILE` | the `.onion` this relay also answers at, for NIP-42 — set for you by `--profile onion` | — |
 
 Every variable — limits, tuning, memory sizing, startup migrations, the parse
 audit — is documented in [`docs/configuration.md`](docs/configuration.md).

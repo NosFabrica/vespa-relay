@@ -119,6 +119,15 @@ services:
       LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
+      # The SECOND address the same relay answers at, when the `onion` profile
+      # is on: the hidden service's container mints it and writes it here, and
+      # the relay reads it to accept NIP-42 from Tor clients — they sign the
+      # address they dialled, which is never RELAY_URL. Harmless with the
+      # profile off: nothing writes the file, the relay says nothing, and the
+      # mount is an empty volume. RELAY_ONION_URL is for a hidden service run
+      # outside this compose file, where no container publishes a hostname.
+      RELAY_ONION_HOSTNAME_FILE: ${RELAY_ONION_HOSTNAME_FILE-/var/lib/onion/hostname}
+      RELAY_ONION_URL: ${RELAY_ONION_URL:-}
       # How the relay presents itself in its NIP-11 document. All optional —
       # empty values are omitted from the doc. See .env.example.
       RELAY_NAME: ${RELAY_NAME:-vespa-relay}
@@ -172,6 +181,10 @@ services:
       # container and is readable on the host. Shared with the sync service,
       # which keeps its own files (sync-cursors.json, the parse audit) there.
       - ${PARSE_AUDIT_LOCAL_DIR:-./.audit}:/var/lib/vespa-relay
+      # READ ONLY, and only the published hostname — never the hidden service's
+      # key directory. This is the internet-facing process; the key that IS the
+      # .onion address stays in the container that generates it.
+      - onion_addr:/var/lib/onion:ro
     restart: unless-stopped
 
   # The router, as its own process. Restart it as often as router.conf changes:
@@ -359,5 +372,66 @@ services:
       start_period: 30s
     restart: unless-stopped
 
+  # The relay's own front door on Tor: one hidden service, forwarding to the
+  # relay's websocket port, so any client that speaks Tor can reach this relay
+  # without the clearnet name, a certificate, or a public IP.
+  #
+  #   docker compose --profile onion up -d
+  #   docker compose logs tor-onion | grep 'reachable at'
+  #
+  # A SECOND Tor container rather than a second job for the `tor` above: that
+  # one is the router's client proxy and lives behind the `sync` profile, and
+  # the two are wanted independently — a serving-only deployment wants a front
+  # door and no mirror; a mirror wants .onion upstreams and need not be on Tor
+  # itself. Sharing one daemon would also tie this service's descriptor to
+  # `restart sync`, which is meant to be a cheap router.conf edit.
+  tor-onion:
+    build: ./tor
+    image: vespa-relay-tor
+    container_name: vespa-tor-onion
+    profiles: ["onion"]
+    # Same image, the other config: this entrypoint resolves the relay's
+    # address, generates the torrc around it, publishes the .onion hostname for
+    # the relay to read, and execs tor.
+    entrypoint: ["/usr/local/bin/publish-onion"]
+    # Root only to hand the volumes to the tor user; the daemon drops to
+    # `User tor` from torrc-onion and never runs as root.
+    user: root
+    mem_limit: ${TOR_MEM_LIMIT:-256m}
+    environment:
+      # The SAME variable the relay reads, so the two cannot drift: one names
+      # where the address is written and the other where it is read, and they
+      # are one file on the shared volume.
+      ONION_HOSTNAME_FILE: ${RELAY_ONION_HOSTNAME_FILE-/var/lib/onion/hostname}
+    depends_on:
+      # Started, not healthy (the relay has no healthcheck): the entrypoint has
+      # to resolve `relay` on this network before Tor can be configured, and it
+      # waits for the name either way.
+      relay:
+        condition: service_started
+    volumes:
+      # The service key — the .onion address IS its public half. A named
+      # volume, because losing it means coming back at a different address with
+      # every client that had the old one pointed at nothing. Mounted here and
+      # nowhere else.
+      - tor_onion:/var/lib/tor
+      # …and the address alone, for the relay to read (see its `:ro` mount).
+      - onion_addr:/var/lib/onion
+    healthcheck:
+      # The published hostname, which is what this container exists to produce.
+      # It does NOT prove the descriptor reached the network — `docker compose
+      # logs tor-onion` and its "Bootstrapped 100%" line is the check for that.
+      test: ["CMD-SHELL", "test -s /var/lib/onion/hostname"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+    restart: unless-stopped
+
 volumes:
   vespa_var:
+  # The hidden service's key directory, and the one file the relay reads out of
+  # it. Two volumes on purpose: the address is public and the key is not, and
+  # only the address is mounted into the internet-facing container.
+  tor_onion:
+  onion_addr:

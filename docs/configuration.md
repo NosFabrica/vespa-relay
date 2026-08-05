@@ -69,6 +69,41 @@ codebase forbids.
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
 
+## Serving over Tor (a `.onion` endpoint)
+
+The relay can answer on a Tor hidden service as well as on its clearnet url —
+the same port, the same store, the same web UI, reachable by any client that
+speaks Tor and without a certificate or a public IP. Under docker compose it is
+one profile:
+
+```bash
+docker compose --profile onion up -d
+docker compose logs tor-onion | grep 'reachable at'
+# onion: this relay is reachable at ws://<56 chars>.onion (published to /var/lib/onion/hostname)
+```
+
+That address is the public half of a key the `tor-onion` container generates on
+first start and keeps in its own volume: it survives restarts and rebuilds, and
+`docker compose down -v` — which removes volumes — is what changes it. Nothing
+publishes the address for you; hand it to clients yourself.
+
+The `tor-onion` service is separate from the `tor` service the router dials
+`.onion` **upstreams** through (`--profile sync`, `SYNC_TOR_SOCKS`). They are
+wanted independently: a serving-only relay can have a front door on Tor without
+mirroring anything, and a mirror can reach hidden services without being one.
+
+Clients dial `ws://<address>.onion` — port 80, no TLS. Tor's own encryption is
+what TLS would have provided, and no CA issues certificates for `.onion` names,
+so there is no `wss://` to offer.
+
+| var | meaning | default |
+|---|---|---|
+| `RELAY_ONION_HOSTNAME_FILE` | file the hidden service's container writes its hostname into. The relay reads it to accept NIP-42 from Tor clients, who sign the address they dialled and have never heard of `RELAY_URL` — without it those clients still read and publish, but every AUTH fails and their search silently loses its web-of-trust lens. Read on demand, not once at boot, so an address minted after the relay started is picked up by the next connection; absent is normal and says nothing | compose: `/var/lib/onion/hostname`; bare: unset |
+| `RELAY_ONION_URL` | the same thing declared by hand, for a hidden service run outside this compose file. Malformed ⇒ startup fails, rather than costing Tor clients their ranking lens for a reason nothing reports | unset |
+
+Both may be set; the relay answers to `RELAY_URL` and to every address either
+one names.
+
 ## Router (the sync process)
 
 These configure `vespa-sync`, the mirror's own process — under docker compose,

@@ -31,6 +31,7 @@ node tools/webtest/run.mjs         # web UI module tests (plain node, no deps)
 
 docker compose up -d --build relay # the usual dev loop (serving only)
 docker compose --profile sync up -d --build   # …with the mirror
+docker compose --profile onion up -d          # …with the relay's own .onion
 docker compose --profile sync restart sync    # new router.conf, relay untouched
 docker compose logs relay --since 5m
 docker compose logs sync --since 5m
@@ -68,8 +69,14 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         than `env["..."]` — grep for both or you will conclude a
                         working setting is dead
     PubKeys.kt          npub-only parsing for every pubkey setting
+    RelayAddresses.kt   the OTHER addresses this relay answers at — the .onion
+                        Tor publishes into RELAY_ONION_HOSTNAME_FILE, read on
+                        demand because the address is minted after we boot
   server/               the serving side
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
+    MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
+                        client signs the .onion it dialled, and quartz's
+                        OptionalAuthPolicy binds exactly one url
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
@@ -286,8 +293,9 @@ statement about someone else's server.
 
 ## Operations
 
-`docker-compose.yml` runs Vespa, the relay, and (behind `--profile sync`) the
-sync process and a client-only Tor — four containers, one store. Vespa holds
+`docker-compose.yml` runs Vespa, the relay, (behind `--profile sync`) the sync
+process and a client-only Tor, and (behind `--profile onion`) a second Tor that
+is the relay's own hidden service — one store throughout. Vespa holds
 ~50M events in this deployment. The JVM memory budget is per process: the sync
 container carries the large limit because the negentropy id snapshots live
 there; check the machine's total against those three limits when the profile is
@@ -299,6 +307,29 @@ give the container a second thing to supervise, and make `restart sync` — a
 `router.conf` edit, meant to be cheap — drop every circuit and re-bootstrap.
 Its SOCKS port is published nowhere: an open SOCKS proxy on a public interface
 is an open proxy.
+
+**Two Tors, because they are two jobs.** `tor` (profile `sync`) is the client
+proxy the router dials `.onion` *upstreams* through. `tor-onion` (profile
+`onion`) is the relay's own front door: one hidden service forwarding to the
+relay's port, so any Tor client can reach it without the clearnet name, a
+certificate or a public IP. Same image, different torrc, and wanted
+independently — a serving-only box wants a front door and no mirror. Three
+things about it are not obvious and each cost a config that would not start:
+
+- **tor refuses a hostname in `HiddenServicePort`** ("Unparseable address in
+  hidden service port configuration"), so the entrypoint resolves the compose
+  service name itself and appends the line to a generated torrc. Docker hands a
+  re-created container a new IP and nothing in Tor re-resolves it, so the same
+  script watches the name and restarts the container when it moves — the key is
+  on a volume, so the address survives and only the descriptor blinks.
+- **the key IS the address.** `tor_onion` holds it, mounted into that container
+  and nowhere else; the relay gets a second volume carrying the hostname alone,
+  read-only. `docker compose down -v` is what changes the address.
+- **the relay has to know its own `.onion`**, because NIP-42 auth events are
+  signed against the address the client dialled. Without it reads and publishes
+  still work and every AUTH fails, which costs Tor clients their ranking lens
+  and looks like nothing at all — the reason the address is handed over in a
+  file rather than an env var someone pastes in later.
 
 **Clients-first crosses the process boundary by HTTP.** The relay measures
 client read latency into `ServingPressure` and serves the mean on
