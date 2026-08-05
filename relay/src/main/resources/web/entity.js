@@ -28,7 +28,7 @@ import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
 import { kindLabel } from "./shared/kinds.js";
 import { nip19Parse, shortNpub } from "./shared/nip19.js";
-import { njumpFor } from "./cards/base.js";
+import { njumpFor, tagsWhere } from "./cards/base.js";
 import { card, namedPubkeys } from "./cards.js";
 
 // A token, not a flag: navigating away (or to the next entity) invalidates
@@ -149,7 +149,7 @@ function titleFor(ev, parsed) {
  * loaded before the card renders.
  */
 async function enrichMentions(ev) {
-  const faces = [...new Set((ev.tags || []).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
+  const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
   await enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]);
 }
 

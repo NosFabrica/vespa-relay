@@ -258,6 +258,35 @@ for (const [slug, kinds] of tabs) {
   }
 }
 
+// TOTALITY: no renderer may throw, whatever the event looks like.
+//
+// Not a hypothetical. entity.js dials the relay hints in an identifier this
+// relay does not hold, renders what comes back, and only THEN submits it here
+// for verification — deliberately, so the reader sees the thing and the
+// relay's verdict on it. That render is outside showEntity's try/catch and
+// its caller adds no .catch, so a throwing renderer left the page on its
+// skeleton with "fetching names…" still showing. 70 of the 118 kinds threw on
+// an event with no `tags` array.
+const DEGENERATE = [
+  ["no tags array", (k) => ({ id: eid, pubkey: pk, kind: k, created_at: now })],
+  ["null in tags", (k) => ({ id: eid, pubkey: pk, kind: k, created_at: now, tags: [["title"], null, ["e"], []] })],
+  ["no id", (k) => ({ pubkey: pk, kind: k, created_at: now, tags: [] })],
+  ["no created_at", (k) => ({ id: eid, pubkey: pk, kind: k, tags: [] })],
+  ["null content", (k) => ({ id: eid, pubkey: pk, kind: k, created_at: now, tags: [], content: null })],
+  ["nothing but a kind", (k) => ({ kind: k })],
+];
+for (const [label, make] of DEGENERATE) {
+  for (const kind of [...renderers.keys(), 999999]) {
+    for (const opts of [undefined, { full: true }]) {
+      let html;
+      try { html = card(make(kind), opts); }
+      catch (e) { assert.fail(`kind ${kind} threw on a ${label} event (${opts ? "full" : "preview"}): ${e.message}`); }
+      assert(!html.includes("Invalid Date"), `kind ${kind}: "Invalid Date" reached the page on a ${label} event`);
+      assert(!html.includes("undefined"), `kind ${kind}: leaked "undefined" on a ${label} event`);
+    }
+  }
+}
+
 // THE ENRICHMENT CLAIM: whoever a card writes a NAME for, namedPubkeys must
 // name too — on both pages, since both now ask it rather than scanning tags
 // themselves. Rendering was always shared; loading the profiles was not, and

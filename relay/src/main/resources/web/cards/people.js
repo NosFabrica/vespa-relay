@@ -6,7 +6,7 @@
 
 import { esc, titleOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
-import { register, shell, faceStrip, personLink, noteHref, addrHref, relayRows, tagsOf, tagOf, clipIf } from "./base.js";
+import { register, shell, faceStrip, personLink, noteHref, addrHref, relayRows, tagsOf, tagsWhere, tagOf, clipIf } from "./base.js";
 
 const pTags = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
 
@@ -49,7 +49,7 @@ function relaySetCard(ev, opts) {
 
 /** 10040 — NIP-85: per dimension, the service trusted and the relay serving it. */
 function observerCard(ev, opts) {
-  const dims = (ev.tags || []).filter((t) => /^\d+:/.test(t[0] || "") && t[1]);
+  const dims = tagsWhere(ev, (name, t) => /^\d+:/.test(name) && t[1]);
   const rows = dims.map((t) =>
     `<li><span class="mono">${esc(t[0])}</span> → ${personLink(t[1])}${t[2] ? ` <span class="muted-note">${esc(t[2].replace(/^wss?:\/\//, ""))}</span>` : ""}</li>`);
   const inner =
@@ -69,8 +69,7 @@ function scoreCard(ev, opts) {
   const subject = tagOf(ev, "d");
   const rank = tagOf(ev, "rank");
   const subjectLink = subjectLinkFor(ev.kind, subject);
-  const extras = (ev.tags || [])
-    .filter((t) => t[0] !== "d" && t[0] !== "rank" && t[1] && /^[\d.]+$/.test(t[1]))
+  const extras = tagsWhere(ev, (name, t) => name !== "d" && name !== "rank" && t[1] && /^[\d.]+$/.test(t[1]))
     .map((t) => [t[0], esc(t[1])]);
   const inner =
     `<div class="result-body">scores ${subjectLink}</div>` +

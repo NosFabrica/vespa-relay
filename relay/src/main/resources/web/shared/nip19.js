@@ -55,7 +55,14 @@ function bech32Bytes(hrp, bytes) {
 }
 
 const hexToBytes = (hex) => hex.match(/../g).map((h) => parseInt(h, 16));
-const bech32 = (hrp, hex) => bech32Bytes(hrp, hexToBytes(hex));
+
+/**
+ * Empty for anything that is not a 32-byte hex id, rather than a throw. Cards
+ * render events this page fetched from a stranger's relay, and `noteId(ev.id)`
+ * on an event with no id took the whole permalink down — a missing identifier
+ * should cost that one link, not the page around it.
+ */
+const bech32 = (hrp, hex) => (/^[0-9a-f]{64}$/i.test(hex || "") ? bech32Bytes(hrp, hexToBytes(String(hex).toLowerCase())) : "");
 
 /**
  * Decode + verify. Null for anything malformed, including a bad checksum —

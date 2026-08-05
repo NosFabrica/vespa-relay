@@ -30,11 +30,25 @@ export const njumpFor = (bech) => `https://njump.me/${esc(bech)}`;
 export const addrHref = (a) => { const n = naddr(a); return n ? `/${esc(n)}` : null; };
 
 // ---- tag access -----------------------------------------------------------
-export const tagsOf = (ev, name) => (ev.tags || []).filter((t) => t[0] === name);
+// `Array.isArray` on every entry, for the same reason format.js's firstTag
+// guards `ev.tags`: a hint-fetched event is rendered before anything has
+// verified it, and `["title"], null, ["e"]` threw on `t[0]` here.
+export const tagsOf = (ev, name) => ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && t[0] === name);
 export const tagOf = (ev, ...names) => {
-  for (const name of names) for (const t of ev.tags || []) if (t[0] === name && t[1]) return t[1];
+  for (const name of names) {
+    for (const t of (ev && ev.tags) || []) if (Array.isArray(t) && t[0] === name && t[1]) return t[1];
+  }
   return null;
 };
+
+/**
+ * Tags matched by a PREDICATE on the name — a 10040's `30382:rank`, a 30618's
+ * `refs/heads/…`, a report's flagged p/e. tagsOf takes a literal name, so
+ * these five call sites each re-implemented the iteration and each re-made
+ * the same `t[0] of null` mistake. One accessor, one guard.
+ */
+export const tagsWhere = (ev, pred) =>
+  ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && pred(String(t[0] ?? ""), t));
 
 /** NIP-92/94 media fields: ["imeta", "url https://…", "m video/mp4", …]. */
 export function imetaField(ev, field) {
@@ -173,7 +187,7 @@ export function chipRow(values, opts) {
   const shown = opts && opts.full ? values : values.slice(0, 12);
   const more = values.length - shown.length;
   if (!shown.length) return "";
-  return `<div class="chip-row">${shown.map((v) => `<span class="chip">${esc(clip(v, 40))}</span>`).join("")}${more > 0 ? `<span class="chip more">+${more}</span>` : ""}</div>`;
+  return `<div class="chip-row">${shown.map((v) => `<span class="tag-chip">${esc(clip(v, 40))}</span>`).join("")}${more > 0 ? `<span class="tag-chip more">+${more}</span>` : ""}</div>`;
 }
 
 /** The emoji themselves — shared by the 30030 set and the 10030 user list. */

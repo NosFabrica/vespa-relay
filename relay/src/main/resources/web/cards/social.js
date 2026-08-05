@@ -13,7 +13,7 @@ import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
   register, shell, titleHtml, bodyHtml, personLink, faceStrip, noteHref, addrHref,
-  chipRow, tagOf, tagsOf, jsonContent, fmtTs, extLink,
+  chipRow, tagOf, tagsOf, tagsWhere, jsonContent, fmtTs, extLink,
 } from "./base.js";
 
 /** The event a reactive kind points at: `e` by id, `a` by address, in that order. */
@@ -148,7 +148,7 @@ function pollResponseCard(ev, opts) {
  * reading a list of these actually filters on.
  */
 function reportCard(ev, opts) {
-  const flagged = (ev.tags || []).find((t) => (t[0] === "p" || t[0] === "e") && t[2]);
+  const flagged = tagsWhere(ev, (name, t) => (name === "p" || name === "e") && t[2])[0];
   const category = flagged ? flagged[2] : tagOf(ev, "report");
   const subject = flagged && flagged[0] === "p" && /^[0-9a-f]{64}$/.test(flagged[1])
     ? personLink(flagged[1])

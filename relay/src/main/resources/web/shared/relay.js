@@ -25,9 +25,14 @@ export class Relay {
       let settled = false;
       const ws = new WebSocket(this.url);
       this.ws = ws;
-      const fail = (e) => { if (!settled) { settled = true; this.opening = null; reject(e); } };
-      setTimeout(() => fail(new Error("relay connect timeout")), 8000);
-      ws.onopen = () => { if (!settled) { settled = true; this.opening = null; resolve(); } };
+      // Cleared on both exits. It used to be armed and forgotten: one live
+      // timer per socket opened, so every reconnect left another behind, and
+      // a page that had reconnected a few times was holding timers whose only
+      // job was to check a flag that was already set.
+      const settle = (fn) => { if (settled) return; settled = true; clearTimeout(timer); this.opening = null; fn(); };
+      const fail = (e) => settle(() => reject(e));
+      const timer = setTimeout(() => fail(new Error("relay connect timeout")), 8000);
+      ws.onopen = () => settle(resolve);
       ws.onerror = () => fail(new Error("relay connection failed"));
       ws.onclose = () => {
         fail(new Error("relay connection closed"));

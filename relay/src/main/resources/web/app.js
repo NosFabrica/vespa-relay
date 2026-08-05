@@ -247,9 +247,16 @@ async function search(text, limit) {
   // test, so a new family that names somebody cannot silently stop being
   // enriched. Faces are excluded on purpose: list previews draw them without
   // names, and a follow list can carry thousands.
+  //
+  // NOT awaited. This used to block the return, so the results existed and
+  // the page showed a skeleton until a SECOND round trip finished — up to the
+  // 5s enrichProfiles timeout of nothing, over a list the relay had already
+  // sent. base.js says it plainly about the score chip: "the score is a
+  // second round trip, and a face should not wait on it." A name is the same
+  // round trip; it was just on the other side of the render.
   const mentioned = events.flatMap(namedPubkeys);
-  await enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
-  return events;
+  const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
+  return { events, names };
 }
 
 // ---- viewing as somebody else -------------------------------------------
@@ -346,16 +353,25 @@ const scores = new Map();          // pubkey -> number | null (null = no score)
 let scoreLensKey = null;           // whose lens `scores` was built for
 const rankServices = new Map();    // observer pubkey -> rank service pubkey | null
 
-/** The `30382:rank` service an observer trusts, from their kind 10040. */
+/**
+ * The `30382:rank` service an observer trusts, from their kind 10040.
+ *
+ * Cached only when the relay ANSWERED. A dropped or timed-out lookup used to
+ * be cached as "this lens ranks nothing", and since that is the early return
+ * below, one slow read meant no score chip anywhere for the rest of the
+ * session — with nothing on screen to say the chips were missing rather than
+ * empty. Same mistake profiles.js documents at length; it lived here too.
+ */
 async function rankServiceOf(observer) {
   if (rankServices.has(observer)) return rankServices.get(observer);
-  let svc = null;
+  let svc = null, answered = false;
   try {
     const conn = await refConn();
-    const [ev] = await conn.req({ kinds: [10040], authors: [observer], limit: 1 });
-    svc = (ev?.tags || []).find(t => t[0] === "30382:rank")?.[1] || null;
-  } catch (e) { svc = null; }
-  rankServices.set(observer, svc);
+    const evs = await conn.req({ kinds: [10040], authors: [observer], limit: 1 });
+    answered = evs.complete === true;
+    svc = (evs[0]?.tags || []).find(t => t?.[0] === "30382:rank")?.[1] || null;
+  } catch (e) { answered = false; }
+  if (answered) rankServices.set(observer, svc);
   return svc;
 }
 
@@ -377,13 +393,18 @@ async function paintScores() {
     } catch (e) { /* leave them unknown rather than wrong */ }
     const seen = new Set();
     for (const ev of evs) {
-      const d = (ev.tags || []).find(t => t[0] === "d")?.[1];
-      const rank = (ev.tags || []).find(t => t[0] === "rank")?.[1];
+      const d = (ev.tags || []).find(t => t?.[0] === "d")?.[1];
+      const rank = (ev.tags || []).find(t => t?.[0] === "rank")?.[1];
       if (!d) continue;
       seen.add(d);
       scores.set(d, rank == null ? null : Number(rank));
     }
-    for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
+    // "The service returned no card for this pubkey" is only a fact once the
+    // service finished answering. EOSE, not merely "resolved": req() hands
+    // back whatever arrived when its timeout fired, so caching the gap off a
+    // slow read records a `null` the relay never stated — and `scores` is
+    // consulted before every repaint, so that null is permanent for the lens.
+    if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
   for (const c of chips) {
     const v = scores.get(c.dataset.pk);
@@ -622,16 +643,28 @@ async function run(text, mode, render) {
   if (mode === "full") s.hits = [];
   render();
   const t0 = performance.now();
+  let names = null;
   try {
-    const hits = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
+    const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
     if (myId !== s.requestId) return;
-    s.hits = hits;
+    s.hits = found.events; names = found.names;
   } catch (e) {
     if (myId !== s.requestId) return;
     s.error = e.message || String(e); s.hits = [];
   }
   s.lastMs = Math.round(performance.now() - t0); s.loading = false;
   render();
+  // The names land after the list does, so paint them when they arrive —
+  // once, and only if the lookup actually learned something. Skipped while a
+  // raw event is expanded: a re-render would collapse a panel the reader
+  // opened, and a name appearing is not worth taking that away.
+  if (names) {
+    names.then((learned) => {
+      if (!learned || myId !== s.requestId) return;
+      if (document.querySelector(".raw-body:not([hidden])")) return;
+      render();
+    }).catch(() => {});
+  }
 }
 
 function openPopup() { $popup.classList.add("open"); $q.setAttribute("aria-expanded", "true"); }

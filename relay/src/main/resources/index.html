@@ -517,11 +517,13 @@
   .ref-list .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
   /* hashtags, muted words, git branches, supported NIPs — short values that
      read as a wrapped row, never as a table of one-word rows */
+  /* NOT `.chip` — that is the filter tab above, and this rule sits later in
+     the sheet, so sharing the name restyled the whole filter bar. */
   .chip-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
-  .chip { padding: 1.5px 9px; border-radius: 999px; font-size: 11.5px; max-width: 100%;
-          overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-          color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); }
-  .chip.more { color: var(--faint); background: none; border-color: transparent; }
+  .tag-chip { padding: 1.5px 9px; border-radius: 999px; font-size: 11.5px; max-width: 100%;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+              color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); }
+  .tag-chip.more { color: var(--faint); background: none; border-color: transparent; }
   /* a list at permalink depth names each section it holds */
   .list-section + .list-section { margin-top: 12px; }
   .section-head { font-size: 11.5px; font-weight: 600; text-transform: uppercase;

@@ -3,7 +3,7 @@
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
-import { register, shell, bodyHtml, noteHref, tagOf, tagsOf, clipIf, chipRow } from "./base.js";
+import { register, shell, bodyHtml, noteHref, tagOf, tagsOf, tagsWhere, clipIf, chipRow } from "./base.js";
 
 const preBlock = (opts, text, n = 2000) =>
   text ? `<pre class="codeblock">${esc(clipIf(opts, text, n))}</pre>` : "";
@@ -77,7 +77,7 @@ function gitStatusCard(ev, opts) {
  * The tag NAME is the branch, which is why this cannot ride on repoCard.
  */
 function repoStateCard(ev, opts) {
-  const refs = (ev.tags || []).filter((t) => /^refs\//.test(t[0] || ""));
+  const refs = tagsWhere(ev, (name) => name.startsWith("refs/"));
   const heads = refs.filter((t) => t[0].startsWith("refs/heads/")).map((t) => t[0].slice("refs/heads/".length));
   const tags = refs.filter((t) => t[0].startsWith("refs/tags/")).map((t) => t[0].slice("refs/tags/".length));
   const inner =

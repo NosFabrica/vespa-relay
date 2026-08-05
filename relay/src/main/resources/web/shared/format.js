@@ -5,11 +5,16 @@
 export const esc = (v) => String(v ?? "").replace(/[&<>"']/g, c => ({ "&":"&amp;","<":"&lt;",">":"&gt;","\"":"&quot;","'":"&#39;" }[c]));
 export const clip = (s, n) => { s = String(s || "").trim(); return s.length > n ? s.slice(0, n - 1) + "…" : s; };
 
-const dateOf = (ev) => new Date(ev.created_at * 1000);
-export const fullDate = (ev) => dateOf(ev).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
+// A date these can't read prints nothing rather than "Invalid Date", which is
+// a JavaScript diagnostic wearing the byline's clothes.
+const secsOf = (ev) => (Number.isFinite(Number(ev && ev.created_at)) ? Number(ev.created_at) : null);
+const dateOf = (ev) => new Date(secsOf(ev) * 1000);
+export const fullDate = (ev) =>
+  secsOf(ev) == null ? "" : dateOf(ev).toLocaleString(undefined, { dateStyle: "medium", timeStyle: "short" });
 
 /** Recent events read better relative; older ones as a plain date. */
 export function when(ev) {
+  if (secsOf(ev) == null) return "";
   const secs = Math.max(0, Date.now() / 1000 - ev.created_at);
   const mins = secs / 60, hours = mins / 60, days = hours / 24;
   if (mins < 1) return "just now";
@@ -19,8 +24,20 @@ export function when(ev) {
   return dateOf(ev).toLocaleDateString(undefined, { year: "numeric", month: "short", day: "numeric" });
 }
 
+/**
+ * Tag access has to be TOTAL, because the events these read are not all this
+ * relay's. entity.js dials the relay hints in an identifier when the index
+ * does not hold it, and renders what comes back BEFORE handing it here for
+ * verification — deliberately, so the reader sees the thing and the relay's
+ * verdict on it. This line used to iterate `ev.tags` bare while base.js's
+ * tagsOf guarded, so an event with no tags array threw in 70 of the 118
+ * renderers, and the entity render is outside showEntity's try/catch: the
+ * page stopped at its skeleton with the loading line still on it.
+ */
 export const firstTag = (ev, ...names) => {
-  for (const name of names) for (const t of ev.tags) if (t[0] === name && t[1]) return t[1];
+  for (const name of names) {
+    for (const t of (ev && ev.tags) || []) if (Array.isArray(t) && t[0] === name && t[1]) return t[1];
+  }
   return null;
 };
 export const titleOf = (ev) => firstTag(ev, "title", "name", "subject") || firstTag(ev, "d");

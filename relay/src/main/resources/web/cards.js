@@ -8,7 +8,7 @@
 import { esc, clip, titleOf, summaryOf } from "./shared/format.js";
 import { shortNpub } from "./shared/nip19.js";
 import { authorOf, displayName, parseProfile } from "./shared/profiles.js";
-import { renderers, avatarHtml, badgeHtml } from "./cards/base.js";
+import { renderers, avatarHtml, badgeHtml, tagOf, tagsWhere } from "./cards/base.js";
 import { genericCard } from "./cards/generic.js";
 import "./cards/profile.js";
 import "./cards/note.js";
@@ -49,18 +49,18 @@ export const card = (ev, opts) => (renderers.get(ev.kind) || genericCard)(ev, op
 export function namedPubkeys(ev) {
   const out = new Set();
   const add = (v) => { if (/^[0-9a-f]{64}$/.test(v || "")) out.add(v); };
-  for (const t of ev.tags || []) {
+  for (const t of tagsWhere(ev, (name) => name === "d" || name === "p" || /^\d+:/.test(name))) {
     // A 30382's `d` is its subject. A 30383's is an event id and a 30384's an
     // address, which is why this is keyed by kind and not by shape.
-    if (t[0] === "d" && ev.kind === 30382) add(t[1]);
-    else if (/^\d+:/.test(t[0] || "")) add(t[1]);           // a 10040's service column
-    else if (t[0] === "p" && NAMES_P_TAGS.has(ev.kind)) add(t[1]);
+    if (t[0] === "d") { if (ev.kind === 30382) add(t[1]); }
+    else if (t[0] === "p") { if (NAMES_P_TAGS.has(ev.kind)) add(t[1]); }
+    else add(t[1]);                                        // a 10040's service column
   }
   // NIP-57 puts the zap REQUEST, stringified, in the receipt's `description`,
   // and the sender is that inner event's author — the one person named on
   // this page who appears nowhere in the outer event's tags.
   if (ev.kind === 9735) {
-    try { add(JSON.parse((ev.tags || []).find((t) => t[0] === "description")?.[1] || "{}").pubkey); } catch (e) { /* a malformed receipt names nobody */ }
+    try { add(JSON.parse(tagOf(ev, "description") || "{}").pubkey); } catch (e) { /* a malformed receipt names nobody */ }
   }
   return [...out];
 }
