@@ -254,22 +254,6 @@ const COMMENT_SCOPE_TAGS = ["#I", "#i"];
  */
 const hashtagIds = (tags) => tags.flatMap((t) => [`#${t}`, t]);
 
-// NIP-32's way of writing the same claim: an `L` namespace that STARTS with `#`
-// means "associate this target with that standard nostr tag", so `L: #t` with
-// `l: nostr` beside it says "this is the topic nostr" — carried by an event
-// labelling itself (NIP-32's self-reporting) and by the kind 1985 that puts the
-// topic on somebody else's event, which is a reader's own classification and
-// worth surfacing next to the notes it classifies.
-//
-// `#l` and `#L` go in ONE filter, ANDed on purpose. The namespace is what makes
-// a label a topic: `l: nostr` alone is "labelled `nostr` in some vocabulary
-// nobody stated", and this page does not guess at meaning it was not told — the
-// same rule that keeps a bare npub a search term rather than an `authors`
-// filter. It costs the events that omit the `L` tag, which NIP-32 only
-// RECOMMENDS; the alternative costs every license, language and moderation
-// label whose value happens to spell a word somebody searched for.
-const TOPIC_NAMESPACE = "#t";
-
 /**
  * The typed string as the REQ this page sends — one or more NIP-01 filters,
  * ORed inside a single subscription.
@@ -287,7 +271,7 @@ const TOPIC_NAMESPACE = "#t";
  *
  *   - the event is about the topic          -> `t`             (NIP-01, NIP-24)
  *   - it is a comment ON the topic          -> `i`/`I`         (NIP-22, NIP-73)
- *   - it is LABELLED with the topic         -> `l` + `L: #t`   (NIP-32)
+ *   - it is LABELLED with the topic         -> `l`             (NIP-32)
  *
  * A note tagging `t` need carry no label; a self-labelled note need carry no
  * `t`; a comment on a topic carries neither. Any one filter answers a third of
@@ -332,7 +316,13 @@ function buildFilters(text, limit) {
 
   const filters = [
     { ...base, "#t": q.hashtags, limit },
-    { ...base, "#l": q.hashtags, "#L": [TOPIC_NAMESPACE], limit },
+    // The label, WITHOUT pinning `L` to the `#t` namespace: NIP-32 only
+    // RECOMMENDS the `L` tag, so requiring it would silently drop every event
+    // that labelled itself with `l` alone — and the mark that would say which
+    // vocabulary it meant is the tag's SECOND value, which NIP-01 does not
+    // index and no filter can reach. The value is what is askable, so the value
+    // is what is asked.
+    { ...base, "#l": q.hashtags, limit },
   ];
   // "Everything" (no kinds) and any tab listing 1111 — Notes — get the comment
   // half; People, Articles and the rest do not, because kind 1111 is not theirs
