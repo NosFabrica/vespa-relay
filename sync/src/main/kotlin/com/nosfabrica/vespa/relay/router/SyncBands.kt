@@ -226,14 +226,33 @@ class SyncBands(
     ): Filter {
         if (urls.isEmpty()) return filter
         var since = Long.MAX_VALUE
+        var anyOutstanding = false
         for (url in urls) {
             val legs = legs(url, filter)
+            // A relay that needs NOTHING constrains nothing. This used to fall
+            // into the `singleOrNull()` branch below — null for an empty list
+            // as much as for a two-leg one — so the most caught-up relay in the
+            // group forced the widest possible snapshot, which is the one thing
+            // this function exists to avoid (24.8M ids and gigabytes held live,
+            // measured). Both call sites already treat empty legs as "already
+            // covers its filter" and skip the relay entirely; the snapshot
+            // sizing was the only place it read as "cannot narrow". The log
+            // line then said "full filter (no relay is caught up yet)" about a
+            // fleet that was caught up.
+            if (legs.isEmpty()) continue
+            anyOutstanding = true
             // More than one leg means an older gap this relay still wants, so
             // the snapshot cannot start above the filter's own floor.
             val only = legs.singleOrNull() ?: return filter
             val legSince = only.since ?: return filter
             since = minOf(since, legSince)
         }
+        // Nobody wants anything. The callers will skip every relay, so the
+        // snapshot this sizes is about to go unused whatever it holds — but it
+        // is still BUILT, so give it the narrowest window rather than the
+        // widest. (Not skipping the build outright: that is the callers' cycle
+        // to restructure, and this stays a pure function of the bands.)
+        if (!anyOutstanding) return filter.copy(since = nowSeconds())
         return if (since == Long.MAX_VALUE) filter else filter.copy(since = since)
     }
 

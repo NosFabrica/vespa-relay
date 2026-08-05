@@ -118,13 +118,38 @@ const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + locati
 // read rather than listed. Anything outside it still goes in the box.
 const KINDS = KNOWN_KINDS.map((k) => [k, kindLabel(k)]);
 
-const PER_KIND_TIMEOUT_MS = 20000;
+/**
+ * IDLE time — silence, not elapsed time. Reset by every message on the socket.
+ *
+ * This was a 20s deadline started at SEND, which is the wrong clock and one
+ * this project has already measured the cost of: a relay answers COUNTs
+ * serially, so with four in flight a cheap count queued behind an expensive
+ * one expired while the socket was busy delivering somebody else's answer.
+ * On the sibling page the same mistake scored 55 answered and 91 "timed out"
+ * with a MEDIAN answer of 75ms, and ZERO of the 91 were ever refused.
+ *
+ * It mattered more here than it looks, because of what this page then SAYS: a
+ * kind that does not answer feeds SILENCE_BAIL and the footer's "the relay
+ * answered no COUNT at all — it advertises NIP-45, so this is worth chasing".
+ * A relay that was working through a queue got reported as one that does not
+ * implement NIP-45. Idle asks the question that actually matters — is it still
+ * talking to us — and only real silence ends it.
+ */
+const IDLE_TIMEOUT_MS = 60000;
+
+/**
+ * Why a cell has no number. Kept apart for the same reason observer_stats.html
+ * keeps them apart: "we stopped waiting" is our budget and "the relay declined"
+ * is the relay telling us something about itself, and only the second is
+ * evidence about NIP-45.
+ */
+const TIMED_OUT = { state: "timeout" };
+const REFUSED = { state: "refused" };
 // Four at a time. The reason this was strictly sequential still holds — "a
 // status page, not a load generator" — and four concurrent COUNTs is not a
 // burst. What changed is the denominator: one at a time over five kinds is a
-// couple of seconds, and over a hundred and twenty it is up to
-// 120 × PER_KIND_TIMEOUT_MS, which is forty minutes of a page reading
-// "counting 3/120".
+// couple of seconds, and over a hundred and twenty it is one serial queue the
+// reader watches tick over as "counting 3/120".
 const POOL = 4;
 // If the first several asks all come back with nothing, stop: a relay that
 // answers no COUNT answers no COUNT. Workers only test this between asks, so
@@ -158,9 +183,21 @@ const familyRank = (kind) => {
   return i < 0 ? FAMILY_ORDER.length : i;
 };
 
+/**
+ * A real count, as opposed to a reason there isn't one.
+ *
+ * The no-answer sentinels are OBJECTS, so they are truthy — every `if (r.count)`
+ * below would take one for an answer and then read `.count` off it, producing
+ * NaN totals and a footer claiming the relay answered when it went silent.
+ * Same trap, same guard, as observer_stats.html.
+ */
+const counted = (v) => !!v && typeof v.count === "number";
+
 const cellHtml = (v) =>
   v === undefined ? '<span class="pending">…</span>'
-  : v === null ? '<span class="none">no reply</span>'
+  : v === TIMED_OUT
+    ? `<span class="none" title="the relay went silent for ${IDLE_TIMEOUT_MS / 1000}s with this ask outstanding — it stopped talking, it did not decline">timed out</span>`
+  : !counted(v) ? '<span class="none" title="the relay answered something other than a count, or closed the subscription">no reply</span>'
   : fmt(v.count) +
     (v.approximate ? ' <span class="name">≈</span>' : "") +
     (SUSPICIOUS.has(v.count)
@@ -201,7 +238,7 @@ function paint(r) {
   // An empty kind is hidden only on request: zero IS an answer, and a page
   // that hides its zeros by default cannot be read as "the relay holds these
   // and nothing else".
-  if (r.row) r.row.classList.toggle("empty", r.count != null && r.count.count === 0);
+  if (r.row) r.row.classList.toggle("empty", counted(r.count) && r.count.count === 0);
 }
 
 /** A COUNT-only client that never authenticates — see the note at the top. */
@@ -209,25 +246,41 @@ function connect() {
   return new Promise((resolve, reject) => {
     const ws = new WebSocket(RELAY_URL);
     const pending = new Map();
-    const failAll = () => { for (const [, p] of pending) { clearTimeout(p.timer); p.resolve(null); } pending.clear(); };
+    const failAll = (reason) => { for (const [, p] of pending) p.resolve(reason); pending.clear(); };
+
+    // ONE watchdog for the connection, armed only while something is
+    // outstanding and reset by ANY message — see IDLE_TIMEOUT_MS.
+    let idle = null;
+    const stopIdle = () => { if (idle) { clearTimeout(idle); idle = null; } };
+    const bumpIdle = () => {
+      stopIdle();
+      if (pending.size) idle = setTimeout(() => failAll(TIMED_OUT), IDLE_TIMEOUT_MS);
+    };
+
     ws.onopen = () => resolve(ws);
-    ws.onerror = () => { failAll(); reject(new Error("could not connect to " + RELAY_URL)); };
-    ws.onclose = failAll;
+    ws.onerror = () => { stopIdle(); failAll(REFUSED); reject(new Error("could not connect to " + RELAY_URL)); };
+    ws.onclose = () => { stopIdle(); failAll(REFUSED); };
     ws.onmessage = (ev) => {
+      // Bumped before parsing and whatever the message was: traffic of any
+      // kind is proof the relay is still working, including a NOTICE about
+      // somebody else's ask.
+      bumpIdle();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       // An AUTH challenge is ignored on purpose: answering it would turn every
       // number below into "what this reader is allowed to see".
       const p = pending.get(m[1]);
       if (!p) return;
-      if (m[0] === "COUNT") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(m[2] || null); }
-      else if (m[0] === "CLOSED" || m[0] === "NOTICE") { clearTimeout(p.timer); pending.delete(m[1]); p.resolve(null); }
+      if (m[0] === "COUNT") { pending.delete(m[1]); p.resolve(m[2] || REFUSED); }
+      else if (m[0] === "CLOSED" || m[0] === "NOTICE") { pending.delete(m[1]); p.resolve(REFUSED); }
+      bumpIdle();
     };
     ws.count = (kind) =>
       new Promise((res) => {
         const id = "k" + kind + "-" + Math.random().toString(36).slice(2, 8);
-        const timer = setTimeout(() => { pending.delete(id); res(null); }, PER_KIND_TIMEOUT_MS);
-        pending.set(id, { resolve: res, timer });
-        ws.send(JSON.stringify(["COUNT", id, { kinds: [kind] }]));
+        pending.set(id, { resolve: res });
+        bumpIdle();
+        try { ws.send(JSON.stringify(["COUNT", id, { kinds: [kind] }])); }
+        catch { pending.delete(id); res(REFUSED); }
       });
   });
 }
@@ -268,7 +321,7 @@ async function run() {
       const r = results[next++];
       r.count = await ws.count(r.kind);
       done++;
-      if (r.count) answered++;
+      if (counted(r.count)) answered++;
       paint(r);
       statusEl.textContent = `counting ${done}/${results.length}…`;
     }
@@ -276,12 +329,14 @@ async function run() {
   await Promise.all(Array.from({ length: Math.min(POOL, results.length) }, worker));
   ws.close();
 
-  const counted = results.filter((r) => r.count);
-  const total = counted.reduce((n, r) => n + r.count.count, 0);
-  const held = counted.filter((r) => r.count.count > 0).length;
+  const answers = results.filter((r) => counted(r.count));
+  const total = answers.reduce((n, r) => n + r.count.count, 0);
+  const held = answers.filter((r) => r.count.count > 0).length;
+  const silent = results.filter((r) => r.count === TIMED_OUT).length;
   statusEl.textContent = `done in ${((Date.now() - started) / 1000).toFixed(1)}s`;
   footEl.innerHTML =
-    `${counted.length}/${results.length} kind(s) answered · ${held} with events · ${fmt(total)} event(s) counted` +
+    `${answers.length}/${results.length} kind(s) answered · ${held} with events · ${fmt(total)} event(s) counted` +
+    (silent ? ` · <span class="none">${silent} went silent for ${IDLE_TIMEOUT_MS / 1000}s with the ask outstanding</span>` : "") +
     (abandoned
       ? ` · <span class="none">gave up after ${done} silent asks and skipped ${abandoned} more — the relay advertises NIP-45, so this is worth chasing</span>`
       : answered === 0

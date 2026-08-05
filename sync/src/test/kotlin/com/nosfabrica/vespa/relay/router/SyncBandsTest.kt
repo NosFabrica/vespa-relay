@@ -232,6 +232,36 @@ class SyncBandsTest {
     }
 
     @Test
+    fun `a relay that needs nothing does not widen the shared window`() {
+        // The regression this pins: `legs()` returns EMPTY for a relay whose
+        // band already covers its whole filter, and the window loop read that
+        // through singleOrNull() — null for "no legs" exactly as for "two legs"
+        // — so the most caught-up relay in a group forced the widest snapshot
+        // there is. The other relay's ceiling is the only real constraint here.
+        val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
+        val c = SyncBands(null)
+        c.record(relay, bounded, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        assertTrue(c.legs(relay, bounded).isEmpty(), "the premise: this relay wants nothing")
+        c.record(other, bounded, null, null, paged = false, reconciledThrough = 1_700_003_000L)
+
+        assertEquals(1_700_003_000L, c.coveringWindow(listOf(relay, other), bounded).since)
+    }
+
+    @Test
+    fun `a group where nobody needs anything gets the narrowest window, not the widest`() {
+        // Every relay is covered, so every one of them will be skipped and the
+        // snapshot goes unused — but it is still built, and building it over
+        // the full filter is the most expensive thing this router does.
+        val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
+        val c = SyncBands(null)
+        c.record(relay, bounded, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        c.record(other, bounded, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+
+        val window = c.coveringWindow(listOf(relay, other), bounded)
+        assertTrue((window.since ?: 0) > 1_700_005_000L, "a window above the filter's own ceiling selects nothing")
+    }
+
+    @Test
     fun `a relay with an older gap also widens the shared window`() {
         val c = SyncBands(null)
         c.record(relay, profiles, null, null, paged = false, reconciledThrough = 1_700_009_000L)
