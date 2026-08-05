@@ -12,6 +12,7 @@ export class Relay {
     this.okWaiters = new Map();  // event id -> resolver for its OK
     this.nextId = 1;
     this.challenge = null;       // the connection's NIP-42 challenge
+    this.challengeWaiters = [];  // resolvers for whoever is waiting on it
     this.authed = false;         // did THIS connection complete NIP-42?
     this.opening = null;
     this.onclose = null;
@@ -41,6 +42,11 @@ export class Relay {
         this.authed = false;
         for (const s of this.subs.values()) s.finish(new Error("connection closed"));
         this.subs.clear();
+        // A challenge that will now never arrive: wake the waiters with the
+        // answer instead of leaving them to age out. The caller's next step is
+        // to reconnect and ask again, and it should not spend its whole budget
+        // waiting on a socket that is already gone.
+        this.wakeChallengeWaiters();
         this.onclose && this.onclose();
       };
       ws.onmessage = (m) => { try { this.handle(JSON.parse(m.data)); } catch (e) {} };
@@ -53,9 +59,41 @@ export class Relay {
       case "EVENT": { const s = this.subs.get(msg[1]); if (s) s.onEvent(msg[2]); break; }
       case "EOSE": { const s = this.subs.get(msg[1]); if (s) s.finish(null); break; }
       case "CLOSED": { const s = this.subs.get(msg[1]); if (s) s.finish(new Error(msg[2] || "subscription closed")); break; }
-      case "AUTH": this.challenge = msg[1]; break;
+      case "AUTH": this.challenge = msg[1]; this.wakeChallengeWaiters(); break;
       case "OK": { const w = this.okWaiters.get(msg[1]); if (w) { this.okWaiters.delete(msg[1]); w(msg); } break; }
     }
+  }
+
+  /** Hand the current challenge (or its absence) to everyone waiting on one. */
+  wakeChallengeWaiters() {
+    if (!this.challengeWaiters.length) return;
+    const waiters = this.challengeWaiters;
+    this.challengeWaiters = [];
+    for (const w of waiters) w(this.challenge);
+  }
+
+  /**
+   * The connection's NIP-42 challenge, or null if none arrives within
+   * [timeoutMs].
+   *
+   * AWAITED, not polled. This was a `while (!relay.challenge) await sleep(100)`
+   * in the page, which is on the critical path of every load: sign-in gates the
+   * first REQ (search() awaits ensureLogin()), so the whole page waited on a
+   * 100ms tick for a message that arrives within a millisecond or two of the
+   * handshake. Averaged 50ms of nothing per load, and it was the FIRST thing
+   * every visitor paid.
+   */
+  waitForChallenge(timeoutMs) {
+    if (this.challenge) return Promise.resolve(this.challenge);
+    return new Promise((resolve) => {
+      const waiter = (c) => { clearTimeout(timer); resolve(c); };
+      const timer = setTimeout(() => {
+        const i = this.challengeWaiters.indexOf(waiter);
+        if (i >= 0) this.challengeWaiters.splice(i, 1);
+        resolve(this.challenge);
+      }, timeoutMs);
+      this.challengeWaiters.push(waiter);
+    });
   }
 
   /** One REQ, collected until EOSE (or timeout: resolve with what arrived). */

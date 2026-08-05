@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -248,6 +249,16 @@ internal class DynamicSync(
                         "router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot"
                     },
                 )
+                emptyList()
+            } else if (!bands.anyOutstanding(relays.map { it.url }, window)) {
+                // Nothing outside any relay's band, so every syncOne below
+                // returns at its own leg check without ever reading the id set.
+                // Distinct from holdsIdSet above, which asks whether this STREAM
+                // ever needs one; this asks whether it needs one THIS cycle.
+                // coveringWindow cannot save it — with nothing outstanding there
+                // is no window to narrow to, and it correctly hands back the
+                // whole filter. Asking first is where the saving is.
+                System.err.println("router: ${stream.name} — all ${relays.size} relay(s) already cover the filter, skipping the snapshot")
                 emptyList()
             } else {
                 val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
@@ -538,13 +549,20 @@ internal class DynamicSync(
         for (leg in bands.legs(url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
+            // Per-kind spans, which quartz's SyncCoverage requires before it
+            // will record a band for a multi-kind filter at all.
+            val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             val syncStartedAt = System.currentTimeMillis() / 1000
             val onEvent: suspend (Event) -> Unit = { event ->
                 if (stream.filter.match(event)) {
-                    if (SyncBands.isPlausible(event.createdAt)) {
+                    if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
+                    // See StaticBackfill: without per-kind evidence quartz
+                    // records no band for a multi-kind filter, so a discovery
+                    // stream would re-walk every relay every cycle.
+                    SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                     ingest.submit(event, stream.trusted)
                 }
             }
@@ -556,7 +574,7 @@ internal class DynamicSync(
                 if (fetched) {
                     null.also {
                         val walk = "${stream.name}|${url.url}"
-                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncBands.PLAUSIBLE_FLOOR)
+                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                         downloaded +=
                             client.fetchAllPages(
                                 url,
@@ -584,6 +602,7 @@ internal class DynamicSync(
                 seenMax,
                 paged = fetched || result?.pagedFallback == true,
                 reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
+                observedByKind = seenByKind,
             )
         }
         return downloaded

@@ -67,6 +67,59 @@
   To develop against a remote server, set RELAY_URL in web/shared/conn.js to
   its ws:// url.
 -->
+
+<!--
+  Every module the page runs, requested from the FIRST byte of the document.
+
+  Without these the browser discovers the graph a level at a time: fetch
+  index.html, then app.js, then the 7 it imports, then the 4 behind those —
+  three dependency waves, each costing a full round trip before any code runs.
+  On localhost that is 188ms and invisible; over a Cloudflare tunnel it measured
+  1,513ms, almost all of it waiting rather than transferring.
+
+  A preload hint starts every fetch in the FIRST wave, so the cost becomes one
+  round trip plus the bytes. The list is checked against the real import graph
+  by tools/webtest/preload.test.mjs — a renamed or new module fails there rather
+  than silently falling back to the slow path.
+
+  Both the hints and the entry script live HERE, ahead of the stylesheet,
+  because "first wave" is a claim about position. They sat at the very END of
+  the body: the hints were the LAST thing in a 25KB document, so the fetches
+  they exist to start early could not be issued until the parser had walked past
+  530 lines of CSS and all of the markup. app.js was worse — it is the entry
+  module and the preload crawler drops it, so it is hinted by nobody
+  (the crawler drops it), so its own fetch began after ALL of that while its
+  dependencies were already in flight. `type="module"` is deferred by
+  definition, so moving the tag up starts the download in the first wave and
+  still runs it after the DOM is parsed, which is what app.js's top-level
+  getElementById calls require.
+-->
+<link rel="modulepreload" href="/web/cards.js" />
+<link rel="modulepreload" href="/web/cards/apps.js" />
+<link rel="modulepreload" href="/web/cards/article.js" />
+<link rel="modulepreload" href="/web/cards/base.js" />
+<link rel="modulepreload" href="/web/cards/code.js" />
+<link rel="modulepreload" href="/web/cards/generic.js" />
+<link rel="modulepreload" href="/web/cards/lists.js" />
+<link rel="modulepreload" href="/web/cards/live.js" />
+<link rel="modulepreload" href="/web/cards/market.js" />
+<link rel="modulepreload" href="/web/cards/media.js" />
+<link rel="modulepreload" href="/web/cards/note.js" />
+<link rel="modulepreload" href="/web/cards/people.js" />
+<link rel="modulepreload" href="/web/cards/profile.js" />
+<link rel="modulepreload" href="/web/cards/relays.js" />
+<link rel="modulepreload" href="/web/cards/social.js" />
+<link rel="modulepreload" href="/web/entity.js" />
+<link rel="modulepreload" href="/web/searchfield.js" />
+<link rel="modulepreload" href="/web/shared/conn.js" />
+<link rel="modulepreload" href="/web/shared/format.js" />
+<link rel="modulepreload" href="/web/shared/kinds.js" />
+<link rel="modulepreload" href="/web/shared/nip05.js" />
+<link rel="modulepreload" href="/web/shared/nip19.js" />
+<link rel="modulepreload" href="/web/shared/profiles.js" />
+<link rel="modulepreload" href="/web/shared/query.js" />
+<link rel="modulepreload" href="/web/shared/relay.js" />
+<script type="module" src="/web/app.js"></script>
 <style>
   /* ---- tokens ------------------------------------------------------------ */
   :root {
@@ -192,7 +245,14 @@
 
   /* Who you are, in the field. Signed in shows your picture; signed out shows a
      neutral mark. Clicking toggles — and signing OUT means a new connection,
-     because NIP-42 auth belongs to the socket, not to the page. */
+     because NIP-42 auth belongs to the socket, not to the page.
+
+     Three states, not two. `.pending` is the window between the extension
+     naming you and the relay accepting your AUTH: the face is already drawn,
+     from the account the extension named, but nothing has been proven yet — so
+     it is faded and the hover reads "signing in as", and it must NOT look like
+     `.in`. Still clickable, unlike `.busy`, which is a click already in
+     progress. */
   .me {
     /* Pinned to the field's own box rather than sized in pixels: top, bottom and
        right are the same gap by construction, and stay equal if the font or the
@@ -207,6 +267,7 @@
   .me:hover { border-color: var(--accent); }
   .me img { width: 100%; height: 100%; object-fit: cover; display: block; }
   .me.in { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+  .me.pending { opacity: .6; }
   .me.busy { opacity: .55; pointer-events: none; }
 
   /* ---- the control bar --------------------------------------------------- */
@@ -714,45 +775,5 @@
   <div id="results" class="results" hidden aria-live="polite"></div>
 </main>
 
-<!--
-  Every module app.js reaches, preloaded.
-
-  Without these the browser discovers the graph a level at a time: fetch
-  index.html, then app.js, then the 7 it imports, then the 4 behind those —
-  three dependency waves, each costing a full round trip before any code runs.
-  On localhost that is 188ms and invisible; over a Cloudflare tunnel it measured
-  1,513ms, almost all of it waiting rather than transferring.
-
-  A preload hint starts every fetch in the FIRST wave, so the cost becomes one
-  round trip plus the bytes. The list is checked against the real import graph
-  by tools/webtest/preload.test.mjs — a renamed or new module fails there rather
-  than silently falling back to the slow path.
--->
-<link rel="modulepreload" href="/web/cards.js" />
-<link rel="modulepreload" href="/web/cards/apps.js" />
-<link rel="modulepreload" href="/web/cards/article.js" />
-<link rel="modulepreload" href="/web/cards/base.js" />
-<link rel="modulepreload" href="/web/cards/code.js" />
-<link rel="modulepreload" href="/web/cards/generic.js" />
-<link rel="modulepreload" href="/web/cards/lists.js" />
-<link rel="modulepreload" href="/web/cards/live.js" />
-<link rel="modulepreload" href="/web/cards/market.js" />
-<link rel="modulepreload" href="/web/cards/media.js" />
-<link rel="modulepreload" href="/web/cards/note.js" />
-<link rel="modulepreload" href="/web/cards/people.js" />
-<link rel="modulepreload" href="/web/cards/profile.js" />
-<link rel="modulepreload" href="/web/cards/relays.js" />
-<link rel="modulepreload" href="/web/cards/social.js" />
-<link rel="modulepreload" href="/web/entity.js" />
-<link rel="modulepreload" href="/web/searchfield.js" />
-<link rel="modulepreload" href="/web/shared/conn.js" />
-<link rel="modulepreload" href="/web/shared/format.js" />
-<link rel="modulepreload" href="/web/shared/kinds.js" />
-<link rel="modulepreload" href="/web/shared/nip05.js" />
-<link rel="modulepreload" href="/web/shared/nip19.js" />
-<link rel="modulepreload" href="/web/shared/profiles.js" />
-<link rel="modulepreload" href="/web/shared/query.js" />
-<link rel="modulepreload" href="/web/shared/relay.js" />
-<script type="module" src="/web/app.js"></script>
 </body>
 </html>
