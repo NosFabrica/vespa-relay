@@ -45,6 +45,17 @@
   tone, which is how a bookmark set came to render its twelve saved articles
   under a badge that still read "kind 30003".
 
+  The search box is a FIELD, not an input. `from:npub1…` and `to:npub1…`
+  narrow a search to a person — the author, or whoever they named — and both
+  draw as that person's face and name rather than 63 characters of bech32,
+  which no <input> can do: an input's value is characters and nothing else.
+  Typing `from:` or `to:` opens a people picker (web/searchfield.js) over the
+  authenticated socket, so the candidates are ranked by YOUR web of trust; the
+  "ranking as" list beside it is deliberately anonymous for the opposite
+  reason. The two popups are never open together — they share this box and the
+  arrow keys. On submit the tokens leave the NIP-50 search entirely and become
+  the NIP-01 filter fields they are, `authors` and `#p`.
+
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
   pushes a history entry, and Back walks them in order down to the hero. The
@@ -151,8 +162,22 @@
     background: var(--surface);
     box-shadow: var(--shadow-sm);
     transition: border-color .15s, box-shadow .15s;
+    /* An input's single line, restored on a div: `pre` keeps the spaces that
+       separate one from:npub… from the next (a collapsed space stops being a
+       token boundary), and the overflow scrolls sideways the way an input's
+       does — scrollbar hidden, because a text field does not have one. */
+    line-height: 1.6;
+    white-space: pre;
+    overflow-x: auto;
+    overflow-y: hidden;
+    scrollbar-width: none;
+    cursor: text;
   }
-  #q::placeholder { color: var(--faint); }
+  #q::-webkit-scrollbar { display: none; }
+  /* The field is EMPTY only when searchfield.js has cleared it — a
+     contenteditable leaves a <br> behind otherwise, and :empty would never
+     match again after the first character was typed and deleted. */
+  #q:empty::before { content: attr(data-placeholder); color: var(--faint); }
   #q:hover { border-color: var(--muted); }
   #q:focus { border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
   #clear {
@@ -295,6 +320,31 @@
   .row-main { flex: 1; min-width: 0; }
   .row-name { font-weight: 550; font-size: 13.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .row-about { color: var(--muted); font-size: 12px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Not a result: the picker saying what it is doing, or that it found
+     nobody. A row would be clickable and this is not. */
+  .popup-note { padding: 13px 14px; color: var(--faint); font-size: 12.5px; }
+
+  /* ---- a person, inside the text field ------------------------------------ */
+  /* The field's VALUE here is still `from:npub1…`; this is only how it draws.
+     Sized in em throughout so it follows the field into the sticky toolbar,
+     where the font shrinks — a chip measured in pixels would grow relative to
+     its own line and push the bar taller. */
+  .mention {
+    display: inline-flex; align-items: center; gap: .35em;
+    vertical-align: middle;
+    max-width: 15em;
+    padding: .1em .6em .1em .2em;
+    border-radius: 999px;
+    background: var(--accent-soft);
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    user-select: none;
+  }
+  /* The card avatar, at field scale — same generated face, no border. */
+  .mention .avatar { width: 1.5em; height: 1.5em; border: 0; }
+  .mention-kind { opacity: .65; font-weight: 700; }
+  .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
   .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
   .export {
@@ -608,11 +658,26 @@
       <svg class="search-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" aria-hidden="true">
         <circle cx="10.5" cy="10.5" r="6.5" /><path d="M15.5 15.5 21 21" stroke-linecap="round" />
       </svg>
-      <input id="q" type="text" autocomplete="off" spellcheck="false" placeholder="Search Nostr&hellip;" autofocus
-             role="combobox" aria-expanded="false" aria-controls="popup" aria-autocomplete="list" aria-label="Search" />
+      <!--
+        A contenteditable, not an <input>: `from:npub1…` renders as a face and
+        a name, and there is no way to put a picture inside an input's value.
+        web/searchfield.js gives back everything the input gave for free —
+        `value`, `select()`, the placeholder, single-line behaviour, paste as
+        text — so app.js still just reads $q.value.
+      -->
+      <!-- autocorrect/autocapitalize off for the same reason spellcheck is:
+           a phone that "fixes" a 63-character npub, or capitalises the `from:`
+           that starts an empty field, is editing a token, not a sentence. -->
+      <div id="q" contenteditable="true" spellcheck="false" autocorrect="off" autocapitalize="off"
+           data-placeholder="Search Nostr&hellip;" enterkeyhint="search"
+           role="combobox" aria-expanded="false" aria-controls="popup" aria-autocomplete="list"
+           aria-multiline="false" aria-label="Search"></div>
       <button id="clear" type="button" aria-label="Clear search" title="Clear">&times;</button>
       <button id="me" type="button" class="me" aria-label="Sign in"></button>
       <div id="popup" class="popup" role="listbox" aria-label="Quick results"></div>
+      <!-- The other popup: who `from:`/`to:` means. Never open at the same
+           time as the one above — they share this box and the arrow keys. -->
+      <div id="mentions" class="popup" role="listbox" aria-label="People"></div>
     </div>
 
     <div class="bar">
@@ -679,12 +744,14 @@
 <link rel="modulepreload" href="/web/cards/relays.js" />
 <link rel="modulepreload" href="/web/cards/social.js" />
 <link rel="modulepreload" href="/web/entity.js" />
+<link rel="modulepreload" href="/web/searchfield.js" />
 <link rel="modulepreload" href="/web/shared/conn.js" />
 <link rel="modulepreload" href="/web/shared/format.js" />
 <link rel="modulepreload" href="/web/shared/kinds.js" />
 <link rel="modulepreload" href="/web/shared/nip05.js" />
 <link rel="modulepreload" href="/web/shared/nip19.js" />
 <link rel="modulepreload" href="/web/shared/profiles.js" />
+<link rel="modulepreload" href="/web/shared/query.js" />
 <link rel="modulepreload" href="/web/shared/relay.js" />
 <script type="module" src="/web/app.js"></script>
 </body>

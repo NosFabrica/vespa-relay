@@ -113,7 +113,12 @@ relay/src/main/resources/
   index.html            the search UI's markup + styles; its behavior lives in web/
   web/                  the page's native ES modules, served at /web — no build
                         step, zero dependencies. app.js is state + wiring;
-                        shared/ is the client + codec + caches; entity.js
+                        shared/ is the client + codec + caches; searchfield.js
+                        is the search box itself — a contenteditable, because
+                        `from:npub1…`/`to:npub1…` draw as a face and a name and
+                        an <input>'s value is characters and nothing else, with
+                        shared/query.js the ONE tokenizer both it and the query
+                        builder ask; entity.js
                         renders /npub1…//note1…//naddr1… paths; cards/ is the
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that
