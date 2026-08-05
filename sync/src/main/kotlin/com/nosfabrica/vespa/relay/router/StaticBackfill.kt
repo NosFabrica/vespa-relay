@@ -29,6 +29,7 @@ import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
@@ -241,7 +242,7 @@ internal class StaticBackfill(
                 // value, which only lands when the walk ends; that once read
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
-                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncBands.PLAUSIBLE_FLOOR)
+                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                 downloaded +=
                     client.fetchAllPages(
                         upstream.url,
@@ -250,7 +251,7 @@ internal class StaticBackfill(
                         onNewPage = { until -> paging.mark(walk, until) },
                     ) { event ->
                         if (upstream.filter.match(event)) {
-                            if (SyncBands.isPlausible(event.createdAt)) {
+                            if (SyncCoverage.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                             }
@@ -340,7 +341,21 @@ internal class StaticBackfill(
         group: List<SyncUpstream>,
         filter: Filter,
     ): StreamSnapshot {
-        val window = bands.coveringWindow(group.map { it.url }, filter)
+        val urls = group.map { it.url }
+        // Nobody in this group has anything outside its band, so every
+        // reconcileOne below returns at its own `legs.isEmpty()` check without
+        // ever reading the snapshot. Build it anyway and the cycle pays the
+        // most expensive thing this router does for no work at all —
+        // coveringWindow cannot help here, because once no relay needs anything
+        // there is no window to narrow TO and it correctly hands back the whole
+        // filter. Asking first is the only place the saving exists.
+        if (!bands.anyOutstanding(urls, filter)) {
+            System.err.println(
+                "router: static backfill ${group.first().streamName} — all ${group.size} relay(s) already cover the filter, skipping the snapshot",
+            )
+            return StreamSnapshot(emptyList(), nowSeconds())
+        }
+        val window = bands.coveringWindow(urls, filter)
         val startedMs = System.currentTimeMillis()
         val takenAt = startedMs / 1000
         val name = group.first().streamName
@@ -393,7 +408,7 @@ internal class StaticBackfill(
                                 // Only PLAUSIBLE stamps widen the band: one
                                 // future-dated event among 700k once discarded
                                 // a whole upstream's band.
-                                if (SyncBands.isPlausible(event.createdAt)) {
+                                if (SyncCoverage.isPlausible(event.createdAt)) {
                                     seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                     seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                                 }

@@ -20,8 +20,13 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -233,32 +238,37 @@ class SyncBandsTest {
 
     @Test
     fun `a relay that needs nothing does not widen the shared window`() {
-        // The regression this pins: `legs()` returns EMPTY for a relay whose
-        // band already covers its whole filter, and the window loop read that
-        // through singleOrNull() — null for "no legs" exactly as for "two legs"
-        // — so the most caught-up relay in a group forced the widest snapshot
-        // there is. The other relay's ceiling is the only real constraint here.
-        val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
+        // The router depends on this, so it is pinned here even though the
+        // arithmetic is quartz's: `legs()` returns EMPTY for a relay whose band
+        // already covers its filter, and a window loop that read that through
+        // singleOrNull() — null for "no legs" exactly as for "two legs" — let
+        // the most caught-up relay force the widest snapshot there is. The
+        // other relay's ceiling is the only real constraint here.
+        val capped = Filter(kinds = listOf(0), until = 1_700_005_000L)
         val c = SyncBands(null)
-        c.record(relay, bounded, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        assertTrue(c.legs(relay, bounded).isEmpty(), "the premise: this relay wants nothing")
-        c.record(other, bounded, null, null, paged = false, reconciledThrough = 1_700_003_000L)
+        c.record(relay, capped, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        assertTrue(c.legs(relay, capped).isEmpty(), "the premise: this relay wants nothing")
+        c.record(other, capped, null, null, paged = false, reconciledThrough = 1_700_003_000L)
 
-        assertEquals(1_700_003_000L, c.coveringWindow(listOf(relay, other), bounded).since)
+        assertEquals(1_700_003_000L, c.coveringWindow(listOf(relay, other), capped).since)
     }
 
     @Test
-    fun `a group where nobody needs anything gets the narrowest window, not the widest`() {
-        // Every relay is covered, so every one of them will be skipped and the
-        // snapshot goes unused — but it is still built, and building it over
-        // the full filter is the most expensive thing this router does.
-        val bounded = Filter(kinds = listOf(0), since = 1_700_001_000L, until = 1_700_005_000L)
+    fun `a group where nobody needs anything is asked about before a snapshot is built`() {
+        // coveringWindow returns the unnarrowed filter when every relay is
+        // covered — safe, and upstream's deliberate choice, because "any window
+        // would do" once nothing will be reconciled. The saving is the caller's
+        // to take, and [anyOutstanding] is how it asks: building the id set is
+        // the most expensive thing this router does, and doing it for a fleet
+        // that will then skip every relay is the whole cost for none of the
+        // benefit.
+        val capped = Filter(kinds = listOf(0), until = 1_700_005_000L)
         val c = SyncBands(null)
-        c.record(relay, bounded, null, null, paged = false, reconciledThrough = 1_700_009_000L)
-        c.record(other, bounded, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        c.record(relay, capped, null, null, paged = false, reconciledThrough = 1_700_009_000L)
+        c.record(other, capped, null, null, paged = false, reconciledThrough = 1_700_009_000L)
 
-        val window = c.coveringWindow(listOf(relay, other), bounded)
-        assertTrue((window.since ?: 0) > 1_700_005_000L, "a window above the filter's own ceiling selects nothing")
+        assertTrue(!c.anyOutstanding(listOf(relay, other), capped), "nobody wants anything")
+        assertTrue(c.anyOutstanding(listOf(relay, other), profiles), "…but a filter with no band still does")
     }
 
     @Test
@@ -288,7 +298,7 @@ class SyncBandsTest {
         val far = System.currentTimeMillis() / 1000 + 400L * 86_400
         val observed = listOf(1_700_001_000L, far, 1_700_002_000L, 0L)
 
-        val plausible = observed.filter { SyncBands.isPlausible(it) }
+        val plausible = observed.filter { SyncCoverage.isPlausible(it) }
         c.record(relay, profiles, plausible.min(), plausible.max(), paged = true)
 
         val band = c.band(relay, profiles)!!
@@ -360,6 +370,49 @@ class SyncBandsTest {
         val reopened = SyncBands(f)
         assertEquals(1_700_001_000L, reopened.band(relay, profiles)!!.minCreatedAt)
         assertEquals(1_700_002_000L, reopened.band(relay, profiles)!!.maxCreatedAt)
+        assertEquals(1_700_001_000L, reopened.legs(relay, profiles)[0].until)
+        f.delete()
+    }
+
+    @Test
+    fun `a state file written before the move to quartz still loads`() {
+        // The band arithmetic moved out to quartz's SyncCoverage; the FILE did
+        // not move with it, and a running deployment's SYNC_STATE_FILE has to
+        // survive that. Written out by hand rather than by this code, because a
+        // round trip through one implementation proves only that it agrees with
+        // itself — this is the shape the previous version actually wrote.
+        val f = tempFile()
+        // The key the previous version built: the relay url, a space, and the
+        // filter's canonical json. Assembled here rather than read back from
+        // the code under test, so a change to either half fails this. Encoded
+        // through the json builder only because the filter half contains quotes
+        // — the SHAPE is the hand-written part.
+        val key = "${relay.url} ${profiles.toJson()}"
+        f.writeText(
+            Json.encodeToString(
+                JsonObject.serializer(),
+                buildJsonObject {
+                    put(
+                        key,
+                        buildJsonObject {
+                            put("min", 1_700_001_000L)
+                            put("max", 1_700_002_000L)
+                            put("complete", false)
+                            put("fullAt", now())
+                        },
+                    )
+                },
+            ),
+        )
+
+        val reopened = SyncBands(f)
+        val band = reopened.band(relay, profiles)
+        assertTrue(band != null, "the key the old code wrote must still resolve")
+        assertEquals(1_700_001_000L, band!!.minCreatedAt)
+        assertEquals(1_700_002_000L, band.maxCreatedAt)
+        // …and it must still NARROW, not merely parse: a band that loads but
+        // does not key correctly is a full re-walk nobody notices.
+        assertEquals(2, reopened.legs(relay, profiles).size)
         assertEquals(1_700_001_000L, reopened.legs(relay, profiles)[0].until)
         f.delete()
     }

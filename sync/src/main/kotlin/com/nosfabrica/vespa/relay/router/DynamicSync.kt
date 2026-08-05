@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -179,6 +180,15 @@ internal class DynamicSync(
                 // is the most expensive thing this router does (24.8M ids and
                 // gigabytes held live, measured).
                 System.err.println("router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot")
+                emptyList()
+            } else if (!bands.anyOutstanding(relays.map { it.url }, window)) {
+                // Every discovered relay already covers this filter, so each
+                // syncOne below returns at its own leg check without ever
+                // reading the id set. coveringWindow cannot save this: with
+                // nothing outstanding there is no window to narrow TO, and it
+                // correctly hands back the whole filter. Asking first is where
+                // the saving is.
+                System.err.println("router: ${stream.name} — all ${relays.size} relay(s) already cover the filter, skipping the snapshot")
                 emptyList()
             } else if (stream.deleteMissing != DeleteMissing.OFF) {
                 // [DeleteMissingSync] reads its OWN ids per ask, and must:
@@ -437,7 +447,7 @@ internal class DynamicSync(
             val syncStartedAt = System.currentTimeMillis() / 1000
             val onEvent: (Event) -> Unit = { event ->
                 if (stream.filter.match(event)) {
-                    if (SyncBands.isPlausible(event.createdAt)) {
+                    if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
@@ -452,7 +462,7 @@ internal class DynamicSync(
                 if (fetched) {
                     null.also {
                         val walk = "${stream.name}|${url.url}"
-                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncBands.PLAUSIBLE_FLOOR)
+                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                         downloaded +=
                             client.fetchAllPages(
                                 url,
