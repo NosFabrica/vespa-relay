@@ -4,12 +4,19 @@
 // show them. DECODING accepts all five forms, because /nevent1… and /naddr1…
 // arrive in pasted links whether or not we would have minted them.
 //
-// Encoding emits npub, note and naddr. nevent stays unminted — its TLV is
-// hints this page has nothing to put in — but naddr's TLV is the ADDRESS
+// Encoding emits npub, note, naddr and nevent. naddr's TLV is the ADDRESS
 // itself (kind, author, d), which every `a` tag already carries in full. Every
 // list, set, calendar and community points at its contents with `a` tags, so
 // without an encoder those cards could only count their items; with one they
 // link to the entity page that renders them.
+//
+// nevent WAS unminted, on the grounds that its TLV is hints this page has
+// nothing to put in. A reply's `e` tag is where that stopped being true: it
+// carries the relay its author believed holds the parent, and often the
+// parent's pubkey. Minting those into the link is the difference between "in
+// reply to Alice" opening her post and opening this relay's "Not here" — the
+// entity page dials an identifier's hints when the index misses, and a note1…
+// has none to dial.
 
 const B32 = "qpzry9x8gf2tvdw0s3jn54khce6mua7l";
 const GEN = [0x3b6a57b2, 0x26508e6d, 0x1ea119fa, 0x3d4233dd, 0x2a1462b3];
@@ -113,6 +120,33 @@ export function naddr(a) {
     2, 32, ...hexToBytes(m[2]),                            // 2: the author
     3, 4, (kind >>> 24) & 255, (kind >>> 16) & 255, (kind >>> 8) & 255, kind & 255, // 3: the kind
   ]);
+}
+
+/**
+ * An event id plus the hints something knew about it, as an nevent — or ""
+ * when the id is not a 32-byte hex, on the same grounds as bech32() above.
+ *
+ * Only what is actually known is encoded: an nevent whose TLV is nothing but
+ * the id is a note1… with thirty more characters and no more meaning, so
+ * callers with no hints should use noteId() and cards/base.js's eventHref
+ * picks between the two for them. Relays are capped at two — the TLV is a url
+ * per entry and this ends up in an address bar.
+ */
+export function nevent(id, { relays = [], author = null, kind = null } = {}) {
+  if (!/^[0-9a-f]{64}$/i.test(id || "")) return "";
+  const bytes = [0, 32, ...hexToBytes(String(id).toLowerCase())];
+  for (const r of relays.slice(0, 2)) {
+    const b = [...new TextEncoder().encode(String(r || ""))];
+    if (b.length && b.length <= 255) bytes.push(1, b.length, ...b);
+  }
+  if (/^[0-9a-f]{64}$/i.test(author || "")) bytes.push(2, 32, ...hexToBytes(String(author).toLowerCase()));
+  // `kind == null` first: kind 0 is a real kind and `Number(null)` is 0, so a
+  // caller passing nothing would otherwise mint "this is a profile".
+  const k = kind == null ? NaN : Number(kind);
+  if (Number.isInteger(k) && k >= 0 && k <= 0xffffffff) {
+    bytes.push(3, 4, (k >>> 24) & 255, (k >>> 16) & 255, (k >>> 8) & 255, k & 255);
+  }
+  return bech32Bytes("nevent", bytes);
 }
 
 /** The half of an `a` tag worth showing: its `d`, else the address itself. */

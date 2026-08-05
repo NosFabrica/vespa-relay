@@ -4,7 +4,7 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
-const { pubkeyParam } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
+const { pubkeyParam, nip19Parse } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { renderers } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
@@ -72,7 +72,7 @@ const FIXTURES = [
   [9,     ev(9, [], "a chat line"), "a chat line"],
   [42,    ev(42, [["e", eid]], "a channel line"), "a channel line"],
   [1311,  ev(1311, [["a", `30311:${pk}:show`]], "a live chat line"), "a live chat line"],
-  [1111,  ev(1111, [["E", eid], ["e", eid]], "a comment"), "replying to"],
+  [1111,  ev(1111, [["E", eid], ["e", eid]], "a comment"), "in reply to"],
   [1068,  ev(1068, [["option", "a", "Yes"], ["option", "b", "No"], ["endsAt", String(now + 3600)]], "Best colour?"), "Best colour?"],
   [1018,  ev(1018, [["e", eid], ["response", "a"]]), "voted on"],
   [1984,  ev(1984, [["p", pk2, "spam"]], "keeps posting the same link"), "<b>spam</b>"],
@@ -232,6 +232,75 @@ for (const html of [scored, observer, nameless]) {
   const text = html.replace(/<[^>]*>/g, " ");
   assert(!text.includes(pk) && !text.includes(pk2), "hex is a storage format, not display text");
 }
+
+// ---- replies name a PERSON, and link the PARENT ---------------------------
+//
+// Three claims, and they are separable — a card can name the right person and
+// link the wrong place:
+//   WHICH `e` tag is the parent  (NIP-10: reply, else root, else the last one)
+//   WHO wrote it                 (the tag's 5th slot, its 4th, a NIP-22 `p`)
+//   WHERE the link goes          (the parent EVENT, never the parent's profile)
+// Asserted on the reply line alone, because the card around it legitimately
+// links both the author's npub (the byline) and a note id (its own permalink).
+const parentId = "a".repeat(64);
+const rootId = "c".repeat(64);
+const lineOf = (html) => (/<div class="reply-line">([\s\S]*?)<\/div>/.exec(html) || ["", ""])[1];
+const linkedTo = (html) => {
+  const href = (/href="\/([a-z0-9]+)"/.exec(lineOf(html)) || ["", ""])[1];
+  return href ? nip19Parse(href) : null;
+};
+
+// pk2 is "olga" in the cache seeded above; here she is the parent's author,
+// hinted where NIP-10 puts it.
+const reply = card(ev(1, [["e", rootId, "", "root"], ["e", parentId, "wss://hint.example", "reply", pk2]], "my answer"), { full: true });
+assert(lineOf(reply).includes("in reply to"), "a reply says what it is");
+assert(lineOf(reply).includes(">olga</a>"), "the parent is a person, named");
+assert(!lineOf(reply).includes("npub1") || !lineOf(reply).includes(">npub1"), "a known name displaces the npub");
+assert(!/href="\/npub1/.test(lineOf(reply)), "the link is not the parent's profile");
+assert.strictEqual(linkedTo(reply).id, parentId, "the `reply` marker wins over `root`");
+assert.deepStrictEqual(linkedTo(reply).relays, ["wss://hint.example"], "the tag's relay hint rides into the link");
+assert.strictEqual(linkedTo(reply).author, pk2, "…and so does the author, for the entity page's fallback");
+// The preview and the permalink say the same thing — one template, two depths.
+assert(lineOf(card(ev(1, [["e", parentId, "", "reply", pk2]], "x"))).includes(">olga</a>"), "the results list names them too");
+
+// Marker precedence, and the positional fallback the NIP deprecated but the
+// corpus is full of: no markers at all means the LAST `e` tag is the parent.
+assert.strictEqual(linkedTo(card(ev(1, [["e", parentId, "", "root"]], "x"), { full: true })).id, parentId,
+  "a lone root marker IS the parent — a direct reply to the opening post marks nothing else");
+assert.strictEqual(linkedTo(card(ev(1, [["e", rootId], ["e", parentId]], "x"), { full: true })).id, parentId,
+  "unmarked: the last `e` tag is the parent");
+assert.strictEqual(linkedTo(card(ev(1, [["e", rootId], ["e", parentId, "", "mention"]], "x"), { full: true })).id, rootId,
+  "a `mention` is a quote, not a parent");
+assert.strictEqual(lineOf(card(ev(1, [], "not a reply at all"), { full: true })), "", "a note that answers nothing says nothing");
+assert.strictEqual(lineOf(card(ev(7, [["e", parentId]], "+"), { full: true })), "",
+  "a reaction already says 'liked <note>' — it does not also reply to it");
+
+// Nobody named: the label falls back to the parent's id, and the link still
+// opens the parent. This is the shape a reply takes before the lookup lands.
+const unresolved = card(ev(1, [["e", parentId]], "x"), { full: true });
+assert(lineOf(unresolved).includes("note1"), "an unresolved parent still shows what it points at");
+assert.strictEqual(linkedTo(unresolved).id, parentId, "…and still links there");
+
+// NIP-22 puts the author where NIP-10 puts the marker, and REQUIRES a `p` tag
+// naming that same person — two more slots for the same fact.
+assert(lineOf(card(ev(1111, [["e", parentId, "", pk2]], "c"), { full: true })).includes(">olga</a>"), "NIP-22's 4th slot is the author");
+assert(lineOf(card(ev(1111, [["e", parentId], ["p", pk2]], "c"), { full: true })).includes(">olga</a>"), "a NIP-22 comment's `p` names the parent's author");
+// A comment on an ARTICLE has no `e` at all: the author is in the address.
+const onArticle = card(ev(1111, [["A", `30023:${pk2}:art`], ["a", `30023:${pk2}:art`]], "c"), { full: true });
+assert(lineOf(onArticle).includes(">olga</a>") && /href="\/naddr1/.test(lineOf(onArticle)), "an addressable parent names its author and links the address");
+
+// A NIP-28 channel message carries the CHANNEL in its root `e` tag. Reading
+// that as a parent would put "in reply to <whoever opened the room>" over
+// every line ever typed in it.
+assert.strictEqual(lineOf(card(ev(42, [["e", rootId, "", "root"]], "hi all"), { full: true })), "", "a channel is not a parent");
+assert.strictEqual(linkedTo(card(ev(42, [["e", rootId, "", "root"], ["e", parentId, "", "reply", pk2]], "hi"), { full: true })).id, parentId,
+  "…but a reply inside one is");
+
+// The enrichment claim, for the one person no scan of the tags would find on
+// its own: whoever the line names, namedPubkeys must declare.
+assert(namedPubkeys(ev(1, [["e", parentId, "", "reply", pk2]])).includes(pk2), "the parent's author is a name this page owes itself");
+assert(namedPubkeys(ev(1111, [["a", `30023:${pk2}:art`]])).includes(pk2), "…including the one written into an address");
+assert.deepStrictEqual(namedPubkeys(ev(1, [["e", parentId]])), [], "an unhinted parent declares nobody until the lookup lands");
 
 // A set renders its CONTENTS, which is the whole complaint that started this:
 // a 30003 with twelve saved articles used to render as a title and a badge

@@ -8,6 +8,7 @@
 import { esc, clip, titleOf, summaryOf } from "./shared/format.js";
 import { shortNpub } from "./shared/nip19.js";
 import { authorOf, displayName, parseProfile } from "./shared/profiles.js";
+import { replyPerson } from "./shared/parents.js";
 import { renderers, avatarHtml, badgeHtml, tagOf, tagsWhere } from "./cards/base.js";
 import { genericCard } from "./cards/generic.js";
 import "./cards/profile.js";
@@ -56,6 +57,11 @@ export function namedPubkeys(ev) {
     else if (t[0] === "p") { if (NAMES_P_TAGS.has(ev.kind)) add(t[1]); }
     else add(t[1]);                                        // a 10040's service column
   }
+  // Who a reply answers. Not reachable by any scan of this event either: the
+  // person is named by an `e` tag's optional fifth element, by an address's
+  // middle field, or by a lookup of the parent — three slots, one answer, and
+  // parents.js is what knows which kinds ask the question at all.
+  add(replyPerson(ev));
   // NIP-57 puts the zap REQUEST, stringified, in the receipt's `description`,
   // and the sender is that inner event's author — the one person named on
   // this page who appears nowhere in the outer event's tags.

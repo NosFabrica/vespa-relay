@@ -1,5 +1,5 @@
 import assert from 'assert';
-const { npub, noteId, naddr: mintAddr, shortAddr, pubkeyParam, nip19Parse } =
+const { npub, noteId, naddr: mintAddr, nevent: mintEvent, shortAddr, pubkeyParam, nip19Parse } =
   await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 
 // A test-side bech32+TLV ENCODER, written independently from the page's
@@ -96,6 +96,31 @@ assert.strictEqual(typeof mintAddr(`30023:${pk}:${"x".repeat(255)}`), "string", 
 // …and the boundary is BYTES, not characters: a 200-character multibyte d
 // overruns the same one-byte prefix that 200 ascii characters fit inside.
 assert.strictEqual(mintAddr(`30023:${pk}:${"ü".repeat(200)}`), null, "the limit counts utf-8 bytes");
+
+// ---- minting nevent from an `e` tag -------------------------------------
+// Same property, same reason: a reply's parent link is minted from whatever
+// the `e` tag carried, and the entity page decodes it back into the id it
+// fetches and the hints it dials on a miss. The hints are the whole point of
+// choosing nevent over note here, so the round trip has to preserve them.
+p = nip19Parse(mintEvent(idHex, { relays: ["wss://hint.example"], author: pk, kind: 1 }));
+assert.deepStrictEqual({ type: p.type, id: p.id, author: p.author, kind: p.kind, relays: p.relays },
+  { type: "nevent", id: idHex, author: pk, kind: 1, relays: ["wss://hint.example"] }, "nevent round trip");
+// Only what is known gets encoded — no empty TLV entries for absent hints.
+p = nip19Parse(mintEvent(idHex, { author: pk }));
+assert.deepStrictEqual([p.id, p.author, p.relays, p.kind], [idHex, pk, [], null], "an nevent with only an author");
+p = nip19Parse(mintEvent(idHex));
+assert.deepStrictEqual([p.id, p.author, p.relays], [idHex, null, []], "a hintless nevent is just the id");
+// Two hints are plenty for a URL; a third is dropped rather than encoded.
+assert.deepStrictEqual(nip19Parse(mintEvent(idHex, { relays: ["wss://a.x", "wss://b.x", "wss://c.x"] })).relays,
+  ["wss://a.x", "wss://b.x"], "relay hints are capped at two");
+// A malformed id mints nothing, the same as bech32() itself: the card falls
+// back to noteHref, which falls back to nothing, rather than linking a lie.
+assert.strictEqual(mintEvent("nope"), "");
+assert.strictEqual(mintEvent(null), "");
+// A garbage author or kind is DROPPED, not encoded — an nevent naming nobody
+// still resolves by id, one whose TLV is junk resolves to nothing.
+p = nip19Parse(mintEvent(idHex, { author: "not-a-pubkey", kind: "soon" }));
+assert.deepStrictEqual([p.id, p.author, p.kind], [idHex, null, null], "junk hints are dropped, the id survives");
 
 // shortAddr shows the d, and names the author when there is no d to show
 assert.strictEqual(shortAddr(`30023:${pk}:my-article`), "my-article");

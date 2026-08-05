@@ -12,13 +12,15 @@
 // relay.test.mjs   the NIP-42 CLOSED auth-required -> auth -> resend wiring
 // profiles.test.mjs a lookup caches "no profile" only off a COMPLETE read —
 //                  the rule two separate caches have now got wrong
+// parents.test.mjs which `e` tag a reply answers and who wrote it — NIP-10's
+//                  rule, plus that same complete-read rule on its cache
 // preload.test.mjs the modulepreload hints match the real import graph, so the
 //                  module waterfall stays one round trip instead of three
 import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "preload.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

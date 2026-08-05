@@ -3,7 +3,7 @@
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
-import { register, shell, bodyHtml, noteHref, tagOf, tagsOf, tagsWhere, clipIf, chipRow } from "./base.js";
+import { register, shell, bodyHtml, replyLine, noteHref, tagOf, tagsOf, tagsWhere, clipIf, chipRow } from "./base.js";
 
 const preBlock = (opts, text, n = 2000) =>
   text ? `<pre class="codeblock">${esc(clipIf(opts, text, n))}</pre>` : "";
@@ -26,11 +26,16 @@ function patchCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 1621 — an issue: a subject and prose, like a note that names a repo. */
+/**
+ * 1621 — an issue: a subject and prose, like a note that names a repo. A 1622
+ * takes the same template as a git REPLY, which is why the reply line is here:
+ * those carry no subject, so without it the card is prose with no thread.
+ */
 function issueCard(ev, opts) {
   const subject = tagOf(ev, "subject");
   const inner =
     (subject ? `<h2 class="result-title">${esc(clipIf(opts, subject, 140))}</h2>` : "") +
+    replyLine(ev) +
     bodyHtml(opts, ev.content, 500);
   return shell(ev, opts, inner);
 }

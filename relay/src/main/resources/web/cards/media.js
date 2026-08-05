@@ -4,7 +4,7 @@
 // URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { register, shell, bodyHtml, emojiGrid, imetaField, tagOf, tagsOf, clipIf } from "./base.js";
+import { register, shell, bodyHtml, replyLine, emojiGrid, imetaField, tagOf, tagsOf, clipIf } from "./base.js";
 
 const mediaUrl = (ev) => imetaField(ev, "url") || tagOf(ev, "url");
 const poster = (ev) => imetaField(ev, "image") || imageOf(ev);
@@ -64,10 +64,15 @@ function fileCard(ev, opts) {
   ]);
 }
 
-/** 1986 — audio: playable when a url is present. */
+/**
+ * 1986 — audio: playable when a url is present. A 1244 is a voice message
+ * REPLY and carries nothing but the audio, so who it answers is the only text
+ * on the card and the only way to place it in a conversation.
+ */
 function audioCard(ev, opts) {
   const url = mediaUrl(ev);
   const inner =
+    replyLine(ev) +
     (opts && opts.full && url ? `<div class="embed"><audio controls preload="metadata" src="${esc(url)}"></audio></div>` : "") +
     bodyHtml(opts, ev.content || titleOf(ev), 300);
   return shell(ev, opts, inner);

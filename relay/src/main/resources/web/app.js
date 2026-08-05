@@ -9,6 +9,7 @@ import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery } from "./shared/query.js";
+import { unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { mountSearchField } from "./searchfield.js";
@@ -266,7 +267,7 @@ function buildFilter(text, limit) {
   return filter;
 }
 
-async function search(text, limit) {
+async function search(text, limit, deep) {
   await ensureLogin();
   const filter = buildFilter(text, limit);
   const events = await relay.req(filter);
@@ -288,7 +289,29 @@ async function search(text, limit) {
   // round trip; it was just on the other side of the render.
   const mentioned = events.flatMap(namedPubkeys);
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
-  return { events, names };
+  return { events, names: deep ? withParents(events, names) : names };
+}
+
+/**
+ * The reply lines' second and third round trips, chained BEHIND the names.
+ *
+ * "In reply to <person>" needs a person, and most `e` tags name only an event
+ * — so an unhinted parent is a lookup by id to learn its author, and then that
+ * author's profile. Three asks deep is why this runs after the authors of the
+ * results themselves have landed: those are what most of the page is waiting
+ * on, and a reply line that fills in a beat later is the same trade the score
+ * chips already make. The counted total is what decides whether the list
+ * repaints, so a parent learned WITHOUT a profile still counts — the line goes
+ * from a note id to an npub, which is a different sentence.
+ *
+ * Full renders only (the `deep` flag): the type-ahead popup shows a name and a
+ * line of text per row, no reply lines, so a debounced keystroke has nothing
+ * to spend two round trips on.
+ */
+async function withParents(events, names) {
+  const before = await names;
+  const learned = await loadParentAuthors(unknownParents(events));
+  return before + learned + await enrichProfiles(events.flatMap(namedPubkeys));
 }
 
 // ---- viewing as somebody else -------------------------------------------
@@ -743,7 +766,7 @@ async function run(text, mode, render) {
   const t0 = performance.now();
   let names = null;
   try {
-    const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
+    const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT, mode === "full");
     if (myId !== s.requestId) return;
     s.hits = found.events; s.hitsFor = text; names = found.names;
   } catch (e) {

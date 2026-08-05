@@ -24,6 +24,7 @@
 import { refConn, relay } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
 import { enrichProfiles } from "./shared/profiles.js";
+import { unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
 import { kindLabel } from "./shared/kinds.js";
@@ -150,6 +151,11 @@ function titleFor(ev, parsed) {
  */
 async function enrichMentions(ev) {
   const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
+  // Before the names, not after: on a reply whose `e` tag names no author, WHO
+  // the parent is only becomes a question once the parent event is looked up,
+  // and namedPubkeys cannot declare a pubkey nothing here has learned yet.
+  // This page renders once — there is no second paint to fix it up in.
+  await loadParentAuthors(unknownParents([ev]));
   await enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]);
 }
 

@@ -11,8 +11,9 @@
 
 import { esc, clip, fullDate, when } from "../shared/format.js";
 import { kindLabel, kindTone } from "../shared/kinds.js";
-import { npub, noteId, naddr, shortAddr, shortNote, shortNpub } from "../shared/nip19.js";
+import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
+import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
 
 // ---- the registry ---------------------------------------------------------
 export const renderers = new Map(); // kind -> (ev, opts) -> html
@@ -28,6 +29,21 @@ export const noteHref = (hex) => `/${esc(noteId(hex))}`;
 export const njumpFor = (bech) => `https://njump.me/${esc(bech)}`;
 /** An `a` tag as a link to its entity page — null when it cannot be encoded. */
 export const addrHref = (a) => { const n = naddr(a); return n ? `/${esc(n)}` : null; };
+
+/**
+ * An event page, carrying whatever the tag that named the event knew about it.
+ *
+ * noteHref is the bare form and stays the default; when a hint is at hand this
+ * mints an nevent instead, because those hints are what entity.js falls back
+ * to when this relay's index misses. A reply whose parent we never mirrored
+ * opens anyway — from a note1… it could only ever say "Not here".
+ */
+export const eventHref = (id, hints = {}) => {
+  const n = hints.relay || hints.author
+    ? nevent(id, { relays: hints.relay ? [hints.relay] : [], author: hints.author, kind: hints.kind })
+    : "";
+  return n ? `/${esc(n)}` : noteHref(id);
+};
 
 // ---- tag access -----------------------------------------------------------
 // `Array.isArray` on every entry, for the same reason format.js's firstTag
@@ -158,6 +174,47 @@ export const bodyHtml = (opts, text, n = 400, muted = false) => {
 export const personLink = (pk) => {
   const nm = displayName(profiles.get(pk));
   return `<a${nm ? "" : ' class="mono"'} href="${keyHref(pk)}" title="${esc(npub(pk))}">${esc(nm || shortNpub(pk))}</a>`;
+};
+
+/**
+ * "↩ in reply to <person>" — the line a reply-shaped card leads with, or ""
+ * when the event is not a reply.
+ *
+ * Two decisions worth stating, because both were the other way round:
+ *
+ * The LABEL is the person. A reply used to render its parent as `note1qqq…`
+ * in the props table, which is a hash: it tells a reader nothing about what
+ * they are looking at, and no other client shows one. Who is being answered
+ * is the context that makes the text above it read as a conversation.
+ *
+ * The LINK is the parent EVENT, not the parent's profile. Somebody clicking
+ * "in reply to Alice" wants the thing Alice said; her profile is one more
+ * click away from the byline of the card that opens. The href therefore
+ * disagrees with the label on purpose — and carries the `e` tag's relay hint,
+ * so a parent this relay never mirrored still opens.
+ *
+ * The fallback ladder is name -> npub -> note id, in decreasing usefulness:
+ * the last rung is only reached when neither the tag nor the lookup produced
+ * an author, which means this relay does not hold the parent either.
+ */
+export function replyLine(ev) {
+  const t = replyTarget(ev);
+  if (t) {
+    const pk = replyAuthor(ev);
+    return replyRow(eventHref(t.id, { relay: t.relay, author: pk }), pk, shortNote(t.id), noteId(t.id));
+  }
+  // A NIP-22 comment on something addressable — an article, a listing — has no
+  // `e` at all, and its `a` carries the author in the address itself.
+  const a = replyAddr(ev);
+  const href = a && addrHref(a.addr);
+  return href ? replyRow(href, a.author, shortAddr(a.addr), a.addr) : "";
+}
+
+const replyRow = (href, pk, fallbackLabel, fallbackTitle) => {
+  const nm = pk ? displayName(profiles.get(pk)) : "";
+  const label = nm || (pk ? shortNpub(pk) : fallbackLabel);
+  const title = pk ? npub(pk) : fallbackTitle;
+  return `<div class="reply-line">↩ in reply to <a${nm ? "" : ' class="mono"'} href="${href}" title="${esc(title)}">${esc(label)}</a></div>`;
 };
 
 /**

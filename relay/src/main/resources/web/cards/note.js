@@ -4,10 +4,20 @@
 
 import { esc } from "../shared/format.js";
 import { noteId, shortNote } from "../shared/nip19.js";
-import { register, shell, bodyHtml, noteHref, tagOf, jsonContent, avatarHtml, clipIf } from "./base.js";
+import { register, shell, bodyHtml, replyLine, noteHref, tagOf, jsonContent, avatarHtml, clipIf } from "./base.js";
 
+/**
+ * A note, and — when it is a reply — who it answers, above the text where the
+ * context belongs rather than as a row under it.
+ *
+ * The `note` row stays. It reads as redundant beside the reply line and it is
+ * not: in a results list it is the ONLY route from a card to its own page
+ * (nothing else in the frame links the event itself), so replacing it with the
+ * reply link would have made every reply a dead end at exactly the moment
+ * replies became worth following.
+ */
 function noteCard(ev, opts) {
-  const inner = bodyHtml(opts, ev.content, 500);
+  const inner = replyLine(ev) + bodyHtml(opts, ev.content, 500);
   const props = [["note", `<a class="mono" href="${noteHref(ev.id)}" title="${esc(noteId(ev.id))}">${esc(shortNote(ev.id))}</a>`]];
   return shell(ev, opts, inner, props);
 }
