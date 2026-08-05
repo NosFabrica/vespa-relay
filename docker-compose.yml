@@ -417,6 +417,11 @@ services:
       - tor_onion:/var/lib/tor
       # …and the address alone, for the relay to read (see its `:ro` mount).
       - onion_addr:/var/lib/onion
+      # Extra torrc lines for this service, appended to the generated config —
+      # latency, PoW defenses, introduction points. The bundled example is all
+      # comments and changes nothing; ONION_EXTRA_LOCAL points at your copy,
+      # the same way SYNC_CONFIG_LOCAL points at your router.conf.
+      - ${ONION_EXTRA_LOCAL:-./tor/onion.extra.conf.example}:/etc/tor/onion.extra.conf:ro
     healthcheck:
       # The published hostname, which is what this container exists to produce.
       # It does NOT prove the descriptor reached the network — `docker compose

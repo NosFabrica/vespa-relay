@@ -25,7 +25,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
-import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The addresses this relay answers at BESIDES `RELAY_URL` — today, the `.onion`
@@ -39,17 +38,24 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * The hidden-service address is DISCOVERED rather than declared. Tor derives it
  * from a key it generates the first time the service starts, so at the moment
- * the relay boots there may be no address to configure yet — and a container
- * restart that loses the key changes it. [hostnameFile] is the file Tor's
- * container publishes the hostname into (a volume shared with this one), read
- * on demand and cached once it parses: an address that appears an hour after
- * boot is picked up by the next connection instead of waiting for a relay
- * restart nobody knew to perform.
+ * the relay boots there may be no address to configure yet. [hostnameFile] is
+ * the file Tor's container publishes the hostname into (a volume shared with
+ * this one), and it is consulted per connection: an address that appears an
+ * hour after boot is picked up by the next client instead of waiting for a
+ * relay restart nobody knew to perform.
  *
- * "On demand" is once per websocket connect, and only until the read succeeds —
- * one failed `open` against a page-cached directory entry, beside a websocket
- * handshake that costs several orders of magnitude more. A relay with no hidden
- * service configures no path at all and does not even do that.
+ * "On demand" is once per websocket connect, and it costs one `stat`: the file
+ * is only re-read when its timestamp moves. `File.lastModified()` rather than
+ * `Files.readString` in a `runCatching` for exactly that reason — a missing
+ * path answers 0 instead of building a `NoSuchFileException` with a stack
+ * trace, and MISSING IS THE DEFAULT: compose sets the path on every relay,
+ * including the ones with no hidden service at all.
+ *
+ * Watching the timestamp rather than reading once is also what makes a
+ * ROTATED address land. Delete the key volume and Tor mints a new .onion; a
+ * relay that had cached the old one would reject every auth event from the new
+ * address until someone restarted it — the same silent downgrade this class
+ * exists to prevent, in its most confusing form.
  */
 class RelayAddresses(
     private val declared: Set<NormalizedRelayUrl> = emptySet(),
@@ -57,63 +63,72 @@ class RelayAddresses(
     private val announce: (String) -> Unit = { System.err.println(it) },
 ) {
     @Volatile
-    private var published: NormalizedRelayUrl? = null
+    private var addresses: Set<NormalizedRelayUrl> = declared
 
+    /** The published file's mtime, or 0 while there is no file; -1 before the first look. */
     @Volatile
-    private var complainedAbout: String? = null
+    private var seenStamp: Long = -1L
 
-    private val announced = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
-    /**
-     * Whatever we know right now. Called per connection, so a hidden service
-     * that comes up after the relay did still gets its clients authenticated.
-     *
-     * Each address is announced the first time it enters the set: an operator
-     * who cannot see the address cannot hand it to anyone, and for the
-     * discovered one that line is the moment the endpoint became usable.
-     */
-    fun alternates(): Set<NormalizedRelayUrl> {
-        val hidden = published ?: readPublished()
-        val all = if (hidden == null) declared else declared + hidden
-        all.forEach {
-            if (announced.add(it)) {
-                announce("onion: this relay also answers at ${it.url} — NIP-42 AUTH is accepted for it")
-            }
-        }
-        return all
+    init {
+        declared.forEach(::announceAddress)
     }
 
     /**
-     * The hostname Tor wrote, as a relay url, cached once it parses.
-     *
-     * A missing file is the ordinary state of a relay whose hidden service has
-     * not started yet — silence, not a warning that would cry wolf on every
-     * boot of every deployment that has no Tor at all. Content that is not a
-     * relay address is different: something wrote a file we cannot use, and
-     * that is worth saying (once per distinct value, so a stuck file does not
-     * repeat itself on every connection).
+     * Whatever we know right now. Called per connection, so a hidden service
+     * that comes up — or changes — after the relay did still gets its clients
+     * authenticated, without a restart nobody knew to perform.
      */
-    private fun readPublished(): NormalizedRelayUrl? {
-        val file = hostnameFile ?: return null
+    fun alternates(): Set<NormalizedRelayUrl> {
+        val file = hostnameFile
+        if (file != null) {
+            val stamp = file.toFile().lastModified()
+            if (stamp != seenStamp) adopt(file, stamp)
+        }
+        return addresses
+    }
+
+    /**
+     * Re-read the published hostname. Synchronized and re-checked because the
+     * caller's test is deliberately lock-free: two connections arriving
+     * together would otherwise both read and both announce.
+     *
+     * A file that is not there says nothing — that is the ordinary state of a
+     * relay whose hidden service has not started, and a warning on every boot
+     * of every deployment without Tor would cry wolf. Content that is not an
+     * address is different: something wrote a file we cannot use, and saying so
+     * once per change is the only way anyone learns of it.
+     */
+    @Synchronized
+    private fun adopt(
+        file: Path,
+        stamp: Long,
+    ) {
+        if (stamp == seenStamp) return
+        seenStamp = stamp
+        // Gone, or never there. Keep the address we already had: a hidden
+        // service does not stop existing because a mount blinked.
+        if (stamp == 0L) return
+
         val raw =
             runCatching { Files.readString(file) }
                 .getOrNull()
                 ?.trim()
                 ?.takeIf { it.isNotEmpty() }
-                ?: return null
+                ?: return
 
         val url = RelayUrlNormalizer.normalizeOrNull(raw)
         if (url == null) {
-            if (raw != complainedAbout) {
-                complainedAbout = raw
-                announce("onion: $file holds \"$raw\", which is not a relay address — no second address in use")
-            }
-            return null
+            announce("onion: $file holds \"$raw\", which is not a relay address — no second address in use")
+            return
         }
 
-        published = url
-        return url
+        if (url !in addresses) {
+            addresses = declared + url
+            announceAddress(url)
+        }
     }
+
+    private fun announceAddress(url: NormalizedRelayUrl) = announce("onion: this relay also answers at ${url.url} — NIP-42 AUTH is accepted for it")
 }
 
 /**

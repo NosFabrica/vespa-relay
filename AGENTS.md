@@ -325,6 +325,10 @@ things about it are not obvious and each cost a config that would not start:
 - **the key IS the address.** `tor_onion` holds it, mounted into that container
   and nowhere else; the relay gets a second volume carrying the hostname alone,
   read-only. `docker compose down -v` is what changes the address.
+- **the torrc is generated, so tuning is a mounted file** —
+  `tor/onion.extra.conf.example`, appended last. Single-hop mode (half the
+  latency, and a one-way door on that key), PoW defenses, introduction points:
+  each is a decision, so each is off and documented rather than chosen here.
 - **the relay has to know its own `.onion`**, because NIP-42 auth events are
   signed against the address the client dialled. Without it reads and publishes
   still work and every AUTH fails, which costs Tor clients their ranking lens

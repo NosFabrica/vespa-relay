@@ -161,6 +161,37 @@ class RelayOnionAuthTest {
         }
     }
 
+    /**
+     * A hidden service is published on port 80, so `ws://…onion:80` is the same
+     * endpoint spelled out — but the normalizer keeps the two strings apart, so
+     * a client configured that way would sign an address we DO serve and be
+     * refused.
+     */
+    @Test
+    fun `the default port spelled out is the same address`() {
+        val server = relayServing { setOf(onion) }
+        try {
+            val explicit = RelayUrlNormalizer.normalize("${onion.url.removeSuffix("/")}:80")
+            val ok = okFor(server) { signer.sign(RelayAuthEvent.build(explicit, it)) }
+            assertTrue(ok.contains(",true"), "ws://…onion:80 is ws://…onion: $ok")
+        } finally {
+            server.close()
+        }
+    }
+
+    /** …and only the DEFAULT port folds. Another port is another endpoint. */
+    @Test
+    fun `a different port on our own host is not our address`() {
+        val server = relayServing { setOf(onion) }
+        try {
+            val elsewhere = RelayUrlNormalizer.normalize("${onion.url.removeSuffix("/")}:7777")
+            val ok = okFor(server) { signer.sign(RelayAuthEvent.build(elsewhere, it)) }
+            assertTrue(ok.contains(",false"), "we do not answer there: $ok")
+        } finally {
+            server.close()
+        }
+    }
+
     @Test
     fun `an auth for a relay we do not serve is rejected`() {
         val server = relayServing { setOf(onion) }

@@ -50,20 +50,26 @@ import com.vitorpamplona.quartz.utils.TimeUtils
  * quartz's messages — `RelayOnionAuthTest` pins each one, so this drifting from
  * the engine fails the build rather than the deployment.
  *
- * Two deliberate widenings over the original:
+ * Three deliberate widenings over the original:
  *  - any of [addresses] satisfies the relay tag, not one fixed url;
  *  - EVERY `relay` tag is considered, not just the first. Quartz's own
  *    `RelayAuthEvent.create(relays, …)` builds multi-relay auth events, and a
  *    client that names both of our addresses means both. This is not a replay
  *    hole: [challenge] is 32 random chars minted per connection, so an event
- *    listing ten relays is still only usable on the connection that issued it.
+ *    listing ten relays is still only usable on the connection that issued it;
+ *  - a scheme's default port is dropped from both sides before comparing. The
+ *    normalizer keeps `ws://host:80/` and `ws://host/` apart, and a hidden
+ *    service is published on port 80 — so a client configured with the port
+ *    spelled out would sign an address this relay does serve and be told it
+ *    does not match. Only the DEFAULT port folds: `ws://host:7777/` is a
+ *    different endpoint and still has to be one we answer at.
  */
 class MultiAddressAuthPolicy(
     primary: NormalizedRelayUrl,
     alsoAt: Set<NormalizedRelayUrl> = emptySet(),
 ) : OptionalAuthPolicy(primary) {
     /** [primary] is always accepted; the set is never empty, whatever [alsoAt] holds. */
-    private val addresses = alsoAt + primary
+    private val addresses = (alsoAt + primary).mapTo(HashSet(), NormalizedRelayUrl::withoutDefaultPort)
 
     override fun accept(cmd: AuthCmd): PolicyResult<AuthCmd> {
         val event = cmd.event
@@ -80,10 +86,35 @@ class MultiAddressAuthPolicy(
             return PolicyResult.Rejected("invalid: challenge does not match")
         }
 
-        if (event.tags.mapNotNull(RelayTag::parse).none { it in addresses }) {
+        if (event.tags.mapNotNull(RelayTag::parse).none { it.withoutDefaultPort() in addresses }) {
             return PolicyResult.Rejected("invalid: relay url does not match")
         }
 
         return PolicyResult.Accepted(cmd)
     }
+}
+
+/**
+ * `ws://host:80/` and `ws://host/` name one endpoint; `wss://host:443/` and
+ * `wss://host/` likewise. Quartz's normalizer folds case and adds the trailing
+ * slash but keeps an explicitly-spelled default port, so the two spellings are
+ * different strings and `==` says they are different relays.
+ *
+ * Bracketed IPv6 survives it: `[::1]:80` ends with the port and loses it,
+ * `[::1]` does not end with `:80` at all — the port only ever follows the
+ * closing bracket.
+ */
+private fun NormalizedRelayUrl.withoutDefaultPort(): NormalizedRelayUrl {
+    val port =
+        when {
+            url.startsWith("ws://") -> ":80"
+            url.startsWith("wss://") -> ":443"
+            else -> return this
+        }
+    val authorityStart = url.indexOf("://") + 3
+    val slash = url.indexOf('/', authorityStart)
+    val authorityEnd = if (slash < 0) url.length else slash
+    val portStart = authorityEnd - port.length
+    if (portStart <= authorityStart || !url.regionMatches(portStart, port, 0, port.length)) return this
+    return NormalizedRelayUrl(url.removeRange(portStart, authorityEnd))
 }

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.config
 
 import kotlin.io.path.createTempDirectory
+import kotlin.io.path.deleteExisting
 import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -80,6 +81,46 @@ class RelayAddressesTest {
         // Cached: the announcement does not repeat on every later connection.
         addresses.alternates()
         assertEquals(1, said.size, "announced once, not once per connection: $said")
+    }
+
+    /**
+     * `docker compose down -v` on the key volume mints a NEW service, and the
+     * container republishes. A relay that had cached the first address would
+     * reject every auth event from the second one — the same downgrade this
+     * class exists to prevent, in the shape hardest to diagnose, since the
+     * endpoint itself works.
+     */
+    @Test
+    fun `a rotated address replaces the one it replaced`() {
+        val dir = createTempDirectory("onion")
+        val file = dir.resolve("hostname")
+        val addresses = RelayAddresses(hostnameFile = file, announce = {})
+
+        file.writeText(hostname)
+        assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
+
+        val rotated = "${"r".repeat(56)}.onion"
+        file.writeText(rotated)
+        // Explicit, so the assertion does not depend on the filesystem's
+        // timestamp resolution: two writes in the same second can share an
+        // mtime, and the re-read is keyed on the mtime moving.
+        file.toFile().setLastModified(System.currentTimeMillis() + 2_000)
+
+        assertEquals(setOf("ws://$rotated/"), addresses.alternates().map { it.url }.toSet())
+    }
+
+    /** A hidden service does not stop existing because a mount blinked. */
+    @Test
+    fun `a hostname file that disappears leaves the address in place`() {
+        val dir = createTempDirectory("onion")
+        val file = dir.resolve("hostname")
+        val addresses = RelayAddresses(hostnameFile = file, announce = {})
+
+        file.writeText(hostname)
+        assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
+
+        file.deleteExisting()
+        assertEquals(setOf("ws://$hostname/"), addresses.alternates().map { it.url }.toSet())
     }
 
     @Test

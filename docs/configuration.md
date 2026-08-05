@@ -102,7 +102,28 @@ so there is no `wss://` to offer.
 | `RELAY_ONION_URL` | the same thing declared by hand, for a hidden service run outside this compose file. Malformed ⇒ startup fails, rather than costing Tor clients their ranking lens for a reason nothing reports | unset |
 
 Both may be set; the relay answers to `RELAY_URL` and to every address either
-one names.
+one names. The relay re-reads the published file when its timestamp moves, so
+an address minted after boot — or rotated by a new key — lands on the next
+connection rather than at the next restart.
+
+One thing does **not** follow the relay onto Tor: the NIP-86 management API.
+Its NIP-98 tokens are bound to the single `RELAY_HTTP_URL`, deliberately — the
+alternative is trusting the `Host` header, which would let anyone bind a signed
+admin token to any url. An admin working over Tor either administers through
+the clearnet url or points `RELAY_HTTP_URL` at the `.onion`; it is one or the
+other, and a token minted for the wrong one is refused rather than ignored.
+
+### Tuning the hidden service
+
+Anything the bundled torrc does not carry goes in a mounted file, appended to
+the generated config: copy [`tor/onion.extra.conf.example`](../tor/onion.extra.conf.example),
+uncomment what you want, and point `ONION_EXTRA_LOCAL` at your copy. It
+documents the three worth knowing about — **single-hop mode**, which roughly
+halves latency by dropping the service's own three hops to one (and is a
+one-way door on that key: tor refuses to launch a service from a directory
+whose anonymity mode changed), tor's **proof-of-work defenses** against
+introduction flooding, and the **number of introduction points**. A file of
+only comments is skipped, so the default mount changes nothing.
 
 ## Router (the sync process)
 
