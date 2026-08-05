@@ -375,8 +375,10 @@ function buildFilters(text, limit) {
  * more than one query), so this is belt and braces rather than the fix for a
  * known duplicate. It stays because NIP-01 does not require that of a relay and
  * the same note rendering twice is a visible bug; it is a Set and one pass over
- * a list the page is about to render anyway. Arrival order is kept — see
- * exportText on what that order actually is once there is more than one filter.
+ * a list the page is about to render anyway. Arrival order is kept, and since
+ * store 8a45e4d1a2 that order is one ranking over all four filters rather than
+ * one run per filter, so keeping the first copy of a duplicate keeps it at the
+ * best position it earned.
  */
 function uniqueById(events) {
   const seen = new Set();

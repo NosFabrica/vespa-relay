@@ -102,6 +102,14 @@
   so the `t` filter keeps the view's limit and the other three ride at a quarter
   of it rather than multiplying the page by four.
 
+  What comes back is ONE order over all four, not each filter's run one after
+  another: the store merges the filters of a REQ that share a rank profile, and
+  these four always do — they carry the same search string. That is what makes
+  the quarter above a real budget rather than a tail cut, since a side filter's
+  hits compete for the top of the page against the `t` filter's. Pinned by
+  RelayProtocolTest."a ranked union is served as one order", which fails against
+  the store this page was written for and passes against the one it pins.
+
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
   pushes a history entry, and Back walks them in order down to the hero. The
