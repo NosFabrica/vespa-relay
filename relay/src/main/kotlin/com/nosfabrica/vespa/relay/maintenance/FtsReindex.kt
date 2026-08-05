@@ -80,6 +80,13 @@ fun launchFtsReindex(
                     progress =
                         runCatching { store.reindexFullTextSearch(cursor) }
                             .onFailure { e ->
+                                // runCatching catches EVERYTHING, cancellation
+                                // included — so a shutdown mid-page arrived
+                                // here and printed a page failure and a retry
+                                // for a page that had not failed. The catch
+                                // below says a cancelled walk is not a failure;
+                                // this is the same rule, one level down.
+                                if (e is CancellationException) throw e
                                 if (++attempt > FTS_PAGE_RETRIES) throw e
                                 System.err.println("fts: page failed (${e.message?.take(80)}) — retry $attempt/$FTS_PAGE_RETRIES in ${attempt * 5}s")
                             }.getOrNull()

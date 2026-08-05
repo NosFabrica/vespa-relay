@@ -6,6 +6,7 @@
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
 import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
+import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery } from "./shared/query.js";
@@ -53,10 +54,61 @@ function rememberSignIn(yes) {
   document.cookie = `${AUTH_COOKIE}=${yes ? 1 : 0}; path=/; max-age=31536000; SameSite=Lax`;
 }
 
+// ---- the face you ended on, kept across loads ----------------------------
+//
+// Every full load — a reload, a pasted /npub1… link, a click in from anywhere
+// — is a new socket, a new challenge, a new signature, and only THEN a REQ for
+// your kind 0. The field therefore sat on a placeholder for that entire chain
+// on every single load, redrawing an answer that had not changed since the
+// last one. The picture url and name of the account you signed in as are kept
+// here so the field can draw them at once.
+//
+// Keyed BY PUBKEY, and dropped the moment the key it is keyed to stops being
+// the one on screen — see the boot note at the foot of this file for the one
+// window where it is drawn on an assumption rather than on an answer. This is a
+// cache of what was already on your own screen, not a session: it authorises
+// nothing, the proof still has to happen, and until it does the field says so
+// rather than claiming you are signed in.
+const FACE_KEY = "sot_face";
+let meFace = readFace();
+function readFace() {
+  try {
+    const f = JSON.parse(localStorage.getItem(FACE_KEY) || "null");
+    return f && /^[0-9a-f]{64}$/.test(f.pubkey || "") ? f : null;
+  } catch (e) { return null; }
+}
+/**
+ * Keep what the relay just said about [pk]'s face.
+ *
+ * Only when it ANSWERED — `has` is true once it has, profile or no profile.
+ * A dropped or timed-out read is not "you have no picture", and recording it
+ * as one would throw away a good face AND cost the next load the head start
+ * this whole cache exists for. Same rule, and the same reason, as the one
+ * profiles.js spells out about caching absences off incomplete reads.
+ */
+function rememberFace(pk) {
+  if (!pk || !profiles.has(pk)) return;
+  const p = profiles.get(pk);
+  meFace = p ? { pubkey: pk, picture: p.picture || "", name: displayName(p) } : null;
+  writeFace();
+}
+/** Signing out is a decision: the next load must not flash the old face. */
+function forgetFace() {
+  meFace = null;
+  writeFace();
+}
+function writeFace() {
+  try {
+    if (meFace) localStorage.setItem(FACE_KEY, JSON.stringify(meFace));
+    else localStorage.removeItem(FACE_KEY);
+  } catch (e) {}
+}
+
 // ---- NIP-07 login -> NIP-42 auth -----------------------------------------
 // Signing the challenge switches the CONNECTION's ranking observer to you
 // (and enrolls you: the relay starts syncing your trust chain).
-let me = null; // authenticated hex pubkey
+let me = null;        // the pubkey the relay ACCEPTED a NIP-42 AUTH for
+let mePending = null; // the pubkey the extension named, before that proof
 
 // A dropped socket loses the AUTH, not the identity. Keeping `me` means the
 // page still knows who you are and re-authenticates on the next request,
@@ -87,12 +139,6 @@ window.addEventListener("pageshow", (ev) => {
   ensureLogin().then(paintScores).catch(() => {});
 });
 
-async function waitForChallenge(ms) {
-  const t0 = Date.now();
-  while (!relay.challenge && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 100));
-  return relay.challenge;
-}
-
 // Sign the CURRENT challenge and send it, retrying if the connection changed
 // underneath us.
 //
@@ -104,7 +150,7 @@ async function waitForChallenge(ms) {
 // the challenge after signing and retrying against the new one is the whole
 // fix; without it the only recovery is for the user to click again.
 async function signAndAuth(attempt = 0, waitMs = 3000) {
-  const challenge = await waitForChallenge(waitMs);
+  const challenge = await relay.waitForChallenge(waitMs);
   if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
   const signed = await window.nostr.signEvent({
     kind: 22242,
@@ -123,34 +169,89 @@ async function signAndAuth(attempt = 0, waitMs = 3000) {
   return signed.pubkey;
 }
 
+/**
+ * Who the extension says you are, and your face — both BEFORE the proof.
+ *
+ * Nothing about a public profile depends on NIP-42. `getPublicKey()` is a local
+ * call: no network, no signature, no challenge. So naming the account and
+ * reading its kind 0 can happen BESIDE the handshake, the challenge and the
+ * signing popup instead of behind all three — and the read is what the picture
+ * actually waits on.
+ *
+ * The pubkey it returns draws and prefetches; it never authorises. `me` is
+ * still set from the signature the relay accepted, and until that lands the
+ * field renders the face faded and titled "signing in as".
+ */
+async function prefetchFace() {
+  let pk = null;
+  try { pk = await window.nostr.getPublicKey(); } catch (e) { pk = null; }
+  if (!/^[0-9a-f]{64}$/.test(pk || "")) {
+    // The extension would not say. Whatever the boot assumed is unsupported —
+    // take it down rather than leave a face nothing is going to confirm.
+    mePending = null;
+    renderMe();
+    return null;
+  }
+  mePending = pk;
+  renderMe();                 // the remembered face, if this is the same account
+  // enrichProfiles skips a pubkey it has already seen — including one recorded
+  // as `null` by a lookup that ran before this account was on screen — so a
+  // cached miss survived signing in and the avatar kept the old face until a
+  // reload. Deleting first forces the re-read.
+  profiles.delete(pk);
+  try { await enrichProfiles([pk]); } catch (e) {}
+  renderMe();
+  return pk;
+}
+
 async function login() {
   if (!(window.nostr && window.nostr.signEvent)) throw new Error("No Nostr extension found (window.nostr / NIP-07)");
-  await relay.connect();
+  // The socket and the face start TOGETHER, because neither needs the other.
+  // This was strictly serial — connect, challenge, sign, AUTH, and only then
+  // open a second socket from cold and ask for one kind 0 — so the picture
+  // landed a full connect-plus-round-trip after the relay had already accepted
+  // the login, with the extension's popup sitting in the middle of the chain.
+  // Now the only step that needs both halves is the AUTH itself.
+  const connecting = relay.connect();
+  const face = prefetchFace();
+  await connecting;
   // A CLICK gets a longer wait than a background attempt. The socket may have
   // only just opened — the page does not connect at all until something needs
   // it — and the AUTH challenge is a message that arrives after the handshake,
   // so a 3s budget was being spent on connecting rather than waiting, and the
   // first press simply failed. That is why it took a few presses.
   me = await signAndAuth(0, 10000);
+  mePending = null;
   renderWhoami();
-  // Our own face, fetched fresh and AWAITED. enrichProfiles skips a pubkey it
-  // has already seen — including one recorded as `null` by a lookup that ran
-  // before this account was on screen — so a cached miss survived signing in
-  // and the avatar kept the old face until a reload. Deleting first forces
-  // the re-read; awaiting means the caller can rely on it being done.
-  profiles.delete(me);
-  try { await enrichProfiles([me]); } catch (e) {}
+  // Usually already resolved during the signing popup. AWAITED all the same,
+  // so a caller can still rely on the face being fetched by the time login()
+  // returns — that is what the retry below and the sign-in click both assume.
+  const named = await face;
+  if (named !== me) {
+    // The extension never answered getPublicKey, or signed as an account other
+    // than the one it named. Fall back to the read login() always did.
+    profiles.delete(me);
+    try { await enrichProfiles([me]); } catch (e) {}
+  }
+  rememberFace(me);
   renderWhoami();
   // The fetch above races page load: the reference socket is opening at the
   // same time as the main one, and when it loses, `me` is signed in with no
   // profile and NOTHING retries — the avatar sat on a placeholder until the
   // user clicked twice, which signed them out and back in again. Retry a
   // couple of times, quietly, and stop as soon as a face arrives.
-  for (let i = 0; i < 3 && me && !profiles.get(me); i++) {
+  //
+  // `has`, not `get`: the cache records `null` for a pubkey the relay ANSWERED
+  // about and has no kind 0 for. Retrying on that spent 3.6s of sleeps and
+  // three more REQs re-asking a question already answered, for every account
+  // that simply has no profile. Only a read that came back with nothing at all
+  // is worth repeating.
+  for (let i = 0; i < 3 && me && !profiles.has(me); i++) {
     await new Promise((r) => setTimeout(r, 600 * (i + 1)));
     if (!me) break;
     profiles.delete(me);
     try { await enrichProfiles([me]); } catch (e) {}
+    rememberFace(me);
     renderWhoami();
   }
 }
@@ -180,18 +281,27 @@ async function login() {
 let loginTried = false;   // the first attempt has SETTLED (labels key on this)
 let loginFlight = null;   // the first attempt itself, awaited by every search
 async function ensureLogin() {
-  await relay.connect();
+  // STARTED, not awaited. This used to gate the whole login flight on the
+  // handshake, which put the three independent waits — the socket, the
+  // extension, the profile read — back in series behind the slowest thing
+  // nobody was waiting for yet. Only the AUTH itself needs both halves, and it
+  // does its own connect. Everything else that sends anything connects on its
+  // own too (Relay.req does), so a failure here surfaces at the ask.
+  relay.connect().catch(() => {});
   if (!loginFlight) {
     loginFlight = (async () => {
       // A remembered "signed out" is a decision, not an absence — respect it
       // rather than prompting the extension on every page load.
       if (!wantsSignIn() || !(window.nostr && window.nostr.signEvent)) {
+        // Nobody is going to prove the assumed face below, so take it down.
+        mePending = null;
         $obsBox.classList.add("anon");
         renderWhoami();
         return;
       }
       try { await login(); } catch (e) {
         me = null;
+        mePending = null;   // the extension named somebody it could not prove
         $obsBox.classList.add("anon");
         $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))} — showing the whole corpus, unranked</span>`;
       }
@@ -318,13 +428,17 @@ async function loadObservers() {
   // exact reason — this used to open a THIRD socket of its own to say the
   // same thing.
   const anon = await refConn();
-  let lists, profileEvents = [];
-  lists = await anon.req({ kinds: [10040], limit: 2000 });
+  const lists = await anon.req({ kinds: [10040], limit: 2000 });
   const ks = [...new Set(lists.map((e) => e.pubkey))];
-  for (let i = 0; i < ks.length; i += 200) {
-    profileEvents = profileEvents.concat(await anon.req({ kinds: [0], authors: ks.slice(i, i + 200), limit: 200 }));
-  }
-  seedProfiles(profileEvents);
+  // The batches are chunks of ONE question, so they go out together rather
+  // than one round trip after another — 271 observers is two REQs, and asking
+  // them serially made the picker's first open cost two full waits for no
+  // reason. NIP-01 subscriptions are concurrent by design and this client
+  // already keys replies by subscription id; only the `await` was serialising.
+  const chunks = [];
+  for (let i = 0; i < ks.length; i += 200) chunks.push(ks.slice(i, i + 200));
+  const answers = await Promise.all(chunks.map((c) => anon.req({ kinds: [0], authors: c, limit: c.length })));
+  seedProfiles(answers.flat());
   observers = ks.map(pubkey => {
     const p = profiles.get(pubkey);
     return { pubkey, name: displayName(p), nip05: (p?.nip05 || "").trim() };
@@ -407,22 +521,45 @@ async function rankServiceOf(observer) {
   return svc;
 }
 
-/** Fill in any score chips currently on the page. */
+/**
+ * Fill in any score chips currently on the page.
+ *
+ * Every exit paints, including the ones that have nothing to say. Most chips
+ * live inside HTML that is rebuilt per search, so a lens with no scores used
+ * to clear itself simply by being re-rendered — but the SEARCH FIELD's chips
+ * outlive every search, and returning early there left one lens's numbers
+ * sitting on a face under the next lens, or after signing out.
+ */
 async function paintScores() {
   const lens = viewingAs || me;
   if (scoreLensKey !== lens) { scores.clear(); scoreLensKey = lens; }
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
-  if (!lens || !chips.length) return;
-  const svc = await rankServiceOf(lens);
-  if (!svc) return;                     // this lens ranks nothing; no chips
+  if (!chips.length) return;
+  const svc = lens ? await rankServiceOf(lens) : null;
+  // Nobody to rank by, or a lens that ranks nothing: the chips are not stale,
+  // they are ANSWERED — with no number.
+  if (!svc) { paintChips(chips); return; }
   const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
-  for (let i = 0; i < need.length; i += 100) {
-    const batch = need.slice(i, i + 100);
-    let evs = [];
-    try {
-      const conn = await refConn();
-      evs = await conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length });
-    } catch (e) { /* leave them unknown rather than wrong */ }
+  const batches = [];
+  for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
+  // In flight together: the chips are already on screen waiting to be filled,
+  // and one batch's answer never informs the next one's ask. An entity page
+  // with a long face strip was paying a full round trip per hundred faces.
+  const conn = batches.length ? await refConn().catch(() => null) : null;
+  const reads = await Promise.all(batches.map((batch) =>
+    // A failed read leaves this batch unknown rather than wrong — an empty
+    // array is NOT marked complete, so nothing gets cached as "no score".
+    (conn ? conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length }) : Promise.resolve([]))
+      .catch(() => [])));
+  // The lens can change WHILE these are in flight — the reader picks another
+  // observer, or signs out — and `scores` was cleared and re-keyed to the new
+  // one by the paint that followed them. Writing these answers into it now
+  // files one lens's numbers under another's name, and the `null`s below are
+  // worse: they are cached as "this lens gives them no score", which nothing
+  // re-asks. The answers are simply stale; drop them.
+  if (scoreLensKey !== lens) return;
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i], evs = reads[i];
     const seen = new Set();
     for (const ev of evs) {
       const d = (ev.tags || []).find(t => t?.[0] === "d")?.[1];
@@ -438,9 +575,14 @@ async function paintScores() {
     // consulted before every repaint, so that null is permanent for the lens.
     if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
+  paintChips(chips);
+}
+
+/** The chips themselves, from whatever `scores` now knows. */
+function paintChips(chips) {
   for (const c of chips) {
     const v = scores.get(c.dataset.pk);
-    if (v == null || Number.isNaN(v)) { c.textContent = ""; c.classList.remove("on"); continue; }
+    if (v == null || Number.isNaN(v)) { c.textContent = ""; c.classList.remove("on"); c.removeAttribute("title"); continue; }
     c.textContent = v;
     c.classList.add("on");
     c.title = `trust ${v} — as ${viewingAs ? "the observer you are viewing as" : "you"} rank them`;
@@ -529,14 +671,36 @@ const $me = document.getElementById("me");
 
 /** The avatar in the field: your picture signed in, a neutral mark signed out. */
 function renderMe() {
-  const p = me ? profiles.get(me) : null;
-  const nm = displayName(p);
+  // Two states, deliberately distinct. `me` is PROVEN — an AUTH this relay
+  // accepted. `mePending` is only what the extension answered when the page
+  // opened: enough to draw a face, not enough to claim a session, so the field
+  // shows it faded and says "signing in as" until the proof lands.
+  const who = me || mePending;
+  const p = who ? profiles.get(who) : null;
+  // The remembered face stands in only until the relay has ANSWERED about this
+  // pubkey — `has` is true once it has, profile or no profile. So a kept
+  // picture can outlive the truth by at most one round trip, and there is no
+  // flash of placeholder in between while the real read is in flight.
+  const kept = who && !profiles.has(who) && meFace && meFace.pubkey === who ? meFace : null;
+  const pic = (p && p.picture) || (kept && kept.picture) || "";
+  const nm = displayName(p) || (kept ? kept.name : "");
   $me.classList.toggle("in", !!me);
-  if (me && p && p.picture) {
-    $me.innerHTML = `<img src="${esc(p.picture)}" alt="" onerror="this.remove()"/>`;
-  } else if (me && nm) {
+  $me.classList.toggle("pending", !!who && !me);
+  if (who && pic) {
+    // The page's one face renderer, at whatever size this button happens to
+    // be — it is pinned to the field's box, so "fill" is the honest answer.
+    // Its own hand-rolled <img> removed itself when the picture failed to
+    // load, which left the button empty; the shared face falls back to the
+    // generated one, the same as every other picture of the same person.
+    //
+    // Rewritten only when the url actually changed: the kept face and the
+    // fetched one are usually the same picture, and replacing the <img> with
+    // an identical one makes it blink for a frame.
+    const img = $me.querySelector("img.avatar");
+    if (!img || img.getAttribute("src") !== pic) $me.innerHTML = avatarHtml(pic, who, "fill");
+  } else if (who && nm) {
     $me.textContent = nm.slice(0, 2).toUpperCase();
-  } else if (me) {
+  } else if (who) {
     // Signed in, profile not (yet) known. Initials off an npub spell "NP" for
     // every account on earth, which reads as a broken avatar rather than as a
     // missing profile.
@@ -554,9 +718,11 @@ function renderMe() {
   }
   $me.title = me
     ? `Signed in as ${nm || shortNpub(me)} — click to sign out (reconnects)`
-    : loginTried
-      ? "Signed out — click to sign in with your Nostr extension"
-      : "Signing in…";
+    : who
+      ? `Signing in as ${nm || shortNpub(who)}…`
+      : loginTried
+        ? "Signed out — click to sign in with your Nostr extension"
+        : "Signing in…";
   $me.setAttribute("aria-label", me ? "Sign out" : "Sign in");
 }
 
@@ -569,6 +735,11 @@ $me.addEventListener("click", async () => {
     if (me) {
       rememberSignIn(false);
       me = null;
+      mePending = null;
+      // Forgotten here, not merely unrendered: the kept face is drawn from the
+      // pubkey the extension names, and it would otherwise flash back on the
+      // next load of a page the reader had deliberately signed out of.
+      forgetFace();
       // The render-only half: the finally below reruns the search once for
       // the whole click, and setViewingAs here meant every sign-out searched
       // twice — two REQs for one action, with the first result thrown away.
@@ -582,6 +753,7 @@ $me.addEventListener("click", async () => {
     }
   } catch (e) {
     me = null;
+    mePending = null;
     $whoami.innerHTML = `<span class="err">${esc(e.message || String(e))}</span>`;
   } finally {
     $me.classList.remove("busy");
@@ -662,7 +834,10 @@ function onQueryEdit() {
   debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
 }
 
-const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit });
+// paintScores goes in for the same reason the entity page takes it: the faces
+// the field and its picker draw carry the same score chip a card's does, and
+// which lens fills it in is app state.
+const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit, paintScores });
 
 // `hitsFor` is the text `hits` actually answers. They outlive each other:
 // results stay on screen while the box is edited, and a debounce can be
@@ -1070,8 +1245,30 @@ document.addEventListener("click", (e) => {
 // Chips render at boot, not only inside applyUrl's search branch: the entity
 // branch returns before that code, so a direct load of /npub1… used to show
 // an empty chip row until the first Back into a search view.
+// The face from the LAST load, drawn on the first paint — before the extension
+// has been asked anything, let alone the relay.
+//
+// getPublicKey() is a local call but it is still a round trip to the extension,
+// and everything after it is network. Assuming the account you were last signed
+// in as, when you have not since chosen to be signed out, is what makes the
+// picture present at first paint instead of a hole that fills in later.
+//
+// It is an ASSUMPTION and the field says so: `.pending` renders it faded and
+// titled "signing in as", the same as any other unproven state. Switch accounts
+// in your extension between loads and it is wrong for the few milliseconds
+// prefetchFace() takes to correct it — the honest cost of not showing an empty
+// seat to everybody else. Signed out by choice, nothing is assumed at all.
+if (wantsSignIn() && meFace) mePending = meFace.pubkey;
 renderChips();
 renderWhoami();
+// The anonymous reference socket, opened at BOOT rather than on first use.
+// Every path this page can take needs it within a second or two — the face in
+// the field, the names under the results, the score chips, the entity view's
+// whole-index fallback — and it used to be opened from cold at the moment one
+// of them asked, which put a WebSocket handshake in front of the first answer
+// instead of alongside the main socket's. refConn() dedupes its own opening,
+// so this is a warm-up rather than a connection anybody has to account for.
+refConn().catch(() => {});
 // applyUrl() either restores a deep-linked search, shows an entity page, or
 // shows the hero. When it starts a search, that search's own ensureLogin()
 // is already driving sign-in, so the extra call is skipped as redundant —

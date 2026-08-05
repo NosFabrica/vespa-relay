@@ -5,7 +5,7 @@ globalThis.window = { addEventListener: () => {} };
 
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
 const { pubkeyParam } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
-const { renderers } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
+const { renderers, safeUrl } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
 
@@ -325,5 +325,60 @@ assert.deepStrictEqual(namedPubkeys(ev(9735, [["description", "not json at all"]
 // A follow list's thousands stay faces: naming them would be a profile fetch
 // per member on every result in the list.
 assert.deepStrictEqual(namedPubkeys(ev(3, [["p", pk2], ["p", pk]])), [], "faces are not names");
+
+// THE ESCAPING CLAIM: nothing an event carries reaches the page as markup.
+//
+// Every renderer builds HTML by string concatenation, and a props table takes
+// its VALUE raw so a row can be a link — so "escaped" is a promise each card
+// makes one interpolation at a time, and four of them had quietly broken it:
+// `fmtTs(tagOf(ev, …))` hands its argument back verbatim when it is not a
+// number, so `["endsAt", "<img src=x onerror=…>"]` on a kind 1068 executed.
+// A page that renders strangers' events cannot hold that promise by review.
+//
+// Asserted for the WHOLE registry, in both depths, with the payload in every
+// tag value, in the content, and as a tag NAME — the last because tagsWhere
+// hands names through to `<dt>` and to the mono spans in the 10040 card.
+// Short on purpose: cards clip long values, and a payload longer than the
+// tightest clip could be truncated past recognition and score a false pass.
+// It opens with a quote so an attribute-context break-out is caught too — and
+// the assertion is that the payload never appears VERBATIM, which is exactly
+// what escaping prevents (`"` becomes &quot;, `<` becomes &lt;) and what raw
+// interpolation produces. `onerror=…` would not do: escaped output still
+// contains that text, inertly, and the test would fail on correct code.
+const XSS = `"><b BAD>`;
+const poison = (fixture) => ({
+  ...fixture,
+  content: XSS,
+  tags: [...(fixture.tags || []).map((t) => [t[0], ...t.slice(1).map(() => XSS)]), [XSS, XSS, XSS]],
+});
+const ESCAPED = (html) => !html.includes("<b BAD>");
+
+for (const [kind, fixture] of FIXTURES) {
+  for (const opts of [undefined, { full: true }]) {
+    const depth = opts ? "permalink" : "preview";
+    assert(ESCAPED(card(poison(fixture), opts)), `kind ${kind}: an event's own text reached the ${depth} as MARKUP`);
+    // The same, with the payload only where a timestamp is read — the tag
+    // shapes above are replaced wholesale, and these four cards read a named
+    // tag whose value they formatted rather than escaped.
+    for (const name of ["endsAt", "expiration", "starts", "start", "end", "published_at"]) {
+      const html = card({ ...fixture, tags: [...(fixture.tags || []), [name, XSS]] }, opts);
+      assert(ESCAPED(html), `kind ${kind}: a "${name}" tag reached the ${depth} as MARKUP`);
+    }
+  }
+}
+
+// …and a url is not linkable just because it is escaped: `javascript:` in an
+// href is a script the reader runs on themselves by clicking.
+for (const [kind, fixture] of FIXTURES) {
+  for (const name of ["r", "web", "url", "website", "streaming", "recording"]) {
+    const html = card({ ...fixture, tags: [...(fixture.tags || []), [name, "javascript:BAD"]] }, { full: true });
+    assert(!/href="javascript:/i.test(html), `kind ${kind}: a "${name}" tag became a javascript: href`);
+  }
+}
+assert.strictEqual(safeUrl("javascript:alert(1)"), null, "javascript: is not a link");
+assert.strictEqual(safeUrl("java\nscript:alert(1)"), null, "nor is it once the parser has stripped the newline");
+assert.strictEqual(safeUrl("data:text/html,<script>"), null, "data: documents are not links either");
+assert.strictEqual(safeUrl("/local/path"), null, "a relative url never meant this origin");
+assert.strictEqual(safeUrl("https://ok.example/x?a=1"), "https://ok.example/x?a=1", "http(s) passes through unchanged");
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + generic floor, all assertions passed`);

@@ -86,4 +86,37 @@ assert.strictEqual(t.calls, 1);
   assert.strictEqual(partial.complete, false, "timeout -> partial");
 }
 
-console.log("auth-required resend + publish + complete flag: all assertions passed");
+// waitForChallenge(): the NIP-42 challenge is DELIVERED, never polled for.
+//
+// The property that matters is the latency, so it is what is asserted: a
+// challenge arriving on the socket must wake the waiter in that turn, not on
+// the next tick of some interval. This replaced a `while (!challenge) await
+// sleep(100)` in the page, which sat on the critical path of every load —
+// sign-in gates the first REQ — and averaged 50ms of nothing.
+{
+  const r = new Relay("ws://unused/");
+  let resolved = false;
+  const p = r.waitForChallenge(5000).then((c) => { resolved = true; return c; });
+  await new Promise((res) => setTimeout(res, 0));
+  assert.strictEqual(resolved, false, "nothing to hand over yet");
+  r.handle(["AUTH", "chal-1"]);
+  assert.strictEqual(await p, "chal-1", "the AUTH message itself wakes the waiter");
+
+  // Already known: answered without a trip through the event loop's timers.
+  assert.strictEqual(await r.waitForChallenge(5000), "chal-1", "a known challenge is immediate");
+
+  // No challenge inside the budget: null, and the waiter is not left behind.
+  const r2 = new Relay("ws://unused/");
+  assert.strictEqual(await r2.waitForChallenge(10), null, "timeout -> null");
+  assert.strictEqual(r2.challengeWaiters.length, 0, "a timed-out waiter unregisters itself");
+
+  // A socket that closes will never deliver one. Say so now rather than
+  // spending the caller's whole budget waiting on a dead connection.
+  const r3 = new Relay("ws://unused/");
+  const dead = r3.waitForChallenge(60000);
+  await new Promise((res) => setTimeout(res, 0));
+  r3.wakeChallengeWaiters();
+  assert.strictEqual(await dead, null, "close wakes waiters with the absence");
+}
+
+console.log("auth-required resend + publish + complete flag + challenge delivery: all assertions passed");

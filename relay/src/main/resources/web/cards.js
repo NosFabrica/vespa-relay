@@ -8,7 +8,8 @@
 import { esc, clip, titleOf, summaryOf } from "./shared/format.js";
 import { shortNpub } from "./shared/nip19.js";
 import { authorOf, displayName, parseProfile } from "./shared/profiles.js";
-import { renderers, avatarHtml, badgeHtml, tagOf, tagsWhere } from "./cards/base.js";
+import { avatarHtml } from "./shared/avatar.js";
+import { renderers, badgeHtml, tagOf, tagsWhere } from "./cards/base.js";
 import { genericCard } from "./cards/generic.js";
 import "./cards/profile.js";
 import "./cards/note.js";

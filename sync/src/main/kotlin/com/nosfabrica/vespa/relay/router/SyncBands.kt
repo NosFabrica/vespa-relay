@@ -21,7 +21,7 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.syncEnv
-import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.Json
@@ -33,122 +33,61 @@ import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
 import kotlinx.serialization.json.put
 import java.io.File
+import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
-import java.util.Collections
-import java.util.IdentityHashMap
-import java.util.concurrent.ConcurrentHashMap
 
 /**
- * How much of a filter's history we have already pulled from one relay, so a
- * restart does not pull it again.
+ * The router's sync bands: file persistence around quartz's [SyncCoverage].
  *
- * A negentropy relay needs none of this — reconciliation downloads only the
- * diff. Most relays lack NIP-77, and a paged fetch re-downloads everything it
- * walked last time, every restart, forever. So for those we remember the band
- * of `created_at` covered per (relay, filter), and the next run asks only for
- * the two legs outside it:
+ * The band arithmetic — what a (relay, filter) pair already covers, which legs
+ * are still outstanding, how wide a shared negentropy snapshot has to be — USED
+ * TO LIVE HERE, as ~150 lines this file owned outright. It is upstream now, and
+ * this class is the half that never was: where the map is written, when, and
+ * which environment variable names it.
  *
- *     stored band:        |<-------- covered -------->|
- *     next fetch:  <------|                           |------>
+ * That fork had already cost something. Upstream fixed two things this copy
+ * never picked up — [SyncCoverage.coveringWindow] stopped letting a relay that
+ * needs NOTHING widen the shared snapshot to the full filter, and
+ * [SyncCoverage.legs] learned that a COMPLETE band still owes an older leg when
+ * the caller's floor now reaches below it — and both bugs sat here, in a file
+ * whose comments still described them as solved. `SYNC_STATE_FILE`'s on-disk
+ * shape is identical either way (`{key: {min, max, complete, fullAt}}`), so an
+ * existing deployment's bands load across this change untouched.
  *
- * Keyed by the WHOLE filter deliberately: any edit to a filter is a new key
- * with no band, so the next run starts over — the safe direction to be wrong
- * in, and the intended way to force a re-walk.
- *
- * A band does not guarantee completeness (a truncating relay, an event
- * back-dated into a walked span). The trade is deliberate: re-reading a corpus
- * on every restart is a certain daily cost, while both holes are occasional
- * and self-heal on the next filter change or full re-walk.
+ * Persistence is deliberately the CALLER's in quartz: [SyncCoverage.export] and
+ * [SyncCoverage.restore] hand over the whole map, and `onChange` fires when a
+ * band moves so a writer can mark itself dirty without polling. Amethyst's own
+ * `SyncCoverageFile` is the same wrapper for geode; this one differs only where
+ * the router needs it to — a null [file] for the in-memory mode the engine
+ * defaults to, and a failed write that re-arms rather than being dropped.
  */
 class SyncBands(
     private val file: File?,
-    // How long a band may narrow work before the whole filter is walked again.
-    // Everything a band claims is a claim about the past; this is how long we
-    // trust it without re-testing.
-    private val fullResyncSeconds: Long = DEFAULT_FULL_RESYNC_SECONDS,
+    fullResyncSeconds: Long = SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
 ) : AutoCloseable {
-    /**
-     * What is already covered for one (relay, filter) pair.
-     *
-     * [complete] is the difference between "we walked this span" (a paged
-     * fetch) and "we are in sync below this point" (a finished negentropy
-     * reconcile, which compared the whole range). Only a complete band may
-     * skip its older leg.
-     *
-     * [fullAt] is when the last pass that started from nothing finished — the
-     * clock for the periodic re-walk.
-     */
-    data class Band(
-        val minCreatedAt: Long,
-        val maxCreatedAt: Long,
-        val complete: Boolean = false,
-        val fullAt: Long = 0,
-    )
-
-    private val bands = ConcurrentHashMap<String, Band>()
-
     @Volatile private var dirty = false
 
     @Volatile private var flusher: Thread? = null
 
-    // filter -> its canonical json. Filter.toJson() runs to tens of thousands
-    // of characters for author-scoped filters. Identity-keyed, and an identity
-    // cache retains every distinct instance it is handed — which the dynamic
-    // streams mint freshly per relay per cycle (narrowed(), author chunks), so
-    // an unbounded cache is a slow heap leak measured in tens of KB per entry.
-    // Past the cap, fresh instances still key correctly; they just pay the
-    // toJson instead of growing the map.
-    private val fingerprints = Collections.synchronizedMap(IdentityHashMap<Filter, String>())
+    private val coverage = SyncCoverage(fullResyncSeconds, onChange = { dirty = true })
 
     init {
         load()
+        // restore() does not fire onChange, but stay defensive: reopening a
+        // file must never count as a change, or every boot rewrites it.
+        dirty = false
     }
 
-    /**
-     * The filters to actually run now, given what is already covered: the
-     * whole filter when nothing is recorded (or the band went stale),
-     * otherwise the legs outside the band, clamped to the filter's own
-     * `since`/`until`.
-     *
-     * The legs are INCLUSIVE of the band's edges (`until = min`, not
-     * `min - 1`): a page boundary can split a run of events sharing one
-     * `created_at`, and excluding the edge would strand the rest of that
-     * second in no leg at all. The cost is re-reading one second's worth of
-     * events per leg, which the store rejects as duplicates.
-     */
+    // ---- the band arithmetic, upstream's ------------------------------------
+    // Delegated rather than exposing `coverage` directly: these five calls are
+    // the entire surface the router uses, and naming them keeps that visible.
+
     fun legs(
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): List<Filter> {
-        val band = bands[key(url, filter)] ?: return listOf(filter)
-        // Time for another full pass: relays gain old events, and without
-        // this the band's claim is never re-tested.
-        if (isStale(band)) return listOf(filter)
-        val legs = mutableListOf<Filter>()
+    ): List<Filter> = coverage.legs(url, filter)
 
-        // Older: up to and including the band's floor, but not past the
-        // filter's. A complete band has no older leg at all — the reconcile
-        // already compared the whole range.
-        if (!band.complete && (filter.since == null || band.minCreatedAt >= filter.since!!)) {
-            legs.add(filter.copy(until = minOf(band.minCreatedAt, filter.until ?: Long.MAX_VALUE)))
-        }
-
-        // Newer: from the band's ceiling on, but not past the filter's.
-        if (filter.until == null || band.maxCreatedAt <= filter.until!!) {
-            legs.add(filter.copy(since = maxOf(band.maxCreatedAt, filter.since ?: Long.MIN_VALUE)))
-        }
-        return legs
-    }
-
-    /**
-     * Widen the band for (url, filter) to include what a completed fetch saw.
-     *
-     * [paged] gates the mechanism: a negentropy sync needs no cursor, and
-     * recording one would only risk narrowing a future reconciliation.
-     * Nothing is recorded for a fetch that saw no events — an empty result
-     * says nothing about what the relay holds.
-     */
     fun record(
         url: NormalizedRelayUrl,
         filter: Filter,
@@ -156,91 +95,37 @@ class SyncBands(
         observedMax: Long?,
         paged: Boolean,
         reconciledThrough: Long? = null,
-    ) {
-        // A finished reconcile is the strong case: it compared the filter's
-        // whole range, so we are in sync up to the instant the sync STARTED —
-        // recorded against that instant rather than the newest event seen,
-        // because "the relay had nothing newer" and "we never asked" must not
-        // look alike.
-        if (reconciledThrough != null) {
-            put(url, filter, observedMin ?: reconciledThrough, reconciledThrough, complete = true)
-            return
-        }
-        if (!paged) return
-        // Guarded even though callers filter with [isPlausible] per event: a
-        // 1970 floor or a 2027 ceiling would make the band claim the whole
-        // timeline, and the leg outside it would ask for a range nothing can
-        // be in, forever.
-        if (observedMin == null || observedMax == null) return
-        if (!isPlausible(observedMin) || !isPlausible(observedMax)) return
-        put(url, filter, observedMin, observedMax, complete = false)
-    }
+        // Required for a multi-kind filter on the PAGED path: without it quartz
+        // records no band rather than let one interval speak for every kind,
+        // and every multi-kind stream here would stop resuming. A reconcile
+        // ignores it — it compares the whole filter in one pass.
+        observedByKind: Map<Int, SyncCoverage.Span>? = null,
+    ) = coverage.record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind)
 
-    /**
-     * Widen (or reset) the band. A pass that ran because the previous band had
-     * gone stale REPLACES it: it re-walked the whole filter, so its own span
-     * is the complete picture and [Band.fullAt] restarts from here.
-     */
-    private fun put(
-        url: NormalizedRelayUrl,
-        filter: Filter,
-        min: Long,
-        max: Long,
-        complete: Boolean,
-    ) {
-        val now = nowSeconds()
-        bands.compute(key(url, filter)) { _, prev ->
-            if (prev == null || isStale(prev)) {
-                Band(min, max, complete, now)
-            } else {
-                Band(
-                    minOf(prev.minCreatedAt, min),
-                    maxOf(prev.maxCreatedAt, max),
-                    prev.complete || complete,
-                    prev.fullAt,
-                )
-            }
-        }
-        // Marked dirty, not written: a dynamic stream records once per leg per
-        // relay, and every write serializes the whole map — saving here would
-        // be thousands of full-file rewrites per cycle. [flush] does it once;
-        // losing the last unflushed window to a hard kill costs one partial
-        // re-fetch, not correctness.
-        dirty = true
-    }
-
-    private fun isStale(band: Band): Boolean = nowSeconds() - band.fullAt >= fullResyncSeconds
-
-    /**
-     * The narrowest single filter that still covers what every one of [urls]
-     * needs — the window a shared negentropy snapshot has to be taken over.
-     *
-     * In steady state every relay carries a complete band and this collapses
-     * to `since = the oldest of their ceilings` — the difference between
-     * snapshotting 24M ids and a few thousand. One relay that has never
-     * synced puts it back to the full filter, correctly.
-     */
     fun coveringWindow(
         urls: List<NormalizedRelayUrl>,
         filter: Filter,
-    ): Filter {
-        if (urls.isEmpty()) return filter
-        var since = Long.MAX_VALUE
-        for (url in urls) {
-            val legs = legs(url, filter)
-            // More than one leg means an older gap this relay still wants, so
-            // the snapshot cannot start above the filter's own floor.
-            val only = legs.singleOrNull() ?: return filter
-            val legSince = only.since ?: return filter
-            since = minOf(since, legSince)
-        }
-        return if (since == Long.MAX_VALUE) filter else filter.copy(since = since)
-    }
+    ): Filter = coverage.coveringWindow(urls, filter)
+
+    /** Whether ANY of [urls] still has work outside its band. */
+    fun anyOutstanding(
+        urls: List<NormalizedRelayUrl>,
+        filter: Filter,
+    ): Boolean = urls.any { coverage.legs(it, filter).isNotEmpty() }
+
+    fun band(
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ): SyncCoverage.Band? = coverage.band(url, filter)
+
+    fun size(): Int = coverage.size()
+
+    // ---- the file ------------------------------------------------------------
 
     /**
      * Write the map every [intervalSec] on a daemon thread, so progress
-     * survives a hard kill between the milestone flushes (which are minutes
-     * to hours apart). Unchanged intervals write nothing.
+     * survives a hard kill between the milestone flushes (which are minutes to
+     * hours apart). Unchanged intervals write nothing.
      */
     fun startPeriodicFlush(intervalSec: Long = DEFAULT_FLUSH_SECONDS): SyncBands {
         if (file == null) return this
@@ -273,60 +158,58 @@ class SyncBands(
     fun flush() {
         if (!dirty) return
         dirty = false
-        // A failed write re-arms the flag: "write anything outstanding" is
-        // this method's contract, and a transiently unwritable disk should be
-        // retried on the next tick, not on the next band mutation.
+        // A failed write re-arms the flag: "write anything outstanding" is this
+        // method's contract, and a transiently unwritable disk should be retried
+        // on the next tick, not on the next band mutation.
         if (!save()) dirty = true
-    }
-
-    /** What is currently covered, for logging and tests. */
-    fun band(
-        url: NormalizedRelayUrl,
-        filter: Filter,
-    ): Band? = bands[key(url, filter)]
-
-    fun size(): Int = bands.size
-
-    /**
-     * The identity of one (relay, filter) pair. [Filter.toJson] is the
-     * protocol's own canonical form, so two filters that mean the same thing
-     * key the same way and any edit keys differently — exactly the "config
-     * changed, start over" rule.
-     */
-    private fun key(
-        url: NormalizedRelayUrl,
-        filter: Filter,
-    ): String {
-        val fingerprint =
-            fingerprints[filter]
-                ?: filter.toJson().also {
-                    if (fingerprints.size < MAX_FINGERPRINTS) fingerprints[filter] = it
-                }
-        return "${url.url} $fingerprint"
     }
 
     private fun load() {
         val f = file ?: return
         if (!f.isFile) return
         runCatching {
-            Json.parseToJsonElement(f.readText()).jsonObject.forEach { (k, v) ->
-                val o = v.jsonObject
-                bands[k] =
-                    Band(
-                        o.getValue("min").jsonPrimitive.long,
-                        o.getValue("max").jsonPrimitive.long,
+            val root = Json.parseToJsonElement(f.readText()).jsonObject
+            coverage.restore(
+                root.mapValues { (_, v) ->
+                    val o = v.jsonObject
+                    SyncCoverage.Band(
+                        spansOf(o),
                         // Absent in files written before coverage was tracked:
-                        // reads as "span only" and stale, so the first run
-                        // after an upgrade re-walks once and records the real
-                        // thing.
+                        // reads as "span only" and stale, so the first run after
+                        // an upgrade re-walks once and records the real thing.
                         o["complete"]?.jsonPrimitive?.boolean ?: false,
                         o["fullAt"]?.jsonPrimitive?.long ?: 0L,
                     )
-            }
+                },
+            )
         }.onFailure {
             // A corrupt cursor file costs one re-sync; exiting costs the mirror.
             System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
         }
+    }
+
+    /**
+     * The per-kind spans, or the single pre-split span read as covering every
+     * kind under [SyncCoverage.ALL_KINDS].
+     *
+     * A file written before coverage was tracked per kind carries only
+     * `min`/`max` — the wider claim per-kind spans exist to stop. It is loaded
+     * as what it always meant rather than discarded, because discarding it
+     * would re-walk every upstream's corpus once on upgrade, which is the cost
+     * bands exist to avoid. The first paged walk that reports per kind
+     * replaces it.
+     */
+    private fun spansOf(o: JsonObject): Map<Int, SyncCoverage.Span> {
+        o["spans"]?.jsonObject?.let { spans ->
+            return spans.entries.associate { (kind, v) ->
+                val span = v.jsonObject
+                kind.toInt() to SyncCoverage.Span(span.getValue("min").jsonPrimitive.long, span.getValue("max").jsonPrimitive.long)
+            }
+        }
+        return mapOf(
+            SyncCoverage.ALL_KINDS to
+                SyncCoverage.Span(o.getValue("min").jsonPrimitive.long, o.getValue("max").jsonPrimitive.long),
+        )
     }
 
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
@@ -336,14 +219,33 @@ class SyncBands(
         return runCatching {
             val snapshot: JsonObject =
                 buildJsonObject {
-                    bands.forEach { (k, band) ->
+                    coverage.export().forEach { (k, band) ->
                         put(
                             k,
                             buildJsonObject {
+                                // min/max are the outer edges across every kind,
+                                // written for two readers: a human debugging why a
+                                // relay re-synced, and a ROLLBACK — a build from
+                                // before per-kind spans reads these and behaves as
+                                // it always did rather than failing to parse.
                                 put("min", band.minCreatedAt)
                                 put("max", band.maxCreatedAt)
                                 put("complete", band.complete)
                                 put("fullAt", band.fullAt)
+                                put(
+                                    "spans",
+                                    buildJsonObject {
+                                        band.spans.forEach { (kind, span) ->
+                                            put(
+                                                kind.toString(),
+                                                buildJsonObject {
+                                                    put("min", span.min)
+                                                    put("max", span.max)
+                                                },
+                                            )
+                                        }
+                                    },
+                                )
                             },
                         )
                     }
@@ -351,7 +253,13 @@ class SyncBands(
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
             tmp.writeText(json.encodeToString(JsonObject.serializer(), snapshot))
-            Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            // ATOMIC_MOVE asked for explicitly: without it the JVM may legally
+            // fall back to copy+delete, and a reader could see a half map.
+            try {
+                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING, StandardCopyOption.ATOMIC_MOVE)
+            } catch (_: AtomicMoveNotSupportedException) {
+                Files.move(tmp.toPath(), f.toPath(), StandardCopyOption.REPLACE_EXISTING)
+            }
         }.onFailure {
             System.err.println("router: could not write sync bands to ${f.path}: ${it.message}")
         }.isSuccess
@@ -362,41 +270,12 @@ class SyncBands(
         // re-synced.
         private val json = Json { prettyPrint = true }
 
-        /**
-         * A week. Long enough that the narrow path is the normal one, short
-         * enough that anything a band is wrong about is wrong for days, not
-         * forever.
-         */
-        const val DEFAULT_FULL_RESYNC_SECONDS = 7L * 24 * 60 * 60
-
-        /**
-         * 2020-01-01. Below this a `created_at` is a bug, not a date — the
-         * protocol did not exist. Also the floor a paged walk measures its
-         * progress against when a filter names no `since`.
-         */
-        const val PLAUSIBLE_FLOOR = 1_577_836_800L
-
-        // Clock skew a relay may legitimately be ahead by. Past this, a
-        // created_at is the author's fiction rather than a time.
-        private const val FUTURE_SKEW_SECONDS = 86_400L
-
         // Often enough that a kill costs little, rare enough to be free.
         private const val DEFAULT_FLUSH_SECONDS = 30L
 
-        // More filter instances than any deliberate configuration holds; only
-        // the fresh-per-cycle dynamic filters ever reach it.
-        private const val MAX_FINGERPRINTS = 1_000
-
         /**
-         * Whether a `created_at` can be believed as evidence of coverage.
-         * Filter with this per EVENT, not over a leg's aggregate: one misdated
-         * event once discarded a whole upstream's 700k-event band.
-         */
-        fun isPlausible(createdAt: Long): Boolean = createdAt in PLAUSIBLE_FLOOR..(nowSeconds() + FUTURE_SKEW_SECONDS)
-
-        /**
-         * `SYNC_STATE_FILE` — where the bands live. Unset keeps them
-         * in memory, which is the same as not having them.
+         * `SYNC_STATE_FILE` — where the bands live. Unset keeps them in memory,
+         * which is the same as not having them.
          */
         fun fromEnv(env: Map<String, String>): SyncBands =
             SyncBands(
@@ -409,7 +288,7 @@ class SyncBands(
                     .syncEnv("SYNC_FULL_RESYNC_SECONDS", "ROUTER_FULL_RESYNC_SECONDS")
                     ?.trim()
                     ?.toLongOrNull()
-                    ?.takeIf { it > 0 } ?: DEFAULT_FULL_RESYNC_SECONDS,
+                    ?.takeIf { it > 0 } ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
             ).startPeriodicFlush()
     }
 }

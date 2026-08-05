@@ -59,10 +59,20 @@ const nip05Watcher = new IntersectionObserver((entries) => {
   }
 }, { rootMargin: "120px" });
 
-/** Hand any freshly rendered nip05 elements to the watcher. */
+/**
+ * Hand the currently rendered nip05 elements to the watcher.
+ *
+ * DISCONNECT first, then observe what is on the page now. Every caller of this
+ * reaches it just after replacing a container's innerHTML wholesale, so the
+ * elements observed on the previous pass are already detached — and an
+ * IntersectionObserver holds a STRONG reference to each target until it is
+ * unobserved, which only happened here when a target scrolled into view. A
+ * session that ran forty searches was keeping every nip05 element of all forty
+ * alive, none of them in the document. The old `data-watched` guard existed to
+ * avoid re-observing across calls; re-observing is now the whole point, and it
+ * costs nothing because a verdict is cached per identity for the session.
+ */
 export function watchNip05() {
-  for (const el of document.querySelectorAll(".nip05[data-addr]:not([data-watched])")) {
-    el.setAttribute("data-watched", "1");
-    nip05Watcher.observe(el);
-  }
+  nip05Watcher.disconnect();
+  for (const el of document.querySelectorAll(".nip05[data-addr]")) nip05Watcher.observe(el);
 }
