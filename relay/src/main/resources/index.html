@@ -343,6 +343,15 @@
   }
   /* The card avatar, at field scale — same generated face, no border. */
   .mention .avatar { width: 1.5em; height: 1.5em; border: 0; }
+  /* …and the same score chip, sized down with it: the card's 15px badge over
+     a 20px face IS the face. The ring is the chip's own background, not the
+     card surface it is cut out of everywhere else. */
+  .mention .score-chip {
+    right: -.35em; bottom: -.3em;
+    min-width: 1.3em; height: 1.3em; padding: 0 .22em;
+    border-radius: .65em; font-size: .55em; line-height: 1.3em;
+    box-shadow: 0 0 0 .16em var(--accent-soft);
+  }
   .mention-kind { opacity: .65; font-weight: 700; }
   .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 

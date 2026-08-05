@@ -662,7 +662,10 @@ function onQueryEdit() {
   debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
 }
 
-const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit });
+// paintScores goes in for the same reason the entity page takes it: the faces
+// the field and its picker draw carry the same score chip a card's does, and
+// which lens fills it in is app state.
+const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit, paintScores });
 
 // `hitsFor` is the text `hits` actually answers. They outlive each other:
 // results stay on screen while the box is edited, and a debounce can be
