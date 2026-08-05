@@ -49,21 +49,32 @@ object BanListFile {
     ) {
         val file = File(path)
         if (!file.exists()) return
-        val root =
-            runCatching { Json.parseToJsonElement(file.readText()).jsonObject }.getOrElse { e ->
-                // Loud: starting with an empty list because the state file is
-                // corrupt means every ban silently stops being enforced —
-                // the operator must know, not discover it from spam.
-                System.err.println("nip86: could not parse $path (${e.message}) — starting with EMPTY ban lists; the file will be overwritten on the next mutation")
-                return
-            }
-        banStore.seedFromSnapshot(
-            root.pairs("bannedPubkeys"),
-            root.pairs("allowedPubkeys"),
-            root.pairs("bannedEvents"),
-            root.ints("allowedKinds"),
-            root.ints("disallowedKinds"),
-        )
+        // The READ and the DECODE are one operation, because they fail the same
+        // way. This guarded only `parseToJsonElement`, and every field accessor
+        // below throws in its own right — `.jsonArray` on a value that is not an
+        // array, `.jsonPrimitive.int` on one that is not a number. So a file
+        // that was still valid JSON but wrong in shape (a truncated write, a
+        // hand-edit, a version that stored a list differently) threw straight
+        // out of here, out of openBanStore, and out of RelayMain: the relay did
+        // not start at all. The documented behaviour for a corrupt state file is
+        // to say so loudly and come up with empty lists, which is what the outer
+        // catch was for; it just did not cover the half that parses field by
+        // field.
+        runCatching {
+            val root = Json.parseToJsonElement(file.readText()).jsonObject
+            banStore.seedFromSnapshot(
+                root.pairs("bannedPubkeys"),
+                root.pairs("allowedPubkeys"),
+                root.pairs("bannedEvents"),
+                root.ints("allowedKinds"),
+                root.ints("disallowedKinds"),
+            )
+        }.onFailure { e ->
+            // Loud: starting with an empty list because the state file is
+            // corrupt means every ban silently stops being enforced —
+            // the operator must know, not discover it from spam.
+            System.err.println("nip86: could not read $path (${e.message}) — starting with EMPTY ban lists; the file will be overwritten on the next mutation")
+        }
     }
 
     /**
