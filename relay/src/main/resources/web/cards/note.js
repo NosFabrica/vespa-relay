@@ -3,23 +3,20 @@
 // profile-shaped JSON content).
 
 import { esc } from "../shared/format.js";
-import { noteId, shortNote } from "../shared/nip19.js";
+import { shortNote } from "../shared/nip19.js";
 import { register, shell, bodyHtml, replyLine, noteHref, tagOf, jsonContent, avatarHtml, clipIf } from "./base.js";
 
 /**
  * A note, and — when it is a reply — who it answers, above the text where the
- * context belongs rather than as a row under it.
+ * context belongs.
  *
- * The `note` row stays. It reads as redundant beside the reply line and it is
- * not: in a results list it is the ONLY route from a card to its own page
- * (nothing else in the frame links the event itself), so replacing it with the
- * reply link would have made every reply a dead end at exactly the moment
- * replies became worth following.
+ * There is no `note: note1qqq…` row any more. It was the card's only route to
+ * its own page, which is why it survived being useless to read for so long;
+ * the card itself and its byline date lead there now, so the row was left
+ * saying nothing to nobody. The id is still one click away under "json".
  */
 function noteCard(ev, opts) {
-  const inner = replyLine(ev) + bodyHtml(opts, ev.content, 500);
-  const props = [["note", `<a class="mono" href="${noteHref(ev.id)}" title="${esc(noteId(ev.id))}">${esc(shortNote(ev.id))}</a>`]];
-  return shell(ev, opts, inner, props);
+  return shell(ev, opts, replyLine(ev) + bodyHtml(opts, ev.content, 500));
 }
 
 /** 9802 — the content IS the quote; what it was clipped from rides in tags. */

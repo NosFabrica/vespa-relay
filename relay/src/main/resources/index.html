@@ -54,6 +54,15 @@
   "note1qqq…" — an identifier that places nobody, and the thing no other client
   shows.
 
+  A result card opens its own page when clicked, which the hover lift had been
+  promising since it was written while only the links inside it navigated. The
+  card carries the destination as `data-href` and app.js yields to any real
+  control and to a text selection; the byline DATE is the same destination as
+  an ordinary anchor, so middle-click, copy-link and Tab still work — a div
+  that navigates can do none of the three. Those two together are what let the
+  `note:` and `id:` props rows go: they existed because a card had no other
+  route to itself, and read as a truncated bech32 nobody wanted.
+
   The search box is a FIELD, not an input. `from:npub1…` and `to:npub1…`
   narrow a search to a person — the author, or whoever they named — and both
   draw as that person's face and name rather than 63 characters of bech32,
@@ -461,6 +470,10 @@
     transition: border-color .12s, box-shadow .12s, transform .12s;
   }
   .result:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  /* The lift above has always said "click me". Only now is it true, and only
+     in the results list: a permalink card carries no data-href, because it is
+     already the page it would navigate to. */
+  .result[data-href] { cursor: pointer; }
 
   .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
   .result-header .avatar { width: 46px; height: 46px; }
@@ -475,6 +488,12 @@
   .byline .avatar { width: 22px; height: 22px; }
   .byline .by-name { font-size: 12.5px; font-weight: 550; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .byline .by-date { font-size: 12px; color: var(--faint); flex-shrink: 0; }
+  /* The date is the card's permalink — the keyboard-reachable, middle-
+     clickable half of the clickable card. It keeps the date's voice rather
+     than the link colour: it should read as a timestamp, not as a call to
+     action, and the whole card is the primary target anyway. */
+  .byline a.by-date { text-decoration: none; }
+  .byline a.by-date:hover { color: var(--accent); text-decoration: underline; }
   .byline .dot { color: var(--border-strong); }
   .byline .spacer { flex: 1; }
 

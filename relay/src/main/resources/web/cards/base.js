@@ -45,6 +45,25 @@ export const eventHref = (id, hints = {}) => {
   return n ? `/${esc(n)}` : noteHref(id);
 };
 
+/**
+ * The card's OWN page — what the whole card, and its date, link to.
+ *
+ * By event id for everything, which is what every kind's title already did:
+ * the entity page dispatches on the FETCHED event's kind, never on the
+ * identifier that led there, so a note1… naming an article renders as an
+ * article. A profile is the one exception, because a person's page is their
+ * npub — a kind 0's id names one revision of it and stops resolving the
+ * moment they edit their bio.
+ *
+ * Null when the event carries no usable identifier: a card with nowhere to go
+ * must not become a card that navigates to "/".
+ */
+export const selfHref = (ev) => {
+  const hex = /^[0-9a-f]{64}$/;
+  if (ev && ev.kind === 0 && hex.test(ev.pubkey || "")) return keyHref(ev.pubkey);
+  return ev && hex.test(ev.id || "") ? noteHref(ev.id) : null;
+};
+
 // ---- tag access -----------------------------------------------------------
 // `Array.isArray` on every entry, for the same reason format.js's firstTag
 // guards `ev.tags`: a hint-fetched event is rendered before anything has
@@ -127,15 +146,29 @@ export const jsonHtml = (ev) =>
   `<div class="raw"><button type="button" class="raw-toggle" data-id="${esc(ev.id)}">json</button>` +
   `<pre class="raw-body" hidden></pre></div>`;
 
-/** The shared author line: avatar, name (a link to the author's page), date, badge. */
+/**
+ * The shared author line: avatar, name (a link to the author's page), date,
+ * badge.
+ *
+ * The DATE is the card's permalink, as it is in every other client — and it is
+ * the reason the whole card can be clickable without the page losing anything:
+ * this is a real anchor, so middle-click opens a tab, right-click copies the
+ * link, and Tab reaches it. A div that navigates on click can do none of the
+ * three. On the permalink itself the date stays plain text; a page does not
+ * link to itself.
+ */
 export function bylineHtml(ev, opts) {
   const a = authorOf(ev);
+  const href = opts && opts.full ? null : selfHref(ev);
+  const date = esc(opts && opts.full ? fullDate(ev) : when(ev));
   return `
     <div class="byline">
       ${avatarHtml(a.picture, ev.pubkey)}
       <a class="by-name" href="${keyHref(ev.pubkey)}">${esc(a.name)}</a>
       <span class="dot">·</span>
-      <span class="by-date" title="${esc(fullDate(ev))}">${esc(opts && opts.full ? fullDate(ev) : when(ev))}</span>
+      ${href
+        ? `<a class="by-date" href="${href}" title="${esc(fullDate(ev))}">${date}</a>`
+        : `<span class="by-date" title="${esc(fullDate(ev))}">${date}</span>`}
       <span class="spacer"></span>
       ${badgeHtml(ev)}
     </div>`;
@@ -147,10 +180,20 @@ export const propsHtml = (props) => {
   return rows.length ? `<dl class="props">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>` : "";
 };
 
-/** The card frame most kinds share: byline, the kind's body, props, json. */
+/**
+ * The card frame most kinds share: byline, the kind's body, props, json.
+ *
+ * `data-href` is where the CARD goes when clicked — app.js reads it off the
+ * article. It is an attribute rather than a wrapping `<a>` because a card
+ * legitimately contains links (the author, a hashtag, whoever it replies to)
+ * and anchors cannot nest; the handler yields to any real control inside, and
+ * to a text selection. Preview depth only: on the permalink the card IS the
+ * page.
+ */
 export function shell(ev, opts, inner, props = []) {
+  const href = opts && opts.full ? null : selfHref(ev);
   return `
-    <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}">
+    <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
       ${bylineHtml(ev, opts)}
       ${inner}
       ${propsHtml(props)}

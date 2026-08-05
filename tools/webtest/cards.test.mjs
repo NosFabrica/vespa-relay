@@ -4,7 +4,7 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
-const { pubkeyParam, nip19Parse } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
+const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { renderers } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
@@ -210,6 +210,34 @@ assert(!hostile.includes("<img src=x"), "content is escaped");
 const note = card(ev(1, [], "hi"));
 assert(note.includes('href="/note1') && note.includes('href="/npub1'), "note links internal");
 assert(!note.includes("njump.me"), "search cards no longer link out");
+
+// ---- every card is a link to its own page --------------------------------
+//
+// Two routes to one destination, and the pair is the point: `data-href` is
+// what app.js navigates on when the card is clicked (the hover lift promises
+// exactly that), and the same destination is ALSO a real anchor inside the
+// card, so middle-click, copy-link and Tab keep working. Without the anchor
+// this is a div pretending to be a link. Which anchor differs by family —
+// the byline date on every shell card, the person's name on a profile, whose
+// frame carries no date — so the assertion is that the two agree, not which
+// element carries it. Neither may appear at permalink depth, where the card
+// is already the page it would open.
+const hrefAttr = (html) => (/data-href="([^"]*)"/.exec(html) || [])[1] || null;
+for (const [kind, fixture] of FIXTURES) {
+  const preview = card(fixture);
+  const href = hrefAttr(preview);
+  assert(href, `kind ${kind}: a result card with nowhere to click`);
+  assert(preview.includes(`<a class="by-date" href="${href}"`) || preview.includes(`<a href="${href}"`),
+    `kind ${kind}: the card navigates somewhere no link goes — unreachable by keyboard or middle-click`);
+  assert.strictEqual(hrefAttr(card(fixture, { full: true })), null, `kind ${kind}: the permalink links to itself`);
+}
+// A profile's page is the PERSON, not the kind 0's id — that id names one
+// revision of a bio and stops resolving the moment it is edited.
+assert.strictEqual(hrefAttr(card(ev(0, [], "{}"))), `/${npub(pk)}`, "a profile card opens the person");
+assert.strictEqual(hrefAttr(card(ev(1, [], "hi"))), `/${noteId(eid)}`, "everything else opens the event");
+// An event with no usable id has nowhere to go, and must not offer "/".
+assert.strictEqual(hrefAttr(card({ kind: 1, pubkey: pk, created_at: now, tags: [], content: "x" })), null,
+  "no id, no click target — navigating to the home page is not the same as opening the note");
 
 // Names over npubs, npubs over nothing, hex never.
 // With a profile in the cache, the score and observer cards name the person;

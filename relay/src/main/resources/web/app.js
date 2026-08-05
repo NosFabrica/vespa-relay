@@ -952,14 +952,38 @@ $results.addEventListener("click", (e) => {
     return;
   }
   const btn = e.target.closest(".raw-toggle");
-  if (!btn) return;
-  const box = btn.parentElement.querySelector(".raw-body");
-  if (!box.hidden) { box.hidden = true; btn.textContent = "json"; return; }
-  const ev = s.hits.find((h) => h.id === btn.dataset.id);
-  // Serialised only when asked for, and only once.
-  if (!box.textContent) box.textContent = ev ? JSON.stringify(ev, null, 2) : "(no longer in the current results)";
-  box.hidden = false;
-  btn.textContent = "hide json";
+  if (btn) {
+    const box = btn.parentElement.querySelector(".raw-body");
+    if (!box.hidden) { box.hidden = true; btn.textContent = "json"; return; }
+    const ev = s.hits.find((h) => h.id === btn.dataset.id);
+    // Serialised only when asked for, and only once.
+    if (!box.textContent) box.textContent = ev ? JSON.stringify(ev, null, 2) : "(no longer in the current results)";
+    box.hidden = false;
+    btn.textContent = "hide json";
+    return;
+  }
+  // The card itself opens its own page. The hover lift has always said it
+  // does — border, shadow and a 1px rise, the page's own vocabulary for
+  // "this is a thing you click" — while only the links inside it navigated,
+  // so a note card promised a destination and delivered nothing.
+  //
+  // Three things it must NOT swallow, in order of how easily they are lost:
+  // a real control (a link, the json button, an audio scrubber), which owns
+  // its own click and usually goes somewhere else entirely; a text SELECTION,
+  // because dragging across a body to copy it ends in a mouseup that is not a
+  // navigation; and anything at permalink depth, where cards.js sets no
+  // data-href because the card IS the page.
+  //
+  // Keyboard and middle-click are served by the byline date, which is a real
+  // anchor to the same place — that is what makes this safe to add rather
+  // than a div pretending to be a link.
+  // `.raw` covers the whole json block, not just its button: a click inside
+  // an expanded raw event is somebody reading it, and navigating away would
+  // close the panel they just opened.
+  if (e.target.closest("a, button, input, textarea, select, label, audio, video, summary, .raw")) return;
+  if (String(window.getSelection ? window.getSelection() : "").trim()) return;
+  const art = e.target.closest(".result[data-href]");
+  if (art) { e.preventDefault(); navigate(art.dataset.href); }
 });
 
 $chips.addEventListener("click", (e) => {
@@ -1086,9 +1110,15 @@ document.addEventListener("click", (e) => {
   if (href === "/") { e.preventDefault(); reset(); return; }
   if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
   e.preventDefault();
+  navigate(href);
+});
+
+/** An internal path as a pushState render — the one place both click paths
+    (a card's anchors, and the card itself) turn a href into a view. */
+function navigate(href) {
   if (location.pathname + location.search !== href) history.pushState(null, "", href);
   applyUrl();
-});
+}
 
 // Chips render at boot, not only inside applyUrl's search branch: the entity
 // branch returns before that code, so a direct load of /npub1… used to show
