@@ -123,8 +123,13 @@ relay/src/main/resources/
                         each: they differ only in which tags carry their items.
                         index.html's header records the rules and why "one
                         file" ended.
-  kind_stats.html       self-contained operator diagnostics — deliberately NOT
-  observer_stats.html   on the module graph; each carries its own tiny client
+  kind_stats.html       operator diagnostics, each carrying its own tiny relay
+  observer_stats.html   client on purpose: they must work when the app does
+                        not. kind_stats reads shared/kinds.js for the kinds to
+                        count — that list IS "which kinds do we support", and a
+                        second copy would go stale in the direction that hides
+                        events. The CLIENT is what stays self-contained; a
+                        table of integers is not worth duplicating
 ```
 
 `docs/configuration.md` documents every environment variable and

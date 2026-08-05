@@ -6,7 +6,7 @@ globalThis.window = { addEventListener: () => {} };
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
 const { pubkeyParam } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { renderers } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
-const { kindLabel, kindTone } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
+const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
@@ -164,6 +164,16 @@ const unnamed = [...registered].filter((k) => kindLabel(k) === `kind ${k}`).sort
 const untinted = [...registered].filter((k) => !kindTone(k)).sort((a, b) => a - b);
 assert.deepStrictEqual(unnamed, [], `registered kinds with no label: ${unnamed}`);
 assert.deepStrictEqual(untinted, [], `registered kinds with no family tone: ${untinted}`);
+
+// KNOWN_KINDS is the answer to "which kinds do we support", and kind_stats.html
+// counts exactly it. An identity, not a subset: a label for a kind nothing
+// renders would put a row on the operator's page for a kind the search cannot
+// show, and a renderer missing from it would go uncounted.
+assert.deepStrictEqual(KNOWN_KINDS, [...registered].sort((a, b) => a - b),
+  "the kinds we count and the kinds we render must be the same set");
+const kindStats = readFileSync(new URL("../../relay/src/main/resources/kind_stats.html", import.meta.url), "utf8");
+assert(/import\s*\{[^}]*KNOWN_KINDS[^}]*\}\s*from\s*"\/web\/shared\/kinds\.js"/.test(kindStats),
+  "kind_stats.html must read its kinds from shared/kinds.js, not carry a second copy");
 
 for (const [kind, fixture, expect] of FIXTURES) {
   for (const opts of [undefined, { full: true }]) {

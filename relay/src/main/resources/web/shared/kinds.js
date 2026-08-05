@@ -49,6 +49,17 @@ const KIND_LABELS = {
 };
 export const kindLabel = (k) => KIND_LABELS[k] || `kind ${k}`;
 
+/**
+ * Every kind this relay's UI knows how to render, ascending.
+ *
+ * The one enumerable answer to "which kinds do we support". COUNT needs a
+ * kind to ask about and NIP-01 has no registry a client can walk, so the
+ * operator pages used to hardcode their own short list — which is a second
+ * copy of this table that nothing keeps honest. kind_stats.html reads this
+ * one, so a kind gaining a card gains a row there on the same commit.
+ */
+export const KNOWN_KINDS = Object.keys(KIND_LABELS).map(Number).sort((a, b) => a - b);
+
 // A badge tint per family, so one mixed list of every kind stays scannable.
 // The tone follows the RENDERER, not the kind number: 39089 is a follow set
 // under another name and tints like one, and the NIP-51 lists tint by what
