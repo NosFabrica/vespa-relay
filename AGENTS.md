@@ -120,7 +120,10 @@ relay/src/main/resources/
                         `from:npub1…`/`to:npub1…` draw as a face and a name and
                         an <input>'s value is characters and nothing else, with
                         shared/query.js the ONE tokenizer both it and the query
-                        builder ask; entity.js
+                        builder ask; shared/parents.js answers "in reply to
+                        WHO" — NIP-10's rule for which `e` tag is the parent,
+                        plus the by-id lookup for the author when the tag
+                        carries no hint; entity.js
                         renders /npub1…//note1…//naddr1… paths; cards/ is the
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that

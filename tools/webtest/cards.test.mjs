@@ -4,10 +4,11 @@ globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
-const { pubkeyParam } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
+const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { renderers, safeUrl } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
+const { REPLY_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
 
 const pk = "82341f882b6eabcd2ba7f1ef90aad961cf074af15b9ef44a09f9d2a8fbfbe6a2";
 const pk2 = "3bf0c63fcb93463407af97a5e5ee64fa883d107ef9e558472c4eb9aaaefa459d";
@@ -72,7 +73,7 @@ const FIXTURES = [
   [9,     ev(9, [], "a chat line"), "a chat line"],
   [42,    ev(42, [["e", eid]], "a channel line"), "a channel line"],
   [1311,  ev(1311, [["a", `30311:${pk}:show`]], "a live chat line"), "a live chat line"],
-  [1111,  ev(1111, [["E", eid], ["e", eid]], "a comment"), "replying to"],
+  [1111,  ev(1111, [["E", eid], ["e", eid]], "a comment"), "in reply to"],
   [1068,  ev(1068, [["option", "a", "Yes"], ["option", "b", "No"], ["endsAt", String(now + 3600)]], "Best colour?"), "Best colour?"],
   [1018,  ev(1018, [["e", eid], ["response", "a"]]), "voted on"],
   [1984,  ev(1984, [["p", pk2, "spam"]], "keeps posting the same link"), "<b>spam</b>"],
@@ -211,6 +212,43 @@ const note = card(ev(1, [], "hi"));
 assert(note.includes('href="/note1') && note.includes('href="/npub1'), "note links internal");
 assert(!note.includes("njump.me"), "search cards no longer link out");
 
+// ---- every card is a link to its own page --------------------------------
+//
+// Two routes to one destination, and the pair is the point: `data-href` is
+// what app.js navigates on when the card is clicked (the hover lift promises
+// exactly that), and the same destination is ALSO a real anchor inside the
+// card, so middle-click, copy-link and Tab keep working. Without the anchor
+// this is a div pretending to be a link. Which anchor differs by family —
+// the byline date on every shell card, the person's name on a profile, whose
+// frame carries no date — so the assertion is that the two agree, not which
+// element carries it. Neither may appear at permalink depth, where the card
+// is already the page it would open.
+const hrefAttr = (html) => (/data-href="([^"]*)"/.exec(html) || [])[1] || null;
+for (const [kind, fixture] of FIXTURES) {
+  const preview = card(fixture);
+  const href = hrefAttr(preview);
+  assert(href, `kind ${kind}: a result card with nowhere to click`);
+  assert(preview.includes(`<a class="by-date" href="${href}"`) || preview.includes(`<a href="${href}"`),
+    `kind ${kind}: the card navigates somewhere no link goes — unreachable by keyboard or middle-click`);
+  assert.strictEqual(hrefAttr(card(fixture, { full: true })), null, `kind ${kind}: the permalink links to itself`);
+}
+// One rule, one spelling. Where an event LIVES is selfHref's answer, and the
+// page has three ways in — a card click, the byline date, a type-ahead row —
+// which is three chances to write `kind 0 ? npub : note` again and have two of
+// them disagree. app.js did exactly that for the picker, without selfHref's
+// guard, so an event with no id opened "/" and looked like a page reset.
+const appSrc = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+assert(!/`\/\$\{(noteId|npub)\(/.test(appSrc),
+  "app.js builds an entity path by hand — ask cards/base.js's selfHref instead, so every route to an event agrees");
+
+// A profile's page is the PERSON, not the kind 0's id — that id names one
+// revision of a bio and stops resolving the moment it is edited.
+assert.strictEqual(hrefAttr(card(ev(0, [], "{}"))), `/${npub(pk)}`, "a profile card opens the person");
+assert.strictEqual(hrefAttr(card(ev(1, [], "hi"))), `/${noteId(eid)}`, "everything else opens the event");
+// An event with no usable id has nowhere to go, and must not offer "/".
+assert.strictEqual(hrefAttr(card({ kind: 1, pubkey: pk, created_at: now, tags: [], content: "x" })), null,
+  "no id, no click target — navigating to the home page is not the same as opening the note");
+
 // Names over npubs, npubs over nothing, hex never.
 // With a profile in the cache, the score and observer cards name the person;
 // the npub survives only in the hover title and the href.
@@ -232,6 +270,90 @@ for (const html of [scored, observer, nameless]) {
   const text = html.replace(/<[^>]*>/g, " ");
   assert(!text.includes(pk) && !text.includes(pk2), "hex is a storage format, not display text");
 }
+
+// ---- replies name a PERSON, and link the PARENT ---------------------------
+//
+// Three claims, and they are separable — a card can name the right person and
+// link the wrong place:
+//   WHICH `e` tag is the parent  (NIP-10: reply, else root, else the last one)
+//   WHO wrote it                 (the tag's 5th slot, its 4th, a NIP-22 `p`)
+//   WHERE the link goes          (the parent EVENT, never the parent's profile)
+// Asserted on the reply line alone, because the card around it legitimately
+// links both the author's npub (the byline) and a note id (its own permalink).
+const parentId = "a".repeat(64);
+const rootId = "c".repeat(64);
+const lineOf = (html) => (/<div class="reply-line">([\s\S]*?)<\/div>/.exec(html) || ["", ""])[1];
+const linkedTo = (html) => {
+  const href = (/href="\/([a-z0-9]+)"/.exec(lineOf(html)) || ["", ""])[1];
+  return href ? nip19Parse(href) : null;
+};
+
+// pk2 is "olga" in the cache seeded above; here she is the parent's author,
+// hinted where NIP-10 puts it.
+const reply = card(ev(1, [["e", rootId, "", "root"], ["e", parentId, "wss://hint.example", "reply", pk2]], "my answer"), { full: true });
+assert(lineOf(reply).includes("in reply to"), "a reply says what it is");
+assert(lineOf(reply).includes(">olga</a>"), "the parent is a person, named");
+assert(!lineOf(reply).includes("npub1") || !lineOf(reply).includes(">npub1"), "a known name displaces the npub");
+assert(!/href="\/npub1/.test(lineOf(reply)), "the link is not the parent's profile");
+assert.strictEqual(linkedTo(reply).id, parentId, "the `reply` marker wins over `root`");
+assert.deepStrictEqual(linkedTo(reply).relays, ["wss://hint.example"], "the tag's relay hint rides into the link");
+assert.strictEqual(linkedTo(reply).author, pk2, "…and so does the author, for the entity page's fallback");
+// The preview and the permalink say the same thing — one template, two depths.
+assert(lineOf(card(ev(1, [["e", parentId, "", "reply", pk2]], "x"))).includes(">olga</a>"), "the results list names them too");
+
+// Marker precedence, and the positional fallback the NIP deprecated but the
+// corpus is full of: no markers at all means the LAST `e` tag is the parent.
+assert.strictEqual(linkedTo(card(ev(1, [["e", parentId, "", "root"]], "x"), { full: true })).id, parentId,
+  "a lone root marker IS the parent — a direct reply to the opening post marks nothing else");
+assert.strictEqual(linkedTo(card(ev(1, [["e", rootId], ["e", parentId]], "x"), { full: true })).id, parentId,
+  "unmarked: the last `e` tag is the parent");
+assert.strictEqual(linkedTo(card(ev(1, [["e", rootId], ["e", parentId, "", "mention"]], "x"), { full: true })).id, rootId,
+  "a `mention` is a quote, not a parent");
+assert.strictEqual(lineOf(card(ev(1, [], "not a reply at all"), { full: true })), "", "a note that answers nothing says nothing");
+assert.strictEqual(lineOf(card(ev(7, [["e", parentId]], "+"), { full: true })), "",
+  "a reaction already says 'liked <note>' — it does not also reply to it");
+
+// Nobody named: the label falls back to the parent's id, and the link still
+// opens the parent. This is the shape a reply takes before the lookup lands.
+const unresolved = card(ev(1, [["e", parentId]], "x"), { full: true });
+assert(lineOf(unresolved).includes("note1"), "an unresolved parent still shows what it points at");
+assert.strictEqual(linkedTo(unresolved).id, parentId, "…and still links there");
+
+// NIP-22 puts the author where NIP-10 puts the marker, and REQUIRES a `p` tag
+// naming that same person — two more slots for the same fact.
+assert(lineOf(card(ev(1111, [["e", parentId, "", pk2]], "c"), { full: true })).includes(">olga</a>"), "NIP-22's 4th slot is the author");
+assert(lineOf(card(ev(1111, [["e", parentId], ["p", pk2]], "c"), { full: true })).includes(">olga</a>"), "a NIP-22 comment's `p` names the parent's author");
+// A comment on an ARTICLE has no `e` at all: the author is in the address.
+const onArticle = card(ev(1111, [["A", `30023:${pk2}:art`], ["a", `30023:${pk2}:art`]], "c"), { full: true });
+assert(lineOf(onArticle).includes(">olga</a>") && /href="\/naddr1/.test(lineOf(onArticle)), "an addressable parent names its author and links the address");
+
+// A NIP-28 channel message carries the CHANNEL in its root `e` tag. Reading
+// that as a parent would put "in reply to <whoever opened the room>" over
+// every line ever typed in it.
+assert.strictEqual(lineOf(card(ev(42, [["e", rootId, "", "root"]], "hi all"), { full: true })), "", "a channel is not a parent");
+assert.strictEqual(linkedTo(card(ev(42, [["e", rootId, "", "root"], ["e", parentId, "", "reply", pk2]], "hi"), { full: true })).id, parentId,
+  "…but a reply inside one is");
+
+// REPLY_KINDS is a claim about the RENDERERS — "these kinds lead with who they
+// answer" — and it is read by namedPubkeys to decide whose profile to load.
+// One list, so the two cannot cover different sets: a kind in it whose card
+// never calls replyLine is a profile fetched for a line nobody draws, and a
+// card drawing the line for a kind outside it renders an npub where a name
+// belongs. Asserted as an identity, the same way KNOWN_KINDS is.
+for (const kind of REPLY_KINDS) {
+  const html = card(ev(kind, [["e", parentId, "", "reply", pk2]], "answering"), { full: true });
+  assert(lineOf(html).includes(">olga</a>"), `kind ${kind} is declared reply-shaped, but its card names no parent`);
+}
+for (const kind of [...renderers.keys()].filter((k) => !REPLY_KINDS.has(k))) {
+  assert.strictEqual(lineOf(card(ev(kind, [["e", parentId, "", "reply", pk2]], "x"), { full: true })), "",
+    `kind ${kind} draws a reply line without being declared reply-shaped, so its parent's profile is never loaded`);
+}
+
+// The enrichment claim, for the one person no scan of the tags would find on
+// its own: whoever the line names, namedPubkeys must declare.
+assert(namedPubkeys(ev(1, [["e", parentId, "", "reply", pk2]])).includes(pk2), "the parent's author is a name this page owes itself");
+assert(namedPubkeys(ev(1111, [["a", `30023:${pk2}:art`]])).includes(pk2), "…including the one written into an address");
+assert.deepStrictEqual(namedPubkeys(ev(1, [["e", parentId]])), [], "an unhinted parent declares nobody until the lookup lands");
 
 // A set renders its CONTENTS, which is the whole complaint that started this:
 // a 30003 with twelve saved articles used to render as a title and a badge
@@ -380,5 +502,29 @@ assert.strictEqual(safeUrl("java\nscript:alert(1)"), null, "nor is it once the p
 assert.strictEqual(safeUrl("data:text/html,<script>"), null, "data: documents are not links either");
 assert.strictEqual(safeUrl("/local/path"), null, "a relative url never meant this origin");
 assert.strictEqual(safeUrl("https://ok.example/x?a=1"), "https://ok.example/x?a=1", "http(s) passes through unchanged");
+
+// The reply line is an interpolation site the loop above cannot reach: poison()
+// replaces every tag VALUE, which destroys the `e` tag shape the line needs to
+// render at all — the id has to be 64 hex or there is no parent. So it gets its
+// own poisoning, in the slots that survive validation: the relay hint, the
+// marker, the author, and an addressable parent's `d`.
+//
+// Some of those never reach the output as text at all — the hint is minted into
+// an nevent, whose alphabet is bech32, and the id is hex-checked before
+// anything is built from it. That is the point of asserting the composite
+// rather than the escaping: this passes today because the inputs are validated
+// AND the outputs escaped, and it fails the moment either half is dropped.
+for (const kind of REPLY_KINDS) {
+  for (const opts of [undefined, { full: true }]) {
+    const html = card(ev(kind, [
+      ["e", rootId, XSS, "root", XSS],
+      ["e", parentId, `wss://evil.example/${XSS}`, "reply", XSS],
+      ["a", `30023:${pk2}:${XSS}`],
+      ["p", XSS],
+    ], XSS), opts);
+    assert(lineOf(html), `kind ${kind}: the poisoned reply fixture rendered no line, so this asserts nothing`);
+    assert(ESCAPED(html), `kind ${kind}: a reply's parent tag reached the ${opts ? "permalink" : "preview"} as MARKUP`);
+  }
+}
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + generic floor, all assertions passed`);

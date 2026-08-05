@@ -6,7 +6,6 @@
 // does not name, which is what keeps an unknown kind honest instead of blank.
 
 import { esc, clip, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { noteId, shortNote } from "../shared/nip19.js";
 import { shell, bodyHtml, clipIf, noteHref } from "./base.js";
 
 export function genericCard(ev, opts) {
@@ -24,6 +23,9 @@ export function genericCard(ev, opts) {
       </div>
       ${img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
     </div>`;
-  const props = title ? [] : [["id", `<a class="mono" href="${noteHref(ev.id)}" title="${esc(noteId(ev.id))}">${esc(shortNote(ev.id))}</a>`]];
-  return shell(ev, opts, inner, props);
+  // No `id` row: it was here because a title-less card had no other link to
+  // its own page, and the card frame carries that now — byline date and the
+  // card itself. What the row actually said, a truncated bech32, is under
+  // "json" for anyone who wants it.
+  return shell(ev, opts, inner);
 }

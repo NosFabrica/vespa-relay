@@ -4,12 +4,14 @@
 // stateless client, codec and caches, and cards.js is the rendering.
 
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
-import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
+import { npub, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery } from "./shared/query.js";
+import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
+import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { mountSearchField } from "./searchfield.js";
@@ -376,7 +378,7 @@ function buildFilter(text, limit) {
   return filter;
 }
 
-async function search(text, limit) {
+async function search(text, limit, deep) {
   await ensureLogin();
   const filter = buildFilter(text, limit);
   const events = await relay.req(filter);
@@ -398,7 +400,36 @@ async function search(text, limit) {
   // round trip; it was just on the other side of the render.
   const mentioned = events.flatMap(namedPubkeys);
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
-  return { events, names };
+  // Free, and it removes most of the asks below: a thread in the results
+  // carries its own parents, and an event is ground truth about who wrote it.
+  seedParentAuthors(events);
+  return { events, names, parents: deep ? replyParents(events) : null };
+}
+
+/**
+ * The reply lines' own lookups, as a SEPARATE promise from the names.
+ *
+ * "In reply to <person>" needs a person, and most `e` tags name only an event
+ * — so an unhinted parent is a lookup by id to learn its author, and then that
+ * author's profile. Two more round trips behind the one the names already
+ * cost, which is why they are not chained onto it: this began as `await names`
+ * followed by the rest, and that made every author name in the list wait for
+ * the parent lookup to finish — a repaint that used to land in one round trip
+ * arrived in three, or after the 5s timeout when a parent was missing. The two
+ * are independent facts and now repaint independently.
+ *
+ * Only the parent AUTHORS are enriched here, not namedPubkeys again: the names
+ * promise is asking for that set concurrently, and enrichProfiles dedupes
+ * against the cache rather than against what is in flight, so the overlap
+ * would be a second REQ for pubkeys already being fetched.
+ *
+ * Full renders only (the `deep` flag): the type-ahead popup draws a name and a
+ * line of text per row, no reply lines, so a debounced keystroke has nothing
+ * to spend two round trips on.
+ */
+async function replyParents(events) {
+  const learned = await loadParentAuthors(unknownParents(events));
+  return learned + await enrichProfiles(events.map(replyPerson).filter(Boolean));
 }
 
 // ---- viewing as somebody else -------------------------------------------
@@ -916,23 +947,25 @@ async function run(text, mode, render) {
   if (mode === "full") { s.hits = []; s.hitsFor = null; }
   render();
   const t0 = performance.now();
-  let names = null;
+  let late = [];
   try {
-    const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
+    const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT, mode === "full");
     if (myId !== s.requestId) return;
-    s.hits = found.events; s.hitsFor = text; names = found.names;
+    s.hits = found.events; s.hitsFor = text; late = [found.names, found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== s.requestId) return;
     s.error = e.message || String(e); s.hits = []; s.hitsFor = text;
   }
   s.lastMs = Math.round(performance.now() - t0); s.loading = false;
   render();
-  // The names land after the list does, so paint them when they arrive —
-  // once, and only if the lookup actually learned something. Skipped while a
-  // raw event is expanded: a re-render would collapse a panel the reader
-  // opened, and a name appearing is not worth taking that away.
-  if (names) {
-    names.then((learned) => {
+  // The names land after the list does, and the reply parents after them, so
+  // paint each when it arrives — and only if that lookup actually learned
+  // something. Independently, because they are: chaining them meant the names
+  // could not repaint until the parents had also answered. Skipped while a raw
+  // event is expanded: a re-render would collapse a panel the reader opened,
+  // and a name appearing is not worth taking that away.
+  for (const lookup of late) {
+    lookup.then((learned) => {
       if (!learned || myId !== s.requestId) return;
       // The field's own chips are named from the same cache, and a `from:`
       // whose profile arrived on THIS lookup would otherwise sit on a short
@@ -1004,10 +1037,13 @@ function runFull(text) {
  * real history entry and Back undoes the click.
  */
 function openPicked(ev) {
-  if (!ev) return;
-  const href = ev.kind === 0 ? `/${npub(ev.pubkey)}` : `/${noteId(ev.id)}`;
-  if (location.pathname + location.search !== href) history.pushState(null, "", href);
-  applyUrl();
+  // selfHref, not a second spelling of it. This used to build the path here —
+  // `kind 0 ? npub : note` — which is the same rule the cards apply, written
+  // twice: a type-ahead row and the card for the same event could disagree
+  // about where that event lives, and the copy here had no guard, so an event
+  // with no id navigated to "/" and looked like the picker had reset the page.
+  const href = ev && selfHref(ev);
+  if (href) navigate(href);
 }
 function rerun() {
   const text = $q.value.trim();
@@ -1104,14 +1140,41 @@ $results.addEventListener("click", (e) => {
     return;
   }
   const btn = e.target.closest(".raw-toggle");
-  if (!btn) return;
-  const box = btn.parentElement.querySelector(".raw-body");
-  if (!box.hidden) { box.hidden = true; btn.textContent = "json"; return; }
-  const ev = s.hits.find((h) => h.id === btn.dataset.id);
-  // Serialised only when asked for, and only once.
-  if (!box.textContent) box.textContent = ev ? JSON.stringify(ev, null, 2) : "(no longer in the current results)";
-  box.hidden = false;
-  btn.textContent = "hide json";
+  if (btn) {
+    const box = btn.parentElement.querySelector(".raw-body");
+    if (!box.hidden) { box.hidden = true; btn.textContent = "json"; return; }
+    const ev = s.hits.find((h) => h.id === btn.dataset.id);
+    // Serialised only when asked for, and only once.
+    if (!box.textContent) box.textContent = ev ? JSON.stringify(ev, null, 2) : "(no longer in the current results)";
+    box.hidden = false;
+    btn.textContent = "hide json";
+    return;
+  }
+  // The card itself opens its own page. The hover lift has always said it
+  // does — border, shadow and a 1px rise, the page's own vocabulary for
+  // "this is a thing you click" — while only the links inside it navigated,
+  // so a note card promised a destination and delivered nothing.
+  //
+  // Three things it must NOT swallow, in order of how easily they are lost:
+  // a real control (a link, the json button, an audio scrubber), which owns
+  // its own click and usually goes somewhere else entirely; a text SELECTION,
+  // because dragging across a body to copy it ends in a mouseup that is not a
+  // navigation; and anything at permalink depth, where cards.js sets no
+  // data-href because the card IS the page.
+  //
+  // Keyboard and middle-click are served by the byline date, which is a real
+  // anchor to the same place — that is what makes this safe to add rather
+  // than a div pretending to be a link.
+  // `.raw` covers the whole json block, not just its button: a click inside
+  // an expanded raw event is somebody reading it, and navigating away would
+  // close the panel they just opened.
+  if (e.target.closest("a, button, input, textarea, select, label, audio, video, summary, .raw")) return;
+  // `getSelection()` may return null, and String(null) is "null" — truthy,
+  // which would have made every card unclickable wherever that happens.
+  const sel = window.getSelection && window.getSelection();
+  if (sel && String(sel).trim()) return;
+  const art = e.target.closest(".result[data-href]");
+  if (art) { e.preventDefault(); navigate(art.dataset.href); }
 });
 
 $chips.addEventListener("click", (e) => {
@@ -1238,9 +1301,15 @@ document.addEventListener("click", (e) => {
   if (href === "/") { e.preventDefault(); reset(); return; }
   if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
   e.preventDefault();
+  navigate(href);
+});
+
+/** An internal path as a pushState render — the one place both click paths
+    (a card's anchors, and the card itself) turn a href into a view. */
+function navigate(href) {
   if (location.pathname + location.search !== href) history.pushState(null, "", href);
   applyUrl();
-});
+}
 
 // Chips render at boot, not only inside applyUrl's search branch: the entity
 // branch returns before that code, so a direct load of /npub1… used to show
