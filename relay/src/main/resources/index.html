@@ -352,7 +352,11 @@
     border-radius: .65em; font-size: .55em; line-height: 1.3em;
     box-shadow: 0 0 0 .16em var(--accent-soft);
   }
-  .mention-kind { opacity: .65; font-weight: 700; }
+  /* The pill's own left padding is cut for a FACE, which is round and fills a
+     rounded corner by itself. `from` / `to` is square text and needs the room
+     back — on the label rather than the pill, so a chip that leads with a face
+     keeps the tighter inset. */
+  .mention-kind { opacity: .65; font-weight: 700; margin-left: .35em; }
   .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
   .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
