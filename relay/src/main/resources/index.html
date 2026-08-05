@@ -469,11 +469,13 @@
     box-shadow: var(--shadow-sm);
     transition: border-color .12s, box-shadow .12s, transform .12s;
   }
-  .result:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
-  /* The lift above has always said "click me". Only now is it true, and only
-     in the results list: a permalink card carries no data-href, because it is
-     already the page it would navigate to. */
+  /* The lift says "click me", so it belongs only to the cards that DO open
+     something: `data-href` is the same attribute app.js navigates on, which
+     makes the promise and the behaviour one condition rather than two rules
+     that can drift. A permalink card carries none — it is already the page it
+     would open, and it used to rise under the cursor to offer that. */
   .result[data-href] { cursor: pointer; }
+  .result[data-href]:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
 
   .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
   .result-header .avatar { width: 46px; height: 46px; }

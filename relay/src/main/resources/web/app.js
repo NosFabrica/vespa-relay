@@ -4,12 +4,13 @@
 // stateless client, codec and caches, and cards.js is the rendering.
 
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
-import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
+import { npub, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery } from "./shared/query.js";
 import { unknownParents, loadParentAuthors } from "./shared/parents.js";
+import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { mountSearchField } from "./searchfield.js";
@@ -852,10 +853,13 @@ function runFull(text) {
  * real history entry and Back undoes the click.
  */
 function openPicked(ev) {
-  if (!ev) return;
-  const href = ev.kind === 0 ? `/${npub(ev.pubkey)}` : `/${noteId(ev.id)}`;
-  if (location.pathname + location.search !== href) history.pushState(null, "", href);
-  applyUrl();
+  // selfHref, not a second spelling of it. This used to build the path here —
+  // `kind 0 ? npub : note` — which is the same rule the cards apply, written
+  // twice: a type-ahead row and the card for the same event could disagree
+  // about where that event lives, and the copy here had no guard, so an event
+  // with no id navigated to "/" and looked like the picker had reset the page.
+  const href = ev && selfHref(ev);
+  if (href) navigate(href);
 }
 function rerun() {
   const text = $q.value.trim();

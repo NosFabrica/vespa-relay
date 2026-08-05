@@ -231,6 +231,15 @@ for (const [kind, fixture] of FIXTURES) {
     `kind ${kind}: the card navigates somewhere no link goes — unreachable by keyboard or middle-click`);
   assert.strictEqual(hrefAttr(card(fixture, { full: true })), null, `kind ${kind}: the permalink links to itself`);
 }
+// One rule, one spelling. Where an event LIVES is selfHref's answer, and the
+// page has three ways in — a card click, the byline date, a type-ahead row —
+// which is three chances to write `kind 0 ? npub : note` again and have two of
+// them disagree. app.js did exactly that for the picker, without selfHref's
+// guard, so an event with no id opened "/" and looked like a page reset.
+const appSrc = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+assert(!/`\/\$\{(noteId|npub)\(/.test(appSrc),
+  "app.js builds an entity path by hand — ask cards/base.js's selfHref instead, so every route to an event agrees");
+
 // A profile's page is the PERSON, not the kind 0's id — that id names one
 // revision of a bio and stops resolving the moment it is edited.
 assert.strictEqual(hrefAttr(card(ev(0, [], "{}"))), `/${npub(pk)}`, "a profile card opens the person");
