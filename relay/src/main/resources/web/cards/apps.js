@@ -3,7 +3,8 @@
 // so they render as a mini profile of the app.
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
-import { register, shell, bodyHtml, avatarHtml, tagsOf, tagOf, jsonContent, clipIf } from "./base.js";
+import { avatarHtml } from "../shared/avatar.js";
+import { register, shell, bodyHtml, tagsOf, tagOf, jsonContent, clipIf } from "./base.js";
 
 /** 31990/32267 — an application, profile-shaped. */
 function appCard(ev, opts) {

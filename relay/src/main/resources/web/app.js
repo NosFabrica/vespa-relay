@@ -6,6 +6,7 @@
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
 import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
+import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery } from "./shared/query.js";
@@ -555,7 +556,12 @@ function renderMe() {
   const nm = displayName(p);
   $me.classList.toggle("in", !!me);
   if (me && p && p.picture) {
-    $me.innerHTML = `<img src="${esc(p.picture)}" alt="" onerror="this.remove()"/>`;
+    // The page's one face renderer, at whatever size this button happens to
+    // be — it is pinned to the field's box, so "fill" is the honest answer.
+    // Its own hand-rolled <img> removed itself when the picture failed to
+    // load, which left the button empty; the shared face falls back to the
+    // generated one, the same as every other picture of the same person.
+    $me.innerHTML = avatarHtml(p.picture, me, "fill");
   } else if (me && nm) {
     $me.textContent = nm.slice(0, 2).toUpperCase();
   } else if (me) {

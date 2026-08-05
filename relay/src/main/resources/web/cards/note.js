@@ -4,7 +4,8 @@
 
 import { esc } from "../shared/format.js";
 import { noteId, shortNote } from "../shared/nip19.js";
-import { register, shell, bodyHtml, noteHref, tagOf, jsonContent, avatarHtml, clipIf } from "./base.js";
+import { avatarHtml } from "../shared/avatar.js";
+import { register, shell, bodyHtml, noteHref, tagOf, jsonContent, clipIf } from "./base.js";
 
 function noteCard(ev, opts) {
   const inner = bodyHtml(opts, ev.content, 500);
