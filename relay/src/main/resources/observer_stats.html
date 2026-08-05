@@ -217,6 +217,20 @@ const fmt = (n) => n.toLocaleString();
 const displayName = (c) => ((c && c.display_name) || "").trim() || ((c && c.name) || "").trim() || "";
 
 /**
+ * HTML escaping, inlined for the same reason the bech32 below is: this page is
+ * deliberately self-contained, and it must work when the app's modules do not.
+ *
+ * It is not decoration. Every row here is built from a STRANGER's kind 0 — a
+ * name and a picture url published by whoever wanted a 10040 on this relay —
+ * and this page is served unauthenticated to whoever asks for it. The name went
+ * into innerHTML raw and the picture url into an unquoted-by-accident `src`, so
+ * publishing a profile called `<script>…` put that script on the operator's
+ * diagnostic page. Same rule the search UI's format.js holds, and this page had
+ * simply never been held to it.
+ */
+const esc = (v) => String(v ?? "").replace(/[&<>"']/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
+
+/**
  * npub, never hex — the same rule the search pages hold. Inlined rather than
  * imported from /web on purpose: this page is deliberately self-contained
  * (its own client, its own helpers), and twenty lines of bech32 is the price
@@ -404,12 +418,17 @@ function verdict(here, there) {
  */
 function paintWho(o) {
   const initials = o.name ? o.name.slice(0, 2).toUpperCase() : "·";
+  // The fallback initials ride in a data attribute and the handler READS them,
+  // rather than being interpolated into the handler's source. A name is a
+  // stranger's string; inside a single-quoted JS literal inside an HTML
+  // attribute it needed two different escapings to be safe, and had neither.
+  // As a value it needs one, which is the one esc() does.
   const avatar = o.picture
-    ? `<img src="${o.picture}" alt="" loading="lazy" decoding="async" ` +
+    ? `<img src="${esc(o.picture)}" alt="" loading="lazy" decoding="async" data-ini="${esc(initials)}" ` +
       `onerror="this.replaceWith(Object.assign(document.createElement('div'),` +
-      `{className:'ph broken',textContent:'${initials}',title:'picture URL failed to load'}))"/>`
+      `{className:'ph broken',textContent:this.dataset.ini,title:'picture URL failed to load'}))"/>`
     : o.hasProfile
-      ? `<div class="ph" title="profile has no picture field">${initials}</div>`
+      ? `<div class="ph" title="profile has no picture field">${esc(initials)}</div>`
       : `<div class="ph missing" title="no kind 0 for this pubkey in this store">?</div>`;
   // The npub line only for observers the store cannot name — with a name, the
   // name is the identifier shown (the full npub stays in the hover). Never hex:
@@ -417,7 +436,7 @@ function paintWho(o) {
   const key = npub(o.pubkey);
   o.whoCell.innerHTML =
     `<div class="who">${avatar}` +
-    `<div><div class="nm" title="${key}">${o.name || (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
+    `<div><div class="nm" title="${key}">${o.name ? esc(o.name) : (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
     (o.name ? "" : `<div class="key" title="${key}">${shortNpub(o.pubkey)}</div>`) +
     `</div></div>`;
 }
@@ -445,7 +464,10 @@ function build(list) {
   rowsEl.innerHTML = "";
   const frag = document.createDocumentFragment();
   const relayCell = (d) =>
-    `<td class="first"><span class="relay" title="${d.relay || ""}">${d.relay ? d.relay.replace(/^wss?:\/\//, "") : "—"}</span></td>` +
+    // normalizeRelay() has already put this through the URL parser, which
+    // percent-encodes the interesting characters — escaped anyway, because
+    // "some other function made it safe" is how the two above got here.
+    `<td class="first"><span class="relay" title="${esc(d.relay || "")}">${d.relay ? esc(d.relay.replace(/^wss?:\/\//, "")) : "—"}</span></td>` +
     `<td class="n"></td><td class="n"></td>`;
   for (const o of list) {
     const tr = document.createElement("tr");

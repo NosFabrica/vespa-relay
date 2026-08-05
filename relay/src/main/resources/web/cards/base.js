@@ -125,7 +125,18 @@ export function bylineHtml(ev, opts) {
     </div>`;
 }
 
-/** A props table, skipping rows whose value came up empty. */
+/**
+ * A props table, skipping rows whose value came up empty.
+ *
+ * The VALUE goes in as raw HTML — that is what lets a row be a link — so every
+ * value derived from an event must arrive already escaped. This is not a
+ * theoretical rule: four cards passed `fmtTs(tagOf(ev, …))` straight in, and
+ * fmtTs hands back its argument verbatim when it is not a number, so
+ * `["endsAt", "<img src=x onerror=…>"]` on a kind 1068 executed in the page.
+ * tools/webtest/cards.test.mjs now renders every registered kind with a payload
+ * in every tag and fails if it survives, so the next one is caught here rather
+ * than in the wild.
+ */
 export const propsHtml = (props) => {
   const rows = props.filter(([, v]) => v != null && v !== "");
   return rows.length ? `<dl class="props">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>` : "";
@@ -171,8 +182,40 @@ export const titleHtml = (opts, text, n = 140, href = null) => {
   return `<h2 class="result-title">${href ? `<a href="${href}">${esc(t)}</a>` : esc(t)}</h2>`;
 };
 
-export const extLink = (url, label) =>
-  url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>` : null;
+/**
+ * A url off an event, reduced to one this page will put in an `href` — or null.
+ *
+ * `esc()` makes a url safe to SIT in an attribute; it says nothing about what
+ * the browser does when the link is clicked, and `javascript:` or
+ * `data:text/html` in an href is a script the reader runs on themselves. Every
+ * link here carries `target="_blank"`, which current browsers refuse to follow
+ * for both schemes — but that is a browser's behaviour, not this page's, and
+ * every one of these urls came from a stranger's event.
+ *
+ * Absolute http/https only. A relative url would resolve against this origin,
+ * which is never what an event meant.
+ */
+export const safeUrl = (u) => {
+  const s = String(u || "").trim();
+  if (!s) return null;
+  try {
+    const p = new URL(s).protocol;   // throws on anything not absolute
+    return p === "http:" || p === "https:" ? s : null;
+  } catch (e) { return null; }
+};
+
+/**
+ * The one external link. Unlinkable urls render as their own text rather than
+ * disappearing: the reader can still see what the event claimed, which is the
+ * point of showing the field at all.
+ */
+export const extLink = (url, label) => {
+  if (!url) return null;
+  const safe = safeUrl(url);
+  return safe
+    ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(label || safe)}</a>`
+    : `<span class="mono">${esc(clip(String(url), 120))}</span>`;
+};
 
 /**
  * A list of relay rows; full mode shows all, preview the first few. Lives here

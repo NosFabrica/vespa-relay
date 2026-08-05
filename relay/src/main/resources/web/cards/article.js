@@ -24,7 +24,7 @@ function articleCard(ev, opts) {
       </div>
       ${!full && img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
     </div>`;
-  return shell(ev, opts, inner, [["published", published ? fmtTs(published) : null]]);
+  return shell(ev, opts, inner, [["published", published ? esc(fmtTs(published)) : null]]);
 }
 
 /** 30004 — a curation: the title and what it collects. */
