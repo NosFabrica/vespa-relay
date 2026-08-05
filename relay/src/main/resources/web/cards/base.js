@@ -1,7 +1,9 @@
-// The substrate every renderer stands on: the registry, the byline, avatars,
-// badges, props tables, the json toggle, and the two rendering modes. Family
-// modules import from here and call register(); they never import each other,
-// and dispatch lives in cards.js so registration stays cycle-free.
+// The substrate every renderer stands on: the registry, the byline, badges,
+// props tables, the json toggle, and the two rendering modes. Family modules
+// import from here and call register(); they never import each other, and
+// dispatch lives in cards.js so registration stays cycle-free. (Faces live in
+// shared/avatar.js — the search field draws them too, and a card module is no
+// place for the page's other half to have to import from.)
 //
 // Every renderer is (ev, opts) -> HTML string. opts.full is the permalink
 // mode: a search result is a PREVIEW of the card (clipped text, clamped
@@ -10,6 +12,7 @@
 // never drift apart.
 
 import { esc, clip, fullDate, when } from "../shared/format.js";
+import { avatarHtml } from "../shared/avatar.js";
 import { kindLabel, kindTone } from "../shared/kinds.js";
 import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
@@ -114,30 +117,6 @@ export const clipIf = (opts, s, n) => (opts && opts.full ? String(s || "").trim(
 export const clampCls = (opts) => (opts && opts.full ? "" : " clamp");
 
 // ---- shared chrome --------------------------------------------------------
-/** A pubkey-derived hue, so a missing picture is still a stable, distinct face. */
-export const hueOf = (seed) => (parseInt(String(seed || "").slice(0, 4), 16) || 0) % 360;
-// Exported because the search field's mention chips fall back the same way: a
-// broken picture becomes the SAME generated face there as in a card, and one
-// answer to "what does this person look like when their host is down" is worth
-// more than a second copy of a data uri.
-export const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
-
-/** A broken picture falls back to the same generated face, in place. */
-export function avatarHtml(pic, seed) {
-  const style = `style="--h:${hueOf(seed)}"`;
-  const face = pic
-    // decoding="async" as well as loading="lazy": lazy decides WHEN the bytes
-    // are fetched, not who decodes them. A full results page lands forty faces
-    // at once, and decoding them synchronously blocks the same main thread that
-    // is rendering the list they belong to.
-    ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"
-         onerror="this.classList.add('gen');this.src='${BLANK}'" />`
-    : `<div class="avatar gen" ${style}></div>`;
-  // The chip is painted after the fact by paintScores(): the score is a second
-  // round trip, and a face should not wait on it.
-  return `<span class="av-wrap">${face}<span class="score-chip" data-pk="${esc(seed || "")}"></span></span>`;
-}
-
 export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(kindLabel(ev.kind))}</span>`;
 
 /**
@@ -169,7 +148,7 @@ export function bylineHtml(ev, opts) {
   const date = esc(opts && opts.full ? fullDate(ev) : when(ev));
   return `
     <div class="byline">
-      ${avatarHtml(a.picture, ev.pubkey)}
+      ${avatarHtml(a.picture, ev.pubkey, "sm")}
       <a class="by-name" href="${keyHref(ev.pubkey)}">${esc(a.name)}</a>
       <span class="dot">·</span>
       ${href
@@ -375,5 +354,5 @@ export function faceStrip(pubkeys, max = 12) {
   const shown = pubkeys.slice(0, max);
   if (!shown.length) return "";
   const more = pubkeys.length - shown.length;
-  return `<div class="face-strip">${shown.map((pk) => `<a href="${keyHref(pk)}">${avatarHtml(authorOf({ pubkey: pk }).picture, pk)}</a>`).join("")}${more > 0 ? `<span class="face-more">+${more}</span>` : ""}</div>`;
+  return `<div class="face-strip">${shown.map((pk) => `<a href="${keyHref(pk)}">${avatarHtml(authorOf({ pubkey: pk }).picture, pk, "md")}</a>`).join("")}${more > 0 ? `<span class="face-more">+${more}</span>` : ""}</div>`;
 }

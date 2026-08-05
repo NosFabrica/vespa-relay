@@ -4,7 +4,8 @@
 
 import { esc } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
-import { register, shell, bodyHtml, replyLine, extLink, noteHref, tagOf, jsonContent, avatarHtml, clipIf } from "./base.js";
+import { avatarHtml } from "../shared/avatar.js";
+import { register, shell, bodyHtml, replyLine, extLink, noteHref, tagOf, jsonContent, clipIf } from "./base.js";
 
 /**
  * A note, and — when it is a reply — who it answers, above the text where the

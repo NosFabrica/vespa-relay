@@ -129,6 +129,7 @@
 <link rel="modulepreload" href="/web/cards/social.js" />
 <link rel="modulepreload" href="/web/entity.js" />
 <link rel="modulepreload" href="/web/searchfield.js" />
+<link rel="modulepreload" href="/web/shared/avatar.js" />
 <link rel="modulepreload" href="/web/shared/conn.js" />
 <link rel="modulepreload" href="/web/shared/format.js" />
 <link rel="modulepreload" href="/web/shared/kinds.js" />
@@ -284,7 +285,13 @@
     transition: border-color .15s, box-shadow .15s;
   }
   .me:hover { border-color: var(--accent); }
-  .me img { width: 100%; height: 100%; object-fit: cover; display: block; }
+  .me .avatar { border: 0; border-radius: 0; }
+  /* No score on your own face in the toolbar: the lens IS you, the button is
+     28px, and the badge would be clipped by its own frame. Written against
+     `.on` because that is the rule it has to beat — the chip is shown by
+     `.score-chip.on`, and an equally specific selector earlier in the file
+     loses to it. */
+  .me .score-chip.on { display: none; }
   .me.in { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
   .me.pending { opacity: .6; }
   .me.busy { opacity: .55; pointer-events: none; }
@@ -421,9 +428,24 @@
     white-space: nowrap;
     user-select: none;
   }
-  /* The card avatar, at field scale — same generated face, no border. */
-  .mention .avatar { width: 1.5em; height: 1.5em; border: 0; }
-  .mention-kind { opacity: .65; font-weight: 700; }
+  /* The one face measured in em rather than px (av-xs is its px fallback):
+     this pill follows the field into the sticky toolbar, where the font
+     shrinks, and a face measured in pixels would grow relative to its own
+     line and push the bar taller. No border — the pill is the frame. */
+  .mention .av-wrap { --av: 1.5em; }
+  .mention .avatar { border: 0; }
+  /* The badge hangs further off the corner here than anywhere else so the
+     digits clear the name beside them, and its ring is cut out of the pill's
+     own background rather than the card surface. */
+  .mention .score-chip {
+    right: calc(var(--chip) * -.45); bottom: calc(var(--chip) * -.3);
+    box-shadow: 0 0 0 calc(var(--chip) * .16) var(--accent-soft);
+  }
+  /* The pill's own left padding is cut for a FACE, which is round and fills a
+     rounded corner by itself. `from` / `to` is square text and needs the room
+     back — on the label rather than the pill, so a chip that leads with a face
+     keeps the tighter inset. */
+  .mention-kind { opacity: .65; font-weight: 700; margin-left: .35em; }
   .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
 
   .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
@@ -459,17 +481,41 @@
   .n5chip.unknown { background: var(--surface-2); color: var(--muted); }
 
   /* ---- avatars ------------------------------------------------------------ */
-  .av-wrap { position: relative; display: inline-flex; flex: 0 0 auto; }
+  /* THE face table. Every picture of a person on this page comes out of
+     shared/avatar.js, which names a size and leaves the pixels here — one row
+     per size, rather than a width restated inside each container that happens
+     to hold a face.
+
+     Three numbers per row: `--av` is the face, `--chip` the score badge on it,
+     `--chip-text` its digits. The badge is a fraction of the face because one
+     15px badge for every size was right on a 34px result face and nearly the
+     whole of a 22px byline one — and the TEXT shrinks less than the badge,
+     because strictly proportional digits are 6px by the time the face is
+     22px, which is a smudge rather than a number.
+
+     In px like the nip05 chip, and unlike everything else drawn inside the
+     search field: a badge stuck on a face is a fixed affordance, not part of
+     the running text, and it should not follow the type down. */
+  .av-wrap { position: relative; display: inline-flex; flex: 0 0 auto; --av: 34px; --chip: 15px; --chip-text: 9px; }
+  .av-xs   { --av: 20px; --chip: 10px;   --chip-text: 7.5px; }   /* the field's from:/to: pill */
+  .av-sm   { --av: 22px; --chip: 11px;   --chip-text: 7.5px; }   /* a card's byline */
+  .av-md   { --av: 30px; --chip: 13px;   --chip-text: 8.5px; }   /* a face strip */
+  .av-lg   { --av: 34px; --chip: 15px;   --chip-text: 9px; }     /* a result row, a card's own picture */
+  .av-xl   { --av: 46px; --chip: 18px;   --chip-text: 10.5px; }  /* the profile card's header */
+  /* As big as the box it was put in — the toolbar's "me" button, which is
+     pinned to the field's height rather than sized in pixels. */
+  .av-fill { --av: 100%; display: block; width: 100%; height: 100%; }
   .score-chip {
-    position: absolute; right: -3px; bottom: -3px; display: none;
-    min-width: 15px; height: 15px; padding: 0 3px;
-    border-radius: 8px; background: var(--accent); color: var(--accent-fg);
-    font-size: 9px; font-weight: 800; line-height: 15px; text-align: center;
-    box-shadow: 0 0 0 2px var(--surface);
+    position: absolute; display: none;
+    right: calc(var(--chip) * -.2); bottom: calc(var(--chip) * -.2);
+    min-width: var(--chip); height: var(--chip); padding: 0 calc(var(--chip) * .2);
+    border-radius: calc(var(--chip) / 2); background: var(--accent); color: var(--accent-fg);
+    font-size: var(--chip-text); font-weight: 800; line-height: var(--chip); text-align: center;
+    box-shadow: 0 0 0 calc(var(--chip) * .14) var(--surface);
   }
   .score-chip.on { display: block; }
   .avatar {
-    width: 34px; height: 34px;
+    width: var(--av); height: var(--av);
     border-radius: 50%;
     background: var(--surface-2);
     object-fit: cover;
@@ -540,7 +586,6 @@
   .result[data-href]:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
 
   .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
-  .result-header .avatar { width: 46px; height: 46px; }
   .result-header .who { flex: 1; min-width: 0; }
   .result-name { font-size: 16.5px; font-weight: 650; letter-spacing: -.012em; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .result-name a { color: inherit; text-decoration: none; }
@@ -549,7 +594,6 @@
 
   .byline { display: flex; gap: 7px; align-items: center; margin-bottom: 8px; }
   .byline .dot { margin: 0 -2px; }
-  .byline .avatar { width: 22px; height: 22px; }
   .byline .by-name { font-size: 12.5px; font-weight: 550; color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .byline .by-date { font-size: 12px; color: var(--faint); flex-shrink: 0; }
   /* The date is the card's permalink — the keyboard-reachable, middle-
@@ -642,7 +686,8 @@
            background: var(--surface-2); border-radius: 0 8px 8px 0; font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .face-strip { display: flex; align-items: center; margin-top: 8px; }
   .face-strip .av-wrap + .av-wrap { margin-left: -9px; }
-  .face-strip .avatar { width: 30px; height: 30px; box-shadow: 0 0 0 2px var(--surface); }
+  /* Overlapping faces need a rim to read as separate ones. */
+  .face-strip .avatar { box-shadow: 0 0 0 2px var(--surface); }
   .face-strip .face-more { margin-left: 8px; font-size: 12px; color: var(--faint); }
   .relay-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
   .relay-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -734,7 +779,7 @@
     }
     body.searching .hero-inner { grid-template-columns: minmax(0, 1fr); }
     body.searching .brand { display: none; }
-    .result-header .avatar { width: 40px; height: 40px; }
+    .av-xl { --av: 40px; --chip: 16px; --chip-text: 10px; }
     .thumb { width: 72px; height: 72px; }
     .props { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
     .props dt { margin-top: 6px; font-size: 11px; }

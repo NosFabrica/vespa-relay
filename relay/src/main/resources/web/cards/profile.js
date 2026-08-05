@@ -5,7 +5,8 @@
 import { esc } from "../shared/format.js";
 import { npub, shortNpub } from "../shared/nip19.js";
 import { displayName, parseProfile } from "../shared/profiles.js";
-import { register, avatarHtml, badgeHtml, extLink, jsonHtml, propsHtml, keyHref, selfHref, clipIf, clampCls } from "./base.js";
+import { avatarHtml } from "../shared/avatar.js";
+import { register, badgeHtml, extLink, jsonHtml, propsHtml, keyHref, selfHref, clipIf, clampCls } from "./base.js";
 
 function profileCard(ev, opts) {
   const p = parseProfile(ev);
@@ -31,7 +32,7 @@ function profileCard(ev, opts) {
   return `
     <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
       <div class="result-header">
-        ${avatarHtml(p.picture, ev.pubkey)}
+        ${avatarHtml(p.picture, ev.pubkey, "xl")}
         <div class="who">
           <h2 class="result-name"><a href="${keyHref(ev.pubkey)}">${esc(name)}</a></h2>
           ${(p.name || "").trim() && (p.name || "").trim() !== name ? `<div class="result-display">${esc(p.name)}</div>` : ""}

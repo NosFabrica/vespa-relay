@@ -6,6 +6,7 @@
 import { RELAY_URL, relay, refConn } from "./shared/conn.js";
 import { npub, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
+import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery } from "./shared/query.js";
@@ -551,14 +552,24 @@ async function rankServiceOf(observer) {
   return svc;
 }
 
-/** Fill in any score chips currently on the page. */
+/**
+ * Fill in any score chips currently on the page.
+ *
+ * Every exit paints, including the ones that have nothing to say. Most chips
+ * live inside HTML that is rebuilt per search, so a lens with no scores used
+ * to clear itself simply by being re-rendered — but the SEARCH FIELD's chips
+ * outlive every search, and returning early there left one lens's numbers
+ * sitting on a face under the next lens, or after signing out.
+ */
 async function paintScores() {
   const lens = viewingAs || me;
   if (scoreLensKey !== lens) { scores.clear(); scoreLensKey = lens; }
   const chips = [...document.querySelectorAll(".score-chip[data-pk]")];
-  if (!lens || !chips.length) return;
-  const svc = await rankServiceOf(lens);
-  if (!svc) return;                     // this lens ranks nothing; no chips
+  if (!chips.length) return;
+  const svc = lens ? await rankServiceOf(lens) : null;
+  // Nobody to rank by, or a lens that ranks nothing: the chips are not stale,
+  // they are ANSWERED — with no number.
+  if (!svc) { paintChips(chips); return; }
   const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
   const batches = [];
   for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
@@ -571,6 +582,13 @@ async function paintScores() {
     // array is NOT marked complete, so nothing gets cached as "no score".
     (conn ? conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length }) : Promise.resolve([]))
       .catch(() => [])));
+  // The lens can change WHILE these are in flight — the reader picks another
+  // observer, or signs out — and `scores` was cleared and re-keyed to the new
+  // one by the paint that followed them. Writing these answers into it now
+  // files one lens's numbers under another's name, and the `null`s below are
+  // worse: they are cached as "this lens gives them no score", which nothing
+  // re-asks. The answers are simply stale; drop them.
+  if (scoreLensKey !== lens) return;
   for (let i = 0; i < batches.length; i++) {
     const batch = batches[i], evs = reads[i];
     const seen = new Set();
@@ -588,9 +606,14 @@ async function paintScores() {
     // consulted before every repaint, so that null is permanent for the lens.
     if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
+  paintChips(chips);
+}
+
+/** The chips themselves, from whatever `scores` now knows. */
+function paintChips(chips) {
   for (const c of chips) {
     const v = scores.get(c.dataset.pk);
-    if (v == null || Number.isNaN(v)) { c.textContent = ""; c.classList.remove("on"); continue; }
+    if (v == null || Number.isNaN(v)) { c.textContent = ""; c.classList.remove("on"); c.removeAttribute("title"); continue; }
     c.textContent = v;
     c.classList.add("on");
     c.title = `trust ${v} — as ${viewingAs ? "the observer you are viewing as" : "you"} rank them`;
@@ -695,13 +718,17 @@ function renderMe() {
   $me.classList.toggle("in", !!me);
   $me.classList.toggle("pending", !!who && !me);
   if (who && pic) {
+    // The page's one face renderer, at whatever size this button happens to
+    // be — it is pinned to the field's box, so "fill" is the honest answer.
+    // Its own hand-rolled <img> removed itself when the picture failed to
+    // load, which left the button empty; the shared face falls back to the
+    // generated one, the same as every other picture of the same person.
+    //
     // Rewritten only when the url actually changed: the kept face and the
     // fetched one are usually the same picture, and replacing the <img> with
     // an identical one makes it blink for a frame.
-    const img = $me.firstElementChild;
-    if (!img || img.tagName !== "IMG" || img.getAttribute("src") !== pic) {
-      $me.innerHTML = `<img src="${esc(pic)}" alt="" onerror="this.remove()"/>`;
-    }
+    const img = $me.querySelector("img.avatar");
+    if (!img || img.getAttribute("src") !== pic) $me.innerHTML = avatarHtml(pic, who, "fill");
   } else if (who && nm) {
     $me.textContent = nm.slice(0, 2).toUpperCase();
   } else if (who) {
@@ -838,7 +865,10 @@ function onQueryEdit() {
   debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
 }
 
-const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit });
+// paintScores goes in for the same reason the entity page takes it: the faces
+// the field and its picker draw carry the same score chip a card's does, and
+// which lens fills it in is app state.
+const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit, paintScores });
 
 // `hitsFor` is the text `hits` actually answers. They outlive each other:
 // results stay on screen while the box is edited, and a debounce can be
