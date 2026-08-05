@@ -29,7 +29,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
-import kotlinx.coroutines.channels.trySendBlocking
+import kotlinx.coroutines.channels.ClosedSendChannelException
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -46,7 +46,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * The channel is bounded so a fast download (negentropy can deliver >10k/s)
  * cannot outrun Vespa ingest and pile events onto the heap: when it fills,
- * [submit] blocks the producing thread and the upstream throttles to the
+ * [submit] suspends the producing coroutine and the upstream throttles to the
  * ingest rate — flat memory instead of an OOM.
  */
 internal class IngestPipeline(
@@ -90,12 +90,15 @@ internal class IngestPipeline(
     /**
      * Threads the ingest workers own outright, which no producer can occupy.
      *
-     * [submit] parks its caller when the channel is full — deliberate
-     * backpressure — but on a shared dispatcher enough parked producers starve
-     * the very workers that must make room, and that is a deadlock (observed:
-     * `queue 8000/8000 FULL, 0 ev/s` permanently, workers parked in
-     * trySendBlocking). A dedicated pool makes the invariant true rather than
-     * probable: however many producers park, these threads still drain.
+     * This was the FIRST attempt at the deadlock [submit] describes, and on its
+     * own it does not hold: the loop body starts here, then calls the store,
+     * which reaches for `Dispatchers.IO` — the same shared pool the producers
+     * were parked on. The drain therefore still queued behind them and the
+     * process still stopped. [submit] suspending is what actually fixes it.
+     *
+     * Kept because it is still worth having: batch work stays off the shared
+     * pool, so ingest and the download fan-out do not compete for the same
+     * threads under normal load.
      */
     private val pool =
         Executors
@@ -147,19 +150,34 @@ internal class IngestPipeline(
     }
 
     /**
-     * Hand an event to the pool, blocking the caller if the buffer is full.
-     * The subscription callbacks that call this are not suspending, so a
-     * blocking send is how backpressure reaches the download.
+     * Hand an event to the pool, SUSPENDING the caller if the buffer is full.
+     *
+     * Suspending rather than blocking is the whole point. This used to call
+     * `trySendBlocking`, and quartz's subscription callbacks were not
+     * suspending, so backpressure had to park a thread. But those callbacks
+     * run on the shared coroutine pool, and so does the store the drain must
+     * reach — so a parked producer was holding a thread the drain needed.
+     * Measured twice, ~13 minutes after each start: all 64 shared workers
+     * parked in `runBlocking` under `trySendBlocking`, the drain unable to get
+     * a thread, and the entire process silent — every stream, the health line,
+     * all of it — at 2% CPU with Vespa idle and healthy. A full queue was the
+     * symptom; producers eating the drain's threads was the cause.
+     *
+     * `send` releases the thread instead of holding it, so the drain always
+     * runs and backpressure still reaches the download. Nothing is dropped.
      */
-    fun submit(
+    suspend fun submit(
         event: Event,
         skipVerify: Boolean,
     ) {
         // Counted only when the channel actually took it: during shutdown
         // (closeIntake) the send fails, and counting a dropped event would
         // leave a phantom queue depth on the final health line.
-        if (inbound.trySendBlocking(Inbound(event, skipVerify)).isSuccess) {
+        try {
+            inbound.send(Inbound(event, skipVerify))
             queued.incrementAndGet()
+        } catch (e: ClosedSendChannelException) {
+            // Shutdown raced this event in. Not an error, and not counted.
         }
     }
 
