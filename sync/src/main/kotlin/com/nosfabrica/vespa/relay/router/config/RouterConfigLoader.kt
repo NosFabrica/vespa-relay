@@ -163,15 +163,18 @@ object RouterConfigLoader {
                     "router: stream '$name' has a `relaySource`, which only pulls down — set dir = \"down\""
                 }
 
+                val filter = parseFilter(s.getConfig("filter"))
+                val deleteMissing = parseDeleteMissing(name, s)
                 SyncStream(
                     name = name,
                     dir = dir,
-                    filter = parseFilter(s.getConfig("filter")),
+                    filter = filter,
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     dynamic = dynamic,
                     sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO,
-                    deleteMissing = parseDeleteMissing(name, s),
+                    deleteMissing = deleteMissing,
+                    ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
                 )
             }
         return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents)
@@ -230,6 +233,51 @@ object RouterConfigLoader {
             }
         }
         return mode
+    }
+
+    /**
+     * `ownedKinds = [30382]` — which of the stream's kinds its upstreams are
+     * authoritative for, and therefore the only ones absence may delete.
+     *
+     * Required, non-empty, and a subset of the filter's kinds whenever
+     * `deleteMissing` is on: the whole point is that turning on deletion makes
+     * you write down what it is allowed to reach, in the same file. Refused
+     * outright when deletion is off, so a stream can never carry a stale
+     * licence that a later `deleteMissing = true` silently activates.
+     */
+    private fun parseOwnedKinds(
+        stream: String,
+        s: Config,
+        filter: Filter,
+        deleteMissing: DeleteMissing,
+    ): Set<Int> {
+        val declared = if (s.hasPath("ownedKinds")) s.getIntList("ownedKinds").map { it.toInt() }.toSet() else null
+        if (deleteMissing == DeleteMissing.OFF) {
+            require(declared == null) {
+                "router: stream '$stream' sets ownedKinds without deleteMissing — remove one. " +
+                    "A licence to delete sitting in a stream that does not delete is a trap for whoever turns it on"
+            }
+            return emptySet()
+        }
+        require(!declared.isNullOrEmpty()) {
+            "router: stream '$stream' sets deleteMissing but no ownedKinds. " +
+                "Name the kinds its upstreams are the source of truth for — e.g. ownedKinds = [30382] — " +
+                "because every other kind in the filter would otherwise be deleted for being absent from a relay " +
+                "that was never supposed to serve it"
+        }
+        // A kind-less filter means "every kind", and then the attached set —
+        // what deletion must NOT touch — has no enumerable shape to protect.
+        val streamKinds =
+            requireNotNull(filter.kinds) {
+                "router: stream '$stream' sets deleteMissing on a filter with no `kinds` — " +
+                    "it would own some kinds and delete from an open-ended rest. List the kinds it mirrors"
+            }
+        val stray = declared - streamKinds.toSet()
+        require(stray.isEmpty()) {
+            "router: stream '$stream' owns kind(s) ${stray.sorted()} that its filter never asks for " +
+                "(filter kinds: ${streamKinds.sorted()}) — nothing would ever be compared, let alone deleted"
+        }
+        return declared
     }
 
     /** The `relaySource = [ ... ]` list plus the stream-level knobs pacing its cycle. */

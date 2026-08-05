@@ -200,6 +200,31 @@ internal class DynamicSync(
                         )
                     }
             }
+        // Authors this cycle found at MORE THAN ONE relay. Deletion reads one
+        // relay's silence as a retraction, and that only holds while it is the
+        // author's sole upstream — measured, 3 of 266 NIP-85 services are
+        // bound to several relays and two of those name general relays that
+        // will never serve their scores, so an empty answer there is a wrong
+        // pointer rather than a withdrawal. They still get mirrored.
+        val sharedAuthors: Set<String> =
+            if (stream.deleteMissing == DeleteMissing.OFF) {
+                emptySet()
+            } else {
+                relays
+                    .flatMap { it.narrow["authors"].orEmpty() }
+                    .groupingBy { it }
+                    .eachCount()
+                    .filterValues { it > 1 }
+                    .keys
+                    .also {
+                        if (it.isNotEmpty()) {
+                            System.err.println(
+                                "router: ${stream.name} ${it.size} author(s) are bound to more than one relay" +
+                                    " — mirroring them, deleting nothing for them",
+                            )
+                        }
+                    }
+            }
         // Why the unreachable ones were unreachable: the shape of the
         // failures tells an operator whether that is normal churn or a broken
         // cycle.
@@ -283,7 +308,7 @@ internal class DynamicSync(
                                 // to `window` for a select that binds only the
                                 // url.
                                 val got =
-                                    syncRelay(stream, relay.url, relay.narrowed(window), local) { reason ->
+                                    syncRelay(stream, relay.url, relay.narrowed(window), local, sharedAuthors) { reason ->
                                         reasons.merge(reason, 1L, Long::plus)
                                     }
                                 when {
@@ -352,6 +377,7 @@ internal class DynamicSync(
         url: NormalizedRelayUrl,
         window: Filter,
         local: List<IdAndTime>,
+        sharedAuthors: Set<String>,
         onFailure: (String) -> Unit,
     ): Int {
         inFlight.merge(url, 1, Int::plus)
@@ -360,7 +386,7 @@ internal class DynamicSync(
             var downloaded = 0
             val asks = splitByAuthors(window, stream.dynamic?.authorsPerLeg)
             for (ask in asks) {
-                downloaded += syncOneFilter(stream, url, ask, local)
+                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors)
             }
             // DIAGNOSTIC: what this relay was asked and what came back. Enabled
             // by SYNC_DIAGNOSE, which names one stream — the fan-out is 16k
@@ -399,8 +425,11 @@ internal class DynamicSync(
         url: NormalizedRelayUrl,
         window: Filter,
         local: List<IdAndTime>,
+        sharedAuthors: Set<String>,
     ): Int {
-        if (stream.deleteMissing != DeleteMissing.OFF) return deleteMissingSync.reconcileAndDelete(stream, url, window)
+        if (stream.deleteMissing != DeleteMissing.OFF) {
+            return deleteMissingSync.reconcileAndDelete(stream, url, window, sharedAuthors)
+        }
         var downloaded = 0
         for (leg in bands.legs(url, window)) {
             var seenMin: Long? = null

@@ -97,6 +97,21 @@ data class SyncStream(
     val sync: SyncMode = SyncMode.AUTO,
     // Whether an upstream dropping a record means we drop it too.
     val deleteMissing: DeleteMissing = DeleteMissing.OFF,
+    /**
+     * The kinds this stream's upstreams are the source of truth for — the only
+     * kinds [deleteMissing] may delete on their own absence. Required whenever
+     * it is on, and checked against [filter]: turning on deletion without
+     * saying what it may delete is a config error, not a default.
+     *
+     * Everything else in [filter] is ATTACHED: fetched from the same relay,
+     * never deleted for being missing there, and dropped only when the owned
+     * set for that author is retracted wholesale. NIP-85 says a provider
+     * should publish its service key's kind 0 and 10002, but measured on 12
+     * (service, relay) pairs not one provider relay actually serves them —
+     * they come from the indexers instead. Deleting on their absence here
+     * would erase the profile of every healthy provider on the stream.
+     */
+    val ownedKinds: Set<Int> = emptySet(),
 )
 
 /**

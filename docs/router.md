@@ -64,6 +64,9 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   that the upstream no longer serves. Only for a stream whose upstream owns the
   records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
+- **`ownedKinds`** *(required by `deleteMissing`)* — which of the filter's kinds
+  the upstream is the source of truth for, and therefore the only ones absence
+  may delete. See [`ownedKinds`, and the cascade](#ownedkinds-and-the-cascade).
 - **`authorsPerLeg`** *(optional)* — how many bound `authors` go into one ask, and
   therefore into one sync band. See
   [Binding filter fields to a relay](#binding-filter-fields-to-a-relay).
@@ -226,6 +229,7 @@ longer serves:
 ```hocon
 sync = "negentropy"
 deleteMissing = "dryRun"        # false (default) | "dryRun" | true
+ownedKinds = [30382]            # required whenever deleteMissing is on
 ```
 
 Only correct when that upstream is the *source of truth* for the records in the
@@ -249,6 +253,8 @@ like "they retracted everything". So:
 | the reconcile must have covered ≥1 window | zero windows compared zero range |
 | local ids | read from the *ask itself*, never the cycle's shared snapshot — quartz's own warning is that entries outside the filter come back as false "have" ids, and the shared snapshot spans every service on the stream |
 | deletes | issued by id, inside the ask, so they cannot reach past what the reconcile compared |
+| only `ownedKinds` | see below — the rest of the filter is mirrored from the same relay and never judged by its absence there |
+| the author's **sole** upstream | an author this cycle found at more than one relay is mirrored and never deleted for: one relay's silence does not retract what a sibling may still serve. Measured, 3 of 266 services are bound to several relays, and two of those name general relays that will never carry their scores |
 
 **There is deliberately no size guard.** An earlier version refused when a relay
 served nothing, and again when a cycle would drop more than half an ask. Both
@@ -265,9 +271,44 @@ misconfigured provider list costing a re-download, weighed against serving a
 retracted score forever. The completed reconcile is what makes "empty"
 trustworthy enough to act on.
 
-Keep the ask to kinds that upstream actually owns. `assertions` mirrors kind 30382
-alone for this reason: with kinds 0 and 10002 in the same filter, a provider relay
-that simply does not carry kind 0 would retract that provider's profile.
+### `ownedKinds`, and the cascade
+
+A stream's filter usually holds more than the upstream is authoritative for.
+`assertions` mirrors kinds 0, 10002 and 30382 from each provider's own relay —
+but the provider owns only its **scores**. NIP-85 says a service should publish
+a kind 0 and 10002 for its key; measured on 12 (service, relay) pairs, not one
+provider relay actually serves them. They reach us from the indexers instead.
+Judged by absence, every healthy provider on the stream would lose its profile.
+
+So deletion is licensed per kind, and saying so is mandatory:
+
+```hocon
+sync = "negentropy"
+deleteMissing = "dryRun"
+ownedKinds = [30382]            # required — the parse fails without it
+filter = { "kinds": [0, 10002, 30382] }
+```
+
+`ownedKinds` is refused when it names a kind the filter never asks for, refused
+on a filter with no `kinds` at all (the protected set would be open-ended), and
+refused on a stream that does not delete — a licence sitting unused is a trap
+for whoever turns deletion on later. Everything in the filter outside it is
+**attached**: fetched from the same relay by the ordinary paged path, never
+deleted for being missing there.
+
+Attached records do get deleted, in one case. When a service's *entire* owned
+set is retracted — we held scores, its relay now serves none of them, and it
+offers nothing in their place — the attached kinds go with them. A service key
+exists to sign scores; once every score is withdrawn, its kind 0 and 10002
+describe a provider that provides nothing, kept alive in search by nothing but
+our own copy. They are meant to go together.
+
+The distinction that makes this safe is `needIds`. An addressable score a
+provider *replaces* arrives as its old id retracted and a new id offered — the
+same "we hold ids it doesn't" shape as a withdrawal. Only an empty `needIds`
+separates "this provider published a fresh score" from "this provider is gone".
+A service we never held scores for retracts nothing, whatever its relay serves
+today, so the cascade needs a non-empty local set too.
 
 Deletions are counted separately on the health line — it is the only number the
 router prints that goes down.

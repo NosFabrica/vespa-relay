@@ -301,7 +301,11 @@ nothing; run that first, and read the number before believing it.
   licence is a COMPLETED reconcile, never a volume: quartz throws rather than
   falling back, so a normal return means every window was compared and an empty
   answer is the relay's answer rather than its silence. There is deliberately no
-  size guard, because a mass retraction is exactly the case that matters.
+  size guard, because a mass retraction is exactly the case that matters. It is
+  scoped by `ownedKinds` (required): the rest of the filter is mirrored from the
+  same relay and dropped only when a service's whole owned set is retracted —
+  measured, no NIP-85 provider relay serves its own key's kind 0, so judging
+  those by absence would delete every healthy provider's profile.
 
 The counterpart to both: a deletion is not a tombstone. A stream that still asks
 by kind re-downloads whatever was freed on its next walk, so reclaiming space and
