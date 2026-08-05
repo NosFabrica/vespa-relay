@@ -5,10 +5,15 @@
 //     from:npub1…   the author       -> a NIP-01 `authors` filter
 //     to:npub1…     who they named   -> a NIP-01 `#p` filter
 //
-// Both are NIP-01 filter fields, not NIP-50 extensions — the store never sees
-// the prefixes at all. That is deliberate: `authors` and `#p` are indexed
-// filters every relay implements, so narrowing by person costs nothing and
-// composes with the trust ranking rather than competing with it.
+// …and one mark narrows it to a subject:
+//
+//     #hashtag      the topic        -> a NIP-01 `#t` filter, plus the NIP-22
+//                                       comments written ON that topic
+//
+// All of them are NIP-01 filter fields, not NIP-50 extensions — the store never
+// sees the prefixes at all. That is deliberate: `authors`, `#p` and `#t` are
+// indexed filters every relay implements, so narrowing this way costs nothing
+// and composes with the trust ranking rather than competing with it.
 //
 // Pure functions over a string, with no DOM and no relay: the field renderer
 // (searchfield.js) and the query builder (app.js) must agree exactly about
@@ -34,6 +39,30 @@ const WHOLE = new RegExp(`^${NPUB}$`, "i");
 // The same two prefixes while they are still being TYPED: everything after the
 // colon up to the caret, which is what the author picker searches for.
 const PARTIAL = /(^|\s)(from|to):(\S*)$/i;
+
+// A hashtag: the same word-start anchor the person tokens use, a `#`, then the
+// characters a `t` tag actually holds. Letters and MARKS by unicode property
+// rather than `\w`, because most of Nostr's hashtags are not ASCII and `\w`
+// would cut `#café` down to `caf` — half a word, filtered for as if it were the
+// whole one. The anchor is what keeps `C#` a language and a `#fragment` part of
+// its url; a `#` mid-word is punctuation, not a topic.
+const HASHTAG = /(^|\s)#([\p{L}\p{M}\p{N}_]+)/gu;
+
+/**
+ * Lift every hashtag out of `text` into `into`, and give back what is left.
+ *
+ * Lowercased, `#` dropped: that is the value a `t` tag carries (NIP-24 says a
+ * `t` tag SHOULD be lowercase) and therefore the value a `#t` filter has to
+ * ask for. The leading whitespace is put back so the words either side of a
+ * lifted tag do not fuse into one term.
+ */
+function liftHashtags(text, into) {
+  return String(text).replace(HASHTAG, (_m, lead, tag) => {
+    const t = tag.toLowerCase();
+    if (!into.includes(t)) into.push(t);
+    return lead;
+  });
+}
 
 /**
  * Is this exactly one finished key — something [tokenize] will draw as a
@@ -87,12 +116,19 @@ export function tokenize(text) {
 /**
  * What the relay is actually asked, from what the person typed:
  *
- *   { terms, authors, mentions }
+ *   { terms, authors, mentions, hashtags }
  *
  * `terms` is what is left for NIP-50 — the from:/to: tokens are lifted out
  * entirely, because leaving them in would search the full-text index for the
  * literal string "from:npub1…", which matches nothing and would make a
  * narrowed search look like an empty one.
+ *
+ * `#hashtag` leaves for the same reason and a sharper one: the full-text index
+ * is built from an event's CONTENT, and a note tagged `t: nostr` need not say
+ * the word anywhere in it. Searching the text for "#nostr" therefore answers a
+ * different question from the one a `#` asks, and answers it worse — it misses
+ * every note that tagged the topic properly, and matches the ones that merely
+ * spelled it out.
  *
  * A BARE npub keeps its existing meaning and stays a term. It renders as a
  * face in the field like any other key, but rendering is not semantics: this
@@ -102,14 +138,18 @@ export function tokenize(text) {
 export function parseQuery(text) {
   const authors = [];
   const mentions = [];
+  const hashtags = [];
   let terms = "";
   for (const seg of tokenize(text)) {
-    if (seg.type === "text") { terms += seg.text; continue; }
+    // Only the TEXT between the person tokens is scanned for hashtags — a `#`
+    // cannot occur inside an npub (bech32 has no such character), and running
+    // the scan over `raw` would be looking for it there anyway.
+    if (seg.type === "text") { terms += liftHashtags(seg.text, hashtags); continue; }
     const into = seg.field === "from" ? authors : seg.field === "to" ? mentions : null;
     if (!into) { terms += seg.raw; continue; }
     if (!into.includes(seg.pubkey)) into.push(seg.pubkey);
   }
-  return { terms: terms.replace(/\s+/g, " ").trim(), authors, mentions };
+  return { terms: terms.replace(/\s+/g, " ").trim(), authors, mentions, hashtags };
 }
 
 /**

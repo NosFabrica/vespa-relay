@@ -4,8 +4,8 @@
 //     node tools/webtest/run.mjs           # every module suite
 //
 // nip19.test.mjs   decoder vs an independently written test-side encoder
-// query.test.mjs   the search box's from:/to: language — what the field draws
-//                  and what the relay is asked, held to ONE tokenizer
+// query.test.mjs   the search box's from:/to: and #hashtag language — what the
+//                  field draws and what the relay is asked, held to ONE tokenizer
 // cards.test.mjs   EVERY registered kind renders, preview and permalink —
 //                  fails if a kind registers without a fixture, which is
 //                  what keeps "covers all kinds" a checked claim

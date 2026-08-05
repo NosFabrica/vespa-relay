@@ -86,4 +86,28 @@ assert.strictEqual(t.calls, 1);
   assert.strictEqual(partial.complete, false, "timeout -> partial");
 }
 
-console.log("auth-required resend + publish + complete flag: all assertions passed");
+// A REQ carries as many filters as it was given. NIP-01 ORs the filters of one
+// subscription, and that is how a hashtag search asks its union question —
+// `#t`, plus the NIP-22 comments naming the same topic in `i`/`I` — in one
+// round trip with one EOSE. Sent as a nested array they would be one malformed
+// filter, and the relay's answer to that is nothing at all.
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  const sent = [];
+  r.ws = { send: (m) => sent.push(JSON.parse(m)) };
+
+  r.reqOnce({ "#t": ["nostr"] }, 20);
+  await new Promise((res) => setTimeout(res, 0));
+  assert.deepStrictEqual(sent[0], ["REQ", "sot1", { "#t": ["nostr"] }], "one filter is still one filter");
+
+  r.reqOnce([{ "#t": ["nostr"] }, { kinds: [1111], "#I": ["#nostr"] }], 20);
+  await new Promise((res) => setTimeout(res, 0));
+  assert.deepStrictEqual(
+    sent[1],
+    ["REQ", "sot2", { "#t": ["nostr"] }, { kinds: [1111], "#I": ["#nostr"] }],
+    "several filters are spread into the REQ, not nested inside one",
+  );
+}
+
+console.log("auth-required resend + publish + complete flag + multi-filter REQ: all assertions passed");

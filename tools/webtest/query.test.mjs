@@ -1,5 +1,5 @@
-// The search box's `from:`/`to:` language: what the field draws, and what the
-// relay is asked.
+// The search box's own language — `from:`/`to:` and `#hashtag`: what the field
+// draws, and what the relay is asked.
 //
 // This is the whole feature's contract in one place. The field renderer and
 // the query builder are in different modules and must agree EXACTLY about
@@ -69,6 +69,38 @@ assert.strictEqual(q.terms, A, "…it stays the search term it has always been")
 q = parseQuery("from:alice cats");
 assert.strictEqual(q.terms, "from:alice cats", "an unresolvable from: is left alone, so the search still says why");
 
+// ---- parseQuery: hashtags -------------------------------------------------
+//
+// A hashtag is a TAG question, not a text one: a note tagged `t: nostr` need
+// not contain the word, so leaving `#nostr` in the NIP-50 search would answer
+// a different question — and miss every note that tagged the topic properly.
+
+q = parseQuery("#nostr");
+assert.deepStrictEqual(q.hashtags, ["nostr"], "a hashtag leaves the search string and becomes a tag filter");
+assert.strictEqual(q.terms, "", "…so a hashtag-only query has no words left");
+
+q = parseQuery("cats #Nostr dogs");
+assert.strictEqual(q.terms, "cats dogs", "the hole a lifted hashtag leaves does not become whitespace");
+assert.deepStrictEqual(q.hashtags, ["nostr"], "lowercased — that is the value a `t` tag carries (NIP-24)");
+
+q = parseQuery("#nostr #NOSTR #bitcoin");
+assert.deepStrictEqual(q.hashtags, ["nostr", "bitcoin"], "repeats collapse after normalizing, and order is what was typed");
+
+// `\w` would have cut this to `caf` and filtered for half a word.
+assert.deepStrictEqual(parseQuery("#café").hashtags, ["café"], "a hashtag is unicode letters, not ASCII");
+assert.deepStrictEqual(parseQuery("#日本").hashtags, ["日本"], "…in any script");
+
+// The same word-start anchor the person tokens use: a `#` mid-word is
+// punctuation, and treating it otherwise silently rewrites the query.
+assert.deepStrictEqual(parseQuery("C# rocks").hashtags, [], "a # inside a word is not a hashtag");
+assert.strictEqual(parseQuery("C# rocks").terms, "C# rocks", "…and the term keeps it");
+assert.deepStrictEqual(parseQuery("https://x.example/a#frag").hashtags, [], "a url fragment is not a hashtag");
+assert.deepStrictEqual(parseQuery("# spaced").hashtags, [], "a lone # is not a hashtag");
+
+// Hashtags and people compose — both are filters, and both leave the words.
+q = parseQuery(`cats from:${A} #nostr`);
+assert.deepStrictEqual([q.terms, q.authors, q.hashtags], ["cats", [HEX_A], ["nostr"]], "person and topic narrow the same search");
+
 // ---- mentionAt: the token being TYPED --------------------------------------
 
 let m = mentionAt("from:ali", 8);
@@ -111,4 +143,4 @@ assert.deepStrictEqual(tokenize(`from:${HEX_A}`).map((s) => s.type), ["text"], "
 assert.strictEqual(isKey(` ${A} `), true, "surrounding space is not part of the key");
 assert.strictEqual(isKey(A + "q"), false, "one character too many is not an npub");
 
-console.log("query: from:/to: tokenize, filter and complete consistently");
+console.log("query: from:/to: and #hashtags tokenize, filter and complete consistently");
