@@ -85,12 +85,6 @@ window.addEventListener("pageshow", (ev) => {
   ensureLogin().then(paintScores).catch(() => {});
 });
 
-async function waitForChallenge(ms) {
-  const t0 = Date.now();
-  while (!relay.challenge && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 100));
-  return relay.challenge;
-}
-
 // Sign the CURRENT challenge and send it, retrying if the connection changed
 // underneath us.
 //
@@ -102,7 +96,7 @@ async function waitForChallenge(ms) {
 // the challenge after signing and retrying against the new one is the whole
 // fix; without it the only recovery is for the user to click again.
 async function signAndAuth(attempt = 0, waitMs = 3000) {
-  const challenge = await waitForChallenge(waitMs);
+  const challenge = await relay.waitForChallenge(waitMs);
   if (!challenge) throw new Error("The relay sent no NIP-42 challenge");
   const signed = await window.nostr.signEvent({
     kind: 22242,
@@ -286,13 +280,17 @@ async function loadObservers() {
   // exact reason — this used to open a THIRD socket of its own to say the
   // same thing.
   const anon = await refConn();
-  let lists, profileEvents = [];
-  lists = await anon.req({ kinds: [10040], limit: 2000 });
+  const lists = await anon.req({ kinds: [10040], limit: 2000 });
   const ks = [...new Set(lists.map((e) => e.pubkey))];
-  for (let i = 0; i < ks.length; i += 200) {
-    profileEvents = profileEvents.concat(await anon.req({ kinds: [0], authors: ks.slice(i, i + 200), limit: 200 }));
-  }
-  seedProfiles(profileEvents);
+  // The batches are chunks of ONE question, so they go out together rather
+  // than one round trip after another — 271 observers is two REQs, and asking
+  // them serially made the picker's first open cost two full waits for no
+  // reason. NIP-01 subscriptions are concurrent by design and this client
+  // already keys replies by subscription id; only the `await` was serialising.
+  const chunks = [];
+  for (let i = 0; i < ks.length; i += 200) chunks.push(ks.slice(i, i + 200));
+  const answers = await Promise.all(chunks.map((c) => anon.req({ kinds: [0], authors: c, limit: c.length })));
+  seedProfiles(answers.flat());
   observers = ks.map(pubkey => {
     const p = profiles.get(pubkey);
     return { pubkey, name: displayName(p), nip05: (p?.nip05 || "").trim() };
@@ -384,13 +382,19 @@ async function paintScores() {
   const svc = await rankServiceOf(lens);
   if (!svc) return;                     // this lens ranks nothing; no chips
   const need = [...new Set(chips.map(c => c.dataset.pk))].filter(pk => !scores.has(pk));
-  for (let i = 0; i < need.length; i += 100) {
-    const batch = need.slice(i, i + 100);
-    let evs = [];
-    try {
-      const conn = await refConn();
-      evs = await conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length });
-    } catch (e) { /* leave them unknown rather than wrong */ }
+  const batches = [];
+  for (let i = 0; i < need.length; i += 100) batches.push(need.slice(i, i + 100));
+  // In flight together: the chips are already on screen waiting to be filled,
+  // and one batch's answer never informs the next one's ask. An entity page
+  // with a long face strip was paying a full round trip per hundred faces.
+  const conn = batches.length ? await refConn().catch(() => null) : null;
+  const reads = await Promise.all(batches.map((batch) =>
+    // A failed read leaves this batch unknown rather than wrong — an empty
+    // array is NOT marked complete, so nothing gets cached as "no score".
+    (conn ? conn.req({ kinds: [30382], authors: [svc], "#d": batch, limit: batch.length }) : Promise.resolve([]))
+      .catch(() => [])));
+  for (let i = 0; i < batches.length; i++) {
+    const batch = batches[i], evs = reads[i];
     const seen = new Set();
     for (const ev of evs) {
       const d = (ev.tags || []).find(t => t?.[0] === "d")?.[1];

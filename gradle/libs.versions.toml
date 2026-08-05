@@ -38,6 +38,10 @@ ktor-server-cors = { module = "io.ktor:ktor-server-cors", version.ref = "ktor" }
 ktor-server-compression = { module = "io.ktor:ktor-server-compression", version.ref = "ktor" }
 # serveRelay bundles the Netty engine (batteries-included) so a consumer — or the
 # standalone main() — can bind a port without wiring an engine itself.
+# testApplication drives the /web route in-process — the module directory is the
+# whole page, so its route, its 304 and its content type are worth asserting
+# rather than eyeballing.
+ktor-server-test-host = { module = "io.ktor:ktor-server-test-host", version.ref = "ktor" }
 ktor-server-netty = { module = "io.ktor:ktor-server-netty", version.ref = "ktor" }
 # Outbound upstream websockets for the router (quartz's BasicOkHttpWebSocket
 # takes an OkHttpClient factory) and the HOCON parser for the streams config.

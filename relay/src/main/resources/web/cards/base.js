@@ -85,7 +85,11 @@ const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAI
 export function avatarHtml(pic, seed) {
   const style = `style="--h:${hueOf(seed)}"`;
   const face = pic
-    ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" referrerpolicy="no-referrer"
+    // decoding="async" as well as loading="lazy": lazy decides WHEN the bytes
+    // are fetched, not who decodes them. A full results page lands forty faces
+    // at once, and decoding them synchronously blocks the same main thread that
+    // is rendering the list they belong to.
+    ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" decoding="async" referrerpolicy="no-referrer"
          onerror="this.classList.add('gen');this.src='${BLANK}'" />`
     : `<div class="avatar gen" ${style}></div>`;
   // The chip is painted after the fact by paintScores(): the score is a second

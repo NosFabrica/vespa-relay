@@ -188,6 +188,17 @@ const REMOTE_CONCURRENCY = 4;
 // four concurrent COUNTs is the same courtesy REMOTE_CONCURRENCY extends to
 // four concurrent relays.
 const PER_RELAY_CONCURRENCY = 4;
+// ...and the same again for OUR relay, which was the one socket still asking
+// one question at a time.
+//
+// The whole remote path was parallelised for a reason this loop had just as
+// badly: 247 distinct services here, counted strictly serially, so the page's
+// first phase cost 247 × one COUNT before a single remote relay was dialled.
+// The bail-out reasoning that keeps kind_stats.html's pool at four applies
+// unchanged — a status page pointed at a relay that is also serving clients is
+// not a load generator, and four concurrent COUNTs is the same courtesy this
+// page already extends to somebody else's server.
+const LOCAL_CONCURRENCY = 4;
 // A COUNT landing exactly on one of these is far more likely to be a relay's
 // default page size reported as a count than a real total. Flagged, not hidden.
 const SUSPICIOUS = new Set([100, 500, 1000, 5000]);
@@ -238,13 +249,26 @@ function npub(hex) {
 }
 const shortNpub = (hex) => { const n = npub(hex); return n.slice(0, 12) + "…" + n.slice(-6); };
 
-/** A tiny COUNT-only client. `null` means the relay never answered. */
+/**
+ * A tiny COUNT + REQ client, every ask multiplexed by subscription id.
+ * `null` means the relay never answered.
+ *
+ * Both verbs go through ONE `pending` map and one message handler. REQ used to
+ * take a different route — it saved `ws.onmessage`, replaced it with its own,
+ * and restored it on EOSE — which works for exactly one REQ at a time and
+ * corrupts the moment two overlap: the second saves the FIRST's handler as
+ * "previous", and whichever finishes first restores over the other and leaves
+ * it deaf until the idle watchdog gives up on it 60s later. The comment beside
+ * it said reqs and counts do not currently overlap "so that they can"; they
+ * could not, and the batched profile reads below now do.
+ */
 function client(url) {
   return new Promise((resolve, reject) => {
     let ws;
     try { ws = new WebSocket(url); } catch (e) { return reject(e); }
+    // subscription id -> { take(msg) -> done?, abort(reason) }
     const pending = new Map();
-    const fail = (reason) => { for (const [, p] of pending) p.resolve(reason); pending.clear(); };
+    const fail = (reason) => { for (const [, p] of pending) p.abort(reason); pending.clear(); };
 
     // ONE idle watchdog for the connection, reset by ANY message.
     //
@@ -275,62 +299,65 @@ function client(url) {
     ws.onmessage = (ev) => {
       // Bumped before parsing and whatever the message was: traffic of any kind
       // is proof the relay is still working, including a NOTICE about something
-      // else entirely.
+      // else entirely — and including an EVENT for somebody else's REQ, which
+      // is why every ask now shares this one handler rather than shadowing it.
       bumpIdle();
       let m; try { m = JSON.parse(ev.data); } catch { return; }
       const p = pending.get(m[1]);
       if (!p) return;
-      pending.delete(m[1]);
-      if (m[0] === "COUNT") p.resolve(m[2] || REFUSED);
-      else if (m[0] === "CLOSED" || m[0] === "NOTICE") p.resolve(REFUSED);
-      else pending.set(m[1], p);
+      // take() answers "is this ask finished". A COUNT is finished by its
+      // answer; a REQ accumulates EVENTs and is finished by EOSE.
+      if (p.take(m)) pending.delete(m[1]);
       bumpIdle();
     };
+    const subId = (prefix) => prefix + Math.random().toString(36).slice(2, 9);
     ws.count = (author) =>
       new Promise((res) => {
-        const id = "c" + Math.random().toString(36).slice(2, 9);
-        pending.set(id, { resolve: res });
+        const id = subId("c");
+        pending.set(id, {
+          take: (m) => {
+            if (m[0] === "COUNT") { res(m[2] || REFUSED); return true; }
+            if (m[0] === "CLOSED" || m[0] === "NOTICE") { res(REFUSED); return true; }
+            return false;
+          },
+          abort: (reason) => res(reason),
+        });
         bumpIdle();
         try { ws.send(JSON.stringify(["COUNT", id, { kinds: [30382], authors: [author] }])); }
         catch { pending.delete(id); res(REFUSED); }
       });
     ws.req = (filter) =>
       new Promise((res) => {
-        const id = "r" + Math.random().toString(36).slice(2, 9);
+        const id = subId("r");
         const acc = [];
-        const prev = ws.onmessage;
-        // ONE exit, restoring the handler and closing the subscription however we
-        // leave. The first version only did that on EOSE, so a timed-out REQ left
-        // a stale handler chained in front of the real one and a subscription open
-        // on the relay — which caps them, so enough timeouts and every later REQ
-        // is rejected for a reason nothing on the page would have shown.
+        // ONE exit, closing the subscription however we leave. Leaving it open
+        // matters: relays cap concurrent subscriptions, so enough abandoned
+        // REQs and every later one is rejected for a reason nothing on the page
+        // would have shown.
         const finish = () => {
-          clearTimeout(timer);
-          ws.onmessage = prev;
           try { ws.send(JSON.stringify(["CLOSE", id])); } catch {}
           res(acc);
         };
-        // Idle here too. A REQ that is streaming thousands of profiles is
-        // working, not stuck, and a fixed deadline would cut it off mid-page and
-        // return a SHORT list — which this page would then render as missing
-        // profiles rather than as an interrupted read.
-        let timer = setTimeout(finish, IDLE_TIMEOUT_MS);
-        ws.onmessage = (ev) => {
-          clearTimeout(timer);
-          timer = setTimeout(finish, IDLE_TIMEOUT_MS);
-          // The CONNECTION's watchdog too, not just this REQ's. While a REQ
-          // streams, its own messages never reached `prev`, so a COUNT waiting
-          // on the same socket saw silence and expired on a connection that was
-          // in fact busy — the same mistake the per-request deadlines made, one
-          // level down. Reqs and counts do not currently overlap here; this is
-          // so that they can.
-          bumpIdle();
-          let m; try { m = JSON.parse(ev.data); } catch { return; }
-          if (m[1] !== id) return prev(ev);
-          if (m[0] === "EVENT") acc.push(m[2]);
-          else if (m[0] === "EOSE" || m[0] === "CLOSED") finish();
-        };
-        ws.send(JSON.stringify(["REQ", id, filter]));
+        pending.set(id, {
+          take: (m) => {
+            if (m[0] === "EVENT") { acc.push(m[2]); return false; }
+            if (m[0] === "EOSE" || m[0] === "CLOSED") { finish(); return true; }
+            return false;
+          },
+          // A REQ cut short by the connection's idle watchdog leaves the same
+          // way it would on EOSE — CLOSE sent, whatever arrived handed back.
+          // Not a sentinel: the caller asked for a list. And not a bare
+          // resolve either, or an abandoned subscription stays open against a
+          // relay that caps them, which is the leak the old per-REQ timer
+          // existed to plug. The watchdog is the only clock it needs now: it is
+          // reset by every message on the socket, so a REQ streaming thousands
+          // of profiles is never "idle", and a per-REQ deadline would only
+          // re-introduce the cut-off-mid-page failure this file documents.
+          abort: finish,
+        });
+        bumpIdle();
+        try { ws.send(JSON.stringify(["REQ", id, filter])); }
+        catch { pending.delete(id); res(acc); }
       });
   });
 }
@@ -364,53 +391,75 @@ function verdict(here, there) {
   return ` <span class="short">${pct}%</span>`;
 }
 
-function render(list) {
-  rowsEl.innerHTML = "";
-  for (const o of list) {
-    const tr = document.createElement("tr");
-    // A grey circle used to mean three different things — no kind 0 in the
-    // store, a kind 0 with no `picture`, and a picture whose URL failed — and
-    // they read as one bug. Measured here: of 200 observers, 11 have no profile
-    // at all and 65 of the remaining 189 publish no picture, so most empty
-    // circles are the network being itself, not the relay missing data.
-    // Initials come from the name or nowhere: two hex chars looked like data,
-    // and initials off an npub would spell "NP" for every account on earth.
-    const initials = o.name ? o.name.slice(0, 2).toUpperCase() : "·";
-    const avatar = o.picture
-      ? `<img src="${o.picture}" alt="" loading="lazy" ` +
-        `onerror="this.replaceWith(Object.assign(document.createElement('div'),` +
-        `{className:'ph broken',textContent:'${initials}',title:'picture URL failed to load'}))"/>`
-      : o.hasProfile
-        ? `<div class="ph" title="profile has no picture field">${initials}</div>`
-        : `<div class="ph missing" title="no kind 0 for this pubkey in this store">?</div>`;
-    // The npub line only for observers the store cannot name — with a name,
-    // the name is the identifier shown (the full npub stays in the hover).
-    // Never hex: that is a storage format, not something a person reads.
-    const who =
-      `<div class="who">${avatar}` +
-      `<div><div class="nm" title="${npub(o.pubkey)}">${o.name || (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
-      (o.name ? "" : `<div class="key" title="${npub(o.pubkey)}">${shortNpub(o.pubkey)}</div>`) +
-      `</div></div>`;
-    const dim = (d) =>
-      `<td class="first"><span class="relay" title="${d.relay || ""}">${d.relay ? d.relay.replace(/^wss?:\/\//, "") : "—"}</span></td>` +
-      `<td class="n">${d.service ? num(d.here) : "—"}</td>` +
-      `<td class="n">${d.service ? num(d.there) + verdict(d.here, d.there) : "—"}</td>`;
-    tr.innerHTML = `<td>${who}</td>` + dim(o.rank) + dim(o.followers);
-    rowsEl.appendChild(tr);
-  }
+/**
+ * The observer cell: face, name, and the npub for anyone the store cannot name.
+ *
+ * A grey circle used to mean three different things — no kind 0 in the store, a
+ * kind 0 with no `picture`, and a picture whose URL failed — and they read as
+ * one bug. Measured here: of 200 observers, 11 have no profile at all and 65 of
+ * the remaining 189 publish no picture, so most empty circles are the network
+ * being itself, not the relay missing data. Initials come from the name or
+ * nowhere: two hex chars looked like data, and initials off an npub would spell
+ * "NP" for every account on earth.
+ */
+function paintWho(o) {
+  const initials = o.name ? o.name.slice(0, 2).toUpperCase() : "·";
+  const avatar = o.picture
+    ? `<img src="${o.picture}" alt="" loading="lazy" decoding="async" ` +
+      `onerror="this.replaceWith(Object.assign(document.createElement('div'),` +
+      `{className:'ph broken',textContent:'${initials}',title:'picture URL failed to load'}))"/>`
+    : o.hasProfile
+      ? `<div class="ph" title="profile has no picture field">${initials}</div>`
+      : `<div class="ph missing" title="no kind 0 for this pubkey in this store">?</div>`;
+  // The npub line only for observers the store cannot name — with a name, the
+  // name is the identifier shown (the full npub stays in the hover). Never hex:
+  // that is a storage format, not something a person reads.
+  const key = npub(o.pubkey);
+  o.whoCell.innerHTML =
+    `<div class="who">${avatar}` +
+    `<div><div class="nm" title="${key}">${o.name || (o.hasProfile ? "(no name)" : '<span class="none">no profile</span>')}</div>` +
+    (o.name ? "" : `<div class="key" title="${key}">${shortNpub(o.pubkey)}</div>`) +
+    `</div></div>`;
+}
+
+/** The two number cells of one dimension, from whatever is known so far. */
+function paintDim(d) {
+  if (!d.hereCell) return;
+  d.hereCell.innerHTML = d.service ? num(d.here) : "—";
+  d.thereCell.innerHTML = d.service ? num(d.there) + verdict(d.here, d.there) : "—";
 }
 
 /**
- * render(), coalesced. Counts stream in and every answered COUNT used to
- * rebuild the whole table — ~250 rows, re-created hundreds of times per run,
- * each rebuild also re-creating every avatar <img>. One repaint per 100ms
- * window is indistinguishable to the eye and removes the churn; anything
- * still pending when the run finishes paints on the trailing edge.
+ * Build the table ONCE and hand every cell that can change back to its owner.
+ *
+ * Counts stream in, and each answer used to rebuild the whole tbody — ~250 rows
+ * re-created for one number, including every avatar <img>, hundreds of times
+ * per run. Coalescing that to one rebuild per 100ms made it survivable but not
+ * cheap: a run lasting minutes still paid a full ~250-row reparse ten times a
+ * second, and it threw away the reader's text selection each time. Writing the
+ * two cells that actually changed costs nothing at any table size, so the
+ * coalescing timer is gone with it — this is the same correction kind_stats.html
+ * already carries, for the same reason.
  */
-let renderTimer = null;
-function scheduleRender(list) {
-  if (renderTimer) return;
-  renderTimer = setTimeout(() => { renderTimer = null; render(list); }, 100);
+function build(list) {
+  rowsEl.innerHTML = "";
+  const frag = document.createDocumentFragment();
+  const relayCell = (d) =>
+    `<td class="first"><span class="relay" title="${d.relay || ""}">${d.relay ? d.relay.replace(/^wss?:\/\//, "") : "—"}</span></td>` +
+    `<td class="n"></td><td class="n"></td>`;
+  for (const o of list) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td></td>" + relayCell(o.rank) + relayCell(o.followers);
+    const td = tr.children;
+    o.whoCell = td[0];
+    o.rank.hereCell = td[2]; o.rank.thereCell = td[3];
+    o.followers.hereCell = td[5]; o.followers.thereCell = td[6];
+    paintWho(o);
+    paintDim(o.rank);
+    paintDim(o.followers);
+    frag.appendChild(tr);
+  }
+  rowsEl.appendChild(frag);
 }
 
 /** Run [tasks] with at most [n] in flight. */
@@ -497,19 +546,27 @@ async function run() {
   }));
   const withoutRank = all.length - all.filter((o) => o.rank.service).length;
   const observers = all.filter((o) => o.rank.service);
-  render(observers);
+  build(observers);
 
-  // Names and pictures, batched.
+  // Names and pictures, batched — and the batches go out TOGETHER. They are
+  // chunks of one question, so nothing in the second depends on the first, and
+  // asking serially spent a full round trip per 200 observers to learn nothing
+  // the others could not have been learning at the same time.
   statusEl.textContent = `loading ${observers.length} profile(s)…`;
-  const keys = observers.map((o) => o.pubkey);
-  for (let i = 0; i < keys.length; i += 200) {
-    for (const ev of await local.req({ kinds: [0], authors: keys.slice(i, i + 200), limit: 200 })) {
-      let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
-      const o = observers.find((x) => x.pubkey === ev.pubkey);
-      if (o) { o.hasProfile = true; o.name = displayName(c); o.picture = c.picture || ""; }
-    }
+  const byPk = new Map(observers.map((o) => [o.pubkey, o]));
+  const keys = [...byPk.keys()];
+  const chunks = [];
+  for (let i = 0; i < keys.length; i += 200) chunks.push(keys.slice(i, i + 200));
+  const profileEvents = await Promise.all(chunks.map((c) => local.req({ kinds: [0], authors: c, limit: c.length })));
+  for (const ev of profileEvents.flat()) {
+    // Keyed, not searched. This was `observers.find(...)` per event, which is a
+    // scan of the whole list for every profile that arrives.
+    const o = byPk.get(ev.pubkey);
+    if (!o) continue;
+    let c = {}; try { c = JSON.parse(ev.content) || {}; } catch {}
+    o.hasProfile = true; o.name = displayName(c); o.picture = c.picture || "";
   }
-  render(observers);
+  for (const o of observers) paintWho(o);
 
   const dims = observers.flatMap((o) => [o.rank, o.followers].filter((d) => d.service));
 
@@ -520,40 +577,42 @@ async function run() {
   // queries for 247 distinct services locally, and 486 for 251 distinct
   // (relay, service) pairs remotely. Same answer, twice the wait, and twice the
   // load on relays that did not ask to be polled by a status page.
-  const localBySvc = new Map();
-  const svcs = [...new Set(dims.map((d) => d.service))];
-  let done = 0;
-  for (const svc of svcs) {
-    statusEl.textContent = `counting here ${++done}/${svcs.length}…`;
-    localBySvc.set(svc, await local.count(svc));
-    for (const d of dims) if (d.service === svc) d.here = localBySvc.get(svc);
-    scheduleRender(observers);
+  // Indexed by the question, so an answer goes straight to the rows that asked
+  // it. Both loops used to re-scan every dimension per answer.
+  const dimsBySvc = new Map();
+  for (const d of dims) {
+    if (!dimsBySvc.has(d.service)) dimsBySvc.set(d.service, []);
+    dimsBySvc.get(d.service).push(d);
   }
+  const svcs = [...dimsBySvc.keys()];
+  let done = 0;
+  await bounded(LOCAL_CONCURRENCY, svcs.map((svc) => async () => {
+    const answer = await local.count(svc);
+    for (const d of dimsBySvc.get(svc)) { d.here = answer; paintDim(d); }
+    statusEl.textContent = `counting here ${++done}/${svcs.length}…`;
+  }));
 
   // Then the remote relays — other people's servers, a few at a time. Grouped
-  // by url so one connection answers every dimension it serves.
-  // Same deduplication remotely, and grouped so one connection answers every
-  // distinct service that relay serves.
-  const byRelay = new Map();
+  // by url so one connection answers every distinct service it serves.
+  const byRelay = new Map();   // url -> service -> the dimension rows asking it
   for (const d of dims) {
-    if (!d.relay) { d.there = null; continue; }
-    if (!byRelay.has(d.relay)) byRelay.set(d.relay, new Set());
-    byRelay.get(d.relay).add(d.service);
+    if (!d.relay) { d.there = null; paintDim(d); continue; }
+    let svcMap = byRelay.get(d.relay);
+    if (!svcMap) byRelay.set(d.relay, svcMap = new Map());
+    if (!svcMap.has(d.service)) svcMap.set(d.service, []);
+    svcMap.get(d.service).push(d);
   }
   let rdone = 0;
-  await bounded(REMOTE_CONCURRENCY, [...byRelay.entries()].map(([url, svcSet]) => async () => {
+  await bounded(REMOTE_CONCURRENCY, [...byRelay.entries()].map(([url, svcMap]) => async () => {
     statusEl.textContent = `asking ${++rdone}/${byRelay.size} relay(s)…`;
-    const rows = (svc) => dims.filter((d) => d.relay === url && d.service === svc);
     let ws = null;
     try { ws = await client(url); } catch {
-      for (const svc of svcSet) for (const d of rows(svc)) d.there = null;
-      scheduleRender(observers);
+      for (const ds of svcMap.values()) for (const d of ds) { d.there = null; paintDim(d); }
       return;
     }
-    await bounded(PER_RELAY_CONCURRENCY, [...svcSet].map((svc) => async () => {
+    await bounded(PER_RELAY_CONCURRENCY, [...svcMap.entries()].map(([svc, ds]) => async () => {
       const answer = await ws.count(svc);
-      for (const d of rows(svc)) d.there = answer;
-      scheduleRender(observers);
+      for (const d of ds) { d.there = answer; paintDim(d); }
     }));
     try { ws.close(); } catch {}
   }));
