@@ -482,11 +482,6 @@ function exportText() {
   const typed = $q.value.trim();
   const q = parseQuery(typed);
   const full = buildFilters(typed, FULL_LIMIT);
-  // Several filters AND a search string: the shape whose order is a sequence of
-  // runs rather than one ranking (see the caveat at the end). With no search
-  // string every filter is plain recall, and the store merges those and sorts
-  // the union newest-first — one order, and a true one.
-  const multiRun = full.length > 1 && full.some((f) => f.search);
   const people = (keys) => keys.map((k) => `${npub(k)}${nameOf(k) ? `  (${nameOf(k)})` : ""}`).join(", ");
   L.push("QUERY AS CONFIGURED");
   L.push(`  typed         ${JSON.stringify(typed)}`);
@@ -537,19 +532,14 @@ function exportText() {
   L.push("  alone. A result placed above another whose author scores higher, or a");
   L.push("  low-scoring author near the top, is worth challenging.");
   L.push("  The events are verbatim: nothing has been trimmed or annotated.");
-  // The union's honest caveat. A ranked multi-filter REQ comes back as each
-  // filter's ranked run, one after another, not as one ranking of the union —
-  // the store concatenates them (NostrSemanticsStore.recallOrdered: only the
-  // all-plain case is merged and re-sorted globally). Without this line the
-  // question above invites a reader to challenge a seam that is not a ranking
-  // mistake, and to trust an order across filters that was never claimed.
-  if (multiRun) {
-    L.push("");
-    L.push(`  CAVEAT: this search sent ${full.length} filters in one REQ, and a ranked read`);
-    L.push("  returns each filter's ranked run end to end — not one ranking of the");
-    L.push("  union. Compare positions WITHIN a run; a jump back up the trust scale");
-    L.push("  is where the next filter's results begin, and is not a misranking.");
-  }
+  // No union caveat any more. This block used to warn that a multi-filter REQ
+  // came back as each filter's ranked run end to end, so a jump back up the
+  // trust scale was a seam and not a misranking — true of the store until
+  // vespaEventStore 8a45e4d1a2, which merges the filters of one REQ on the
+  // engine's scores when they share a rank profile (which this page's four
+  // hashtag filters always do: they carry the same search string). The order is
+  // now one ranking of the union, so a jump back up the scale IS worth
+  // challenging, and the question above stands unqualified.
   return L.join("\n");
 }
 

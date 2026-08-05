@@ -271,6 +271,13 @@ const tagAsks = (tags) => [...new Set(tags.flatMap(tagValues))];
  * scrolls maybe twice. The `t` filter keeps the full limit because it answers
  * the question people mean; the other three ride along at a quarter, enough to
  * be represented near the top and not enough to dominate the page.
+ *
+ * "Near the top" became literal in store 8a45e4d1a2: filters of one REQ that
+ * share a rank profile — which these four always do, they carry the same search
+ * string — come back as ONE ranking of the union rather than run after run. So
+ * a side filter's quarter is no longer just a cap on tail volume; it bounds how
+ * many of its hits can COMPETE for the top of the page. A labelled note that
+ * outranks everything tagged still lands first.
  */
 const sideLimit = (limit) => Math.max(4, Math.round(limit / 4));
 

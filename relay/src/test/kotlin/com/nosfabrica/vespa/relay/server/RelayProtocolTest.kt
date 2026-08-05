@@ -350,6 +350,62 @@ class RelayProtocolTest {
             }
         }
 
+    /**
+     * A RANKED union comes back as ONE order over all four filters, not as each
+     * filter's run end to end.
+     *
+     * The fourth assumption the search page rests on, and the newest: until
+     * store `8a45e4d1a2` a multi-filter REQ with a search string was served as
+     * run after run, so the page's export carried a caveat telling readers that
+     * a jump back up the trust scale was a seam and not a misranking. That
+     * caveat is gone, which makes the merge something this repo now depends on.
+     *
+     * Asserted through the ordering the in-memory engine CAN produce: it does
+     * not rank, so it reports no scores and the store merges on recency
+     * instead. That is enough to tell the two behaviors apart — the events are
+     * arranged so the tag filter holds the newest AND the oldest, and the label
+     * filter the one in between. Concatenation can only put the label's hit
+     * last; one merged order has to interleave it.
+     *
+     * What it cannot check is the merge on real relevance — that needs an
+     * engine that ranks, and lives in the store's own integration gate.
+     */
+    @Test
+    fun `a ranked union is served as one order, not one run per filter`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                suspend fun publish(
+                    at: Long,
+                    tags: Array<Array<String>>,
+                ): Event {
+                    val ev = signer.sign<Event>(at, 1, tags, "a note about the topic")
+                    session.receive("""["EVENT",${ev.toJson()}]""")
+                    awaitMessage(out) { it.startsWith("""["OK","${ev.id}",true""") }
+                    return ev
+                }
+
+                val oldestTagged = publish(1_700_000_100L, arrayOf(arrayOf("t", "nostr")))
+                val labelled = publish(1_700_000_200L, arrayOf(arrayOf("L", "#t"), arrayOf("l", "nostr")))
+                val newestTagged = publish(1_700_000_300L, arrayOf(arrayOf("t", "nostr")))
+
+                session.receive(
+                    """["REQ","r",""" +
+                        """{"#t":["nostr"],"search":"topic","limit":40},""" +
+                        """{"#l":["nostr"],"search":"topic","limit":10}]""",
+                )
+                awaitMessage(out) { it.startsWith("""["EOSE","r"]""") }
+                val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","r",""") } }
+
+                val order = listOf(newestTagged, labelled, oldestTagged).map { ev -> served.indexOfFirst { ev.id in it } }
+                assertTrue(order.none { it < 0 }, "every event of the ranked union is served")
+                assertEquals(order.sorted(), order, "one order over the union: the label's hit lands BETWEEN the two tagged ones")
+            } finally {
+                session.close()
+            }
+        }
+
     private fun awaitMessage(
         out: List<String>,
         match: (String) -> Boolean,
