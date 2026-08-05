@@ -8,7 +8,7 @@ import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
-import { card, popupRow } from "./cards.js";
+import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 
 const POPUP_LIMIT = 8;
@@ -239,14 +239,15 @@ async function search(text, limit) {
   if (tab.kinds) filter.kinds = tab.kinds;
   const events = await relay.req(filter);
   seedProfiles(events);
-  // Authors, plus any tag value that IS a pubkey the card will show as a
-  // person — a 30382's d subject, a 10040's service column. The names rule
-  // holds in the results list, not only on permalinks. p tags are excluded
-  // on purpose: list previews draw them as faces without names, and a follow
-  // list can carry thousands.
-  const mentioned = events.flatMap((e) => (e.tags || [])
-    .filter((t) => (t[0] === "d" || /^\d+:/.test(t[0] || "")) && /^[0-9a-f]{64}$/.test(t[1] || ""))
-    .map((t) => t[1]));
+  // Authors, plus everyone the cards will NAME — a 30382's d subject, a
+  // 10040's service column, a zap's sender. The names rule holds in the
+  // results list, not only on permalinks. This used to be a tag scan written
+  // here, which meant it could only cover the slots that existed when it was
+  // written; namedPubkeys lives with the renderers and is held to them by a
+  // test, so a new family that names somebody cannot silently stop being
+  // enriched. Faces are excluded on purpose: list previews draw them without
+  // names, and a follow list can carry thousands.
+  const mentioned = events.flatMap(namedPubkeys);
   await enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
   return events;
 }

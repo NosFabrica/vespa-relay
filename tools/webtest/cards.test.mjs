@@ -3,7 +3,8 @@ import { readFileSync } from 'node:fs';
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
-const { card } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
+const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
+const { pubkeyParam } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { renderers } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
@@ -256,5 +257,34 @@ for (const [slug, kinds] of tabs) {
     assert.strictEqual(kindTone(k), TAB_TONE[slug], `tab "${slug}" filters on kind ${k}, which belongs to the "${kindTone(k)}" family`);
   }
 }
+
+// THE ENRICHMENT CLAIM: whoever a card writes a NAME for, namedPubkeys must
+// name too — on both pages, since both now ask it rather than scanning tags
+// themselves. Rendering was always shared; loading the profiles was not, and
+// the results list showed npubs where the permalink showed names.
+//
+// Asserted by rendering with an EMPTY profile cache: personLink puts the full
+// npub in the title attribute whether or not a name was found, so every one
+// that appears is a person this card names and therefore a profile the page
+// owed itself.
+seedProfiles([]);
+for (const [kind, fixture] of FIXTURES) {
+  const html = card(fixture, { full: true });
+  const shown = [...new Set([...html.matchAll(/title="(npub1[a-z0-9]+)"/g)].map((m) => pubkeyParam(m[1])))].filter(Boolean);
+  const declared = new Set(namedPubkeys(fixture));
+  // The author is the byline's own link, loaded by every caller already.
+  const undeclared = shown.filter((p) => p !== fixture.pubkey && !declared.has(p));
+  assert.deepStrictEqual(undeclared, [], `kind ${kind}: names ${undeclared.length} pubkey(s) namedPubkeys does not declare, so they render as npubs`);
+}
+// …and the zap receipt's sender, the one who lives in no tag at all.
+const zapper = "d".repeat(64);
+assert(namedPubkeys(ev(9735, [["p", pk2],
+  ["description", JSON.stringify({ pubkey: zapper, tags: [["amount", "1000"]] })]])).includes(zapper),
+  "the zap sender comes out of the stringified request, not the tags");
+assert.deepStrictEqual(namedPubkeys(ev(9735, [["description", "not json at all"]])), [],
+  "a malformed receipt names nobody rather than throwing");
+// A follow list's thousands stay faces: naming them would be a profile fetch
+// per member on every result in the list.
+assert.deepStrictEqual(namedPubkeys(ev(3, [["p", pk2], ["p", pk]])), [], "faces are not names");
 
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + generic floor, all assertions passed`);
