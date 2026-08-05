@@ -1,0 +1,28 @@
+# A client-only Tor: the router dials .onion relays through it, and nothing
+# dials in. No relay, no exit, no hidden service — adding one means adding a
+# HiddenServiceDir here and publishing the address yourself.
+
+# Reachable from the compose network, which is the only reason to bind
+# anything but loopback. The port is deliberately NOT published to the host in
+# docker-compose.yml: an open SOCKS proxy on a public interface is an open
+# proxy, and this one is only for the sync container.
+SocksPort 0.0.0.0:9050
+
+# ...and say so at the SOCKS layer too, so a misconfigured network cannot turn
+# the bind above into a service for the LAN. Docker's default bridge pools live
+# in these ranges.
+SocksPolicy accept 172.16.0.0/12
+SocksPolicy accept 192.168.0.0/16
+SocksPolicy accept 10.0.0.0/8
+SocksPolicy reject *
+
+# To the container log, where `docker compose logs tor` finds it. "Bootstrapped
+# 100%" is the line that says onion dials can succeed; before it they fail with
+# a SOCKS error, which the router reports as a transfer failure and retries.
+Log notice stdout
+
+# Client only. Stated rather than left to the defaults, because the cost of
+# being wrong is carrying strangers' traffic on the relay operator's address.
+ClientOnly 1
+ExitRelay 0
+SocksTimeout 120

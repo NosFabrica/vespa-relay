@@ -8,8 +8,10 @@ import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
+import { parseQuery } from "./shared/query.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
+import { mountSearchField } from "./searchfield.js";
 
 const POPUP_LIMIT = 8;
 const FULL_LIMIT = 40;
@@ -342,10 +344,40 @@ function searchString(text) {
   return s;
 }
 
+/**
+ * The typed string as the REQ this page sends.
+ *
+ * `from:npub…` and `to:npub…` leave the NIP-50 search entirely and become the
+ * NIP-01 filter fields they are — `authors` and `#p`. Those are indexed on
+ * every relay and compose with the ranking rather than competing with it,
+ * whereas leaving them in `search` would have the full-text index hunting for
+ * the literal string "from:npub1…" and a narrowed search would look like an
+ * empty one.
+ *
+ * With a person filter and no words left, `search` is omitted rather than sent
+ * empty: a filter carrying only the sort/spam/observer extensions is a text
+ * query for nothing, and what the reader asked for — everything this person
+ * wrote — is an ordinary NIP-01 read. The trade is real and worth saying out
+ * loud: no `search` means no NIP-50, so the trust ranking and the extensions
+ * do not apply to that one shape. Add a word and they are back.
+ *
+ * Shared with exportText() so the filter a reader is shown is the filter that
+ * was sent, byte for byte, rather than a second construction of it.
+ */
+function buildFilter(text, limit) {
+  const q = parseQuery(text);
+  const filter = {};
+  if (q.terms || !(q.authors.length || q.mentions.length)) filter.search = searchString(q.terms);
+  if (tab.kinds) filter.kinds = tab.kinds;
+  if (q.authors.length) filter.authors = q.authors;
+  if (q.mentions.length) filter["#p"] = q.mentions;
+  filter.limit = limit;
+  return filter;
+}
+
 async function search(text, limit) {
   await ensureLogin();
-  const filter = { search: searchString(text), limit };
-  if (tab.kinds) filter.kinds = tab.kinds;
+  const filter = buildFilter(text, limit);
   const events = await relay.req(filter);
   seedProfiles(events);
   // Authors, plus everyone the cards will NAME — a 30382's d subject, a
@@ -555,15 +587,25 @@ function exportText() {
   L.push(`taken           ${new Date().toISOString()}`);
   L.push(`relay           ${RELAY_URL}`);
   L.push("");
+  const typed = $q.value.trim();
+  const q = parseQuery(typed);
+  const full = buildFilter(typed, FULL_LIMIT);
+  const people = (keys) => keys.map((k) => `${npub(k)}${nameOf(k) ? `  (${nameOf(k)})` : ""}`).join(", ");
   L.push("QUERY AS CONFIGURED");
-  L.push(`  terms         ${JSON.stringify($q.value.trim())}`);
+  L.push(`  typed         ${JSON.stringify(typed)}`);
+  L.push(`  terms         ${JSON.stringify(q.terms)}`);
+  // The person filters are the reason an order can look wrong and be right:
+  // a reader judging position 7 has to know the list was narrowed to two
+  // authors before it was ranked at all.
+  if (q.authors.length) L.push(`  from          ${people(q.authors)}`);
+  if (q.mentions.length) L.push(`  to            ${people(q.mentions)}`);
   L.push(`  tab           ${tab.label}${tab.kinds ? ` (kinds ${tab.kinds.join(", ")})` : " (all kinds)"}`);
   L.push(`  sort          ${$sort.value || "(relevance — NIP-50 default)"}`);
   L.push(`  include spam  ${$spam.checked ? "yes — unranked authors included" : "no — trust floor applied"}`);
   L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
   L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
-  L.push(`  search string ${JSON.stringify(searchString($q.value.trim()))}`);
-  L.push(`  full filter   ${JSON.stringify({ search: searchString($q.value.trim()), limit: FULL_LIMIT, ...(tab.kinds ? { kinds: tab.kinds } : {}) })}`);
+  L.push(`  search string ${full.search == null ? "(none — a person filter with no words is a plain NIP-01 read)" : JSON.stringify(full.search)}`);
+  L.push(`  full filter   ${JSON.stringify(full)}`);
   L.push("");
   // Whose scores produced this order, listed once rather than repeated per
   // result — and kept OUT of the events themselves, which are reproduced
@@ -596,6 +638,7 @@ function exportText() {
 const $q = document.getElementById("q");
 const $clear = document.getElementById("clear");
 const $popup = document.getElementById("popup");
+const $mentions = document.getElementById("mentions");
 const $results = document.getElementById("results");
 const $chips = document.getElementById("chips");
 const $sort = document.getElementById("sort");
@@ -716,7 +759,62 @@ $obsFilter.addEventListener("keydown", (e) => {
   if (e.key === "Escape") { $obsList.innerHTML = ""; $obsFilter.blur(); }
 });
 
-const s = { requestId: 0, hits: [], lastMs: null, loading: false, error: null };
+// ---- the field renders its own contents ----------------------------------
+//
+// `$q` stops being an <input> here and becomes a field that draws the people
+// in it as faces (searchfield.js says why an input could not). Everything
+// below still reads and writes `$q.value`, and the URL still carries the
+// plain `from:npub1…` text — the rendering is a view of that string.
+//
+// Mounted before applyUrl() runs at the bottom of this file: the restore path
+// assigns `$q.value`, and until this call that property is an ordinary DOM
+// attribute with nothing rendering behind it.
+
+/**
+ * Who the picker offers for a half-typed `from:`/`to:`.
+ *
+ * On the AUTHENTICATED socket, unlike the "ranking as" list beside it. That
+ * one must never be personalised — it is the list of lenses you could switch
+ * to, and hiding everyone you have not met would make it useless. This one is
+ * the opposite question: "who do I mean by ali", and the right answer is the
+ * one your own web of trust puts first. So it is a plain NIP-50 profile
+ * search down the same connection every other search uses, ranked by you.
+ *
+ * A pasted HEX key resolves to itself rather than being searched for: it
+ * already names one person, and the full-text index has never heard of it.
+ * (A pasted npub never reaches here — query.js calls that token finished, so
+ * it becomes a face without a round trip at all. Hex does not, precisely so
+ * that picking it here is what rewrites it as an npub.)
+ */
+async function lookupAuthors(partial) {
+  const direct = pubkeyParam(partial);
+  if (direct) { await enrichProfiles([direct]).catch(() => {}); return [direct]; }
+  await ensureLogin();
+  const events = await relay.req({ kinds: [0], search: partial, limit: 12 });
+  seedProfiles(events);
+  return [...new Set(events.map((e) => e.pubkey))];
+}
+
+/** Every human edit of the field, whatever made it — typing, paste, a pick. */
+function onQueryEdit() {
+  const text = $q.value.trim();
+  document.body.classList.toggle("has-query", text.length > 0);
+  clearTimeout(debounceTimer);
+  // A half-written `from:` is not a search for "from:". The two popups share
+  // one square of screen and one set of arrow keys, so while the picker owns
+  // them the results preview stays shut.
+  if (!text || field.mentioning) { closePopup(); return; }
+  debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
+}
+
+const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit });
+
+// `hitsFor` is the text `hits` actually answers. They outlive each other:
+// results stay on screen while the box is edited, and a debounce can be
+// abandoned before it ever runs — so "there are hits" is not "these hits are
+// about what the box says", and reopening the popup on that assumption showed
+// one query's answers under another query's words.
+const s = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null };
 let debounceTimer = null;
 let activeKey = null;
 
@@ -785,17 +883,17 @@ function renderResults() {
 async function run(text, mode, render) {
   const myId = ++s.requestId;
   s.loading = true; s.error = null;
-  if (mode === "full") s.hits = [];
+  if (mode === "full") { s.hits = []; s.hitsFor = null; }
   render();
   const t0 = performance.now();
   let names = null;
   try {
     const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
     if (myId !== s.requestId) return;
-    s.hits = found.events; names = found.names;
+    s.hits = found.events; s.hitsFor = text; names = found.names;
   } catch (e) {
     if (myId !== s.requestId) return;
-    s.error = e.message || String(e); s.hits = [];
+    s.error = e.message || String(e); s.hits = []; s.hitsFor = text;
   }
   s.lastMs = Math.round(performance.now() - t0); s.loading = false;
   render();
@@ -806,14 +904,33 @@ async function run(text, mode, render) {
   if (names) {
     names.then((learned) => {
       if (!learned || myId !== s.requestId) return;
+      // The field's own chips are named from the same cache, and a `from:`
+      // whose profile arrived on THIS lookup would otherwise sit on a short
+      // npub until the next edit.
+      field.repaint();
       if (document.querySelector(".raw-body:not([hidden])")) return;
       render();
     }).catch(() => {});
   }
 }
 
-function openPopup() { $popup.classList.add("open"); $q.setAttribute("aria-expanded", "true"); }
-function closePopup() { $popup.classList.remove("open"); $q.setAttribute("aria-expanded", "false"); activeKey = null; }
+function openPopup() {
+  $popup.classList.add("open");
+  $q.setAttribute("aria-expanded", "true");
+  $q.setAttribute("aria-controls", "popup");
+}
+function closePopup() {
+  $popup.classList.remove("open");
+  // Two listboxes hang off one combobox, and only one is ever up. When the
+  // PICKER is the one showing, these attributes are describing it — lowering
+  // them here told a screen reader the list had closed while the people list
+  // was on screen and being arrowed through.
+  if (!field.pickerOpen) {
+    $q.setAttribute("aria-expanded", "false");
+    $q.removeAttribute("aria-activedescendant");
+  }
+  activeKey = null;
+}
 const popupItems = () => Array.from($popup.querySelectorAll(".popup-item"));
 function setActive(idx) {
   const items = popupItems();
@@ -826,13 +943,16 @@ function setActive(idx) {
   activeKey = idx;
 }
 
-function runPopup(text) { openPopup(); run(text, "popup", renderPopup); }
+// Never over the people picker: a debounced type-ahead from before the `from:`
+// was started can still land after it, and the two popups occupy the same box.
+function runPopup(text) { if (field.mentioning) return; openPopup(); run(text, "popup", renderPopup); }
 
 function runFull(text) {
   clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
   cancelEntity(); // a search launched FROM an entity page must not be painted over by its slow fetch
   document.title = "SearchOverTrust";
   closePopup();
+  field.close(); // Enter with nothing highlighted searches; the picker is done
   $results.hidden = false;
   document.body.classList.add("searching");
   // Every way into the full view converges here — Enter, a chip/sort/spam/
@@ -872,7 +992,7 @@ function showHero() {
   clearTimeout(debounceTimer);
   cancelEntity(); // same for "← Search" out of an entity page mid-fetch
   document.title = "SearchOverTrust";
-  s.requestId++; s.hits = []; s.error = null; s.loading = false; s.lastMs = null;
+  s.requestId++; s.hits = []; s.hitsFor = null; s.error = null; s.loading = false; s.lastMs = null;
   $q.value = "";
   $results.hidden = true;
   $results.innerHTML = "";
@@ -888,15 +1008,12 @@ function reset() {
   $q.focus();
 }
 
-$q.addEventListener("input", () => {
-  const text = $q.value.trim();
-  document.body.classList.toggle("has-query", text.length > 0);
-  clearTimeout(debounceTimer);
-  if (!text) { closePopup(); return; }
-  debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
-});
-
 $q.addEventListener("keydown", (e) => {
+  // The picker gets first refusal on the arrows, Enter, Tab and Escape while
+  // it is open — asked outright rather than by racing this listener in the
+  // capture phase, because which of two listeners on one element runs first
+  // is registration order and that is not a thing to depend on.
+  if (field.handleKey(e)) return;
   if (e.key === "Enter") {
     e.preventDefault();
     // An arrowed-to row is a selection, same as a click on it: Enter opens
@@ -919,7 +1036,11 @@ $clear.addEventListener("click", reset);
 // "/" anywhere focuses the search box, the way every search page does it.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-  if (/^(INPUT|TEXTAREA|SELECT)$/.test(document.activeElement.tagName)) return;
+  // `isContentEditable`, not just the tag list: the search box IS a div now,
+  // so a tag test alone swallowed every "/" typed INTO the field and focused
+  // the thing that already had focus.
+  const el = document.activeElement;
+  if (!el || el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
   e.preventDefault();
   $q.focus();
   $q.select();
@@ -933,7 +1054,13 @@ $popup.addEventListener("mousedown", (e) => {
 });
 
 document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closePopup(); });
-$q.addEventListener("focus", () => { if (s.hits.length && $q.value.trim() && $results.hidden) openPopup(); });
+$q.addEventListener("focus", () => {
+  // Never over a half-written `from:`/`to:` — the picker owns that box, and
+  // it may be shut simply because the blur that took focus away closed it.
+  if (field.mentioning) return;
+  const text = $q.value.trim();
+  if (s.hits.length && s.hitsFor === text && text && $results.hidden) openPopup();
+});
 
 $results.addEventListener("click", (e) => {
   if (e.target.closest("#export")) {
@@ -1027,7 +1154,7 @@ function applyUrl() {
     if (/^(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(seg)) {
       clearTimeout(debounceTimer);
       s.requestId++; // cancel any in-flight search render
-      s.hits = []; s.error = null; s.loading = false;
+      s.hits = []; s.hitsFor = null; s.error = null; s.loading = false;
       $q.value = "";
       document.body.classList.remove("has-query");
       document.body.classList.add("searching");
@@ -1121,3 +1248,8 @@ refConn().catch(() => {});
 // lens picker is only meaningful once there is an authenticated reader, and
 // an idle page should not sit on "signing in…" until somebody types.
 if (!applyUrl()) ensureLogin().then(renderWhoami).catch(() => renderWhoami());
+// What `autofocus` did while the field was an <input>. A contenteditable takes
+// the attribute inconsistently across browsers, and the condition is the one
+// that was always meant: focus the box when the page IS the box — never on an
+// entity permalink, which has its own content to read.
+if ($results.hidden) $q.focus();

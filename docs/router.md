@@ -432,3 +432,67 @@ docker compose --profile sync restart sync
 Setting `SYNC_CONFIG` / `SYNC_CONFIG_FILE` on the **relay** fails its boot
 deliberately: it once meant "run the mirror in-process", and a config that is
 read, accepted and does nothing is how a mirror quietly stops mirroring.
+
+## Syncing with .onion relays
+
+The same profile starts a `tor` service — a client-only Tor whose SOCKS port
+is reachable from the compose network and published nowhere. The router dials
+hidden services through it and everything else directly, chosen per url:
+
+```hocon
+streams {
+  hidden {
+    dir    = "down"
+    filter = { "kinds": [1] }
+    urls   = [ "ws://somerelayaddress…xyz.onion" ]
+  }
+}
+```
+
+`ws://`, not `wss://` — Tor already authenticates and encrypts to the service,
+and a hidden service rarely carries a CA certificate for its own name. The url
+normalizer knows this and leaves a bare `.onion` on `ws://`, so a relay list
+that names one needs no special handling.
+
+Nothing else changes: bands, `deleteMissing`, `relaySource` discovery and the
+NIP-66 monitor all work the same. Three things behave differently, on purpose.
+
+**The name never leaves this box.** OkHttp hands the hostname to the proxy
+instead of resolving it, so `.onion` resolution happens inside Tor. That is
+both the only way a hidden service resolves and what stops the local resolver
+from learning which ones you sync with.
+
+**A `.onion` with no `SYNC_TOR_SOCKS` refuses to boot** — it names the urls and
+the setting. Discovered ones are dropped instead, and counted in the log: a
+relay list is not something you typed, so the fix is a setting rather than an
+edit.
+
+**No verdict of ours is published about anything reached through Tor.** The
+router synthesises two — a host struck out for silence, and "unreachable" from
+a failed transfer — and both are suppressed for a proxied relay, because
+silence arriving through three relays and a rendezvous is as likely to be our
+circuit as their server. Under `SYNC_TOR_ALL` that covers every relay: the
+weakness is the transport, not the address.
+
+What still gets published is quartz's own connection-level observation: a dial
+that fails is recorded as unreachable whatever the transport. That is the
+reason the router probes its **own** SOCKS port before dialling anything it
+routes through Tor — a proxy that is down or restarting would otherwise turn a
+whole fan-out into signed claims about other people's servers. Those relays are
+skipped instead, counted on the cycle line. The answer is cached for 30s rather
+than taken once per cycle, so a Tor container that restarts is picked up inside
+the running cycle instead of at the next refresh, six hours later.
+
+Onion relays are slow to dial — seconds, not milliseconds — so give them their
+own stream first, and measure it alone:
+
+```bash
+SYNC_STREAMS=hidden SYNC_WIRE_LOG=sent docker compose --profile sync up -d sync
+docker compose logs tor --since 5m     # "Bootstrapped 100%" ⇒ dials can succeed
+docker compose logs sync --since 5m
+```
+
+For a deployment where no relay should learn this box's address, `SYNC_TOR_ALL=true`
+sends clearnet upstreams through Tor as well. Expect a fraction of the
+throughput, and some large relays refuse exit traffic outright — it is a
+different deployment, not a stronger setting.

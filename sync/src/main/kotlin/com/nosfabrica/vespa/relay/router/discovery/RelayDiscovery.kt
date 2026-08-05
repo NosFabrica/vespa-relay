@@ -78,6 +78,10 @@ object RelayDiscovery {
         dynamic: RelayDiscoveryConfig,
         skip: Set<NormalizedRelayUrl> = emptySet(),
         pageSize: Int = SCAN_PAGE,
+        // Whether this deployment has a Tor transport. Defaults to the
+        // clearnet answer so a caller that has not thought about it drops
+        // them, which is what dialling them without Tor amounts to anyway.
+        allowOnion: Boolean = false,
     ): List<DiscoveredRelay> {
         val found = LinkedHashSet<NormalizedRelayUrl>()
         // url -> destination -> values, unioned across every select and source.
@@ -106,7 +110,7 @@ object RelayDiscovery {
                             // another element still applies (NIP-65's marker).
                             where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
                         )
-                    for (v in raw) normalize(v)?.let(found::add)
+                    for (v in raw) normalize(v, allowOnion)?.let(found::add)
                 }
             }
             // A select with no tag name can match anything in an event, which
@@ -116,7 +120,7 @@ object RelayDiscovery {
                 scan(store, source.filter, pageSize) { event ->
                     for (select in stillPaged) {
                         if (select.kind != null && select.kind != event.kind) continue
-                        bindingsIn(event, select) { url, bound ->
+                        bindingsIn(event, select, allowOnion) { url, bound ->
                             found += url
                             if (bound.isNotEmpty()) {
                                 val per = narrowing.getOrPut(url) { HashMap() }
@@ -246,13 +250,15 @@ object RelayDiscovery {
     fun urlsIn(
         event: Event,
         select: RelaySelect,
-    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, select, it) }
+        allowOnion: Boolean = false,
+    ): Set<NormalizedRelayUrl> = LinkedHashSet<NormalizedRelayUrl>().also { urlsIn(event, select, it, allowOnion) }
 
     private fun urlsIn(
         event: Event,
         select: RelaySelect,
         into: MutableSet<NormalizedRelayUrl>,
-    ) = bindingsIn(event, select) { url, _ -> into.add(url) }
+        allowOnion: Boolean = false,
+    ) = bindingsIn(event, select, allowOnion) { url, _ -> into.add(url) }
 
     /**
      * Every (url, bound values) pair one event yields for one select. The TAG
@@ -264,6 +270,7 @@ object RelayDiscovery {
     private inline fun bindingsIn(
         event: Event,
         select: RelaySelect,
+        allowOnion: Boolean,
         onMatch: (NormalizedRelayUrl, Map<String, String>) -> Unit,
     ) {
         for (tag in event.tags) {
@@ -273,7 +280,7 @@ object RelayDiscovery {
             if (select.where.isNotEmpty() && select.where.none { it.matches(tag) }) continue
             // With no tag name to go on, only take values that already say
             // they are a relay.
-            val url = normalize(tag[select.index]) ?: continue
+            val url = normalize(tag[select.index], allowOnion) ?: continue
             if (select.bindings.isEmpty()) {
                 onMatch(url, emptyMap())
                 continue
@@ -324,11 +331,16 @@ object RelayDiscovery {
      * Relay lists in the wild carry prose where a url belongs, and the
      * normalizer is forgiving by design — so anything blank or with
      * whitespace is dropped before it gets there. Two more classes are
-     * dropped because dialling them cannot work: `.onion` (no Tor transport
-     * here — every dial is a guaranteed timeout) and loopback/private hosts
-     * (`ws://localhost` in someone else's relay list means THEIR machine).
+     * dropped because dialling them cannot work: loopback/private hosts
+     * (`ws://localhost` in someone else's relay list means THEIR machine),
+     * and `.onion` unless [allowOnion] — a deployment with no Tor transport
+     * has nothing that can resolve one, so every dial is a guaranteed
+     * failure AND a hidden service name handed to the local resolver.
      */
-    private fun normalize(raw: String): NormalizedRelayUrl? {
+    private fun normalize(
+        raw: String,
+        allowOnion: Boolean,
+    ): NormalizedRelayUrl? {
         val trimmed = raw.trim()
         if (trimmed.isEmpty() || trimmed.any { it.isWhitespace() }) return null
         // ws:// or wss://, ALWAYS. This used to be required only when the select
@@ -356,7 +368,8 @@ object RelayDiscovery {
         // `https://nostr.watch/relays/find`, `//nos.lol/` — 116 live "relays"
         // returning 0 events between them.
         if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return null
-        if (RelayUrlNormalizer.isOnion(url.url) || RelayUrlNormalizer.isLocalHost(url.url)) return null
+        if (!allowOnion && RelayUrlNormalizer.isOnion(url.url)) return null
+        if (RelayUrlNormalizer.isLocalHost(url.url)) return null
         return url
     }
 }

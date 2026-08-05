@@ -58,6 +58,29 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * Is the cheap TCP pre-probe able to answer anything about this relay?
+ *
+ * Only when the dial it precedes takes the same route it does. [TcpProber]
+ * opens a plain socket to `InetSocketAddress(host, port)` — a DNS lookup and a
+ * direct connection from this box's own address — so for anything the router
+ * reaches THROUGH Tor it measures a path the transfer will never use.
+ *
+ * For a `.onion` that is a wrong answer: no resolver can answer the name, so
+ * the probe reports `UnknownHostException` for a service that is up, and
+ * [Unreachability] accepts that as proof and publishes it, signed, about
+ * someone else's server. Under `SYNC_TOR_ALL` it is worse than wrong — the
+ * probe would resolve and connect to every discovered relay directly, which is
+ * precisely the exposure that setting exists to remove.
+ *
+ * There is nothing to replace it with: reachability through Tor is exactly
+ * what the websocket dial measures, so the dial is the only verdict.
+ */
+internal fun shouldPreProbe(
+    url: NormalizedRelayUrl,
+    tor: TorTransport?,
+): Boolean = tor?.routes(url) != true
+
+/**
  * The dynamic streams: no configured relays — every refresh reads the relay
  * lists our own store holds ([RelayDiscovery]), syncs the stream's filter
  * against every relay they name, sleeps, repeats. The discovery is inside the
@@ -79,6 +102,9 @@ internal class DynamicSync(
     // Relays with a live static subscription, whose sockets must never be
     // dropped out from under their tail.
     private val pinnedUrls: Set<NormalizedRelayUrl>,
+    // The Tor transport, when configured: what makes discovered .onion urls
+    // dialable at all, and what decides whether they may be dialled today.
+    private val tor: TorTransport?,
     private val scope: CoroutineScope,
 ) {
     /**
@@ -118,15 +144,33 @@ internal class DynamicSync(
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
                 phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
-                val relays = RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay))
+                val relays =
+                    RelayDiscovery.discover(
+                        store,
+                        dynamic,
+                        skip = setOfNotNull(store.relay),
+                        // A relay list full of .onion urls is only worth
+                        // reading when something can dial them.
+                        allowOnion = tor != null,
+                    )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
-                } else {
+                } else if (holdsIdSet(stream)) {
                     // Serialised with every other stream: this holds its id
                     // set for the whole fan-out, and two large sets resident
                     // at once is what pushed the heap to its ceiling.
                     phases.set(stream.name, StreamPhases.Phase.Queued(relays.size))
                     streamGate.withPermit { cycle(stream, dynamic, sourceNames, relays) }
+                    ran = true
+                } else {
+                    // No id set, so nothing to serialise for. Taking the permit
+                    // anyway is not free caution: measured, a 50-minute
+                    // assertions cycle that downloaded 46 events held the only
+                    // slot while two fetch streams sat on 15,458 discovered
+                    // relays each, for a heap cost neither of them can incur.
+                    // StaticBackfill has always gated this way — it takes the
+                    // permit only when it has reconcilers to snapshot for.
+                    cycle(stream, dynamic, sourceNames, relays)
                     ran = true
                 }
             } catch (e: CancellationException) {
@@ -146,6 +190,16 @@ internal class DynamicSync(
             }
         }
     }
+
+    /**
+     * Does a cycle of this stream build the one big local id set?
+     *
+     * That set — every id we hold for the stream's filter — is what the stream
+     * gate serialises, because two of them resident at once is what pushed the
+     * heap to its ceiling. A stream that never builds one has nothing to
+     * serialise for, and must not queue behind a stream that does.
+     */
+    private fun holdsIdSet(stream: SyncStream): Boolean = stream.sync != SyncMode.FETCH && stream.deleteMissing == DeleteMissing.OFF
 
     /** Sync every discovered relay, [RelayDiscoveryConfig.concurrency] of them at a time. */
     private suspend fun cycle(
@@ -175,27 +229,36 @@ internal class DynamicSync(
         val snapStartedMs = System.currentTimeMillis()
 
         val local: List<IdAndTime> =
-            if (stream.sync == SyncMode.FETCH) {
-                // A fetch-only stream never reads the id set, and building one
-                // is the most expensive thing this router does (24.8M ids and
-                // gigabytes held live, measured).
-                System.err.println("router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot")
+            if (!holdsIdSet(stream)) {
+                // The same predicate that decided whether to hold the stream
+                // gate decides whether to build the set it exists to protect.
+                // Split in two, they drift, and the drift is invisible: a
+                // stream queues behind a slot it never needed.
+                System.err.println(
+                    if (stream.sync == SyncMode.FETCH) {
+                        // A fetch-only stream never reads the id set, and
+                        // building one is the most expensive thing this router
+                        // does (24.8M ids and gigabytes held live, measured).
+                        "router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot"
+                    } else {
+                        // [DeleteMissingSync] reads its OWN ids per ask, and
+                        // must: the shared snapshot spans every service on the
+                        // stream, and handing it to a one-service reconcile
+                        // would report every other service's records as
+                        // retracted.
+                        "router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot"
+                    },
+                )
                 emptyList()
             } else if (!bands.anyOutstanding(relays.map { it.url }, window)) {
-                // Every discovered relay already covers this filter, so each
-                // syncOne below returns at its own leg check without ever
-                // reading the id set. coveringWindow cannot save this: with
-                // nothing outstanding there is no window to narrow TO, and it
-                // correctly hands back the whole filter. Asking first is where
-                // the saving is.
+                // Nothing outside any relay's band, so every syncOne below
+                // returns at its own leg check without ever reading the id set.
+                // Distinct from holdsIdSet above, which asks whether this STREAM
+                // ever needs one; this asks whether it needs one THIS cycle.
+                // coveringWindow cannot save it — with nothing outstanding there
+                // is no window to narrow to, and it correctly hands back the
+                // whole filter. Asking first is where the saving is.
                 System.err.println("router: ${stream.name} — all ${relays.size} relay(s) already cover the filter, skipping the snapshot")
-                emptyList()
-            } else if (stream.deleteMissing != DeleteMissing.OFF) {
-                // [DeleteMissingSync] reads its OWN ids per ask, and must:
-                // the shared snapshot spans every service on the stream, and
-                // handing it to a one-service reconcile would report every
-                // other service's records as retracted.
-                System.err.println("router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot")
                 emptyList()
             } else {
                 val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
@@ -239,6 +302,12 @@ internal class DynamicSync(
         // failures tells an operator whether that is normal churn or a broken
         // cycle.
         val reasons = ConcurrentHashMap<String, Long>()
+
+        // Relays skipped because OUR proxy was not answering. Counted apart
+        // from `reasons`, which prints its top three under "unreachable:" — a
+        // failure of this router's own transport must never be filed as, or
+        // crowded out by, other people's relays being unreachable.
+        val torless = AtomicLong()
         System.err.println(
             "router: ${stream.name} syncing ${relays.size} relay(s) from [$sourceNames]" +
                 " against ${local.size} local id(s)" +
@@ -290,6 +359,25 @@ internal class DynamicSync(
                 coroutineScope {
                     relays.forEach { relay ->
                         launch {
+                            // Our own transport, before anything is said about
+                            // theirs. A Tor that is down, restarting or renamed
+                            // fails every dial it carries in a way that reads
+                            // exactly like the relay being gone — so ask our
+                            // SOCKS port instead, and skip rather than dial.
+                            //
+                            // Per relay, not once per cycle: the answer is
+                            // cached for [TorSettings.PROBE_TTL_MS], so this
+                            // costs one connect per 30s, and a Tor that comes
+                            // back is picked up inside the running cycle. Held
+                            // to the cycle boundary it would have cost a full
+                            // refresh interval — six hours, by default — to
+                            // notice a container that restarted in seconds.
+                            if (tor?.routes(relay.url) == true && !tor.socksAnswers()) {
+                                torless.incrementAndGet()
+                                skipped.incrementAndGet()
+                                done.incrementAndGet()
+                                return@launch
+                            }
                             // A TCP connect before the websocket handshake: a
                             // refused connection or unresolvable host answers
                             // in milliseconds, where each of ~20k corpses
@@ -372,6 +460,13 @@ internal class DynamicSync(
                 (if (elapsedMs >= 1_000 && downloaded.get() > 0) " (${downloaded.get() * 1000 / elapsedMs}/s)" else "") +
                 "; ${strikes.summary(relays.size)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
+                (
+                    if (torless.get() > 0) {
+                        "; ${torless.get()} skipped — tor SOCKS ${tor?.settings?.socksAddress} not answering, nothing published about them"
+                    } else {
+                        ""
+                    }
+                ) +
                 "; next in ${dynamic.refreshSeconds}s",
         )
         phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.refreshSeconds))
@@ -418,7 +513,17 @@ internal class DynamicSync(
             onFailure("${e.javaClass.simpleName}: ${e.message?.take(50) ?: ""}".trim(':', ' '))
             // UNREACHABLE costs the relay a signed NIP-66 record — only say it
             // when it is true. See [Unreachability].
-            if (Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
+            //
+            // Never for anything dialled through Tor. What arrives here from
+            // a SOCKS dial is the PROXY's report — "host unreachable" from a
+            // failed rendezvous, or an UnknownHostException from a Tor that is
+            // not there — and none of it separates their server being down
+            // from our circuit not being built. Under SYNC_TOR_ALL that covers
+            // every relay, which is the case this guard exists for: a proxy
+            // that stops answering would otherwise sign a false record about
+            // every clearnet relay in the fan-out. The verdict costs one
+            // skipped relay per cycle, which is the price of not guessing.
+            if (tor?.routes(url) != true && Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
         } finally {
             transferring.decrementAndGet()
             releaseSocket(url)
@@ -448,7 +553,7 @@ internal class DynamicSync(
             // will record a band for a multi-kind filter at all.
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             val syncStartedAt = System.currentTimeMillis() / 1000
-            val onEvent: (Event) -> Unit = { event ->
+            val onEvent: suspend (Event) -> Unit = { event ->
                 if (stream.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -528,6 +633,16 @@ internal class DynamicSync(
         url: NormalizedRelayUrl,
     ) {
         val evicted = strikes.strike(url) ?: return
+        // Struck locally either way — a host that answers nothing should stop
+        // costing the cycle sockets — but nothing we reach THROUGH Tor is ever
+        // published on this evidence. The verdict is built from silence, and
+        // silence arriving through three relays and a rendezvous is at least as
+        // likely to be our circuit as their server. The test is the transport,
+        // not the address: under SYNC_TOR_ALL an ordinary wss:// relay is
+        // behind exactly the same circuit and the claim is exactly as weak.
+        // quartz's own observer still records what a failed connection said;
+        // this is the claim we synthesise, and we cannot support it.
+        if (tor?.routes(url) == true) return
         monitor?.observer?.record(
             url,
             reachable = false,
@@ -546,6 +661,7 @@ internal class DynamicSync(
      * will ever look at most of these relays.
      */
     private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean {
+        if (!shouldPreProbe(url, tor)) return true
         val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
         // Only claim what we can prove. [TcpProber.tcpReachable] answers with a
         // Boolean, so a refusal and a timeout arrive here as the same value — and
