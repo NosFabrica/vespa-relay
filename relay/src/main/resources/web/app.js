@@ -9,7 +9,7 @@ import { esc } from "./shared/format.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
-import { parseQuery } from "./shared/query.js";
+import { parseQuery, buildFilters as filtersFor } from "./shared/query.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
@@ -348,40 +348,53 @@ function searchString(text) {
 }
 
 /**
- * The typed string as the REQ this page sends.
+ * The filters this page's REQ carries, from what the person typed.
  *
- * `from:npub…` and `to:npub…` leave the NIP-50 search entirely and become the
- * NIP-01 filter fields they are — `authors` and `#p`. Those are indexed on
- * every relay and compose with the ranking rather than competing with it,
- * whereas leaving them in `search` would have the full-text index hunting for
- * the literal string "from:npub1…" and a narrowed search would look like an
- * empty one.
+ * The construction itself lives in shared/query.js — pure, and tested there
+ * against the whole of the box's language. What is HERE is the page state it
+ * needs: which tab is on, how many rows this view wants, and the NIP-50
+ * extension string the sort menu, the spam toggle and the "ranking as" lens
+ * build between them.
  *
- * With a person filter and no words left, `search` is omitted rather than sent
- * empty: a filter carrying only the sort/spam/observer extensions is a text
- * query for nothing, and what the reader asked for — everything this person
- * wrote — is an ordinary NIP-01 read. The trade is real and worth saying out
- * loud: no `search` means no NIP-50, so the trust ranking and the extensions
- * do not apply to that one shape. Add a word and they are back.
- *
- * Shared with exportText() so the filter a reader is shown is the filter that
- * was sent, byte for byte, rather than a second construction of it.
+ * Shared with exportText() so the filters a reader is shown are the filters
+ * that were sent, byte for byte, rather than a second construction of them.
  */
-function buildFilter(text, limit) {
-  const q = parseQuery(text);
-  const filter = {};
-  if (q.terms || !(q.authors.length || q.mentions.length)) filter.search = searchString(q.terms);
-  if (tab.kinds) filter.kinds = tab.kinds;
-  if (q.authors.length) filter.authors = q.authors;
-  if (q.mentions.length) filter["#p"] = q.mentions;
-  filter.limit = limit;
-  return filter;
+function buildFilters(text, limit) {
+  return filtersFor(text, { kinds: tab.kinds, limit, searchString });
+}
+
+/**
+ * One event, one card, however many filters it answered.
+ *
+ * A hashtag search is four filters in one REQ, and one event can answer several
+ * of them: a top-level comment on the topic carries it in both `i` and `I`, and
+ * a note that tags `t` and also labels itself answers two.
+ *
+ * THIS relay's store already dedupes across the filters of a subscription
+ * (NostrSemanticsStore.recallOrdered — `distinctBy(idOf)` whenever there is
+ * more than one query), so this is belt and braces rather than the fix for a
+ * known duplicate. It stays because NIP-01 does not require that of a relay and
+ * the same note rendering twice is a visible bug; it is a Set and one pass over
+ * a list the page is about to render anyway. Arrival order is kept, and since
+ * store 8a45e4d1a2 that order is one ranking over all four filters rather than
+ * one run per filter, so keeping the first copy of a duplicate keeps it at the
+ * best position it earned.
+ */
+function uniqueById(events) {
+  const seen = new Set();
+  const out = [];
+  for (const e of events) {
+    if (!e || seen.has(e.id)) continue;
+    seen.add(e.id);
+    out.push(e);
+  }
+  return out;
 }
 
 async function search(text, limit, deep) {
   await ensureLogin();
-  const filter = buildFilter(text, limit);
-  const events = await relay.req(filter);
+  const filters = buildFilters(text, limit);
+  const events = uniqueById(await relay.req(filters));
   seedProfiles(events);
   // Authors, plus everyone the cards will NAME — a 30382's d subject, a
   // 10040's service column, a zap's sender. The names rule holds in the
@@ -643,7 +656,7 @@ function exportText() {
   L.push("");
   const typed = $q.value.trim();
   const q = parseQuery(typed);
-  const full = buildFilter(typed, FULL_LIMIT);
+  const full = buildFilters(typed, FULL_LIMIT);
   const people = (keys) => keys.map((k) => `${npub(k)}${nameOf(k) ? `  (${nameOf(k)})` : ""}`).join(", ");
   L.push("QUERY AS CONFIGURED");
   L.push(`  typed         ${JSON.stringify(typed)}`);
@@ -653,13 +666,22 @@ function exportText() {
   // authors before it was ranked at all.
   if (q.authors.length) L.push(`  from          ${people(q.authors)}`);
   if (q.mentions.length) L.push(`  to            ${people(q.mentions)}`);
+  // Same reason, and one more: a hashtag search is a union, so a reader
+  // comparing two results has to know one may have arrived as a `t` tag, the
+  // next as a NIP-22 comment on the topic, and the next as a NIP-32 label —
+  // three different claims, ranked into one list.
+  if (q.hashtags.length) L.push(`  hashtags      ${q.hashtags.map((t) => `#${t}`).join(", ")}`);
   L.push(`  tab           ${tab.label}${tab.kinds ? ` (kinds ${tab.kinds.join(", ")})` : " (all kinds)"}`);
   L.push(`  sort          ${$sort.value || "(relevance — NIP-50 default)"}`);
   L.push(`  include spam  ${$spam.checked ? "yes — unranked authors included" : "no — trust floor applied"}`);
   L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
   L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
-  L.push(`  search string ${full.search == null ? "(none — a person filter with no words is a plain NIP-01 read)" : JSON.stringify(full.search)}`);
-  L.push(`  full filter   ${JSON.stringify(full)}`);
+  L.push(`  search string ${full[0].search == null ? "(none — no words and no sort/spam/lens to carry, so this is a plain NIP-01 read)" : JSON.stringify(full[0].search)}`);
+  // Every filter of the REQ, one per line: they are ORed in one subscription,
+  // and a reader shown only the first would think the comments came from
+  // nowhere. The label stays singular for the ordinary one-filter search.
+  L.push(`  full filter${full.length > 1 ? "s " : "  "} ${JSON.stringify(full[0])}`);
+  for (const f of full.slice(1)) L.push(`                ${JSON.stringify(f)}`);
   L.push("");
   // Whose scores produced this order, listed once rather than repeated per
   // result — and kept OUT of the events themselves, which are reproduced
@@ -685,6 +707,14 @@ function exportText() {
   L.push("  alone. A result placed above another whose author scores higher, or a");
   L.push("  low-scoring author near the top, is worth challenging.");
   L.push("  The events are verbatim: nothing has been trimmed or annotated.");
+  // No union caveat any more. This block used to warn that a multi-filter REQ
+  // came back as each filter's ranked run end to end, so a jump back up the
+  // trust scale was a seam and not a misranking — true of the store until
+  // vespaEventStore 8a45e4d1a2, which merges the filters of one REQ on the
+  // engine's scores when they share a rank profile (which this page's four
+  // hashtag filters always do: they carry the same search string). The order is
+  // now one ranking of the union, so a jump back up the scale IS worth
+  // challenging, and the question above stands unqualified.
   return L.join("\n");
 }
 

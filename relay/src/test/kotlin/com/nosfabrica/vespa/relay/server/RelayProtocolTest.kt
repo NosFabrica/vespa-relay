@@ -261,6 +261,151 @@ class RelayProtocolTest {
             }
         }
 
+    /**
+     * The search page's hashtag REQ, end to end — the assumptions the web UI's
+     * four filters rest on, none of which this repo owns.
+     *
+     * A `#hashtag` in the search box becomes a union: `#t` for events tagged
+     * with the topic, `#l` for NIP-32 labels, and kind 1111 with the NIP-73
+     * external id in `#I` (a comment thread's root scope) or `#i` (its parent).
+     * Three of those are load-bearing beliefs about code upstream of here:
+     *
+     *  - `#I` survives Quartz's REQ parse as an UPPERCASE tag name and is not
+     *    folded into `#i`. NIP-01 allows a-zA-Z and Quartz's isIndexableTagName
+     *    implements exactly that, but a fold anywhere in the chain would not
+     *    fail loudly — the filter would quietly match the wrong events, which
+     *    is worse than matching none.
+     *  - Tag VALUES compare cased (the engine schema's `match { cased }`), so
+     *    an event tagged `t: Nostr` is invisible to a `#t: ["nostr"]` ask. The
+     *    page sends the spellings for this reason; asserted here so a future
+     *    "normalize tags on write" would break this test rather than the feed.
+     *  - The filters of one REQ are ORed and the union is deduped, so an event
+     *    answering two of them is delivered once.
+     */
+    @Test
+    fun `the search page's hashtag union reaches the right events`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                val at = 1_700_000_100L
+
+                suspend fun publish(
+                    kind: Int,
+                    tags: Array<Array<String>>,
+                    content: String,
+                ): Event {
+                    val ev = signer.sign<Event>(at, kind, tags, content)
+                    session.receive("""["EVENT",${ev.toJson()}]""")
+                    awaitMessage(out) { it.startsWith("""["OK","${ev.id}",true""") }
+                    return ev
+                }
+
+                val tagged = publish(1, arrayOf(arrayOf("t", "nostr")), "tagged the topic")
+                val taggedCased = publish(1, arrayOf(arrayOf("t", "Nostr")), "tagged it in mixed case")
+                val labelled = publish(1, arrayOf(arrayOf("L", "#t"), arrayOf("l", "nostr")), "labelled itself")
+                val rootScope = publish(1111, arrayOf(arrayOf("I", "#nostr"), arrayOf("K", "#")), "a reply deep in the thread")
+                val parentScope = publish(1111, arrayOf(arrayOf("i", "#nostr"), arrayOf("k", "#")), "a comment on the topic")
+                val otherTopic = publish(1111, arrayOf(arrayOf("i", "#bitcoin"), arrayOf("k", "#")), "a comment on something else")
+                val both = publish(1, arrayOf(arrayOf("t", "nostr"), arrayOf("l", "nostr")), "tagged AND labelled")
+
+                // Byte for byte the shape shared/query.js builds for "#nostr".
+                session.receive(
+                    """["REQ","h",""" +
+                        """{"#t":["nostr","Nostr","NOSTR"],"limit":40},""" +
+                        """{"#l":["nostr","Nostr","NOSTR"],"limit":10},""" +
+                        """{"kinds":[1111],"#I":["#nostr","nostr"],"limit":10},""" +
+                        """{"kinds":[1111],"#i":["#nostr","nostr"],"limit":10}]""",
+                )
+                awaitMessage(out) { it.startsWith("""["EOSE","h"]""") }
+                val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","h",""") } }
+
+                for (
+                (ev, why) in
+                listOf(
+                    tagged to "the `t` tag",
+                    taggedCased to "a MIXED CASE `t` tag — cased matching means the spellings are the ask",
+                    labelled to "a NIP-32 `l` label",
+                    rootScope to "an UPPERCASE `I` tag: #I is not folded into #i anywhere in the chain",
+                    parentScope to "a lowercase `i` tag",
+                    both to "tagged and labelled at once",
+                )
+                ) {
+                    assertTrue(served.any { ev.id in it }, "the union must serve the event matched by $why")
+                }
+                assertEquals(1, served.count { both.id in it }, "an event answering two filters is served once")
+                assertTrue(served.none { otherTopic.id in it }, "a comment on another topic is not in this union")
+                assertEquals(6, served.size, "exactly the six events the union describes")
+
+                // The control for the spellings: the lowercase ask ALONE cannot
+                // see `t: Nostr`. This is the assertion that makes the extra
+                // values in the filter above a fix rather than decoration.
+                session.receive("""["REQ","lc",{"#t":["nostr"],"limit":40}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","lc"]""") }
+                val lower = synchronized(out) { out.filter { it.startsWith("""["EVENT","lc",""") } }
+                assertTrue(lower.any { tagged.id in it }, "the lowercase ask sees the lowercase tag")
+                assertTrue(lower.none { taggedCased.id in it }, "…and is blind to `t: Nostr`: tag values compare cased")
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
+     * A RANKED union comes back as ONE order over all four filters, not as each
+     * filter's run end to end.
+     *
+     * The fourth assumption the search page rests on, and the newest: until
+     * store `8a45e4d1a2` a multi-filter REQ with a search string was served as
+     * run after run, so the page's export carried a caveat telling readers that
+     * a jump back up the trust scale was a seam and not a misranking. That
+     * caveat is gone, which makes the merge something this repo now depends on.
+     *
+     * Asserted through the ordering the in-memory engine CAN produce: it does
+     * not rank, so it reports no scores and the store merges on recency
+     * instead. That is enough to tell the two behaviors apart — the events are
+     * arranged so the tag filter holds the newest AND the oldest, and the label
+     * filter the one in between. Concatenation can only put the label's hit
+     * last; one merged order has to interleave it.
+     *
+     * What it cannot check is the merge on real relevance — that needs an
+     * engine that ranks, and lives in the store's own integration gate.
+     */
+    @Test
+    fun `a ranked union is served as one order, not one run per filter`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                suspend fun publish(
+                    at: Long,
+                    tags: Array<Array<String>>,
+                ): Event {
+                    val ev = signer.sign<Event>(at, 1, tags, "a note about the topic")
+                    session.receive("""["EVENT",${ev.toJson()}]""")
+                    awaitMessage(out) { it.startsWith("""["OK","${ev.id}",true""") }
+                    return ev
+                }
+
+                val oldestTagged = publish(1_700_000_100L, arrayOf(arrayOf("t", "nostr")))
+                val labelled = publish(1_700_000_200L, arrayOf(arrayOf("L", "#t"), arrayOf("l", "nostr")))
+                val newestTagged = publish(1_700_000_300L, arrayOf(arrayOf("t", "nostr")))
+
+                session.receive(
+                    """["REQ","r",""" +
+                        """{"#t":["nostr"],"search":"topic","limit":40},""" +
+                        """{"#l":["nostr"],"search":"topic","limit":10}]""",
+                )
+                awaitMessage(out) { it.startsWith("""["EOSE","r"]""") }
+                val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","r",""") } }
+
+                val order = listOf(newestTagged, labelled, oldestTagged).map { ev -> served.indexOfFirst { ev.id in it } }
+                assertTrue(order.none { it < 0 }, "every event of the ranked union is served")
+                assertEquals(order.sorted(), order, "one order over the union: the label's hit lands BETWEEN the two tagged ones")
+            } finally {
+                session.close()
+            }
+        }
+
     private fun awaitMessage(
         out: List<String>,
         match: (String) -> Boolean,

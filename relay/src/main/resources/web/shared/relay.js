@@ -115,7 +115,15 @@ export class Relay {
     });
   }
 
-  /** One REQ, collected until EOSE (or timeout: resolve with what arrived). */
+  /**
+   * One REQ, collected until EOSE (or timeout: resolve with what arrived).
+   *
+   * `filter` is one filter or an ARRAY of them. NIP-01 ORs the filters within
+   * a subscription, which is the only way to ask a union question — "tagged
+   * `t: nostr`, OR a comment whose `I` says the same" is two filters and one
+   * REQ. Sending them as separate REQs would mean two EOSEs, two timeouts and
+   * two `limit`s to reconcile before anything could render.
+   */
   async req(filter, timeoutMs = REQ_TIMEOUT_MS) {
     try {
       return await this.reqOnce(filter, timeoutMs);
@@ -161,7 +169,7 @@ export class Relay {
       };
       const timer = setTimeout(() => finish(null, false), timeoutMs);
       this.subs.set(id, { onEvent: (ev) => events.push(ev), finish });
-      this.ws.send(JSON.stringify(["REQ", id, filter]));
+      this.ws.send(JSON.stringify(["REQ", id, ...(Array.isArray(filter) ? filter : [filter])]));
     });
   }
 

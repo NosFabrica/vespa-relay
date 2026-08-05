@@ -86,6 +86,30 @@ assert.strictEqual(t.calls, 1);
   assert.strictEqual(partial.complete, false, "timeout -> partial");
 }
 
+// A REQ carries as many filters as it was given. NIP-01 ORs the filters of one
+// subscription, and that is how a hashtag search asks its union question —
+// `#t`, plus the NIP-22 comments naming the same topic in `i`/`I` — in one
+// round trip with one EOSE. Sent as a nested array they would be one malformed
+// filter, and the relay's answer to that is nothing at all.
+{
+  const r = new Relay("ws://unused/");
+  r.connect = async () => {};
+  const sent = [];
+  r.ws = { send: (m) => sent.push(JSON.parse(m)) };
+
+  r.reqOnce({ "#t": ["nostr"] }, 20);
+  await new Promise((res) => setTimeout(res, 0));
+  assert.deepStrictEqual(sent[0], ["REQ", "sot1", { "#t": ["nostr"] }], "one filter is still one filter");
+
+  r.reqOnce([{ "#t": ["nostr"] }, { kinds: [1111], "#I": ["#nostr"] }], 20);
+  await new Promise((res) => setTimeout(res, 0));
+  assert.deepStrictEqual(
+    sent[1],
+    ["REQ", "sot2", { "#t": ["nostr"] }, { kinds: [1111], "#I": ["#nostr"] }],
+    "several filters are spread into the REQ, not nested inside one",
+  );
+}
+
 // waitForChallenge(): the NIP-42 challenge is DELIVERED, never polled for.
 //
 // The property that matters is the latency, so it is what is asserted: a
@@ -119,4 +143,4 @@ assert.strictEqual(t.calls, 1);
   assert.strictEqual(await dead, null, "close wakes waiters with the absence");
 }
 
-console.log("auth-required resend + publish + complete flag + challenge delivery: all assertions passed");
+console.log("auth-required resend + publish + complete flag + multi-filter REQ + challenge delivery: all assertions passed");

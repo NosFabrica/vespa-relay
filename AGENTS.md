@@ -34,7 +34,26 @@ docker compose --profile sync up -d --build   # …with the mirror
 docker compose --profile sync restart sync    # new router.conf, relay untouched
 docker compose logs relay --since 5m
 docker compose logs sync --since 5m
+
+# A cloud sandbox has the docker binaries but NO daemon running. Start one
+# before anything that needs it, and lower the API floor or testcontainers
+# cannot talk to it (see the trap below):
+DOCKER_MIN_API_VERSION=1.24 dockerd > /tmp/dockerd.log 2>&1 &
 ```
+
+Bumping `vespaEventStore` is not done until the store's OWN integration gate has
+run against the commit being pinned — the relay's tests use `InMemoryEventIndex`
+and cannot see a Vespa-only regression:
+
+```bash
+git clone https://github.com/NosFabrica/vespa-eventstore && cd vespa-eventstore
+git checkout <the pinned commit>          # test what the relay actually resolves
+TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
+```
+
+Six ITs, ~7 min total, each standing up a real Vespa. Fetching that repo works
+here; pushing to it does not (the git proxy only holds a credential for repos in
+the session's sources).
 
 Git hooks are installed by the build: **pre-commit runs `spotlessCheck`,
 pre-push runs the tests**. A commit will be rejected for formatting alone, so
@@ -119,11 +138,18 @@ relay/src/main/resources/
                         is the search box itself — a contenteditable, because
                         `from:npub1…`/`to:npub1…` draw as a face and a name and
                         an <input>'s value is characters and nothing else, with
-                        shared/query.js the ONE tokenizer both it and the query
-                        builder ask; shared/parents.js answers "in reply to
-                        WHO" — NIP-10's rule for which `e` tag is the parent,
-                        plus the by-id lookup for the author when the tag
-                        carries no hint; entity.js
+                        shared/query.js the ONE tokenizer the field asks — and
+                        the REQ builder too: buildFilters() turns `#hashtag`
+                        into the three ways Nostr writes a topic (`#t`, a
+                        kind-1111 comment naming it in `i`/`I` per NIP-73, and a
+                        `#l` label per NIP-32), ORed in one REQ, with the page
+                        state passed IN so the whole thing is testable —
+                        tools/webtest/query.test.mjs asserts the filters, and
+                        RelayProtocolTest asserts the relay answers them;
+                        shared/parents.js answers "in reply to WHO" — NIP-10's
+                        rule for which `e` tag is the parent, plus the by-id
+                        lookup for the author when the tag carries no hint;
+                        entity.js
                         renders /npub1…//note1…//naddr1… paths; cards/ is the
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that
@@ -273,6 +299,25 @@ statement about someone else's server.
   actually took effect.
 - **JitPack's build-status API lies.** It reported a build `ok` whose log ended
   in `exit code 1`. Only the presence of the artifact file proves anything.
+- **An integration run that skips still prints `BUILD SUCCESSFUL`.** Three
+  things stack up to make "I ran the ITs" a false claim, and none of them
+  announces itself:
+  - A cloud sandbox ships `docker`/`dockerd` but runs no daemon. `docker info`
+    fails with "is the daemon running?" — start `dockerd` yourself.
+  - Docker 29 refuses API versions below 1.40; testcontainers 1.20.4 (what the
+    store's ITs use) speaks 1.32 and gets `400 client version 1.32 is too old`.
+    Every IT then hits its own `assumeTrue(dockerAvailable())` and aborts.
+    Start the daemon as `DOCKER_MIN_API_VERSION=1.24 dockerd`.
+  - The Gradle daemon inherits the environment it STARTED with, so env vars set
+    on the `./gradlew` command line never reach the forked test JVM if a daemon
+    from before is reused. Use `--no-daemon` when the env is the point.
+
+  A skip is invisible in console output. Read `skipped="…"` in
+  `build/test-results/test/*.xml`, or `--rerun-tasks` and check the wall time:
+  six real Vespa ITs take ~7 minutes, not 7 seconds. Testcontainers logs the
+  actual reason through SLF4J, and with no binding on the test classpath that
+  goes to a NOP logger — put `logback-classic` on a probe classpath and call
+  `DockerClientFactory.instance().isDockerAvailable()` directly to see it.
 - **JitPack caches builds per group-spelling.** `com.github.NosFabrica` and
   `com.github.nosfabrica` are separate cache entries for the same repo; one
   can permanently hold a failed infra build while the other serves fine. The

@@ -74,6 +74,42 @@
   arrow keys. On submit the tokens leave the NIP-50 search entirely and become
   the NIP-01 filter fields they are, `authors` and `#p`.
 
+  A `#hashtag` draws as a pill in the same field, for a different reason: it is
+  already the word it means, so nothing is being hidden — the pill is the box
+  saying that word left the search string and became a tag filter. Quieter than
+  a person (an outline, no face, no lookup) and it appears only when the caret
+  leaves the tag, because a hashtag is a token one character in and a pill that
+  formed at `#n` would re-render the field on every keystroke.
+
+  `#hashtag` leaves the search string too, and becomes a union, because Nostr
+  writes a topic down three ways: `#t` for the events that TAG it, kind 1111
+  with the NIP-73 external id in `i` or `I` for the NIP-22 comments written ON
+  it (which carry no `t` at all), and the NIP-32 label `#l` for the events
+  LABELLED with it — the author's own label, or somebody else's kind 1985
+  saying so. The label filter asks the value alone: NIP-32 only RECOMMENDS the
+  `L` namespace beside it, and the mark that would name the vocabulary is the
+  tag's second value, which NIP-01 does not index. All of them ride in one REQ
+  — NIP-01 ORs the filters of a subscription — because which convention a topic
+  was written down under is not something a reader searching for `#nostr`
+  should have to know.
+
+  Two things the union has to get right, both asserted by
+  RelayProtocolTest."the search page's hashtag union": tag values compare CASED
+  here (the engine schema says so), so the ask carries the spellings —
+  `nostr`, `Nostr`, `NOSTR` — or every note tagged in mixed case is invisible;
+  and `#I` must stay uppercase all the way through Quartz's REQ parse, or the
+  root-scope filter would quietly match the wrong events. `limit` is per FILTER,
+  so the `t` filter keeps the view's limit and the other three ride at a quarter
+  of it rather than multiplying the page by four.
+
+  What comes back is ONE order over all four, not each filter's run one after
+  another: the store merges the filters of a REQ that share a rank profile, and
+  these four always do — they carry the same search string. That is what makes
+  the quarter above a real budget rather than a tail cut, since a side filter's
+  hits compete for the top of the page against the `t` filter's. Pinned by
+  RelayProtocolTest."a ranked union is served as one order", which fails against
+  the store this page was written for and passes against the one it pins.
+
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
   pushes a history entry, and Back walks them in order down to the hero. The
@@ -447,6 +483,29 @@
      keeps the tighter inset. */
   .mention-kind { opacity: .65; font-weight: 700; margin-left: .35em; }
   .mention-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+
+  /* ---- a hashtag, inside the text field ----------------------------------
+     Deliberately NOT a .mention. A person chip replaces something unreadable
+     with a face; `#nostr` is already the word it means, so the pill is not
+     hiding anything — it is the field saying this word LEFT the search string
+     and became a tag filter. So: no avatar, no lookup, no repaint, and quieter
+     than a person — an outline rather than a filled chip, because it marks a
+     word rather than standing in for one. Same em sizing for the same reason
+     the person chip has it: the field shrinks in the sticky toolbar. */
+  .hashtag {
+    display: inline-flex; align-items: center;
+    vertical-align: middle;
+    max-width: 15em;
+    padding: .1em .55em;
+    border-radius: 999px;
+    border: 1px solid var(--accent-soft);
+    background: transparent;
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    overflow: hidden; text-overflow: ellipsis;
+    user-select: none;
+  }
 
   .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
   .export {

@@ -5,10 +5,15 @@
 //     from:npub1…   the author       -> a NIP-01 `authors` filter
 //     to:npub1…     who they named   -> a NIP-01 `#p` filter
 //
-// Both are NIP-01 filter fields, not NIP-50 extensions — the store never sees
-// the prefixes at all. That is deliberate: `authors` and `#p` are indexed
-// filters every relay implements, so narrowing by person costs nothing and
-// composes with the trust ranking rather than competing with it.
+// …and one mark narrows it to a subject:
+//
+//     #hashtag      the topic        -> a NIP-01 `#t` filter, plus the NIP-22
+//                                       comments written ON that topic
+//
+// All of them are NIP-01 filter fields, not NIP-50 extensions — the store never
+// sees the prefixes at all. That is deliberate: `authors`, `#p` and `#t` are
+// indexed filters every relay implements, so narrowing this way costs nothing
+// and composes with the trust ranking rather than competing with it.
 //
 // Pure functions over a string, with no DOM and no relay: the field renderer
 // (searchfield.js) and the query builder (app.js) must agree exactly about
@@ -35,6 +40,59 @@ const WHOLE = new RegExp(`^${NPUB}$`, "i");
 // colon up to the caret, which is what the author picker searches for.
 const PARTIAL = /(^|\s)(from|to):(\S*)$/i;
 
+// A hashtag: a `#` that starts a word, then the characters a `t` tag actually
+// holds. Three decisions, each one paid for:
+//
+//   - Letters, MARKS and digits by unicode property rather than `\w`, because
+//     most of Nostr's hashtags are not ASCII: `\w` cut `#café` to `caf` and
+//     filtered for half a word.
+//   - The HYPHEN is part of the tag. Without it `#covid-19` lifted `covid` and
+//     left `-19` behind as a term — and a leading `-` is NIP-50's exclusion
+//     operator (README's search table), so the query asked for the topic and
+//     then excluded results containing "19". A trailing hyphen is trimmed
+//     below: `#nostr-` is the tag, not the punctuation after it.
+//   - The lead anchor is any character that cannot be part of a word, not just
+//     whitespace, so `(#nostr)` and `"#nostr` are tags while `C#` stays a
+//     language and `…/a#frag` stays a url fragment.
+//   - Emoji count as tag characters. Clients let people tag `#🔥`, and `\p{L}`
+//     does not reach it; ZWJ and the variation selector are in the class too,
+//     or a family emoji would tag its first person and drop the rest.
+const WORD = "\\p{L}\\p{M}\\p{N}_";
+const EMOJI = "\\p{Extended_Pictographic}\\u200D\\uFE0F";
+const HASHTAG = new RegExp(`(^|[^${WORD}])#([${WORD}${EMOJI}-]+)`, "gu");
+
+// What a lifted hashtag can strand: the punctuation that was attached to it.
+// `#bitcoin.` leaves `.`, `#nostr, cats` leaves `, cats` — and an orphan is not
+// a search term. Left in, it also flipped the filter's SHAPE: a non-empty
+// `terms` is what decides whether `search` is sent at all, so a trailing full
+// stop turned a plain tag read into a text query for ".".
+// `#`, `"` and `-` are NOT orphans: a `#` the tag rule declined to take is
+// still the reader's text, and `-word` / `"phrase"` are NIP-50's own operators.
+const ORPHAN = new RegExp(`(^|\\s)[^${WORD}${EMOJI}#"-]+(?=\\s|$)`, "gu");
+
+/** The leftover words, with the punctuation a lifted token stranded removed. */
+const tidyTerms = (s) => s.replace(ORPHAN, "$1").replace(/\s+/g, " ").trim();
+
+/**
+ * Every spelling of `tag` worth asking a tag filter for, best first.
+ *
+ * The store matches tag values CASED — its schema says so in as many words:
+ * "a stored `t:MixedCase` matched a `#t:["mixedcase"]` filter. Cased matching
+ * restores byte equality." So the lowercase NIP-24 spelling is the right ask
+ * and an incomplete one: a note tagged `t: Bitcoin` is invisible to it, and
+ * plenty are. A tag filter's value list is an OR and the store compiles a
+ * multi-value list to one dictionary-backed `in` (EventYql.tagClause), so the
+ * extra spellings cost a string each, not a query each.
+ *
+ * Four at most, deduped: as typed, lowercase, Capitalized, UPPERCASE.
+ */
+export function tagValues(tag) {
+  const t = String(tag ?? "");
+  if (!t) return [];
+  const lower = t.toLowerCase();
+  return [...new Set([t, lower, lower.charAt(0).toUpperCase() + lower.slice(1), t.toUpperCase()])];
+}
+
 /**
  * Is this exactly one finished key — something [tokenize] will draw as a
  * person and [parseQuery] will lift into a filter?
@@ -49,18 +107,46 @@ const PARTIAL = /(^|\s)(from|to):(\S*)$/i;
  */
 export const isKey = (v) => WHOLE.test(String(v ?? "").trim()) && !!pubkeyParam(v);
 
+/** The hashtags inside one stretch of plain text, as segments in place. */
+function tagSegments(chunk, out) {
+  let at = 0;
+  HASHTAG.lastIndex = 0;
+  for (let m; (m = HASHTAG.exec(chunk)); ) {
+    const start = m.index + m[1].length;
+    const raw = chunk.slice(start, HASHTAG.lastIndex);
+    const tag = m[2].replace(/-+$/, "").toLowerCase();
+    // A tag that is nothing but hyphens normalizes to empty and is not a tag.
+    if (!tag) continue;
+    if (start > at) out.push({ type: "text", text: chunk.slice(at, start) });
+    // `raw` is what the field draws over and measures; the trailing hyphen the
+    // NORMALIZED tag drops is part of the token all the same, or the pill would
+    // cover fewer characters than it stands for and the caret would shift.
+    out.push({ type: "tag", raw, tag });
+    at = HASHTAG.lastIndex;
+  }
+  if (at < chunk.length) out.push({ type: "text", text: chunk.slice(at) });
+}
+
 /**
- * The typed string as a list of segments: plain text, and the keys inside it.
+ * The typed string as a list of segments: plain text, and the tokens in it.
  *
  *   { type: "text", text }
  *   { type: "key", raw, field: "from" | "to" | null, pubkey }
+ *   { type: "tag", raw, tag }
  *
  * `raw` is the token exactly as typed, so a renderer can put it back verbatim
- * and a caret measured in characters stays measured in characters.
+ * and a caret measured in characters stays measured in characters. For a tag,
+ * `tag` is the normalized value the filters ask for — `#Nostr` draws as typed
+ * and is asked for as `nostr`, which is exactly the split a `from:npub1…` chip
+ * already makes between what it shows and what it means.
  *
  * An npub whose CHECKSUM fails stays text. A corrupted identifier must not
  * become a chip naming a plausible stranger — the same rule nip19.js's decoder
  * states for entity pages, applied one layer up.
+ *
+ * Hashtags are only ever found in the TEXT between the person tokens: a `#`
+ * cannot occur inside an npub — bech32 has no such character — so scanning the
+ * keys for one would be looking where it cannot be.
  */
 export function tokenize(text) {
   const s = String(text ?? "");
@@ -71,7 +157,7 @@ export function tokenize(text) {
     const start = m.index + m[1].length;
     const pubkey = pubkeyParam(m[3]);
     if (!pubkey) continue;
-    if (start > at) out.push({ type: "text", text: s.slice(at, start) });
+    if (start > at) tagSegments(s.slice(at, start), out);
     out.push({
       type: "key",
       raw: s.slice(start, TOKEN.lastIndex),
@@ -80,19 +166,55 @@ export function tokenize(text) {
     });
     at = TOKEN.lastIndex;
   }
-  if (at < s.length) out.push({ type: "text", text: s.slice(at) });
+  if (at < s.length) tagSegments(s.slice(at), out);
   return out;
+}
+
+/**
+ * The segments to DRAW: [tokenize]'s, minus the tag the caret is inside.
+ *
+ * A hashtag becomes a token one character in — `#n` is already a tag — so
+ * drawing every tag would re-render the field on EVERY keystroke of one,
+ * which is exactly what structureChanged() exists to avoid: it fights the
+ * browser over the caret, the undo stack and IME composition, and an npub
+ * only ever crosses that line once, at its 63rd character.
+ *
+ * So a tag under the caret stays text, and pills the moment the caret leaves
+ * it. That is the same rule the people picker follows — a token being built
+ * is not yet a token — and it means the pill's appearance is the field
+ * saying "this one is finished, and it is a filter now".
+ *
+ * `typingAt` null draws everything: a paste, a URL restore or a blur is not
+ * somebody midway through typing a word.
+ */
+export function drawable(text, typingAt) {
+  const segs = tokenize(text);
+  if (typingAt == null) return segs;
+  let at = 0;
+  return segs.map((seg) => {
+    const start = at;
+    at += seg.type === "text" ? seg.text.length : seg.raw.length;
+    if (seg.type !== "tag" || typingAt <= start || typingAt > at) return seg;
+    return { type: "text", text: seg.raw };
+  });
 }
 
 /**
  * What the relay is actually asked, from what the person typed:
  *
- *   { terms, authors, mentions }
+ *   { terms, authors, mentions, hashtags }
  *
  * `terms` is what is left for NIP-50 — the from:/to: tokens are lifted out
  * entirely, because leaving them in would search the full-text index for the
  * literal string "from:npub1…", which matches nothing and would make a
  * narrowed search look like an empty one.
+ *
+ * `#hashtag` leaves for the same reason and a sharper one: the full-text index
+ * is built from an event's CONTENT, and a note tagged `t: nostr` need not say
+ * the word anywhere in it. Searching the text for "#nostr" therefore answers a
+ * different question from the one a `#` asks, and answers it worse — it misses
+ * every note that tagged the topic properly, and matches the ones that merely
+ * spelled it out.
  *
  * A BARE npub keeps its existing meaning and stays a term. It renders as a
  * face in the field like any other key, but rendering is not semantics: this
@@ -102,14 +224,126 @@ export function tokenize(text) {
 export function parseQuery(text) {
   const authors = [];
   const mentions = [];
+  const hashtags = [];
   let terms = "";
   for (const seg of tokenize(text)) {
     if (seg.type === "text") { terms += seg.text; continue; }
+    // `#Nostr` asks for `nostr`: the segment already carries both, so the field
+    // and the filters cannot disagree about which is which.
+    if (seg.type === "tag") { if (!hashtags.includes(seg.tag)) hashtags.push(seg.tag); continue; }
     const into = seg.field === "from" ? authors : seg.field === "to" ? mentions : null;
     if (!into) { terms += seg.raw; continue; }
     if (!into.includes(seg.pubkey)) into.push(seg.pubkey);
   }
-  return { terms: terms.replace(/\s+/g, " ").trim(), authors, mentions };
+  return { terms: tidyTerms(terms), authors, mentions, hashtags };
+}
+
+// A NIP-22 comment (kind 1111) says what it is about in `I` — the thread's
+// ROOT scope — and in `i`, its immediate parent's. A top-level comment on a
+// topic carries both; a reply further down the thread carries `I` for the topic
+// and `e` for the comment above it, so it has no `i` naming the topic at all.
+// Hence one filter per tag: both in one filter would AND them and drop exactly
+// those replies, and separate filters is the only way NIP-01 spells "or".
+const COMMENT_KIND = 1111;
+const COMMENT_SCOPE_TAGS = ["#I", "#i"];
+
+/**
+ * The NIP-73 external ids a hashtag is written as, for a comment's `i`/`I`.
+ *
+ * NIP-73 spells the id `#topic`, lowercase — the `#` is part of the value, and
+ * the `k`/`K` beside it is the bare `"#"`. No case variants here, unlike
+ * [tagValues]: NIP-73 fixes the case where NIP-24 only suggests it. The
+ * unprefixed form goes in the list because a tag filter is an OR and one extra
+ * string is cheaper than missing every comment written by something that reused
+ * the `t` value here.
+ */
+const hashtagIds = (tags) => tags.flatMap((t) => [`#${t}`, t]);
+
+/** The `#t`/`#l` value list for a set of hashtags: every spelling, deduped. */
+const tagAsks = (tags) => [...new Set(tags.flatMap(tagValues))];
+
+/**
+ * How many results a SECONDARY filter of a union may return.
+ *
+ * The store applies `limit` per filter, so a four-filter hashtag search at the
+ * page's limit could return four times the rows a word search does — four times
+ * the cards, the profile lookups and the score batches, for a screen the reader
+ * scrolls maybe twice. The `t` filter keeps the full limit because it answers
+ * the question people mean; the other three ride along at a quarter, enough to
+ * be represented near the top and not enough to dominate the page.
+ *
+ * "Near the top" became literal in store 8a45e4d1a2: filters of one REQ that
+ * share a rank profile — which these four always do, they carry the same search
+ * string — come back as ONE ranking of the union rather than run after run. So
+ * a side filter's quarter is no longer just a cap on tail volume; it bounds how
+ * many of its hits can COMPETE for the top of the page. A labelled note that
+ * outranks everything tagged still lands first.
+ */
+const sideLimit = (limit) => Math.max(4, Math.round(limit / 4));
+
+/**
+ * The typed string as the REQ the page sends — NIP-01 filters, ORed inside one
+ * subscription. `kinds` is the tab's kinds (null for all), `limit` the page's,
+ * and `searchString(terms)` the caller's NIP-50 string builder: the sort, spam
+ * and observer extensions are page state, so the one impure input is a function.
+ *
+ * `from:npub…` and `to:npub…` become the NIP-01 filter fields they are —
+ * `authors` and `#p` — which are indexed on every relay and compose with the
+ * ranking rather than competing with it, whereas leaving them in `search` would
+ * have the full-text index hunting for the literal string "from:npub1…".
+ *
+ * `#hashtag` becomes THREE questions, because Nostr writes a topic down three
+ * ways and none of them is a superset of the others:
+ *
+ *   - the event is about the topic          -> `t`             (NIP-01, NIP-24)
+ *   - it is a comment ON the topic          -> `i`/`I`         (NIP-22, NIP-73)
+ *   - it is LABELLED with the topic         -> `l`             (NIP-32)
+ *
+ * A note tagging `t` need carry no label; a self-labelled note need carry no
+ * `t`; a comment on a topic carries neither. (Four filters for three questions:
+ * `i` and `I` in one filter would AND, so the comment question needs one each.)
+ *
+ * The person filters ride on EVERY filter — they narrow the same search, and
+ * leaving them off the comment half would make `from:alice #nostr` return
+ * everybody's comments alongside alice's notes. So do the tab's kinds, except on
+ * the comment filters, which name their own kind and are therefore GATED on it
+ * instead: a tab that excludes 1111 sends the other filters alone rather than
+ * two that can only come back empty. The label filter needs no such gate — a
+ * label rides on an event of any kind, so under Notes it finds self-labelled
+ * notes, and under Everything it also finds the kind 1985 that labelled one.
+ *
+ * `search` is sent whenever it would CARRY something — words, or a sort/spam/
+ * observer extension. It used to be dropped whenever the words were empty, on
+ * the belief that "a filter carrying only the extensions is a text query for
+ * nothing"; the store says otherwise in as many words ("a query that is nothing
+ * but extensions becomes unconstrained, not match-nothing", and `sort:` with no
+ * terms "is a match-all in that order"). That belief cost a hashtag search its
+ * ranking: `#nostr` with "Most trusted" picked, or the spam floor lifted, or a
+ * lens chosen, sent none of it — three visible controls doing nothing, on the
+ * most ordinary query this page has. An EMPTY string is still omitted, because
+ * then there is genuinely nothing to say and a plain NIP-01 read is the honest
+ * shape.
+ */
+export function buildFilters(text, { kinds = null, limit, searchString = (t) => t } = {}) {
+  const q = parseQuery(text);
+  const base = {};
+  const search = searchString(q.terms);
+  if (search.trim()) base.search = search;
+  if (kinds) base.kinds = kinds;
+  if (q.authors.length) base.authors = q.authors;
+  if (q.mentions.length) base["#p"] = q.mentions;
+  if (!q.hashtags.length) return [{ ...base, limit }];
+
+  const side = sideLimit(limit);
+  const filters = [
+    { ...base, "#t": tagAsks(q.hashtags), limit },
+    { ...base, "#l": tagAsks(q.hashtags), limit: side },
+  ];
+  if (!kinds || kinds.includes(COMMENT_KIND)) {
+    const ids = hashtagIds(q.hashtags);
+    for (const tag of COMMENT_SCOPE_TAGS) filters.push({ ...base, kinds: [COMMENT_KIND], [tag]: ids, limit: side });
+  }
+  return filters;
 }
 
 /**
