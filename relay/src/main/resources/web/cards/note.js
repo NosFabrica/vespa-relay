@@ -5,7 +5,7 @@
 import { esc } from "../shared/format.js";
 import { noteId, shortNote } from "../shared/nip19.js";
 import { avatarHtml } from "../shared/avatar.js";
-import { register, shell, bodyHtml, noteHref, tagOf, jsonContent, clipIf } from "./base.js";
+import { register, shell, bodyHtml, noteHref, extLink, tagOf, jsonContent, clipIf } from "./base.js";
 
 function noteCard(ev, opts) {
   const inner = bodyHtml(opts, ev.content, 500);
@@ -20,7 +20,7 @@ function highlightCard(ev, opts) {
   const sourceUrl = tagOf(ev, "r");
   const sourceEvent = tagOf(ev, "e");
   const props = [];
-  if (sourceUrl) props.push(["source", `<a href="${esc(sourceUrl)}" target="_blank" rel="noopener noreferrer">${esc(sourceUrl)}</a>`]);
+  if (sourceUrl) props.push(["source", extLink(sourceUrl)]);
   else if (sourceEvent && /^[0-9a-f]{64}$/.test(sourceEvent)) props.push(["source", `<a class="mono" href="${noteHref(sourceEvent)}">${esc(shortNote(sourceEvent))}</a>`]);
   const inner =
     (quote ? `<blockquote class="quote">${esc(quote)}</blockquote>` : "") +

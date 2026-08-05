@@ -4,7 +4,7 @@
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { avatarHtml } from "../shared/avatar.js";
-import { register, shell, bodyHtml, tagsOf, tagOf, jsonContent, clipIf } from "./base.js";
+import { register, shell, bodyHtml, extLink, tagsOf, tagOf, jsonContent, clipIf } from "./base.js";
 
 /** 31990/32267 — an application, profile-shaped. */
 function appCard(ev, opts) {
@@ -21,7 +21,7 @@ function appCard(ev, opts) {
       </div>
     </div>`;
   return shell(ev, opts, inner, [
-    ["website", tagOf(ev, "web") ? `<a href="${esc(tagOf(ev, "web"))}" target="_blank" rel="noopener noreferrer">${esc(tagOf(ev, "web"))}</a>` : null],
+    ["website", extLink(tagOf(ev, "web"))],
   ]);
 }
 

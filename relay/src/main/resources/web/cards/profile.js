@@ -6,7 +6,7 @@ import { esc } from "../shared/format.js";
 import { npub, shortNpub } from "../shared/nip19.js";
 import { displayName, parseProfile } from "../shared/profiles.js";
 import { avatarHtml } from "../shared/avatar.js";
-import { register, badgeHtml, jsonHtml, propsHtml, keyHref, clipIf, clampCls } from "./base.js";
+import { register, badgeHtml, extLink, jsonHtml, propsHtml, keyHref, clipIf, clampCls } from "./base.js";
 
 function profileCard(ev, opts) {
   const p = parseProfile(ev);
@@ -17,7 +17,7 @@ function profileCard(ev, opts) {
       `<span class="nip05" data-addr="${esc(p.nip05)}" data-pk="${esc(ev.pubkey)}">` +
       `${esc(p.nip05)}<span class="n5chip checking" title="checking with the domain…">…</span></span>`]);
   }
-  if (p.website) props.push(["website", `<a href="${esc(p.website)}" target="_blank" rel="noopener noreferrer">${esc(p.website)}</a>`]);
+  if (p.website) props.push(["website", extLink(p.website)]);
   if (p.lud16) props.push(["lightning", esc(p.lud16)]);
   // The pubkey row only when the profile carries no name. With one, the name
   // IS how the person is shown — the npub stays in the page URL and one click

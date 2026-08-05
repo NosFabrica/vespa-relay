@@ -4,22 +4,21 @@
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
-import { register, shell, bodyHtml, addrHref, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
+import { register, shell, bodyHtml, addrHref, extLink, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
 
 /** 30311 — a live event: status, the stream, who is watching. */
 function liveCard(ev, opts) {
   const status = (tagOf(ev, "status") || "").toLowerCase();
   const img = imageOf(ev);
   const full = opts && opts.full;
-  const link = (url, label) => url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>` : null;
   const inner =
     (full && img ? `<div class="embed"><img src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "") +
     `${titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 140))}${status ? ` <span class="status-pill ${esc(status)}">${esc(status)}</span>` : ""}</h2>` : ""}` +
     bodyHtml(opts, summaryOf(ev) || ev.content, 300);
   const participants = tagOf(ev, "current_participants");
   return shell(ev, opts, inner, [
-    ["stream", link(tagOf(ev, "streaming"))],
-    ["recording", link(tagOf(ev, "recording"))],
+    ["stream", extLink(tagOf(ev, "streaming"))],
+    ["recording", extLink(tagOf(ev, "recording"))],
     ["starts", tagOf(ev, "starts") ? fmtTs(tagOf(ev, "starts")) : null],
     ["watching", participants ? esc(participants) : null],
   ]);

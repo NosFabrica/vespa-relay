@@ -154,8 +154,35 @@ export const titleHtml = (opts, text, n = 140, href = null) => {
   return `<h2 class="result-title">${href ? `<a href="${href}">${esc(t)}</a>` : esc(t)}</h2>`;
 };
 
-export const extLink = (url, label) =>
-  url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>` : null;
+/**
+ * A url out of an EVENT, safe to put in an href — or null.
+ *
+ * esc() stops the attribute being broken out of; it does not stop the SCHEME,
+ * and `javascript:` in an href runs on click in this page's origin — the
+ * origin holding an authenticated NIP-42 socket. Every one of these urls is a
+ * string a stranger published. Only what a card's link is actually for gets
+ * through: a web page.
+ */
+export const webUrl = (url) => {
+  const t = String(url ?? "").trim();
+  // The parser strips tabs and newlines and lowercases the scheme, so
+  // "Java\nSCRIPT:…" is caught here rather than by the regex it defeats.
+  try { return /^https?:$/.test(new URL(t).protocol) ? t : null; } catch (e) { return null; }
+};
+
+/**
+ * A url on a card: a link when it can be one, the plain text when it cannot.
+ *
+ * Not dropped — a `website` the page refuses to link is still a claim the
+ * profile makes, and the reader is better served seeing it than wondering
+ * where it went. Every family renders these identically (five had their own
+ * copy of this anchor, and each of those was one of the href holes above).
+ */
+export const extLink = (url, label) => {
+  const safe = webUrl(url);
+  if (safe) return `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>`;
+  return url ? `<span class="mono">${esc(label || url)}</span>` : null;
+};
 
 /**
  * A list of relay rows; full mode shows all, preview the first few. Lives here
