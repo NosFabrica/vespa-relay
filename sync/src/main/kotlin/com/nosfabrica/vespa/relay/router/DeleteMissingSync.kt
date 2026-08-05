@@ -223,6 +223,9 @@ internal class DeleteMissingSync(
         for (leg in bands.legs(url, ask)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
+            // Per-kind spans, which quartz's SyncCoverage requires before it
+            // will record a band for a multi-kind filter at all.
+            val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             // Same time-axis reporting as every other paged walk: without it
             // these walks are the one hole in the stream's fraction/ETA line.
             val walk = "${stream.name}|${url.url}"
@@ -235,13 +238,14 @@ internal class DeleteMissingSync(
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                             }
+                            SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                             ingest.submit(event, stream.trusted)
                         }
                     }
             } finally {
                 paging.finish(walk)
             }
-            bands.record(url, ask, seenMin, seenMax, paged = true)
+            bands.record(url, ask, seenMin, seenMax, paged = true, observedByKind = seenByKind)
         }
         return downloaded
     }

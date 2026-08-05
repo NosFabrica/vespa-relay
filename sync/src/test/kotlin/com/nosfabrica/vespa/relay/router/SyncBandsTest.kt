@@ -30,6 +30,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
 import kotlin.test.assertTrue
@@ -492,5 +493,74 @@ class SyncBandsTest {
     fun `fromEnv is off unless a path is given`() {
         assertEquals(0, SyncBands.fromEnv(emptyMap()).size())
         assertEquals(0, SyncBands.fromEnv(mapOf("SYNC_STATE_FILE" to "  ")).size())
+    }
+
+    // ---- per-kind spans, as the router has to supply them ------------------
+
+    @Test
+    fun `a multi-kind paged walk earns a band only when it reports per kind`() {
+        // The whole reason every record() call site in this module now threads
+        // observedByKind. Quartz refuses to let one interval speak for several
+        // kinds, so a caller that does not report per kind gets NO band — and
+        // every multi-kind stream in router.conf (kinds [0, 10002, 30382] on a
+        // fetch-mode stream) would quietly re-walk from scratch every cycle.
+        val mixed = Filter(kinds = listOf(0, 10002, 30382))
+
+        val unreported = SyncBands(null)
+        unreported.record(relay, mixed, 1_690_000_000L, 1_700_000_000L, paged = true)
+        assertNull(unreported.band(relay, mixed), "no per-kind evidence, no band")
+
+        val reported = SyncBands(null)
+        reported.record(
+            relay,
+            mixed,
+            1_690_000_000L,
+            1_700_000_000L,
+            paged = true,
+            observedByKind =
+                mapOf(
+                    0 to SyncCoverage.Span(1_600_000_000L, 1_700_000_000L),
+                    30382 to SyncCoverage.Span(1_690_000_000L, 1_700_000_000L),
+                ),
+        )
+        val band = assertNotNull(reported.band(relay, mixed), "reported per kind, so it earns one")
+        assertEquals(setOf(0, 30382), band.spans.keys)
+        // …and the kinds genuinely narrow apart, which is the point of it.
+        assertTrue(reported.legs(relay, mixed).size > 2, "kinds with different evidence want different windows")
+    }
+
+    @Test
+    fun `per-kind spans survive a restart through the state file`() {
+        // The file is where a per-kind band can silently flatten back into the
+        // single interval it replaced.
+        val mixed = Filter(kinds = listOf(0, 30382))
+        val f = tempFile()
+        SyncBands(f).apply {
+            record(
+                relay,
+                mixed,
+                null,
+                null,
+                paged = true,
+                observedByKind =
+                    mapOf(
+                        0 to SyncCoverage.Span(1_600_000_000L, 1_700_000_000L),
+                        30382 to SyncCoverage.Span(1_690_000_000L, 1_700_000_000L),
+                    ),
+            )
+            flush()
+        }
+
+        val reopened = SyncBands(f)
+        assertEquals(
+            mapOf(
+                0 to SyncCoverage.Span(1_600_000_000L, 1_700_000_000L),
+                30382 to SyncCoverage.Span(1_690_000_000L, 1_700_000_000L),
+            ),
+            reopened.band(relay, mixed)!!.spans,
+            "each kind keeps its own evidence across a restart",
+        )
+        assertTrue(reopened.legs(relay, mixed).size > 2, "and the restored band still narrows per kind")
+        f.delete()
     }
 }

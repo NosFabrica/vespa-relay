@@ -95,7 +95,12 @@ class SyncBands(
         observedMax: Long?,
         paged: Boolean,
         reconciledThrough: Long? = null,
-    ) = coverage.record(url, filter, observedMin, observedMax, paged, reconciledThrough)
+        // Required for a multi-kind filter on the PAGED path: without it quartz
+        // records no band rather than let one interval speak for every kind,
+        // and every multi-kind stream here would stop resuming. A reconcile
+        // ignores it — it compares the whole filter in one pass.
+        observedByKind: Map<Int, SyncCoverage.Span>? = null,
+    ) = coverage.record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind)
 
     fun coveringWindow(
         urls: List<NormalizedRelayUrl>,
@@ -168,8 +173,7 @@ class SyncBands(
                 root.mapValues { (_, v) ->
                     val o = v.jsonObject
                     SyncCoverage.Band(
-                        o.getValue("min").jsonPrimitive.long,
-                        o.getValue("max").jsonPrimitive.long,
+                        spansOf(o),
                         // Absent in files written before coverage was tracked:
                         // reads as "span only" and stale, so the first run after
                         // an upgrade re-walks once and records the real thing.
@@ -184,6 +188,30 @@ class SyncBands(
         }
     }
 
+    /**
+     * The per-kind spans, or the single pre-split span read as covering every
+     * kind under [SyncCoverage.ALL_KINDS].
+     *
+     * A file written before coverage was tracked per kind carries only
+     * `min`/`max` — the wider claim per-kind spans exist to stop. It is loaded
+     * as what it always meant rather than discarded, because discarding it
+     * would re-walk every upstream's corpus once on upgrade, which is the cost
+     * bands exist to avoid. The first paged walk that reports per kind
+     * replaces it.
+     */
+    private fun spansOf(o: JsonObject): Map<Int, SyncCoverage.Span> {
+        o["spans"]?.jsonObject?.let { spans ->
+            return spans.entries.associate { (kind, v) ->
+                val span = v.jsonObject
+                kind.toInt() to SyncCoverage.Span(span.getValue("min").jsonPrimitive.long, span.getValue("max").jsonPrimitive.long)
+            }
+        }
+        return mapOf(
+            SyncCoverage.ALL_KINDS to
+                SyncCoverage.Span(o.getValue("min").jsonPrimitive.long, o.getValue("max").jsonPrimitive.long),
+        )
+    }
+
     /** Persist via a temp file and an atomic move, so a reader never sees a half-written map. */
     @Synchronized
     private fun save(): Boolean {
@@ -195,10 +223,29 @@ class SyncBands(
                         put(
                             k,
                             buildJsonObject {
+                                // min/max are the outer edges across every kind,
+                                // written for two readers: a human debugging why a
+                                // relay re-synced, and a ROLLBACK — a build from
+                                // before per-kind spans reads these and behaves as
+                                // it always did rather than failing to parse.
                                 put("min", band.minCreatedAt)
                                 put("max", band.maxCreatedAt)
                                 put("complete", band.complete)
                                 put("fullAt", band.fullAt)
+                                put(
+                                    "spans",
+                                    buildJsonObject {
+                                        band.spans.forEach { (kind, span) ->
+                                            put(
+                                                kind.toString(),
+                                                buildJsonObject {
+                                                    put("min", span.min)
+                                                    put("max", span.max)
+                                                },
+                                            )
+                                        }
+                                    },
+                                )
                             },
                         )
                     }

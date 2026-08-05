@@ -276,7 +276,11 @@ class SyncEngine(
 
     private fun downListener(up: SyncUpstream): SubscriptionListener =
         object : SubscriptionListener {
-            override fun onEvent(
+            // suspend as of quartz 9373c0a22c: the incoming-message chain was
+            // suspended down to this callback upstream. The body does not
+            // suspend — it hands off through a bounded channel — so this is a
+            // signature change only.
+            override suspend fun onEvent(
                 event: Event,
                 isLive: Boolean,
                 relay: NormalizedRelayUrl,

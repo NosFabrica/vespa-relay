@@ -444,6 +444,9 @@ internal class DynamicSync(
         for (leg in bands.legs(url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
+            // Per-kind spans, which quartz's SyncCoverage requires before it
+            // will record a band for a multi-kind filter at all.
+            val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             val syncStartedAt = System.currentTimeMillis() / 1000
             val onEvent: (Event) -> Unit = { event ->
                 if (stream.filter.match(event)) {
@@ -451,6 +454,10 @@ internal class DynamicSync(
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                     }
+                    // See StaticBackfill: without per-kind evidence quartz
+                    // records no band for a multi-kind filter, so a discovery
+                    // stream would re-walk every relay every cycle.
+                    SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                     ingest.submit(event, stream.trusted)
                 }
             }
@@ -490,6 +497,7 @@ internal class DynamicSync(
                 seenMax,
                 paged = fetched || result?.pagedFallback == true,
                 reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
+                observedByKind = seenByKind,
             )
         }
         return downloaded
