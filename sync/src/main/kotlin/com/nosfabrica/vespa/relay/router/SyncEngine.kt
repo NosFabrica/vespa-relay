@@ -91,6 +91,10 @@ class SyncEngine(
     // when client reads slow down. Null — no feed configured — is the
     // mirror-at-full-speed mode, and SyncMain says so at boot.
     servingPressure: ServingPressure? = null,
+    // SYNC_TOR_SOCKS: the proxy .onion upstreams are dialled through. Null is
+    // the clearnet-only deployment, where discovery drops .onion urls and a
+    // configured one is a boot error — never a silent timeout.
+    torSettings: TorSettings? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -115,7 +119,14 @@ class SyncEngine(
             .connectTimeout(Duration.ofSeconds(config.connectionTimeoutSec))
             .build()
 
-    private val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
+    // The Tor client, when there is one, and which urls it takes. See
+    // [TorTransport] for why resolution has to happen inside the proxy.
+    private val tor = torSettings?.let { TorTransport(it, okhttp) }
+
+    // Per URL, not one client for the process: quartz's builder takes
+    // (NormalizedRelayUrl) -> OkHttpClient precisely so a relay can be dialled
+    // over the transport that can reach it.
+    private val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> tor?.clientFor(url) ?: okhttp }, scope)
 
     // NIP-66: watches every connection this client makes, measures round
     // trips, signs them as kind 30166 into this same store, and hands back a
@@ -190,7 +201,7 @@ class SyncEngine(
     private val paging = PagingProgress()
     private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, streamGate, transferring, scope)
-    private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, scope)
+    private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, tor, scope)
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
@@ -201,6 +212,18 @@ class SyncEngine(
         }
 
         ingest.start()
+
+        // Said at boot, both ways: a transport that is configured but not
+        // answering must not be discovered later, one silent onion relay at a
+        // time. The probe asks our own SOCKS port, so a false answer here is
+        // a statement about this container and nobody else's server.
+        tor?.let {
+            val reach = if (it.socksAnswers()) "answering" else "NOT answering — .onion relays will be skipped until it does"
+            System.err.println(
+                "router: tor SOCKS ${it.settings.socksAddress} $reach" +
+                    (if (it.settings.everything) "; SYNC_TOR_ALL is on — EVERY upstream goes through it" else " (.onion upstreams only)"),
+            )
+        }
 
         // Make a fatal error visible instead of leaving a silent process that
         // looks merely quiet — four OOMs once passed unnoticed while the

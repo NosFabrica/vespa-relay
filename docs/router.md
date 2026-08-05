@@ -432,3 +432,58 @@ docker compose --profile sync restart sync
 Setting `SYNC_CONFIG` / `SYNC_CONFIG_FILE` on the **relay** fails its boot
 deliberately: it once meant "run the mirror in-process", and a config that is
 read, accepted and does nothing is how a mirror quietly stops mirroring.
+
+## Syncing with .onion relays
+
+The same profile starts a `tor` service — a client-only Tor whose SOCKS port
+is reachable from the compose network and published nowhere. The router dials
+hidden services through it and everything else directly, chosen per url:
+
+```hocon
+streams {
+  hidden {
+    dir    = "down"
+    filter = { "kinds": [1] }
+    urls   = [ "ws://somerelayaddress…xyz.onion" ]
+  }
+}
+```
+
+`ws://`, not `wss://` — Tor already authenticates and encrypts to the service,
+and a hidden service rarely carries a CA certificate for its own name. The url
+normalizer knows this and leaves a bare `.onion` on `ws://`, so a relay list
+that names one needs no special handling.
+
+Nothing else changes: bands, `deleteMissing`, `relaySource` discovery and the
+NIP-66 monitor all work the same. Three things behave differently, on purpose.
+
+**The name never leaves this box.** OkHttp hands the hostname to the proxy
+instead of resolving it, so `.onion` resolution happens inside Tor. That is
+both the only way a hidden service resolves and what stops the local resolver
+from learning which ones you sync with.
+
+**A `.onion` with no `SYNC_TOR_SOCKS` refuses to boot** — it names the urls and
+the setting. Discovered ones are dropped instead, and counted in the log: a
+relay list is not something you typed, so the fix is a setting rather than an
+edit.
+
+**Nothing negative is published about a hidden service.** Reaching one depends
+on our circuit as much as on their server, and a NIP-66 record is a signed
+public statement. The router also probes its own SOCKS port before each cycle
+that would dial one: if our Tor is down, those relays are skipped with a log
+line rather than dialled into failures that read exactly like the services
+being gone.
+
+Onion relays are slow to dial — seconds, not milliseconds — so give them their
+own stream first, and measure it alone:
+
+```bash
+SYNC_STREAMS=hidden SYNC_WIRE_LOG=sent docker compose --profile sync up -d sync
+docker compose logs tor --since 5m     # "Bootstrapped 100%" ⇒ dials can succeed
+docker compose logs sync --since 5m
+```
+
+For a deployment where no relay should learn this box's address, `SYNC_TOR_ALL=true`
+sends clearnet upstreams through Tor as well. Expect a fraction of the
+throughput, and some large relays refuse exit traffic outright — it is a
+different deployment, not a stronger setting.

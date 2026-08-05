@@ -97,6 +97,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
     UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
     SyncBands.kt          covered created_at bands per (relay, filter)
+    TorTransport.kt       SYNC_TOR_SOCKS: the second OkHttp client, chosen per
+                          url, whose .onion names resolve INSIDE the proxy
     config/               the declarative side
       RouterConfig.kt       the stream model (streams, directions, sync modes)
       RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
@@ -168,6 +170,20 @@ and not measurable from counts.** NIP-85 assertions were the standing example of
 provider) instead of by kind, the same data overlaps almost entirely and
 `negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
 when a stream's filter changes shape rather than trusting the label.
+
+**`.onion` upstreams go through Tor, chosen per url** (`TorTransport`,
+`SYNC_TOR_SOCKS`). quartz's socket builder takes
+`(NormalizedRelayUrl) -> OkHttpClient`, so hidden services get the proxied
+client and clearnet keeps the direct one — routing a 20k-relay cycle through
+Tor to reach the handful on it would trade the fan-out for the exception. The
+mechanism is OkHttp's: given a SOCKS proxy it hands the hostname over instead
+of calling `Dns.lookup`, so the name resolves inside Tor. Never give that
+client a `Dns` — it would move resolution back out here, breaking `.onion` and
+leaking every hidden service we sync with to the local resolver. Two rules
+follow from the same place: the TCP pre-probe is skipped for onion urls (it is
+a DNS lookup, and it would publish `UnknownHostException` as proof of a dead
+relay), and nothing negative is ever published about one — reaching a hidden
+service depends on our circuit as much as on their server.
 
 **Sync bands** (`SyncBands`) record the `created_at` span already walked for
 a `(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
@@ -266,10 +282,18 @@ statement about someone else's server.
 ## Operations
 
 `docker-compose.yml` runs Vespa, the relay, and (behind `--profile sync`) the
-sync process — three containers, one store. Vespa holds ~50M events in this
-deployment. The JVM memory budget is per process: the sync container carries
-the large limit because the negentropy id snapshots live there; check the
-machine's total against all three limits when the profile is on.
+sync process and a client-only Tor — four containers, one store. Vespa holds
+~50M events in this deployment. The JVM memory budget is per process: the sync
+container carries the large limit because the negentropy id snapshots live
+there; check the machine's total against those three limits when the profile is
+on (Tor's rounds to nothing).
+
+**Tor is a container, not a layer.** One image carries both JVM processes on
+purpose, so installing a daemon in it would put Tor in the serving relay too,
+give the container a second thing to supervise, and make `restart sync` — a
+`router.conf` edit, meant to be cheap — drop every circuit and re-bootstrap.
+Its SOCKS port is published nowhere: an open SOCKS proxy on a public interface
+is an open proxy.
 
 **Clients-first crosses the process boundary by HTTP.** The relay measures
 client read latency into `ServingPressure` and serves the mean on

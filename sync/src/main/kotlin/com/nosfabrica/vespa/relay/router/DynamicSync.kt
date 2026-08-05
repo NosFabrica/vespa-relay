@@ -57,6 +57,23 @@ import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
+ * Is the cheap TCP pre-probe able to answer anything about this relay?
+ *
+ * No, for a hidden service, and dialling one anyway is worse than useless.
+ * [TcpProber] opens a plain socket to `InetSocketAddress(host, port)` —
+ * which is a DNS lookup. A `.onion` has nothing a resolver can answer, so
+ * the probe returns `UnknownHostException` for a service that is up, which
+ * [Unreachability] accepts as proof and publishes, signed, about someone
+ * else's server. The lookup also hands every hidden service we sync with
+ * to whatever resolver this box uses, which is the one thing an operator
+ * putting the router behind Tor is trying to avoid.
+ *
+ * There is nothing to replace it with: reachability through Tor is exactly
+ * what the websocket dial measures, so the dial is the only verdict.
+ */
+internal fun shouldPreProbe(url: NormalizedRelayUrl): Boolean = !isOnion(url)
+
+/**
  * The dynamic streams: no configured relays — every refresh reads the relay
  * lists our own store holds ([RelayDiscovery]), syncs the stream's filter
  * against every relay they name, sleeps, repeats. The discovery is inside the
@@ -78,6 +95,9 @@ internal class DynamicSync(
     // Relays with a live static subscription, whose sockets must never be
     // dropped out from under their tail.
     private val pinnedUrls: Set<NormalizedRelayUrl>,
+    // The Tor transport, when configured: what makes discovered .onion urls
+    // dialable at all, and what decides whether they may be dialled today.
+    private val tor: TorTransport?,
     private val scope: CoroutineScope,
 ) {
     /**
@@ -117,7 +137,17 @@ internal class DynamicSync(
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
                 phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
-                val relays = RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay))
+                val relays =
+                    dialable(
+                        RelayDiscovery.discover(
+                            store,
+                            dynamic,
+                            skip = setOfNotNull(store.relay),
+                            // A relay list full of .onion urls is only worth
+                            // reading when something can dial them.
+                            allowOnion = tor != null,
+                        ),
+                    )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {
@@ -436,7 +466,14 @@ internal class DynamicSync(
             onFailure("${e.javaClass.simpleName}: ${e.message?.take(50) ?: ""}".trim(':', ' '))
             // UNREACHABLE costs the relay a signed NIP-66 record — only say it
             // when it is true. See [Unreachability].
-            if (Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
+            //
+            // Never for a hidden service. What arrives here from a SOCKS dial
+            // is the PROXY's report — "host unreachable" from a failed
+            // rendezvous, or an UnknownHostException from a Tor that is not
+            // there — and none of it separates their service being down from
+            // our circuit not being built. The verdict costs one skipped relay
+            // for the cycle, which is the price of not signing a guess.
+            if (!isOnion(url) && Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
         } finally {
             transferring.decrementAndGet()
             releaseSocket(url)
@@ -528,6 +565,27 @@ internal class DynamicSync(
     }
 
     /**
+     * The discovered relays this cycle may actually dial.
+     *
+     * Hidden services drop out whole when our own SOCKS port is not answering
+     * — a Tor container that is down, restarting, or renamed. Dialling them
+     * anyway would spend the cycle's sockets on guaranteed failures and, worse,
+     * would produce a connection failure per relay that reads exactly like the
+     * service being gone. The count is logged: relays skipped for OUR reasons
+     * must never be mistaken for relays that are failing.
+     */
+    private fun dialable(relays: List<DiscoveredRelay>): List<DiscoveredRelay> {
+        if (tor == null) return relays
+        val onion = relays.count { isOnion(it.url) }
+        if (onion == 0 || tor.socksAnswers()) return relays
+        System.err.println(
+            "router: skipping $onion .onion relay(s) this cycle — tor SOCKS ${tor.settings.socksAddress} " +
+                "is not answering; nothing is published about them",
+        )
+        return relays.filterNot { isOnion(it.url) }
+    }
+
+    /**
      * Strike a relay, and publish the verdict if it takes its whole host
      * down. Eviction is the only point where evidence exists — after it,
      * every sibling url is skipped without being dialled, so nothing will
@@ -538,6 +596,14 @@ internal class DynamicSync(
         url: NormalizedRelayUrl,
     ) {
         val evicted = strikes.strike(url) ?: return
+        // Struck locally either way — a host that answers nothing should stop
+        // costing the cycle sockets — but a hidden service is never PUBLISHED
+        // on this evidence. The verdict is built from silence, and silence
+        // reached through three relays and a rendezvous is at least as likely
+        // to be our circuit as their server. quartz's own observer still
+        // records what an actual failed connection said; this is the claim we
+        // synthesise, and we cannot support it.
+        if (isOnion(url)) return
         monitor?.observer?.record(
             url,
             reachable = false,
@@ -556,6 +622,7 @@ internal class DynamicSync(
      * will ever look at most of these relays.
      */
     private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean {
+        if (!shouldPreProbe(url)) return true
         val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
         // Only claim what we can prove. [TcpProber.tcpReachable] answers with a
         // Boolean, so a refusal and a timeout arrive here as the same value — and
