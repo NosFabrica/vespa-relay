@@ -26,6 +26,7 @@ import kotlin.io.path.writeText
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -136,6 +137,47 @@ class RelayAddressesTest {
         assertEquals(1, said.size, "said once…: $said")
         addresses.alternates()
         assertEquals(1, said.size, "…and not again for the same content: $said")
+    }
+
+    /**
+     * What goes in the `Onion-Location` header. `http://`, not `ws://`: the
+     * clients that read it parse the value as an http url (okhttp's
+     * `toHttpUrl()` in Amethyst), and a ws scheme parses to null there — an
+     * advertisement dropped without a word.
+     */
+    @Test
+    fun `the advertised value is an http url`() {
+        assertEquals("http://$hostname/", relayAddressesFromEnv(mapOf("RELAY_ONION_URL" to hostname)).onionLocation())
+    }
+
+    @Test
+    fun `a relay with no hidden service advertises nothing`() {
+        assertNull(relayAddressesFromEnv(emptyMap()).onionLocation())
+    }
+
+    /** The header names a hidden service or nothing — a clearnet alias is not one. */
+    @Test
+    fun `a second clearnet address is accepted for auth but never advertised`() {
+        val addresses = relayAddressesFromEnv(mapOf("RELAY_ONION_URL" to "wss://relay2.example.com"))
+        assertEquals(setOf("wss://relay2.example.com/"), addresses.alternates().map { it.url }.toSet())
+        assertNull(addresses.onionLocation())
+    }
+
+    /** The service this deployment runs wins over one someone else holds open. */
+    @Test
+    fun `the published address is the one advertised`() {
+        val dir = createTempDirectory("onion")
+        val file = dir.resolve("hostname")
+        file.writeText(hostname)
+        val addresses =
+            relayAddressesFromEnv(
+                mapOf(
+                    "RELAY_ONION_URL" to "ws://${"z".repeat(56)}.onion/",
+                    "RELAY_ONION_HOSTNAME_FILE" to file.toString(),
+                ),
+            )
+
+        assertEquals("http://$hostname/", addresses.onionLocation())
     }
 
     /** Both sources are addresses of this relay; neither replaces the other. */

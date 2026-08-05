@@ -257,6 +257,9 @@ fun main() {
         limits = limits,
         admin = admin,
         pressure = servingPressure,
+        // "This relay is also a hidden service" — read by Tor Browser and by
+        // clients that move the connection inside the network when Tor is on.
+        onionLocation = addresses::onionLocation,
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = resourceText("/index.html"),
         statsPage = resourceText("/kind_stats.html"),

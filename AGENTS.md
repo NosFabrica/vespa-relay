@@ -334,6 +334,15 @@ things about it are not obvious and each cost a config that would not start:
   still work and every AUTH fails, which costs Tor clients their ranking lens
   and looks like nothing at all — the reason the address is handed over in a
   file rather than an env var someone pastes in later.
+- **the clearnet endpoint advertises it** with `Onion-Location` on EVERY
+  response, the websocket 101 included — a Nostr client may make no other
+  request, so a header on `GET /` alone would never reach the clients this is
+  for. Tor Browser shows the ".onion available" button; Amethyst caches the
+  mapping and rewrites the host when Tor is on. It rewrites the TRANSPORT, not
+  the relay's identity, so such a client signs its AUTH with the clearnet url
+  on a connection that arrived through the onion: accepting any address we
+  answer at, rather than binding the policy to the address dialled, is what
+  makes that work.
 
 **Clients-first crosses the process boundary by HTTP.** The relay measures
 client read latency into `ServingPressure` and serves the mean on

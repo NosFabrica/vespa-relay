@@ -106,6 +106,29 @@ one names. The relay re-reads the published file when its timestamp moves, so
 an address minted after boot — or rotated by a new key — lands on the next
 connection rather than at the next restart.
 
+### Telling clients the address exists
+
+The clearnet endpoint advertises the hidden service on **every** response —
+`Onion-Location: http://<address>.onion/`, the Tor Project's header. Nothing to
+configure: it appears as soon as the relay knows its own address and names
+whatever the `tor-onion` container published.
+
+Two things read it. Tor Browser turns it into the ".onion available" button on
+the web UI. Amethyst records it from any response its OkHttp client sees —
+including the **WebSocket 101 handshake**, which is often the only request a
+Nostr client makes — and, when the user has Tor enabled, dials the `.onion`
+instead, so the connection never crosses an exit node. The value is an `http`
+url rather than `ws` because both parse it with an http url parser; a `ws://`
+value parses to null in okhttp and the advertisement would vanish silently.
+
+A request that already arrived over the hidden service is not told about it.
+
+Clients that move a connection this way keep signing NIP-42 with the address
+they were configured with — Amethyst rewrites the host at the transport layer,
+not the relay's identity — so the relay has to accept the clearnet url on a
+connection that arrived through the onion, and the reverse. It accepts any
+address it answers at, whichever door the connection came through.
+
 One thing does **not** follow the relay onto Tor: the NIP-86 management API.
 Its NIP-98 tokens are bound to the single `RELAY_HTTP_URL`, deliberately — the
 alternative is trusting the `Host` header, which would let anyone bind a signed

@@ -67,10 +67,12 @@ docker compose logs tor-onion | grep 'reachable at'
 ```
 
 Clients dial `ws://<address>.onion`. The address is a key the Tor container
-generates once and keeps in a volume, so it survives restarts; hand it to
-clients yourself, nothing publishes it for you. The relay reads it too, because
-NIP-42 auth events are signed against the address the client dialled — see
-[Serving over Tor](docs/configuration.md#serving-over-tor-a-onion-endpoint).
+generates once and keeps in a volume, so it survives restarts. The clearnet
+endpoint advertises it on every response — `Onion-Location`, the header Tor
+Browser turns into the ".onion available" button and Amethyst uses to move a
+connection inside the network when Tor is on — so clients that already reach
+this relay find the hidden service by themselves. Both addresses authenticate:
+see [Serving over Tor](docs/configuration.md#serving-over-tor-a-onion-endpoint).
 
 ## Configuration
 

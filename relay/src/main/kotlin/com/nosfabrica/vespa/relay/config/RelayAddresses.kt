@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.config
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.isOnion
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.toHttp
 import java.nio.file.Files
 import java.nio.file.Path
 import java.nio.file.Paths
@@ -65,6 +67,19 @@ class RelayAddresses(
     @Volatile
     private var addresses: Set<NormalizedRelayUrl> = declared
 
+    /**
+     * The `Onion-Location` value, ready to write, or null when there is no
+     * hidden service to name. Held as the finished string because it is emitted
+     * on EVERY http response and changes about once in a deployment's life.
+     *
+     * `http://…onion/`, not `ws://…onion/`: the header is HTTP's, and the
+     * clients that read it parse the value with an http url parser — okhttp's
+     * `toHttpUrl()` in Amethyst's case, which returns null for a ws scheme and
+     * would drop the advertisement on the floor without a word.
+     */
+    @Volatile
+    private var advertised: String? = onionAmong(declared)
+
     /** The published file's mtime, or 0 while there is no file; -1 before the first look. */
     @Volatile
     private var seenStamp: Long = -1L
@@ -79,12 +94,25 @@ class RelayAddresses(
      * authenticated, without a restart nobody knew to perform.
      */
     fun alternates(): Set<NormalizedRelayUrl> {
-        val file = hostnameFile
-        if (file != null) {
-            val stamp = file.toFile().lastModified()
-            if (stamp != seenStamp) adopt(file, stamp)
-        }
+        refresh()
         return addresses
+    }
+
+    /**
+     * What to put in the `Onion-Location` header on the clearnet endpoint, so
+     * a Tor-capable client that arrived the ordinary way learns this relay is
+     * also a hidden service and can move its connection inside the network.
+     * Null when we have no address to name.
+     */
+    fun onionLocation(): String? {
+        refresh()
+        return advertised
+    }
+
+    private fun refresh() {
+        val file = hostnameFile ?: return
+        val stamp = file.toFile().lastModified()
+        if (stamp != seenStamp) adopt(file, stamp)
     }
 
     /**
@@ -123,10 +151,18 @@ class RelayAddresses(
         }
 
         if (url !in addresses) {
-            addresses = declared + url
+            val next = declared + url
+            // The published address wins the advertisement: it is the service
+            // this deployment actually runs, and a declared one may be a
+            // second door someone else's Tor holds open.
+            advertised = (if (url.isOnion()) url.toHttp() else null) ?: onionAmong(next)
+            addresses = next
             announceAddress(url)
         }
     }
+
+    /** The first `.onion` in [from], as an http url — the only thing the header may name. */
+    private fun onionAmong(from: Set<NormalizedRelayUrl>): String? = from.firstOrNull { it.isOnion() }?.toHttp()
 
     private fun announceAddress(url: NormalizedRelayUrl) = announce("onion: this relay also answers at ${url.url} — NIP-42 AUTH is accepted for it")
 }
