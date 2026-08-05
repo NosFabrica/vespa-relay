@@ -86,6 +86,12 @@ streams {
         dir = "down"
         sync   = "negentropy"
         deleteMissing = "dryRun"
+        # The provider's relay is the source of truth for its OWN scores, and
+        # for nothing else here. Kind 0/10002 ride along so we pick them up if
+        # it serves them (NIP-85 says it should; measured, none do) — they are
+        # deleted only when a service's whole score set is retracted, never for
+        # being absent from a relay that was never going to have them.
+        ownedKinds = [30382]
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 8            # relays synced at the same time

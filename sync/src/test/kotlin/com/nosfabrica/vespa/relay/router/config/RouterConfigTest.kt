@@ -454,6 +454,7 @@ class RouterConfigTest {
             DeleteMissing.ON,
             stream(
                 """sync = "negentropy"
+                ownedKinds = [30382]
                 deleteMissing = true""",
             ).deleteMissing,
         )
@@ -461,6 +462,7 @@ class RouterConfigTest {
             DeleteMissing.DRY_RUN,
             stream(
                 """sync = "negentropy"
+                ownedKinds = [30382]
                 deleteMissing = "dryRun"""",
             ).deleteMissing,
         )
@@ -471,17 +473,91 @@ class RouterConfigTest {
         assertFailsWith<IllegalArgumentException> {
             stream(
                 """sync = "fetch"
+                ownedKinds = [30382]
                 deleteMissing = true""",
             )
         }
         // auto can silently BE a fetch, so it is refused for the same reason.
-        assertFailsWith<IllegalArgumentException> { stream("""deleteMissing = true""") }
+        assertFailsWith<IllegalArgumentException> {
+            stream(
+                """ownedKinds = [30382]
+                deleteMissing = true""",
+            )
+        }
         assertFailsWith<IllegalArgumentException> {
             stream(
                 """sync = "negentropy"
+                ownedKinds = [30382]
                 deleteMissing = "sometimes"""",
             )
         }
+    }
+
+    @Test
+    fun `deleting requires naming what it may delete`() {
+        fun stream(
+            kinds: String,
+            extra: String,
+        ) = RouterConfigLoader
+            .parse(
+                """
+                streams {
+                  s {
+                    dir = "down"
+                    sync = "negentropy"
+                    filter = { $kinds }
+                    urls = [ "wss://a.example" ]
+                    $extra
+                  }
+                }
+                """.trimIndent(),
+            ).streams
+            .single()
+
+        // The whole point: deletion is refused until the config says which
+        // kinds the upstream owns. Without it every other kind in the filter
+        // gets deleted for being absent from a relay that never held it —
+        // measured, no NIP-85 provider relay serves its own key's kind 0.
+        assertFailsWith<IllegalArgumentException> {
+            stream(""""kinds": [0, 10002, 30382]""", """deleteMissing = true""")
+        }
+        assertFailsWith<IllegalArgumentException> {
+            stream(
+                """"kinds": [0, 10002, 30382]""",
+                """deleteMissing = true
+                ownedKinds = []""",
+            )
+        }
+        assertEquals(
+            setOf(30382),
+            stream(
+                """"kinds": [0, 10002, 30382]""",
+                """deleteMissing = true
+                ownedKinds = [30382]""",
+            ).ownedKinds,
+        )
+
+        // Owning a kind the stream never asks for compares nothing.
+        assertFailsWith<IllegalArgumentException> {
+            stream(
+                """"kinds": [0, 10002]""",
+                """deleteMissing = true
+                ownedKinds = [30382]""",
+            )
+        }
+        // "Every kind" leaves the protected set open-ended.
+        assertFailsWith<IllegalArgumentException> {
+            stream(
+                """"authors": ["aa"]""",
+                """deleteMissing = true
+                ownedKinds = [30382]""",
+            )
+        }
+        // A licence with no deletion is a trap for whoever turns deletion on.
+        assertFailsWith<IllegalArgumentException> {
+            stream(""""kinds": [30382]""", """ownedKinds = [30382]""")
+        }
+        assertEquals(emptySet(), stream(""""kinds": [30382]""", "").ownedKinds)
     }
 
     @Test
