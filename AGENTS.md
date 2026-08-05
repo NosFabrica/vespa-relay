@@ -146,6 +146,9 @@ relay/src/main/resources/
                         state passed IN so the whole thing is testable —
                         tools/webtest/query.test.mjs asserts the filters, and
                         RelayProtocolTest asserts the relay answers them;
+                        shared/parents.js answers "in reply to WHO" — NIP-10's
+                        rule for which `e` tag is the parent, plus the by-id
+                        lookup for the author when the tag carries no hint;
                         entity.js
                         renders /npub1…//note1…//naddr1… paths; cards/ is the
                         kind registry — one renderer module per family, a
@@ -216,18 +219,29 @@ a DNS lookup, and it would publish `UnknownHostException` as proof of a dead
 relay), and nothing negative is ever published about one — reaching a hidden
 service depends on our circuit as much as on their server.
 
-**Sync bands** (`SyncBands`) record the `created_at` span already walked for
-a `(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
+**Sync bands** record the `created_at` span already walked for a
+`(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
 filter* deliberately: edit a stream's filter and its band is invalidated, which
 is the intended way to force a re-walk. A paged fetch records `complete = false`;
 only a finished negentropy reconcile records `complete = true`.
 
-**Known open bug:** a band holds one span for every kind in the filter, so a
-long-lived kind (0) vouches for a short-lived one (30382) and `legs()` skips the
-interior. The fix is per-kind spans *inside* the filter-keyed band — not
-per-kind keys, which would break the invalidation property above. Still
-unfixed; it stopped biting only because `assertions` narrowed to a single kind,
-so any multi-kind filter can walk into it again.
+**The arithmetic is quartz's** — `SyncCoverage`, in
+`nip01Core.relay.client.accessories`, beside `fetchAllPages` and
+`negentropySyncOrFetch`. `SyncBands` here is only the file: `SYNC_STATE_FILE`,
+the flush thread, the env names. It used to own a copy of the whole algorithm,
+and that fork silently missed two upstream fixes — a relay needing NOTHING was
+widening the shared snapshot to the full filter, and a `complete` band was not
+re-opening its older leg when the caller's floor dropped below it. **Fix band
+behaviour upstream, not here**, or the next quartz bump reverts it. The
+on-disk shape (`{key: {min, max, complete, fullAt}}`) is this repo's and is
+pinned by a test.
+
+**Known open bug (now upstream's):** a band holds one span for every kind in
+the filter, so a long-lived kind (0) vouches for a short-lived one (30382) and
+`legs()` skips the interior. The fix is per-kind spans *inside* the
+filter-keyed band — not per-kind keys, which would break the invalidation
+property above. Still unfixed; it stopped biting only because `assertions`
+narrowed to a single kind, so any multi-kind filter can walk into it again.
 
 ## Instrumentation — use it before theorising
 

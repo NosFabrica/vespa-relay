@@ -12,7 +12,7 @@
 import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
-  register, shell, titleHtml, bodyHtml, personLink, faceStrip, noteHref, addrHref,
+  register, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
   chipRow, tagOf, tagsOf, tagsWhere, jsonContent, fmtTs, extLink,
 } from "./base.js";
 
@@ -103,7 +103,14 @@ function zapRequestCard(ev, opts) {
 /**
  * 1111 — a NIP-22 comment. It is a note whose whole point is what it replies
  * to, and the uppercase tags name the ROOT while the lowercase ones name the
- * immediate parent — so both are shown when they differ.
+ * immediate parent.
+ *
+ * The parent leads the card as a PERSON now — replyLine reads the same `e`/`a`
+ * pair this used to print as two bech32 ids side by side, and a comment whose
+ * card says "replying to note1qqq… under note1qqq…" told a reader nothing
+ * twice. The root stays a row, and only when it differs from the parent: on a
+ * direct comment the two are the same event, which is where the duplicate came
+ * from.
  */
 function commentCard(ev, opts) {
   const ref = (id, addr) => {
@@ -114,9 +121,12 @@ function commentCard(ev, opts) {
   };
   const root = ref(tagOf(ev, "E"), tagOf(ev, "A")) || (tagOf(ev, "I") ? esc(tagOf(ev, "I")) : null);
   const parent = ref(tagOf(ev, "e"), tagOf(ev, "a"));
-  const inner = bodyHtml(opts, ev.content, 500);
+  const line = replyLine(ev);
+  const inner = line + bodyHtml(opts, ev.content, 500);
   return shell(ev, opts, inner, [
-    ["replying to", parent],
+    // The parent's own id, kept as a row only when the line above could not
+    // name it — otherwise the card says the same thing in two registers.
+    ["replying to", line ? null : parent],
     ["under", root && root !== parent ? root : null],
   ]);
 }
@@ -130,7 +140,7 @@ function pollCard(ev, opts) {
     (options.length ? `<ul class="ref-list">${(opts && opts.full ? options : options.slice(0, 6)).map((o) => `<li>${esc(clip(o, 120))}</li>`).join("")}</ul>` : "");
   return shell(ev, opts, inner, [
     ["choices", options.length ? String(options.length) : null],
-    ["closes", ends ? fmtTs(ends) : null],
+    ["closes", ends ? esc(fmtTs(ends)) : null],
   ]);
 }
 
@@ -240,7 +250,7 @@ function statusCard(ev, opts) {
   return shell(ev, opts, inner, [
     ["status", kindOfStatus ? esc(kindOfStatus) : null],
     ["link", extLink(link)],
-    ["expires", expiry ? fmtTs(expiry) : null],
+    ["expires", expiry ? esc(fmtTs(expiry)) : null],
   ]);
 }
 

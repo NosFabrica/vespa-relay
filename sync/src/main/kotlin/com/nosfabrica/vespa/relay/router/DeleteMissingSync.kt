@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
@@ -222,25 +223,29 @@ internal class DeleteMissingSync(
         for (leg in bands.legs(url, ask)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
+            // Per-kind spans, which quartz's SyncCoverage requires before it
+            // will record a band for a multi-kind filter at all.
+            val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             // Same time-axis reporting as every other paged walk: without it
             // these walks are the one hole in the stream's fraction/ETA line.
             val walk = "${stream.name}|${url.url}"
-            paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncBands.PLAUSIBLE_FLOOR)
+            paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
             try {
                 downloaded +=
                     client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS, onNewPage = { until -> paging.mark(walk, until) }) { event ->
                         if (stream.filter.match(event)) {
-                            if (SyncBands.isPlausible(event.createdAt)) {
+                            if (SyncCoverage.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                             }
+                            SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                             ingest.submit(event, stream.trusted)
                         }
                     }
             } finally {
                 paging.finish(walk)
             }
-            bands.record(url, ask, seenMin, seenMax, paged = true)
+            bands.record(url, ask, seenMin, seenMax, paged = true, observedByKind = seenByKind)
         }
         return downloaded
     }

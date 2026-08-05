@@ -5,7 +5,8 @@
 import { esc } from "../shared/format.js";
 import { npub, shortNpub } from "../shared/nip19.js";
 import { displayName, parseProfile } from "../shared/profiles.js";
-import { register, avatarHtml, badgeHtml, jsonHtml, propsHtml, keyHref, clipIf, clampCls } from "./base.js";
+import { avatarHtml } from "../shared/avatar.js";
+import { register, badgeHtml, extLink, jsonHtml, propsHtml, keyHref, selfHref, clipIf, clampCls } from "./base.js";
 
 function profileCard(ev, opts) {
   const p = parseProfile(ev);
@@ -16,7 +17,7 @@ function profileCard(ev, opts) {
       `<span class="nip05" data-addr="${esc(p.nip05)}" data-pk="${esc(ev.pubkey)}">` +
       `${esc(p.nip05)}<span class="n5chip checking" title="checking with the domain…">…</span></span>`]);
   }
-  if (p.website) props.push(["website", `<a href="${esc(p.website)}" target="_blank" rel="noopener noreferrer">${esc(p.website)}</a>`]);
+  if (p.website) props.push(["website", extLink(p.website)]);
   if (p.lud16) props.push(["lightning", esc(p.lud16)]);
   // The pubkey row only when the profile carries no name. With one, the name
   // IS how the person is shown — the npub stays in the page URL and one click
@@ -24,10 +25,14 @@ function profileCard(ev, opts) {
   // string nobody reads.
   if (!displayName(p)) props.push(["pubkey", `<a class="mono" href="${keyHref(ev.pubkey)}" title="${esc(npub(ev.pubkey))}">${esc(shortNpub(ev.pubkey))}</a>`]);
   const about = clipIf(opts, p.about, 400);
+  // This frame is hand-rolled rather than shell()'s, so the card's own click
+  // target has to be set here too — a profile's is the person's page, not the
+  // kind 0's id, which names one revision of it.
+  const href = opts && opts.full ? null : selfHref(ev);
   return `
-    <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}">
+    <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
       <div class="result-header">
-        ${avatarHtml(p.picture, ev.pubkey)}
+        ${avatarHtml(p.picture, ev.pubkey, "xl")}
         <div class="who">
           <h2 class="result-name"><a href="${keyHref(ev.pubkey)}">${esc(name)}</a></h2>
           ${(p.name || "").trim() && (p.name || "").trim() !== name ? `<div class="result-display">${esc(p.name)}</div>` : ""}

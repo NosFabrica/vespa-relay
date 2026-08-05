@@ -24,6 +24,7 @@
 import { refConn, relay } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
 import { enrichProfiles } from "./shared/profiles.js";
+import { unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
 import { kindLabel } from "./shared/kinds.js";
@@ -150,7 +151,19 @@ function titleFor(ev, parsed) {
  */
 async function enrichMentions(ev) {
   const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
-  await enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]);
+  // The parent lookup runs ALONGSIDE the mentions, not before them: they ask
+  // different questions of the same relay, and this page renders once — every
+  // round trip it serialises is dead time on a blank card. It cannot be
+  // skipped entirely, though: on a reply whose `e` tag names no author, WHO
+  // the parent is only becomes answerable once the parent event has been
+  // fetched, and namedPubkeys cannot declare a pubkey nothing here knows yet.
+  await Promise.all([
+    loadParentAuthors(unknownParents([ev])),
+    enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]),
+  ]);
+  // Which is what this second pass is for — the parent's own profile, and a
+  // no-op when the lookup above learned nobody new.
+  await enrichProfiles(namedPubkeys(ev));
 }
 
 /**
@@ -188,6 +201,15 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
 
   let ev = null, err = null, hint = null, gated = null;
   try {
+    // The anonymous socket is opened ALONGSIDE sign-in, not after the lens has
+    // already missed. Every path below reaches it — the whole-index fallback,
+    // the names, the score chips — and opening a WebSocket is a round trip
+    // before a single byte of question moves. A signed-in reader got this for
+    // free (login() fetches their own face over it); a signed-out one, or one
+    // whose lens holds the event, was paying the handshake in the middle of
+    // the lookup. refConn() dedupes its own opening, so this is a warm-up, not
+    // a second connection.
+    const warming = refConn().catch(() => null);
     // Settle sign-in first: whether there is a lens decides who gets asked.
     stage("signing in…");
     try { await ensureLogin(); } catch (e) {}
@@ -201,7 +223,7 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
     }
     if (!ev) {
       stage(relay.authed ? "not in your network's view — checking the whole index…" : "asking this relay…");
-      const conn = await refConn();
+      const conn = (await warming) || (await refConn());
       const anon = await fetchEntity(conn, parsed);
       // Present in the index but held back by the lens: OFFERED, not shown.
       if (anon && relay.authed) gated = anon;

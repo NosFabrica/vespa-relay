@@ -1,7 +1,9 @@
-// The substrate every renderer stands on: the registry, the byline, avatars,
-// badges, props tables, the json toggle, and the two rendering modes. Family
-// modules import from here and call register(); they never import each other,
-// and dispatch lives in cards.js so registration stays cycle-free.
+// The substrate every renderer stands on: the registry, the byline, badges,
+// props tables, the json toggle, and the two rendering modes. Family modules
+// import from here and call register(); they never import each other, and
+// dispatch lives in cards.js so registration stays cycle-free. (Faces live in
+// shared/avatar.js — the search field draws them too, and a card module is no
+// place for the page's other half to have to import from.)
 //
 // Every renderer is (ev, opts) -> HTML string. opts.full is the permalink
 // mode: a search result is a PREVIEW of the card (clipped text, clamped
@@ -10,9 +12,11 @@
 // never drift apart.
 
 import { esc, clip, fullDate, when } from "../shared/format.js";
+import { avatarHtml } from "../shared/avatar.js";
 import { kindLabel, kindTone } from "../shared/kinds.js";
-import { npub, noteId, naddr, shortAddr, shortNote, shortNpub } from "../shared/nip19.js";
+import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
+import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
 
 // ---- the registry ---------------------------------------------------------
 export const renderers = new Map(); // kind -> (ev, opts) -> html
@@ -28,6 +32,42 @@ export const noteHref = (hex) => `/${esc(noteId(hex))}`;
 export const njumpFor = (bech) => `https://njump.me/${esc(bech)}`;
 /** An `a` tag as a link to its entity page — null when it cannot be encoded. */
 export const addrHref = (a) => { const n = naddr(a); return n ? `/${esc(n)}` : null; };
+
+/**
+ * An event page, carrying whatever the tag that named the event knew about it.
+ *
+ * noteHref is the bare form and stays the default; when a hint is at hand this
+ * mints an nevent instead, because those hints are what entity.js falls back
+ * to when this relay's index misses. A reply whose parent we never mirrored
+ * opens anyway — from a note1… it could only ever say "Not here".
+ */
+export const eventHref = (id, hints = {}) => {
+  const n = hints.relay || hints.author
+    ? nevent(id, { relays: hints.relay ? [hints.relay] : [], author: hints.author, kind: hints.kind })
+    : "";
+  return n ? `/${esc(n)}` : noteHref(id);
+};
+
+/**
+ * The card's OWN page — what the whole card, and its date, link to.
+ *
+ * By event id for everything, which is what every kind's title already did:
+ * the entity page dispatches on the FETCHED event's kind, never on the
+ * identifier that led there, so a note1… naming an article renders as an
+ * article. A profile is the one exception, because a person's page is their
+ * npub — a kind 0's id names one revision of it and stops resolving the
+ * moment they edit their bio.
+ *
+ * Null when the event carries no usable identifier: a card with nowhere to go
+ * must not become a card that navigates to "/".
+ */
+export const selfHref = (ev) => {
+  if (ev && ev.kind === 0 && HEX64.test(ev.pubkey || "")) return keyHref(ev.pubkey);
+  return ev && HEX64.test(ev.id || "") ? noteHref(ev.id) : null;
+};
+// Module scope, because a literal inside the function allocates a RegExp on
+// every evaluation and this one runs twice per card, per render.
+const HEX64 = /^[0-9a-f]{64}$/;
 
 // ---- tag access -----------------------------------------------------------
 // `Array.isArray` on every entry, for the same reason format.js's firstTag
@@ -77,26 +117,6 @@ export const clipIf = (opts, s, n) => (opts && opts.full ? String(s || "").trim(
 export const clampCls = (opts) => (opts && opts.full ? "" : " clamp");
 
 // ---- shared chrome --------------------------------------------------------
-/** A pubkey-derived hue, so a missing picture is still a stable, distinct face. */
-export const hueOf = (seed) => (parseInt(String(seed || "").slice(0, 4), 16) || 0) % 360;
-// Exported because the search field's mention chips fall back the same way: a
-// broken picture becomes the SAME generated face there as in a card, and one
-// answer to "what does this person look like when their host is down" is worth
-// more than a second copy of a data uri.
-export const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAABAAEAAAICTAEAOw==";
-
-/** A broken picture falls back to the same generated face, in place. */
-export function avatarHtml(pic, seed) {
-  const style = `style="--h:${hueOf(seed)}"`;
-  const face = pic
-    ? `<img class="avatar" ${style} src="${esc(pic)}" alt="" loading="lazy" referrerpolicy="no-referrer"
-         onerror="this.classList.add('gen');this.src='${BLANK}'" />`
-    : `<div class="avatar gen" ${style}></div>`;
-  // The chip is painted after the fact by paintScores(): the score is a second
-  // round trip, and a face should not wait on it.
-  return `<span class="av-wrap">${face}<span class="score-chip" data-pk="${esc(seed || "")}"></span></span>`;
-}
-
 export const badgeHtml = (ev) => `<span class="kind-badge" data-tone="${kindTone(ev.kind)}">${esc(kindLabel(ev.kind))}</span>`;
 
 /**
@@ -111,30 +131,65 @@ export const jsonHtml = (ev) =>
   `<div class="raw"><button type="button" class="raw-toggle" data-id="${esc(ev.id)}">json</button>` +
   `<pre class="raw-body" hidden></pre></div>`;
 
-/** The shared author line: avatar, name (a link to the author's page), date, badge. */
+/**
+ * The shared author line: avatar, name (a link to the author's page), date,
+ * badge.
+ *
+ * The DATE is the card's permalink, as it is in every other client — and it is
+ * the reason the whole card can be clickable without the page losing anything:
+ * this is a real anchor, so middle-click opens a tab, right-click copies the
+ * link, and Tab reaches it. A div that navigates on click can do none of the
+ * three. On the permalink itself the date stays plain text; a page does not
+ * link to itself.
+ */
 export function bylineHtml(ev, opts) {
   const a = authorOf(ev);
+  const href = opts && opts.full ? null : selfHref(ev);
+  const date = esc(opts && opts.full ? fullDate(ev) : when(ev));
   return `
     <div class="byline">
-      ${avatarHtml(a.picture, ev.pubkey)}
+      ${avatarHtml(a.picture, ev.pubkey, "sm")}
       <a class="by-name" href="${keyHref(ev.pubkey)}">${esc(a.name)}</a>
       <span class="dot">·</span>
-      <span class="by-date" title="${esc(fullDate(ev))}">${esc(opts && opts.full ? fullDate(ev) : when(ev))}</span>
+      ${href
+        ? `<a class="by-date" href="${href}" title="${esc(fullDate(ev))}">${date}</a>`
+        : `<span class="by-date" title="${esc(fullDate(ev))}">${date}</span>`}
       <span class="spacer"></span>
       ${badgeHtml(ev)}
     </div>`;
 }
 
-/** A props table, skipping rows whose value came up empty. */
+/**
+ * A props table, skipping rows whose value came up empty.
+ *
+ * The VALUE goes in as raw HTML — that is what lets a row be a link — so every
+ * value derived from an event must arrive already escaped. This is not a
+ * theoretical rule: four cards passed `fmtTs(tagOf(ev, …))` straight in, and
+ * fmtTs hands back its argument verbatim when it is not a number, so
+ * `["endsAt", "<img src=x onerror=…>"]` on a kind 1068 executed in the page.
+ * tools/webtest/cards.test.mjs now renders every registered kind with a payload
+ * in every tag and fails if it survives, so the next one is caught here rather
+ * than in the wild.
+ */
 export const propsHtml = (props) => {
   const rows = props.filter(([, v]) => v != null && v !== "");
   return rows.length ? `<dl class="props">${rows.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${v}</dd>`).join("")}</dl>` : "";
 };
 
-/** The card frame most kinds share: byline, the kind's body, props, json. */
+/**
+ * The card frame most kinds share: byline, the kind's body, props, json.
+ *
+ * `data-href` is where the CARD goes when clicked — app.js reads it off the
+ * article. It is an attribute rather than a wrapping `<a>` because a card
+ * legitimately contains links (the author, a hashtag, whoever it replies to)
+ * and anchors cannot nest; the handler yields to any real control inside, and
+ * to a text selection. Preview depth only: on the permalink the card IS the
+ * page.
+ */
 export function shell(ev, opts, inner, props = []) {
+  const href = opts && opts.full ? null : selfHref(ev);
   return `
-    <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}">
+    <article class="result${opts && opts.full ? " full" : ""}" data-id="${esc(ev.id)}"${href ? ` data-href="${href}"` : ""}>
       ${bylineHtml(ev, opts)}
       ${inner}
       ${propsHtml(props)}
@@ -161,6 +216,47 @@ export const personLink = (pk) => {
 };
 
 /**
+ * "↩ in reply to <person>" — the line a reply-shaped card leads with, or ""
+ * when the event is not a reply.
+ *
+ * Two decisions worth stating, because both were the other way round:
+ *
+ * The LABEL is the person. A reply used to render its parent as `note1qqq…`
+ * in the props table, which is a hash: it tells a reader nothing about what
+ * they are looking at, and no other client shows one. Who is being answered
+ * is the context that makes the text above it read as a conversation.
+ *
+ * The LINK is the parent EVENT, not the parent's profile. Somebody clicking
+ * "in reply to Alice" wants the thing Alice said; her profile is one more
+ * click away from the byline of the card that opens. The href therefore
+ * disagrees with the label on purpose — and carries the `e` tag's relay hint,
+ * so a parent this relay never mirrored still opens.
+ *
+ * The fallback ladder is name -> npub -> note id, in decreasing usefulness:
+ * the last rung is only reached when neither the tag nor the lookup produced
+ * an author, which means this relay does not hold the parent either.
+ */
+export function replyLine(ev) {
+  const t = replyTarget(ev);
+  if (t) {
+    const pk = replyAuthor(ev);
+    return replyRow(eventHref(t.id, { relay: t.relay, author: pk }), pk, shortNote(t.id), noteId(t.id));
+  }
+  // A NIP-22 comment on something addressable — an article, a listing — has no
+  // `e` at all, and its `a` carries the author in the address itself.
+  const a = replyAddr(ev);
+  const href = a && addrHref(a.addr);
+  return href ? replyRow(href, a.author, shortAddr(a.addr), a.addr) : "";
+}
+
+const replyRow = (href, pk, fallbackLabel, fallbackTitle) => {
+  const nm = pk ? displayName(profiles.get(pk)) : "";
+  const label = nm || (pk ? shortNpub(pk) : fallbackLabel);
+  const title = pk ? npub(pk) : fallbackTitle;
+  return `<div class="reply-line">↩ in reply to <a${nm ? "" : ' class="mono"'} href="${href}" title="${esc(title)}">${esc(label)}</a></div>`;
+};
+
+/**
  * A heading, at either depth, optionally linking somewhere. `href` goes in
  * RAW — pass keyHref/noteHref/addrHref, which escape, and never a url taken
  * straight off an event.
@@ -171,8 +267,40 @@ export const titleHtml = (opts, text, n = 140, href = null) => {
   return `<h2 class="result-title">${href ? `<a href="${href}">${esc(t)}</a>` : esc(t)}</h2>`;
 };
 
-export const extLink = (url, label) =>
-  url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(label || url)}</a>` : null;
+/**
+ * A url off an event, reduced to one this page will put in an `href` — or null.
+ *
+ * `esc()` makes a url safe to SIT in an attribute; it says nothing about what
+ * the browser does when the link is clicked, and `javascript:` or
+ * `data:text/html` in an href is a script the reader runs on themselves. Every
+ * link here carries `target="_blank"`, which current browsers refuse to follow
+ * for both schemes — but that is a browser's behaviour, not this page's, and
+ * every one of these urls came from a stranger's event.
+ *
+ * Absolute http/https only. A relative url would resolve against this origin,
+ * which is never what an event meant.
+ */
+export const safeUrl = (u) => {
+  const s = String(u || "").trim();
+  if (!s) return null;
+  try {
+    const p = new URL(s).protocol;   // throws on anything not absolute
+    return p === "http:" || p === "https:" ? s : null;
+  } catch (e) { return null; }
+};
+
+/**
+ * The one external link. Unlinkable urls render as their own text rather than
+ * disappearing: the reader can still see what the event claimed, which is the
+ * point of showing the field at all.
+ */
+export const extLink = (url, label) => {
+  if (!url) return null;
+  const safe = safeUrl(url);
+  return safe
+    ? `<a href="${esc(safe)}" target="_blank" rel="noopener noreferrer">${esc(label || safe)}</a>`
+    : `<span class="mono">${esc(clip(String(url), 120))}</span>`;
+};
 
 /**
  * A list of relay rows; full mode shows all, preview the first few. Lives here
@@ -226,5 +354,5 @@ export function faceStrip(pubkeys, max = 12) {
   const shown = pubkeys.slice(0, max);
   if (!shown.length) return "";
   const more = pubkeys.length - shown.length;
-  return `<div class="face-strip">${shown.map((pk) => `<a href="${keyHref(pk)}">${avatarHtml(authorOf({ pubkey: pk }).picture, pk)}</a>`).join("")}${more > 0 ? `<span class="face-more">+${more}</span>` : ""}</div>`;
+  return `<div class="face-strip">${shown.map((pk) => `<a href="${keyHref(pk)}">${avatarHtml(authorOf({ pubkey: pk }).picture, pk, "md")}</a>`).join("")}${more > 0 ? `<span class="face-more">+${more}</span>` : ""}</div>`;
 }

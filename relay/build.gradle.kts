@@ -40,6 +40,10 @@ dependencies {
     // production code in the store's transitively-exposed :vespa engine jar — no
     // test-fixtures dependency needed. RelayInfoTest parses the NIP-11 doc.
     testImplementation(libs.kotlinx.serialization.json)
+    // RelayWebAssetsTest drives GET /web/… in-process: the module directory IS
+    // the landing page, so its route, its 304 and its content type are asserted
+    // rather than eyeballed against a running container.
+    testImplementation(libs.ktor.server.test.host)
 }
 
 kotlin {

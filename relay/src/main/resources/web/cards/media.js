@@ -4,7 +4,7 @@
 // URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { register, shell, bodyHtml, emojiGrid, imetaField, tagOf, tagsOf, clipIf } from "./base.js";
+import { register, shell, bodyHtml, replyLine, emojiGrid, extLink, imetaField, tagOf, tagsOf, clipIf } from "./base.js";
 
 const mediaUrl = (ev) => imetaField(ev, "url") || tagOf(ev, "url");
 const poster = (ev) => imetaField(ev, "image") || imageOf(ev);
@@ -38,7 +38,7 @@ function videoCard(ev, opts) {
   const inner = full
     ? (url ? `<div class="embed"><video controls preload="metadata" src="${esc(url)}"${poster(ev) ? ` poster="${esc(poster(ev))}"` : ""}></video></div>` : "") + body
     : `<div class="result-main"><div class="text">${body}</div>${thumbFallback(poster(ev))}</div>`;
-  return shell(ev, opts, inner, full && url ? [["url", `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>`]] : []);
+  return shell(ev, opts, inner, full && url ? [["url", extLink(url)]] : []);
 }
 
 const fmtBytes = (n) => {
@@ -58,16 +58,21 @@ function fileCard(ev, opts) {
     (full && url && mime.startsWith("image/") ? imgEmbed(url) : "") +
     bodyHtml(opts, ev.content || titleOf(ev), 300);
   return shell(ev, opts, inner, [
-    ["file", url ? `<a href="${esc(url)}" target="_blank" rel="noopener noreferrer">${esc(url)}</a>` : null],
+    ["file", extLink(url)],
     ["type", mime ? esc(mime) : null],
     ["size", fmtBytes(tagOf(ev, "size"))],
   ]);
 }
 
-/** 1986 — audio: playable when a url is present. */
+/**
+ * 1986 — audio: playable when a url is present. A 1244 is a voice message
+ * REPLY and carries nothing but the audio, so who it answers is the only text
+ * on the card and the only way to place it in a conversation.
+ */
 function audioCard(ev, opts) {
   const url = mediaUrl(ev);
   const inner =
+    replyLine(ev) +
     (opts && opts.full && url ? `<div class="embed"><audio controls preload="metadata" src="${esc(url)}"></audio></div>` : "") +
     bodyHtml(opts, ev.content || titleOf(ev), 300);
   return shell(ev, opts, inner);
