@@ -43,9 +43,16 @@ export function seedProfiles(events) {
   }
 }
 
+/**
+ * Load the profiles for [pubkeys] that are not cached yet.
+ *
+ * Returns how many NEW ones it learned, so a caller that rendered before the
+ * names arrived knows whether repainting would change anything — a lookup
+ * that found nothing new must not cost a second render.
+ */
 export async function enrichProfiles(pubkeys) {
   const missing = [...new Set(pubkeys)].filter(p => p && !profiles.has(p));
-  if (!missing.length) return;
+  if (!missing.length) return 0;
   let asked = false;
   try {
     // Anonymous, like every other reference lookup. A displayed author's name
@@ -66,7 +73,9 @@ export async function enrichProfiles(pubkeys) {
   // appear to need a page refresh: the very first attempt poisoned the entry
   // for your own key, and every later render read the poison. A timed-out
   // read is the same mistake in slow motion, hence the `complete` check.
+  const learned = missing.filter((p) => profiles.get(p)).length;
   if (asked) for (const p of missing) if (!profiles.has(p)) profiles.set(p, null);
+  return learned;
 }
 
 export function authorOf(ev) {

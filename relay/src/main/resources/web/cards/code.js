@@ -2,7 +2,8 @@
 // scrolling <pre> — a diff with re-wrapped lines is not a diff any more.
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
-import { register, shell, bodyHtml, tagOf, tagsOf, clipIf } from "./base.js";
+import { shortNote } from "../shared/nip19.js";
+import { register, shell, bodyHtml, noteHref, tagOf, tagsOf, tagsWhere, clipIf, chipRow } from "./base.js";
 
 const preBlock = (opts, text, n = 2000) =>
   text ? `<pre class="codeblock">${esc(clipIf(opts, text, n))}</pre>` : "";
@@ -57,8 +58,41 @@ function releaseCard(ev, opts) {
     links.slice(0, opts && opts.full ? links.length : 3).map((u) => ["artifact", `<a href="${esc(u)}" target="_blank" rel="noopener noreferrer">${esc(u)}</a>`]));
 }
 
+/**
+ * 1630-1633 — a NIP-34 status. The KIND is the status: which one it is cannot
+ * be read off any tag, so the map below is the whole meaning of the event and
+ * a card that omitted it would be showing a comment with no verdict attached.
+ */
+const GIT_STATUS = { 1630: "open", 1631: "applied or merged", 1632: "closed", 1633: "draft" };
+function gitStatusCard(ev, opts) {
+  const target = tagsOf(ev, "e").map((t) => t[1]).find((v) => /^[0-9a-f]{64}$/.test(v));
+  const inner =
+    `<div class="result-body">marked <b>${esc(GIT_STATUS[ev.kind])}</b>${target ? ` — <a class="mono" href="${noteHref(target)}">${esc(shortNote(target))}</a>` : ""}</div>` +
+    bodyHtml(opts, ev.content, 400);
+  return shell(ev, opts, inner);
+}
+
+/**
+ * 30618 — repository state: one tag per ref, `["refs/heads/master", <commit>]`.
+ * The tag NAME is the branch, which is why this cannot ride on repoCard.
+ */
+function repoStateCard(ev, opts) {
+  const refs = tagsWhere(ev, (name) => name.startsWith("refs/"));
+  const heads = refs.filter((t) => t[0].startsWith("refs/heads/")).map((t) => t[0].slice("refs/heads/".length));
+  const tags = refs.filter((t) => t[0].startsWith("refs/tags/")).map((t) => t[0].slice("refs/tags/".length));
+  const inner =
+    `<div class="result-body">${heads.length} branch${heads.length === 1 ? "" : "es"} · ${tags.length} tag${tags.length === 1 ? "" : "s"}</div>` +
+    chipRow([...heads, ...tags], opts);
+  return shell(ev, opts, inner, [["HEAD", tagOf(ev, "HEAD") ? esc(tagOf(ev, "HEAD")) : null]]);
+}
+
 register([1337], snippetCard);
 register([1617], patchCard);
-register([1621], issueCard);
+// 1618/1619 are pull requests and their updates: a subject over prose, not a
+// diff, so they take the issue template rather than the patch one — a <pre>
+// around a paragraph is a description with its line breaks frozen.
+register([1621, 1618, 1619, 1622], issueCard);
+register([1630, 1631, 1632, 1633], gitStatusCard);
 register([30617], repoCard);
+register([30618], repoStateCard);
 register([30063], releaseCard);

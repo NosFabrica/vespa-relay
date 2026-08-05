@@ -23,6 +23,17 @@
 
   Counts come from the store's index rather than a walk over events, so this
   stays cheap against a 50M-event corpus.
+
+  THE DEFAULT SET is every kind the search UI renders, read from
+  /web/shared/kinds.js. It used to be five kinds hardcoded here, on the
+  reasoning that "the protocol has no registry a client can enumerate, so
+  there is no 'all kinds' to offer" — true of NIP-01, but this relay has one:
+  the card registry. Copying the list into this file instead would be a second
+  table nothing keeps honest, and it would go stale in the direction that
+  hides events rather than the one that shows too many. This page still
+  carries its own COUNT-only client — that is the part worth keeping
+  self-contained, because it must work when the app is broken; a table of
+  integers is not.
 -->
 <style>
   :root {
@@ -60,6 +71,11 @@
   td.n { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
   td.kind { font-variant-numeric: tabular-nums; color: var(--accent); font-weight: 600; }
   .name { color: var(--muted); }
+  tr.group td { background: var(--bar); font-size: .78rem; font-weight: 700; text-transform: uppercase;
+                letter-spacing: .05em; color: var(--muted); padding: .35rem .75rem; }
+  body.hide-empty tr.empty { display: none; }
+  .toggle { display: inline-flex; align-items: center; gap: .35rem; color: var(--muted); font-size: .9rem; }
+  .toggle input { width: auto; }
   .pending { color: var(--muted); font-style: italic; }
   .none { color: var(--warn); }
   .capped { color: var(--warn); }
@@ -71,11 +87,12 @@
 <main>
   <h1>Kind stats</h1>
   <p class="sub">One NIP-45 <code>COUNT</code> per kind, asked anonymously — totals for the whole store,
-     not for any one reader's web of trust.</p>
+     not for any one reader's web of trust. Every kind this relay's search renders is counted by default.</p>
 
   <div class="bar-row">
     <button id="run">Count</button>
     <input id="extra" placeholder="also count these kinds, comma separated" />
+    <label class="toggle"><input type="checkbox" id="hide-empty" /> hide kinds with no events</label>
     <span class="status" id="status">idle</span>
   </div>
 
@@ -91,27 +108,32 @@
   <footer id="foot"></footer>
 </main>
 
-<script>
+<script type="module">
+import { KNOWN_KINDS, kindLabel, kindTone } from "/web/shared/kinds.js";
+
 // Same origin as the page, so this works wherever the relay is served from.
 const RELAY_URL = (location.protocol === "https:" ? "wss://" : "ws://") + location.host;
 
-// What this relay is actually for. Ranked search needs profiles to rank, scores
-// to rank them BY, and the two lists that say where to find each — so these are
-// the kinds whose numbers mean something here, and a page that answers in five
-// rows gets read.
-//
-// Anything else goes in the box: COUNT needs a kind to ask about and the
-// protocol has no registry a client can enumerate, so there is no "all kinds"
-// to offer.
-const KINDS = [
-  [0, "Profiles"],
-  [1, "Notes"],
-  [10002, "Relay lists (NIP-65)"],
-  [10040, "Observers (NIP-85)"],
-  [30382, "User Scores"],
-];
+// Every kind the search UI renders — see the note at the top for why this is
+// read rather than listed. Anything outside it still goes in the box.
+const KINDS = KNOWN_KINDS.map((k) => [k, kindLabel(k)]);
 
 const PER_KIND_TIMEOUT_MS = 20000;
+// Four at a time. The reason this was strictly sequential still holds — "a
+// status page, not a load generator" — and four concurrent COUNTs is not a
+// burst. What changed is the denominator: one at a time over five kinds is a
+// couple of seconds, and over a hundred and twenty it is up to
+// 120 × PER_KIND_TIMEOUT_MS, which is forty minutes of a page reading
+// "counting 3/120".
+const POOL = 4;
+// If the first several asks all come back with nothing, stop: a relay that
+// answers no COUNT answers no COUNT. Workers only test this between asks, so
+// the real cost is this many plus whatever was already in flight — measured
+// against a deliberately silent relay at 11 asks and 60s, where walking the
+// whole list would have been 117 timeouts and about ten minutes. The footer
+// reports the number actually asked rather than this constant. Only SILENCE
+// trips it: a genuine zero is an answer, and the walk continues.
+const SILENCE_BAIL = 8;
 // A COUNT landing exactly on one of these is more likely a relay reporting its
 // default page size than a real total. Flagged rather than hidden: this relay
 // did exactly that until quartz stopped applying defaultLimit to COUNT, and 500
@@ -123,26 +145,63 @@ const statusEl = document.getElementById("status");
 const footEl = document.getElementById("foot");
 const runEl = document.getElementById("run");
 const extraEl = document.getElementById("extra");
+const hideEmptyEl = document.getElementById("hide-empty");
 
 const fmt = (n) => n.toLocaleString();
 
-function render(results) {
+// Families in the order the search page's chips run, so the two read the same
+// way; "other" collects the kinds typed into the box, which have no family.
+const FAMILY_ORDER = ["people", "note", "social", "article", "media", "code", "live", "market", "list", "apps", "other"];
+const familyOf = (kind) => kindTone(kind) || "other";
+const familyRank = (kind) => {
+  const i = FAMILY_ORDER.indexOf(familyOf(kind));
+  return i < 0 ? FAMILY_ORDER.length : i;
+};
+
+const cellHtml = (v) =>
+  v === undefined ? '<span class="pending">…</span>'
+  : v === null ? '<span class="none">no reply</span>'
+  : fmt(v.count) +
+    (v.approximate ? ' <span class="name">≈</span>' : "") +
+    (SUSPICIOUS.has(v.count)
+      ? ' <span class="capped" title="exactly a common page-size cap — the relay may be reporting its default limit instead of a count">⚠</span>'
+      : "");
+
+/**
+ * Build the table ONCE and hand each row back its own count cell.
+ *
+ * With five kinds, rebuilding the whole tbody after every answer cost
+ * nothing. With a hundred and twenty it is a hundred and twenty rebuilds of a
+ * hundred and twenty rows for one number each — and it threw away the
+ * reader's scroll position every time an answer landed.
+ */
+function build(results) {
   rowsEl.innerHTML = "";
+  results.sort((a, b) => familyRank(a.kind) - familyRank(b.kind) || a.kind - b.kind);
+  let family = null;
   for (const r of results) {
-    const v = r.count;
-    const cell =
-      v === undefined ? '<span class="pending">…</span>'
-      : v === null ? '<span class="none">no reply</span>'
-      : fmt(v.count) +
-        (v.approximate ? ' <span class="name">≈</span>' : "") +
-        (SUSPICIOUS.has(v.count)
-          ? ' <span class="capped" title="exactly a common page-size cap — the relay may be reporting its default limit instead of a count">⚠</span>'
-          : "");
+    if (familyOf(r.kind) !== family) {
+      family = familyOf(r.kind);
+      const head = document.createElement("tr");
+      head.className = "group";
+      head.innerHTML = `<td colspan="3">${family}</td>`;
+      rowsEl.appendChild(head);
+    }
     const tr = document.createElement("tr");
-    tr.innerHTML =
-      `<td class="kind">${r.kind}</td><td class="name">${r.name || ""}</td><td class="n">${cell}</td>`;
+    tr.innerHTML = `<td class="kind">${r.kind}</td><td class="name">${r.name || ""}</td><td class="n"></td>`;
+    r.row = tr;
+    r.cell = tr.lastElementChild;
+    paint(r);
     rowsEl.appendChild(tr);
   }
+}
+
+function paint(r) {
+  r.cell.innerHTML = cellHtml(r.count);
+  // An empty kind is hidden only on request: zero IS an answer, and a page
+  // that hides its zeros by default cannot be read as "the relay holds these
+  // and nothing else".
+  if (r.row) r.row.classList.toggle("empty", r.count != null && r.count.count === 0);
 }
 
 /** A COUNT-only client that never authenticates — see the note at the top. */
@@ -187,7 +246,7 @@ async function run() {
   const qs = extra.length ? "?kinds=" + extra.join(",") : "";
   if (location.search !== qs) history.replaceState(null, "", location.pathname + qs);
   const results = [...KINDS.map(([kind, name]) => ({ kind, name })), ...extra.map((kind) => ({ kind, name: "" }))];
-  render(results);
+  build(results);
 
   let ws;
   try {
@@ -200,31 +259,47 @@ async function run() {
   }
 
   const started = Date.now();
-  let done = 0;
-  // One at a time: this is a status page, not a load generator, and a busy relay
-  // should degrade to slow rather than to a burst of stalled queries.
-  for (const r of results) {
-    statusEl.textContent = `counting ${++done}/${results.length} (kind ${r.kind})…`;
-    r.count = await ws.count(r.kind);
-    render(results);
-  }
+  let next = 0, done = 0, answered = 0, abandoned = 0;
+  const worker = async () => {
+    while (next < results.length) {
+      // Silence, not zeros: `answered` counts replies of any value, so a relay
+      // that genuinely holds none of the first eight kinds keeps going.
+      if (answered === 0 && done >= SILENCE_BAIL) { abandoned = results.length - done; return; }
+      const r = results[next++];
+      r.count = await ws.count(r.kind);
+      done++;
+      if (r.count) answered++;
+      paint(r);
+      statusEl.textContent = `counting ${done}/${results.length}…`;
+    }
+  };
+  await Promise.all(Array.from({ length: Math.min(POOL, results.length) }, worker));
   ws.close();
 
-  const answered = results.filter((r) => r.count).length;
-  const total = results.reduce((n, r) => n + (r.count ? r.count.count : 0), 0);
+  const counted = results.filter((r) => r.count);
+  const total = counted.reduce((n, r) => n + r.count.count, 0);
+  const held = counted.filter((r) => r.count.count > 0).length;
   statusEl.textContent = `done in ${((Date.now() - started) / 1000).toFixed(1)}s`;
   footEl.innerHTML =
-    `${answered}/${results.length} kind(s) answered · ${fmt(total)} event(s) counted` +
-    (answered === 0
-      ? ' · <span class="none">the relay answered no COUNT at all — it advertises NIP-45, so this is worth chasing</span>'
-      : "");
+    `${counted.length}/${results.length} kind(s) answered · ${held} with events · ${fmt(total)} event(s) counted` +
+    (abandoned
+      ? ` · <span class="none">gave up after ${done} silent asks and skipped ${abandoned} more — the relay advertises NIP-45, so this is worth chasing</span>`
+      : answered === 0
+        ? ' · <span class="none">the relay answered no COUNT at all — it advertises NIP-45, so this is worth chasing</span>'
+        : "");
   runEl.disabled = false;
 }
 
 // `?kinds=1063,9735` pre-fills the box before the auto-run below, so a pasted
-// link answers the question it was copied to ask instead of the default five.
+// link answers the question it was copied to ask on top of the default set.
 const urlKinds = new URLSearchParams(location.search).get("kinds");
 if (urlKinds) extraEl.value = urlKinds;
+
+// A CSS class, not a re-render: the rows are already built and the counts
+// already in them, so hiding the zeros must not cost another pass over the
+// table or lose where the reader was.
+hideEmptyEl.addEventListener("change", () =>
+  document.body.classList.toggle("hide-empty", hideEmptyEl.checked));
 
 runEl.addEventListener("click", run);
 run();

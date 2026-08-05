@@ -28,8 +28,8 @@ import { watchNip05 } from "./shared/nip05.js";
 import { esc, titleOf } from "./shared/format.js";
 import { kindLabel } from "./shared/kinds.js";
 import { nip19Parse, shortNpub } from "./shared/nip19.js";
-import { njumpFor } from "./cards/base.js";
-import { card } from "./cards.js";
+import { njumpFor, tagsWhere } from "./cards/base.js";
+import { card, namedPubkeys } from "./cards.js";
 
 // A token, not a flag: navigating away (or to the next entity) invalidates
 // any fetch still in flight, so a slow lookup can never paint over the view
@@ -133,14 +133,24 @@ function titleFor(ev, parsed) {
 }
 
 /**
- * Names and faces for everyone the card will mention: the author, the p
- * tags, and any other tag value that IS a pubkey — a 30382's d subject, a
- * 10040's service column. "Never an npub where a name exists" only holds if
- * the profiles are actually loaded before the card renders.
+ * Names and faces for everyone the card will mention. Two sets, because they
+ * answer different questions:
+ *
+ * - every 64-hex tag value, capped: the FACES. A follow set's strip, a
+ *   community's moderators. Broad and cheap to be wrong about — a value that
+ *   turns out to be an event id costs one lookup that finds nothing.
+ * - namedPubkeys: the NAMES, from cards.js, which knows what the renderers
+ *   actually write out. Not a subset of the above: a zap receipt's sender
+ *   lives inside the stringified request in its `description` tag, so no scan
+ *   of the outer event's tags can reach it, and the permalink rendered that
+ *   one person as an npub.
+ *
+ * "Never an npub where a name exists" only holds if the profiles are actually
+ * loaded before the card renders.
  */
 async function enrichMentions(ev) {
-  const mentioned = [...new Set((ev.tags || []).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
-  await enrichProfiles([ev.pubkey, ...mentioned.slice(0, 50)]);
+  const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
+  await enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]);
 }
 
 /**

@@ -5,7 +5,7 @@
 // so plain-but-safe wins until a renderer earns its audit.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { register, shell, bodyHtml, noteHref, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
+import { register, shell, titleHtml, bodyHtml, refRows, noteHref, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
 
 function articleCard(ev, opts) {
   const title = titleOf(ev);
@@ -38,5 +38,27 @@ function curationCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-register([30023, 30024, 30818], articleCard);
+/**
+ * 30040 — a curated publication index: a book's table of contents. Its `a`
+ * tags are ORDERED sections (30041s), so the card lists them as the contents
+ * they are; the prose lives in the sections, not here, which is why this one
+ * cannot share articleCard's body-first template.
+ */
+function publicationCard(ev, opts) {
+  const sections = tagsOf(ev, "a").map((t) => t[1]).filter(Boolean);
+  const inner =
+    titleHtml(opts, titleOf(ev), 140, noteHref(ev.id)) +
+    bodyHtml(opts, summaryOf(ev), 300, true) +
+    `<div class="result-body">${sections.length} section${sections.length === 1 ? "" : "s"}</div>` +
+    refRows(sections.map((a) => ({ kind: "a", value: a })), opts);
+  return shell(ev, opts, inner, [
+    ["author", tagOf(ev, "author") ? esc(tagOf(ev, "author")) : null],
+    ["version", tagOf(ev, "version") ? esc(tagOf(ev, "version")) : null],
+  ]);
+}
+
+// 30041 is a publication SECTION — a title over prose, which is an article in
+// every way that matters to this page.
+register([30023, 30024, 30818, 30041], articleCard);
 register([30004], curationCard);
+register([30040], publicationCard);

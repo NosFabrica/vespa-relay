@@ -8,7 +8,7 @@ import { npub, noteId, shortNpub, pubkeyParam } from "./shared/nip19.js";
 import { esc } from "./shared/format.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
-import { card, popupRow } from "./cards.js";
+import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 
 const POPUP_LIMIT = 8;
@@ -19,14 +19,22 @@ const DEBOUNCE_MS = 150;
 // `slug` is the tab's name in the URL (`?tab=notes`). A slug, not the label
 // ("Code & git" percent-encodes into line noise) and not the kinds list
 // (which this page is free to tune without breaking every bookmarked URL).
+//
+// A tab's kinds must be the ones the matching FAMILY renders, and were not:
+// Media asked for 31922 — a NIP-52 date-based calendar event, which renders
+// under Live — while leaving out 1986 audio, so the audio tab kind was
+// unreachable from any chip and every "Media" result set could contain a
+// conference date. Kept in sync with shared/kinds.js by hand; the tone table
+// there is the reference for which family a kind belongs to.
 const KIND_TABS = [
   { label: "Everything", slug: "all", kinds: null },
   { label: "People", slug: "people", kinds: [0] },
-  { label: "Notes", slug: "notes", kinds: [1, 11] },
-  { label: "Articles", slug: "articles", kinds: [30023, 30024, 30818] },
-  { label: "Media", slug: "media", kinds: [20, 21, 22, 1063, 31922, 34235, 34236] },
-  { label: "Code & git", slug: "code", kinds: [1337, 1617, 1621, 30617] },
-  { label: "Live", slug: "live", kinds: [30311] },
+  { label: "Notes", slug: "notes", kinds: [1, 11, 1111] },
+  { label: "Articles", slug: "articles", kinds: [30023, 30024, 30818, 30040, 30041] },
+  { label: "Media", slug: "media", kinds: [20, 21, 22, 1063, 1986, 1222, 34235, 34236] },
+  { label: "Code & git", slug: "code", kinds: [1337, 1617, 1618, 1621, 30617] },
+  { label: "Live", slug: "live", kinds: [30311, 30312, 30313, 31922, 31923, 31924] },
+  { label: "Lists", slug: "lists", kinds: [10003, 10015, 30001, 30003, 30015, 30267, 39701] },
 ];
 
 // ---- signed-in preference, shared across the relay's pages ----------------
@@ -231,16 +239,24 @@ async function search(text, limit) {
   if (tab.kinds) filter.kinds = tab.kinds;
   const events = await relay.req(filter);
   seedProfiles(events);
-  // Authors, plus any tag value that IS a pubkey the card will show as a
-  // person — a 30382's d subject, a 10040's service column. The names rule
-  // holds in the results list, not only on permalinks. p tags are excluded
-  // on purpose: list previews draw them as faces without names, and a follow
-  // list can carry thousands.
-  const mentioned = events.flatMap((e) => (e.tags || [])
-    .filter((t) => (t[0] === "d" || /^\d+:/.test(t[0] || "")) && /^[0-9a-f]{64}$/.test(t[1] || ""))
-    .map((t) => t[1]));
-  await enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
-  return events;
+  // Authors, plus everyone the cards will NAME — a 30382's d subject, a
+  // 10040's service column, a zap's sender. The names rule holds in the
+  // results list, not only on permalinks. This used to be a tag scan written
+  // here, which meant it could only cover the slots that existed when it was
+  // written; namedPubkeys lives with the renderers and is held to them by a
+  // test, so a new family that names somebody cannot silently stop being
+  // enriched. Faces are excluded on purpose: list previews draw them without
+  // names, and a follow list can carry thousands.
+  //
+  // NOT awaited. This used to block the return, so the results existed and
+  // the page showed a skeleton until a SECOND round trip finished — up to the
+  // 5s enrichProfiles timeout of nothing, over a list the relay had already
+  // sent. base.js says it plainly about the score chip: "the score is a
+  // second round trip, and a face should not wait on it." A name is the same
+  // round trip; it was just on the other side of the render.
+  const mentioned = events.flatMap(namedPubkeys);
+  const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
+  return { events, names };
 }
 
 // ---- viewing as somebody else -------------------------------------------
@@ -337,16 +353,25 @@ const scores = new Map();          // pubkey -> number | null (null = no score)
 let scoreLensKey = null;           // whose lens `scores` was built for
 const rankServices = new Map();    // observer pubkey -> rank service pubkey | null
 
-/** The `30382:rank` service an observer trusts, from their kind 10040. */
+/**
+ * The `30382:rank` service an observer trusts, from their kind 10040.
+ *
+ * Cached only when the relay ANSWERED. A dropped or timed-out lookup used to
+ * be cached as "this lens ranks nothing", and since that is the early return
+ * below, one slow read meant no score chip anywhere for the rest of the
+ * session — with nothing on screen to say the chips were missing rather than
+ * empty. Same mistake profiles.js documents at length; it lived here too.
+ */
 async function rankServiceOf(observer) {
   if (rankServices.has(observer)) return rankServices.get(observer);
-  let svc = null;
+  let svc = null, answered = false;
   try {
     const conn = await refConn();
-    const [ev] = await conn.req({ kinds: [10040], authors: [observer], limit: 1 });
-    svc = (ev?.tags || []).find(t => t[0] === "30382:rank")?.[1] || null;
-  } catch (e) { svc = null; }
-  rankServices.set(observer, svc);
+    const evs = await conn.req({ kinds: [10040], authors: [observer], limit: 1 });
+    answered = evs.complete === true;
+    svc = (evs[0]?.tags || []).find(t => t?.[0] === "30382:rank")?.[1] || null;
+  } catch (e) { answered = false; }
+  if (answered) rankServices.set(observer, svc);
   return svc;
 }
 
@@ -368,13 +393,18 @@ async function paintScores() {
     } catch (e) { /* leave them unknown rather than wrong */ }
     const seen = new Set();
     for (const ev of evs) {
-      const d = (ev.tags || []).find(t => t[0] === "d")?.[1];
-      const rank = (ev.tags || []).find(t => t[0] === "rank")?.[1];
+      const d = (ev.tags || []).find(t => t?.[0] === "d")?.[1];
+      const rank = (ev.tags || []).find(t => t?.[0] === "rank")?.[1];
       if (!d) continue;
       seen.add(d);
       scores.set(d, rank == null ? null : Number(rank));
     }
-    for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
+    // "The service returned no card for this pubkey" is only a fact once the
+    // service finished answering. EOSE, not merely "resolved": req() hands
+    // back whatever arrived when its timeout fired, so caching the gap off a
+    // slow read records a `null` the relay never stated — and `scores` is
+    // consulted before every repaint, so that null is permanent for the lens.
+    if (evs.complete === true) for (const pk of batch) if (!seen.has(pk)) scores.set(pk, null);
   }
   for (const c of chips) {
     const v = scores.get(c.dataset.pk);
@@ -613,16 +643,28 @@ async function run(text, mode, render) {
   if (mode === "full") s.hits = [];
   render();
   const t0 = performance.now();
+  let names = null;
   try {
-    const hits = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
+    const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT);
     if (myId !== s.requestId) return;
-    s.hits = hits;
+    s.hits = found.events; names = found.names;
   } catch (e) {
     if (myId !== s.requestId) return;
     s.error = e.message || String(e); s.hits = [];
   }
   s.lastMs = Math.round(performance.now() - t0); s.loading = false;
   render();
+  // The names land after the list does, so paint them when they arrive —
+  // once, and only if the lookup actually learned something. Skipped while a
+  // raw event is expanded: a re-render would collapse a panel the reader
+  // opened, and a name appearing is not worth taking that away.
+  if (names) {
+    names.then((learned) => {
+      if (!learned || myId !== s.requestId) return;
+      if (document.querySelector(".raw-body:not([hidden])")) return;
+      render();
+    }).catch(() => {});
+  }
 }
 
 function openPopup() { $popup.classList.add("open"); $q.setAttribute("aria-expanded", "true"); }

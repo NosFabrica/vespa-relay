@@ -35,9 +35,15 @@
   scores the store projects — 271 here against 12.28M profiles), applied with
   NIP-50 `observer:`. It replaced a login toggle sitting beside a lens picker,
   a pair whose off-plus-somebody combination was legal and did nothing at all.
-  And
-  renders every kind the index holds as a card: profiles, notes, articles,
-  media, code, listings, and a generic card for the rest.
+
+  Every kind the index holds renders as a card: profiles, notes, articles,
+  media, code, live events, listings, the reactive kinds (reactions, reposts,
+  zaps, comments), the whole NIP-51 list and set table, this relay's own
+  NIP-66 and NIP-85 records — and a generic floor for the rest. "The whole
+  table" is a checked claim, not a boast: tools/webtest/cards.test.mjs fails
+  if a kind registers a renderer without a fixture, a badge label or a family
+  tone, which is how a bookmark set came to render its twelve saved articles
+  under a badge that still read "kind 30003".
 
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
@@ -371,6 +377,9 @@
   [data-tone="code"]     { --h: 152; --s: 48%; }
   [data-tone="live"]     { --h: 5;   --s: 65%; }
   [data-tone="market"]   { --h: 185; --s: 52%; }
+  [data-tone="social"]   { --h: 285; --s: 40%; }
+  [data-tone="list"]     { --h: 95;  --s: 40%; }
+  [data-tone="apps"]     { --h: 250; --s: 30%; }
 
   /* ---- results ------------------------------------------------------------ */
   .results { padding: 20px 0 64px; }
@@ -494,8 +503,33 @@
                  border-radius: 999px; font-size: 11px; font-weight: 700; text-transform: uppercase;
                  letter-spacing: .04em; background: var(--surface-2); color: var(--muted); }
   .status-pill.live { background: var(--danger); color: #fff; }
+  /* the NIP-52 rsvp answers, which are the whole content of a 31925 */
+  .status-pill.accepted { background: var(--accent); color: var(--accent-fg); }
+  .status-pill.declined { background: var(--danger); color: #fff; }
+  .status-pill.tentative { background: var(--warn); color: #fff; }
   .price-line { margin: 2px 0 6px; font-size: 15px; font-weight: 650; }
   .rank-big { margin: 2px 0; font-size: 28px; font-weight: 700; color: var(--accent); }
+  /* what a list POINTS AT — e tags to notes, a tags to addressable entities */
+  .ref-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
+  .ref-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ref-list a { color: var(--accent); text-decoration: none; }
+  .ref-list a:hover { text-decoration: underline; }
+  .ref-list .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  /* hashtags, muted words, git branches, supported NIPs — short values that
+     read as a wrapped row, never as a table of one-word rows */
+  /* NOT `.chip` — that is the filter tab above, and this rule sits later in
+     the sheet, so sharing the name restyled the whole filter bar. */
+  .chip-row { display: flex; flex-wrap: wrap; gap: 5px; margin-top: 8px; }
+  .tag-chip { padding: 1.5px 9px; border-radius: 999px; font-size: 11.5px; max-width: 100%;
+              overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+              color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); }
+  .tag-chip.more { color: var(--faint); background: none; border-color: transparent; }
+  /* a list at permalink depth names each section it holds */
+  .list-section + .list-section { margin-top: 12px; }
+  .section-head { font-size: 11.5px; font-weight: 600; text-transform: uppercase;
+                  letter-spacing: .04em; color: var(--faint); }
+  .react-glyph { font-size: 18px; vertical-align: middle; }
+  .react-emoji { width: 22px; height: 22px; vertical-align: middle; object-fit: contain; }
 
   /* ---- loading skeletons -------------------------------------------------- */
   .skel-card { background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); padding: 15px 16px; margin-bottom: 10px; }
@@ -630,8 +664,20 @@
   than silently falling back to the slow path.
 -->
 <link rel="modulepreload" href="/web/cards.js" />
+<link rel="modulepreload" href="/web/cards/apps.js" />
+<link rel="modulepreload" href="/web/cards/article.js" />
 <link rel="modulepreload" href="/web/cards/base.js" />
+<link rel="modulepreload" href="/web/cards/code.js" />
 <link rel="modulepreload" href="/web/cards/generic.js" />
+<link rel="modulepreload" href="/web/cards/lists.js" />
+<link rel="modulepreload" href="/web/cards/live.js" />
+<link rel="modulepreload" href="/web/cards/market.js" />
+<link rel="modulepreload" href="/web/cards/media.js" />
+<link rel="modulepreload" href="/web/cards/note.js" />
+<link rel="modulepreload" href="/web/cards/people.js" />
+<link rel="modulepreload" href="/web/cards/profile.js" />
+<link rel="modulepreload" href="/web/cards/relays.js" />
+<link rel="modulepreload" href="/web/cards/social.js" />
 <link rel="modulepreload" href="/web/entity.js" />
 <link rel="modulepreload" href="/web/shared/conn.js" />
 <link rel="modulepreload" href="/web/shared/format.js" />
