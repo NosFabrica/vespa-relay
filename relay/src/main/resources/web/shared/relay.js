@@ -25,6 +25,12 @@ export class Relay {
       let settled = false;
       const ws = new WebSocket(this.url);
       this.ws = ws;
+      // A new socket is a new connection: it carries neither the previous
+      // challenge nor its NIP-42 auth. Cleared HERE, when the replacement is
+      // made, rather than relying on the old socket's close event to do it —
+      // that event is late, and the guard below now (correctly) ignores it.
+      this.challenge = null;
+      this.authed = false;
       // Cleared on both exits. It used to be armed and forgotten: one live
       // timer per socket opened, so every reconnect left another behind, and
       // a page that had reconnected a few times was holding timers whose only
@@ -36,6 +42,17 @@ export class Relay {
       ws.onerror = () => fail(new Error("relay connection failed"));
       ws.onclose = () => {
         fail(new Error("relay connection closed"));
+        // Only if this is still OUR socket.
+        //
+        // A close event lands a task or more after close() was called, and the
+        // page does not wait for it: signing out is `ws.close(); connect()`,
+        // which builds the replacement immediately. The dead socket's event
+        // then arrived and nulled `this.ws` — the LIVE one — and cleared the
+        // auth flag and the challenge belonging to it. From there the client
+        // held no socket while one was open: the next req() opened a third,
+        // the second stayed open forever with its handlers still writing this
+        // object's challenge, and every sign-out leaked one more.
+        if (this.ws !== ws) return;
         this.ws = null;
         this.challenge = null;
         this.authed = false;
@@ -43,7 +60,9 @@ export class Relay {
         this.subs.clear();
         this.onclose && this.onclose();
       };
-      ws.onmessage = (m) => { try { this.handle(JSON.parse(m.data)); } catch (e) {} };
+      // Same guard, for the same reason: a replaced socket must not keep
+      // writing the challenge the live one is authenticating against.
+      ws.onmessage = (m) => { if (this.ws !== ws) return; try { this.handle(JSON.parse(m.data)); } catch (e) {} };
     });
     return this.opening;
   }
