@@ -254,6 +254,22 @@ const COMMENT_SCOPE_TAGS = ["#I", "#i"];
  */
 const hashtagIds = (tags) => tags.flatMap((t) => [`#${t}`, t]);
 
+// NIP-32's way of writing the same claim: an `L` namespace that STARTS with `#`
+// means "associate this target with that standard nostr tag", so `L: #t` with
+// `l: nostr` beside it says "this is the topic nostr" — carried by an event
+// labelling itself (NIP-32's self-reporting) and by the kind 1985 that puts the
+// topic on somebody else's event, which is a reader's own classification and
+// worth surfacing next to the notes it classifies.
+//
+// `#l` and `#L` go in ONE filter, ANDed on purpose. The namespace is what makes
+// a label a topic: `l: nostr` alone is "labelled `nostr` in some vocabulary
+// nobody stated", and this page does not guess at meaning it was not told — the
+// same rule that keeps a bare npub a search term rather than an `authors`
+// filter. It costs the events that omit the `L` tag, which NIP-32 only
+// RECOMMENDS; the alternative costs every license, language and moderation
+// label whose value happens to spell a word somebody searched for.
+const TOPIC_NAMESPACE = "#t";
+
 /**
  * The typed string as the REQ this page sends — one or more NIP-01 filters,
  * ORed inside a single subscription.
@@ -265,19 +281,29 @@ const hashtagIds = (tags) => tags.flatMap((t) => [`#${t}`, t]);
  * the literal string "from:npub1…" and a narrowed search would look like an
  * empty one.
  *
- * `#hashtag` leaves for the same reason, and becomes TWO questions, because on
- * Nostr a topic is written down two ways: an event ABOUT it tags `t`, while a
- * NIP-22 comment ON it names it as a NIP-73 external id in `i`/`I` and carries
- * no `t` at all. Either filter alone answers half — and which half depends on
- * the convention the writer's client follows, which is not something a reader
- * searching for `#nostr` should have to know. (Three filters, not two: `i` and
- * `I` in one filter would AND, so the comment question needs one each.)
+ * `#hashtag` leaves for the same reason, and becomes THREE questions, because
+ * Nostr writes a topic down three ways and none of them is a superset of the
+ * others:
+ *
+ *   - the event is about the topic          -> `t`             (NIP-01, NIP-24)
+ *   - it is a comment ON the topic          -> `i`/`I`         (NIP-22, NIP-73)
+ *   - it is LABELLED with the topic         -> `l` + `L: #t`   (NIP-32)
+ *
+ * A note tagging `t` need carry no label; a self-labelled note need carry no
+ * `t`; a comment on a topic carries neither. Any one filter answers a third of
+ * the question — and which third depends on the convention the writer's client
+ * follows, which is not something a reader searching for `#nostr` should have
+ * to know. (Four filters for three questions: `i` and `I` in one filter would
+ * AND, so the comment question needs one each.)
  *
  * The person filters ride on EVERY filter — they narrow the same search, and
  * leaving them off the comment half would make `from:alice #nostr` return
- * everybody's comments alongside alice's notes. The tab's kinds instead GATE
- * that half, since it names its own kind: a tab that excludes 1111 gets the
- * `#t` filter only, rather than a second filter that can only come back empty.
+ * everybody's comments alongside alice's notes. So do the tab's kinds, except on
+ * the comment filters, which name their own kind and are therefore GATED on it
+ * instead: a tab that excludes 1111 sends the other filters alone rather than
+ * two that can only come back empty. The label filter needs no such gate — a
+ * label rides on an event of any kind, so under Notes it finds self-labelled
+ * notes, and under Everything it also finds the kind 1985 that labelled one.
  *
  * `limit` is NIP-01's per-filter limit, and it is left that way: a hashtag
  * search can therefore come back with more rows than a word search. Trimming
@@ -304,7 +330,10 @@ function buildFilters(text, limit) {
   if (q.mentions.length) base["#p"] = q.mentions;
   if (!q.hashtags.length) return [{ ...base, limit }];
 
-  const filters = [{ ...base, "#t": q.hashtags, limit }];
+  const filters = [
+    { ...base, "#t": q.hashtags, limit },
+    { ...base, "#l": q.hashtags, "#L": [TOPIC_NAMESPACE], limit },
+  ];
   // "Everything" (no kinds) and any tab listing 1111 — Notes — get the comment
   // half; People, Articles and the rest do not, because kind 1111 is not theirs
   // to show and the filter could only come back empty.
@@ -318,12 +347,13 @@ function buildFilters(text, limit) {
 /**
  * One event, one card, however many filters it answered.
  *
- * A hashtag search is three filters in one REQ, and a top-level comment on the
- * topic answers two of them — it carries the topic in both `i` and `I`. NIP-01
- * does not say whether a relay dedupes across the filters of one subscription,
- * so the page cannot assume it does; the same note rendering twice is a visible
- * bug, and this is cheaper than finding out per relay. Arrival order is kept:
- * it is the relay's ranking, and the export claims the list is in it.
+ * A hashtag search is four filters in one REQ, and one event can answer several
+ * of them: a top-level comment on the topic carries it in both `i` and `I`, and
+ * a note that tags `t` and also labels itself answers two. NIP-01 does not
+ * say whether a relay dedupes across the filters of one subscription, so the
+ * page cannot assume it does; the same note rendering twice is a visible bug,
+ * and this is cheaper than finding out per relay. Arrival order is kept: it is
+ * the relay's ranking, and the export claims the list is in it.
  */
 function uniqueById(events) {
   const seen = new Set();
@@ -551,8 +581,9 @@ function exportText() {
   if (q.authors.length) L.push(`  from          ${people(q.authors)}`);
   if (q.mentions.length) L.push(`  to            ${people(q.mentions)}`);
   // Same reason, and one more: a hashtag search is a union, so a reader
-  // comparing two results has to know one may have arrived as a `t` tag and
-  // the next as a NIP-22 comment on the topic.
+  // comparing two results has to know one may have arrived as a `t` tag, the
+  // next as a NIP-22 comment on the topic, and the next as a NIP-32 label —
+  // three different claims, ranked into one list.
   if (q.hashtags.length) L.push(`  hashtags      ${q.hashtags.map((t) => `#${t}`).join(", ")}`);
   L.push(`  tab           ${tab.label}${tab.kinds ? ` (kinds ${tab.kinds.join(", ")})` : " (all kinds)"}`);
   L.push(`  sort          ${$sort.value || "(relevance — NIP-50 default)"}`);

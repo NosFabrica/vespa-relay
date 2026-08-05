@@ -121,9 +121,10 @@ relay/src/main/resources/
                         an <input>'s value is characters and nothing else, with
                         shared/query.js the ONE tokenizer both it and the query
                         builder ask — it also lifts `#hashtag` out of the NIP-50
-                        search, which app.js turns into `#t` OR a kind-1111
-                        comment naming the same topic in `i`/`I` (NIP-73), all
-                        ORed in one REQ; entity.js
+                        search, which app.js turns into the three ways Nostr
+                        writes a topic: `#t`, a kind-1111 comment naming it in
+                        `i`/`I` (NIP-73), and a `#l` label under `#L: #t`
+                        (NIP-32), all ORed in one REQ; entity.js
                         renders /npub1…//note1…//naddr1… paths; cards/ is the
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that

@@ -56,12 +56,14 @@
   arrow keys. On submit the tokens leave the NIP-50 search entirely and become
   the NIP-01 filter fields they are, `authors` and `#p`.
 
-  `#hashtag` leaves the search string too, and becomes a union: `#t` for the
-  events that TAG the topic, and kind 1111 with the NIP-73 external id in `i`
-  or `I` for the NIP-22 comments written ON it, which carry no `t` at all. All
-  of them ride in one REQ — NIP-01 ORs the filters of a subscription — because
-  which of the two conventions a topic was written down under is not something
-  a reader searching for `#nostr` should have to know.
+  `#hashtag` leaves the search string too, and becomes a union, because Nostr
+  writes a topic down three ways: `#t` for the events that TAG it, kind 1111
+  with the NIP-73 external id in `i` or `I` for the NIP-22 comments written ON
+  it (which carry no `t` at all), and `#l` under the NIP-32 namespace `#L: #t`
+  for the events LABELLED with it — the author's own label, or somebody else's
+  kind 1985 saying so. All of them ride in one REQ — NIP-01 ORs the filters of
+  a subscription — because which convention a topic was written down under is
+  not something a reader searching for `#nostr` should have to know.
 
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
