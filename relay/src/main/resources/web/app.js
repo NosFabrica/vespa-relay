@@ -769,8 +769,23 @@ async function run(text, mode, render) {
   }
 }
 
-function openPopup() { $popup.classList.add("open"); $q.setAttribute("aria-expanded", "true"); }
-function closePopup() { $popup.classList.remove("open"); $q.setAttribute("aria-expanded", "false"); activeKey = null; }
+function openPopup() {
+  $popup.classList.add("open");
+  $q.setAttribute("aria-expanded", "true");
+  $q.setAttribute("aria-controls", "popup");
+}
+function closePopup() {
+  $popup.classList.remove("open");
+  // Two listboxes hang off one combobox, and only one is ever up. When the
+  // PICKER is the one showing, these attributes are describing it — lowering
+  // them here told a screen reader the list had closed while the people list
+  // was on screen and being arrowed through.
+  if (!field.pickerOpen) {
+    $q.setAttribute("aria-expanded", "false");
+    $q.removeAttribute("aria-activedescendant");
+  }
+  activeKey = null;
+}
 const popupItems = () => Array.from($popup.querySelectorAll(".popup-item"));
 function setActive(idx) {
   const items = popupItems();

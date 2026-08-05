@@ -665,7 +665,11 @@
         `value`, `select()`, the placeholder, single-line behaviour, paste as
         text — so app.js still just reads $q.value.
       -->
-      <div id="q" contenteditable="true" spellcheck="false" data-placeholder="Search Nostr&hellip;"
+      <!-- autocorrect/autocapitalize off for the same reason spellcheck is:
+           a phone that "fixes" a 63-character npub, or capitalises the `from:`
+           that starts an empty field, is editing a token, not a sentence. -->
+      <div id="q" contenteditable="true" spellcheck="false" autocorrect="off" autocapitalize="off"
+           data-placeholder="Search Nostr&hellip;" enterkeyhint="search"
            role="combobox" aria-expanded="false" aria-controls="popup" aria-autocomplete="list"
            aria-multiline="false" aria-label="Search"></div>
       <button id="clear" type="button" aria-label="Clear search" title="Clear">&times;</button>
