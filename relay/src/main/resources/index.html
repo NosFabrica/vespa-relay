@@ -818,7 +818,10 @@
      of — not an avatar. Square-cropped it lost a third of every one from each
      side, and centred it left the title floating beside the middle of the
      picture instead of starting level with it. */
-  .thumb.cover { width: 168px; height: 105px; align-self: flex-start; }
+  /* `height: auto` is load-bearing: an explicit height BEATS aspect-ratio, and
+     .thumb's square one is inherited here, so without it the ratio below is
+     ignored and every cover draws 168x92. */
+  .thumb.cover { width: 168px; height: auto; aspect-ratio: 16 / 10; align-self: flex-start; }
 
   .props { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; margin: 10px 0 0; }
   .props dt { color: var(--faint); }
@@ -1031,8 +1034,10 @@
     .av-xl { --av: 40px; --chip: 16px; --chip-text: 10px; }
     .thumb { width: 72px; height: 72px; }
     /* .thumb.cover outranks .thumb whatever the viewport, so the narrow frame
-       has to be named too or the cover keeps its desktop width here. */
-    .thumb.cover { width: 116px; height: 73px; }
+       has to be named too or the cover keeps its desktop width here. Width
+       ONLY: the ratio above is what makes the covers read as a set, and it is
+       the same set on a phone. */
+    .thumb.cover { width: 116px; }
     .props { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
     .props dt { margin-top: 6px; font-size: 11px; }
   }
