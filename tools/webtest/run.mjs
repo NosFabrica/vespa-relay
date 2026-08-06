@@ -9,6 +9,9 @@
 // cards.test.mjs   EVERY registered kind renders, preview and permalink —
 //                  fails if a kind registers without a fixture, which is
 //                  what keeps "covers all kinds" a checked claim
+// feed.test.mjs    the latest feed — that its ask carries no NIP-50 search
+//                  string (an ordered feed is a plain NIP-01 read) and that
+//                  replies, future dates and duplicates never reach a card
 // relay.test.mjs   the NIP-42 CLOSED auth-required -> auth -> resend wiring
 // profiles.test.mjs a lookup caches "no profile" only off a COMPLETE read —
 //                  the rule two separate caches have now got wrong
@@ -23,7 +26,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "avatar.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "feed.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "avatar.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

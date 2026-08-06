@@ -14,6 +14,7 @@ import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } fro
 import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
+import { FEED_KINDS, HOME_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
 import { mountSearchField } from "./searchfield.js";
 
 const POPUP_LIMIT = 8;
@@ -364,6 +365,19 @@ function buildFilters(text, limit) {
 }
 
 /**
+ * The feed's ask: the SAME builder with nothing to say.
+ *
+ * No words, and — pointedly — no `searchString`, so the sort menu, the spam
+ * toggle and the "ranking as" lens do not ride along. What is left is
+ * `{ kinds, limit }`: a plain NIP-01 read, which is what the store answers
+ * newest-first. Any of those three would make it a NIP-50 query for an ORDER
+ * instead, and the page would be saying "latest" over a ranked list. That is
+ * also why the feed view hides the bar rather than leaving three controls on
+ * screen that this ask cannot carry.
+ */
+const feedFilters = (limit) => filtersFor("", { kinds: FEED_KINDS, limit });
+
+/**
  * One event, one card, however many filters it answered.
  *
  * A hashtag search is four filters in one REQ, and one event can answer several
@@ -394,7 +408,35 @@ function uniqueById(events) {
 async function search(text, limit, deep) {
   await ensureLogin();
   const filters = buildFilters(text, limit);
-  const events = uniqueById(await relay.req(filters));
+  return { ...hydrate(uniqueById(await relay.req(filters)), deep), text };
+}
+
+/**
+ * The newest content, for the hero's preview and for the feed page.
+ *
+ * The ask is over-sized and then cut back, because NIP-01 has no way to say
+ * "not a reply" — feed.js owns both halves of that arithmetic. `deep` is
+ * false for the same reason: once the replies are gone there is no "in reply
+ * to" line to fill in, so the two round trips replyParents() costs would buy
+ * nothing.
+ */
+async function fetchLatest(want) {
+  await ensureLogin();
+  // No uniqueById on the way in: pickFeed dedupes by id itself, in the same
+  // pass that drops the replies and the future dates.
+  return hydrate(pickFeed(await relay.req(feedFilters(askFor(want))), want), false);
+}
+
+/**
+ * The lookups a list of events needs once it has arrived — everything between
+ * "the relay answered" and "the cards can be dressed".
+ *
+ * Split out of search() when the feed appeared: the feed asks a completely
+ * different question (a plain NIP-01 read, no NIP-50 anything) and needs
+ * exactly the same names, faces and reply lines afterwards. Two copies of this
+ * would drift the first time a renderer started naming somebody new.
+ */
+function hydrate(events, deep) {
   seedProfiles(events);
   // Authors, plus everyone the cards will NAME — a 30382's d subject, a
   // 10040's service column, a zap's sender. The names rule holds in the
@@ -724,6 +766,7 @@ const $clear = document.getElementById("clear");
 const $popup = document.getElementById("popup");
 const $mentions = document.getElementById("mentions");
 const $results = document.getElementById("results");
+const $latest = document.getElementById("latest");
 const $chips = document.getElementById("chips");
 const $sort = document.getElementById("sort");
 const $spam = document.getElementById("spam");
@@ -821,6 +864,10 @@ $me.addEventListener("click", async () => {
     renderMe();
     renderWhoami();
     rerun();
+    // The hero's feed is a different list for a signed-in reader than for
+    // anyone else — and for a signed-OUT one it is not drawn at all — so it
+    // follows this click the way the results do.
+    showLatest();
   }
 });
 const $obsBox = document.getElementById("obsbox");
@@ -942,10 +989,13 @@ const skelRows = (n) => Array.from({ length: n }, () =>
      </div>
    </div>`).join("");
 
-function statusBody(placeholder) {
+// `empty` is the view's own way of saying it has nothing, because "no results"
+// is an answer to a QUESTION and the feed was not asked one — telling a reader
+// of an empty feed to "try a different term" names a term they never typed.
+function statusBody(placeholder, empty) {
   if (s.error) return `<div class="error">${esc(s.error)}</div>`;
   if (s.loading && !s.hits.length) return placeholder;
-  if (!s.hits.length) return `<div class="empty"><b>No results</b>Try a different term, or widen the filter above.</div>`;
+  if (!s.hits.length) return empty ?? `<div class="empty"><b>No results</b>Try a different term, or widen the filter above.</div>`;
   return null;
 }
 
@@ -956,6 +1006,146 @@ function renderPopup() {
   const body = statusBody(skelRows(3)) ?? s.hits.slice(0, POPUP_LIMIT).map(popupRow).join("");
   $popup.innerHTML = head + body;
   paintScores();
+}
+
+/**
+ * Which corpus this feed is, in one line, wherever it is drawn.
+ *
+ * It is not decoration. Signed in, the relay applies the reader's trust floor
+ * to a plain NIP-01 read as well as to a search, so the feed IS a web-of-trust
+ * feed and nothing in the ask says so. Signed out, exactly the same request is
+ * the whole mirror in time order — a completely different list under the same
+ * heading, and the reader is entitled to know which one they are looking at.
+ *
+ * The title attribute answers the question the "ranking as" control raises by
+ * sitting a few pixels above this: it is a NIP-50 extension, it rides on a
+ * search string, and this view sends none.
+ */
+const lensNote = () =>
+  `<div class="prov" title="The feed is a plain NIP-01 read, so the &quot;ranking as&quot; lens — a NIP-50 observer: extension — applies to searches, not here.">` +
+  (me
+    ? "newest first, through your own web of trust — the relay drops authors below your trust floor"
+    : "newest first, the whole corpus — sign in (the avatar in the field) to read it through your web of trust") +
+  `</div>`;
+
+/** The feed page: the same cards as a search, over a list nobody searched for. */
+function renderFeed() {
+  const stats = s.error ? "" : `${s.hits.length} event${s.hits.length === 1 ? "" : "s"} · ${s.lastMs ?? "?"} ms`;
+  const head = `<div class="list-head"><div class="list-title">Latest</div>` +
+    `<div class="list-right"><span class="list-stats">${stats}</span></div></div>`;
+  // An empty feed is a fact about the INDEX (or about the reader's trust
+  // floor), never about a query — there is no query. Both readings are named,
+  // because "nothing here" means two different things depending on which of
+  // them is looking.
+  const empty = `<div class="empty"><b>Nothing here yet</b>` +
+    (me
+      ? "This relay holds no recent posts from anyone your web of trust reaches."
+      : "This relay's index holds no recent posts of these kinds.") +
+    `</div>`;
+  // No Export button, unlike a search: that download exists to let somebody
+  // argue with a RANKING — the query, the lens, the scores behind the order.
+  // A time-ordered list has no order to defend.
+  const body = statusBody(skelCards(4), empty) ?? s.hits.map((ev) => card(ev)).join("");
+  $results.innerHTML = head + lensNote() + body;
+  paintScores();
+  watchNip05();
+}
+
+// ---- the same feed, three cards, under the hero ---------------------------
+//
+// The landing page was a search box over an empty page: nothing to read, and
+// no evidence that the index behind it holds anything at all. Three of the
+// newest cards fix both, and "see more" opens the full page above.
+//
+// Only for a SIGNED-IN reader, which is the one condition this preview has.
+// Signed out the same read is the whole mirror in time order — the firehose,
+// including everything nobody's web of trust vouches for — and putting that
+// under the search box would be the house showing you a feed it does not
+// stand behind. The feed page still serves it to anyone who asks, labelled;
+// the hero stays the clean page it is.
+//
+// It has its own hits rather than sharing `s`, because it is on screen at the
+// same time as nothing else: the results view is hidden while it shows, and
+// the two would otherwise take turns clearing each other's state.
+let latestHits = [];    // the preview's events — its json toggles look them up here
+let latestFor = null;   // the pubkey they were read for; a new sign-in is a new feed
+let latestAt = 0;       // when, so returning to the hero is not a fresh round trip
+let latestToken = 0;    // invalidates an in-flight read the way entity.js does
+
+/** Long enough that Back to the hero is instant, short enough to feel live. */
+const LATEST_STALE_MS = 120_000;
+
+function hideLatest() {
+  latestToken++;   // whatever is in flight must not reveal this again
+  $latest.hidden = true;
+  $latest.innerHTML = "";
+  document.body.classList.remove("has-latest");
+}
+
+/**
+ * Where "see more" goes.
+ *
+ * A parameter on the ROOT, not a path of its own. The feed is the results view
+ * with an empty query, and `/` is already the page — so `/?feed=1` is served
+ * from cold by the route that serves the landing page, while `/feed` would be
+ * a 404 until somebody added a route for it. The only thing the prettier url
+ * would buy is being prettier, and the server has no business knowing this
+ * view exists. `=1` is the page's existing idiom for a flag, as `spam=1`.
+ *
+ * One spelling, read by the link and by the click interceptor that turns it
+ * into a render — two literals could drift into a link that reloads the page.
+ */
+const FEED_URL = "/?feed=1";
+
+const latestHead = () =>
+  `<div class="list-head"><div class="list-title">Latest</div>` +
+  `<div class="list-right"><a class="feed-more" href="${FEED_URL}">See more →</a></div></div>`;
+
+function renderLatest() {
+  $latest.innerHTML = latestHead() + latestHits.map((ev) => card(ev)).join("");
+  paintScores();
+  watchNip05();
+}
+
+/**
+ * Draw the preview, if this is the hero and there is a reader to draw it for.
+ *
+ * Safe to call from anywhere that might have changed either of those — the
+ * hero being shown, a sign-in, a sign-out — because it re-checks both rather
+ * than trusting the caller to know.
+ */
+async function showLatest() {
+  const my = ++latestToken;
+  try { await ensureLogin(); } catch (e) {}
+  if (my !== latestToken) return;
+  // Signed out, or no longer on the hero (a search or a link can land in the
+  // window sign-in takes).
+  if (!me || !$results.hidden) { if (my === latestToken) hideLatest(); return; }
+  $latest.hidden = false;
+  document.body.classList.add("has-latest");
+  if (latestHits.length && latestFor === me && Date.now() - latestAt < LATEST_STALE_MS) { renderLatest(); return; }
+  $latest.innerHTML = latestHead() + skelCards(HOME_CARDS);
+  let found;
+  try {
+    found = await fetchLatest(HOME_CARDS);
+  } catch (e) {
+    if (my !== latestToken) return;
+    // Quietly: the hero's job is the search box, and a feed that could not be
+    // read is not a reason to put an error where the page's content goes.
+    hideLatest();
+    return;
+  }
+  if (my !== latestToken) return;
+  latestHits = found.events; latestFor = me; latestAt = Date.now();
+  // A head and a "see more" over nothing is a promise the page cannot keep.
+  // The hero simply goes back to being the hero; the feed page says it properly.
+  if (!latestHits.length) { hideLatest(); return; }
+  renderLatest();
+  // The names land a round trip after the cards, exactly as they do under a
+  // search — repaint when that lookup actually learned something.
+  found.names.then((learned) => {
+    if (learned && my === latestToken && !$latest.hidden) renderLatest();
+  }).catch(() => {});
 }
 
 function renderResults() {
@@ -971,7 +1161,12 @@ function renderResults() {
   watchNip05();
 }
 
-async function run(text, mode, render) {
+// `fetch` is a thunk rather than a query string because the results view now
+// answers two different questions: a NIP-50 search, and the feed page's plain
+// NIP-01 read. Everything after the ask — the stale-response guard, the
+// timing, the skeleton, the late repaints — is the same for both, and was
+// worth having once.
+async function run(fetch, mode, render) {
   const myId = ++s.requestId;
   s.loading = true; s.error = null;
   if (mode === "full") { s.hits = []; s.hitsFor = null; }
@@ -979,12 +1174,15 @@ async function run(text, mode, render) {
   const t0 = performance.now();
   let late = [];
   try {
-    const found = await search(text, mode === "popup" ? POPUP_LIMIT : FULL_LIMIT, mode === "full");
+    const found = await fetch();
     if (myId !== s.requestId) return;
-    s.hits = found.events; s.hitsFor = text; late = [found.names, found.parents].filter(Boolean);
+    // `hitsFor` is what the SEARCH BOX would have to say for these hits to be
+    // about it, and the feed's answer is "nothing does" — null, so reopening
+    // the popup on focus can never show the feed under a typed query.
+    s.hits = found.events; s.hitsFor = found.text ?? null; late = [found.names, found.parents].filter(Boolean);
   } catch (e) {
     if (myId !== s.requestId) return;
-    s.error = e.message || String(e); s.hits = []; s.hitsFor = text;
+    s.error = e.message || String(e); s.hits = []; s.hitsFor = null;
   }
   s.lastMs = Math.round(performance.now() - t0); s.loading = false;
   render();
@@ -1038,23 +1236,49 @@ function setActive(idx) {
 
 // Never over the people picker: a debounced type-ahead from before the `from:`
 // was started can still land after it, and the two popups occupy the same box.
-function runPopup(text) { if (field.mentioning) return; openPopup(); run(text, "popup", renderPopup); }
+function runPopup(text) { if (field.mentioning) return; openPopup(); run(() => search(text, POPUP_LIMIT, false), "popup", renderPopup); }
 
 function runFull(text) {
   clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
   cancelEntity(); // a search launched FROM an entity page must not be painted over by its slow fetch
+  hideLatest();   // …and the hero's preview is not part of a results page
   document.title = "SearchOverTrust";
   closePopup();
   field.close(); // Enter with nothing highlighted searches; the picker is done
   $results.hidden = false;
   document.body.classList.add("searching");
+  document.body.classList.remove("feed"); // searching FROM the feed leaves it
   // Every way into the full view converges here — Enter, a chip/sort/spam/
   // lens change via rerun() — so this is the one place the URL learns about
   // it. Pushed, not replaced: each of those is a state the user chose and
   // Back should be able to undo. A restore FROM history is the exception,
   // and syncUrl() itself knows to stand down there.
   syncUrl();
-  run(text, "full", renderResults);
+  run(() => search(text, FULL_LIMIT, true), "full", renderResults);
+}
+
+/**
+ * The feed page: the newest [PAGE_CARDS] content events, full cards.
+ *
+ * Reached from the hero's "see more", from a pasted link, and from Back —
+ * every one of them through applyUrl(), so this never pushes history itself.
+ * No syncUrl() call for the same reason the entity view has none: `feed=1` IS
+ * the whole state, and this view takes none of the other four parameters.
+ */
+function runFeed() {
+  clearTimeout(debounceTimer);
+  cancelEntity();
+  hideLatest();   // the preview and the page are the same feed; one at a time
+  document.title = "SearchOverTrust — latest";
+  closePopup();
+  field.close();
+  $results.hidden = false;
+  // `feed` hides the bar. The sort, the spam toggle and the lens are NIP-50
+  // extensions that ride on a search string, and this view sends none — so
+  // they are taken off the screen rather than left there doing nothing, which
+  // is the one thing this codebase is most consistent about refusing to ship.
+  document.body.classList.add("searching", "feed");
+  run(() => fetchLatest(PAGE_CARDS), "full", renderFeed);
 }
 
 /**
@@ -1076,6 +1300,10 @@ function openPicked(ev) {
   if (href) navigate(href);
 }
 function rerun() {
+  // The feed has no query to re-run, but it does have an answer that changes
+  // with who is asking: signing in applies the trust floor, signing out lifts
+  // it, and the line under the head says which. Same reason a search re-runs.
+  if (document.body.classList.contains("feed")) { runFeed(); return; }
   const text = $q.value.trim();
   if (!text) return;
   if (!$results.hidden) runFull(text);
@@ -1092,8 +1320,12 @@ function showHero() {
   $q.value = "";
   $results.hidden = true;
   $results.innerHTML = "";
-  document.body.classList.remove("searching", "has-query");
+  document.body.classList.remove("searching", "has-query", "feed");
   closePopup();
+  // The hero's own three cards, if there is a reader to draw them for. Here
+  // rather than at each call site: every route to the hero — boot, Back, the
+  // clear button, the brand — goes through this function.
+  showLatest();
 }
 
 /** The hero as a NAVIGATION — clear button, brand click. Pushed, so Back
@@ -1158,7 +1390,12 @@ $q.addEventListener("focus", () => {
   if (s.hits.length && s.hitsFor === text && text && $results.hidden) openPopup();
 });
 
-$results.addEventListener("click", (e) => {
+// Clicks inside a LIST OF CARDS. Two lists exist now — the results view and
+// the hero's feed preview — and they behave identically down to the json
+// panel, so the behaviour is a factory over "which events is this list
+// showing" rather than a second copy under the preview. (`#export` can only
+// ever appear in the results head; the preview never renders one.)
+const cardClicks = (hitsOf) => (e) => {
   if (e.target.closest("#export")) {
     const blob = new Blob([exportText()], { type: "text/plain;charset=utf-8" });
     const a = document.createElement("a");
@@ -1173,7 +1410,7 @@ $results.addEventListener("click", (e) => {
   if (btn) {
     const box = btn.parentElement.querySelector(".raw-body");
     if (!box.hidden) { box.hidden = true; btn.textContent = "json"; return; }
-    const ev = s.hits.find((h) => h.id === btn.dataset.id);
+    const ev = hitsOf().find((h) => h.id === btn.dataset.id);
     // Serialised only when asked for, and only once.
     if (!box.textContent) box.textContent = ev ? JSON.stringify(ev, null, 2) : "(no longer in the current results)";
     box.hidden = false;
@@ -1205,7 +1442,9 @@ $results.addEventListener("click", (e) => {
   if (sel && String(sel).trim()) return;
   const art = e.target.closest(".result[data-href]");
   if (art) { e.preventDefault(); navigate(art.dataset.href); }
-});
+};
+$results.addEventListener("click", cardClicks(() => s.hits));
+$latest.addEventListener("click", cardClicks(() => latestHits));
 
 $chips.addEventListener("click", (e) => {
   const chip = e.target.closest(".chip");
@@ -1229,12 +1468,23 @@ $spam.addEventListener("change", rerun);
 // The hero is the clean path with no params, which gives Back a floor to
 // land on. The popup preview never appears here: it is keystroke feedback,
 // and pushing an entry per keystroke is how Back buttons become useless.
+//
+// `/?feed=1` is the sixth and last thing this url can say, and it is exclusive
+// with all five: the feed is the results view with an empty query and none of
+// the bar's extensions, so there is nothing else about it to write down. A
+// parameter rather than a `/feed` path deliberately — the root already serves
+// this page, and a new path would need a route on the server before a reload
+// of it could work at all.
 
 // A restore must not re-push what it is restoring — popstate would otherwise
 // truncate the forward stack it is trying to walk.
 let navRestoring = false;
 
 function currentUrl() {
+  // The feed is one flag and nothing else, because it reads nothing else: a
+  // url carrying a tab or a sort this view ignores would be state that cannot
+  // be restored, which is the same lie as a control that does nothing.
+  if (document.body.classList.contains("feed")) return FEED_URL;
   const p = new URLSearchParams();
   const text = $q.value.trim();
   if (!$results.hidden && text) p.set("q", text);
@@ -1279,7 +1529,8 @@ function applyUrl() {
       s.requestId++; // cancel any in-flight search render
       s.hits = []; s.hitsFor = null; s.error = null; s.loading = false;
       $q.value = "";
-      document.body.classList.remove("has-query");
+      hideLatest();
+      document.body.classList.remove("has-query", "feed");
       document.body.classList.add("searching");
       closePopup();
       $results.hidden = false;
@@ -1289,6 +1540,24 @@ function applyUrl() {
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch
     document.title = "SearchOverTrust";
     const p = new URLSearchParams(location.search);
+    // The fourth view, and the only one that is a whole page from a single
+    // parameter: the feed takes no q, no tab and none of the bar's three
+    // extensions. So the controls go back to their DEFAULTS with the url that
+    // carries none of them — the bar is hidden here, and a `sort:rank` left
+    // over from the previous search would otherwise be applied, invisibly, to
+    // the next search typed from this page. runFeed() awaits sign-in itself,
+    // hence `true`: boot does not need to kick it a second time.
+    if (p.get("feed") === "1") {
+      tab = KIND_TABS[0];
+      renderChips();
+      $sort.value = "";
+      $spam.checked = false;
+      applyViewingAs(null, null);
+      $q.value = "";
+      document.body.classList.remove("has-query");
+      runFeed();
+      return true;
+    }
     const text = (p.get("q") || "").trim();
     tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
     renderChips();
@@ -1329,6 +1598,11 @@ document.addEventListener("click", (e) => {
   if (!a) return;
   const href = a.getAttribute("href");
   if (href === "/") { e.preventDefault(); reset(); return; }
+  // "See more" is a real anchor to a real url — middle-click, copy-link and a
+  // cold load all work, because it is the root with a parameter and the root
+  // is the page — but a plain click renders it in place like every other
+  // internal link, socket and NIP-42 auth intact.
+  if (href === FEED_URL) { e.preventDefault(); navigate(href); return; }
   if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
   e.preventDefault();
   navigate(href);
