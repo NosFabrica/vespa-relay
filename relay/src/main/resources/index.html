@@ -1192,9 +1192,18 @@
       -->
       <!-- autocorrect/autocapitalize off for the same reason spellcheck is:
            a phone that "fixes" a 63-character npub, or capitalises the `from:`
-           that starts an empty field, is editing a token, not a sentence. -->
+           that starts an empty field, is editing a token, not a sentence.
+
+           inputmode AND enterkeyhint, both saying "search", because they are
+           answered by different halves of the keyboard: enterkeyhint asks for
+           the action key's LABEL, while inputmode is what an Android IME reads
+           to pick the action at all — and a contenteditable defaults to a
+           newline key, since a div is somewhere a line break can go. It has
+           nowhere to go here (`white-space: pre`, one line by construction),
+           and searchfield.js refuses the break itself for the keyboards that
+           send one anyway. -->
       <div id="q" contenteditable="true" spellcheck="false" autocorrect="off" autocapitalize="off"
-           data-placeholder="Search Nostr&hellip;" enterkeyhint="search"
+           data-placeholder="Search Nostr&hellip;" enterkeyhint="search" inputmode="search"
            role="combobox" aria-expanded="false" aria-controls="popup" aria-autocomplete="list"
            aria-multiline="false" aria-label="Search"></div>
       <button id="clear" type="button" aria-label="Clear search" title="Clear">&times;</button>
