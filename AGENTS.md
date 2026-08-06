@@ -164,7 +164,13 @@ relay/src/main/resources/
                         NIP-50 extensions leaves `{kinds, limit}`, a plain
                         NIP-01 read, which is the only shape the store answers
                         newest-first (a stray `sort:` would rank it while the
-                        page said "latest"), so the feed hides the bar; what is
+                        page said "latest"), so the feed hides the Filters
+                        disclosure — but NOT the kind chips, which are the
+                        `kinds` of that same read and narrow the feed under the
+                        hero and at /?feed=1&tab=media alike, replacing the
+                        content default rather than intersecting it (four of
+                        the seven narrowing chips share no kind with it); what
+                        is
                         feed.js's own is the shaping — replies, future dates and
                         duplicates never reach a card; cards/ is the
                         kind registry — one renderer module per family, a

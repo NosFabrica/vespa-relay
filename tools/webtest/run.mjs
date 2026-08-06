@@ -13,8 +13,10 @@
 //                  fails if a kind registers without a fixture, which is
 //                  what keeps "covers all kinds" a checked claim
 // feed.test.mjs    the latest feed — that its ask carries no NIP-50 search
-//                  string (an ordered feed is a plain NIP-01 read) and that
-//                  replies, future dates and duplicates never reach a card
+//                  string (an ordered feed is a plain NIP-01 read), that every
+//                  kind chip picks the kinds it names and survives the URL,
+//                  and that replies, future dates and duplicates never reach
+//                  a card
 // relay.test.mjs   the NIP-42 CLOSED auth-required -> auth -> resend wiring
 // profiles.test.mjs a lookup caches "no profile" only off a COMPLETE read —
 //                  the rule two separate caches have now got wrong
