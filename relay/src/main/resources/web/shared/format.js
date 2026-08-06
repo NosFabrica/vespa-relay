@@ -63,3 +63,68 @@ export const titleOf = (ev) => {
 };
 export const summaryOf = (ev) => firstTag(ev, "summary", "description", "alt");
 export const imageOf = (ev) => firstTag(ev, "image", "thumb", "picture", "icon");
+
+/**
+ * A NIP-23 markdown body reduced to the prose a PREVIEW can show.
+ *
+ * An article that carries a `summary` needs none of this. Most do not, and the
+ * card then falls back to the body — which is markup. The preview for "On
+ * Relays, Bandwidth, and Who Pays" opened with `## Somebody is paying for
+ * this` and spent its remaining lines on `1. **Paid relays.**`: every mark
+ * visible, nothing rendered, and a summary slot showing syntax instead of the
+ * sentence underneath it.
+ *
+ * This is a reducer to TEXT, not a renderer to HTML — the distinction article.js
+ * turns on. It DROPS what a preview cannot show (fenced code, images, rules,
+ * table rules) and UNWRAPS what it can (headings, quotes, list markers,
+ * emphasis, the text of a link). Nothing here emits markup, the call site still
+ * escapes what comes back, and so this adds no surface to the audit that a
+ * markdown renderer would.
+ *
+ * [title] drops a leading heading that only repeats it: opening the body with
+ * the article's own title is what most long-form clients write, and a preview
+ * that says the title twice has spent its first line saying nothing.
+ */
+const MD_HEADING = /^\s{0,3}#{1,6}\s+/;
+const MD_RULE = /^\s*(?:[-*_=]\s*){3,}$/;          // thematic break, setext underline
+const MD_TABLE_RULE = /^\s*\|?[\s:|-]*\|[\s:|-]*$/;
+
+export function mdExcerpt(md, title = "") {
+  const body = String(md || "")
+    .replace(/```[\s\S]*?(?:```|$)|~~~[\s\S]*?(?:~~~|$)/g, " ")  // fenced code
+    .replace(/!\[[^\]]*\]\([^)]*\)/g, " ")                       // images
+    .replace(/\[([^\]]*)\]\([^)]*\)/g, "$1")                     // inline links
+    .replace(/\[([^\]]*)\]\[[^\]]*\]/g, "$1")                    // reference links
+    .replace(/<((?:https?|wss?|mailto):[^>\s]+)>/g, "$1")        // autolinks, before
+    .replace(/<\/?[a-zA-Z][^>]*>/g, " ");                        // ...the tags they look like
+
+  // A heading is a LABEL for the prose under it, not prose. Every line here
+  // ends up in ONE run, so a kept heading runs straight into the sentence it
+  // introduces — "Somebody is paying for this A relay that accepts every
+  // event from everybody…", which is what the fallback read like. The excerpt
+  // is therefore the FIRST PROSE RUN: leading headings skipped, and the run
+  // ending where the next section's heading starts it over. A body that is
+  // nothing BUT headings falls back to them, since some words beat none.
+  const heads = [], prose = [];
+  let started = false, ended = false;
+  for (const raw of body.split("\n")) {
+    if (MD_RULE.test(raw) || MD_TABLE_RULE.test(raw)) continue;
+    const line = raw
+      .replace(/^\s{0,3}>+\s?/, "")                              // quote
+      .replace(MD_HEADING, "")                                   // heading
+      .replace(/^\s{0,3}(?:[-*+]|\d+[.)])\s+/, "");              // list marker
+    if (MD_HEADING.test(raw)) { heads.push(line); ended = started; continue; }
+    if (ended) continue;
+    if (line.trim()) started = true;
+    prose.push(line);
+  }
+
+  const s = (started ? prose : heads).join(" ")
+    .replace(/(\*\*|__|~~)(.+?)\1/g, "$2")                       // strong, strike
+    .replace(/(^|[^\w*])[*_](?!\s)([^*_]+?)[*_](?![\w*])/g, "$1$2")  // emphasis
+    .replace(/`+([^`]+)`+/g, "$1")                               // inline code
+    .replace(/\s+/g, " ")                                        // paragraphs read as one run
+    .trim();
+  const t = String(title || "").trim();
+  return t && s.slice(0, t.length).toLowerCase() === t.toLowerCase() ? s.slice(t.length).trim() : s;
+}

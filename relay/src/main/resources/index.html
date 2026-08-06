@@ -814,6 +814,11 @@
     object-fit: cover; border-radius: 10px;
     background: var(--surface-2); border: 1px solid var(--border);
   }
+  /* An article's image is a COVER — a wide banner an author chose the framing
+     of — not an avatar. Square-cropped it lost a third of every one from each
+     side, and centred it left the title floating beside the middle of the
+     picture instead of starting level with it. */
+  .thumb.cover { width: 168px; height: 105px; align-self: flex-start; }
 
   .props { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; margin: 10px 0 0; }
   .props dt { color: var(--faint); }
@@ -1025,6 +1030,9 @@
     body.searching .brand { display: none; }
     .av-xl { --av: 40px; --chip: 16px; --chip-text: 10px; }
     .thumb { width: 72px; height: 72px; }
+    /* .thumb.cover outranks .thumb whatever the viewport, so the narrow frame
+       has to be named too or the cover keeps its desktop width here. */
+    .thumb.cover { width: 116px; height: 73px; }
     .props { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
     .props dt { margin-top: 6px; font-size: 11px; }
   }
