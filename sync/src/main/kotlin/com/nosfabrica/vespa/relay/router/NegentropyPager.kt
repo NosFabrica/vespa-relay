@@ -283,7 +283,12 @@ internal class NegentropyPager(
                     capped
                 }
             try {
-                val result = peer.reconcile(url, window(shape, w), ids, onProgress) { onEvent(it) }
+                // Offset by what the sweep already has: quartz counts from zero
+                // per NEG-OPEN, so passing its numbers straight through would
+                // walk the progress line backwards at every window boundary.
+                val base = downloaded
+                val progress = onProgress?.let { report -> { need: Int, got: Int -> report(need, base + got) } }
+                val result = peer.reconcile(url, window(shape, w), ids, progress) { onEvent(it) }
                 downloaded += result.downloaded
                 reconciled++
                 consecutiveFailures = 0
