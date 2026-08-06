@@ -157,7 +157,16 @@ relay/src/main/resources/
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
                         entity.js
-                        renders /npub1…//note1…//naddr1… paths; cards/ is the
+                        renders /npub1…//note1…//naddr1… paths; feed.js is the
+                        latest feed — three cards under the hero for a signed-in
+                        reader, a hundred at /?feed=1 — and is an EMPTY SEARCH:
+                        buildFilters() with no words and none of the bar's
+                        NIP-50 extensions leaves `{kinds, limit}`, a plain
+                        NIP-01 read, which is the only shape the store answers
+                        newest-first (a stray `sort:` would rank it while the
+                        page said "latest"), so the feed hides the bar; what is
+                        feed.js's own is the shaping — replies, future dates and
+                        duplicates never reach a card; cards/ is the
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that
                         FAILS if a kind registers without a fixture, a badge
