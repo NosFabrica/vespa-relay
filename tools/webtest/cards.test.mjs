@@ -5,6 +5,7 @@ globalThis.window = { addEventListener: () => {} };
 
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
 const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
+const { buildFilters } = await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 const { renderers, safeUrl } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
@@ -249,6 +250,52 @@ assert(!hostileDim.includes("aspect-ratio") && !hostileDim.includes("javascript:
 
 // The `d` fallback still does the work it was there for: a community's name.
 assert(card(ev(34550, [["d", "nostr-devs"]])).includes("nostr-devs"), "a readable `d` is still a title");
+
+// ---- a hashtag chip is a search --------------------------------------------
+//
+// The chip's href and the search field's language are the SAME language, and
+// that is the assertion worth making: not that the href has some shape, but
+// that feeding it back to the tokenizer this app runs its REQ from asks for
+// the topic the chip named. A chip that linked to a query the field cannot
+// parse would look right in the markup and land on an empty page.
+const chipHref = (html) => (/<a class="tag-chip" href="([^"]*)"/.exec(html) || [])[1] || null;
+const tagged = card(ev(22, [["imeta", "url https://x/v.mp4"], ["t", "isleofskye"]], "a video"));
+const href = chipHref(tagged);
+assert(href, "a topic tag renders as a link, not as inert text");
+const q = new URLSearchParams(href.slice(href.indexOf("?"))).get("q");
+assert.strictEqual(q, "#isleofskye", "the chip asks for the topic as the field would have written it");
+// (The filter carries the case variants people write topics in — that is the
+// query builder's business, and the chip's is only that the topic is in there.)
+assert(buildFilters(q, { kinds: null, limit: 10 })[0]["#t"].includes("isleofskye"),
+  "and that query builds the REQ for that topic");
+// NIP-51 interests carry the same hashtags in bare form and link the same way.
+assert.strictEqual(chipHref(card(ev(30015, [["d", "mine"], ["t", "isleofskye"]]))), href,
+  "one hashtag, one link, wherever the card family puts it");
+// A mute word is not a hashtag: it stays inert on purpose.
+assert(!chipHref(card(ev(10000, [["word", "spoilers"]]))), "a mute word is not a search to run");
+
+// ---- a picture post is an album --------------------------------------------
+//
+// NIP-68 gives a picture post one imeta PER PICTURE. Reading only the first
+// showed one photo of five, in a 92px thumbnail, next to text.
+const album = ev(20, [
+  ["title", "Five days on Skye"],
+  ["imeta", "url https://x/1.jpg", "dim 1600x1200", "alt the Cuillin ridge"],
+  ["imeta", "url https://x/2.jpg"], ["imeta", "url https://x/3.jpg"],
+  ["imeta", "url https://x/4.jpg"], ["imeta", "url https://x/5.jpg"],
+], "the whole trip");
+const albumPreview = card(album), albumFull = card(album, { full: true });
+assert.strictEqual((albumPreview.match(/<img/g) || []).length, 4, "the list shows four of five");
+assert(albumPreview.includes("…and 1 more"), "and says so rather than silently dropping one");
+assert.strictEqual((albumFull.match(/<img/g) || []).length, 5, "the permalink shows every picture");
+assert(albumPreview.includes("media-grid"), "several pictures are a grid, not a stack");
+
+// A lone picture gets the frame a video gets, shaped by its own `dim`, and the
+// description the event wrote for it becomes the image's alt text.
+const onePic = card(ev(20, [["imeta", "url https://x/1.jpg", "dim 1600x1200", "alt the Cuillin ridge"]], "one photo"));
+assert(onePic.includes("media-frame sized") && onePic.includes("aspect-ratio: 1600 / 1200"), "one picture, one shaped frame");
+assert(onePic.includes('alt="the Cuillin ridge"'), "the imeta description IS the alt text");
+assert(!onePic.includes("media-grid"), "one picture is not a grid");
 
 // Escaping holds in every renderer that touches content.
 const hostile = card(ev(1, [], `<img src=x onerror=alert(1)>`), { full: true });

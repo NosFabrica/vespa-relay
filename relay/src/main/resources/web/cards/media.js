@@ -1,36 +1,77 @@
-// The media family. The permalink shows the media itself — an <img> or a
-// <video controls> — because for these kinds the file IS the event. A picture
-// keeps its small thumbnail in the results list so a list stays a list; a
-// VIDEO does not, and that difference is deliberate (see videoCard).
+// The media family. The media itself is on the card at BOTH depths — an
+// <img>, a grid of them, or a <video controls> — because for these kinds the
+// file IS the event, and a 92px thumbnail beside two lines of text is a card
+// about a picture rather than the picture. Every other family still previews
+// small; this is the one place where the media is the point.
 // URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
 import { esc, titleOf, imageOf } from "../shared/format.js";
-import { register, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, extLink, imetaField, tagOf, tagsOf, clipIf } from "./base.js";
-
-const mediaUrl = (ev) => imetaField(ev, "url") || tagOf(ev, "url");
-const poster = (ev) => imetaField(ev, "image") || imageOf(ev);
-/** imeta first, then the same field as a top-level tag — NIP-71 allows both. */
-const mediaField = (ev, name) => imetaField(ev, name) || tagOf(ev, name);
-
-const imgEmbed = (url) =>
-  `<div class="embed"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>`;
-const thumbFallback = (url) =>
-  url ? `<img class="thumb" src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : "";
+import { register, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink, imetas, tagOf, tagsOf, clipIf } from "./base.js";
 
 /**
- * 20 — picture-first. One body, computed once: the first version of these
- * two cards composed "embed-or-preview-block" + "full-mode body" as separate
- * terms, and the corner cases double-rendered — a full-depth video with no
- * url printed its text twice, and a preview picture with no url printed
- * nothing at all.
+ * The file a single-file card is about: its FIRST imeta, read once and passed
+ * around whole.
+ *
+ * One imeta, not "the first tag that happens to carry this field", because a
+ * NIP-71 video may list several — an mp4 and a webm of the same thing, each
+ * with its own url, dim and duration. Reading field by field across all of
+ * them can shape the frame from one file and play another.
+ */
+const EMPTY = Object.freeze(Object.create(null));
+const fileOf = (ev) => imetas(ev)[0] || EMPTY;
+/** …falling back to the same field as a top-level tag, which NIP-71 also allows. */
+const fieldOf = (m, ev, name) => m[name] || tagOf(ev, name);
+/** The topics an event names, as the chips a reader can search from. */
+const topics = (ev) => tagsOf(ev, "t").filter((t) => t[1]).map((t) => `#${t[1]}`);
+
+/**
+ * What a media card says in words: the author's own text, then the media's
+ * description, and only last the NIP-31 `alt` — which is boilerplate by
+ * design ("Vertical Video"), a line for clients that cannot render the kind
+ * at all rather than anything about this file.
+ */
+const captionOf = (ev, media) =>
+  ev.content || tagOf(ev, "summary", "description") || (media && media.alt) || tagOf(ev, "alt");
+
+/**
+ * 20 — pictures, and a NIP-68 picture post is an ALBUM: one imeta per image,
+ * where reading only the first showed one photo of nine and the search preview
+ * showed that one at 92px. A single picture gets the same frame a video does,
+ * shaped by its `dim`; several get a grid, capped in the list and complete on
+ * the permalink, because a results list is still a list.
+ *
+ * The imeta `alt` becomes the image's alt text, which is what it was written
+ * for — the card was passing `alt=""` while the event carried the description.
  */
 function pictureCard(ev, opts) {
-  const url = mediaUrl(ev) || imageOf(ev);
-  const body = bodyHtml(opts, titleOf(ev) || ev.content, 200);
-  const inner = opts && opts.full
-    ? (url ? imgEmbed(url) : "") + body
-    : `<div class="result-main"><div class="text">${body}</div>${thumbFallback(url)}</div>`;
+  const pics = imetas(ev).filter((m) => m.url);
+  const legacy = tagOf(ev, "url") || imageOf(ev);
+  const shown = pics.length ? pics : (legacy ? [{ url: legacy }] : []);
+  const title = titleOf(ev);
+  const caption = captionOf(ev, shown[0]);
+  const inner =
+    titleHtml(opts, title, 140) +
+    (shown.length === 1 ? mediaFrame(frameStyle(shown[0].dim, opts), pictureImg(shown[0])) : pictureGrid(shown, opts)) +
+    bodyHtml(opts, caption === title ? "" : caption, 300) +
+    chipRow(topics(ev), opts, hashtagHref);
   return shell(ev, opts, inner);
+}
+
+/**
+ * One picture, carrying the description the event wrote for it. `whenBroken`
+ * is what a dead url takes with it: the frame around a lone picture (an empty
+ * bordered box is worse than no box), the cell alone inside a grid.
+ */
+const pictureImg = (m, whenBroken = "this.parentElement.remove()") =>
+  `<img src="${esc(m.url)}" alt="${esc(m.alt || "")}" loading="lazy" referrerpolicy="no-referrer" onerror="${whenBroken}" />`;
+
+/** The album: four in the list, all of them on the permalink. */
+function pictureGrid(pics, opts) {
+  if (!pics.length) return "";
+  const shown = opts && opts.full ? pics : pics.slice(0, 4);
+  const more = pics.length - shown.length;
+  return `<div class="media-grid">${shown.map((m) => pictureImg(m, "this.remove()")).join("")}</div>` +
+    (more > 0 ? `<div class="muted-note">…and ${more} more</div>` : "");
 }
 
 /**
@@ -52,36 +93,33 @@ function pictureCard(ev, opts) {
  * poster, since a picture we already have is not worth a second request.
  */
 function videoCard(ev, opts) {
-  const url = mediaUrl(ev);
+  const m = fileOf(ev);
+  const url = fieldOf(m, ev, "url");
   const title = titleOf(ev);
-  // The caption: what the author wrote, then the media's own description, and
-  // only last the NIP-31 `alt` — which is boilerplate by design ("Vertical
-  // Video"), a line for clients that cannot render the kind at all rather than
-  // anything about this video. A title already has its own line above, so it
-  // never repeats itself down here — which is all the body of a titled video's
-  // card used to be.
-  const caption = ev.content || tagOf(ev, "summary", "description") || imetaField(ev, "alt") || tagOf(ev, "alt");
-  const tags = tagsOf(ev, "t").filter((t) => t[1]).map((t) => `#${t[1]}`);
+  // A title already has its own line above, so the caption never repeats it
+  // down here — which is all the body of a titled video's card used to be.
+  const caption = captionOf(ev, m);
   const inner =
     titleHtml(opts, title, 140) +
-    (url ? videoFrame(ev, url, opts) : "") +
+    (url ? videoFrame(m, ev, url, opts) : "") +
     bodyHtml(opts, caption === title ? "" : caption, 300) +
-    chipRow(tags, opts);
+    chipRow(topics(ev), opts, hashtagHref);
   return shell(ev, opts, inner, opts && opts.full
-    ? [["url", extLink(url)], ["duration", esc(fmtDuration(mediaField(ev, "duration")))], ["size", fmtBytes(mediaField(ev, "size"))]]
+    ? [["url", extLink(url)], ["duration", esc(fmtDuration(fieldOf(m, ev, "duration")))], ["size", fmtBytes(fieldOf(m, ev, "size"))]]
     : []);
 }
 
-function videoFrame(ev, url, opts) {
-  const p = poster(ev);
-  const dur = fmtDuration(mediaField(ev, "duration"));
+function videoFrame(m, ev, url, opts) {
+  const p = m.image || imageOf(ev);
+  const dur = fmtDuration(fieldOf(m, ev, "duration"));
   const src = (p || url.includes("#")) ? url : `${url}#t=0.1`;
-  const shape = frameStyle(ev, opts);
-  return `<div class="media-frame${shape ? " sized" : ""}"${shape}>` +
+  return mediaFrame(frameStyle(fieldOf(m, ev, "dim"), opts),
     `<video controls playsinline preload="${p ? "none" : "metadata"}"${p ? ` poster="${esc(p)}"` : ""} src="${esc(src)}" onerror="this.parentElement.remove()"></video>` +
-    (dur ? `<span class="media-chip">${esc(dur)}</span>` : "") +
-    "</div>";
+    (dur ? `<span class="media-chip">${esc(dur)}</span>` : ""));
 }
+
+/** The one media box a picture and a video share — `.sized` when `dim` said so. */
+const mediaFrame = (shape, inner) => `<div class="media-frame${shape ? " sized" : ""}"${shape}>${inner}</div>`;
 
 /**
  * The frame's shape, from NIP-92 `dim`, as an inline style — and the one place
@@ -94,8 +132,8 @@ function videoFrame(ev, url, opts) {
  * is a full-width black band with a narrow slot of picture down the middle;
  * with it, the card is the shape of the video.
  */
-function frameStyle(ev, opts) {
-  const m = /^(\d{1,5})x(\d{1,5})$/.exec(mediaField(ev, "dim") || "");
+function frameStyle(dim, opts) {
+  const m = /^(\d{1,5})x(\d{1,5})$/.exec(dim || "");
   const w = m ? Number(m[1]) : 0, h = m ? Number(m[2]) : 0;
   if (!w || !h) return "";
   // The floor is for the shapes nobody films in: `dim 100x4000` is a legal tag
@@ -126,13 +164,21 @@ const fmtBytes = (n) => {
   return `${(n / 1024 / 1024).toFixed(1)} MB`;
 };
 
-/** 1063 — file metadata: what it is, how big, where; preview when it is an image. */
+/**
+ * 1063 — file metadata: what it is, how big, where; the file itself when it is
+ * one this page can show. A 1063 is a NIP-94 description of the same bytes a
+ * kind 20 would carry, tags and all, so it uses the same frame — the alternative
+ * was a second image embed that sized itself differently for no reason a reader
+ * could see.
+ */
 function fileCard(ev, opts) {
   const url = tagOf(ev, "url");
   const mime = tagOf(ev, "m") || "";
   const full = opts && opts.full;
   const inner =
-    (full && url && mime.startsWith("image/") ? imgEmbed(url) : "") +
+    (full && url && mime.startsWith("image/")
+      ? mediaFrame(frameStyle(tagOf(ev, "dim"), opts), pictureImg({ url, alt: tagOf(ev, "alt") }))
+      : "") +
     bodyHtml(opts, ev.content || titleOf(ev), 300);
   return shell(ev, opts, inner, [
     ["file", extLink(url)],
@@ -147,7 +193,7 @@ function fileCard(ev, opts) {
  * on the card and the only way to place it in a conversation.
  */
 function audioCard(ev, opts) {
-  const url = mediaUrl(ev);
+  const url = fieldOf(fileOf(ev), ev, "url");
   const inner =
     replyLine(ev) +
     (opts && opts.full && url ? `<div class="embed"><audio controls preload="metadata" src="${esc(url)}"></audio></div>` : "") +

@@ -1329,7 +1329,12 @@ document.addEventListener("click", (e) => {
   if (!a) return;
   const href = a.getAttribute("href");
   if (href === "/") { e.preventDefault(); reset(); return; }
-  if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
+  // `/?q=…` is the third shape a card can link to, after "/" and the NIP-19
+  // paths: a hashtag chip is a SEARCH, and applyUrl() already restores one
+  // from exactly this url. Without this arm the chip still worked — as a full
+  // page load, which tears down the socket and re-does the NIP-42 handshake
+  // to arrive at the same results.
+  if (!/^\/(\?q=|(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$)/i.test(href)) return;
   e.preventDefault();
   navigate(href);
 });

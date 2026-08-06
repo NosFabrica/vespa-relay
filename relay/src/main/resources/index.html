@@ -753,7 +753,7 @@
                  width: fit-content; max-width: 100%; max-height: 360px; overflow: hidden; border-radius: 12px;
                  border: 1px solid var(--border); background: var(--surface-2); }
   .result.full .media-frame { max-height: 70vh; }
-  .media-frame video { display: block; max-width: 100%; max-height: inherit; }
+  .media-frame video, .media-frame img { display: block; max-width: 100%; max-height: inherit; }
   /* `.sized` is the frame that knows its shape: it takes the width its
      aspect-ratio and the cap above imply, and the video fills it. Without a
      `dim` there is no shape to reserve, so the frame hugs whatever the video
@@ -761,6 +761,19 @@
      until the metadata says otherwise. */
   .media-frame.sized { width: auto; }
   .media-frame.sized video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  /* A picture fills its frame exactly — the frame IS its aspect ratio — so it
+     needs no letterbox behind it the way a video's controls chrome does. */
+  .media-frame.sized img { width: 100%; height: 100%; object-fit: cover; }
+  /* An album: NIP-68 gives a picture post one imeta per image. Square cells,
+     because a grid of mixed aspect ratios reads as a mistake, and the frame
+     above is what a single picture gets instead. */
+  .media-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 6px;
+                margin: 4px auto 10px; max-width: 460px; }
+  .media-grid img { display: block; width: 100%; aspect-ratio: 1 / 1; object-fit: cover;
+                    border-radius: 10px; border: 1px solid var(--border); background: var(--surface-2); }
+  /* "…and 2 more" belongs to the grid above it, so it sits under it rather
+     than at the card's left edge, where it read as the start of the caption. */
+  .media-grid + .muted-note { text-align: center; margin-bottom: 8px; }
   /* The length, where every video player in the world puts it — but out of the
      controls' way, which own the bottom edge the moment the card is hovered. */
   .media-chip { position: absolute; top: 8px; right: 8px; padding: 1px 7px; border-radius: 999px;
@@ -808,6 +821,11 @@
               overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
               color: var(--muted); background: var(--surface-2); border: 1px solid var(--border); }
   .tag-chip.more { color: var(--faint); background: none; border-color: transparent; }
+  /* A hashtag chip is a link to the search for it. It keeps the chip's quiet
+     voice until it is hovered, where it picks up the page's accent — the same
+     bargain the byline date makes: a real anchor that does not shout. */
+  a.tag-chip { text-decoration: none; }
+  a.tag-chip:hover { color: var(--accent); border-color: var(--accent); }
   /* a list at permalink depth names each section it holds */
   .list-section + .list-section { margin-top: 12px; }
   .section-head { font-size: 11.5px; font-weight: 600; text-transform: uppercase;
