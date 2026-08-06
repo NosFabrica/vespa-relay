@@ -520,6 +520,7 @@ function applyViewingAs(pubkey, name) {
   $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : "me";
   $obsList.innerHTML = "";
   $obsFilter.value = "";
+  renderAdvCount();
 }
 
 function setViewingAs(pubkey, name) {
@@ -844,7 +845,51 @@ document.addEventListener("click", (e) => {
   if (!e.target.closest("#obsbox")) $obsList.innerHTML = "";
 });
 $obsFilter.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { $obsList.innerHTML = ""; $obsFilter.blur(); }
+  // Stopped here so one press does one thing: without this the same Escape
+  // would close the panel the list is drawn inside.
+  if (e.key === "Escape") { e.stopPropagation(); $obsList.innerHTML = ""; $obsFilter.blur(); }
+});
+
+// ---- the advanced filters -------------------------------------------------
+//
+// Sort, the "ranking as" lens and include:spam live behind a disclosure (the
+// <details> owns open/closed, the keyboard and the ARIA — this file only reads
+// it). Hiding a control that changes what comes back needs the badge below,
+// which is the whole of the JS here: the three of them are still exactly the
+// URL params `sort`, `spam` and `as`, so a shared link arrives with somebody
+// else's filters on and nothing else on screen would say so.
+const $adv = document.getElementById("adv");
+const $advBtn = document.getElementById("advbtn");
+const $advCount = document.getElementById("advcount");
+
+/** How many advanced filters are off their default, on the button. */
+function renderAdvCount() {
+  const on = [];
+  if ($sort.value) on.push("sorted by " + $sort.options[$sort.selectedIndex].text.toLowerCase());
+  if (viewingAs) on.push("ranking as " + $obsCurrent.textContent);
+  if ($spam.checked) on.push("spam included");
+  $advCount.textContent = String(on.length);
+  $advCount.hidden = !on.length;
+  $advBtn.title = on.length
+    ? on.join(", ")
+    : "Sorting, whose web of trust ranks the page, and whether unranked results are shown";
+}
+
+// Dismissed like the popups it sits next to, and for the same reason: it is
+// absolutely positioned over the page. The observer list inside it is a click
+// within #adv, so picking somebody does not close the panel out from under the
+// list they picked from.
+document.addEventListener("click", (e) => {
+  if ($adv.open && !e.target.closest("#adv")) $adv.open = false;
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape" || !$adv.open) return;
+  // Focus goes back to the button only if it was inside the panel: Escape is
+  // also how the search popup closes, and that press must not yank the caret
+  // out of the field somebody is typing in.
+  const inside = $adv.contains(document.activeElement);
+  $adv.open = false;
+  if (inside) $advBtn.focus();
 });
 
 // ---- the field renders its own contents ----------------------------------
@@ -1215,8 +1260,8 @@ $chips.addEventListener("click", (e) => {
   rerun();
 });
 
-$sort.addEventListener("change", rerun);
-$spam.addEventListener("change", rerun);
+$sort.addEventListener("change", () => { renderAdvCount(); rerun(); });
+$spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 
 // ---- the URL is the search ------------------------------------------------
 //
@@ -1296,13 +1341,14 @@ function applyUrl() {
     if ($sort.selectedIndex < 0) $sort.value = ""; // an unknown sort is no sort
     $spam.checked = p.get("spam") === "1";
     const as = pubkeyParam(p.get("as"));
-    applyViewingAs(as, null);
+    applyViewingAs(as, null); // recounts the badge for all three: setting the
+                              // two above fires no `change` of its own
     if (as) {
       // The URL carries the key; the label wants the name. Filled in after
       // the fact so the restore itself never waits on a profile lookup.
       enrichProfiles([as]).then(() => {
         const nm = displayName(profiles.get(as));
-        if (nm && viewingAs === as) $obsCurrent.textContent = nm;
+        if (nm && viewingAs === as) { $obsCurrent.textContent = nm; renderAdvCount(); }
       }).catch(() => {});
     }
     $q.value = text;
