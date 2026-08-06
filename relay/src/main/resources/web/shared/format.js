@@ -40,6 +40,26 @@ export const firstTag = (ev, ...names) => {
   }
   return null;
 };
-export const titleOf = (ev) => firstTag(ev, "title", "name", "subject") || firstTag(ev, "d");
+/**
+ * A `d` is an IDENTIFIER, and reading it as a title is a bet that its author
+ * wrote something a person can read there. Often they did — a community's
+ * name, a wiki slug, a bookmarked url — and often a client generated it: a
+ * kind 22 short video from Amethyst carries
+ * `d f56d739a-09c9-4f0b-ba82-f8c21e1a6b8e`, and that UUID was what every one
+ * of those cards led with, standing in for a caption the event was carrying
+ * in `content` all along.
+ *
+ * These three shapes are never prose: a UUID, a hex blob (an event id, a
+ * pubkey, a file hash), a bare unix timestamp. When the `d` is one of them the
+ * ladder falls past it to whatever the card would have said next, which is
+ * always more informative than a hash — including nothing at all.
+ */
+const OPAQUE_D = /^(?:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|[0-9a-f]{16,}|\d{10,})$/i;
+export const titleOf = (ev) => {
+  const named = firstTag(ev, "title", "name", "subject");
+  if (named) return named;
+  const d = firstTag(ev, "d");
+  return d && !OPAQUE_D.test(d) ? d : null;
+};
 export const summaryOf = (ev) => firstTag(ev, "summary", "description", "alt");
 export const imageOf = (ev) => firstTag(ev, "image", "thumb", "picture", "icon");

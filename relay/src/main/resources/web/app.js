@@ -1283,10 +1283,17 @@ $spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 // truncate the forward stack it is trying to walk.
 let navRestoring = false;
 
-function currentUrl() {
+/**
+ * The url for the page as it stands — optionally with a DIFFERENT query, which
+ * is what a hashtag chip navigates to. applyUrl() reads the url as the whole
+ * of the page's state, so anything a chip's url omits is a setting the chip
+ * silently clears: the kind tab, the sort, include:spam, and the ranking lens
+ * — three of which the Filters badge is at that moment counting. A chip
+ * changes the query and nothing else.
+ */
+function currentUrl(text = $q.value.trim(), showing = !$results.hidden) {
   const p = new URLSearchParams();
-  const text = $q.value.trim();
-  if (!$results.hidden && text) p.set("q", text);
+  if (showing && text) p.set("q", text);
   if (tab.slug !== KIND_TABS[0].slug) p.set("tab", tab.slug);
   if ($sort.value) p.set("sort", $sort.value);
   if ($spam.checked) p.set("spam", "1");
@@ -1379,10 +1386,54 @@ document.addEventListener("click", (e) => {
   if (!a) return;
   const href = a.getAttribute("href");
   if (href === "/") { e.preventDefault(); reset(); return; }
+  // `/?q=…` is the third shape a card can link to, after "/" and the NIP-19
+  // paths: a hashtag chip is a SEARCH, and applyUrl() already restores one
+  // from exactly this url. Without this arm the chip still worked — as a full
+  // page load, which tears down the socket and re-does the NIP-42 handshake
+  // to arrive at the same results.
+  //
+  // The chip's url is rebuilt through currentUrl() rather than followed as
+  // written: it names a query and knows nothing about the page it was clicked
+  // on, and every filter it does not name is one applyUrl() would clear.
+  if (/^\/\?q=/.test(href)) {
+    e.preventDefault();
+    navigate(currentUrl(new URLSearchParams(href.slice(1)).get("q") || "", true));
+    return;
+  }
   if (!/^\/(npub|nprofile|note|nevent|naddr)1[a-z0-9]+$/i.test(href)) return;
   e.preventDefault();
   navigate(href);
 });
+
+// ---- media that loads when it is nearly on screen -------------------------
+//
+// A video card renders its url in `data-src`. `preload="metadata"` is a range
+// request per card — two for an mp4 whose moov atom is at the end — so a
+// search returning sixty short videos opened sixty of them before the reader
+// had scrolled past the second. This promotes the url one screen ahead, which
+// still leaves the first frame time to paint before the card arrives.
+//
+// Armed from a MutationObserver rather than from each render because cards are
+// inserted from more than one place — renderResults() here, and entity.js for
+// a permalink — and a path that forgot to arm would show a video that never
+// loads at all. A card renderer cannot know about the page's scroll, and a
+// render path cannot forget a call it does not have to make.
+const loadMedia = (v) => { v.src = v.dataset.src; delete v.dataset.src; };
+const nearViewport = "IntersectionObserver" in window
+  ? new IntersectionObserver((entries, obs) => {
+      for (const e of entries) if (e.isIntersecting) { loadMedia(e.target); obs.unobserve(e.target); }
+    }, { rootMargin: "500px 0px" })
+  : null;
+function armMedia(root) {
+  if (!root || root.nodeType !== 1) return;
+  const vids = [...root.querySelectorAll("video[data-src]")];
+  if (root.matches("video[data-src]")) vids.push(root);
+  // No IntersectionObserver is no lazy loading, not a page of dead players.
+  for (const v of vids) nearViewport ? nearViewport.observe(v) : loadMedia(v);
+}
+new MutationObserver((records) => {
+  for (const r of records) for (const n of r.addedNodes) armMedia(n);
+}).observe(document.body, { childList: true, subtree: true });
 
 /** An internal path as a pushState render — the one place both click paths
     (a card's anchors, and the card itself) turn a href into a view. */

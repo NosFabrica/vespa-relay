@@ -15,7 +15,7 @@
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import {
-  register, shell, titleHtml, bodyHtml, faceStrip, relayRows, chipRow,
+  register, shell, titleHtml, bodyHtml, faceStrip, relayRows, chipRow, hashtagHref,
   emojiGrid, refRows, extLink, tagsOf, tagOf,
 } from "./base.js";
 
@@ -25,7 +25,11 @@ const TAGS = {
   p: { one: "person", many: "people", show: (v, o) => faceStrip(v.filter((pk) => /^[0-9a-f]{64}$/.test(pk)), o && o.full ? 24 : 12) },
   e: { one: "event", many: "events", show: (v, o) => refRows(v.map((x) => ({ kind: "e", value: x })), o) },
   a: { one: "entry", many: "entries", show: (v, o) => refRows(v.map((x) => ({ kind: "a", value: x })), o) },
-  t: { one: "hashtag", many: "hashtags", show: chipRow },
+  // A hashtag is a search wherever it appears — on an interest list as much as
+  // on a picture. A mute WORD is not: it is a string this person does not want
+  // to read, and linking it to a page full of it would be a joke at their
+  // expense.
+  t: { one: "hashtag", many: "hashtags", show: (v, o) => chipRow(v, o, hashtagHref) },
   word: { one: "word", many: "words", show: chipRow },
   relay: { one: "relay", many: "relays", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
   server: { one: "server", many: "servers", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
