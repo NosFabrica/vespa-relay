@@ -1248,19 +1248,26 @@ let cursorId = null;
 const cursorCards = () => [...$results.querySelectorAll(".result[data-href]")];
 const cursorAt = (cards) => cards.findIndex((el) => el.dataset.id === cursorId);
 
-/** Draw the cursor where it is — after every render, which replaced the very
-    elements that were carrying the class. An id the list no longer holds is a
-    cursor pointing at nothing, so it goes. */
+/**
+ * Draw the cursor where it is — after every render, which replaced the very
+ * elements that were carrying the class.
+ *
+ * An id the list no longer holds is a cursor pointing at nothing, so it goes —
+ * but only against a list that HAS cards. Every search paints a skeleton
+ * first, and forgetting the id there cost the cursor everything that re-runs
+ * the query: Back out of a card landed on the list with nothing selected, and
+ * a chip change dropped the cursor off an event that was still in the results.
+ * Keying this to the event instead of the row is only worth anything if the id
+ * outlives the moment the list is empty.
+ */
 function paintCursor() {
   const cards = cursorCards();
   const at = cursorAt(cards);
-  if (at < 0) cursorId = null;
+  if (at < 0 && cards.length) cursorId = null;
   cards.forEach((el, i) => el.classList.toggle("cursor", i === at));
 }
 
-function moveCursor(delta) {
-  const cards = cursorCards();
-  if (!cards.length) return;
+function moveCursor(cards, delta) {
   const el = cards[stepIndex(cursorAt(cards), cards.length, delta)];
   cursorId = el.dataset.id;
   paintCursor();
@@ -1277,12 +1284,18 @@ function moveCursor(delta) {
 document.addEventListener("keydown", (e) => {
   const move = navKey(e, document.activeElement);
   if (!move || $results.hidden) return;
+  const cards = cursorCards();
+  // Nothing to walk — a permalink, an empty result set, the error card — so
+  // the key is not ours. This has to be decided BEFORE preventDefault(): a
+  // shortcut that takes a key and then does nothing with it is worse than no
+  // shortcut, and `j` is a key Firefox's find-as-you-type is otherwise about
+  // to use.
+  if (!cards.length) return;
   if (move === "open") {
     // Enter is only ours while the cursor is actually on something. Every
     // other Enter on this page belongs to whatever has focus — a chip, the
     // json button, a link — and swallowing those to do nothing would be worse
     // than not having the shortcut.
-    const cards = cursorCards();
     const el = cards[cursorAt(cards)];
     if (!el) return;
     e.preventDefault();
@@ -1293,7 +1306,7 @@ document.addEventListener("keydown", (e) => {
   // A type-ahead preview left open over the list is furniture at this point:
   // the reader is walking the results themselves.
   closePopup();
-  moveCursor(move === "next" ? 1 : -1);
+  moveCursor(cards, move === "next" ? 1 : -1);
 });
 
 $popup.addEventListener("mousedown", (e) => {
