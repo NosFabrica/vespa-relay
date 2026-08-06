@@ -10,6 +10,7 @@ import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor } from "./shared/query.js";
+import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
@@ -779,6 +780,10 @@ const $sort = document.getElementById("sort");
 const $spam = document.getElementById("spam");
 const $whoami = document.getElementById("whoami");
 const $me = document.getElementById("me");
+// By class, because the class is the thing being asked about: `.hero` is what
+// `body.searching .hero` makes a sticky toolbar, and its height is what the
+// keyboard cursor has to scroll clear of.
+const $hero = document.querySelector(".hero");
 
 /** The avatar in the field: your picture signed in, a neutral mark signed out. */
 function renderMe() {
@@ -1123,6 +1128,7 @@ const listHead = (title, right) =>
 function paintList($el, html) {
   $el.innerHTML = html;
   paintScores();
+  paintCursor();
   watchNip05();
 }
 
@@ -1330,6 +1336,13 @@ function runFull(text) {
   document.title = "SearchOverTrust";
   closePopup();
   field.close(); // Enter with nothing highlighted searches; the picker is done
+  // The field lets go of the keyboard on submit, so the results are what it is
+  // aimed at. j/k are the LETTERS j and k while a caret is in a text field —
+  // keeping focus here would have made the whole shortcut unreachable without
+  // first clicking somewhere else — and "/" brings the box back in one key.
+  // On a phone it also puts the on-screen keyboard away, which was covering
+  // the answer it had just been used to ask for.
+  $q.blur();
   $results.hidden = false;
   document.body.classList.add("searching");
   document.body.classList.remove("feed"); // searching FROM the feed leaves it
@@ -1357,6 +1370,7 @@ function runFeed() {
   document.title = "SearchOverTrust — latest";
   closePopup();
   field.close();
+  $q.blur();   // a full-page list takes the keyboard, exactly as a search does
   $results.hidden = false;
   // `feed` hides the bar — both halves of it. The three behind Filters are
   // NIP-50 extensions riding on a search string this view does not send, and
@@ -1451,16 +1465,93 @@ $q.addEventListener("keydown", (e) => {
 $clear.addEventListener("click", reset);
 
 // "/" anywhere focuses the search box, the way every search page does it.
+// Not while something is being typed into — see keynav.js's isTyping(), which
+// is that rule, written once for the two shortcuts that need it.
 document.addEventListener("keydown", (e) => {
   if (e.key !== "/" || e.metaKey || e.ctrlKey || e.altKey) return;
-  // `isContentEditable`, not just the tag list: the search box IS a div now,
-  // so a tag test alone swallowed every "/" typed INTO the field and focused
-  // the thing that already had focus.
   const el = document.activeElement;
-  if (!el || el.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(el.tagName)) return;
+  if (!el || isTyping(el)) return;
   e.preventDefault();
   $q.focus();
   $q.select();
+});
+
+// ---- j and k walk the results --------------------------------------------
+//
+// The cursor is an EVENT, not a row number. The list re-renders under it more
+// often than it looks: names and reply parents land after the cards do and
+// repaint them, and a filter change replaces the list wholesale. Holding a row
+// number through that would leave the cursor on whatever slid into position 3;
+// holding the id keeps it on the thing the reader was reading, and a card that
+// is no longer in the list is a cursor that no longer points at anything.
+let cursorId = null;
+
+// The cards a cursor can sit on are the ones that OPEN something. A permalink
+// card carries no `data-href` — it is already the page it would open — so on
+// an entity view this is empty and j/k do nothing at all, rather than lighting
+// up a card with nowhere to go.
+const cursorCards = () => [...$results.querySelectorAll(".result[data-href]")];
+const cursorAt = (cards) => cards.findIndex((el) => el.dataset.id === cursorId);
+
+/**
+ * Draw the cursor where it is — after every render, which replaced the very
+ * elements that were carrying the class.
+ *
+ * An id the list no longer holds is a cursor pointing at nothing, so it goes —
+ * but only against a list that HAS cards. Every search paints a skeleton
+ * first, and forgetting the id there cost the cursor everything that re-runs
+ * the query: Back out of a card landed on the list with nothing selected, and
+ * a chip change dropped the cursor off an event that was still in the results.
+ * Keying this to the event instead of the row is only worth anything if the id
+ * outlives the moment the list is empty.
+ */
+function paintCursor() {
+  const cards = cursorCards();
+  const at = cursorAt(cards);
+  if (at < 0 && cards.length) cursorId = null;
+  cards.forEach((el, i) => el.classList.toggle("cursor", i === at));
+}
+
+function moveCursor(cards, delta) {
+  const el = cards[stepIndex(cursorAt(cards), cards.length, delta)];
+  cursorId = el.dataset.id;
+  paintCursor();
+  // `nearest` scrolls the least, which is what walking a list wants — but the
+  // toolbar is sticky once results are up, and "nearest" knows nothing about
+  // what is floating over the top of the page. Measured rather than guessed:
+  // that bar is a different height on a phone, and grows again when the chip
+  // row wraps.
+  el.style.scrollMarginTop = Math.ceil($hero.getBoundingClientRect().height) + 12 + "px";
+  el.style.scrollMarginBottom = "12px";
+  el.scrollIntoView({ block: "nearest" });
+}
+
+document.addEventListener("keydown", (e) => {
+  const move = navKey(e, document.activeElement);
+  if (!move || $results.hidden) return;
+  const cards = cursorCards();
+  // Nothing to walk — a permalink, an empty result set, the error card — so
+  // the key is not ours. This has to be decided BEFORE preventDefault(): a
+  // shortcut that takes a key and then does nothing with it is worse than no
+  // shortcut, and `j` is a key Firefox's find-as-you-type is otherwise about
+  // to use.
+  if (!cards.length) return;
+  if (move === "open") {
+    // Enter is only ours while the cursor is actually on something. Every
+    // other Enter on this page belongs to whatever has focus — a chip, the
+    // json button, a link — and swallowing those to do nothing would be worse
+    // than not having the shortcut.
+    const el = cards[cursorAt(cards)];
+    if (!el) return;
+    e.preventDefault();
+    navigate(el.dataset.href);
+    return;
+  }
+  e.preventDefault();
+  // A type-ahead preview left open over the list is furniture at this point:
+  // the reader is walking the results themselves.
+  closePopup();
+  moveCursor(cards, move === "next" ? 1 : -1);
 });
 
 $popup.addEventListener("mousedown", (e) => {
