@@ -3,10 +3,37 @@
 // hand-rolled markdown renderer is exactly the kind of surface where an
 // escaping mistake becomes an XSS in a page that renders strangers' events,
 // so plain-but-safe wins until a renderer earns its audit.
+//
+// The PREVIEW's summary line is the one place that costs something, because
+// there the marks are most of the four lines on offer. format.js's mdExcerpt
+// pays it without moving the line above: it reduces markdown to TEXT, never to
+// HTML, so what this card interpolates is still a string it escapes.
 
-import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import { esc, titleOf, summaryOf, imageOf, mdExcerpt } from "../shared/format.js";
 import { register, shell, titleHtml, bodyHtml, refRows, noteHref, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
 
+/**
+ * An article, at both depths — and in preview the three things a long-form
+ * card is for: **cover, title, summary**, in that reading order.
+ *
+ * Each of the three used to be almost that and not quite:
+ *
+ * The COVER is a 1200×630-ish banner, and it was drawn in the shared square
+ * `.thumb` frame that channel pictures and generic images use, centred against
+ * the text. `object-fit: cover` on a square then threw away a third of every
+ * banner from each side. `.thumb.cover` is the landscape frame, topped out
+ * with the title.
+ *
+ * The SUMMARY was the `summary` tag when there was one and the raw markdown
+ * body when there was not — see mdExcerpt for what that looked like — and the
+ * two rendered in different VOICES, the tag muted and the fallback in body
+ * text. One slot, one voice: whichever it came from, this line is the standing
+ * in for the article, not the article.
+ *
+ * `published_at` stays on the permalink. On a card whose byline already reads
+ * "2d ago" it was a second date for the same event, in a props table under a
+ * preview that is supposed to be three things.
+ */
 function articleCard(ev, opts) {
   const title = titleOf(ev);
   const summary = summaryOf(ev);
@@ -20,11 +47,11 @@ function articleCard(ev, opts) {
         ${title ? `<h2 class="result-title"><a href="${noteHref(ev.id)}">${esc(clipIf(opts, title, 120))}</a></h2>` : ""}
         ${full
           ? (summary ? `<div class="result-body muted">${esc(summary)}</div>` : "") + bodyHtml(opts, ev.content, 0)
-          : bodyHtml(opts, summary || ev.content, 400, !!summary)}
+          : bodyHtml(opts, summary || mdExcerpt(ev.content, title), 400, true)}
       </div>
-      ${!full && img ? `<img class="thumb" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
+      ${!full && img ? `<img class="thumb cover" src="${esc(img)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />` : ""}
     </div>`;
-  return shell(ev, opts, inner, [["published", published ? esc(fmtTs(published)) : null]]);
+  return shell(ev, opts, inner, full ? [["published", published ? esc(fmtTs(published)) : null]] : []);
 }
 
 /** 30004 — a curation: the title and what it collects. */

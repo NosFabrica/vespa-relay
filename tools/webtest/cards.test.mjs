@@ -630,4 +630,45 @@ for (const kind of REPLY_KINDS) {
   }
 }
 
+// ---- an article previews as cover, title, summary --------------------------
+//
+// The three things a long-form card is for, and each was almost that: the
+// cover shared the square avatar frame, and the summary slot showed raw NIP-23
+// markdown whenever the event carried no `summary` tag — which most do not.
+//
+// Asserted on the CARD rather than on the reducer, because the property is
+// what a reader sees: prose, in one voice, once. The reducer is free to change
+// its rules underneath this.
+const marked = ev(30023, [["d", "a"], ["title", "On Relays, Bandwidth, and Who Pays"], ["image", "https://x/cover.jpg"],
+  ["published_at", String(now - 400)]],
+  "# On Relays, Bandwidth, and Who Pays\n\n## Somebody is paying for this\n\nA relay that accepts **every** event " +
+  "from *everybody* is running a [charity](https://x/c) with an unbounded budget.\n\n## The ways out\n\n" +
+  "1. Paid relays.\n2. Zaps to the operator.\n");
+const markedPreview = card(marked);
+for (const mark of ["##", "**", "](", "1. "]) {
+  assert(!markedPreview.includes(mark), `the preview summary showed markdown \`${mark}\` instead of the prose under it`);
+}
+assert(markedPreview.includes("A relay that accepts every event from everybody"),
+  "the reduced summary is the article's first prose, with its emphasis unwrapped");
+assert(!markedPreview.includes("Somebody is paying for this A relay"),
+  "a heading labels the prose under it; joined into one run it reads as a sentence that isn't there");
+assert.strictEqual((markedPreview.match(/On Relays, Bandwidth, and Who Pays/g) || []).length, 1,
+  "a body opening with the article's own title must not make the preview say it twice");
+// One voice: whether the line came from the `summary` tag or from the body, it
+// stands in for the article and is styled as such. It used to be muted only in
+// the first case, so two articles side by side disagreed about what that slot was.
+const summarised = card(ev(30023, [["d", "b"], ["title", "T"], ["summary", "the summary tag itself"]], "body"));
+assert(summarised.includes("the summary tag itself") && /result-body[^"]*muted/.test(summarised), "tag summary is muted");
+assert(/result-body[^"]*muted/.test(markedPreview), "and so is the one reduced from the body");
+// The cover is a banner, not an avatar, and the permalink keeps the full markdown.
+assert(markedPreview.includes('class="thumb cover"'), "an article's image gets the landscape frame");
+assert(card(marked, { full: true }).includes("## Somebody is paying for this"),
+  "the permalink still shows the body exactly as its author wrote it");
+// `published_at` under a byline that already says "6m ago" is the same date twice.
+assert(!markedPreview.includes("published"), "the preview carries one date, in the byline");
+assert(card(marked, { full: true }).includes("published"), "the permalink is where the publication date belongs");
+// An article that is nothing but headings still says something.
+assert(card(ev(30023, [["d", "c"], ["title", "T"]], "# Only a heading")).includes("Only a heading"),
+  "some words beat none when the body has no prose at all");
+
 console.log(`all kinds: ${FIXTURES.length} bespoke renderers + generic floor, all assertions passed`);
