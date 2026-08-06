@@ -15,14 +15,14 @@
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import {
-  register, shell, titleHtml, bodyHtml, faceStrip, relayRows, chipRow, hashtagHref,
+  register, registerPeopleGrid, shell, titleHtml, bodyHtml, peopleGrid, uniquePubkeys, relayRows, chipRow, hashtagHref,
   emojiGrid, refRows, extLink, tagsOf, tagOf,
 } from "./base.js";
 
 // What each tag holds, and how it wants to be shown. A section with no
 // renderer here cannot be declared below — the table is the whole vocabulary.
 const TAGS = {
-  p: { one: "person", many: "people", show: (v, o) => faceStrip(v.filter((pk) => /^[0-9a-f]{64}$/.test(pk)), o && o.full ? 24 : 12) },
+  p: { one: "person", many: "people", show: (v, o) => peopleGrid(v, o) },
   e: { one: "event", many: "events", show: (v, o) => refRows(v.map((x) => ({ kind: "e", value: x })), o) },
   a: { one: "entry", many: "entries", show: (v, o) => refRows(v.map((x) => ({ kind: "a", value: x })), o) },
   // A hashtag is a search wherever it appears — on an interest list as much as
@@ -87,11 +87,28 @@ const spec = (entry) => {
   return { tag, one: one || d.one, many: many || d.many, show: d.show };
 };
 
-/** `emoji` carries a pair per tag (shortcode, url); everything else a value. */
-const valuesOf = (ev, tag) =>
-  tag === "emoji"
-    ? tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]])
-    : tagsOf(ev, tag).map((t) => t[1]).filter(Boolean);
+/**
+ * `emoji` carries a pair per tag (shortcode, url); everything else a value.
+ *
+ * Deduped, because a list holds a THING once: repeated tags are common (a
+ * client appends without checking what is already there, two merges of the
+ * same list stack up), and every section here both counts its values and
+ * draws them. Undeduped, a follow list with the same person twice drew that
+ * person in two cells and counted them as two members.
+ */
+const valuesOf = (ev, tag) => {
+  if (tag === "emoji") return unique(tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]), (v) => v.join("|"));
+  // `p` counts and draws the same set: a value that is not a key is not a
+  // person, and "7 people" over six faces is the count answering a different
+  // question from the grid.
+  if (tag === "p") return uniquePubkeys(tagsOf(ev, "p").map((t) => t[1]));
+  return unique(tagsOf(ev, tag).map((t) => t[1]).filter(Boolean), (v) => v);
+};
+
+const unique = (values, keyOf) => {
+  const seen = new Set();
+  return values.filter((v) => { const k = keyOf(v); return seen.has(k) ? false : (seen.add(k), true); });
+};
 
 const countOf = (s, n) => `${n.toLocaleString()} ${n === 1 ? s.one : s.many}`;
 
@@ -124,6 +141,13 @@ function listCard(ev, opts) {
 }
 
 register(Object.keys(LISTS).map(Number), listCard);
+// Derived from the table rather than listed again: a kind draws a people grid
+// exactly when its row carries a `p` section, so adding one to the table above
+// is all it takes for those people to be named — and enriched — as well as drawn.
+registerPeopleGrid(
+  Object.keys(LISTS)
+    .filter((k) => LISTS[k].some((e) => (Array.isArray(e) ? e[0] : e) === "p"))
+    .map(Number));
 
 // 39701 — NIP-B0 web bookmarks. Not a NIP-51 list at all, but the same
 // instinct one file over: the `d` IS the bookmarked url (without its scheme),

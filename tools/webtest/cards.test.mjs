@@ -6,7 +6,7 @@ globalThis.window = { addEventListener: () => {} };
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
 const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { buildFilters } = await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
-const { renderers, safeUrl } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
+const { renderers, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
 const { REPLY_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
@@ -478,6 +478,72 @@ const private_ = card(ev(10000, [], "AbCdEf==?iv=xyz"), { full: true });
 assert(private_.includes("nothing public here") && private_.includes("encrypted"), "an all-private list says so");
 assert(!private_.includes("0 people"), "an encrypted list is not an empty one");
 
+// A list's PEOPLE are its contents, so they are drawn as a grid of face +
+// name — one cell per person, not a row of anonymous 30px circles. Both the
+// standard lists (this 10000's `p` section) and the follow kinds.
+const muted = card(ev(10000, [["p", pk2]]), { full: true });
+assert(muted.includes('class="people-grid full"') && muted.includes('class="person-cell"'), "a list's people get a cell each");
+assert(muted.includes(">olga</span>"), "…with the name under the face");
+assert(!card(ev(10000, [["p", pk2]])).includes("face-strip"), "the preview draws the same grid the permalink does");
+// The two depths are one template at two densities, and the stylesheet is
+// told which by the same `full` the card frame carries. A preview that drew
+// the permalink's face is a result row as tall as a page.
+assert(card(ev(10000, [["p", pk2]])).includes("av-xl") && muted.includes("av-xxl"),
+  "the preview takes the smaller face and the permalink the larger one");
+
+// The caps are per depth, and when a list overruns one, the LAST CELL is the
+// count: the row stays rectangular, and nobody reads a ragged row as the
+// whole list. A follow list of thousands saying nothing about the rest would
+// be the card lying by omission.
+const crowd = Array.from({ length: PEOPLE_GRID.full + 5 }, (_, i) => i.toString(16).padStart(64, "0"));
+// The more-cell is `person-cell more`, so the open-ended match counts every
+// cell and the `href` one counts only the cells that are a person.
+const cells = (html) => (html.match(/class="person-cell/g) || []).length;
+const faces = (html) => (html.match(/class="person-cell" href/g) || []).length;
+const follows = ev(3, crowd.map((p) => ["p", p]));
+for (const [depth, opts, cap] of [["preview", undefined, PEOPLE_GRID.preview], ["full", { full: true }, PEOPLE_GRID.full]]) {
+  const html = card(follows, opts);
+  assert.strictEqual(cells(html), cap, `the ${depth} grid fills exactly its cap`);
+  assert.strictEqual(faces(html), cap - 1, `…with the last cell spent on the count, not on a face`);
+  assert(html.includes(`+${crowd.length - (cap - 1)}`), `the ${depth} grid counts out loud who did not fit`);
+}
+// Under the cap there is no more-cell at all, and every cell is a person.
+const short = card(ev(3, [["p", pk2], ["p", pk]]));
+assert.strictEqual(cells(short), 2);
+assert.strictEqual(faces(short), 2, "a list inside the cap spends no cell on a count");
+assert(!short.includes("more-face"), "…and claims nothing beyond itself");
+// Four digits do not fit in a 46px circle. 8,432 people is `+8.4k`.
+const many = card(ev(3, Array.from({ length: 8433 }, (_, i) => ["p", i.toString(16).padStart(64, "0")])));
+assert(many.includes("+8.4k"), "a four-figure remainder is compacted, not printed in full");
+
+// A nameless person still gets an identity, truncated ONCE: shortNpub's
+// head-and-tail form is 19 characters, so the cell's ellipsis cut it a second
+// time and the label read `npub1eedm57z…ag…`.
+const strangerCell = card(ev(3, [["p", "a".repeat(64)]]));
+assert(/class="person-name mono">npub1[a-z0-9]{7}…</.test(strangerCell), "the grid's npub fallback is truncated once");
+assert(strangerCell.includes(`title="${npub("a".repeat(64))}"`), "…and the whole key is in the title");
+
+// A list holds a thing ONCE. Repeated `p` tags are common — clients append
+// without checking, two copies of a list get merged — and the card drew that
+// person twice, in two cells linking to one page, under a count that said
+// they were two members.
+const twice = card(ev(3, [["p", pk2], ["p", pk2], ["p", pk], ["p", "not-a-pubkey"]]), { full: true });
+assert.strictEqual(cells(twice), 2, "a repeated person is one person");
+assert(twice.includes("follows <b>2</b> people"), "…and the count says the same number the grid draws");
+const twiceList = card(ev(10000, [["p", pk2], ["p", pk2]]), { full: true });
+assert(twiceList.includes("1 person"), "the same rule, counted by the NIP-51 table");
+
+// PEOPLE_GRID_KINDS is what cards.js loads profiles from, so it must be the
+// same set as the kinds whose card actually draws a grid — in BOTH directions.
+// A kind that declares one and draws none fetches profiles for nobody; a kind
+// that draws one without declaring puts an npub under every face in it, which
+// is the failure the whole enrichment claim below exists to prevent.
+for (const kind of renderers.keys()) {
+  const drawn = card(ev(kind, [["d", "x"], ["p", pk2]]), { full: true }).includes("people-grid");
+  assert.strictEqual(drawn, PEOPLE_GRID_KINDS.has(kind),
+    `kind ${kind}: draws a people grid = ${drawn}, but declares one = ${PEOPLE_GRID_KINDS.has(kind)}`);
+}
+
 // A tab is a `kinds` filter, so a kind in the wrong tab is a search that
 // cannot find it under any chip. "Media" carried 31922 — a calendar date the
 // live family renders — while 1986 audio was in no tab at all.
@@ -535,7 +601,7 @@ seedProfiles([]);
 for (const [kind, fixture] of FIXTURES) {
   const html = card(fixture, { full: true });
   const shown = [...new Set([...html.matchAll(/title="(npub1[a-z0-9]+)"/g)].map((m) => pubkeyParam(m[1])))].filter(Boolean);
-  const declared = new Set(namedPubkeys(fixture));
+  const declared = new Set(namedPubkeys(fixture, { full: true }));
   // The author is the byline's own link, loaded by every caller already.
   const undeclared = shown.filter((p) => p !== fixture.pubkey && !declared.has(p));
   assert.deepStrictEqual(undeclared, [], `kind ${kind}: names ${undeclared.length} pubkey(s) namedPubkeys does not declare, so they render as npubs`);
@@ -547,9 +613,20 @@ assert(namedPubkeys(ev(9735, [["p", pk2],
   "the zap sender comes out of the stringified request, not the tags");
 assert.deepStrictEqual(namedPubkeys(ev(9735, [["description", "not json at all"]])), [],
   "a malformed receipt names nobody rather than throwing");
-// A follow list's thousands stay faces: naming them would be a profile fetch
-// per member on every result in the list.
-assert.deepStrictEqual(namedPubkeys(ev(3, [["p", pk2], ["p", pk]])), [], "faces are not names");
+// A list's people are DRAWN with names now, so they are declared — but only
+// as far as the grid reaches, and only as far as THIS depth's grid reaches.
+// Naming a follow list's thousands would be a profile fetch per member on
+// every result in a list of results; naming none of them was the version that
+// put an npub under every face in the grid; and naming the permalink's set on
+// a page of previews fetched three times what any card on it could show.
+for (const [depth, opts, cap] of [["preview", undefined, PEOPLE_GRID.preview], ["full", { full: true }, PEOPLE_GRID.full]]) {
+  const declared = namedPubkeys(follows, opts);
+  assert.deepStrictEqual(declared, crowd.slice(0, cap - 1),
+    `at ${depth} depth a follow list declares exactly the faces it draws, in order`);
+}
+// The people a card only shows a PICTURE of stay undeclared: a face needs no
+// lookup to be right, and 34550 carries its moderators as a strip.
+assert.deepStrictEqual(namedPubkeys(ev(34550, [["d", "c"], ["p", pk2, "", "moderator"]])), [], "faces are not names");
 
 // THE ESCAPING CLAIM: nothing an event carries reaches the page as markup.
 //

@@ -26,15 +26,16 @@ export const BLANK = "data:image/gif;base64,R0lGODlhAQABAAAAACH5BAEKAAEALAAAAAAB
  *
  *   xs    the search field's `from:`/`to:` pill
  *   sm    a card's byline
- *   md    a face strip (follow lists, sets)
+ *   md    a face strip (a community's moderators, a poll's winners)
  *   lg    a result row or a card's own picture — the default
  *   xl    the profile card's header
+ *   xxl   a cell of a list's people grid, where the face IS the content
  *   fill  as large as the box it is placed in (the toolbar's "me" button)
  *
  * An unknown name would silently draw a face with no width at all, so it is
  * rejected here rather than in a screenshot.
  */
-export const SIZES = ["xs", "sm", "md", "lg", "xl", "fill"];
+export const SIZES = ["xs", "sm", "md", "lg", "xl", "xxl", "fill"];
 
 /**
  * One face: `pic` if there is one, a generated face if not or if it fails to

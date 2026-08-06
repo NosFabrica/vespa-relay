@@ -10,7 +10,7 @@ import { shortNpub } from "./shared/nip19.js";
 import { authorOf, displayName, parseProfile } from "./shared/profiles.js";
 import { replyPerson } from "./shared/parents.js";
 import { avatarHtml } from "./shared/avatar.js";
-import { renderers, badgeHtml, tagOf, tagsWhere } from "./cards/base.js";
+import { renderers, badgeHtml, gridPeople, tagOf, tagsWhere } from "./cards/base.js";
 import { genericCard } from "./cards/generic.js";
 import "./cards/profile.js";
 import "./cards/note.js";
@@ -44,11 +44,20 @@ export const card = (ev, opts) => (renderers.get(ev.kind) || genericCard)(ev, op
  * somebody from a slot the scans did not cover. A zap names its sender from
  * inside a stringified event, which no tag scan will ever reach.
  *
- * Faces are deliberately NOT here. A face strip shows a picture, a follow list
- * carries thousands of them, and both pages already load those separately —
- * this is the narrow set whose absence shows up as hex-shaped text.
+ * A bare FACE is still not here — a poll's winners and a community's
+ * moderators are pictures, and a picture needs no lookup to be right. What a
+ * list's people grid draws is not that: it draws names, so gridPeople() is
+ * declared, capped at the number the card can actually draw. Bounded by the
+ * grid rather than by the list, because that is the difference between a
+ * follow list costing a couple of dozen profiles and costing eight thousand.
+ *
+ * `opts` is the RENDER's opts, and it is the same one the card will be drawn
+ * with — the answer is "who does this card name at this depth", not "who could
+ * it ever name". The results list only ever renders previews; asking it for
+ * the permalink's set fetched three times the profiles any card on the page
+ * could show, on every search.
  */
-export function namedPubkeys(ev) {
+export function namedPubkeys(ev, opts) {
   const out = new Set();
   const add = (v) => { if (/^[0-9a-f]{64}$/.test(v || "")) out.add(v); };
   for (const t of tagsWhere(ev, (name) => name === "d" || name === "p" || /^\d+:/.test(name))) {
@@ -58,6 +67,8 @@ export function namedPubkeys(ev) {
     else if (t[0] === "p") { if (NAMES_P_TAGS.has(ev.kind)) add(t[1]); }
     else add(t[1]);                                        // a 10040's service column
   }
+  // Everyone a list's grid puts a name under, and nobody past its last cell.
+  for (const pk of gridPeople(ev, opts)) add(pk);
   // Who a reply answers. Not reachable by any scan of this event either: the
   // person is named by an `e` tag's optional fifth element, by an address's
   // middle field, or by a lookup of the parent — three slots, one answer, and

@@ -445,8 +445,8 @@ function hydrate(events, deep) {
   // here, which meant it could only cover the slots that existed when it was
   // written; namedPubkeys lives with the renderers and is held to them by a
   // test, so a new family that names somebody cannot silently stop being
-  // enriched. Faces are excluded on purpose: list previews draw them without
-  // names, and a follow list can carry thousands.
+  // enriched — including the people a list's grid names, which arrive here
+  // capped at what one card can draw rather than at what the list carries.
   //
   // NOT awaited. This used to block the return, so the results existed and
   // the page showed a skeleton until a SECOND round trip finished — up to the
@@ -454,7 +454,11 @@ function hydrate(events, deep) {
   // sent. base.js says it plainly about the score chip: "the score is a
   // second round trip, and a face should not wait on it." A name is the same
   // round trip; it was just on the other side of the render.
-  const mentioned = events.flatMap(namedPubkeys);
+  // Called with ONE argument on purpose. namedPubkeys takes the render depth
+  // as its second, and `flatMap(namedPubkeys)` hands it the array INDEX —
+  // harmless while a number has no `.full`, and a silent depth switch the
+  // moment that argument grows a second field somebody reads.
+  const mentioned = events.flatMap((e) => namedPubkeys(e));
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
   // Free, and it removes most of the asks below: a thread in the results
   // carries its own parents, and an event is ground truth about who wrote it.

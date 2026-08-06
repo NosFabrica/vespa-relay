@@ -14,7 +14,7 @@
 import { esc, clip, fullDate, when } from "../shared/format.js";
 import { avatarHtml } from "../shared/avatar.js";
 import { kindLabel, kindTone } from "../shared/kinds.js";
-import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub } from "../shared/nip19.js";
+import { npub, noteId, naddr, nevent, shortAddr, shortNote, shortNpub, tinyNpub } from "../shared/nip19.js";
 import { authorOf, displayName, profiles } from "../shared/profiles.js";
 import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
 
@@ -384,10 +384,130 @@ export function refRows(refs, opts) {
   return `<ul class="ref-list">${shown.map((r) => `<li>${row(r)}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
-/** A strip of faces for list kinds — stable generated faces even before any profile loads. */
+/** A strip of faces where people are a card's CONTEXT — a poll's winners, a community's moderators. */
 export function faceStrip(pubkeys, max = 12) {
   const shown = pubkeys.slice(0, max);
   if (!shown.length) return "";
   const more = pubkeys.length - shown.length;
   return `<div class="face-strip">${shown.map((pk) => `<a href="${keyHref(pk)}">${avatarHtml(authorOf({ pubkey: pk }).picture, pk, "md")}</a>`).join("")}${more > 0 ? `<span class="face-more">+${more}</span>` : ""}</div>`;
 }
+
+/**
+ * How many CELLS a grid gets, per depth. Not rows: how many columns fit is the
+ * width's answer, so a count fixed here is one row on a laptop and two on a
+ * phone. A preview is a card among cards and takes about a row; the permalink
+ * is the page about this list and takes four.
+ *
+ * Both numbers are divisible by every column count the stylesheet uses (6 and
+ * 3) — that is a pair, not a coincidence. Change one of these and the grid can
+ * end in a ragged row, which for this grid means the `+1.2k more` cell alone on
+ * a row of its own. index.html's `.people-grid` records the other half.
+ *
+ * Exported because cards.js reads these to decide whose profile the page owes
+ * itself: the number drawn and the number NAMED are the same number, and a
+ * second copy of it would drift into npubs in the last row.
+ */
+export const PEOPLE_GRID = { preview: 6, full: 24 };
+
+/**
+ * A list's `p` values as PEOPLE: hex-shaped, and each of them once.
+ *
+ * Both halves are load-bearing. Every caller filtered the hex itself and one
+ * of them would eventually not, and npub() on a value that is not a key is a
+ * label for somebody who does not exist. The dedupe is the one that shows:
+ * kind-3 lists in the wild repeat entries (clients append without checking),
+ * and the grid drew that person twice, in two cells, both linking to the same
+ * page — while the count above it said something a reader could not reconcile
+ * with what they were looking at.
+ */
+export const uniquePubkeys = (values) =>
+  [...new Set((values || []).filter((pk) => HEX64.test(pk || "")))];
+
+/** The distinct people a list holds — its `p` tags, deduped, hex only. */
+export const peopleOf = (ev) => uniquePubkeys(tagsOf(ev, "p").map((t) => t[1]));
+
+/**
+ * Who a grid actually draws, and how many it leaves out — the ONE answer both
+ * the renderer and the profile loader read, so the faces on the page and the
+ * profiles fetched for them cannot be different sets.
+ *
+ * When the list overruns, the last cell IS the count, so one fewer face fits:
+ * a `+794 more` cell keeps the row rectangular and puts the number where the
+ * eye already is, instead of a line of text below a ragged row.
+ */
+export function gridCells(pubkeys, opts) {
+  const cap = opts && opts.full ? PEOPLE_GRID.full : PEOPLE_GRID.preview;
+  const shown = pubkeys.length > cap ? pubkeys.slice(0, cap - 1) : pubkeys;
+  return { shown, more: pubkeys.length - shown.length };
+}
+
+/**
+ * The people a list HOLDS, as a grid of face + name.
+ *
+ * A `p` tag on a list kind is not a mention — it IS the list. Rendered as a
+ * face strip it was a row of 30px thumbnails with no names at all, so a follow
+ * set of twelve people said "12 members" and then showed twelve anonymous
+ * circles: everything about WHO was in it had to be recovered by hovering, one
+ * at a time. So the people get a cell each, at a size a face is recognisable
+ * at, with the name under it.
+ *
+ * Two depths, one template: the preview is a card among cards and takes the
+ * smaller face, the permalink is the page about this list and takes the larger
+ * one. The stylesheet is told which by the same `full` class the card frame
+ * carries, and decides both the face size and how many columns the width can
+ * hold — this function counts cells, never rows.
+ *
+ * The name is `personLink`'s ladder, minus the link markup — display name, a
+ * short npub only when the store knows no profile, never hex — and the npub
+ * always sits in the title, which is also how cards.test.mjs finds every
+ * person a card names.
+ */
+export function peopleGrid(pubkeys, opts) {
+  const full = !!(opts && opts.full);
+  const { shown, more } = gridCells(uniquePubkeys(pubkeys), opts);
+  if (!shown.length) return "";
+  const size = full ? "xxl" : "xl";
+  // One map read per cell. This was authorOf() for the picture and a second
+  // profiles.get() for the name — two lookups and a throwaway object per face,
+  // 24 of them per card, for one entry that is already in hand.
+  const cell = (pk) => {
+    const p = profiles.get(pk);
+    const nm = displayName(p);
+    return `<a class="person-cell" href="${keyHref(pk)}" title="${esc(npub(pk))}">` +
+      avatarHtml((p && p.picture) || "", pk, size) +
+      `<span class="person-name${nm ? "" : " mono"}">${esc(nm || tinyNpub(pk))}</span></a>`;
+  };
+  const moreCell = `<div class="person-cell more"><span class="av-wrap av-${size}">` +
+    `<span class="avatar more-face">+${esc(compactCount(more))}</span></span>` +
+    `<span class="person-name">more</span></div>`;
+  return `<div class="people-grid${full ? " full" : ""}">${shown.map(cell).join("")}${more > 0 ? moreCell : ""}</div>`;
+}
+
+/** `+8.4k` rather than `+8,432`: it has to read inside a 46px circle. */
+const compactCount = (n) =>
+  n < 1000 ? String(n) : n < 10000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`;
+
+/**
+ * Which kinds draw that grid — declared by the families that register the
+ * renderers, not listed a second time in cards.js.
+ *
+ * A card that NAMES somebody must have that somebody's profile loaded before
+ * it renders, and cards.js is where the page asks who those people are. It
+ * used to answer "never a `p` tag on a list kind", which was true while lists
+ * drew faces and became silently wrong the moment they drew names — the exact
+ * drift its own docstring warns about. Registering the kinds beside the
+ * renderer keeps one answer: whoever draws a grid says so here.
+ */
+export const PEOPLE_GRID_KINDS = new Set();
+export const registerPeopleGrid = (kinds) => { for (const k of kinds) PEOPLE_GRID_KINDS.add(k); };
+
+/**
+ * The pubkeys [ev]'s grid draws AT THIS DEPTH — the profiles the page owes
+ * itself before rendering it.
+ *
+ * Depth matters here, and getting it wrong is paid for per result: the results
+ * list only ever renders previews, so declaring the permalink's cap there
+ * fetched three times the profiles any card on the page could show.
+ */
+export const gridPeople = (ev, opts) =>
+  PEOPLE_GRID_KINDS.has(ev.kind) ? gridCells(peopleOf(ev), opts).shown : [];
