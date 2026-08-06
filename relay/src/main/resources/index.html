@@ -74,8 +74,11 @@
 
   The results are walkable from the keyboard: `j` down, `k` up, Enter opens
   the card the cursor is on, and "/" puts the caret back in the search box.
-  That is the vocabulary mail clients, timelines and code review already
-  share, so it is the one this page speaks rather than one of its own. What it
+  The feed page walks the same way and for free — it is the same list of cards
+  in the same box, and the cursor asks the DOM which cards open something
+  rather than asking the page which view it is. That is the vocabulary mail
+  clients, timelines and code review already share, so it is the one this page
+  speaks rather than one of its own. What it
   has to be careful about is everything the keys already meant, and
   web/shared/keynav.js is that half — the testable one, held by
   tools/webtest/keynav.test.mjs. A `j` typed INTO the search box is the letter
@@ -146,10 +149,28 @@
   RelayProtocolTest."a ranked union is served as one order", which fails against
   the store this page was written for and passes against the one it pins.
 
+  The landing page is not an empty page any more: signed in, three of the
+  newest content cards sit under the box, and "see more" opens `/?feed=1` with
+  a hundred. That feed IS an empty search — web/feed.js says so at length — the
+  page's own filter builder with no words, no sort, no spam toggle and no lens,
+  which leaves `{kinds, limit}`: a plain NIP-01 read, which the store answers
+  newest-first. The trust gate comes from the CONNECTION rather than from the
+  query, so a signed-in reader's feed is already their web of trust's view of
+  the network. That is also why the preview is drawn only for a signed-in
+  reader — signed out the identical read is the whole mirror in time order,
+  which the hero should not be handing anybody unasked — and why the feed hides
+  the bar entirely: the three filters above cannot ride on an ask with no search
+  string, and the kind chips have nothing to narrow when the kinds are the
+  view's own. A control that cannot act on the page it is drawn on is what the
+  Filters badge exists to prevent, one level up.
+
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
-  pushes a history entry, and Back walks them in order down to the hero. The
-  type-ahead popup deliberately never touches the URL — a keystroke is not a
+  pushes a history entry, and Back walks them in order down to the hero.
+  `/?feed=1` is the one view whose whole state is a single parameter — it takes
+  none of those five, and it is a parameter on the ROOT rather than a `/feed`
+  path because the root is already served and a new path would need a route.
+  The type-ahead popup deliberately never touches the URL — a keystroke is not a
   place. Before this, the page held all of that in JS only: Back left the
   site from the middle of a search, reload emptied it, and a result list
   could not be handed to anyone.
@@ -200,6 +221,7 @@
 <link rel="modulepreload" href="/web/cards/relays.js" />
 <link rel="modulepreload" href="/web/cards/social.js" />
 <link rel="modulepreload" href="/web/entity.js" />
+<link rel="modulepreload" href="/web/feed.js" />
 <link rel="modulepreload" href="/web/searchfield.js" />
 <link rel="modulepreload" href="/web/shared/avatar.js" />
 <link rel="modulepreload" href="/web/shared/calendar.js" />
@@ -846,6 +868,22 @@
   .props a { color: var(--accent); text-decoration: none; }
   .props a:hover { text-decoration: underline; }
 
+  /* ---- the hero's feed ---------------------------------------------------
+     The same cards as a results list, under the landing page's search box.
+     It reuses .list-head, so the only thing new here is the room it needs and
+     the link out of it — and the hero gives some of its own height back, since
+     a feed nobody can see without scrolling is a feed nobody reads. */
+  .feed-preview { padding: 26px 0 56px; }
+  body.has-feed-preview .hero { padding-top: 7vh; }
+  .feed-more { font-size: 12.5px; font-weight: 550; color: var(--accent); text-decoration: none; white-space: nowrap; }
+  .feed-more:hover { text-decoration: underline; }
+  /* The feed sends no NIP-50 search string at all, so the three controls behind
+     Filters have nothing to ride on — and its kinds are its own, so the chips
+     have nothing to narrow either. The whole row goes rather than sit there
+     doing nothing; hiding the disclosure alone would leave a bar of height with
+     one chip row in it that means nothing here. */
+  body.feed .bar { display: none; }
+
   .empty, .error { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13.5px; }
   .error { color: var(--danger); }
   .empty b { display: block; color: var(--fg); font-size: 15px; font-weight: 600; margin-bottom: 4px; }
@@ -1150,6 +1188,14 @@
 </header>
 
 <main class="page">
+  <!--
+    The hero's own feed: the three newest content cards, under the box, for a
+    signed-in reader — and "see more" opens /?feed=1, a hundred of them. Its own
+    element rather than a mode of #results, because it belongs to the landing
+    page: it is on screen exactly when the results are not, and the two would
+    otherwise be one container taking turns clearing the other's state.
+  -->
+  <section id="feed-preview" class="feed-preview" hidden aria-label="Latest"></section>
   <div id="results" class="results" hidden aria-live="polite"></div>
 </main>
 
