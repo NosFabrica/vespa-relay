@@ -844,35 +844,30 @@ $obsReset.addEventListener("click", () => setViewingAs(null, null));
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#obsbox")) $obsList.innerHTML = "";
 });
-$obsFilter.addEventListener("keydown", (e) => {
-  // Stopped here so one press does one thing: without this the same Escape
-  // would close the panel the list is drawn inside.
-  if (e.key === "Escape") { e.stopPropagation(); $obsList.innerHTML = ""; $obsFilter.blur(); }
-});
 
 // ---- the advanced filters -------------------------------------------------
 //
-// Sort, the "ranking as" lens and include:spam live behind a disclosure (the
-// <details> owns open/closed, the keyboard and the ARIA — this file only reads
-// it). Hiding a control that changes what comes back needs the badge below,
-// which is the whole of the JS here: the three of them are still exactly the
-// URL params `sort`, `spam` and `as`, so a shared link arrives with somebody
-// else's filters on and nothing else on screen would say so.
+// The disclosure itself is the <details> element's job — open/closed, the
+// keyboard, the ARIA. What is left for this file is the part hiding a control
+// costs: the badge, which is the only thing on screen that admits a filter is
+// on while the panel is shut. tools/webtest/filters.test.mjs holds the three
+// of them — panel control, badge fact, URL param — in step.
 const $adv = document.getElementById("adv");
 const $advBtn = document.getElementById("advbtn");
 const $advCount = document.getElementById("advcount");
+// The idle tooltip, read off the markup rather than repeated here: two copies
+// of one sentence is one sentence that gets edited and one that does not.
+const advIdleTitle = $advBtn.title;
 
-/** How many advanced filters are off their default, on the button. */
+/** What is on, on the button: a count while shut, and the list as its title. */
 function renderAdvCount() {
   const on = [];
-  if ($sort.value) on.push("sorted by " + $sort.options[$sort.selectedIndex].text.toLowerCase());
-  if (viewingAs) on.push("ranking as " + $obsCurrent.textContent);
-  if ($spam.checked) on.push("spam included");
+  if ($sort.value) on.push("Sort: " + $sort.options[$sort.selectedIndex].text);
+  if (viewingAs) on.push("Ranking as: " + $obsCurrent.textContent);
+  if ($spam.checked) on.push("Spam included");
   $advCount.textContent = String(on.length);
   $advCount.hidden = !on.length;
-  $advBtn.title = on.length
-    ? on.join(", ")
-    : "Sorting, whose web of trust ranks the page, and whether unranked results are shown";
+  $advBtn.title = on.length ? on.join(" · ") : advIdleTitle;
 }
 
 // Dismissed like the popups it sits next to, and for the same reason: it is
@@ -882,11 +877,20 @@ function renderAdvCount() {
 document.addEventListener("click", (e) => {
   if ($adv.open && !e.target.closest("#adv")) $adv.open = false;
 });
+
+// ONE Escape handler for the two things stacked here, asked in order rather
+// than each stopping the key on its way past: a stopPropagation() in the
+// observer field would swallow Escape for every other listener on the page,
+// including ones written later that have no idea this field exists.
 document.addEventListener("keydown", (e) => {
-  if (e.key !== "Escape" || !$adv.open) return;
-  // Focus goes back to the button only if it was inside the panel: Escape is
-  // also how the search popup closes, and that press must not yank the caret
-  // out of the field somebody is typing in.
+  if (e.key !== "Escape") return;
+  // Innermost first — the list is drawn INSIDE the panel, so closing the panel
+  // on the same press would dismiss two things for one key.
+  if ($obsList.childElementCount) { $obsList.innerHTML = ""; $obsFilter.blur(); return; }
+  if (!$adv.open) return;
+  // Focus returns to the button only if it was inside the panel: Escape is also
+  // how the search popup closes, and that press must not yank the caret out of
+  // the field somebody is typing in.
   const inside = $adv.contains(document.activeElement);
   $adv.open = false;
   if (inside) $advBtn.focus();
