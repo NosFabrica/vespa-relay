@@ -90,15 +90,27 @@ export const tagOf = (ev, ...names) => {
 export const tagsWhere = (ev, pred) =>
   ((ev && ev.tags) || []).filter((t) => Array.isArray(t) && pred(String(t[0] ?? ""), t));
 
-/** NIP-92/94 media fields: ["imeta", "url https://…", "m video/mp4", …]. */
-export function imetaField(ev, field) {
-  for (const t of tagsOf(ev, "imeta")) {
-    for (const part of t.slice(1)) {
-      if (typeof part === "string" && part.startsWith(field + " ")) return part.slice(field.length + 1);
-    }
+/**
+ * Every NIP-92/94 imeta on the event, parsed: `["imeta", "url https://…",
+ * "dim 1088x1920"]` becomes `{url: "https://…", dim: "1088x1920"}`.
+ *
+ * Per TAG, because the count matters: a video's imeta is the video, so the
+ * first one is the whole story — but NIP-68 gives a picture post one imeta
+ * PER PICTURE, and reading only the first turns an album into a single photo.
+ *
+ * A null-prototype object because the keys are a stranger's: `"constructor …"`
+ * is a legal imeta part, and on a `{}` the `in` guard below would read the
+ * prototype's and drop it. First occurrence of a key wins.
+ */
+export const imetas = (ev) => tagsOf(ev, "imeta").map((t) => {
+  const m = Object.create(null);
+  for (const part of t.slice(1)) {
+    if (typeof part !== "string") continue;
+    const sp = part.indexOf(" ");
+    if (sp > 0 && !(part.slice(0, sp) in m)) m[part.slice(0, sp)] = part.slice(sp + 1);
   }
-  return null;
-}
+  return m;
+});
 
 export const fmtTs = (secs) => {
   const n = Number(secs);
@@ -314,12 +326,35 @@ export function relayRows(rows, opts) {
   return `<ul class="relay-list">${shown.map((r) => `<li><span class="mono">${esc(r.url)}</span>${r.note ? ` <span class="muted-note">${esc(r.note)}</span>` : ""}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
-/** Hashtags, words, mime types — short values that read as chips, not rows. */
-export function chipRow(values, opts) {
+/**
+ * A search this page can run, as a url — `#scotland` is a query, not a place,
+ * so it lands at the root with `q` set exactly as the search field would have
+ * tokenized it. app.js's link interceptor turns a left click on one of these
+ * into a pushState render, so the socket and its NIP-42 auth survive the trip.
+ */
+export const searchHref = (q) => `/?${new URLSearchParams({ q })}`;
+/** A topic, however it was written: `t` tags carry `scotland`, cards show `#scotland`. */
+export const hashtagHref = (t) => searchHref(String(t).startsWith("#") ? t : `#${t}`);
+
+/**
+ * Hashtags, words, mime types — short values that read as chips, not rows.
+ *
+ * `hrefOf` makes them links: a hashtag is a search waiting to happen, and a
+ * chip that looks like every other hashtag on the internet but does nothing
+ * when clicked is a worse affordance than plain text. Values with no search
+ * behind them (a mute word, a mime type) pass no `hrefOf` and stay spans.
+ */
+export function chipRow(values, opts, hrefOf = null) {
   const shown = opts && opts.full ? values : values.slice(0, 12);
   const more = values.length - shown.length;
   if (!shown.length) return "";
-  return `<div class="chip-row">${shown.map((v) => `<span class="tag-chip">${esc(clip(v, 40))}</span>`).join("")}${more > 0 ? `<span class="tag-chip more">+${more}</span>` : ""}</div>`;
+  const chip = (v) => {
+    const href = hrefOf && hrefOf(v);
+    return href
+      ? `<a class="tag-chip" href="${href}">${esc(clip(v, 40))}</a>`
+      : `<span class="tag-chip">${esc(clip(v, 40))}</span>`;
+  };
+  return `<div class="chip-row">${shown.map(chip).join("")}${more > 0 ? `<span class="tag-chip more">+${more}</span>` : ""}</div>`;
 }
 
 /** The emoji themselves — shared by the 30030 set and the 10030 user list. */

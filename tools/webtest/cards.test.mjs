@@ -5,6 +5,7 @@ globalThis.window = { addEventListener: () => {} };
 
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
 const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
+const { buildFilters } = await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 const { renderers, safeUrl } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
@@ -202,6 +203,108 @@ assert(!full.includes("clamp") && full.includes(long), "full mode renders every 
 const noUrlVideo = card(ev(21, [["title", "the only body line"]]), { full: true });
 assert.strictEqual((noUrlVideo.match(/the only body line/g) || []).length, 1, "video full/no-url: body once");
 assert(card(ev(20, [], "picture text, no url")).includes("picture text, no url"), "picture preview keeps text without a url");
+
+// ---- a video card in the FEED --------------------------------------------
+//
+// The real event this was written against: a kind 22 whose `d` is a UUID its
+// client generated, whose caption is in `content`, and which names no poster
+// image at all. Every part of the old card failed on it — the title ladder
+// showed the UUID, the poster slot was empty, and the caption never rendered
+// — so the assertions are about the whole card, not one helper.
+const short22 = ev(22, [
+  ["d", "f56d739a-09c9-4f0b-ba82-f8c21e1a6b8e"],
+  ["alt", "Vertical Video"],
+  ["imeta", "url https://video.example/x.mp4", "m video/mp4", "dim 1088x1920", "duration 42"],
+  ["t", "isleofskye"],
+], "Vlogging directly from the phone");
+const shortPreview = card(short22);
+assert(!shortPreview.includes("f56d739a"), "a generated `d` is an identifier, not a caption");
+assert(shortPreview.includes("Vlogging directly from the phone"), "the caption in `content` reaches the card");
+assert(shortPreview.includes("<video") && shortPreview.includes("https://video.example/x.mp4"),
+  "the video plays in the results list, not only on its permalink");
+// The url rides in `data-src` — app.js promotes it when the card nears the
+// viewport, so a list of sixty videos is not sixty range requests up front.
+assert(/data-src="https:\/\/video\.example/.test(shortPreview) && !/<video[^>]* src=/.test(shortPreview),
+  "the video url is deferred, not fetched by every card in the list");
+assert(shortPreview.includes("#t=0.1"), "with no poster, ask for the first frame rather than a black box");
+assert(shortPreview.includes("aspect-ratio: 1088 / 1920"), "`dim` reserves the frame before the video loads");
+assert(shortPreview.includes(">0:42<"), "duration reads as a clock, not as a count of seconds");
+assert(shortPreview.includes("#isleofskye"), "topic tags ride along as chips");
+// Repeated and pre-hashed `t` tags are one chip, not three that look alike.
+const dupTags = card(ev(22, [["imeta", "url https://x/v.mp4"],
+  ["t", "Scotland"], ["t", "scotland"], ["t", "#scotland"]], "hi"));
+assert.strictEqual((dupTags.match(/tag-chip/g) || []).length, 1, "one topic, one chip");
+assert(dupTags.includes(">#Scotland<"), "and it keeps the spelling the author wrote first");
+
+// With no content, the media's own description carries the card — the NIP-31
+// `alt` is a line for clients that cannot render kind 22 at all, and saying
+// "Vertical Video" under a vertical video is the card describing itself.
+const alted = card(ev(22, [["alt", "Vertical Video"], ["imeta", "url https://x/v.mp4", "alt A puffin, up close"]]));
+assert(alted.includes("A puffin, up close") && !alted.includes("Vertical Video"), "the media's description beats the NIP-31 fallback");
+
+// A poster is a picture we already have: no second request for a frame.
+const posterVideo = card(ev(21, [["imeta", "url https://x/v.mp4", "image https://x/p.jpg"], ["title", "a video"]]));
+assert(posterVideo.includes('poster="https://x/p.jpg"') && posterVideo.includes('preload="none"'), "poster instead of a metadata fetch");
+assert(!posterVideo.includes("#t=0.1"), "no first-frame seek when the event named a poster");
+
+// The title has its own line, so it must not also be the body — the old card
+// put it in the body, which is how a titled video said everything twice.
+const titled = card(ev(21, [["imeta", "url https://x/v.mp4"], ["title", "One Title"]], "One Title"), { full: true });
+assert.strictEqual((titled.match(/One Title/g) || []).length, 1, "title once, never as its own caption");
+
+// `dim` is the one event-supplied value that reaches a style attribute, so a
+// value that is not two short runs of digits must produce no attribute at all.
+const hostileDim = card(ev(22, [["imeta", "url https://x/v.mp4", "dim 1x1;background:url(javascript:alert(1))"]]));
+assert(!hostileDim.includes("aspect-ratio") && !hostileDim.includes("javascript:"), "a `dim` that is not WxH styles nothing");
+
+// The `d` fallback still does the work it was there for: a community's name.
+assert(card(ev(34550, [["d", "nostr-devs"]])).includes("nostr-devs"), "a readable `d` is still a title");
+
+// ---- a hashtag chip is a search --------------------------------------------
+//
+// The chip's href and the search field's language are the SAME language, and
+// that is the assertion worth making: not that the href has some shape, but
+// that feeding it back to the tokenizer this app runs its REQ from asks for
+// the topic the chip named. A chip that linked to a query the field cannot
+// parse would look right in the markup and land on an empty page.
+const chipHref = (html) => (/<a class="tag-chip" href="([^"]*)"/.exec(html) || [])[1] || null;
+const tagged = card(ev(22, [["imeta", "url https://x/v.mp4"], ["t", "isleofskye"]], "a video"));
+const href = chipHref(tagged);
+assert(href, "a topic tag renders as a link, not as inert text");
+const q = new URLSearchParams(href.slice(href.indexOf("?"))).get("q");
+assert.strictEqual(q, "#isleofskye", "the chip asks for the topic as the field would have written it");
+// (The filter carries the case variants people write topics in — that is the
+// query builder's business, and the chip's is only that the topic is in there.)
+assert(buildFilters(q, { kinds: null, limit: 10 })[0]["#t"].includes("isleofskye"),
+  "and that query builds the REQ for that topic");
+// NIP-51 interests carry the same hashtags in bare form and link the same way.
+assert.strictEqual(chipHref(card(ev(30015, [["d", "mine"], ["t", "isleofskye"]]))), href,
+  "one hashtag, one link, wherever the card family puts it");
+// A mute word is not a hashtag: it stays inert on purpose.
+assert(!chipHref(card(ev(10000, [["word", "spoilers"]]))), "a mute word is not a search to run");
+
+// ---- a picture post is an album --------------------------------------------
+//
+// NIP-68 gives a picture post one imeta PER PICTURE. Reading only the first
+// showed one photo of five, in a 92px thumbnail, next to text.
+const album = ev(20, [
+  ["title", "Five days on Skye"],
+  ["imeta", "url https://x/1.jpg", "dim 1600x1200", "alt the Cuillin ridge"],
+  ["imeta", "url https://x/2.jpg"], ["imeta", "url https://x/3.jpg"],
+  ["imeta", "url https://x/4.jpg"], ["imeta", "url https://x/5.jpg"],
+], "the whole trip");
+const albumPreview = card(album), albumFull = card(album, { full: true });
+assert.strictEqual((albumPreview.match(/<img/g) || []).length, 4, "the list shows four of five");
+assert(albumPreview.includes("…and 1 more"), "and says so rather than silently dropping one");
+assert.strictEqual((albumFull.match(/<img/g) || []).length, 5, "the permalink shows every picture");
+assert(albumPreview.includes("media-grid"), "several pictures are a grid, not a stack");
+
+// A lone picture gets the frame a video gets, shaped by its own `dim`, and the
+// description the event wrote for it becomes the image's alt text.
+const onePic = card(ev(20, [["imeta", "url https://x/1.jpg", "dim 1600x1200", "alt the Cuillin ridge"]], "one photo"));
+assert(onePic.includes("media-frame sized") && onePic.includes("aspect-ratio: 1600 / 1200"), "one picture, one shaped frame");
+assert(onePic.includes('alt="the Cuillin ridge"'), "the imeta description IS the alt text");
+assert(!onePic.includes("media-grid"), "one picture is not a grid");
 
 // Escaping holds in every renderer that touches content.
 const hostile = card(ev(1, [], `<img src=x onerror=alert(1)>`), { full: true });
