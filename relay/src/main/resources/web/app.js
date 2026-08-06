@@ -714,6 +714,12 @@ function exportText() {
   // next as a NIP-22 comment on the topic, and the next as a NIP-32 label —
   // three different claims, ranked into one list.
   if (q.hashtags.length) L.push(`  hashtags      ${q.hashtags.map((t) => `#${t}`).join(", ")}`);
+  // The window, as both the second the filter carries and the moment it stands
+  // for. A reader auditing an order has to be able to tell an empty page from a
+  // window that excluded everything, and a bare epoch second cannot say which.
+  const when = (at) => `${at}  (${new Date(at * 1000).toISOString()})`;
+  if (q.since != null) L.push(`  since         ${when(q.since)}`);
+  if (q.until != null) L.push(`  until         ${when(q.until)}`);
   L.push(`  tab           ${tab.label}${tab.kinds ? ` (kinds ${tab.kinds.join(", ")})` : " (all kinds)"}`);
   L.push(`  sort          ${$sort.value || "(relevance — NIP-50 default)"}`);
   L.push(`  include spam  ${$spam.checked ? "yes — unranked authors included" : "no — trust floor applied"}`);
@@ -984,10 +990,11 @@ function onQueryEdit() {
   const text = $q.value.trim();
   document.body.classList.toggle("has-query", text.length > 0);
   clearTimeout(debounceTimer);
-  // A half-written `from:` is not a search for "from:". The two popups share
-  // one square of screen and one set of arrow keys, so while the picker owns
-  // them the results preview stays shut.
-  if (!text || field.mentioning) { closePopup(); return; }
+  // A half-written `from:` is not a search for "from:", and neither is a
+  // `since:` with a calendar under it. All three popups share one square of
+  // screen and one set of arrow keys, so while a picker owns them the results
+  // preview stays shut.
+  if (!text || field.picking) { closePopup(); return; }
   debounceTimer = setTimeout(() => runPopup(text), DEBOUNCE_MS);
 }
 
@@ -1038,13 +1045,36 @@ const skelRows = (n) => Array.from({ length: n }, () =>
      </div>
    </div>`).join("");
 
-// `empty` is the view's own way of saying it has nothing, because "no results"
-// is an answer to a QUESTION and the feed was not asked one — telling a reader
-// of an empty feed to "try a different term" names a term they never typed.
+/**
+ * Nothing came back — but "nothing matched" and "nothing COULD match" are two
+ * different answers, and only one of them is worth trying a different term for.
+ *
+ * A window whose `until` is before its `since` is the second: it excludes every
+ * event that has ever existed, and the relay returning zero is not evidence
+ * about the search. It is easy to build without noticing — pick a `since`, then
+ * pick an `until` from the same calendar a month too early — and easier still
+ * to inherit from a shared URL, so the check is on the query rather than on the
+ * picker that usually makes it.
+ */
+function emptyWindow(text) {
+  const q = parseQuery(text || "");
+  return q.since != null && q.until != null && q.since > q.until;
+}
+
+// `empty` is a view's own way of saying it has nothing, for a view that was
+// asked no question: both sentences below answer "no results" by talking about
+// the QUERY, and the feed has none — telling a reader of an empty feed that the
+// window is inverted, or to try a different term, names things they never typed.
 function statusBody(placeholder, empty) {
   if (s.error) return `<div class="error">${esc(s.error)}</div>`;
   if (s.loading && !s.hits.length) return placeholder;
-  if (!s.hits.length) return empty ?? `<div class="empty"><b>No results</b>Try a different term, or widen the filter above.</div>`;
+  if (!s.hits.length) {
+    if (empty) return empty;
+    const why = emptyWindow(s.hitsFor)
+      ? "The window is empty — until: is before since:, so nothing can fall inside it."
+      : "Try a different term, or widen the filter above.";
+    return `<div class="empty"><b>No results</b>${esc(why)}</div>`;
+  }
   return null;
 }
 
@@ -1291,7 +1321,7 @@ function setActive(idx) {
 
 // Never over the people picker: a debounced type-ahead from before the `from:`
 // was started can still land after it, and the two popups occupy the same box.
-function runPopup(text) { if (field.mentioning) return; openPopup(); run(s, () => search(text, POPUP_LIMIT, false), KEEP, renderPopup); }
+function runPopup(text) { if (field.picking) return; openPopup(); run(s, () => search(text, POPUP_LIMIT, false), KEEP, renderPopup); }
 
 function runFull(text) {
   clearTimeout(debounceTimer); // else a type-ahead still in flight re-opens the popup over the results
@@ -1444,7 +1474,7 @@ document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap"
 $q.addEventListener("focus", () => {
   // Never over a half-written `from:`/`to:` — the picker owns that box, and
   // it may be shut simply because the blur that took focus away closed it.
-  if (field.mentioning) return;
+  if (field.picking) return;
   const text = $q.value.trim();
   if (s.hits.length && s.hitsFor === text && text && $results.hidden) openPopup();
 });

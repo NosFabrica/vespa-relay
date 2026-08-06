@@ -4,8 +4,11 @@
 //     node tools/webtest/run.mjs           # every module suite
 //
 // nip19.test.mjs   decoder vs an independently written test-side encoder
-// query.test.mjs   the search box's from:/to: and #hashtag language — what the
-//                  field draws and what the relay is asked, held to ONE tokenizer
+// query.test.mjs   the search box's from:/to:, since:/until: and #hashtag
+//                  language — what the field draws and what the relay is asked,
+//                  held to ONE tokenizer
+// calendar.test.mjs the month arithmetic the date picker draws: lengths, leads,
+//                  DST-safe day steps, and the days the shortcuts write
 // cards.test.mjs   EVERY registered kind renders, preview and permalink —
 //                  fails if a kind registers without a fixture, which is
 //                  what keeps "covers all kinds" a checked claim
@@ -29,7 +32,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "feed.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "avatar.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "avatar.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }
