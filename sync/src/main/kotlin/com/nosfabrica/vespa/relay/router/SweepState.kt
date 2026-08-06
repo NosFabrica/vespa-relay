@@ -48,9 +48,10 @@ import java.util.concurrent.ConcurrentHashMap
  *
  *  - **The window size** (`target`) is learned. A peer's `max_sync_events` is
  *    not advertised anywhere in NIP-11, so the only way to know it is to be
- *    refused once (see [NegErrWatcher], which reads the number out of strfry's
- *    own rejection). Re-learning it from scratch on every boot means walking
- *    the same doubling ladder again, against the same relay, for nothing.
+ *    refused once — quartz parses the number out of that refusal and hands it
+ *    back as `NegentropySyncResult.peerCap`. Re-learning it from scratch on
+ *    every boot means walking the same ladder again, against the same relay,
+ *    for nothing.
  *  - **The cursor** is the thing count-based paging fundamentally cannot give
  *    you. [SyncBands] records a band only once a relay's whole filter has been
  *    walked; a sweep killed at 80% leaves nothing behind, and on a corpus large

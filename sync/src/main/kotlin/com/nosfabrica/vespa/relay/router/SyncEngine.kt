@@ -205,16 +205,13 @@ class SyncEngine(
     private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
 
     /**
-     * The automatic window chunker, and the connection listener that teaches it
-     * a peer's cap.
-     *
-     * The listener is attached to the shared client rather than to a sync call
-     * because that is the only place the number appears: quartz absorbs a
-     * negentropy overflow internally and reports the category, not the frame.
+     * The automatic window chunker. A peer's cap arrives through quartz —
+     * `NegentropySyncResult.peerCap`, parsed off the relay's own refusal — so
+     * nothing here has to watch the wire for it.
      */
     private val pager =
         NegentropyPager(
-            StoreLocalIndex(store),
+            StoreWindowIndex(store),
             ClientWindowSync(client),
             sweepState,
             NegPageTuning(
@@ -223,7 +220,7 @@ class SyncEngine(
                 maxTarget = config.negPageMax,
                 slackSeconds = config.negPageSlackSec,
             ),
-        ).also { client.addConnectionListener(NegErrWatcher(it::learnCap)) }
+        )
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope)
     private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, tor, scope)
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)

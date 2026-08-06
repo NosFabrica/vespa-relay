@@ -260,22 +260,30 @@ pinned by a test.
 
 **Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
 reconcile call, and the division of labour with quartz is the thing to
-understand before touching it. quartz already halves an over-cap window and
-retries down to one second; it cannot see OUR count (it slices the local list we
-hand it, so the snapshot is already built by then), it forgets everything
-between calls, and it has nowhere to write a cursor. So this layer supplies
-exactly three things and nothing else: a **local pre-split** from
-`store.count` before the round trip, a **per-peer window size** learned from
-refusals (`NegErrWatcher` reads strfry's cap straight out of the NEG-ERR text or
-its fourth element — quartz's parsed `NegErrMessage` drops it, which is why the
-watcher listens on the connection instead) and grown back on clean windows, and
-a **per-window cursor** in `SweepState`. Windows are walked newest-first on
-purpose: that is what keeps the finished region contiguous, which is what lets
-the cursor be one timestamp instead of a set of intervals. Every push in that
-class preserves it — check it before adding one. Engaged automatically by
-`StaticBackfill` once our own count passes `SYNC_NEG_PAGE_TARGET`; the dynamic
-fan-out deliberately still shares one snapshot across its 16k relays, where
-per-peer windowing would multiply the store work by the fan-out.
+understand before touching it. It moved once already: quartz used to take a
+materialised id list and know nothing about our side, so this class did the
+pre-split, sniffed the peer's cap off the wire, and re-tried windows around a
+dense second. All three now live upstream (`NegentropyLocalIndex`,
+`targetWindow`, `NegentropySyncResult.peerCap`, `onUnreconcilableWindow` — see
+amethyst#3871), and this class shrank to what survives a call:
+
+- **the cursor** (`SweepState`), written per finished window, because quartz
+  forgets everything between calls and a band is only recorded per leg;
+- **the per-peer window size**, learned from `peerCap` across syncs and
+  persisted, so a restart does not re-walk the ladder;
+- **the order windows are walked in** — strictly newest-first, which is what
+  keeps the finished region contiguous, which is the only reason the cursor can
+  be one timestamp instead of a set of intervals. Every push preserves it; check
+  that before adding one.
+
+Everything inside a call is quartz's: splitting a window it cannot reconcile,
+bounding what it reads from the index (`PrimedIndex` hands it the count this
+layer already took, so the same window is not counted twice), and draining a
+second no window size will fit through the hook this class passes it. Engaged
+automatically by `StaticBackfill` once our own count passes
+`SYNC_NEG_PAGE_TARGET`; the dynamic fan-out deliberately still shares one
+snapshot across its 16k relays, where per-peer windowing would multiply the
+store work by the fan-out.
 
 **Known open bug (now upstream's):** a band holds one span for every kind in
 the filter, so a long-lived kind (0) vouches for a short-lived one (30382) and

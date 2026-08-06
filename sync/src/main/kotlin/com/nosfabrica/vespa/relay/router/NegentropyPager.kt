@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
@@ -57,31 +58,22 @@ internal data class NegPageTuning(
     val slackSeconds: Long = 60,
 )
 
-/** Our own side of a window: how many we hold there, and which ids. */
-internal interface LocalIndex {
-    /** Null when the store could not answer — the pager then bounds the read instead. */
-    suspend fun count(window: Filter): Int?
-
-    /**
-     * The ids in [window]. With [maxEntries] set, the store may stop at
-     * `maxEntries + 1` — the extra entry being the sentinel that says "there
-     * were more", which is the only way the caller can tell a full window from
-     * an overflowing one.
-     */
-    suspend fun ids(
-        window: Filter,
-        maxEntries: Int? = null,
-    ): List<IdAndTime>
-}
-
-/** One window against one peer: reconcile it, or (the escape hatch) page it. */
+/**
+ * One window against one peer: reconcile it, or (the escape hatch) page it.
+ *
+ * The reconcile is handed the INDEX rather than a materialised id list — quartz
+ * reads what it needs per window now, so nothing here has to hold a snapshot at
+ * all — plus the size that bounds those reads.
+ */
 internal interface WindowSync {
     /** @throws NegentropySyncException when NIP-77 cannot enumerate this window. */
     suspend fun reconcile(
         url: NormalizedRelayUrl,
         window: Filter,
-        local: List<IdAndTime>,
+        local: NegentropyLocalIndex,
+        targetWindow: Int,
         onProgress: ((Int, Int) -> Unit)?,
+        onUnreconcilable: suspend (Filter) -> Unit,
         onEvent: suspend (Event) -> Unit,
     ): NegentropySyncResult
 
@@ -92,17 +84,38 @@ internal interface WindowSync {
     ): Int
 }
 
-internal class StoreLocalIndex(
+/** [NegentropyLocalIndex] over this relay's store: counts and id reads by range. */
+internal class StoreWindowIndex(
     private val store: IEventStore,
-) : LocalIndex {
-    // A count that fails is not fatal — the pager has a bounded read to fall
-    // back on — so it must not take the sweep down with it.
+) : NegentropyLocalIndex {
+    // A count that fails is not fatal — quartz falls back to letting the peer's
+    // refusal do the splitting — so it must not take the sweep down with it.
     override suspend fun count(window: Filter): Int? = runCatching { store.count(window) }.getOrNull()
 
-    override suspend fun ids(
-        window: Filter,
-        maxEntries: Int?,
-    ): List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window), maxEntries)
+    override suspend fun entriesFor(window: Filter): List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+}
+
+/**
+ * The count the pager already took, handed to quartz instead of a second query.
+ *
+ * quartz asks for the count of the window it is given before deciding whether to
+ * sub-split it — the same window this class just counted to decide the
+ * checkpoint size. Priming it saves exactly one store round trip per window,
+ * which at tens of thousands of windows is worth the fifteen lines.
+ */
+internal class PrimedIndex(
+    private val inner: NegentropyLocalIndex,
+    private val window: Filter,
+    private val known: Int?,
+) : NegentropyLocalIndex {
+    override suspend fun count(window: Filter): Int? =
+        if (known != null && window.since == this.window.since && window.until == this.window.until) {
+            known
+        } else {
+            inner.count(window)
+        }
+
+    override suspend fun entriesFor(window: Filter): List<IdAndTime> = inner.entriesFor(window)
 }
 
 internal class ClientWindowSync(
@@ -112,15 +125,19 @@ internal class ClientWindowSync(
     override suspend fun reconcile(
         url: NormalizedRelayUrl,
         window: Filter,
-        local: List<IdAndTime>,
+        local: NegentropyLocalIndex,
+        targetWindow: Int,
         onProgress: ((Int, Int) -> Unit)?,
+        onUnreconcilable: suspend (Filter) -> Unit,
         onEvent: suspend (Event) -> Unit,
     ): NegentropySyncResult =
         client.negentropySync(
             relay = url,
             filter = window,
             idleTimeoutMs = idleTimeoutMs,
-            localEntries = local,
+            localIndex = local,
+            targetWindow = targetWindow,
+            onUnreconcilableWindow = onUnreconcilable,
             onProgress = onProgress,
             onEvent = onEvent,
         )
@@ -174,26 +191,25 @@ internal class SweepOutcome(
  * So the boundary is expressed as a timestamp but decided by a COUNT, and two
  * independent sources may split a window:
  *
- *  1. **We are dense.** [LocalIndex.count] over the window, before a round trip
- *    is spent. Cheap against an indexed store, and it is what bounds our own
- *    snapshot: a window that passes this check is at most `target` ids, so peak
- *    memory is a property of the target rather than of the corpus.
- *  2. **They are dense.** The peer refuses, or quartz's own splitter had to cut
- *    the window up to get an answer ([NegentropySyncResult.windows] > 1). Either
- *    way the target shrinks, so the NEXT window is asked at a size they will
- *    take — and if they told us the number ([NegErrWatcher]), it shrinks to
- *    theirs in one step instead of a halving ladder.
+ *  1. **We are dense.** [NegentropyLocalIndex.count] over the window, before a
+ *    round trip is spent. That number sizes the CHECKPOINT — how much a crash
+ *    costs — and is handed to quartz as its own read bound for the same window.
+ *  2. **They are dense.** The peer states its cap in a refusal, which quartz
+ *    parses and reports as [NegentropySyncResult.peerCap]; failing that, a
+ *    window it had to split ([NegentropySyncResult.windows] > 1) says the same
+ *    thing more vaguely. A stated cap fits the target in one step; a split
+ *    halves it.
  *
  * Neither source knows anything about the other, and the same stack absorbs
  * both. That is what makes this automatic rather than tuned.
  *
- * **The division of labour with quartz.** quartz already halves a window on
- * overflow and retries, down to one second — that is its job and this does not
- * duplicate it. What it cannot do is any of the three things that make paging
- * work at scale: it never sees OUR count (it slices the local list we already
- * built, so our snapshot is whatever we handed it), it forgets everything
- * between calls, and it has nowhere to write a cursor. This layer supplies
- * exactly those: the pre-split, the learned per-peer size, and the checkpoint.
+ * **The division of labour with quartz.** quartz owns everything INSIDE one
+ * call: splitting a window it cannot reconcile, bounding what it reads from the
+ * index, draining a second no window size will fit (through the hook this class
+ * passes it), and reporting the peer's cap. What it cannot do is remember
+ * anything between calls. So this layer owns exactly what survives a call: the
+ * checkpoint cursor, the per-peer size learned across syncs, and the order the
+ * windows are walked in.
  *
  * **Ordering is not incidental.** Windows are popped strictly newest-first, so
  * the finished region is always a single contiguous slice growing downward from
@@ -201,7 +217,7 @@ internal class SweepOutcome(
  * instead of a set of intervals. Every push below keeps that invariant.
  */
 internal class NegentropyPager(
-    private val local: LocalIndex,
+    private val local: NegentropyLocalIndex,
     private val peer: WindowSync,
     private val state: SweepState,
     private val tuning: NegPageTuning,
@@ -255,60 +271,76 @@ internal class NegentropyPager(
             val w = stack.removeLast()
             val minimal = w.last - w.first <= MIN_WINDOW_SECONDS
 
-            // (1) Our side, before the round trip. Skipped on a minimal
-            // window: there is nothing left to cut, and reconciling a dense
-            // second still beats re-downloading it.
+            // (1) Our side, before the round trip: this is what sizes the
+            // CHECKPOINT — how much a crash costs — and quartz re-uses the same
+            // number to bound its own reads inside the window.
             val ours = if (minimal) null else local.count(window(shape, w))
             if (ours != null && ours > target) {
                 bisect(stack, w)
                 continue
             }
 
-            // A count the store could not answer is the one case where the
-            // snapshot below is unbounded — exactly the multi-gigabyte read this
-            // class exists to prevent. So read it CAPPED instead and let the
-            // sentinel decide: over the target means split, not reconcile.
-            val ids =
-                if (ours != null || minimal) {
-                    local.ids(window(shape, w))
-                } else {
-                    val capped = local.ids(window(shape, w), target)
-                    if (capped.size > target) {
-                        System.err.println(
-                            "router: sweep ${url.url} could not count [${w.first}, ${w.last}] — over ${fmtCount(target)} id(s), splitting on that alone",
-                        )
-                        bisect(stack, w)
-                        continue
-                    }
-                    capped
-                }
+            var pagedHere = 0
             try {
                 // Offset by what the sweep already has: quartz counts from zero
                 // per NEG-OPEN, so passing its numbers straight through would
                 // walk the progress line backwards at every window boundary.
                 val base = downloaded
                 val progress = onProgress?.let { report -> { need: Int, got: Int -> report(need, base + got) } }
-                val result = peer.reconcile(url, window(shape, w), ids, progress) { onEvent(it) }
+                val result =
+                    peer.reconcile(
+                        url = url,
+                        window = window(shape, w),
+                        // Primed so quartz's own sizing check does not re-ask the
+                        // store for the count we just took.
+                        local = PrimedIndex(local, window(shape, w), ours),
+                        targetWindow = target,
+                        onProgress = progress,
+                        // A second the peer will not reconcile at any size is
+                        // drained HERE, inside the call, so everything around it
+                        // in this window still reconciles — it never becomes an
+                        // exception and the window never has to be re-tried.
+                        onUnreconcilable = { dense ->
+                            downloaded += drainDense(url, shape, dense, target, onEvent)
+                            pagedHere++
+                        },
+                        onEvent = onEvent,
+                    )
                 downloaded += result.downloaded
                 reconciled++
+                paged += pagedHere
                 consecutiveFailures = 0
-                // (2) Their side. `windows > 1` means quartz had to cut this
-                // window up to get an answer — the peer is denser than our count
-                // suggested, and the next window should be asked smaller.
-                target = if (result.windows > 1) shrink(url, target) else grow(url, target)
+                // (2) Their side. A stated cap is the peer telling us its size
+                // outright; a split with no cap means something made quartz cut
+                // the window up, so be cautious. Anything else earns growth.
+                target =
+                    when {
+                        result.peerCap != null -> fitToCap(url, result.peerCap!!)
+                        result.windows > 1 -> shrink(url, target)
+                        else -> grow(url, target)
+                    }
                 complete(cursor, w)
             } catch (e: NegentropySyncException) {
                 lastFailure = e
                 when (e.reason) {
                     NegentropySyncException.Reason.OVER_MAX_SYNC_EVENTS -> {
-                        // The peer refused a slice even after quartz halved this
-                        // window down to the second. Learn from it, drain that
-                        // second by other means, and keep the rest of the window
-                        // on the stack.
-                        target = shrink(url, target)
-                        val (got, pagedHere) = drainOverflow(url, shape, cursor, w, e, target, stack, onEvent)
-                        downloaded += got
-                        paged += pagedHere
+                        // Defensive: quartz hands an un-reconcilable window to
+                        // the hook above rather than throwing, so reaching here
+                        // means it could not even do that. Drain the slice it
+                        // named and keep the rest of the window on the stack.
+                        e.cap?.let { fitToCap(url, it) } ?: shrink(url, target)
+                        target = state.target(url, tuning.target)
+                        val badFrom = (e.window.since ?: w.first).coerceIn(w.first, w.last)
+                        val badTo = (e.window.until ?: w.last).coerceIn(badFrom, w.last)
+                        downloaded += drainDense(url, shape, window(shape, badFrom..badTo), target, onEvent)
+                        paged++
+                        if (badFrom > w.first) stack.addLast(w.first..(badFrom - 1))
+                        if (badTo < w.last) stack.addLast((badTo + 1)..w.last)
+                        // Only claimable when the drained slice reaches the top
+                        // of the window: a slice out of the middle leaves a
+                        // pending piece ABOVE it, and a cursor that reached down
+                        // past that piece would claim ground no one compared.
+                        if (badTo >= w.last) state.advance(cursor, badFrom, w.last)
                         consecutiveFailures = 0
                     }
 
@@ -362,18 +394,24 @@ internal class NegentropyPager(
     }
 
     /**
-     * [NegErrWatcher]'s hook: the peer stated its `max_sync_events` in a
-     * refusal. Recorded against the peer, and the window size drops to fit it
-     * immediately — the whole point of reading the number is not having to find
-     * it by halving. Never RAISES the target: the cap is a ceiling the peer
-     * enforces, not evidence that a larger window would have worked.
+     * The peer stated its `max_sync_events` — in a refusal quartz parsed for us
+     * and reported through [NegentropySyncResult.peerCap]. Recorded against the
+     * peer, and the window size drops to fit it immediately: the whole point of
+     * having the number is not having to find it by halving. Never RAISES the
+     * target — a cap is a ceiling the peer enforces, not evidence that a larger
+     * window would have worked.
      */
-    fun learnCap(
+    private fun fitToCap(
         url: NormalizedRelayUrl,
-        cap: Int,
-    ) {
-        val fitted = (cap * CAP_MARGIN).toInt().coerceIn(tuning.minTarget, tuning.maxTarget)
-        state.learnCap(url, cap, minOf(state.target(url, tuning.target), fitted))
+        cap: Long,
+    ): Int {
+        val fitted =
+            (cap * CAP_MARGIN)
+                .coerceIn(tuning.minTarget.toDouble(), tuning.maxTarget.toDouble())
+                .toInt()
+        val next = minOf(state.target(url, tuning.target), fitted)
+        state.learnCap(url, cap.coerceAtMost(Int.MAX_VALUE.toLong()).toInt(), next)
+        return next
     }
 
     /**
@@ -434,89 +472,67 @@ internal class NegentropyPager(
      *
      * `created_at` has second granularity and is author-controlled, so a single
      * second holding more than a relay's cap is reachable and cannot be cut on
-     * the time axis — the loop would spin forever. Two ways out, in order of
-     * how much they cost:
+     * the time axis. Two ways out, in order of how much they cost:
      *
      *  1. **Split by kind.** Only available to a multi-kind filter, and it
-     *     changes the filter shape, which on strfry means the window stops
+     *     changes the filter shape, which on strfry means the slice stops
      *     matching their declared tree and falls onto the capped snapshot path.
      *     A deliberate downgrade, taken only here.
-     *  2. **Page that second over REQ.** Always available. `fetchAllPages`
-     *     steps past a second denser than one page rather than looping on it,
-     *     so this terminates — at the cost of that second's unreachable tail.
+     *  2. **Page it over REQ.** Always available. `fetchAllPages` steps past a
+     *     second denser than one page rather than looping on it, so this
+     *     terminates — at the cost of that second's unreachable tail.
      *
-     * The rest of the failed window goes back on the stack around the slice, so
-     * a sweep loses one second's guarantee rather than the window.
+     * Everything AROUND the slice is quartz's problem now, not this method's:
+     * the hook is called mid-reconcile, so the rest of the window carries on
+     * being reconciled once this returns.
      */
-    private suspend fun drainOverflow(
+    private suspend fun drainDense(
         url: NormalizedRelayUrl,
         shape: Filter,
-        cursor: String,
-        w: LongRange,
-        e: NegentropySyncException,
+        dense: Filter,
         target: Int,
-        stack: ArrayDeque<LongRange>,
         onEvent: suspend (Event) -> Unit,
-    ): Pair<Int, Int> {
-        // The slice quartz actually failed on, clamped into this window: it
-        // reports the exact sub-range, so there is no need to guess which
-        // second is the dense one.
-        val badFrom = (e.window.since ?: w.first).coerceIn(w.first, w.last)
-        val badTo = (e.window.until ?: w.last).coerceIn(badFrom, w.last)
-
+    ): Int {
         var downloaded = 0
-        var paged = 0
         val kinds = shape.kinds
+        val span = (dense.until ?: 0L) - (dense.since ?: 0L) + 1
         if (kinds != null && kinds.size > 1) {
-            var stillOver = false
+            var stillOver = 0
             for (kind in kinds) {
-                val perKind = window(shape, badFrom..badTo).copy(kinds = listOf(kind))
-                // Capped like every other read: this is the one slice we already
-                // know is dense at the PEER, and there is no reason to assume our
-                // side of it is small either. Over the target, paging is the only
-                // move left — there is no narrower window to fall back to.
-                val mine = local.ids(perKind, target)
-                if (mine.size > target) {
-                    stillOver = true
+                val perKind = dense.copy(kinds = listOf(kind), limit = null)
+                // Counted, not read: this is the one slice we already know is
+                // dense at the PEER, and there is no reason to assume our side
+                // of it is small either. A minimal window is the end of the
+                // line for splitting, so over the target — or uncountable —
+                // paging is the only move left that stays bounded.
+                val mine = local.count(perKind)
+                if (mine == null || mine > target) {
+                    stillOver++
                     downloaded += peer.page(url, perKind, onEvent)
-                    paged++
                     continue
                 }
                 try {
-                    downloaded += peer.reconcile(url, perKind, mine, null) { onEvent(it) }.downloaded
+                    downloaded +=
+                        peer
+                            .reconcile(url, perKind, PrimedIndex(local, perKind, mine), target, null, { }, onEvent)
+                            .downloaded
                 } catch (_: NegentropySyncException) {
-                    stillOver = true
+                    stillOver++
                     downloaded += peer.page(url, perKind, onEvent)
-                    paged++
                 }
             }
             System.err.println(
-                "router: sweep ${url.url} [$badFrom, $badTo] over the peer's cap at ${badTo - badFrom + 1}s" +
-                    " — split by kind${if (stillOver) ", $paged kind(s) still over and paged" else ""}",
+                "router: sweep ${url.url} [${dense.since}, ${dense.until}] over the peer's cap at ${span}s" +
+                    " — split by kind${if (stillOver > 0) ", $stillOver kind(s) still over and paged" else ""}",
             )
         } else {
             System.err.println(
-                "router: sweep ${url.url} [$badFrom, $badTo] over the peer's cap and un-splittable" +
-                    " (single kind, ${badTo - badFrom + 1}s) — paging it",
+                "router: sweep ${url.url} [${dense.since}, ${dense.until}] over the peer's cap and un-splittable" +
+                    " (single kind, ${span}s) — paging it",
             )
-            downloaded += peer.page(url, window(shape, badFrom..badTo), onEvent)
-            paged++
+            downloaded += peer.page(url, dense, onEvent)
         }
-
-        // Rebuild the window around the drained slice, newest-last. The drained
-        // slice itself is NOT re-pushed; it is done, by whichever route.
-        if (badFrom > w.first) stack.addLast(w.first..(badFrom - 1))
-        if (badTo < w.last) stack.addLast((badTo + 1)..w.last)
-        // The cursor moves ONLY if the drained slice reaches the top of the
-        // window, because only then is everything above it finished. A slice
-        // taken out of the middle leaves a pending piece ABOVE it, and a cursor
-        // that reached down past that piece would claim ground no one has
-        // compared — the one way this design can lose events rather than repeat
-        // them. Nothing is lost by staying quiet: the pieces around it move the
-        // cursor as they finish, and their claim covers the drained slice
-        // between them, which by then is true.
-        if (badTo >= w.last) state.advance(cursor, badFrom, w.last)
-        return downloaded to paged
+        return downloaded
     }
 
     /** One window finished, by any route: move the cursor. */

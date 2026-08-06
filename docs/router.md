@@ -171,6 +171,13 @@ both, which is what makes this automatic rather than tuned. What the relay
 learns is remembered per peer in `SYNC_SWEEP_STATE_FILE`, so the next sync
 starts at the right size instead of rediscovering it.
 
+The split with quartz is worth knowing when reading the logs: quartz owns
+everything inside one reconcile — sub-splitting a window it cannot answer,
+bounding what it reads from the store, and draining a second no window size
+will fit — and reports the peer's stated cap back. This router owns what has to
+survive that call: the cursor, the learned size, and the order windows are
+walked in.
+
 Three details that matter more than they look:
 
 - **The filter shape stays byte-identical across windows** — only `since`/`until`
@@ -181,10 +188,11 @@ Three details that matter more than they look:
   a strategy.
 - **Bisection bottoms out at one second.** `created_at` has second granularity
   and is author-controlled, so a single second holding more than a relay's cap
-  is reachable and cannot be cut further on the time axis. When one shows up,
-  the sweep retries that second per kind (accepting the tree miss) and pages it
-  over plain REQ if that still does not fit. Rare, and it costs that second's
-  guarantee rather than the sweep.
+  is reachable and cannot be cut further on the time axis. When one shows up it
+  is handed back mid-reconcile: the sweep retries that second per kind
+  (accepting the tree miss) and pages it over plain REQ if that still does not
+  fit, while everything around it in the same window goes on reconciling. Rare,
+  and it costs that second's guarantee rather than the window's.
 - **Windows are walked newest-first and checkpointed one at a time.** The
   finished region is therefore always one contiguous slice growing downward
   from the top of the range, which is what lets the cursor be a single

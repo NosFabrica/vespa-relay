@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyLocalIndex
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncResult
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -67,10 +68,9 @@ class NegentropyPagerTest {
 
     private class FakeIndex(
         val density: Density,
-    ) : LocalIndex {
+    ) : NegentropyLocalIndex {
         val counted = mutableListOf<LongRange>()
-        val snapshotted = mutableListOf<LongRange>()
-        val capped = mutableListOf<Boolean>()
+        val read = mutableListOf<LongRange>()
         var answersCount = true
 
         override suspend fun count(window: Filter): Int? {
@@ -79,88 +79,91 @@ class NegentropyPagerTest {
             return if (answersCount) density.count(range) else null
         }
 
-        override suspend fun ids(
-            window: Filter,
-            maxEntries: Int?,
-        ): List<IdAndTime> {
+        override suspend fun entriesFor(window: Filter): List<IdAndTime> {
             val range = window.since!!..window.until!!
-            snapshotted += range
-            capped += (maxEntries != null)
-            // Only the SIZE matters to the pager (it compares against the
-            // sentinel), so hand back that many placeholder entries.
-            val held = density.count(range)
-            val n = if (maxEntries == null) held else minOf(held, maxEntries + 1)
-            return List(n) { IdAndTime(range.first, it.toString().padStart(64, '0')) }
+            read += range
+            return List(density.count(range)) { IdAndTime(range.first, it.toString().padStart(64, '0')) }
         }
     }
 
     /**
-     * A relay with a cap, doing what quartz does inside one call: split an
-     * over-cap window and reconcile the halves, refusing only when a minimal
-     * window still does not fit.
+     * A relay with a cap, wrapped in the quartz that now talks to it: it splits
+     * an over-cap window itself, hands a slice no window size can fit to the
+     * caller's hook instead of throwing, and reports the cap it refused with.
      */
     private class FakePeer(
         val density: Density,
         val cap: Int = Int.MAX_VALUE,
         // Windows (in call order) the relay drops instead of answering.
         val failAt: Set<Int> = emptySet(),
+        // Refuse through the exception rather than the hook — the defensive
+        // path, for a quartz that could not hand the window over.
+        val throwsOverMax: Boolean = false,
+        // A relay whose refusal carries no number: nothing to fit to, so the
+        // caller is left halving.
+        val statesCap: Boolean = true,
     ) : WindowSync {
         val asked = mutableListOf<LongRange>()
         val reconciled = mutableListOf<LongRange>()
         val pagedRanges = mutableListOf<LongRange>()
         val kindsAsked = mutableListOf<List<Int>?>()
+        val targetsSeen = mutableListOf<Int>()
         var calls = 0
 
         override suspend fun reconcile(
             url: NormalizedRelayUrl,
             window: Filter,
-            local: List<IdAndTime>,
+            local: NegentropyLocalIndex,
+            targetWindow: Int,
             onProgress: ((Int, Int) -> Unit)?,
+            onUnreconcilable: suspend (Filter) -> Unit,
             onEvent: suspend (Event) -> Unit,
         ): NegentropySyncResult {
             val range = window.since!!..window.until!!
             asked += range
             kindsAsked += window.kinds
+            targetsSeen += targetWindow
             if (calls++ in failAt) {
-                throw NegentropySyncException(
-                    url,
-                    window,
-                    NegentropySyncException.Reason.UNAVAILABLE,
-                    "relay disconnected",
-                )
+                throw NegentropySyncException(url, window, NegentropySyncException.Reason.UNAVAILABLE, "relay disconnected")
             }
             val done = mutableListOf<LongRange>()
-            split(url, window, range, done)
-            reconciled += done
-            return NegentropySyncResult(
-                needCount = done.sumOf { density.count(it) },
-                haveCount = 0,
-                downloaded = done.sumOf { density.count(it) },
-                windows = done.size,
-            )
-        }
+            var refused = false
 
-        private fun split(
-            url: NormalizedRelayUrl,
-            window: Filter,
-            range: LongRange,
-            done: MutableList<LongRange>,
-        ) {
-            if (density.count(range) <= cap) {
-                done += range
-                return
+            // quartz's own loop: split what does not fit, hand over what cannot
+            // be split, and keep going.
+            suspend fun walk(r: LongRange) {
+                if (density.count(r) <= cap) {
+                    done += r
+                    return
+                }
+                refused = true
+                if (r.last - r.first <= NegentropyPager.MIN_WINDOW_SECONDS) {
+                    if (throwsOverMax) {
+                        throw NegentropySyncException(
+                            url,
+                            window.copy(since = r.first, until = r.last),
+                            NegentropySyncException.Reason.OVER_MAX_SYNC_EVENTS,
+                            "created_at window [${r.first}, ${r.last}] still exceeds the relay's max_sync_events",
+                            cap.toLong(),
+                        )
+                    }
+                    onUnreconcilable(window.copy(since = r.first, until = r.last))
+                    return
+                }
+                val mid = r.first + (r.last - r.first) / 2
+                walk(r.first..mid)
+                walk((mid + 1)..r.last)
             }
-            if (range.last - range.first <= NegentropyPager.MIN_WINDOW_SECONDS) {
-                throw NegentropySyncException(
-                    url,
-                    window.copy(since = range.first, until = range.last),
-                    NegentropySyncException.Reason.OVER_MAX_SYNC_EVENTS,
-                    "created_at window [${range.first}, ${range.last}] still exceeds the relay's max_sync_events",
-                )
-            }
-            val mid = range.first + (range.last - range.first) / 2
-            split(url, window, range.first..mid, done)
-            split(url, window, (mid + 1)..range.last, done)
+            walk(range)
+            reconciled += done
+            val downloaded = done.sumOf { density.count(it) }
+            return NegentropySyncResult(
+                needCount = downloaded,
+                haveCount = 0,
+                downloaded = downloaded,
+                windows = done.size.coerceAtLeast(1),
+                peerCap = if (refused && statesCap) cap.toLong() else null,
+            )
         }
 
         override suspend fun page(
@@ -176,7 +179,7 @@ class NegentropyPagerTest {
     }
 
     private fun pager(
-        index: LocalIndex,
+        index: NegentropyLocalIndex,
         peer: WindowSync,
         state: SweepState = SweepState(null),
         tuning: NegPageTuning = NegPageTuning(target = 1_000, minTarget = 10, maxTarget = 100_000, slackSeconds = 60),
@@ -254,39 +257,81 @@ class NegentropyPagerTest {
         }
 
     @Test
-    fun `a store that cannot count is read under a cap, not unbounded`() =
+    fun `a store that cannot count still hands the peer a bound`() =
         runBlocking {
-            // The count failing is the one path where nothing else bounds the
-            // snapshot — the exact multi-gigabyte read the pager exists to stop.
+            // Without a count there is nothing to pre-split on, so the window
+            // goes to the peer whole — but never unbounded: the target rides
+            // along, and quartz splits and reads inside it against that number.
             val index = FakeIndex(Density(perSecond = 100)).apply { answersCount = false }
             val peer = FakePeer(Density(perSecond = 100))
             val out = pager(index, peer).sweep(relay, notes, leg(1_000, 1_999)) {}
 
             assertTrue(out.complete)
-            assertTrue(index.capped.any { it }, "an uncountable window must be read with a cap")
-            // It still converges on the sentinel alone: the first window — asked
-            // before any clean window has grown the target — is within it.
-            assertTrue(
-                index.density.count(peer.asked.first()) <= 1_000,
-                "first window held ${index.density.count(peer.asked.first())} local ids, over the starting target",
-            )
-            assertTrue(peer.asked.size > 1, "a leg 100x the target must still be cut")
-            assertTiles(peer.reconciled, 1_000, 1_999)
+            assertTrue(peer.targetsSeen.isNotEmpty())
+            peer.targetsSeen.forEach { assertTrue(it in 10..100_000, "target $it is outside the configured bounds") }
+            assertTrue(index.read.isEmpty(), "the pager must not materialise ids itself any more")
+        }
+
+    @Test
+    fun `the count the pager took is not asked for twice`() =
+        runBlocking {
+            // quartz sizes the window it is handed before splitting it, using
+            // the same count this layer just took. Priming the index is what
+            // keeps that from being a second store round trip per window.
+            val index = FakeIndex(Density(perSecond = 1))
+            val peer =
+                object : WindowSync by FakePeer(Density(perSecond = 1)) {
+                    var seen: Int? = null
+
+                    override suspend fun reconcile(
+                        url: NormalizedRelayUrl,
+                        window: Filter,
+                        local: NegentropyLocalIndex,
+                        targetWindow: Int,
+                        onProgress: ((Int, Int) -> Unit)?,
+                        onUnreconcilable: suspend (Filter) -> Unit,
+                        onEvent: suspend (Event) -> Unit,
+                    ): NegentropySyncResult {
+                        // What quartz does first for the window it is given.
+                        seen = local.count(window)
+                        return NegentropySyncResult(0, 0, 0, 1, null)
+                    }
+                }
+            pager(index, peer).sweep(relay, notes, leg(1_000, 1_999)) {}
+
+            assertEquals(1_000, peer.seen, "the primed count must come back without another query")
+            assertEquals(1, index.counted.size, "one count for the window, not two")
         }
 
     // ---- (2) their side ------------------------------------------------------
 
     @Test
-    fun `a peer that had to split shrinks the next window`() =
+    fun `a cap below the target pulls it down, a cap above it does not`() =
         runBlocking {
-            val state = SweepState(null)
-            // We hold nothing, so our pre-split sees no reason to cut anything;
-            // only the peer knows it is dense.
-            val index = FakeIndex(Density(perSecond = 0))
-            val peer = FakePeer(Density(perSecond = 100), cap = 5_000)
-            pager(index, peer, state).sweep(relay, notes, leg(1_000, 1_999)) {}
+            // The number is the point: a peer that will take 400 must be asked
+            // for less than we planned, and a peer that will take 40,000 must
+            // not drag us down just because it happened to split this window.
+            val tight = SweepState(null)
+            pager(FakeIndex(Density(perSecond = 0)), FakePeer(Density(perSecond = 100), cap = 500), tight)
+                .sweep(relay, notes, leg(1_000, 1_999)) {}
+            assertEquals(400, tight.target(relay, 1_000), "the target must come down to the cap, with margin")
 
-            assertTrue(state.target(relay, 1_000) < 1_000, "a peer-side split must shrink the learned window size")
+            val roomy = SweepState(null)
+            pager(FakeIndex(Density(perSecond = 0)), FakePeer(Density(perSecond = 100), cap = 50_000), roomy)
+                .sweep(relay, notes, leg(1_000, 1_999)) {}
+            assertTrue(roomy.target(relay, 1_000) >= 1_000, "a cap above the target is not a reason to shrink")
+        }
+
+    @Test
+    fun `a refusal with no number leaves us halving`() =
+        runBlocking {
+            // Nothing to fit to, so the only move is to ask for less next time.
+            val state = SweepState(null)
+            val peer = FakePeer(Density(perSecond = 100), cap = 5_000, statesCap = false)
+            pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(state.target(relay, 1_000) < 1_000, "a split we cannot explain must still shrink the ask")
+            assertNull(state.peer(relay)?.cap, "and it must not invent a cap it was never told")
         }
 
     @Test
@@ -302,17 +347,19 @@ class NegentropyPagerTest {
         }
 
     @Test
-    fun `a stated cap sizes the window in one step`() =
+    fun `a stated cap sizes the window in one step and is remembered`() =
         runBlocking {
             val state = SweepState(null)
-            val p = pager(FakeIndex(Density(perSecond = 100)), FakePeer(Density(perSecond = 100)), state)
-            // What NegErrWatcher would hand over from a strfry rejection.
-            p.learnCap(relay, 1_000)
+            // The peer refuses once and says what it will take; quartz parses
+            // that off the refusal and reports it, so no ladder is walked.
+            val peer = FakePeer(Density(perSecond = 100), cap = 1_000)
+            pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(relay, notes, leg(1_000, 1_999)) {}
 
-            assertEquals(1_000, state.peer(relay)?.cap)
-            assertEquals(800, state.target(relay, 999_999), "the target must fit under the cap with margin")
+            assertEquals(1_000, state.peer(relay)?.cap, "the cap outlives the sweep that learned it")
+            assertTrue(state.target(relay, 999_999) <= 800, "the target must fit under the cap with margin")
             // And it never grows past it, however many clean windows follow.
-            p.sweep(relay, notes, leg(1_000, 1_999)) {}
+            pager(FakeIndex(Density(perSecond = 0)), FakePeer(Density(perSecond = 0)), state)
+                .sweep(relay, notes, leg(2_000, 2_999)) {}
             assertTrue(state.target(relay, 999_999) <= 800)
         }
 
@@ -416,7 +463,7 @@ class NegentropyPagerTest {
             val hot = Density(perSecond = 10, spikes = mapOf(1_500L to 100_000))
             val peer = FakePeer(hot, cap = 20_000)
             val checking =
-                object : LocalIndex {
+                object : NegentropyLocalIndex {
                     val inner = FakeIndex(Density(perSecond = 10))
 
                     override suspend fun count(window: Filter): Int? {
@@ -430,10 +477,7 @@ class NegentropyPagerTest {
                         return inner.count(window)
                     }
 
-                    override suspend fun ids(
-                        window: Filter,
-                        maxEntries: Int?,
-                    ): List<IdAndTime> = inner.ids(window, maxEntries)
+                    override suspend fun entriesFor(window: Filter): List<IdAndTime> = inner.entriesFor(window)
                 }
             val out = pager(checking, peer, state).sweep(relay, shape, leg(1_000, 1_999)) {}
 
