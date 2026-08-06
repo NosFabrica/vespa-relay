@@ -258,6 +258,25 @@ behaviour upstream, not here**, or the next quartz bump reverts it. The
 on-disk shape (`{key: {min, max, complete, fullAt}}`) is this repo's and is
 pinned by a test.
 
+**Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
+reconcile call, and the division of labour with quartz is the thing to
+understand before touching it. quartz already halves an over-cap window and
+retries down to one second; it cannot see OUR count (it slices the local list we
+hand it, so the snapshot is already built by then), it forgets everything
+between calls, and it has nowhere to write a cursor. So this layer supplies
+exactly three things and nothing else: a **local pre-split** from
+`store.count` before the round trip, a **per-peer window size** learned from
+refusals (`NegErrWatcher` reads strfry's cap straight out of the NEG-ERR text or
+its fourth element — quartz's parsed `NegErrMessage` drops it, which is why the
+watcher listens on the connection instead) and grown back on clean windows, and
+a **per-window cursor** in `SweepState`. Windows are walked newest-first on
+purpose: that is what keeps the finished region contiguous, which is what lets
+the cursor be one timestamp instead of a set of intervals. Every push in that
+class preserves it — check it before adding one. Engaged automatically by
+`StaticBackfill` once our own count passes `SYNC_NEG_PAGE_TARGET`; the dynamic
+fan-out deliberately still shares one snapshot across its 16k relays, where
+per-peer windowing would multiply the store work by the fan-out.
+
 **Known open bug (now upstream's):** a band holds one span for every kind in
 the filter, so a long-lived kind (0) vouches for a short-lived one (30382) and
 `legs()` skips the interior. The fix is per-kind spans *inside* the

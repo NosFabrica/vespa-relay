@@ -689,6 +689,47 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `negentropy paging is on by default and sized from the env`() {
+        val stock = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig))
+        assertEquals(100_000, stock!!.negPageTarget)
+        assertEquals(60L, stock.negPageSlackSec)
+
+        val tuned =
+            RouterConfigLoader.fromEnv(
+                mapOf(
+                    "SYNC_CONFIG" to streamsConfig,
+                    "SYNC_NEG_PAGE_TARGET" to "25000",
+                    "SYNC_NEG_PAGE_MIN" to "500",
+                    "SYNC_NEG_PAGE_MAX" to "250000",
+                    "SYNC_NEG_PAGE_SLACK_SECONDS" to "120",
+                ),
+            )
+        assertEquals(25_000, tuned!!.negPageTarget)
+        assertEquals(500, tuned.negPageMin)
+        assertEquals(250_000, tuned.negPageMax)
+        assertEquals(120L, tuned.negPageSlackSec)
+    }
+
+    @Test
+    fun `a zero paging target turns windowed reconciliation off`() {
+        // The escape hatch back to one shared snapshot per stream — correct,
+        // and the only way to get the old memory profile back.
+        val cfg = RouterConfigLoader.fromEnv(mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_NEG_PAGE_TARGET" to "0"))
+        assertEquals(0, cfg!!.negPageTarget)
+    }
+
+    @Test
+    fun `a paging ceiling below the floor is raised to it`() {
+        // Nonsense config must not produce a window size that can never be met.
+        val cfg =
+            RouterConfigLoader.fromEnv(
+                mapOf("SYNC_CONFIG" to streamsConfig, "SYNC_NEG_PAGE_MIN" to "10000", "SYNC_NEG_PAGE_MAX" to "100"),
+            )
+        assertEquals(10_000, cfg!!.negPageMin)
+        assertEquals(10_000, cfg.negPageMax)
+    }
+
+    @Test
     fun `no router config env yields null`() {
         assertNull(RouterConfigLoader.fromEnv(emptyMap()))
     }

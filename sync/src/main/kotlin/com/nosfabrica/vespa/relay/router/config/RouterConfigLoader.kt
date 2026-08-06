@@ -97,9 +97,42 @@ object RouterConfigLoader {
                         ?.toIntOrNull()
                         ?.coerceIn(1, 256) ?: fallback.concurrency,
             )
-        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, negMinEvents).let {
-            if (only == null) it else it.copy(streams = select(it.streams, only))
-        }
+        // Window sizing for the automatic negentropy pager. Applied with copy()
+        // rather than threaded through parse(): they are runtime tuning, not
+        // part of the strfry-shaped config the parser reads.
+        val pageTarget =
+            env
+                .syncEnv("SYNC_NEG_PAGE_TARGET", "ROUTER_NEG_PAGE_TARGET")
+                ?.trim()
+                ?.toIntOrNull()
+                ?.coerceAtLeast(0) ?: 100_000
+        val pageMin =
+            env
+                .syncEnv("SYNC_NEG_PAGE_MIN", "ROUTER_NEG_PAGE_MIN")
+                ?.trim()
+                ?.toIntOrNull()
+                ?.coerceAtLeast(1) ?: 1_000
+        val pageMax =
+            env
+                .syncEnv("SYNC_NEG_PAGE_MAX", "ROUTER_NEG_PAGE_MAX")
+                ?.trim()
+                ?.toIntOrNull()
+                ?.coerceAtLeast(pageMin) ?: 1_000_000
+        val pageSlack =
+            env
+                .syncEnv("SYNC_NEG_PAGE_SLACK_SECONDS", "ROUTER_NEG_PAGE_SLACK_SECONDS")
+                ?.trim()
+                ?.toLongOrNull()
+                ?.coerceAtLeast(0L) ?: 60L
+        return parse(raw, upInterval, ingestConcurrency, ingestBatch, relaySourceDefaults, negMinEvents)
+            .copy(
+                negPageTarget = pageTarget,
+                negPageMin = pageMin,
+                negPageMax = pageMax.coerceAtLeast(pageMin),
+                negPageSlackSec = pageSlack,
+            ).let {
+                if (only == null) it else it.copy(streams = select(it.streams, only))
+            }
     }
 
     /**
