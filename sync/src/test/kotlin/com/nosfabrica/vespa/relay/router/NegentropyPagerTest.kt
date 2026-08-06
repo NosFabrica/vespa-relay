@@ -70,6 +70,7 @@ class NegentropyPagerTest {
     ) : LocalIndex {
         val counted = mutableListOf<LongRange>()
         val snapshotted = mutableListOf<LongRange>()
+        val capped = mutableListOf<Boolean>()
         var answersCount = true
 
         override suspend fun count(window: Filter): Int? {
@@ -78,9 +79,18 @@ class NegentropyPagerTest {
             return if (answersCount) density.count(range) else null
         }
 
-        override suspend fun ids(window: Filter): List<IdAndTime> {
-            snapshotted += window.since!!..window.until!!
-            return emptyList()
+        override suspend fun ids(
+            window: Filter,
+            maxEntries: Int?,
+        ): List<IdAndTime> {
+            val range = window.since!!..window.until!!
+            snapshotted += range
+            capped += (maxEntries != null)
+            // Only the SIZE matters to the pager (it compares against the
+            // sentinel), so hand back that many placeholder entries.
+            val held = density.count(range)
+            val n = if (maxEntries == null) held else minOf(held, maxEntries + 1)
+            return List(n) { IdAndTime(range.first, it.toString().padStart(64, '0')) }
         }
     }
 
@@ -243,6 +253,27 @@ class NegentropyPagerTest {
             }
         }
 
+    @Test
+    fun `a store that cannot count is read under a cap, not unbounded`() =
+        runBlocking {
+            // The count failing is the one path where nothing else bounds the
+            // snapshot — the exact multi-gigabyte read the pager exists to stop.
+            val index = FakeIndex(Density(perSecond = 100)).apply { answersCount = false }
+            val peer = FakePeer(Density(perSecond = 100))
+            val out = pager(index, peer).sweep(relay, notes, leg(1_000, 1_999)) {}
+
+            assertTrue(out.complete)
+            assertTrue(index.capped.any { it }, "an uncountable window must be read with a cap")
+            // It still converges on the sentinel alone: the first window — asked
+            // before any clean window has grown the target — is within it.
+            assertTrue(
+                index.density.count(peer.asked.first()) <= 1_000,
+                "first window held ${index.density.count(peer.asked.first())} local ids, over the starting target",
+            )
+            assertTrue(peer.asked.size > 1, "a leg 100x the target must still be cut")
+            assertTiles(peer.reconciled, 1_000, 1_999)
+        }
+
     // ---- (2) their side ------------------------------------------------------
 
     @Test
@@ -299,7 +330,7 @@ class NegentropyPagerTest {
             val out = pager(index, peer, state).sweep(relay, notes, leg(1_000, 1_999)) {}
 
             assertTrue(out.complete)
-            assertNull(state.reconciled(relay, notes), "a completed sweep leaves no cursor behind")
+            assertNull(state.reconciled(SweepState.keyFor(relay, notes)), "a completed sweep leaves no cursor behind")
         }
 
     @Test
@@ -312,7 +343,7 @@ class NegentropyPagerTest {
             val first = pager(index, stopping, state).sweep(relay, notes, leg(1_000, 1_999)) {}
 
             assertFalse(first.complete)
-            val mark = assertNotNull(state.reconciled(relay, notes), "a stopped sweep must leave a cursor")
+            val mark = assertNotNull(state.reconciled(SweepState.keyFor(relay, notes)), "a stopped sweep must leave a cursor")
             assertEquals(1_999, mark.upTo, "the finished region starts at the leg's ceiling")
 
             val second = FakePeer(Density(perSecond = 1))
@@ -327,7 +358,7 @@ class NegentropyPagerTest {
     fun `a cursor from a different filter shape is not reused`() =
         runBlocking {
             val state = SweepState(null)
-            state.advance(relay, notes, 1_500, 1_999)
+            state.advance(SweepState.keyFor(relay, notes), 1_500, 1_999)
             val profiles = Filter(kinds = listOf(0))
             val peer = FakePeer(Density(perSecond = 1))
             pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(relay, profiles, profiles.copy(since = 1_000, until = 1_999)) {}
@@ -389,7 +420,7 @@ class NegentropyPagerTest {
                     val inner = FakeIndex(Density(perSecond = 10))
 
                     override suspend fun count(window: Filter): Int? {
-                        val claimed = state.reconciled(relay, shape)
+                        val claimed = state.reconciled(SweepState.keyFor(relay, shape))
                         if (claimed != null) {
                             assertTrue(
                                 claimed.downTo > window.until!!,
@@ -399,7 +430,10 @@ class NegentropyPagerTest {
                         return inner.count(window)
                     }
 
-                    override suspend fun ids(window: Filter): List<IdAndTime> = inner.ids(window)
+                    override suspend fun ids(
+                        window: Filter,
+                        maxEntries: Int?,
+                    ): List<IdAndTime> = inner.ids(window, maxEntries)
                 }
             val out = pager(checking, peer, state).sweep(relay, shape, leg(1_000, 1_999)) {}
 
@@ -419,6 +453,34 @@ class NegentropyPagerTest {
             assertFalse(out.complete)
             assertEquals(1, peer.asked.size, "a relay that cannot reconcile must not be asked window after window")
             assertTrue(peer.pagedRanges.isEmpty(), "paging the whole leg is the caller's decision, not the pager's")
+        }
+
+    @Test
+    fun `a resumed sweep that cannot reconcile hands back only what is left`() =
+        runBlocking {
+            // A relay that stops speaking NIP-77 between runs must not cost the
+            // caller the ground the cursor was holding: what comes back is the
+            // un-swept remainder, not the whole leg.
+            val state = SweepState(null)
+            state.advance(SweepState.keyFor(relay, notes), 1_500, 1_999)
+            val peer = FakePeer(Density(perSecond = 1), failAt = setOf(0))
+            val out = pager(FakeIndex(Density(perSecond = 0)), peer, state).sweep(relay, notes, leg(1_000, 1_999)) {}
+
+            assertFalse(out.negentropyUsable)
+            val rest = assertNotNull(out.outstanding, "the caller needs to know what to page")
+            assertEquals(1_000, rest.since)
+            assertEquals(1_499, rest.until, "everything the cursor already claims stays claimed")
+        }
+
+    @Test
+    fun `a fresh sweep that cannot reconcile hands back the whole leg`() =
+        runBlocking {
+            val peer = FakePeer(Density(perSecond = 1), failAt = setOf(0))
+            val out = pager(FakeIndex(Density(perSecond = 0)), peer).sweep(relay, notes, leg(1_000, 1_999)) {}
+
+            val rest = assertNotNull(out.outstanding)
+            assertEquals(1_000, rest.since)
+            assertEquals(1_999, rest.until)
         }
 
     // ---- the live head -------------------------------------------------------

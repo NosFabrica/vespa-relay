@@ -496,12 +496,16 @@ internal class StaticBackfill(
                     // "try negentropy, else page" fallback the non-windowed path
                     // gets from `negentropySyncOrFetch`, made here because the
                     // pager deliberately leaves the choice to its caller.
+                    // Only what the sweep has NOT already covered: a resumed
+                    // sweep may be most of the way down the leg, and paging the
+                    // whole thing would throw that away.
+                    val rest = outcome.outstanding ?: leg
                     val walk = "${upstream.streamName}|${upstream.url.url}"
-                    paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                    paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                     downloaded +=
                         client.fetchAllPages(
                             upstream.url,
-                            listOf(leg),
+                            listOf(rest),
                             NEG_IDLE_MS,
                             onNewPage = { until -> paging.mark(walk, until) },
                             onEvent = onEvent,

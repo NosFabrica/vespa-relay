@@ -114,9 +114,10 @@ class SweepState(
         url: NormalizedRelayUrl,
         target: Int,
     ) {
-        val before = peers[url.url]
-        if (before?.target == target) return
-        peers[url.url] = Peer(target, before?.cap)
+        if (peers[url.url]?.target == target) return
+        // compute(), so a cap learned on the reader coroutine at the same moment
+        // as a target update on a sweep coroutine cannot be dropped.
+        peers.compute(url.url) { _, before -> Peer(target, before?.cap) }
         dirty = true
     }
 
@@ -131,7 +132,7 @@ class SweepState(
     ) {
         val before = peers[url.url]
         if (before?.cap == cap && before.target == target) return
-        peers[url.url] = Peer(target, cap)
+        peers.compute(url.url) { _, _ -> Peer(target, cap) }
         dirty = true
     }
 
@@ -142,32 +143,31 @@ class SweepState(
      * nothing usable — no cursor, or one old enough that re-comparing is the
      * honest answer.
      */
-    fun reconciled(
-        url: NormalizedRelayUrl,
-        shape: Filter,
-    ): Reconciled? {
-        val mark = sweeps[key(url, shape)] ?: return null
+    fun reconciled(key: String): Reconciled? {
+        val mark = sweeps[key] ?: return null
         return if (nowSeconds() - mark.at > staleAfterSeconds) null else mark
     }
 
     /** Widen the reconciled slice to include a window that just finished. */
     fun advance(
-        url: NormalizedRelayUrl,
-        shape: Filter,
+        key: String,
         downTo: Long,
         upTo: Long,
     ) {
-        val k = key(url, shape)
-        val before = sweeps[k]
+        // compute(), not read-then-write: the flusher reads this map on another
+        // thread, and two sweeps sharing a key (a relay in two streams with the
+        // same filter) would otherwise be able to drop one's progress.
+        //
         // Only ever widened, never replaced: windows land newest-first, so the
         // low edge is the one that moves, and a `downTo` that jumped BACKWARD
         // would silently claim an un-compared hole.
-        sweeps[k] =
+        sweeps.compute(key) { _, before ->
             Reconciled(
                 downTo = minOf(before?.downTo ?: downTo, downTo),
                 upTo = maxOf(before?.upTo ?: upTo, upTo),
                 at = nowSeconds(),
             )
+        }
         dirty = true
     }
 
@@ -176,27 +176,11 @@ class SweepState(
      * same moment is the durable statement; keeping the cursor too would let a
      * later, narrower leg inherit a claim it never earned.
      */
-    fun finish(
-        url: NormalizedRelayUrl,
-        shape: Filter,
-    ) {
-        if (sweeps.remove(key(url, shape)) != null) dirty = true
+    fun finish(key: String) {
+        if (sweeps.remove(key) != null) dirty = true
     }
 
     fun size(): Int = sweeps.size
-
-    /**
-     * The cursor key: the peer, plus the filter with its time bounds removed.
-     *
-     * Time is what the sweep VARIES, so a key that included `since`/`until`
-     * would mint a fresh cursor per window and never resume anything. Everything
-     * else — kinds, authors, tags — changes what is being asked for, and a
-     * different ask has not been reconciled just because this one was.
-     */
-    private fun key(
-        url: NormalizedRelayUrl,
-        shape: Filter,
-    ): String = "${url.url}|${shape.copy(since = null, until = null, limit = null).toJson()}"
 
     // ---- the file ------------------------------------------------------------
 
@@ -309,6 +293,25 @@ class SweepState(
     }
 
     companion object {
+        /**
+         * The cursor key: the peer, plus the filter with its time bounds removed.
+         *
+         * Time is what the sweep VARIES, so a key that included `since`/`until`
+         * would mint a fresh cursor per window and never resume anything.
+         * Everything else — kinds, authors, tags — changes what is being asked
+         * for, and a different ask has not been reconciled just because this one
+         * was.
+         *
+         * Taken ONCE per sweep and passed back in, because building it
+         * serialises the filter: a discovery stream's filter carries thousands
+         * of authors, and re-deriving the key per finished window would re-render
+         * that JSON for every window, for nothing.
+         */
+        fun keyFor(
+            url: NormalizedRelayUrl,
+            shape: Filter,
+        ): String = "${url.url}|${shape.copy(since = null, until = null, limit = null).toJson()}"
+
         // Read by a human asking why a peer is being asked for 12,500 events at
         // a time, so it is written to be read.
         private val json = Json { prettyPrint = true }

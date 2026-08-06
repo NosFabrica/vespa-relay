@@ -59,10 +59,19 @@ internal data class NegPageTuning(
 
 /** Our own side of a window: how many we hold there, and which ids. */
 internal interface LocalIndex {
-    /** Null when the store could not answer — the pager then lets the peer decide. */
+    /** Null when the store could not answer — the pager then bounds the read instead. */
     suspend fun count(window: Filter): Int?
 
-    suspend fun ids(window: Filter): List<IdAndTime>
+    /**
+     * The ids in [window]. With [maxEntries] set, the store may stop at
+     * `maxEntries + 1` — the extra entry being the sentinel that says "there
+     * were more", which is the only way the caller can tell a full window from
+     * an overflowing one.
+     */
+    suspend fun ids(
+        window: Filter,
+        maxEntries: Int? = null,
+    ): List<IdAndTime>
 }
 
 /** One window against one peer: reconcile it, or (the escape hatch) page it. */
@@ -86,9 +95,14 @@ internal interface WindowSync {
 internal class StoreLocalIndex(
     private val store: IEventStore,
 ) : LocalIndex {
+    // A count that fails is not fatal — the pager has a bounded read to fall
+    // back on — so it must not take the sweep down with it.
     override suspend fun count(window: Filter): Int? = runCatching { store.count(window) }.getOrNull()
 
-    override suspend fun ids(window: Filter): List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window))
+    override suspend fun ids(
+        window: Filter,
+        maxEntries: Int?,
+    ): List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(window), maxEntries)
 }
 
 internal class ClientWindowSync(
@@ -128,10 +142,19 @@ internal class SweepOutcome(
     /**
      * False when the peer could not reconcile the FIRST window at all (no
      * NIP-77, refused, unreachable). Nothing was learned about the rest of the
-     * leg, so the caller should page the leg itself — the same fallback
+     * leg, so the caller should page it — the same fallback
      * `negentropySyncOrFetch` makes, kept in the caller's hands.
      */
     val negentropyUsable: Boolean,
+    /**
+     * What the caller should page when [negentropyUsable] is false: the part of
+     * the leg this sweep has NOT already covered.
+     *
+     * Not the whole leg, because a sweep that resumed from a cursor may be most
+     * of the way down it already — one transient failure on the window after a
+     * restart would otherwise re-download everything the cursor was keeping.
+     */
+    val outstanding: Filter?,
     val failure: NegentropySyncException?,
 )
 
@@ -210,13 +233,16 @@ internal class NegentropyPager(
         if (ceiling < floor) {
             // The whole leg is inside the live head. Not an error and not
             // complete: the subscription owns that range, not this sweep.
-            return SweepOutcome(0, 0, 0, complete = false, negentropyUsable = true, failure = null)
+            return SweepOutcome(0, 0, 0, complete = false, negentropyUsable = true, outstanding = null, failure = null)
         }
 
         var target = state.target(url, tuning.target).coerceIn(tuning.minTarget, tuning.maxTarget)
         val startedTarget = target
+        // Once per sweep, not per window: building it serialises the filter, and
+        // a discovery stream's filter carries thousands of authors.
+        val cursor = SweepState.keyFor(url, shape)
         val stack = ArrayDeque<LongRange>()
-        pushResumed(stack, url, shape, floor, ceiling)
+        pushResumed(stack, url, cursor, floor, ceiling)
 
         var downloaded = 0
         var reconciled = 0
@@ -229,18 +255,33 @@ internal class NegentropyPager(
             val w = stack.removeLast()
             val minimal = w.last - w.first <= MIN_WINDOW_SECONDS
 
-            // (1) Our side, before a round trip is spent. Skipped on a minimal
+            // (1) Our side, before the round trip. Skipped on a minimal
             // window: there is nothing left to cut, and reconciling a dense
             // second still beats re-downloading it.
-            if (!minimal) {
-                val ours = local.count(window(shape, w))
-                if (ours != null && ours > target) {
-                    bisect(stack, w)
-                    continue
-                }
+            val ours = if (minimal) null else local.count(window(shape, w))
+            if (ours != null && ours > target) {
+                bisect(stack, w)
+                continue
             }
 
-            val ids = local.ids(window(shape, w))
+            // A count the store could not answer is the one case where the
+            // snapshot below is unbounded — exactly the multi-gigabyte read this
+            // class exists to prevent. So read it CAPPED instead and let the
+            // sentinel decide: over the target means split, not reconcile.
+            val ids =
+                if (ours != null || minimal) {
+                    local.ids(window(shape, w))
+                } else {
+                    val capped = local.ids(window(shape, w), target)
+                    if (capped.size > target) {
+                        System.err.println(
+                            "router: sweep ${url.url} could not count [${w.first}, ${w.last}] — over ${fmtCount(target)} id(s), splitting on that alone",
+                        )
+                        bisect(stack, w)
+                        continue
+                    }
+                    capped
+                }
             try {
                 val result = peer.reconcile(url, window(shape, w), ids, onProgress) { onEvent(it) }
                 downloaded += result.downloaded
@@ -250,7 +291,7 @@ internal class NegentropyPager(
                 // window up to get an answer — the peer is denser than our count
                 // suggested, and the next window should be asked smaller.
                 target = if (result.windows > 1) shrink(url, target) else grow(url, target)
-                complete(url, shape, w)
+                complete(cursor, w)
             } catch (e: NegentropySyncException) {
                 lastFailure = e
                 when (e.reason) {
@@ -260,7 +301,7 @@ internal class NegentropyPager(
                         // second by other means, and keep the rest of the window
                         // on the stack.
                         target = shrink(url, target)
-                        val (got, pagedHere) = drainOverflow(url, shape, w, e, stack, onEvent)
+                        val (got, pagedHere) = drainOverflow(url, shape, cursor, w, e, target, stack, onEvent)
                         downloaded += got
                         paged += pagedHere
                         consecutiveFailures = 0
@@ -273,7 +314,15 @@ internal class NegentropyPager(
                             // caller page the leg — a sweep of windows that each
                             // fail the same way would be the same paging with
                             // extra round trips.
-                            return SweepOutcome(downloaded, 0, 0, complete = false, negentropyUsable = false, failure = e)
+                            return SweepOutcome(
+                                downloaded,
+                                0,
+                                0,
+                                complete = false,
+                                negentropyUsable = false,
+                                outstanding = outstanding(shape, floor, ceiling, cursor),
+                                failure = e,
+                            )
                         }
                         // Mid-sweep: one window's worth of trouble. Page it so
                         // the sweep keeps its contiguity and moves on.
@@ -282,13 +331,13 @@ internal class NegentropyPager(
                         )
                         downloaded += peer.page(url, window(shape, w), onEvent)
                         paged++
-                        complete(url, shape, w)
+                        complete(cursor, w)
                         if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
                             System.err.println(
                                 "router: sweep ${url.url} gave up after $consecutiveFailures window(s) in a row failed" +
-                                    " — ${fmtCount(downloaded)} event(s) kept, cursor holds at ${cursorLow(url, shape) ?: w.first}",
+                                    " — ${fmtCount(downloaded)} event(s) kept, cursor holds at ${state.reconciled(cursor)?.downTo ?: w.first}",
                             )
-                            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, failure = e)
+                            return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = e)
                         }
                     }
                 }
@@ -297,14 +346,14 @@ internal class NegentropyPager(
 
         // The leg is done; the band the caller records now is the durable
         // statement, so the working cursor goes.
-        state.finish(url, shape)
+        state.finish(cursor)
         if (target != startedTarget) {
             System.err.println(
                 "router: sweep ${url.url} window size ${fmtCount(startedTarget)} → ${fmtCount(target)} event(s)" +
                     (state.peer(url)?.cap?.let { " (their cap ${fmtCount(it)})" } ?: ""),
             )
         }
-        return SweepOutcome(downloaded, reconciled, paged, complete = true, negentropyUsable = true, failure = lastFailure)
+        return SweepOutcome(downloaded, reconciled, paged, complete = true, negentropyUsable = true, outstanding = null, failure = lastFailure)
     }
 
     /**
@@ -323,6 +372,22 @@ internal class NegentropyPager(
     }
 
     /**
+     * The slice of the leg nothing has covered yet — everything below what the
+     * cursor claims, since the sweep walks newest-first and the claim is
+     * contiguous from the ceiling down.
+     */
+    private fun outstanding(
+        shape: Filter,
+        floor: Long,
+        ceiling: Long,
+        cursor: String,
+    ): Filter {
+        val done = state.reconciled(cursor)
+        val top = if (done != null && done.downTo > floor) done.downTo - 1 else ceiling
+        return shape.copy(since = floor, until = minOf(top, ceiling), limit = null)
+    }
+
+    /**
      * The stack's starting state: the leg, minus whatever a previous run
      * already reconciled.
      *
@@ -333,11 +398,11 @@ internal class NegentropyPager(
     private fun pushResumed(
         stack: ArrayDeque<LongRange>,
         url: NormalizedRelayUrl,
-        shape: Filter,
+        cursor: String,
         floor: Long,
         ceiling: Long,
     ) {
-        val done = state.reconciled(url, shape)
+        val done = state.reconciled(cursor)
         if (done == null || done.upTo < floor || done.downTo > ceiling) {
             stack.addLast(floor..ceiling)
             return
@@ -381,8 +446,10 @@ internal class NegentropyPager(
     private suspend fun drainOverflow(
         url: NormalizedRelayUrl,
         shape: Filter,
+        cursor: String,
         w: LongRange,
         e: NegentropySyncException,
+        target: Int,
         stack: ArrayDeque<LongRange>,
         onEvent: suspend (Event) -> Unit,
     ): Pair<Int, Int> {
@@ -399,8 +466,19 @@ internal class NegentropyPager(
             var stillOver = false
             for (kind in kinds) {
                 val perKind = window(shape, badFrom..badTo).copy(kinds = listOf(kind))
+                // Capped like every other read: this is the one slice we already
+                // know is dense at the PEER, and there is no reason to assume our
+                // side of it is small either. Over the target, paging is the only
+                // move left — there is no narrower window to fall back to.
+                val mine = local.ids(perKind, target)
+                if (mine.size > target) {
+                    stillOver = true
+                    downloaded += peer.page(url, perKind, onEvent)
+                    paged++
+                    continue
+                }
                 try {
-                    downloaded += peer.reconcile(url, perKind, local.ids(perKind), null) { onEvent(it) }.downloaded
+                    downloaded += peer.reconcile(url, perKind, mine, null) { onEvent(it) }.downloaded
                 } catch (_: NegentropySyncException) {
                     stillOver = true
                     downloaded += peer.page(url, perKind, onEvent)
@@ -432,21 +510,15 @@ internal class NegentropyPager(
         // them. Nothing is lost by staying quiet: the pieces around it move the
         // cursor as they finish, and their claim covers the drained slice
         // between them, which by then is true.
-        if (badTo >= w.last) state.advance(url, shape, badFrom, w.last)
+        if (badTo >= w.last) state.advance(cursor, badFrom, w.last)
         return downloaded to paged
     }
 
     /** One window finished, by any route: move the cursor. */
     private fun complete(
-        url: NormalizedRelayUrl,
-        shape: Filter,
+        cursor: String,
         w: LongRange,
-    ) = state.advance(url, shape, w.first, w.last)
-
-    private fun cursorLow(
-        url: NormalizedRelayUrl,
-        shape: Filter,
-    ): Long? = state.reconciled(url, shape)?.downTo
+    ) = state.advance(cursor, w.first, w.last)
 
     /**
      * Shrink toward what the peer will take: their own number when they sent

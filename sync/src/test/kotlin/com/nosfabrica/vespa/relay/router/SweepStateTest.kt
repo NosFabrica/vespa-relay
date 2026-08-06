@@ -68,64 +68,64 @@ class SweepStateTest {
     fun `a cursor survives a restart and is keyed on the peer`() {
         val f = tempFile()
         SweepState(f).use {
-            it.advance(relay, notes, 1_500, 2_000)
+            it.advance(SweepState.keyFor(relay, notes), 1_500, 2_000)
             it.flush()
         }
         val reopened = SweepState(f)
-        assertEquals(1_500, reopened.reconciled(relay, notes)?.downTo)
-        assertEquals(2_000, reopened.reconciled(relay, notes)?.upTo)
-        assertNull(reopened.reconciled(other, notes), "another relay's sweep is not ours")
+        assertEquals(1_500, reopened.reconciled(SweepState.keyFor(relay, notes))?.downTo)
+        assertEquals(2_000, reopened.reconciled(SweepState.keyFor(relay, notes))?.upTo)
+        assertNull(reopened.reconciled(SweepState.keyFor(other, notes)), "another relay's sweep is not ours")
     }
 
     @Test
     fun `advancing only ever widens the finished region`() {
         val state = SweepState(null)
-        state.advance(relay, notes, 1_500, 2_000)
-        state.advance(relay, notes, 1_000, 1_499)
-        val mark = assertNotNull(state.reconciled(relay, notes))
+        state.advance(SweepState.keyFor(relay, notes), 1_500, 2_000)
+        state.advance(SweepState.keyFor(relay, notes), 1_000, 1_499)
+        val mark = assertNotNull(state.reconciled(SweepState.keyFor(relay, notes)))
         assertEquals(1_000, mark.downTo)
         assertEquals(2_000, mark.upTo)
 
         // A window inside what is already claimed changes nothing — it cannot
         // punch a hole in the region by narrowing it.
-        state.advance(relay, notes, 1_800, 1_900)
-        assertEquals(1_000, state.reconciled(relay, notes)?.downTo)
-        assertEquals(2_000, state.reconciled(relay, notes)?.upTo)
+        state.advance(SweepState.keyFor(relay, notes), 1_800, 1_900)
+        assertEquals(1_000, state.reconciled(SweepState.keyFor(relay, notes))?.downTo)
+        assertEquals(2_000, state.reconciled(SweepState.keyFor(relay, notes))?.upTo)
     }
 
     @Test
     fun `the cursor ignores the time bounds and nothing else`() {
         val state = SweepState(null)
-        state.advance(relay, notes, 1_000, 2_000)
+        state.advance(SweepState.keyFor(relay, notes), 1_000, 2_000)
 
         // Same ask, different window: this is what a sweep varies, so it must
         // find its own cursor.
-        assertNotNull(state.reconciled(relay, notes.copy(since = 5, until = 9)))
+        assertNotNull(state.reconciled(SweepState.keyFor(relay, notes.copy(since = 5, until = 9))))
         // Different ask: reconciling kind 1 says nothing about kind 0.
-        assertNull(state.reconciled(relay, Filter(kinds = listOf(0))))
-        assertNull(state.reconciled(relay, notes.copy(authors = listOf("a".repeat(64)))))
+        assertNull(state.reconciled(SweepState.keyFor(relay, Filter(kinds = listOf(0)))))
+        assertNull(state.reconciled(SweepState.keyFor(relay, notes.copy(authors = listOf("a".repeat(64))))))
     }
 
     @Test
     fun `a stale cursor is not acted on`() {
         val fresh = SweepState(null, staleAfterSeconds = 3_600)
-        fresh.advance(relay, notes, 1_000, 2_000)
-        assertNotNull(fresh.reconciled(relay, notes))
+        fresh.advance(SweepState.keyFor(relay, notes), 1_000, 2_000)
+        assertNotNull(fresh.reconciled(SweepState.keyFor(relay, notes)))
 
         // Zero horizon: anything written before this instant is already too old.
         val stale = SweepState(null, staleAfterSeconds = -1)
-        stale.advance(relay, notes, 1_000, 2_000)
-        assertNull(stale.reconciled(relay, notes), "an aged claim must be re-compared, not trusted")
+        stale.advance(SweepState.keyFor(relay, notes), 1_000, 2_000)
+        assertNull(stale.reconciled(SweepState.keyFor(relay, notes)), "an aged claim must be re-compared, not trusted")
     }
 
     @Test
     fun `finishing a leg drops its cursor and leaves the peer's size`() {
         val state = SweepState(null)
         state.setTarget(relay, 12_500)
-        state.advance(relay, notes, 1_000, 2_000)
-        state.finish(relay, notes)
+        state.advance(SweepState.keyFor(relay, notes), 1_000, 2_000)
+        state.finish(SweepState.keyFor(relay, notes))
 
-        assertNull(state.reconciled(relay, notes))
+        assertNull(state.reconciled(SweepState.keyFor(relay, notes)))
         assertEquals(12_500, state.target(relay, 1), "what the peer will take outlives the sweep that learned it")
     }
 
@@ -141,8 +141,8 @@ class SweepStateTest {
     @Test
     fun `no file configured keeps everything in memory`() {
         val state = SweepState(null)
-        state.advance(relay, notes, 1_000, 2_000)
+        state.advance(SweepState.keyFor(relay, notes), 1_000, 2_000)
         state.flush()
-        assertNotNull(state.reconciled(relay, notes))
+        assertNotNull(state.reconciled(SweepState.keyFor(relay, notes)))
     }
 }
