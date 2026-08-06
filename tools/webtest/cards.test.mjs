@@ -203,6 +203,53 @@ const noUrlVideo = card(ev(21, [["title", "the only body line"]]), { full: true 
 assert.strictEqual((noUrlVideo.match(/the only body line/g) || []).length, 1, "video full/no-url: body once");
 assert(card(ev(20, [], "picture text, no url")).includes("picture text, no url"), "picture preview keeps text without a url");
 
+// ---- a video card in the FEED --------------------------------------------
+//
+// The real event this was written against: a kind 22 whose `d` is a UUID its
+// client generated, whose caption is in `content`, and which names no poster
+// image at all. Every part of the old card failed on it — the title ladder
+// showed the UUID, the poster slot was empty, and the caption never rendered
+// — so the assertions are about the whole card, not one helper.
+const short22 = ev(22, [
+  ["d", "f56d739a-09c9-4f0b-ba82-f8c21e1a6b8e"],
+  ["alt", "Vertical Video"],
+  ["imeta", "url https://video.example/x.mp4", "m video/mp4", "dim 1088x1920", "duration 42"],
+  ["t", "isleofskye"],
+], "Vlogging directly from the phone");
+const shortPreview = card(short22);
+assert(!shortPreview.includes("f56d739a"), "a generated `d` is an identifier, not a caption");
+assert(shortPreview.includes("Vlogging directly from the phone"), "the caption in `content` reaches the card");
+assert(shortPreview.includes("<video") && shortPreview.includes("https://video.example/x.mp4"),
+  "the video plays in the results list, not only on its permalink");
+assert(shortPreview.includes("#t=0.1"), "with no poster, ask for the first frame rather than a black box");
+assert(shortPreview.includes("aspect-ratio: 1088 / 1920"), "`dim` reserves the frame before the video loads");
+assert(shortPreview.includes(">0:42<"), "duration reads as a clock, not as a count of seconds");
+assert(shortPreview.includes("#isleofskye"), "topic tags ride along as chips");
+
+// With no content, the media's own description carries the card — the NIP-31
+// `alt` is a line for clients that cannot render kind 22 at all, and saying
+// "Vertical Video" under a vertical video is the card describing itself.
+const alted = card(ev(22, [["alt", "Vertical Video"], ["imeta", "url https://x/v.mp4", "alt A puffin, up close"]]));
+assert(alted.includes("A puffin, up close") && !alted.includes("Vertical Video"), "the media's description beats the NIP-31 fallback");
+
+// A poster is a picture we already have: no second request for a frame.
+const posterVideo = card(ev(21, [["imeta", "url https://x/v.mp4", "image https://x/p.jpg"], ["title", "a video"]]));
+assert(posterVideo.includes('poster="https://x/p.jpg"') && posterVideo.includes('preload="none"'), "poster instead of a metadata fetch");
+assert(!posterVideo.includes("#t=0.1"), "no first-frame seek when the event named a poster");
+
+// The title has its own line, so it must not also be the body — the old card
+// put it in the body, which is how a titled video said everything twice.
+const titled = card(ev(21, [["imeta", "url https://x/v.mp4"], ["title", "One Title"]], "One Title"), { full: true });
+assert.strictEqual((titled.match(/One Title/g) || []).length, 1, "title once, never as its own caption");
+
+// `dim` is the one event-supplied value that reaches a style attribute, so a
+// value that is not two short runs of digits must produce no attribute at all.
+const hostileDim = card(ev(22, [["imeta", "url https://x/v.mp4", "dim 1x1;background:url(javascript:alert(1))"]]));
+assert(!hostileDim.includes("aspect-ratio") && !hostileDim.includes("javascript:"), "a `dim` that is not WxH styles nothing");
+
+// The `d` fallback still does the work it was there for: a community's name.
+assert(card(ev(34550, [["d", "nostr-devs"]])).includes("nostr-devs"), "a readable `d` is still a title");
+
 // Escaping holds in every renderer that touches content.
 const hostile = card(ev(1, [], `<img src=x onerror=alert(1)>`), { full: true });
 assert(!hostile.includes("<img src=x"), "content is escaped");

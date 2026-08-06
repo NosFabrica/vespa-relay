@@ -738,6 +738,30 @@
   .embed img, .embed video { display: block; max-width: 100%; max-height: 70vh; border-radius: 10px;
                              border: 1px solid var(--border); background: var(--surface-2); }
   .embed audio { width: 100%; }
+  /* A video plays in the results list, not just on its permalink — the frame
+     IS the card for kinds 21/22 (cards/media.js says why). The renderer puts
+     the event's `dim` on this box as an aspect-ratio plus the max-width that
+     the cap below implies, so the space is reserved at the right SHAPE before
+     the first byte arrives and a portrait video does not read as a black band
+     with a slot in it. The two caps are the card's two depths: a list of
+     videos still has to scroll, a permalink is a destination. */
+  .media-frame { position: relative; display: flex; justify-content: center; margin: 4px 0 10px;
+                 width: fit-content; max-width: 100%; max-height: 360px; overflow: hidden; border-radius: 12px;
+                 border: 1px solid var(--border); background: var(--surface-2); }
+  .result.full .media-frame { max-height: 70vh; }
+  .media-frame video { display: block; max-width: 100%; max-height: inherit; }
+  /* `.sized` is the frame that knows its shape: it takes the width its
+     aspect-ratio and the cap above imply, and the video fills it. Without a
+     `dim` there is no shape to reserve, so the frame hugs whatever the video
+     turns out to be instead of standing a full-width black band in the feed
+     until the metadata says otherwise. */
+  .media-frame.sized { width: auto; }
+  .media-frame.sized video { width: 100%; height: 100%; object-fit: contain; background: #000; }
+  /* The length, where every video player in the world puts it — but out of the
+     controls' way, which own the bottom edge the moment the card is hovered. */
+  .media-chip { position: absolute; top: 8px; right: 8px; padding: 1px 7px; border-radius: 999px;
+                background: rgba(0,0,0,.72); color: #fff; font-size: 11.5px; font-weight: 600;
+                letter-spacing: .02em; pointer-events: none; }
   .codeblock { margin: 6px 0 0; padding: 12px; overflow: auto; max-height: 60vh;
                background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
                font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
