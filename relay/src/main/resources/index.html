@@ -223,31 +223,6 @@
   }
 
   * { box-sizing: border-box; }
-  /* The vertical scrollbar is ALWAYS there, so the page's horizontal centre is
-     a property of the viewport rather than of how tall the document happens to
-     be this frame.
-
-     Without this, every re-render moved the whole page sideways by half a
-     classic scrollbar — 7.5px of a 15px bar, measured in Chromium at 1200px
-     wide (macOS/iOS overlay scrollbars take no space and never showed it).
-     `.page` is `margin: 0 auto` inside the body box, and the body box loses
-     the scrollbar's width the moment one appears. So clicking a kind chip,
-     which empties #results for the frame before the new cards land, went
-     short document → no scrollbar → page jumps right → cards land → scrollbar
-     back → page jumps left. Opening a note did the same thing, once each way.
-     Nothing in JS caused it and nothing in JS can fix it: the shift is the
-     layout answering a question about document height.
-
-     `scrollbar-gutter: stable` fixes the centring just as exactly and was the
-     first try, but it reserves a BLANK strip when there is no scrollbar, and
-     this page has a full-bleed sticky toolbar: `body.searching .hero`'s
-     background and its 1px bottom border end at the body box, so on a results
-     page too short to scroll the rule stopped 15px shy of the window edge and
-     read as a rendering fault. Forcing the scrollbar means the gutter holds
-     the same thing in both states — a scrollbar the bar can end against — at
-     the cost of an inert track on the idle hero. It also works in every
-     browser that has the bug, which `scrollbar-gutter` (Safari 18.2+) does
-     not. */
   html { overflow-y: scroll; }
   html, body {
     margin: 0;
