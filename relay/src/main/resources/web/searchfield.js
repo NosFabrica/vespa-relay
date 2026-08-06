@@ -1,6 +1,6 @@
 // The search box, as a field that RENDERS what it holds.
 //
-// Three things live here, and they are one feature:
+// Four things live here, and they are one feature:
 //
 //   1. `from:npub1…` / `to:npub1…` draw as a face and a name instead of 63
 //      characters of bech32. The field's VALUE is still the plain text — the
@@ -9,14 +9,23 @@
 //   2. Typing `from:` or `to:` opens a people picker over the network, ranked
 //      by your own web of trust because the lookup rides the AUTHENTICATED
 //      socket. Picking somebody writes their npub into the text.
-//   3. `#hashtag` draws as a pill. NOT for the reason a person does — a
+//   3. Typing `since:` or `until:` opens a CALENDAR in the same box, and
+//      picking a day writes `since:2026-08-06` into the text. Nothing about it
+//      goes near the network — a month grid is arithmetic — so unlike the
+//      people picker it answers instantly and has nothing to debounce.
+//      `since:2026-08-06` then draws as a pill reading `since 6 Aug 2026`:
+//      the token is the ISO day, because `06/08/2026` means two different days
+//      to two readers, and the pill is the reader's own spelling of it.
+//   4. `#hashtag` draws as a pill. NOT for the reason a person does — a
 //      hashtag is already the word it means, and nothing is being hidden. It
 //      is the field admitting what it did: that word LEFT the NIP-50 search
 //      string and became a tag filter, which the box had no way of saying. So
 //      it is quieter than a person (an outline, no face, no lookup, no
 //      repaint) and it appears only once the caret leaves the tag — see
 //      query.js's drawable(), and the comment there on why a pill that
-//      appeared at `#n` would re-render the field on every keystroke.
+//      appeared at `#n` would re-render the field on every keystroke. A date
+//      pill settles on the same rule, and needs it more: one more digit after
+//      `since:2026-08-06` takes the whole token back to text.
 //
 // Why a contenteditable rather than the <input> this used to be: an input's
 // value is a string of characters and nothing else — there is no way to put a
@@ -28,19 +37,73 @@
 // and paste/drop that insert TEXT rather than whatever html was on the
 // clipboard. app.js keeps writing `$q.value` and never learns the difference.
 //
-// The picker and the results popup are mutually exclusive on purpose. They
-// occupy the same square of screen, and a keystroke inside `from:ali` is not
-// a search for "from:ali" — so while a mention is being built this module
-// owns the arrows and Enter, and app.js is told to stand down.
+// The pickers and the results popup are mutually exclusive on purpose. All
+// three occupy the same square of screen, and a keystroke inside `from:ali` is
+// not a search for "from:ali" — so while a token is being built this module
+// owns the arrows and Enter, and app.js is told to stand down. The two pickers
+// are exclusive with each OTHER for free: one caret is inside one token, and
+// `from|to` and `since|until` are different prefixes.
 
 import { npub, shortNpub } from "./shared/nip19.js";
 import { esc, clip } from "./shared/format.js";
 import { profiles, displayName, enrichProfiles } from "./shared/profiles.js";
 import { avatarHtml } from "./shared/avatar.js";
-import { tokenize, mentionAt, drawable } from "./shared/query.js";
+import { tokenize, mentionAt, dateAt, drawable, ymd } from "./shared/query.js";
 
 const PICKER_LIMIT = 8;
 const DEBOUNCE_MS = 150;
+
+// ---- days, as the calendar counts them ------------------------------------
+//
+// All local, all midnight, because that is what the language means by a day
+// (query.js's dayBound says why) and because a grid that drifted by a timezone
+// would highlight the wrong square for "today".
+
+const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
+const shiftDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
+const shiftMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
+const sameDay = (a, b) => !!a && !!b && ymd(a) === ymd(b);
+
+/**
+ * Which weekday a week starts on, 0 = Sunday.
+ *
+ * Asked of the reader's own locale where the browser will say (Chrome, Safari
+ * carry Intl.Locale.weekInfo) and ISO Monday where it will not (Firefox). A
+ * calendar that starts the week on the wrong day is not wrong so much as
+ * unreadable — the columns stop being where the eye expects them.
+ */
+function weekStart() {
+  try {
+    // weekInfo counts 1..7 from Monday; JS dates count 0..6 from Sunday.
+    const first = new Intl.Locale(navigator.language).weekInfo?.firstDay;
+    if (first) return first % 7;
+  } catch (e) { /* no weekInfo here — ISO it is */ }
+  return 1;
+}
+
+/** The column headings, in the order this locale's week runs. 4 Jan 2026 is a Sunday. */
+const dowNames = (start) =>
+  Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 4 + start + i)).map((d) => ({
+    narrow: d.toLocaleDateString(undefined, { weekday: "narrow" }),
+    long: d.toLocaleDateString(undefined, { weekday: "long" }),
+  }));
+
+/** A day in the reader's own spelling — what a pill and a calendar say out loud. */
+const dayLabel = (d) => d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
+
+/**
+ * The quick picks under the grid, as offsets in DAYS from today.
+ *
+ * Different for the two prefixes because they answer different questions: a
+ * `since` is the start of a window ("the last week"), an `until` is a cutoff
+ * ("before last week"). Each resolves to an absolute day and writes that, so
+ * the language stays one token shape — a saved URL reading `since:7d` would
+ * mean a different search every day it was opened.
+ */
+const QUICK = {
+  since: [["Today", 0], ["Last 7 days", -6], ["Last 30 days", -29], ["Last 90 days", -89]],
+  until: [["Today", 0], ["Yesterday", -1], ["A week ago", -7], ["A month ago", -30]],
+};
 
 // The faces here are the page's face — generated fallback, score chip and all.
 // This module used to draw its own <img>, which is how the one place that ASKS
@@ -64,11 +127,14 @@ const faceHtml = (pubkey, size) => avatarHtml((profiles.get(pubkey) || {}).pictu
  * read under is app state, and this module only draws the faces.
  */
 export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
-  let mention = null;   // the token being built, from mentionAt()
+  let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
   let active = -1;      // which one is highlighted
   let timer = null;
   let reqId = 0;
+  let day = null;       // the since:/until: token being built, from dateAt()
+  let month = null;     // the month the grid is showing (a Date on its 1st)
+  let cursor = null;    // the day the KEYBOARD is on, or null while the mouse leads
 
   /**
    * Fill the chips on the faces this module just drew.
@@ -216,6 +282,22 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
         : `tag filter for “${seg.tag}”`;
       return span;
     }
+    if (seg.type === "date") {
+      // Quieter than a person, like a hashtag, and for the same reason: the
+      // token is readable, so the pill is not standing in for it. What it does
+      // do is RESPELL it — `2026-08-06` is the one spelling both readers of a
+      // slash-separated date agree on, and `6 Aug 2026` is the one they read.
+      span.className = "datepill";
+      span.innerHTML = `<b>${esc(seg.field)}</b>${esc(dayLabel(new Date(seg.at * 1000)))}`;
+      // The hover is where the exactness goes: which second of the day the
+      // bound lands on is the whole difference between the two prefixes, and
+      // the pill has no room to say it.
+      span.title =
+        `${seg.raw} — a NIP-01 ${seg.field} filter: ` +
+        (seg.field === "since" ? `written from 00:00` : `written up to 23:59`) +
+        ` on ${dayLabel(new Date(seg.at * 1000))}, your time`;
+      return span;
+    }
     span.className = "mention";
     span.dataset.pk = seg.pubkey;
     if (seg.field) span.dataset.field = seg.field;
@@ -289,7 +371,7 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     render(text.slice(0, from) + insert + text.slice(to), caret, typingAt);
   }
 
-  // ---- the people picker ---------------------------------------------------
+  // ---- the pickers ---------------------------------------------------------
 
   const listOpen = () => list.classList.contains("open");
 
@@ -298,12 +380,42 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     mention = null;
     hits = [];
     active = -1;
+    day = null;
+    month = null;
+    cursor = null;
     list.classList.remove("open");
     list.innerHTML = "";
     // Handed back to the results popup, which owns them the rest of the time.
     el.setAttribute("aria-expanded", "false");
     el.setAttribute("aria-controls", "popup");
     el.removeAttribute("aria-activedescendant");
+  }
+
+  /** Raise the box, whichever picker filled it, and say so to a screen reader. */
+  function openList(label) {
+    list.setAttribute("aria-label", label);
+    list.classList.add("open");
+    el.setAttribute("aria-expanded", "true");
+    el.setAttribute("aria-controls", "mentions");
+  }
+
+  /**
+   * Splice a finished token over the partial the caret is in.
+   *
+   * Both pickers end here, because both are answering the same question — the
+   * reader typed a prefix, the box worked out what they meant, and the VALUE
+   * is what has to change. One trailing space, so the next word is a word and
+   * not more of the token; and the caret lands past it, which is outside the
+   * token and therefore the moment the pill draws.
+   */
+  function replaceToken(ctx, token) {
+    const text = readValue();
+    const tail = text.slice(ctx.end).startsWith(" ") ? "" : " ";
+    const { start, end } = ctx;
+    closeList();
+    replaceRange(start, end, token + tail, start + token.length + tail.length);
+    el.focus();
+    onEdit && onEdit();
   }
 
   const ROW_ID = (i) => `mention-opt-${i}`;
@@ -359,9 +471,7 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     else if (!rows.length) body = `<div class="popup-note">Nobody matches “${esc(clip(mention.partial, 40))}”</div>`;
     else body = rows.map(rowHtml).join("");
     list.innerHTML = head + body;
-    list.classList.add("open");
-    el.setAttribute("aria-expanded", "true");
-    el.setAttribute("aria-controls", "mentions");
+    openList("People");
     markActive();
     // Asked of the DOM rather than of `rows`, because a note ("type a name",
     // "nobody matches") is also a body built from a non-empty argument.
@@ -437,19 +547,172 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
 
   function pick(pubkey) {
     if (!mention || !pubkey) return;
-    const token = `${mention.field}:${npub(pubkey)}`;
-    const text = readValue();
-    // One trailing space, so the next word is a word and not more of the
-    // token — unless the caret already sits in front of one.
-    const tail = text.slice(mention.end).startsWith(" ") ? "" : " ";
-    const { start, end } = mention;
-    closeList();
-    replaceRange(start, end, token + tail, start + token.length + tail.length);
-    el.focus();
-    onEdit && onEdit();
+    replaceToken(mention, `${mention.field}:${npub(pubkey)}`);
   }
 
-  // ---- wiring --------------------------------------------------------------
+  // ---- the calendar --------------------------------------------------------
+  //
+  // Everything here is arithmetic on local dates: there is no lookup, no
+  // debounce and no request id, because a month grid is not a question anyone
+  // has to answer. That is the whole difference from the people picker beside
+  // it — same box, same keys, same splice at the end, no network in the middle.
+
+  const DAY_ID = (d) => `cal-day-${ymd(d)}`;
+
+  /**
+   * The month a half-typed date names, or null while it names none.
+   *
+   * `since:2026-01` should not leave the grid sitting on this month: the reader
+   * has already said which one they mean, and making them arrow back to it is
+   * the calendar ignoring what is in the box. The day half is deliberately not
+   * read — `2026-01-3` is not a day yet, and jumping the grid at the third
+   * digit of a year would make it lurch through 2 AD on the way to 2026.
+   */
+  function typedMonth(partial) {
+    const m = /^(\d{4})-(\d{2})/.exec(String(partial || ""));
+    if (!m) return null;
+    const [y, mo] = m.slice(1).map(Number);
+    if (mo < 1 || mo > 12) return null;
+    const at = new Date(y, mo - 1, 1);
+    return at.getFullYear() === y ? at : null;
+  }
+
+  function calendarHtml() {
+    const today = midnight(new Date());
+    const start = weekStart();
+    const shown = month || shiftMonths(today, 0);
+    const lead = (new Date(shown.getFullYear(), shown.getMonth(), 1).getDay() - start + 7) % 7;
+    const days = new Date(shown.getFullYear(), shown.getMonth() + 1, 0).getDate();
+    const cells = [];
+    // The blanks before the 1st are real cells, not a margin: the grid is seven
+    // columns and the 1st has to land under its own weekday.
+    for (let i = 0; i < lead; i++) cells.push(`<span class="cal-pad" aria-hidden="true"></span>`);
+    for (let n = 1; n <= days; n++) {
+      const d = new Date(shown.getFullYear(), shown.getMonth(), n);
+      const cls = ["cal-day"];
+      if (sameDay(d, today)) cls.push("today");
+      if (sameDay(d, cursor)) cls.push("active");
+      // A future day is a legal bound — events carry the created_at their
+      // author claimed — so it is dimmed rather than disabled: rare, not wrong.
+      if (d > today) cls.push("ahead");
+      cells.push(
+        `<button type="button" class="${cls.join(" ")}" id="${DAY_ID(d)}" data-day="${ymd(d)}"` +
+        ` role="option" aria-selected="${sameDay(d, cursor)}" aria-label="${esc(dayLabel(d))}">${n}</button>`,
+      );
+    }
+    const dow = dowNames(start)
+      .map((w) => `<span class="cal-dow" title="${esc(w.long)}">${esc(w.narrow)}</span>`)
+      .join("");
+    const quick = QUICK[day.field]
+      .map(([label, off]) => `<button type="button" class="cal-pick" data-day="${ymd(shiftDays(today, off))}">${esc(label)}</button>`)
+      .join("");
+    return (
+      `<div class="cal">` +
+      `<div class="cal-nav">` +
+      `<button type="button" class="cal-step" data-step="-1" aria-label="Previous month">&lsaquo;</button>` +
+      `<div class="cal-month">${esc(shown.toLocaleDateString(undefined, { month: "long", year: "numeric" }))}</div>` +
+      `<button type="button" class="cal-step" data-step="1" aria-label="Next month">&rsaquo;</button>` +
+      `</div>` +
+      `<div class="cal-grid">${dow}${cells.join("")}</div>` +
+      `<div class="cal-quick">${quick}</div>` +
+      `</div>`
+    );
+  }
+
+  function renderCalendar() {
+    if (!day) return;
+    const head =
+      `<div class="popup-head"><span>${day.field === "since" ? "Written on or after" : "Written on or before"}</span>` +
+      `<span class="timing">${esc(day.field)}:</span></div>`;
+    list.innerHTML = head + calendarHtml();
+    // A listbox of days rather than a grid: the field is a combobox, the two
+    // pickers share its aria-activedescendant, and one honest pattern that both
+    // fit beats a second one that only this half implements properly.
+    openList("Dates");
+    const on = cursor && list.querySelector(".cal-day.active");
+    if (on) el.setAttribute("aria-activedescendant", on.id);
+    else el.removeAttribute("aria-activedescendant");
+  }
+
+  /** Re-read the `since:`/`until:` token under the caret and keep the grid in step. */
+  function showCalendar(next) {
+    const same = !!day && day.field === next.field && day.start === next.start;
+    // Idempotent for the same reason updateMention() is: this runs on every
+    // caret move as well as every edit, and a grid that rebuilt itself for an
+    // unchanged token would throw away the month the reader had stepped to.
+    if (same && day.partial === next.partial && listOpen()) return;
+    day = next;
+    if (mention) { clearTimeout(timer); mention = null; hits = []; active = -1; }
+    // The typed month wins whenever the partial names one, so the grid follows
+    // the box; otherwise it holds where the reader last stepped it, and opens
+    // on this month.
+    month = typedMonth(next.partial) || (same && month) || shiftMonths(midnight(new Date()), 0);
+    if (!same) cursor = null;
+    // A cursor the reader has stepped off the shown month is not on screen and
+    // must not stay highlighted in the dark; Enter would pick a day nobody saw.
+    if (cursor && (cursor.getFullYear() !== month.getFullYear() || cursor.getMonth() !== month.getMonth())) cursor = null;
+    renderCalendar();
+  }
+
+  function stepMonth(by) {
+    if (!day) return;
+    month = shiftMonths(month || midnight(new Date()), by);
+    if (cursor) cursor = null;
+    renderCalendar();
+  }
+
+  /**
+   * Move the keyboard cursor by `by` days, opening the month it lands in.
+   *
+   * The first press starts from the day the grid is already about: today when
+   * it is in view, the 1st of the shown month otherwise. Starting from "today"
+   * unconditionally would put the cursor off-screen the moment somebody
+   * arrowed after stepping back a year.
+   */
+  function moveDay(by) {
+    if (!day) return;
+    const today = midnight(new Date());
+    const shown = month || today;
+    const inShown = today.getFullYear() === shown.getFullYear() && today.getMonth() === shown.getMonth();
+    cursor = cursor ? shiftDays(cursor, by) : inShown ? today : new Date(shown.getFullYear(), shown.getMonth(), 1);
+    month = shiftMonths(cursor, 0);
+    renderCalendar();
+  }
+
+  function pickDay(value) {
+    if (!day || !value) return;
+    replaceToken(day, `${day.field}:${value}`);
+  }
+
+  // ---- what the caret is inside, and which picker that opens ---------------
+
+  /**
+   * The UNFINISHED `since:`/`until:` token the caret sits in, or null.
+   *
+   * Read from the text every time, exactly as [pendingMention] is and for the
+   * same reason: the box being shut is not the same thing as the token being
+   * done, and `since:2026-08-` left behind by a blur is still waiting.
+   */
+  function pendingDate() {
+    const d = dateAt(readValue(), caretIndex());
+    return d && !d.complete ? d : null;
+  }
+
+  /**
+   * Re-read the token under the caret and put the right picker under it.
+   *
+   * The date half goes first because it is the cheap one — no network, no
+   * debounce — and because only one of the two can match: a caret is inside one
+   * token, and `from|to` and `since|until` are different prefixes. Whichever
+   * does not match has to be shut, or stepping from `since:` straight into a
+   * `from:` would leave a calendar over a people search.
+   */
+  function updateToken() {
+    const next = pendingDate();
+    if (next) { showCalendar(next); return; }
+    if (day) closeList();
+    updateMention();
+  }
 
   el.addEventListener("input", (e) => {
     const text = readValue();
@@ -461,7 +724,7 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     // typing a whole class of scripts. Nothing can finish a token during a
     // composition anyway — an npub is 63 bech32 characters.
     else if (!e.isComposing) { const at = caretIndex(); if (structureChanged(text, at)) render(text, at); }
-    updateMention();
+    updateToken();
     onEdit && onEdit();
   });
 
@@ -475,14 +738,14 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     // A paste is not somebody midway through typing a word, so a pasted tag
     // pills immediately: `typingAt` null draws every token it finds.
     replaceRange(from, to, text, from + text.length, null);
-    updateMention();
+    updateToken();
     onEdit && onEdit();
   }
   el.addEventListener("paste", (e) => insertPlain(e, (e.clipboardData || window.clipboardData).getData("text/plain")));
   el.addEventListener("drop", (e) => insertPlain(e, e.dataTransfer && e.dataTransfer.getData("text/plain"), dropIndex(e)));
 
   /**
-   * A caret MOVE finishes a hashtag without editing anything.
+   * A caret MOVE finishes a hashtag or a date without editing anything.
    *
    * `#nos|` is text while the caret is in it and a pill the moment the caret
    * leaves — so clicking away, arrowing past it or tabbing out has to re-read
@@ -490,7 +753,7 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
    * Nothing happens unless the drawing would actually change, so this stays a
    * comparison of two short lists on a keyup, not a render.
    */
-  function syncTags(typingAt = caretIndex()) {
+  function syncPills(typingAt = caretIndex()) {
     const text = readValue();
     if (text && structureChanged(text, typingAt)) render(text, typingAt, typingAt);
   }
@@ -498,30 +761,38 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
   // A caret MOVE can enter or leave a token without editing anything. Arrows
   // that the picker is using are excluded — they move the highlight, not the
   // caret, and re-reading here would reset it on every press.
-  el.addEventListener("click", () => { updateMention(); syncTags(); });
+  el.addEventListener("click", () => { updateToken(); syncPills(); });
   // Coming BACK to a half-written token has to pick up where it left off. Blur
   // shut the picker, and without this the only way to see it again was to type
   // another character — so tabbing away and back, or leaving the window and
   // returning, stranded `from:al` with no way to finish it but by hand.
-  el.addEventListener("focus", () => { updateMention(); syncTags(); });
+  el.addEventListener("focus", () => { updateToken(); syncPills(); });
   el.addEventListener("keyup", (e) => {
-    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") { updateMention(); syncTags(); }
+    if (e.key === "ArrowLeft" || e.key === "ArrowRight" || e.key === "Home" || e.key === "End") { updateToken(); syncPills(); }
   });
   el.addEventListener("blur", () => {
     // Nobody is typing a word in a field they have left: every tag pills, and
     // the caret is not placed at all — restoring one into an unfocused field
     // would scroll it back into view for no reader.
-    syncTags(null);
+    syncPills(null);
     // A click ON the picker must land before the picker disappears; mousedown
     // there has already fired by the time blur does, so the delay only has to
     // outlast the same tick.
     setTimeout(() => { if (!list.contains(document.activeElement)) closeList(); }, 120);
   });
 
+  // preventDefault throughout: the caret in the field is what a pick splices
+  // into, and a mousedown in here would move it out of the token first. The
+  // month arrows need it for a second reason — they are not a pick at all, and
+  // a field that lost focus to a `‹` would close the calendar being paged.
   list.addEventListener("mousedown", (e) => {
+    const step = e.target.closest(".cal-step");
+    if (step) { e.preventDefault(); stepMonth(Number(step.dataset.step)); return; }
+    const cell = e.target.closest(".cal-day, .cal-pick");
+    if (cell) { e.preventDefault(); pickDay(cell.dataset.day); return; }
     const row = e.target.closest(".popup-item");
     if (!row) return;
-    e.preventDefault();   // keep the caret, which pick() is about to splice into
+    e.preventDefault();
     pick(hits[Number(row.dataset.i)]);
   });
 
@@ -556,33 +827,53 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
 
   return {
     /**
-     * Is a from:/to: token being built right now?
+     * Is a `from:`/`to:`/`since:`/`until:` token being built right now?
      *
-     * The open list OR an unfinished token under the caret — the second half
-     * matters because the list closes on blur and on Escape while the token
+     * An open picker OR an unfinished token under the caret — the second half
+     * matters because the box closes on blur and on Escape while the token
      * stays half-written, and app.js uses this to decide whether the results
      * popup may open. Answering "no" in that window is how a stale result
      * list ended up over `from:al`.
      */
-    get mentioning() { return listOpen() || !!pendingMention(); },
+    get picking() { return listOpen() || !!pendingMention() || !!pendingDate(); },
     /**
-     * Is the picker LIST itself on screen? Narrower than `mentioning`, and the
-     * difference matters to exactly one caller: while the list is up it owns
-     * the field's aria-expanded / aria-controls / aria-activedescendant, and
-     * closePopup() must not lower them under it.
+     * Is a picker itself on screen? Narrower than `picking`, and the difference
+     * matters to exactly one caller: while one is up it owns the field's
+     * aria-expanded / aria-controls / aria-activedescendant, and closePopup()
+     * must not lower them under it.
      */
     get pickerOpen() { return listOpen(); },
     /**
-     * The keys the picker owns while it is open, consumed here so app.js's
-     * own handler can return. Called BY app.js rather than racing it in the
+     * The keys a picker owns while it is open, consumed here so app.js's own
+     * handler can return. Called BY app.js rather than racing it in the
      * capture phase: which of two listeners on one element runs first is
      * registration order, and that is not a thing to depend on.
+     *
+     * The calendar takes the same four keys and reads them as a grid rather
+     * than a list — sideways is a day, up and down are a week, which is what
+     * the shape on screen promises. Two more are its own: Page keys are how a
+     * reader gets to last March without forty presses.
      */
     handleKey(e) {
       if (!listOpen()) return false;
+      if (e.key === "Escape") { e.preventDefault(); closeList(); return true; }
+      if (day) {
+        const by = { ArrowLeft: -1, ArrowRight: 1, ArrowUp: -7, ArrowDown: 7 }[e.key];
+        if (by) { e.preventDefault(); moveDay(by); return true; }
+        if (e.key === "PageUp" || e.key === "PageDown") {
+          e.preventDefault();
+          stepMonth(e.key === "PageUp" ? -1 : 1);
+          return true;
+        }
+        // Enter on nothing highlighted stays the page's Enter, exactly as it
+        // does over the people list: the reader typed a partial date and hit
+        // Enter, which is a search for what is in the box, not a pick of
+        // whatever day the grid happens to be showing.
+        if ((e.key === "Enter" || e.key === "Tab") && cursor) { e.preventDefault(); pickDay(ymd(cursor)); return true; }
+        return false;
+      }
       if (e.key === "ArrowDown") { e.preventDefault(); move(1); return true; }
       if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return true; }
-      if (e.key === "Escape") { e.preventDefault(); closeList(); return true; }
       if (e.key === "Enter" || e.key === "Tab") {
         // Enter with nothing highlighted stays the page's Enter — the picker
         // is a suggestion over the text, not a gate in front of it.
