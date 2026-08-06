@@ -5,15 +5,21 @@
 //     from:npub1…   the author       -> a NIP-01 `authors` filter
 //     to:npub1…     who they named   -> a NIP-01 `#p` filter
 //
+// …two narrow it to a stretch of time:
+//
+//     since:2026-08-06   written that day or after   -> a NIP-01 `since`
+//     until:2026-08-06   written that day or before  -> a NIP-01 `until`
+//
 // …and one mark narrows it to a subject:
 //
 //     #hashtag      the topic        -> a NIP-01 `#t` filter, plus the NIP-22
 //                                       comments written ON that topic
 //
 // All of them are NIP-01 filter fields, not NIP-50 extensions — the store never
-// sees the prefixes at all. That is deliberate: `authors`, `#p` and `#t` are
-// indexed filters every relay implements, so narrowing this way costs nothing
-// and composes with the trust ranking rather than competing with it.
+// sees the prefixes at all. That is deliberate: `authors`, `#p`, `#t`, `since`
+// and `until` are indexed filters every relay implements, so narrowing this way
+// costs nothing and composes with the trust ranking rather than competing with
+// it.
 //
 // Pure functions over a string, with no DOM and no relay: the field renderer
 // (searchfield.js) and the query builder (app.js) must agree exactly about
@@ -30,15 +36,38 @@ import { pubkeyParam } from "./nip19.js";
 // stays punctuation.
 const NPUB = "npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}";
 
-// The lead group anchors the token to a word start, so a `to:` inside a url
-// is not a filter. `i` because npubs get pasted out of clients that upcase
-// them; pubkeyParam lowercases before decoding.
-const TOKEN = new RegExp(`(^|\\s)((?:from|to):)?(${NPUB})(?![a-z0-9])`, "gi");
+// A calendar day, as the ISO spelling the date picker writes and the one a
+// person types by hand. Only this shape: `06/08/2026` is the sixth of August
+// to half the world and the eighth of June to the other half, and a search box
+// is the last place to guess which reader is in front of it.
+const YMD = "\\d{4}-\\d{2}-\\d{2}";
+
+// Every token in one scan, because they interleave and their order in the
+// string is what the field measures its caret against — two passes would have
+// to be merged back together in position order anyway.
+//
+// The lead group anchors a token to a word start, so a `to:` inside a url is
+// not a filter. `i` because npubs get pasted out of clients that upcase them
+// (pubkeyParam lowercases before decoding), and because `Since:` at the start
+// of a sentence-cased field is still the prefix.
+//
+// A date ends on anything that is not a word character or a hyphen, so
+// `until:2026-08-06.` ends at the `6` while `2026-08-06-07` is not a date at
+// all — a half-typed range must not silently filter for its first half.
+const TOKEN = new RegExp(
+  `(?<lead>^|\\s)(?:` +
+    `(?<who>(?:from|to):)?(?<key>${NPUB})(?![a-z0-9])` +
+    `|(?<when>(?:since|until):)(?<day>${YMD})(?![\\w-])` +
+    `)`,
+  "gi",
+);
 const WHOLE = new RegExp(`^${NPUB}$`, "i");
 
-// The same two prefixes while they are still being TYPED: everything after the
-// colon up to the caret, which is what the author picker searches for.
+// The prefixes while they are still being TYPED: everything after the colon up
+// to the caret, which is what the author picker searches for and what tells
+// the calendar which month to open on.
 const PARTIAL = /(^|\s)(from|to):(\S*)$/i;
+const PARTIAL_DAY = /(^|\s)(since|until):(\S*)$/i;
 
 // A hashtag: a `#` that starts a word, then the characters a `t` tag actually
 // holds. Three decisions, each one paid for:
@@ -72,6 +101,46 @@ const ORPHAN = new RegExp(`(^|\\s)[^${WORD}${EMOJI}#"-]+(?=\\s|$)`, "gu");
 
 /** The leftover words, with the punctuation a lifted token stranded removed. */
 const tidyTerms = (s) => s.replace(ORPHAN, "$1").replace(/\s+/g, " ").trim();
+
+const pad = (n, w = 2) => String(n).padStart(w, "0");
+
+/** A Date as the `YYYY-MM-DD` this language writes, in the reader's timezone. */
+export const ymd = (d) => `${pad(d.getFullYear(), 4)}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+
+/**
+ * `YYYY-MM-DD` as the unix second that bound means, or null if it is not a day.
+ *
+ * A DAY, not an instant, and the two ends of one are not symmetric:
+ *
+ *   - `since` is 00:00:00 and `until` is 23:59:59, both of the named day.
+ *     NIP-01's `until` is INCLUSIVE, so an `until` that stopped at midnight
+ *     would exclude the whole of the day it names — `since:X until:X` would be
+ *     one second wide instead of one day, which is not what anybody means by
+ *     "between the 6th and the 6th".
+ *   - The reader's timezone, not UTC. The date came off a calendar they read;
+ *     "the 6th" is their 6th. A UTC reading shifts the window by up to a day,
+ *     most visibly for whoever types today's date in the evening east of
+ *     Greenwich and gets back nothing they wrote today.
+ *
+ * The round-trip check is what rejects `2026-02-31` and `2026-13-01`: the Date
+ * constructor ROLLS those over — to 3 March, to January 2027 — rather than
+ * failing, so without it a date nobody typed would become a filter. It also
+ * catches the two-digit-year rule, under which `0026-01-01` is 1926.
+ */
+export function dayBound(day, field) {
+  const m = /^(\d{4})-(\d{2})-(\d{2})$/.exec(String(day ?? ""));
+  if (!m) return null;
+  const [y, mo, d] = m.slice(1).map(Number);
+  const at = new Date(y, mo - 1, d);
+  if (at.getFullYear() !== y || at.getMonth() !== mo - 1 || at.getDate() !== d) return null;
+  if (field !== "until") return Math.floor(at.getTime() / 1000);
+  // The last second of the day, as the second BEFORE the next midnight rather
+  // than this one plus 86,399. Twice a year a local day is 23 or 25 hours long,
+  // and the arithmetic version lands an hour inside the neighbouring day on
+  // both of them — the one day of the year a "since today until today" search
+  // would quietly reach into tomorrow.
+  return Math.floor(new Date(y, mo - 1, d + 1).getTime() / 1000) - 1;
+}
 
 /**
  * Every spelling of `tag` worth asking a tag filter for, best first.
@@ -131,22 +200,26 @@ function tagSegments(chunk, out) {
  * The typed string as a list of segments: plain text, and the tokens in it.
  *
  *   { type: "text", text }
- *   { type: "key", raw, field: "from" | "to" | null, pubkey }
- *   { type: "tag", raw, tag }
+ *   { type: "key",  raw, field: "from" | "to" | null, pubkey }
+ *   { type: "date", raw, field: "since" | "until", at }
+ *   { type: "tag",  raw, tag }
  *
  * `raw` is the token exactly as typed, so a renderer can put it back verbatim
  * and a caret measured in characters stays measured in characters. For a tag,
  * `tag` is the normalized value the filters ask for — `#Nostr` draws as typed
  * and is asked for as `nostr`, which is exactly the split a `from:npub1…` chip
- * already makes between what it shows and what it means.
+ * already makes between what it shows and what it means. A date makes the same
+ * split the other way round: `at` is the unix second, and the pill draws the
+ * day in the reader's own spelling.
  *
- * An npub whose CHECKSUM fails stays text. A corrupted identifier must not
- * become a chip naming a plausible stranger — the same rule nip19.js's decoder
- * states for entity pages, applied one layer up.
+ * An npub whose CHECKSUM fails stays text, and so does a date that is not a
+ * day — `since:2026-02-31`. A corrupted value must not become a chip claiming
+ * to filter for something nobody asked for: the rule nip19.js's decoder states
+ * for entity pages, applied one layer up and to both kinds of token.
  *
- * Hashtags are only ever found in the TEXT between the person tokens: a `#`
- * cannot occur inside an npub — bech32 has no such character — so scanning the
- * keys for one would be looking where it cannot be.
+ * Hashtags are only ever found in the TEXT between the other tokens: a `#`
+ * cannot occur inside an npub — bech32 has no such character — nor inside a
+ * date, so scanning them for one would be looking where it cannot be.
  */
 export function tokenize(text) {
   const s = String(text ?? "");
@@ -154,24 +227,33 @@ export function tokenize(text) {
   let at = 0;
   TOKEN.lastIndex = 0;
   for (let m; (m = TOKEN.exec(s)); ) {
-    const start = m.index + m[1].length;
-    const pubkey = pubkeyParam(m[3]);
-    if (!pubkey) continue;
+    const g = m.groups;
+    const start = m.index + g.lead.length;
+    const raw = s.slice(start, TOKEN.lastIndex);
+    let seg;
+    if (g.key) {
+      const pubkey = pubkeyParam(g.key);
+      if (!pubkey) continue;
+      seg = { type: "key", raw, field: g.who ? g.who.slice(0, -1).toLowerCase() : null, pubkey };
+    } else {
+      const field = g.when.slice(0, -1).toLowerCase();
+      const bound = dayBound(g.day, field);
+      if (bound == null) continue;
+      seg = { type: "date", raw, field, at: bound };
+    }
     if (start > at) tagSegments(s.slice(at, start), out);
-    out.push({
-      type: "key",
-      raw: s.slice(start, TOKEN.lastIndex),
-      field: m[2] ? m[2].slice(0, -1).toLowerCase() : null,
-      pubkey,
-    });
+    out.push(seg);
     at = TOKEN.lastIndex;
   }
   if (at < s.length) tagSegments(s.slice(at), out);
   return out;
 }
 
+/** The token types that pill only once the caret has left them. */
+const SETTLES = new Set(["tag", "date"]);
+
 /**
- * The segments to DRAW: [tokenize]'s, minus the tag the caret is inside.
+ * The segments to DRAW: [tokenize]'s, minus the tag or date the caret is inside.
  *
  * A hashtag becomes a token one character in — `#n` is already a tag — so
  * drawing every tag would re-render the field on EVERY keystroke of one,
@@ -179,10 +261,14 @@ export function tokenize(text) {
  * browser over the caret, the undo stack and IME composition, and an npub
  * only ever crosses that line once, at its 63rd character.
  *
- * So a tag under the caret stays text, and pills the moment the caret leaves
- * it. That is the same rule the people picker follows — a token being built
- * is not yet a token — and it means the pill's appearance is the field
- * saying "this one is finished, and it is a filter now".
+ * A date is worse than a tag, not better: `since:2026-08-06` is a whole token
+ * at the `6`, and one more digit takes it back to text again — so a field that
+ * pilled on sight would flicker a pill in and out inside one typed year.
+ *
+ * So both stay text under the caret and pill the moment it leaves. That is the
+ * same rule the people picker follows — a token being built is not yet a token
+ * — and it means the pill's appearance is the field saying "this one is
+ * finished, and it is a filter now".
  *
  * `typingAt` null draws everything: a paste, a URL restore or a blur is not
  * somebody midway through typing a word.
@@ -194,7 +280,7 @@ export function drawable(text, typingAt) {
   return segs.map((seg) => {
     const start = at;
     at += seg.type === "text" ? seg.text.length : seg.raw.length;
-    if (seg.type !== "tag" || typingAt <= start || typingAt > at) return seg;
+    if (!SETTLES.has(seg.type) || typingAt <= start || typingAt > at) return seg;
     return { type: "text", text: seg.raw };
   });
 }
@@ -202,7 +288,7 @@ export function drawable(text, typingAt) {
 /**
  * What the relay is actually asked, from what the person typed:
  *
- *   { terms, authors, mentions, hashtags }
+ *   { terms, authors, mentions, hashtags, since, until }
  *
  * `terms` is what is left for NIP-50 — the from:/to: tokens are lifted out
  * entirely, because leaving them in would search the full-text index for the
@@ -216,6 +302,14 @@ export function drawable(text, typingAt) {
  * every note that tagged the topic properly, and matches the ones that merely
  * spelled it out.
  *
+ * `since` and `until` are unix seconds or null, and leave the words for the
+ * plainest reason of the lot: a date is not a thing to full-text search for.
+ * Two of the same prefix keep the NARROWER bound — the later `since`, the
+ * earlier `until`. Unlike the author and tag lists there is no OR to fall back
+ * on, one filter carries one of each; and every token in this box narrows the
+ * search, so the narrower bound is the reading that keeps that promise. It is
+ * also the same answer whichever order the two were typed in.
+ *
  * A BARE npub keeps its existing meaning and stays a term. It renders as a
  * face in the field like any other key, but rendering is not semantics: this
  * page has never guessed whether a pasted key means "by them" or "about
@@ -225,17 +319,24 @@ export function parseQuery(text) {
   const authors = [];
   const mentions = [];
   const hashtags = [];
+  let since = null;
+  let until = null;
   let terms = "";
   for (const seg of tokenize(text)) {
     if (seg.type === "text") { terms += seg.text; continue; }
     // `#Nostr` asks for `nostr`: the segment already carries both, so the field
     // and the filters cannot disagree about which is which.
     if (seg.type === "tag") { if (!hashtags.includes(seg.tag)) hashtags.push(seg.tag); continue; }
+    if (seg.type === "date") {
+      if (seg.field === "since") since = since == null ? seg.at : Math.max(since, seg.at);
+      else until = until == null ? seg.at : Math.min(until, seg.at);
+      continue;
+    }
     const into = seg.field === "from" ? authors : seg.field === "to" ? mentions : null;
     if (!into) { terms += seg.raw; continue; }
     if (!into.includes(seg.pubkey)) into.push(seg.pubkey);
   }
-  return { terms: tidyTerms(terms), authors, mentions, hashtags };
+  return { terms: tidyTerms(terms), authors, mentions, hashtags, since, until };
 }
 
 // A NIP-22 comment (kind 1111) says what it is about in `I` — the thread's
@@ -291,6 +392,8 @@ const sideLimit = (limit) => Math.max(4, Math.round(limit / 4));
  * `authors` and `#p` — which are indexed on every relay and compose with the
  * ranking rather than competing with it, whereas leaving them in `search` would
  * have the full-text index hunting for the literal string "from:npub1…".
+ * `since:`/`until:` become the NIP-01 fields of the same names, one window over
+ * `created_at` however many filters the rest of the query turns into.
  *
  * `#hashtag` becomes THREE questions, because Nostr writes a topic down three
  * ways and none of them is a superset of the others:
@@ -332,6 +435,11 @@ export function buildFilters(text, { kinds = null, limit, searchString = (t) => 
   if (kinds) base.kinds = kinds;
   if (q.authors.length) base.authors = q.authors;
   if (q.mentions.length) base["#p"] = q.mentions;
+  // On `base`, so the window rides every filter of a hashtag union for the same
+  // reason the person filters do: `since:2026-01-01 #nostr` narrowed only the
+  // `t` half would return this week's comments beside last year's notes.
+  if (q.since != null) base.since = q.since;
+  if (q.until != null) base.until = q.until;
   if (!q.hashtags.length) return [{ ...base, limit }];
 
   const side = sideLimit(limit);
@@ -347,31 +455,43 @@ export function buildFilters(text, { kinds = null, limit, searchString = (t) => 
 }
 
 /**
- * The `from:`/`to:` token the caret is currently inside, or null.
+ * A prefixed token the caret is currently inside, or null.
  *
  *   { field, partial, start, end, complete }
  *
  * `start`/`end` are character offsets into `text`, so a pick can splice the
- * finished token straight back in. `complete` means the partial already
- * decodes to a pubkey — the token is finished, so there is nothing left to
- * pick and the picker must get out of the way.
+ * finished token straight back in. `complete` means the partial already reads
+ * as a value — the token is finished, so there is nothing left to pick and the
+ * picker must get out of the way.
  *
- * A caret in the MIDDLE of a word is not a mention: `after` must be empty or
- * whitespace, or editing the middle of an unrelated sentence would pop a
- * people list over it.
+ * A caret in the MIDDLE of a word is not a token being built: what follows must
+ * be empty or whitespace, or editing the middle of an unrelated sentence would
+ * pop a picker over it.
  */
-export function mentionAt(text, caret) {
+function partialAt(text, caret, re, finished) {
   const s = String(text ?? "");
   const end = Math.max(0, Math.min(Number(caret) || 0, s.length));
   const rest = s.slice(end);
   if (rest && !/^\s/.test(rest)) return null;
-  const m = PARTIAL.exec(s.slice(0, end));
+  const m = re.exec(s.slice(0, end));
   if (!m) return null;
-  return {
-    field: m[2].toLowerCase(),
-    partial: m[3],
-    start: m.index + m[1].length,
-    end,
-    complete: isKey(m[3]),
-  };
+  const field = m[2].toLowerCase();
+  return { field, partial: m[3], start: m.index + m[1].length, end, complete: finished(m[3], field) };
 }
+
+/** The `from:`/`to:` token the caret is inside — what the people picker asks. */
+export const mentionAt = (text, caret) => partialAt(text, caret, PARTIAL, isKey);
+
+/**
+ * The `since:`/`until:` token the caret is inside — what the calendar opens on.
+ *
+ * The same shape as [mentionAt] and for the same reason: the two pickers share
+ * one box and one set of arrow keys, so whichever is up has to be able to say
+ * exactly which characters it will replace when something is picked.
+ *
+ * A partial that is already a day is COMPLETE — the calendar closes, the same
+ * way the people list does over a finished npub. `since:2026-02-3` keeps it
+ * open, and so does `since:2026-02-31`, because a day that does not exist is
+ * not a day and the reader has more typing to do.
+ */
+export const dateAt = (text, caret) => partialAt(text, caret, PARTIAL_DAY, (v, f) => dayBound(v, f) != null);

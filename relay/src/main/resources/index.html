@@ -83,6 +83,16 @@
   arrow keys. On submit the tokens leave the NIP-50 search entirely and become
   the NIP-01 filter fields they are, `authors` and `#p`.
 
+  `since:2026-08-06` and `until:2026-08-06` narrow it to a stretch of time, and
+  typing either prefix opens a CALENDAR in the same box the people picker uses
+  — never both, because one caret is inside one token. They become the NIP-01
+  `since` and `until`, a window over `created_at` that rides every filter the
+  rest of the query turns into. The token is ISO on purpose (`06/08/2026` is
+  two different days depending on who is reading) and the pill respells it the
+  reader's way; `since` is 00:00 of its day and `until` is 23:59 of its own, in
+  the reader's timezone, because NIP-01's `until` is inclusive and a window from
+  a day to itself has to be a day wide.
+
   A `#hashtag` draws as a pill in the same field, for a different reason: it is
   already the word it means, so nothing is being hidden — the pill is the box
   saying that word left the search string and became a tag filter. Quieter than
@@ -175,6 +185,7 @@
 <link rel="modulepreload" href="/web/entity.js" />
 <link rel="modulepreload" href="/web/searchfield.js" />
 <link rel="modulepreload" href="/web/shared/avatar.js" />
+<link rel="modulepreload" href="/web/shared/calendar.js" />
 <link rel="modulepreload" href="/web/shared/conn.js" />
 <link rel="modulepreload" href="/web/shared/format.js" />
 <link rel="modulepreload" href="/web/shared/kinds.js" />
@@ -567,6 +578,70 @@
     overflow: hidden; text-overflow: ellipsis;
     user-select: none;
   }
+
+  /* ---- a date, inside the text field --------------------------------------
+     An outline, like a hashtag and unlike a person: `since:2026-08-06` is
+     readable, so the pill is not standing in for it. What the pill DOES do is
+     respell it — the token is ISO because `06/08/2026` names two different days
+     to two readers, and the pill is whichever of the two this reader writes. */
+  .datepill {
+    display: inline-flex; align-items: baseline; gap: .4em;
+    vertical-align: middle;
+    padding: .1em .6em;
+    border-radius: 999px;
+    border: 1px solid var(--accent-soft);
+    color: var(--accent);
+    font-size: .86em; font-weight: 600;
+    white-space: nowrap;
+    user-select: none;
+  }
+  .datepill b { font-weight: 700; opacity: .65; }
+
+  /* ---- the calendar `since:` and `until:` open ----------------------------
+     Inside the same popup box the people picker uses — they are never open
+     together, because one caret is inside one token. Sized in px rather than
+     em: unlike the pills this is not inside the field, so it does not have to
+     shrink with it in the sticky toolbar. */
+  .cal { padding: 10px 12px 12px; }
+  .cal-nav { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+  .cal-month { font-weight: 600; font-size: 13px; }
+  .cal-step {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    border-radius: 8px; width: 27px; height: 27px; padding: 0;
+    font: inherit; font-size: 15px; line-height: 1; cursor: pointer;
+  }
+  .cal-step:hover { border-color: var(--accent); color: var(--accent); }
+  .cal-grid { display: grid; grid-template-columns: repeat(7, 1fr); gap: 2px; }
+  .cal-dow {
+    text-align: center; padding: 5px 0;
+    font-size: 10.5px; text-transform: uppercase; letter-spacing: .06em; color: var(--faint);
+  }
+  .cal-day {
+    border: 0; background: none; color: var(--fg);
+    padding: 6px 0; border-radius: 8px;
+    font: inherit; font-size: 12.5px; font-variant-numeric: tabular-nums;
+    cursor: pointer;
+  }
+  .cal-day:hover { background: var(--surface-2); }
+  /* Today is a ring, the keyboard's day is filled: one is a landmark that is
+     always there, the other is a choice about to be made, and a reader has to
+     be able to see both at once on the day they coincide. */
+  .cal-day.today { box-shadow: inset 0 0 0 1px var(--accent-soft); color: var(--accent); }
+  .cal-day.active { background: var(--accent-soft); color: var(--accent); font-weight: 650; }
+  /* A future bound is legal — an event carries the created_at its author
+     claimed — so a day ahead of today is muted, not disabled and not faint:
+     half a month is usually in the future, and at --faint that half of the
+     grid reads as switched off. */
+  .cal-day.ahead { color: var(--muted); }
+  .cal-quick {
+    display: flex; flex-wrap: wrap; gap: 6px;
+    margin-top: 10px; padding-top: 10px; border-top: 1px solid var(--border);
+  }
+  .cal-pick {
+    border: 1px solid var(--border); background: var(--surface); color: var(--muted);
+    border-radius: 999px; padding: 3px 10px; font: inherit; font-size: 12px; cursor: pointer;
+  }
+  .cal-pick:hover { border-color: var(--accent); color: var(--accent); }
 
   .list-right { display: inline-flex; align-items: baseline; gap: 12px; }
   .export {
@@ -991,8 +1066,10 @@
       <button id="clear" type="button" aria-label="Clear search" title="Clear">&times;</button>
       <button id="me" type="button" class="me" aria-label="Sign in"></button>
       <div id="popup" class="popup" role="listbox" aria-label="Quick results"></div>
-      <!-- The other popup: who `from:`/`to:` means. Never open at the same
-           time as the one above — they share this box and the arrow keys. -->
+      <!-- The other popup: who `from:`/`to:` means, or which day `since:`/
+           `until:` does. Never open at the same time as the one above, or as
+           each other — they share this box and the arrow keys, and the label
+           says which of the two is currently in it. -->
       <div id="mentions" class="popup" role="listbox" aria-label="People"></div>
     </div>
 
