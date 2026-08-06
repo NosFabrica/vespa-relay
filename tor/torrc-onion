@@ -1,0 +1,40 @@
+# A server-only Tor: it publishes ONE onion service in front of the relay's
+# websocket port and dials nothing on anyone's behalf. The client proxy the
+# router uses to REACH .onion upstreams is the other torrc in this directory,
+# running as its own container — one Tor with both jobs would mean a
+# `restart sync` (a router.conf edit, meant to be cheap) also drops the hidden
+# service's descriptor and takes the relay off Tor for minutes.
+
+# No SOCKS port at all. This instance answers; nothing here needs to dial out
+# on behalf of a local program, and a proxy nobody asked for is a proxy someone
+# else can use.
+SocksPort 0
+
+# Explicit because this instance starts as root and drops to `User tor` below:
+# tor's default DataDirectory is $HOME/.tor, and $HOME here is root's, so the
+# default sends it to /root/.tor and it refuses to start ("Couldn't access
+# private data directory"). Its own volume, alongside the service key.
+DataDirectory /var/lib/tor
+
+# The service's identity. The .onion address IS the public half of the key
+# under this directory, so the directory is a named volume: lose it and the
+# relay comes back at a DIFFERENT address, with every client that had the old
+# one pointed at nothing. Tor creates and owns it on first start; the entrypoint
+# hands it over before dropping privileges.
+HiddenServiceDir /var/lib/tor/onion
+
+# The forwarded port is NOT here: tor parses `HiddenServicePort` once, at
+# startup, and refuses a hostname target outright ("Unparseable address in
+# hidden service port configuration") — it wants an IP. The compose service
+# name is all we have, so the entrypoint resolves it and appends the line to a
+# generated copy of this file. See publish-onion.sh, which also notices when
+# that IP changes under a re-created relay.
+
+# Started as root so the entrypoint can hand the volumes over, then dropped
+# here — the daemon itself never runs as root.
+User tor
+
+# To the container log, where `docker compose logs tor-onion` finds it. The
+# address is echoed by the entrypoint once Tor mints it; "Bootstrapped 100%"
+# is what says the descriptor can be published at all.
+Log notice stdout

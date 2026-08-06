@@ -69,6 +69,88 @@ codebase forbids.
 | `RELAY_STATE_FILE` | path where NIP-86 ban/allow lists are persisted (survives restart) | unset ⇒ in-memory |
 | `RELAY_HTTP_URL` | the http(s) url NIP-98 auth events must be tagged with | derived from `RELAY_URL` |
 
+## Serving over Tor (a `.onion` endpoint)
+
+The relay can answer on a Tor hidden service as well as on its clearnet url —
+the same port, the same store, the same web UI, reachable by any client that
+speaks Tor and without a certificate or a public IP. Under docker compose it is
+one profile:
+
+```bash
+docker compose --profile onion up -d
+docker compose logs tor-onion | grep 'reachable at'
+# onion: this relay is reachable at ws://<56 chars>.onion (published to /var/lib/onion/hostname)
+```
+
+That address is the public half of a key the `tor-onion` container generates on
+first start and keeps in its own volume: it survives restarts and rebuilds, and
+`docker compose down -v` — which removes volumes — is what changes it. Nothing
+publishes the address for you; hand it to clients yourself.
+
+The `tor-onion` service is separate from the `tor` service the router dials
+`.onion` **upstreams** through (`--profile sync`, `SYNC_TOR_SOCKS`). They are
+wanted independently: a serving-only relay can have a front door on Tor without
+mirroring anything, and a mirror can reach hidden services without being one.
+
+Clients dial `ws://<address>.onion` — port 80, no TLS. Tor's own encryption is
+what TLS would have provided, and no CA issues certificates for `.onion` names,
+so there is no `wss://` to offer.
+
+| var | meaning | default |
+|---|---|---|
+| `RELAY_ONION_HOSTNAME_FILE` | file the hidden service's container writes its hostname into. The relay reads it to accept NIP-42 from Tor clients, who sign the address they dialled and have never heard of `RELAY_URL` — without it those clients still read and publish, but every AUTH fails and their search silently loses its web-of-trust lens. Looked at on demand rather than once at boot, so an address minted after the relay started is picked up within a second of the next connection; absent is normal and says nothing | compose: `/var/lib/onion/hostname`; bare: unset |
+| `RELAY_ONION_ADVERTISE` | whether the clearnet endpoint names the hidden service in `Onion-Location` (below). `false` keeps an onion unlisted — the relay still authenticates clients that dial it, it just stops handing out the address, which clients cache for a day | `true` |
+| `RELAY_ONION_URL` | the same thing declared by hand, for a hidden service run outside this compose file. Malformed ⇒ startup fails, rather than costing Tor clients their ranking lens for a reason nothing reports | unset |
+
+Both may be set; the relay answers to `RELAY_URL` and to every address either
+one names. The published file is re-read when its timestamp moves, at most once
+a second however much traffic asks, so an address minted after boot — or
+rotated by a new key — lands within a second rather than at the next restart.
+
+### Telling clients the address exists
+
+The clearnet endpoint advertises the hidden service on **every** response —
+`Onion-Location: http://<address>.onion/`, the Tor Project's header. Nothing to
+configure: it appears as soon as the relay knows its own address and names
+whatever the `tor-onion` container published.
+
+Two things read it. Tor Browser turns it into the ".onion available" button on
+the web UI. Amethyst records it from any response its OkHttp client sees —
+including the **WebSocket 101 handshake**, which is often the only request a
+Nostr client makes — and, when the user has Tor enabled, dials the `.onion`
+instead, so the connection never crosses an exit node. The value is an `http`
+url rather than `ws` because both parse it with an http url parser; a `ws://`
+value parses to null in okhttp and the advertisement would vanish silently.
+
+A request that already arrived over the hidden service is not told about it,
+and `RELAY_ONION_ADVERTISE=false` turns the whole advertisement off for an
+onion meant to stay unlisted.
+
+Clients that move a connection this way keep signing NIP-42 with the address
+they were configured with — Amethyst rewrites the host at the transport layer,
+not the relay's identity — so the relay has to accept the clearnet url on a
+connection that arrived through the onion, and the reverse. It accepts any
+address it answers at, whichever door the connection came through.
+
+One thing does **not** follow the relay onto Tor: the NIP-86 management API.
+Its NIP-98 tokens are bound to the single `RELAY_HTTP_URL`, deliberately — the
+alternative is trusting the `Host` header, which would let anyone bind a signed
+admin token to any url. An admin working over Tor either administers through
+the clearnet url or points `RELAY_HTTP_URL` at the `.onion`; it is one or the
+other, and a token minted for the wrong one is refused rather than ignored.
+
+### Tuning the hidden service
+
+Anything the bundled torrc does not carry goes in a mounted file, appended to
+the generated config: copy [`tor/onion.extra.conf.example`](../tor/onion.extra.conf.example),
+uncomment what you want, and point `ONION_EXTRA_LOCAL` at your copy. It
+documents the three worth knowing about — **single-hop mode**, which roughly
+halves latency by dropping the service's own three hops to one (and is a
+one-way door on that key: tor refuses to launch a service from a directory
+whose anonymity mode changed), tor's **proof-of-work defenses** against
+introduction flooding, and the **number of introduction points**. A file of
+only comments is skipped, so the default mount changes nothing.
+
 ## Router (the sync process)
 
 These configure `vespa-sync`, the mirror's own process — under docker compose,

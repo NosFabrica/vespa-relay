@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.relay.config.denyPubkeysFromEnv
 import com.nosfabrica.vespa.relay.config.expirationSweepSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.negentropySettingsFromEnv
 import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
+import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
@@ -66,6 +67,7 @@ import kotlinx.coroutines.launch
  *   RELAY_PORT    the port to listen on (default 7777)
  *   RELAY_URL     this relay's own ws url (REQUIRED)
  *   RELAY_NSEC    the relay's identity key (NIP-11 self, NIP-42, NIP-66)
+ *   RELAY_ONION_* the .onion this relay also answers at, for NIP-42
  */
 fun main() {
     val env = System.getenv()
@@ -118,6 +120,14 @@ fun main() {
     if (identity != null) {
         System.err.println("relay identity: ${identity.pubKey.take(12)}… (NIP-11 self, NIP-42 auth, NIP-66 monitor)")
     }
+
+    // A hidden service in front of this same port answers at a second address,
+    // and a Tor client signs the one it dialled. Read here so a malformed
+    // RELAY_ONION_URL stops the boot rather than costing Tor clients their
+    // ranking lens quietly. The eager alternates() call is for the log: an
+    // address Tor has already published is named at boot, and one that
+    // appears later is named by the connection that first finds it.
+    val addresses = relayAddressesFromEnv(env).also { it.alternates() }
 
     val limits = relayLimitsFromEnv(env)
     val negentropy = negentropySettingsFromEnv(env)
@@ -178,6 +188,7 @@ fun main() {
             store = store,
             servingPressure = servingPressure,
             relayUrl = relayUrl,
+            alsoServedAt = addresses::alternates,
             listener = listener,
             limits = limits,
             negentropySettings = negentropy,
@@ -246,6 +257,9 @@ fun main() {
         limits = limits,
         admin = admin,
         pressure = servingPressure,
+        // "This relay is also a hidden service" — read by Tor Browser and by
+        // clients that move the connection inside the network when Tor is on.
+        onionLocation = addresses::onionLocation,
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = resourceText("/index.html"),
         statsPage = resourceText("/kind_stats.html"),

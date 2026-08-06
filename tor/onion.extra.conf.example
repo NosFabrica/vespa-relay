@@ -1,0 +1,47 @@
+# Extra torrc lines for the relay's hidden service — the `tor-onion` service,
+# behind `docker compose --profile onion`.
+#
+# Copy this file, uncomment what you want, and point ONION_EXTRA_LOCAL at your
+# copy; compose mounts it at /etc/tor/onion.extra.conf and the entrypoint
+# appends it to the generated torrc, last, so it wins on any option tor takes
+# once. A file of nothing but comments (this one, as shipped) is skipped
+# entirely — the log line only appears when something was actually appended.
+#
+# Everything here is off by default on purpose: each one trades something an
+# operator has to decide about, and two of the three cannot be undone on the
+# same key.
+
+# --- Latency -----------------------------------------------------------------
+# A hidden service's default path is six hops — three the client builds, three
+# the service builds. Single-hop mode drops the service's three to one, which
+# roughly halves round-trip latency, and for a relay whose clearnet address is
+# already published there is little left to hide: the trade is that the
+# rendezvous point learns this server's IP.
+#
+# ONE WAY, on a given key. Tor's own warning: "If the
+# HiddenServiceNonAnonymousMode option is changed, Tor will refuse to launch
+# hidden services from the same directories". Turning it back off means a new
+# key, which means a new .onion address and every client that had the old one
+# pointed at nothing. Decide before you publish the address, not after.
+#
+# Both lines are required together — tor refuses to start with SingleHopMode
+# alone ("does not provide any server anonymity"). The bundled torrc's
+# `SocksPort 0` is the other precondition, and it is already there.
+#
+# HiddenServiceNonAnonymousMode 1
+# HiddenServiceSingleHopMode 1
+
+# --- Introduction flooding ---------------------------------------------------
+# Tor's onion-service proof-of-work defense (0.4.8+). Idle until the service is
+# under an introduction flood, at which point clients that support it pay a
+# small computed cost and get served ahead of the flood. Clients that do not
+# support it still connect normally when there is no attack.
+#
+# HiddenServicePoWDefensesEnabled 1
+
+# --- Reachability ------------------------------------------------------------
+# How many introduction points the service maintains (default 3, max 20). More
+# costs a little upkeep and survives more of them going away at once; worth
+# raising for a busy relay, pointless for a quiet one.
+#
+# HiddenServiceNumIntroductionPoints 5
