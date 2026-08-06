@@ -139,6 +139,75 @@ router: backfill 4/12 upstream(s), 12,340/29,110 events (42%), 851/s, ETA ~0:03:
 router: backfill complete — 41,880 events from 12 upstream(s) in 0:04:52; live tail now streaming
 ```
 
+## Paging a negentropy sync
+
+A NEG-OPEN is all-or-nothing at both ends of the wire, and neither end can see
+the other's size. Ours: a reconcile needs our matching ids up front, so a
+whole-filter pass materialises the stream's entire id set — 14.9M ids for one
+stream here, and enough that concurrent streams are serialised behind a
+semaphore to keep them from summing on the heap. Theirs: past
+`max_sync_events` a relay refuses the whole thing rather than answering part of
+it.
+
+So above `SYNC_NEG_PAGE_TARGET` local events (default 100,000) a static
+backfill stops asking for the whole filter and sweeps it in windows instead.
+The boundary is a `created_at` timestamp — the only axis a Nostr filter can be
+cut on — but it is **decided by a count**, and two independent things may cut a
+window:
+
+1. **We are dense.** Our own count for the window, taken from the store before
+   any round trip is spent. This is what bounds our snapshot: a window that
+   passes the check is at most `target` ids, so peak memory becomes a property
+   of the target rather than of the corpus.
+2. **They are dense.** The relay refuses, or had to split the window itself to
+   answer. Either way the window size shrinks — to their stated cap when they
+   send one (strfry puts the number in the rejection: `blocked: query matches
+   too many records (2431002 > 1000000)`), by halving when they do not. A clean
+   window grows it back, so a sweep settles on the largest size that peer will
+   take instead of a size an operator guessed.
+
+Neither source knows anything about the other and the same work stack absorbs
+both, which is what makes this automatic rather than tuned. What the relay
+learns is remembered per peer in `SYNC_SWEEP_STATE_FILE`, so the next sync
+starts at the right size instead of rediscovering it.
+
+The split with quartz is worth knowing when reading the logs: quartz owns
+everything inside one reconcile — sub-splitting a window it cannot answer,
+bounding what it reads from the store, and draining a second no window size
+will fit — and reports the peer's stated cap back. This router owns what has to
+survive that call: the cursor, the learned size, and the order windows are
+walked in.
+
+Three details that matter more than they look:
+
+- **The filter shape stays byte-identical across windows** — only `since`/`until`
+  vary. strfry matches a declared negentropy tree by comparing canonicalised
+  filter JSON, so a stable shape rides their index for the whole sweep while
+  sub-partitioning on any other axis drops the window onto the capped snapshot
+  path. That is why splitting a window by kind is an escape hatch below and not
+  a strategy.
+- **Bisection bottoms out at one second.** `created_at` has second granularity
+  and is author-controlled, so a single second holding more than a relay's cap
+  is reachable and cannot be cut further on the time axis. When one shows up it
+  is handed back mid-reconcile: the sweep retries that second per kind
+  (accepting the tree miss) and pages it over plain REQ if that still does not
+  fit, while everything around it in the same window goes on reconciling. Rare,
+  and it costs that second's guarantee rather than the window's.
+- **Windows are walked newest-first and checkpointed one at a time.** The
+  finished region is therefore always one contiguous slice growing downward
+  from the top of the range, which is what lets the cursor be a single
+  timestamp. A killed sweep resumes at the window it reached; without that, a
+  crash at 80% of a multi-day sync costs the whole sync.
+
+The top of the range is deliberately left alone: a sweep stops
+`SYNC_NEG_PAGE_SLACK_SECONDS` below `now`, because a window still receiving
+events cannot be checkpointed honestly. The live subscription covers the head.
+
+Set `SYNC_NEG_PAGE_TARGET=0` to turn all of this off and go back to one shared
+snapshot per stream — which is also what happens on any stream small enough
+that a single window would hold it, where sharing one id walk across the group
+is strictly cheaper.
+
 ## Dynamic relay lists: the outbox, and everything else that names a relay
 
 A stream can leave `urls` out entirely and take its relay list from the store
