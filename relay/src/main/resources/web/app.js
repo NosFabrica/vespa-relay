@@ -562,6 +562,7 @@ function applyViewingAs(pubkey, name) {
   $obsCurrent.textContent = pubkey ? (name || shortNpub(pubkey)) : "me";
   $obsList.innerHTML = "";
   $obsFilter.value = "";
+  renderAdvCount();
 }
 
 function setViewingAs(pubkey, name) {
@@ -890,8 +891,56 @@ $obsReset.addEventListener("click", () => setViewingAs(null, null));
 document.addEventListener("click", (e) => {
   if (!e.target.closest("#obsbox")) $obsList.innerHTML = "";
 });
-$obsFilter.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") { $obsList.innerHTML = ""; $obsFilter.blur(); }
+
+// ---- the advanced filters -------------------------------------------------
+//
+// The disclosure itself is the <details> element's job — open/closed, the
+// keyboard, the ARIA. What is left for this file is the part hiding a control
+// costs: the badge, which is the only thing on screen that admits a filter is
+// on while the panel is shut. tools/webtest/filters.test.mjs holds the three
+// of them — panel control, badge fact, URL param — in step.
+const $adv = document.getElementById("adv");
+const $advBtn = document.getElementById("advbtn");
+const $advCount = document.getElementById("advcount");
+// The idle tooltip, read off the markup rather than repeated here: two copies
+// of one sentence is one sentence that gets edited and one that does not.
+const advIdleTitle = $advBtn.title;
+
+/** What is on, on the button: a count while shut, and the list as its title. */
+function renderAdvCount() {
+  const on = [];
+  if ($sort.value) on.push("Sort: " + $sort.options[$sort.selectedIndex].text);
+  if (viewingAs) on.push("Ranking as: " + $obsCurrent.textContent);
+  if ($spam.checked) on.push("Spam included");
+  $advCount.textContent = String(on.length);
+  $advCount.hidden = !on.length;
+  $advBtn.title = on.length ? on.join(" · ") : advIdleTitle;
+}
+
+// Dismissed like the popups it sits next to, and for the same reason: it is
+// absolutely positioned over the page. The observer list inside it is a click
+// within #adv, so picking somebody does not close the panel out from under the
+// list they picked from.
+document.addEventListener("click", (e) => {
+  if ($adv.open && !e.target.closest("#adv")) $adv.open = false;
+});
+
+// ONE Escape handler for the two things stacked here, asked in order rather
+// than each stopping the key on its way past: a stopPropagation() in the
+// observer field would swallow Escape for every other listener on the page,
+// including ones written later that have no idea this field exists.
+document.addEventListener("keydown", (e) => {
+  if (e.key !== "Escape") return;
+  // Innermost first — the list is drawn INSIDE the panel, so closing the panel
+  // on the same press would dismiss two things for one key.
+  if ($obsList.childElementCount) { $obsList.innerHTML = ""; $obsFilter.blur(); return; }
+  if (!$adv.open) return;
+  // Focus returns to the button only if it was inside the panel: Escape is also
+  // how the search popup closes, and that press must not yank the caret out of
+  // the field somebody is typing in.
+  const inside = $adv.contains(document.activeElement);
+  $adv.open = false;
+  if (inside) $advBtn.focus();
 });
 
 // ---- the field renders its own contents ----------------------------------
@@ -1279,10 +1328,11 @@ function runFeed() {
   closePopup();
   field.close();
   $results.hidden = false;
-  // `feed` hides the bar. The sort, the spam toggle and the lens are NIP-50
-  // extensions that ride on a search string, and this view sends none — so
-  // they are taken off the screen rather than left there doing nothing, which
-  // is the one thing this codebase is most consistent about refusing to ship.
+  // `feed` hides the bar — both halves of it. The three behind Filters are
+  // NIP-50 extensions riding on a search string this view does not send, and
+  // the kind chips narrow a `kinds` filter the feed sets for itself. Taken off
+  // the screen rather than left there doing nothing, which is the one thing
+  // this codebase is most consistent about refusing to ship.
   document.body.classList.add("searching", "feed");
   run(s, () => fetchFeed(PAGE_CARDS), REPLACE, renderFeed);
 }
@@ -1467,8 +1517,8 @@ $chips.addEventListener("click", (e) => {
   rerun();
 });
 
-$sort.addEventListener("change", rerun);
-$spam.addEventListener("change", rerun);
+$sort.addEventListener("change", () => { renderAdvCount(); rerun(); });
+$spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 
 // ---- the URL is the search ------------------------------------------------
 //
@@ -1571,7 +1621,10 @@ function applyUrl() {
       renderChips();
       $sort.value = "";
       $spam.checked = false;
-      applyViewingAs(null, null);
+      applyViewingAs(null, null); // last of the three on purpose: it recounts the
+                                  // badge, and the two above fire no `change` of
+                                  // their own — the same order the search branch
+                                  // below relies on
       $q.value = "";
       document.body.classList.remove("has-query");
       runFeed();
@@ -1584,13 +1637,14 @@ function applyUrl() {
     if ($sort.selectedIndex < 0) $sort.value = ""; // an unknown sort is no sort
     $spam.checked = p.get("spam") === "1";
     const as = pubkeyParam(p.get("as"));
-    applyViewingAs(as, null);
+    applyViewingAs(as, null); // recounts the badge for all three: setting the
+                              // two above fires no `change` of its own
     if (as) {
       // The URL carries the key; the label wants the name. Filled in after
       // the fact so the restore itself never waits on a profile lookup.
       enrichProfiles([as]).then(() => {
         const nm = displayName(profiles.get(as));
-        if (nm && viewingAs === as) $obsCurrent.textContent = nm;
+        if (nm && viewingAs === as) { $obsCurrent.textContent = nm; renderAdvCount(); }
       }).catch(() => {});
     }
     $q.value = text;

@@ -35,7 +35,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip01Core.relay.server.backend.SessionBackend
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.IRelayPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.KindAllowDenyPolicy
-import com.vitorpamplona.quartz.nip01Core.relay.server.policies.OptionalAuthPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PolicyStack
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PubkeyAllowDenyPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.RejectFutureEventsPolicy
@@ -63,6 +62,11 @@ import kotlin.coroutines.CoroutineContext
  * the engine and also drive the NIP-11 `limitation` block, so the doc and the
  * enforcement can never disagree.
  *
+ * NIP-42 runs through [MultiAddressAuthPolicy] rather than quartz's
+ * OptionalAuthPolicy, so a client that dialled the relay's hidden service — and
+ * therefore signs that address — authenticates as itself instead of quietly
+ * losing its ranking lens.
+ *
  * [close] shuts down the connections and the ingest writer, but not the store —
  * the composition root owns that — and the sync process holds its own handle
  * to the same cluster, so "done with the store" is per-process anyway.
@@ -70,6 +74,11 @@ import kotlin.coroutines.CoroutineContext
 class NostrRelayServer(
     store: IEventStore,
     relayUrl: NormalizedRelayUrl,
+    // Other addresses the same relay answers at — a `.onion` in front of this
+    // port. Asked per connection, not once at boot: Tor generates the hidden
+    // service's address the first time it starts, which can be after this
+    // process is already serving.
+    alsoServedAt: () -> Set<NormalizedRelayUrl> = { emptySet() },
     parentContext: CoroutineContext = SupervisorJob(),
     listener: RelayServerListener = RelayServerListener.None,
     limits: RelayLimits? = defaultRelayLimits(),
@@ -101,7 +110,7 @@ class NostrRelayServer(
                     if (kindAllow.isNotEmpty() || kindDeny.isNotEmpty()) KindAllowDenyPolicy(kindAllow, kindDeny) else null,
                     if (rejectFutureSeconds > 0) RejectFutureEventsPolicy(rejectFutureSeconds) else null,
                     VerifyAuthOnlyPolicy,
-                    OptionalAuthPolicy(relayUrl),
+                    MultiAddressAuthPolicy(relayUrl, alsoServedAt()),
                 ).toTypedArray<IRelayPolicy>(),
             )
         },

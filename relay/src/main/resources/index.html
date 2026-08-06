@@ -36,6 +36,15 @@
   NIP-50 `observer:`. It replaced a login toggle sitting beside a lens picker,
   a pair whose off-plus-somebody combination was legal and did nothing at all.
 
+  That control, the sort menu and include:spam are the page's THREE advanced
+  filters, and they live behind one "Filters" disclosure. Spread across the bar
+  they were permanent furniture for the few searches that use them, and on a
+  phone they took a line of their own and pushed the kind chips — the control
+  most searches do use — into a sideways scroll. What the disclosure owes back
+  is the count on its button: these three change what comes back, `?sort=…`,
+  `?spam=1` and `?as=…` mean a shared link can arrive with all three already
+  set, and a filter nothing on screen admits to is worse than a crowded bar.
+
   Every kind the index holds renders as a card: profiles, notes, articles,
   media, code, live events, listings, the reactive kinds (reactions, reposts,
   zaps, comments), the whole NIP-51 list and set table, this relay's own
@@ -69,7 +78,7 @@
   which no <input> can do: an input's value is characters and nothing else.
   Typing `from:` or `to:` opens a people picker (web/searchfield.js) over the
   authenticated socket, so the candidates are ranked by YOUR web of trust; the
-  "ranking as" list beside it is deliberately anonymous for the opposite
+  "ranking as" list under Filters is deliberately anonymous for the opposite
   reason. The two popups are never open together — they share this box and the
   arrow keys. On submit the tokens leave the NIP-50 search entirely and become
   the NIP-01 filter fields they are, `authors` and `#p`.
@@ -120,8 +129,10 @@
   the network. That is also why the preview is drawn only for a signed-in
   reader — signed out the identical read is the whole mirror in time order,
   which the hero should not be handing anybody unasked — and why the feed hides
-  the bar: three controls that this ask cannot carry do not belong on a page
-  that cannot use them.
+  the bar entirely: the three filters above cannot ride on an ask with no search
+  string, and the kind chips have nothing to narrow when the kinds are the
+  view's own. A control that cannot act on the page it is drawn on is what the
+  Filters badge exists to prevent, one level up.
 
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
@@ -240,6 +251,7 @@
   }
 
   * { box-sizing: border-box; }
+  html { overflow-y: scroll; }
   html, body {
     margin: 0;
     padding: 0;
@@ -391,34 +403,85 @@
     cursor: pointer;
   }
   .select:hover { border-color: var(--border-strong); color: var(--fg); }
-  .toggle { display: inline-flex; align-items: center; gap: 8px; cursor: pointer; user-select: none; }
+
+  /* ---- the advanced filters, behind a disclosure --------------------------
+     Why they are hidden at all is in the header; what is here is how a
+     <summary> is made to look like the buttons beside it, and the badge that
+     pays for the hiding. */
+  .adv { position: relative; flex-shrink: 0; }
+  .adv-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    list-style: none;               /* the disclosure triangle, Firefox */
+    border: 1px solid var(--border);
+    background: var(--surface);
+    color: var(--muted);
+    border-radius: 8px;
+    padding: 5px 10px;
+    font-size: 12.5px;
+    white-space: nowrap;
+    cursor: pointer;
+    user-select: none;
+  }
+  .adv-btn::-webkit-details-marker { display: none; }   /* …and Safari's */
+  .adv-btn:hover { border-color: var(--border-strong); color: var(--fg); }
+  .adv-btn:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+  .adv[open] .adv-btn { border-color: var(--border-strong); color: var(--fg); }
+  .adv-icon { width: 14px; height: 14px; flex-shrink: 0; }
+  .adv-count {
+    display: inline-flex; align-items: center; justify-content: center;
+    min-width: 16px; height: 16px; padding: 0 4px; border-radius: 999px;
+    background: var(--accent); color: var(--accent-fg);
+    font-size: 10.5px; font-weight: 600;
+  }
+  /* `hidden` alone loses to the display above on specificity, and the button
+     would carry a permanent "0" — asserted by tools/webtest/filters.test.mjs */
+  .adv-count[hidden] { display: none; }
+  .adv-panel {
+    position: absolute; top: calc(100% + 6px); right: 0; z-index: 45;
+    width: min(17rem, calc(100vw - 32px));   /* 32px = .page's gutter, both sides */
+    display: flex; flex-direction: column; gap: 11px; padding: 12px;
+    background: var(--surface); border: 1px solid var(--border);
+    border-radius: var(--radius); box-shadow: var(--shadow-md);
+  }
+  .adv-row { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+  /* the two rows that ARE labels: the whole row is the control's hit area */
+  label.adv-row { cursor: pointer; }
+  .adv-stack { flex-direction: column; align-items: stretch; gap: 6px; }
+  .adv-label { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
+
   /* "as" — whose web of trust ranks the results */
-  .obsbox { position: relative; display: inline-flex; align-items: center; gap: 6px; }
-  .obslabel { color: var(--muted); font-size: 13px; }
-  .obscurrent { font-size: 13px; font-weight: 600; max-width: 12rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .obsbox { position: relative; display: flex; align-items: center; gap: 6px; }
+  .obscurrent { font-size: 13px; font-weight: 600; max-width: 7rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .obsbox.active .obscurrent { color: var(--accent); }
   .obsbox.anon .obsfilter { opacity: .5; pointer-events: none; }
-  .obsfilter { width: 8rem; font: inherit; font-size: 13px; padding: 3px 7px; border-radius: 8px;
+  .obsfilter { flex: 1 1 auto; min-width: 0; font: inherit; font-size: 13px; padding: 3px 7px; border-radius: 8px;
                border: 1px solid var(--border); background: var(--surface); color: var(--fg); }
   .obsfilter:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
   .obsreset { display: none; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
   .obsbox.active .obsreset { display: inline; }
+  /* Capped, because the rows are `nowrap` and a display name is whatever its
+     owner typed: one 60-character name sized this list at 438px and gave the
+     whole PAGE a horizontal scrollbar on a phone. The name ellipsises; the row
+     still carries the npub as its title. */
   .obslist { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; margin: 0; padding: 4px;
-             list-style: none; min-width: 16rem; max-height: 15rem; overflow-y: auto;
+             list-style: none; min-width: 16rem; max-width: min(20rem, calc(100vw - 32px));
+             max-height: 15rem; overflow-y: auto;
              background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
              box-shadow: var(--shadow-md); }
   .obslist:empty { display: none; }
-  .obslist li { padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .obslist li { padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 13px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .obslist li:hover { background: var(--surface-2); }
   .obslist li.muted { color: var(--faint); cursor: default; }
-  .toggle input { position: absolute; opacity: 0; width: 0; height: 0; }
+  /* the include-spam switch — the page's only one, so it is scoped to #spam
+     rather than carrying a class the markup uses once */
+  .switch { display: inline-flex; align-items: center; }
+  #spam { position: absolute; opacity: 0; width: 0; height: 0; }
   .toggle-track { position: relative; width: 32px; height: 19px; border-radius: 10px; background: var(--border-strong); flex-shrink: 0; transition: background .15s; }
   .toggle-thumb { position: absolute; top: 2px; left: 2px; width: 15px; height: 15px; border-radius: 50%; background: #fff; box-shadow: 0 1px 2px rgba(0,0,0,.3); transition: transform .15s; }
-  .toggle input:checked + .toggle-track { background: var(--accent); }
-  .toggle input:checked + .toggle-track .toggle-thumb { transform: translateX(13px); }
-  .toggle input:focus-visible + .toggle-track { box-shadow: 0 0 0 3px var(--ring); }
-  .toggle-text { font-size: 12.5px; color: var(--muted); white-space: nowrap; }
-  .toggle input:checked ~ .toggle-text { color: var(--fg); }
+  #spam:checked + .toggle-track { background: var(--accent); }
+  #spam:checked + .toggle-track .toggle-thumb { transform: translateX(13px); }
+  #spam:focus-visible + .toggle-track { box-shadow: 0 0 0 3px var(--ring); }
 
   .whoami { font-size: 12px; color: var(--muted); margin-top: 8px; width: 100%; }
   .whoami:empty { display: none; }
@@ -712,9 +775,11 @@
   body.has-feed-preview .hero { padding-top: 7vh; }
   .feed-more { font-size: 12.5px; font-weight: 550; color: var(--accent); text-decoration: none; white-space: nowrap; }
   .feed-more:hover { text-decoration: underline; }
-  /* The feed view sends no NIP-50 search string at all, so the sort menu, the
-     spam toggle and the "ranking as" lens have nothing to ride on. They are
-     hidden rather than left on screen doing nothing. */
+  /* The feed sends no NIP-50 search string at all, so the three controls behind
+     Filters have nothing to ride on — and its kinds are its own, so the chips
+     have nothing to narrow either. The whole row goes rather than sit there
+     doing nothing; hiding the disclosure alone would leave a bar of height with
+     one chip row in it that means nothing here. */
   body.feed .bar { display: none; }
 
   .empty, .error { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13.5px; }
@@ -860,8 +925,9 @@
 
   @media (max-width: 620px) {
     .hero { padding-top: 7vh; }
-    .bar-right { width: 100%; gap: 10px 12px; }
-    .select { padding-left: 8px; }
+    /* the chip row takes the whole line here, so the button wraps below it at
+       the LEFT — and a panel hung off its right edge would run off screen */
+    .adv-panel { left: 0; right: auto; }
     /* the chip row scrolls sideways; fade its right edge so that reads as more */
     .chips {
       flex: 1 1 100%; margin: 0 -16px; padding: 0 16px 1px;
@@ -920,26 +986,48 @@
     <div class="bar">
       <div id="chips" class="chips" role="tablist" aria-label="Filter by kind"></div>
       <div class="bar-right">
-        <select id="sort" class="select" title="NIP-50 sort: extension" aria-label="Sort">
-          <option value="">Best match</option>
-          <option value="rank">Most trusted</option>
-          <option value="rank:asc">Least trusted</option>
-          <option value="followers">Followers</option>
-          <option value="text">Text only</option>
-        </select>
-        <span id="obsbox" class="obsbox" title="Whose web of trust ranks these results. You are signed in automatically; pick somebody else to read the index through their eyes. Only pubkeys with a kind 10040 can rank anything.">
-          <span class="obslabel">ranking as</span>
-          <span id="obscurrent" class="obscurrent">me</span>
-          <input id="obsfilter" class="obsfilter" placeholder="view as…" autocomplete="off" />
-          <button id="obsreset" class="obsreset" type="button" title="Back to your own web of trust">×</button>
-          <ul id="obslist" class="obslist"></ul>
-        </span>
-        <label class="toggle" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
-          <input id="spam" type="checkbox" />
-          <span class="toggle-track"><span class="toggle-thumb"></span></span>
-          <span class="toggle-text">include spam</span>
-        </label>
-
+        <!-- A <details>, not a button and a div: the open/closed state, the
+             keyboard and the ARIA are the element's, and this page does not
+             pay for them twice. app.js only dismisses it and keeps the count
+             on the button. -->
+        <details id="adv" class="adv">
+          <summary id="advbtn" class="adv-btn" title="Sorting, whose web of trust ranks the page, and whether unranked results are shown">
+            <svg class="adv-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" aria-hidden="true">
+              <path d="M4 7h10M18 7h2M4 17h4M12 17h8" stroke-linecap="round" />
+              <circle cx="16" cy="7" r="2" /><circle cx="10" cy="17" r="2" />
+            </svg>
+            <span>Filters</span>
+            <span id="advcount" class="adv-count" hidden></span>
+          </summary>
+          <div class="adv-panel">
+            <label class="adv-row">
+              <span class="adv-label">Sort</span>
+              <select id="sort" class="select" title="NIP-50 sort: extension">
+                <option value="">Best match</option>
+                <option value="rank">Most trusted</option>
+                <option value="rank:asc">Least trusted</option>
+                <option value="followers">Followers</option>
+                <option value="text">Text only</option>
+              </select>
+            </label>
+            <div class="adv-row adv-stack" title="Whose web of trust ranks these results. You are signed in automatically; pick somebody else to read the index through their eyes. Only pubkeys with a kind 10040 can rank anything.">
+              <span class="adv-label">Ranking as</span>
+              <span id="obsbox" class="obsbox">
+                <span id="obscurrent" class="obscurrent">me</span>
+                <input id="obsfilter" class="obsfilter" placeholder="view as…" autocomplete="off" aria-label="View as somebody else" />
+                <button id="obsreset" class="obsreset" type="button" title="Back to your own web of trust">×</button>
+                <ul id="obslist" class="obslist"></ul>
+              </span>
+            </div>
+            <label class="adv-row" title="NIP-50 include:spam — also show results your web of trust doesn't rank">
+              <span class="adv-label">Include spam</span>
+              <span class="switch">
+                <input id="spam" type="checkbox" />
+                <span class="toggle-track"><span class="toggle-thumb"></span></span>
+              </span>
+            </label>
+          </div>
+        </details>
       </div>
     </div>
 

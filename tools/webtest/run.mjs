@@ -19,6 +19,9 @@
 //                  rule, plus that same complete-read rule on its cache
 // preload.test.mjs the modulepreload hints match the real import graph, so the
 //                  module waterfall stays one round trip instead of three
+// filters.test.mjs every control in the filters panel is counted on the button
+//                  and carried in the URL — the two things that keep a filter
+//                  behind a closed disclosure from being an invisible one
 // avatar.test.mjs  the one face renderer — and every size it names has a row
 //                  in index.html's --av table, since a missing row draws a
 //                  face at no size at all and throws nothing
@@ -26,7 +29,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "feed.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "avatar.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "feed.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "avatar.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

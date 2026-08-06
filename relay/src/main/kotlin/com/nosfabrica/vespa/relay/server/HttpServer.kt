@@ -30,6 +30,7 @@ import io.ktor.http.HttpStatusCode
 import io.ktor.http.defaultForFilePath
 import io.ktor.http.withCharset
 import io.ktor.server.application.ApplicationCall
+import io.ktor.server.application.createApplicationPlugin
 import io.ktor.server.application.install
 import io.ktor.server.engine.EmbeddedServer
 import io.ktor.server.engine.embeddedServer
@@ -40,6 +41,7 @@ import io.ktor.server.plugins.compression.deflate
 import io.ktor.server.plugins.compression.gzip
 import io.ktor.server.plugins.compression.minimumSize
 import io.ktor.server.plugins.cors.routing.CORS
+import io.ktor.server.request.host
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
@@ -101,6 +103,10 @@ fun serveRelay(
     // the sync process — its own container since the split — can keep yielding
     // ingest to slow reads the way it did when both shared a JVM.
     pressure: ServingPressure? = null,
+    // The `http://…onion/` this relay also answers at, advertised on every
+    // clearnet response. Asked per response rather than captured once: the
+    // hidden service can come up after this server did.
+    onionLocation: () -> String? = { null },
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     // NIP-86 advertises itself in supported_nips only when an admin is wired.
@@ -127,6 +133,27 @@ fun serveRelay(
             deflate { priority = 0.9 }
             minimumSize(1024)
         }
+
+        // Onion-Location: the standard way a clearnet service says "I am also
+        // this hidden service". Tor Browser turns it into the ".onion
+        // available" button; Amethyst records it from ANY response — the
+        // NIP-11 fetch, the websocket handshake, a media request — and, when
+        // the user has Tor on, dials the .onion instead, so the connection
+        // never crosses an exit node. That is why this is a response hook and
+        // not a route: the clients that most need it may only ever open the
+        // websocket, and a header on `GET /` alone would never reach them.
+        //
+        // The header only makes sense pointing INTO the network from outside
+        // it, so a request that already arrived on the .onion does not get one
+        // — the alternative is caching a host as its own alternative.
+        install(
+            createApplicationPlugin("OnionLocation") {
+                onCall { call ->
+                    if (call.request.host().endsWith(".onion", ignoreCase = true)) return@onCall
+                    onionLocation()?.let { call.response.header(ONION_LOCATION, it) }
+                }
+            },
+        )
 
         install(CORS) {
             // NIP-11 is consumed by browser clients and NIP-86 by browser
@@ -199,6 +226,13 @@ fun serveRelay(
         }
     }.start(wait = wait)
 }
+
+/**
+ * The header a clearnet service uses to name its hidden service. Spelled as
+ * the Tor Project spells it; HTTP header names are case-insensitive, and
+ * Amethyst's `response.header("Onion-Location")` is too.
+ */
+private const val ONION_LOCATION = "Onion-Location"
 
 /** The NIP-11 content type, parsed once — every client fetches this on connect. */
 private val NOSTR_JSON = ContentType.parse("application/nostr+json")
