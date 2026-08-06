@@ -16,7 +16,7 @@ import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { FEED_KINDS, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
-import { mountSearchField } from "./searchfield.js";
+import { mountSearchField, softKeyboard } from "./searchfield.js";
 
 const POPUP_LIMIT = 8;
 const FULL_LIMIT = 40;
@@ -1927,4 +1927,12 @@ if (!applyUrl()) ensureLogin().then(renderWhoami).catch(() => renderWhoami());
 // the attribute inconsistently across browsers, and the condition is the one
 // that was always meant: focus the box when the page IS the box — never on an
 // entity permalink, which has its own content to read.
-if ($results.hidden) $q.focus();
+//
+// And never where a caret arrives without a keyboard behind it. `focus()` from
+// script cannot raise a soft keyboard — mobile browsers raise one only for a
+// focus a finger caused — so on a phone this autofocus landed a blinking caret
+// in a field nothing could type into, and left it there: tapping the box did
+// nothing either, the element being focused already. softKeyboard() is that
+// distinction, and searchfield.js owns it because the field's own rules turn
+// on the same question.
+if ($results.hidden && !softKeyboard()) $q.focus();

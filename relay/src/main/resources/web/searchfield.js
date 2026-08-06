@@ -60,6 +60,25 @@ import {
 const PICKER_LIMIT = 8;
 const DEBOUNCE_MS = 150;
 
+/**
+ * Does this reader RAISE a keyboard to type, rather than already having one?
+ *
+ * The question two rules below both turn on, and app.js's autofocus with them,
+ * so it is asked once here. A caret and a keyboard are one thing on a phone
+ * and two on a desktop: a soft keyboard is raised only for a focus a finger
+ * caused — `focus()` from script cannot do it, on any mobile browser, by
+ * design — so anywhere the caret can arrive without one, a caret placed by
+ * script is a field that looks ready and cannot be typed into.
+ *
+ * `pointer: coarse` is the PRIMARY pointer, which is the right cut rather than
+ * "has a touchscreen": a laptop with a touch screen still types on the
+ * keyboard it has, and would lose its autofocus for nothing.
+ *
+ * Asked at the moment it matters, not cached at load — a tablet gains and
+ * loses a keyboard by being put in a case.
+ */
+export const softKeyboard = () => window.matchMedia("(pointer: coarse)").matches;
+
 // A line break, which this field has nowhere to put. Module constants because
 // the first of them is tested against every keystroke's beforeinput, and a
 // regex literal inside the handler builds a new RegExp on each of them.
@@ -870,6 +889,33 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
     if (t && t.closest && t.closest(".search-wrap")) return;
     el.blur();
   }, { capture: true, passive: true });
+
+  /**
+   * Leaving the page takes the keyboard with it, so the field lets the caret
+   * go too.
+   *
+   * Coming BACK is where this was felt. The page freezes with the field
+   * focused, the keyboard is gone by the time it thaws, and a caret is still
+   * blinking in a box that cannot be typed into — and tapping that box does
+   * not fix it, because the element is already focused, so there is no focus
+   * change for the browser to raise a keyboard for. The only way back in was
+   * to tap somewhere else first and then return, which is a thing no reader
+   * should have to know.
+   *
+   * Three events for one rule, because no one of them fires everywhere:
+   * pagehide is the back/forward cache freeze (conn.js closes the sockets on
+   * the same signal), visibilitychange is switching apps without a navigation,
+   * and pageshow is the belt to their braces — if the page did come back with
+   * the caret still in here, this is where it goes.
+   *
+   * Only where a keyboard has to be raised at all. On a desktop the caret and
+   * the keyboard are not the same thing, and dropping a caret because the
+   * reader looked at another tab would be taking something away for nothing.
+   */
+  const releaseOnHide = () => { if (document.activeElement === el && softKeyboard()) el.blur(); };
+  window.addEventListener("pagehide", releaseOnHide);
+  window.addEventListener("pageshow", releaseOnHide);
+  document.addEventListener("visibilitychange", releaseOnHide);
 
   document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closeList(); });
 
