@@ -60,6 +60,12 @@ import {
 const PICKER_LIMIT = 8;
 const DEBOUNCE_MS = 150;
 
+// A line break, which this field has nowhere to put. Module constants because
+// the first of them is tested against every keystroke's beforeinput, and a
+// regex literal inside the handler builds a new RegExp on each of them.
+const NEWLINE = /[\r\n]/;
+const NEWLINES = /[\r\n]+/g;
+
 export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScores }) {
   let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
@@ -707,36 +713,6 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
     onEdit && onEdit();
   });
 
-  /**
-   * The other door Enter comes through, and on a phone the only one.
-   *
-   * A soft keyboard's action key is not a key press. Gboard and the iOS
-   * keyboard report an IME edit, so the keydown that reaches the page carries
-   * `Unidentified` (keyCode 229) or does not arrive at all — `e.key ===
-   * "Enter"` never matched, app.js never got its preventDefault in, and the
-   * div did what a div does with a newline: grew a second line, which is why
-   * the box and the faces in it jumped. An <input> had no such failure mode
-   * because it has nowhere to put a line break.
-   *
-   * So the newline is caught as what it actually is here — an INPUT of a line
-   * break — and refused, whichever keyboard produced it. Refused rather than
-   * merely redirected: this field is one line by construction (`white-space:
-   * pre`, `aria-multiline="false"`), so a break has no meaning in it even when
-   * the Enter it came from is not a submit.
-   *
-   * Desktop cannot double-submit through this: there, Enter IS a keydown, and
-   * app.js's preventDefault stops the input from ever being attempted.
-   */
-  el.addEventListener("beforeinput", (e) => {
-    const t = e.inputType;
-    const newline = t === "insertLineBreak" || t === "insertParagraph"
-      || ((t === "insertText" || t === "insertCompositionText") && /[\r\n]/.test(e.data || ""));
-    if (!newline) return;
-    e.preventDefault();
-    if (takeEnter()) return;
-    onSubmit && onSubmit();
-  });
-
   // Paste and drop insert TEXT. Left to the browser they insert markup — a
   // pasted link arrives as an <a>, a pasted paragraph as a <div> — and this
   // field's value is the concatenation of its nodes.
@@ -752,6 +728,52 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
   }
   el.addEventListener("paste", (e) => insertPlain(e, (e.clipboardData || window.clipboardData).getData("text/plain")));
   el.addEventListener("drop", (e) => insertPlain(e, e.dataTransfer && e.dataTransfer.getData("text/plain"), dropIndex(e)));
+
+  /**
+   * The other door Enter comes through, and on a phone the only one.
+   *
+   * A soft keyboard's action key is not a key press. Gboard and the iOS
+   * keyboard report an IME edit, so the keydown that reaches the page carries
+   * `Unidentified` (keyCode 229) or does not arrive at all — `e.key ===
+   * "Enter"` never matched, app.js never got its preventDefault in, and the
+   * div did what a div does with a newline: grew a second line, which is why
+   * the box and the faces in it jumped. An <input> had no such failure mode
+   * because it has nowhere to put a line break.
+   *
+   * So the newline is caught here as what it actually IS — an input of a line
+   * break — whichever keyboard produced it, and refused rather than merely
+   * redirected: the field is one line by construction (`white-space: pre`,
+   * `aria-multiline="false"`), so a break has no meaning in it even when the
+   * Enter behind it is not a submit.
+   *
+   * Three things this had wrong when it was written, all of them the same
+   * mistake — treating "there is a newline in here" as "this event IS the
+   * newline":
+   *
+   *   - An IME can commit the composing word and the action key as ONE
+   *     insertion, `hello\n`. Refusing that outright dropped `hello` with the
+   *     break, which is the worst failure available: text the reader typed,
+   *     gone, with a search running to distract from it. The break is stripped
+   *     and the rest inserted, so only the newline is refused.
+   *   - insertCompositionText is deliberately absent. A pick re-renders the
+   *     field, and doing that under a live composition is exactly what the
+   *     input handler above refuses to do for the same reason.
+   *   - The regex is hoisted, because this runs on every keystroke.
+   *
+   * Desktop cannot double-submit through this: there Enter IS a keydown, and
+   * app.js's preventDefault stops the input from ever being attempted.
+   */
+  el.addEventListener("beforeinput", (e) => {
+    const t = e.inputType;
+    const typed = t === "insertText" && e.data && NEWLINE.test(e.data) ? e.data : null;
+    if (!typed && t !== "insertLineBreak" && t !== "insertParagraph") return;
+    const rest = typed ? typed.replace(NEWLINES, "") : "";
+    // insertPlain preventDefaults, splices and reports the edit; a bare
+    // newline leaves nothing to insert and is only the submit.
+    if (rest) insertPlain(e, rest); else e.preventDefault();
+    if (takeEnter()) return;
+    onSubmit && onSubmit();
+  });
 
   /**
    * A caret MOVE finishes a hashtag or a date without editing anything.
@@ -832,17 +854,22 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
    * pointerdown, because that is the moment the desktop already does it, and
    * it is ahead of the click that closeList() waits for below. Capture, so
    * nothing between the tap and the document can strand the caret by
-   * swallowing the event. Never inside .search-wrap: that box holds both
-   * pickers and the results popup, whose rows are picked with the caret still
-   * in the token they splice into — see the mousedown handler above, which
-   * preventDefaults for exactly that reason.
+   * swallowing the event. Passive, because unlike the picker's own mousedown
+   * below — which preventDefaults to keep the caret in the token a row splices
+   * into — this one never cancels anything; it is the opposite handler, and
+   * the flag says so to the browser as well as to the reader.
+   *
+   * Never inside .search-wrap: that box holds the field, both pickers and the
+   * results popup, and a row is picked with the caret still in the token.
+   * The activeElement test is first because it is the cheap one and it is
+   * false for almost every tap on the page — this runs on all of them.
    */
   document.addEventListener("pointerdown", (e) => {
     if (document.activeElement !== el) return;
     const t = e.target;
     if (t && t.closest && t.closest(".search-wrap")) return;
     el.blur();
-  }, true);
+  }, { capture: true, passive: true });
 
   document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closeList(); });
 
@@ -855,7 +882,11 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
     // value fires no input event, and it dismisses the picker because the
     // token that was being built no longer exists.
     set(v) {
-      const text = String(v ?? "");
+      // The last door a line break could come through. The keyboard's is shut
+      // on beforeinput and the clipboard's by insertPlain, but this one takes
+      // whatever `?q=` carried — and a text node holding a `\n` under
+      // `white-space: pre` is the same two-line box, arrived at from the URL.
+      const text = String(v ?? "").replace(NEWLINES, " ");
       closeList();
       // typingAt null: a URL restore or a clear is not typing, so a tag the
       // caret happens to land after still draws as the filter it already is.
