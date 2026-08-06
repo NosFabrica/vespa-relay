@@ -440,12 +440,18 @@
   .obsfilter:focus { outline: 2px solid var(--ring); outline-offset: 1px; }
   .obsreset { display: none; border: 0; background: none; color: var(--muted); cursor: pointer; font-size: 15px; line-height: 1; }
   .obsbox.active .obsreset { display: inline; }
+  /* Capped, because the rows are `nowrap` and a display name is whatever its
+     owner typed: one 60-character name sized this list at 438px and gave the
+     whole PAGE a horizontal scrollbar on a phone. The name ellipsises; the row
+     still carries the npub as its title. */
   .obslist { position: absolute; top: calc(100% + 4px); left: 0; z-index: 40; margin: 0; padding: 4px;
-             list-style: none; min-width: 16rem; max-height: 15rem; overflow-y: auto;
+             list-style: none; min-width: 16rem; max-width: min(20rem, calc(100vw - 32px));
+             max-height: 15rem; overflow-y: auto;
              background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius);
              box-shadow: var(--shadow-md); }
   .obslist:empty { display: none; }
-  .obslist li { padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 13px; white-space: nowrap; }
+  .obslist li { padding: 5px 8px; border-radius: 8px; cursor: pointer; font-size: 13px;
+                white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .obslist li:hover { background: var(--surface-2); }
   .obslist li.muted { color: var(--faint); cursor: default; }
   /* the include-spam switch — the page's only one, so it is scoped to #spam
