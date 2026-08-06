@@ -5,17 +5,25 @@ app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 quartz = "9373c0a22c"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
+# 057d52d690 = store PR #56, the coverage-guard fix: a response is judged by
+# Vespa's own isDegraded(), not by its `full`. The two disagree in both
+# directions — `full: false` at a rounded 100% with no reason named was refused
+# on every read (this relay's empty-search feeds), and `full: true` below
+# targetActive was served silently at any coverage. Also carries #54/#55.
 #
-# NOT a commit on the store's main — main does not carry the coverage-guard fix
-# this relay needs (`claude/media-tab-search-error-0pdd81`, unmerged). Pinning
-# main reinstates the refusal that took out every empty-search feed. Re-point at
-# the merge commit once it lands, and not before.
+# The store compiles against quartz 7caf4a8a25; this relay pins 9373c0a22c and
+# FORCES it, so the store RUNS on a quartz older than it was built against. Safe
+# for this pair — the store's own catalog records that the changed files are all
+# NIP-77 negentropy client/serialization it references none of, with
+# IEventStore/SQLiteEventStore byte-identical — and verified class-by-class, not
+# taken on trust. Re-check on the next store bump: nothing in either build fails
+# when it stops being true, it just NoSuchMethodErrors in production.
 #
-# Whichever hash goes here, VERIFY it resolved rather than reading this line:
-# Gradle breaks a version conflict lexicographically, so a hash that sorts below
-# one dragged in transitively loses silently and the bump does nothing.
+# VERIFY the hash resolved rather than reading this line: Gradle breaks a version
+# conflict lexicographically, and this one sorts LOW ('0'), so anything dragging
+# the store in at an older, higher-spelling hash wins silently.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
-vespaEventStore = "e9eb69969b"
+vespaEventStore = "057d52d690"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
