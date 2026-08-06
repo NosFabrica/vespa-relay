@@ -5,7 +5,14 @@ app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 quartz = "9373c0a22c"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-vespaEventStore = "c6df127cae"
+#
+# This hash sorts BELOW the one it replaced ('9' < 'c'), so the lexicographic
+# conflict trap below bites in the direction that HIDES the bump: anything
+# dragging the store in transitively at an older, higher-spelling hash wins and
+# the pin silently does nothing. Verify with
+# `./gradlew :relay:dependencies --configuration runtimeClasspath` after a bump,
+# not by reading this line.
+vespaEventStore = "97287b9211"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
