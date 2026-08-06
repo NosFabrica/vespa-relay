@@ -72,6 +72,23 @@
   `note:` and `id:` props rows go: they existed because a card had no other
   route to itself, and read as a truncated bech32 nobody wanted.
 
+  The results are walkable from the keyboard: `j` down, `k` up, Enter opens
+  the card the cursor is on, and "/" puts the caret back in the search box.
+  That is the vocabulary mail clients, timelines and code review already
+  share, so it is the one this page speaks rather than one of its own. What it
+  has to be careful about is everything the keys already meant, and
+  web/shared/keynav.js is that half — the testable one, held by
+  tools/webtest/keynav.test.mjs. A `j` typed INTO the search box is the letter
+  j: the box is a contenteditable div, so a tag test alone eats it, which is
+  the trap "/" fell into first and the reason both shortcuts now ask one
+  function. Enter belongs to whatever has the focus ring when that thing is a
+  chip, a link or the json toggle — Tab-then-Enter is how this page was
+  operable before there was a cursor, and a cursor must not take it back. The
+  cursor itself tracks the EVENT rather than the row, because names and reply
+  parents land after the cards do and repaint them. And submitting a search
+  blurs the field, which is what makes any of it reachable — and on a phone
+  puts away a keyboard that was covering the answer.
+
   The search box is a FIELD, not an input. `from:npub1…` and `to:npub1…`
   narrow a search to a person — the author, or whoever they named — and both
   draw as that person's face and name rather than 63 characters of bech32,
@@ -188,6 +205,7 @@
 <link rel="modulepreload" href="/web/shared/calendar.js" />
 <link rel="modulepreload" href="/web/shared/conn.js" />
 <link rel="modulepreload" href="/web/shared/format.js" />
+<link rel="modulepreload" href="/web/shared/keynav.js" />
 <link rel="modulepreload" href="/web/shared/kinds.js" />
 <link rel="modulepreload" href="/web/shared/nip05.js" />
 <link rel="modulepreload" href="/web/shared/nip19.js" />
@@ -779,6 +797,12 @@
      would open, and it used to rise under the cursor to offer that. */
   .result[data-href] { cursor: pointer; }
   .result[data-href]:hover { border-color: var(--border-strong); box-shadow: var(--shadow-md); transform: translateY(-1px); }
+  /* Where j/k are. Drawn as focus is drawn a few hundred lines up — the page
+     already has one way of saying "the keyboard is here", and a second one
+     invented for this would read as a different kind of thing. It rides on
+     the same cards the lift does, since the cursor and the pointer open the
+     same page. */
+  .result.cursor { border-color: var(--border-strong); box-shadow: var(--shadow-md); outline: 2px solid var(--accent); outline-offset: 2px; }
 
   .result-header { display: flex; gap: 12px; align-items: center; margin-bottom: 8px; }
   .result-header .who { flex: 1; min-width: 0; }
