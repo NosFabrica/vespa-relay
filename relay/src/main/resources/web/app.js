@@ -1548,6 +1548,12 @@ function applyUrl() {
     // the next search typed from this page. runFeed() awaits sign-in itself,
     // hence `true`: boot does not need to kick it a second time.
     if (p.get("feed") === "1") {
+      // A hand-made `/?feed=1&q=cats&sort=rank` is a url naming two views.
+      // The feed wins — it is checked first — so the address bar is corrected
+      // to what is actually on screen rather than left describing a search
+      // that is not running. replaceState, not push: this is the same place,
+      // spelled properly, and it leaves the forward stack alone.
+      if (location.search !== "?feed=1") history.replaceState(null, "", FEED_URL);
       tab = KIND_TABS[0];
       renderChips();
       $sort.value = "";

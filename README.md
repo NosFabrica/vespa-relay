@@ -14,9 +14,9 @@ engine, because it is one — the store is
 
 - **Trust-ranked search.** Log in with NIP-42 and results are ranked by your own
   NIP-85 web of trust — relevance × how much *you* trust the author, with
-  below-floor authors dropped as spam. Anonymous searches use the operator's
-  default lens, and any client can pick a lens explicitly with
-  `observer:<pubkey>`.
+  below-floor authors dropped as spam. Anonymous reads are the whole corpus,
+  unranked: there is no house lens standing in for you. Any client can pick one
+  explicitly with `observer:<pubkey>`, since the scores are public.
 - **A relay that fills itself.** The **router** — a sibling process sharing the
   same store — mirrors events from upstream relays: strfry-style `streams` of
   live subscriptions, NIP-77 negentropy backfill where upstreams speak it,
