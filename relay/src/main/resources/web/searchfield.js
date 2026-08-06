@@ -60,7 +60,7 @@ import {
 const PICKER_LIMIT = 8;
 const DEBOUNCE_MS = 150;
 
-export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
+export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScores }) {
   let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
   let active = -1;      // which one is highlighted
@@ -673,6 +673,26 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     updateMention();
   }
 
+  /**
+   * Enter, however it arrived — true when a picker consumed it.
+   *
+   * Shared by the two doors Enter comes through, because a phone's action key
+   * is not reliably a keydown (see the beforeinput handler below) and a
+   * highlighted person or day has to be picked either way. Tab lands here too:
+   * completing the token is what Tab means over an open picker.
+   *
+   * Nothing highlighted is deliberately NOT consumed. The picker is a
+   * suggestion over the text, not a gate in front of it, so a partial date
+   * with no day chosen falls through to the page's own Enter — the search.
+   */
+  function takeEnter() {
+    if (!listOpen()) return false;
+    if (day) { if (!cursor) return false; pickDay(ymd(cursor)); return true; }
+    if (active < 0 || !hits[active]) return false;
+    pick(hits[active]);
+    return true;
+  }
+
   el.addEventListener("input", (e) => {
     const text = readValue();
     // Empty means EMPTY: the browser leaves a `<br>` behind when the last
@@ -685,6 +705,36 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     else if (!e.isComposing) { const at = caretIndex(); if (structureChanged(text, at)) render(text, at); }
     updateToken();
     onEdit && onEdit();
+  });
+
+  /**
+   * The other door Enter comes through, and on a phone the only one.
+   *
+   * A soft keyboard's action key is not a key press. Gboard and the iOS
+   * keyboard report an IME edit, so the keydown that reaches the page carries
+   * `Unidentified` (keyCode 229) or does not arrive at all — `e.key ===
+   * "Enter"` never matched, app.js never got its preventDefault in, and the
+   * div did what a div does with a newline: grew a second line, which is why
+   * the box and the faces in it jumped. An <input> had no such failure mode
+   * because it has nowhere to put a line break.
+   *
+   * So the newline is caught as what it actually is here — an INPUT of a line
+   * break — and refused, whichever keyboard produced it. Refused rather than
+   * merely redirected: this field is one line by construction (`white-space:
+   * pre`, `aria-multiline="false"`), so a break has no meaning in it even when
+   * the Enter it came from is not a submit.
+   *
+   * Desktop cannot double-submit through this: there, Enter IS a keydown, and
+   * app.js's preventDefault stops the input from ever being attempted.
+   */
+  el.addEventListener("beforeinput", (e) => {
+    const t = e.inputType;
+    const newline = t === "insertLineBreak" || t === "insertParagraph"
+      || ((t === "insertText" || t === "insertCompositionText") && /[\r\n]/.test(e.data || ""));
+    if (!newline) return;
+    e.preventDefault();
+    if (takeEnter()) return;
+    onSubmit && onSubmit();
   });
 
   // Paste and drop insert TEXT. Left to the browser they insert markup — a
@@ -871,18 +921,20 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
         // Enter on nothing highlighted stays the page's Enter, exactly as it
         // does over the people list: the reader typed a partial date and hit
         // Enter, which is a search for what is in the box, not a pick of
-        // whatever day the grid happens to be showing.
-        if ((e.key === "Enter" || e.key === "Tab") && cursor) { e.preventDefault(); pickDay(ymd(cursor)); return true; }
+        // whatever day the grid happens to be showing. takeEnter() is that
+        // rule, for both lists and for the phones that never send this key.
+        if (e.key === "Enter" || e.key === "Tab") {
+          if (!takeEnter()) return false;
+          e.preventDefault();
+          return true;
+        }
         return false;
       }
       if (e.key === "ArrowDown") { e.preventDefault(); move(1); return true; }
       if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return true; }
       if (e.key === "Enter" || e.key === "Tab") {
-        // Enter with nothing highlighted stays the page's Enter — the picker
-        // is a suggestion over the text, not a gate in front of it.
-        if (active < 0 || !hits[active]) return false;
+        if (!takeEnter()) return false;
         e.preventDefault();
-        pick(hits[active]);
         return true;
       }
       return false;
