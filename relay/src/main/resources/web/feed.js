@@ -41,7 +41,7 @@ import { replyTarget } from "./shared/parents.js";
 export const FEED_KINDS = [1, 11, 20, 21, 22, 1063, 1222, 30023, 34235, 34236];
 
 /** Cards under the hero, and cards on the page "see more" opens. */
-export const HOME_CARDS = 3;
+export const PREVIEW_CARDS = 3;
 export const PAGE_CARDS = 100;
 
 /** How far ahead of now a `created_at` may be and still be believed. */
@@ -51,11 +51,15 @@ const FUTURE_SKEW_SECS = 300;
  * How many events to ASK for, to end up with [want] after the shaping below.
  *
  * NIP-01 cannot express "a note that is not a reply" — there is no absence
- * filter — so replies come back with everything else and are dropped here.
- * Much of kind 1 is replies, so asking for exactly [want] would routinely
- * render one card where three were promised. The floor matters more than the
- * factor for the home preview: three cards asked as three, times anything, is
- * still a sample small enough to come back entirely replies.
+ * filter — so replies come back with everything else and are dropped here, and
+ * asking for exactly [want] would render one card where three were promised.
+ *
+ * The 3x is a GUESS, not a measurement: what share of this corpus's kind 1 is
+ * replies has not been counted, and the honest way to find out is the health of
+ * the preview itself — a hero that regularly draws one card or none is this
+ * number being wrong, not the relay being empty. The floor is what actually
+ * carries the preview, since three-times-three is still a sample small enough
+ * to come back entirely replies.
  */
 export const askFor = (want) => Math.max(want * 3, 24);
 

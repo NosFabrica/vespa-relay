@@ -16,7 +16,7 @@ import assert from "assert";
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
-const { FEED_KINDS, HOME_CARDS, PAGE_CARDS, askFor, pickFeed } =
+const { FEED_KINDS, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } =
   await import(new URL("../../relay/src/main/resources/web/feed.js", import.meta.url));
 const { buildFilters } =
   await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
@@ -49,7 +49,7 @@ for (const k of [0, 3, 7, 10002, 30166, 30382]) {
 // their absence. A preview that asked for exactly three cards would routinely
 // draw one, so the ask is widened — and the floor is what does the work at the
 // preview's size, not the multiplier.
-assert.ok(askFor(HOME_CARDS) >= 24, "three cards are asked for as a sample, not as three");
+assert.ok(askFor(PREVIEW_CARDS) >= 24, "three cards are asked for as a sample, not as three");
 assert.ok(askFor(PAGE_CARDS) > PAGE_CARDS, "…and a hundred are asked for as more than a hundred");
 
 // ---- the shaping ----------------------------------------------------------

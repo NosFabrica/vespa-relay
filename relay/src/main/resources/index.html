@@ -708,8 +708,8 @@
      It reuses .list-head, so the only thing new here is the room it needs and
      the link out of it — and the hero gives some of its own height back, since
      a feed nobody can see without scrolling is a feed nobody reads. */
-  .latest { padding: 26px 0 56px; }
-  body.has-latest .hero { padding-top: 7vh; }
+  .feed-preview { padding: 26px 0 56px; }
+  body.has-feed-preview .hero { padding-top: 7vh; }
   .feed-more { font-size: 12.5px; font-weight: 550; color: var(--accent); text-decoration: none; white-space: nowrap; }
   .feed-more:hover { text-decoration: underline; }
   /* The feed view sends no NIP-50 search string at all, so the sort menu, the
@@ -955,7 +955,7 @@
     page: it is on screen exactly when the results are not, and the two would
     otherwise be one container taking turns clearing the other's state.
   -->
-  <section id="latest" class="latest" hidden aria-label="Latest"></section>
+  <section id="feed-preview" class="feed-preview" hidden aria-label="Latest"></section>
   <div id="results" class="results" hidden aria-live="polite"></div>
 </main>
 
