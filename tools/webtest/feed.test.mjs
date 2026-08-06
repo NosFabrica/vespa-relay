@@ -1,13 +1,17 @@
-// The latest feed's two rules: what counts as content, and what a time-ordered
-// list has to drop before it can honestly be called "latest".
+// The latest feed's three rules: what counts as content, which of those kinds
+// a given chip asks for, and what a time-ordered list has to drop before it
+// can honestly be called "latest".
 //
-// The ASK is not tested here, because there is nothing of the feed's own in it
-// — it is the page's ordinary buildFilters() with no words and no extensions,
-// which query.test.mjs already covers. What IS the feed is the shaping, and
-// each rule below is a thing that would otherwise be on screen: a reply with
-// no thread around it, a note dated 2050 nailed to the top of the page
-// forever, or the same note twice.
+// The ASK is barely tested here, because there is almost nothing of the feed's
+// own in it — it is the page's ordinary buildFilters() with no words and no
+// extensions, which query.test.mjs already covers. The exception is `kinds`,
+// which the chips now set: that one field is the feed's, so the chip's route
+// into it is held below. The rest of what IS the feed is the shaping, and each
+// rule there is a thing that would otherwise be on screen: a reply with no
+// thread around it, a note dated 2050 nailed to the top of the page forever,
+// or the same note twice.
 import assert from "assert";
+import { readFileSync } from "node:fs";
 
 // feed.js asks shared/parents.js what a reply is, and that module's own import
 // of the relay client reads `location` at load. The same two stubs parents'
@@ -16,7 +20,7 @@ import assert from "assert";
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
-const { FEED_KINDS, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } =
+const { FEED_KINDS, feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } =
   await import(new URL("../../relay/src/main/resources/web/feed.js", import.meta.url));
 const { buildFilters } =
   await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
@@ -43,6 +47,71 @@ for (const k of [1, 20, 21, 22]) assert.ok(FEED_KINDS.includes(k), `kind ${k} is
 for (const k of [0, 3, 7, 10002, 30166, 30382]) {
   assert.ok(!FEED_KINDS.includes(k), `kind ${k} is not something anybody browses`);
 }
+
+// ---- the chip picks the kinds ----------------------------------------------
+//
+// The chips are the one part of the bar that reaches this view, because
+// `kinds` is a field of the plain read rather than an extension on a search
+// string. Three claims, and the first two are the whole reason the rule is a
+// function instead of `tab.kinds || FEED_KINDS` written at the call site.
+assert.deepStrictEqual(feedKinds(null), FEED_KINDS, `"Everything" is the content default, not every kind in the index`);
+assert.deepStrictEqual(feedKinds([]), FEED_KINDS, "an empty kinds list is not a filter for nothing");
+assert.deepStrictEqual(feedKinds([0]), [0], "a chip REPLACES the default — the newest kind 0s are the latest people");
+
+// Every chip has to move the feed, which is the whole point of this change:
+// the chips sat over the landing page's preview doing nothing. Parsed out of
+// app.js the same way cards.test.mjs parses the same table — the tabs are page
+// state, not a module, and a second copy of them here would be the thing that
+// goes stale.
+const appJs = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+const tabs = [...appJs.matchAll(/slug:\s*"([a-z]+)",\s*kinds:\s*(null|\[([^\]]*)\])/g)]
+  .map((m) => [m[1], m[3] ? m[3].split(",").map((s) => Number(s.trim())).filter(Number.isFinite) : null]);
+assert.ok(tabs.length >= 2, "the tab table parsed");
+const everything = tabs.filter(([, kinds]) => kinds === null);
+assert.strictEqual(everything.length, 1, "exactly one chip means 'no chip'");
+for (const [slug, kinds] of tabs) {
+  const asked = feedKinds(kinds);
+  assert.ok(asked.length, `chip "${slug}" asks for no kinds at all — it would answer "nothing here yet" always`);
+  if (kinds) assert.deepStrictEqual(asked, kinds, `chip "${slug}" must ask for its own kinds`);
+  // …and whatever the chip asks for, the ask stays a plain NIP-01 read.
+  const f = buildFilters("", { kinds: asked, limit: askFor(PREVIEW_CARDS) });
+  assert.strictEqual(f.length, 1, `chip "${slug}": one filter`);
+  assert.deepStrictEqual(Object.keys(f[0]).sort(), ["kinds", "limit"], `chip "${slug}": no search field`);
+}
+
+// And the measurement that decided REPLACE over intersect: narrowing the
+// content default by the chip would leave several chips asking for nothing at
+// all. Pinned rather than described, because a later edit to either table is
+// exactly when somebody would reach for the intersection again.
+const inert = tabs.filter(([, kinds]) => kinds && !kinds.some((k) => FEED_KINDS.includes(k)));
+assert.ok(
+  inert.length >= 3,
+  "intersecting the chip with FEED_KINDS is only obviously wrong while several chips share no kind with it: " +
+  `found ${inert.length} (${inert.map(([s]) => s).join(", ")})`,
+);
+
+// ---- a narrowed feed is a place ---------------------------------------------
+//
+// `?feed=1` used to be the whole of this view's state, so applyUrl() cleared
+// the tab along with the sort and the lens. Now the chip is state too, and a
+// view whose state cannot be linked to dies on reload — the same lie as a
+// control that does nothing, one step later. Written by feedUrl() and read
+// back in applyUrl()'s feed branch: a half either side does not know about is
+// a link that loses the chip, or a chip nothing can share.
+assert.ok(/const feedUrl = .*tab=\$\{t\.slug\}/.test(appJs), "feedUrl() must write the chip into the url");
+const feedBranch = appJs.slice(appJs.indexOf(`if (p.get("feed") === "1") {`));
+assert.ok(feedBranch.startsWith(`if (p.get("feed") === "1") {`), "applyUrl() has no feed branch");
+assert.ok(
+  feedBranch.slice(0, feedBranch.indexOf("runFeed();")).includes(`p.get("tab")`),
+  "applyUrl()'s feed branch must read ?tab= — otherwise a shared narrowed feed opens as Everything",
+);
+
+// The chips have to be ON SCREEN on the feed page for any of that to be
+// reachable: the whole bar used to be hidden there, which took the one working
+// control off the page along with the three that could not work on it.
+const html = readFileSync(new URL("../../relay/src/main/resources/index.html", import.meta.url), "utf8");
+assert.ok(/body\.feed \.bar-right \{ display: none/.test(html), "the feed hides the Filters half of the bar");
+assert.ok(!/body\.feed \.bar \{ display: none/.test(html), "…and not the chips, which are the half that acts on it");
 
 // ---- the over-ask ---------------------------------------------------------
 // Replies are dropped AFTER the relay answers, because NIP-01 cannot ask for
@@ -88,4 +157,4 @@ assert.strictEqual(pickFeed([reply, ev(7), ev(8), ev(9)], 2, NOW).length, 2, "at
 assert.deepStrictEqual(pickFeed([null, {}, { id: id(9) }], 5, NOW), [], "no id, no date, no card — and no throw");
 assert.deepStrictEqual(pickFeed(undefined, 5, NOW), [], "nothing at all is an empty feed");
 
-console.log("feed: the ask carries no search string, and the shaping holds");
+console.log(`feed: the ask carries no search string, ${tabs.length} chips each pick its kinds, and the shaping holds`);

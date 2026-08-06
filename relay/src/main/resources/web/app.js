@@ -15,7 +15,7 @@ import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } fro
 import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
-import { FEED_KINDS, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
+import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
 import { mountSearchField, softKeyboard } from "./searchfield.js";
 
 const POPUP_LIMIT = 8;
@@ -366,17 +366,22 @@ function buildFilters(text, limit) {
 }
 
 /**
- * The feed's ask: the SAME builder with nothing to say.
+ * The feed's ask: the SAME builder with nothing to say but its kinds.
  *
  * No words, and — pointedly — no `searchString`, so the sort menu, the spam
  * toggle and the "ranking as" lens do not ride along. What is left is
  * `{ kinds, limit }`: a plain NIP-01 read, which is what the store answers
  * newest-first. Any of those three would make it a NIP-50 query for an ORDER
  * instead, and the page would be saying "latest" over a ranked list. That is
- * also why the feed view hides the bar rather than leaving three controls on
- * screen that this ask cannot carry.
+ * why the feed view hides the Filters disclosure rather than leaving three
+ * controls on screen that this ask cannot carry.
+ *
+ * `kinds` is the exception, and the reason the chip row stays: it is a field
+ * of this filter, not an extension on a search string, so the tab narrows the
+ * feed exactly as it narrows a search. feed.js's feedKinds() owns which list
+ * that is.
  */
-const feedFilters = (limit) => filtersFor("", { kinds: FEED_KINDS, limit });
+const feedFilters = (limit) => filtersFor("", { kinds: feedKinds(tab.kinds), limit });
 
 /**
  * One event, one card, however many filters it answered.
@@ -1116,6 +1121,17 @@ const lensNote = () =>
     : "newest first, the whole corpus — sign in (the avatar in the field) to read it through your web of trust") +
   `</div>`;
 
+/**
+ * What the feed's heading says: "Latest", and what it was narrowed to.
+ *
+ * The chip that narrowed it is lit, but it is one of eight in a row that
+ * scrolls sideways on a phone — where the lit one can be off screen entirely —
+ * and it lives up in the header while the list is what the reader is looking
+ * at. A hundred pictures under a bare "Latest" reads as the whole feed having
+ * changed rather than as a filter being on, so the heading names the tab.
+ */
+const feedTitle = () => (tab.kinds ? `Latest &middot; ${esc(tab.label)}` : "Latest");
+
 /** The list heading every card list wears: a name, and whatever goes right. */
 const listHead = (title, right) =>
   `<div class="list-head"><div class="list-title">${title}</div><div class="list-right">${right}</div></div>`;
@@ -1142,17 +1158,20 @@ function renderFeed() {
   // An empty feed is a fact about the INDEX (or about the reader's trust
   // floor), never about a query — there is no query. Both readings are named,
   // because "nothing here" means two different things depending on which of
-  // them is looking.
+  // them is looking. A third reading arrived with the chips: an empty MEDIA
+  // feed says nothing about the relay's notes, and a reader who does not
+  // notice which chip is lit would read it as one.
   const empty = `<div class="empty"><b>Nothing here yet</b>` +
     (me
       ? "This relay holds no recent posts from anyone your web of trust reaches."
       : "This relay's index holds no recent posts of these kinds.") +
+    (tab.kinds ? ` The ${esc(tab.label)} filter is on — pick Everything for the whole feed.` : "") +
     `</div>`;
   // No Export button, unlike a search: that download exists to let somebody
   // argue with a RANKING — the query, the lens, the scores behind the order.
   // A time-ordered list has no order to defend.
   const body = statusBody(skelCards(4), empty) ?? s.hits.map((ev) => card(ev)).join("");
-  paintList($results, listHead("Latest", `<span class="list-stats">${stats}</span>`) + lensNote() + body);
+  paintList($results, listHead(feedTitle(), `<span class="list-stats">${stats}</span>`) + lensNote() + body);
 }
 
 // ---- the same feed, three cards, under the hero ---------------------------
@@ -1176,7 +1195,7 @@ function renderFeed() {
 // how the two drift. It already had: the hand-written copy repainted over an
 // expanded json panel, which run() has known not to do since the day a reader
 // lost one mid-read.
-const feedPreview = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, reader: null };
+const feedPreview = { requestId: 0, hits: [], hitsFor: null, lastMs: null, loading: false, error: null, reader: null, tab: null };
 
 function hideFeedPreview() {
   feedPreview.requestId++;   // whatever is in flight must not reveal this again
@@ -1200,6 +1219,24 @@ function hideFeedPreview() {
  */
 const FEED_URL = "/?feed=1";
 
+/**
+ * That url, carrying the chip — `/?feed=1&tab=media`.
+ *
+ * The feed used to be one flag and nothing else, which was true while its
+ * kinds were its own. Now the chips narrow it, and a narrowed feed that cannot
+ * be linked to is a view whose state dies on reload — the same lie as a
+ * control that does nothing, one step later. "Everything" writes no parameter,
+ * so the plain `/?feed=1` still means what it always did and nothing that
+ * already links to it changes.
+ *
+ * `tab` is spelled the same here as in a search url on purpose: it is the same
+ * chip, and one slug means one thing wherever it appears.
+ */
+const feedUrl = (t = tab) => FEED_URL + (t.kinds ? `&tab=${t.slug}` : "");
+
+/** Does [href] name the feed, whichever chip it carries? */
+const isFeedHref = (href) => href === FEED_URL || href.startsWith(FEED_URL + "&");
+
 function renderFeedPreview() {
   // Nothing, and nothing still coming: the hero goes back to being the hero
   // rather than standing a heading and a "see more" over an empty box. This is
@@ -1209,7 +1246,9 @@ function renderFeedPreview() {
   const body = feedPreview.hits.length
     ? feedPreview.hits.map((ev) => card(ev)).join("")
     : skelCards(PREVIEW_CARDS);
-  paintList($feedPreview, listHead("Latest", `<a class="feed-more" href="${FEED_URL}">See more &rarr;</a>`) + body);
+  // The link carries the chip: "see more" of THESE three, not of a feed the
+  // reader has just narrowed away from.
+  paintList($feedPreview, listHead(feedTitle(), `<a class="feed-more" href="${feedUrl()}">See more &rarr;</a>`) + body);
 }
 
 /**
@@ -1223,10 +1262,13 @@ function renderFeedPreview() {
  * holding an answer for a while: a feed that says "latest" and hands back a
  * two-minute-old list on the way home is wrong in the one way this view is not
  * allowed to be wrong. What it does keep is the CARDS, so the wait redraws
- * nothing — the skeleton is for the first ask only. The one thing it must not
- * keep across is a change of reader: those cards were gated by the previous
- * account's web of trust, and flashing them under the next one's name for a
- * round trip would be showing somebody another person's feed.
+ * nothing — the skeleton is for the first ask only. Two things it must not
+ * keep across: a change of reader, because those cards were gated by the
+ * previous account's web of trust and flashing them under the next one's name
+ * for a round trip would be showing somebody another person's feed; and a
+ * change of CHIP, because the heading and the "see more" link repaint from the
+ * new tab immediately while the cards would still be the old one's — "Latest ·
+ * Media" over three notes, which reads as the filter having answered.
  */
 async function showFeedPreview() {
   const my = feedPreview.requestId;
@@ -1234,7 +1276,11 @@ async function showFeedPreview() {
   // Anything that left the hero, and any second call, moved the counter on.
   if (my !== feedPreview.requestId) return;
   if (!me || !$results.hidden) { hideFeedPreview(); return; }
-  if (feedPreview.reader !== me) { feedPreview.hits = []; feedPreview.reader = me; }
+  if (feedPreview.reader !== me || feedPreview.tab !== tab) {
+    feedPreview.hits = [];
+    feedPreview.reader = me;
+    feedPreview.tab = tab;
+  }
   $feedPreview.hidden = false;
   document.body.classList.add("has-feed-preview");
   run(feedPreview, () => fetchFeed(PREVIEW_CARDS), KEEP, renderFeedPreview);
@@ -1362,26 +1408,33 @@ function runFull(text) {
 /**
  * The feed page: the newest [PAGE_CARDS] content events, full cards.
  *
- * Reached from the hero's "see more", from a pasted link, and from Back —
- * every one of them through applyUrl(), so this never pushes history itself.
- * No syncUrl() call for the same reason the entity view has none: `feed=1` IS
- * the whole state, and this view takes none of the other four parameters.
+ * Reached from the hero's "see more", from a pasted link, and from Back — all
+ * three through applyUrl(), which holds navRestoring for exactly this reason,
+ * so the syncUrl() below is a no-op on every one of them. It is here for the
+ * fourth way in: a chip picked while already on this page, which is a place
+ * the reader chose and Back should be able to undo, the same as a chip picked
+ * during a search. `feed=1` plus that chip IS the whole state; the other four
+ * parameters this view still takes none of.
  */
 function runFeed() {
   clearTimeout(debounceTimer);
   cancelEntity();
   hideFeedPreview();   // the preview and the page are the same feed; one at a time
-  document.title = "SearchOverTrust — latest";
+  // The chip belongs in the title for the same reason it belongs in the
+  // heading: two tabs open on two narrowings of this feed are otherwise the
+  // same word twice.
+  document.title = `SearchOverTrust — latest${tab.kinds ? ` ${tab.label.toLowerCase()}` : ""}`;
   closePopup();
   field.close();
   $q.blur();   // a full-page list takes the keyboard, exactly as a search does
   $results.hidden = false;
-  // `feed` hides the bar — both halves of it. The three behind Filters are
-  // NIP-50 extensions riding on a search string this view does not send, and
-  // the kind chips narrow a `kinds` filter the feed sets for itself. Taken off
-  // the screen rather than left there doing nothing, which is the one thing
-  // this codebase is most consistent about refusing to ship.
+  // `feed` hides the Filters half of the bar and keeps the chips. The three
+  // behind Filters are NIP-50 extensions riding on a search string this view
+  // does not send; the chips are the `kinds` of the read it does send, so they
+  // are the half that works here. Taking a working control off the screen is
+  // the same waste as leaving a dead one on it.
   document.body.classList.add("searching", "feed");
+  syncUrl();
   run(s, () => fetchFeed(PAGE_CARDS), REPLACE, renderFeed);
 }
 
@@ -1408,11 +1461,20 @@ const onFeed = () => document.body.classList.contains("feed");
 
 function rerun() {
   // The feed has no query to re-run, but it does have an answer that changes
-  // with who is asking: signing in applies the trust floor, signing out lifts
-  // it, and the line under the head says which. Same reason a search re-runs.
+  // with who is asking and with which chip is on: signing in applies the trust
+  // floor, signing out lifts it, and the line under the head says which. Same
+  // reason a search re-runs.
   if (onFeed()) { runFeed(); return; }
   const text = $q.value.trim();
-  if (!text) return;
+  // The hero, with the preview under it, is the third thing a chip can change.
+  // Nothing re-ran here at all before the preview existed — there was nothing
+  // on the page to re-run — so a chip picked on the landing page lit up and
+  // left the same three cards sitting underneath it, which is a filter that
+  // says it is on and is not. The preview is the same feed as the page, so it
+  // answers the same chip. Nothing goes to the URL: `/` is the floor Back
+  // lands on, three cards under a hero are not a destination, and the "see
+  // more" link is what carries the chip on to one.
+  if (!text) { if ($results.hidden) showFeedPreview(); return; }
   if (!$results.hidden) runFull(text);
   else if ($popup.classList.contains("open")) runPopup(text);
 }
@@ -1669,9 +1731,11 @@ $spam.addEventListener("change", () => { renderAdvCount(); rerun(); });
 // land on. The popup preview never appears here: it is keystroke feedback,
 // and pushing an entry per keystroke is how Back buttons become useless.
 //
-// `/?feed=1` is the sixth and last thing this url can say, and it is exclusive
-// with all five: the feed is the results view with an empty query and none of
-// the bar's extensions, so there is nothing else about it to write down. A
+// `feed=1` is the sixth and last thing this url can say, and it is exclusive
+// with four of the five: the feed is the results view with an empty query and
+// none of the bar's extensions. `tab` is the exception, because the chips are
+// the one control that acts on this view — so `/?feed=1&tab=media` is the
+// whole of the feed's state, and the pair is written and read together. A
 // parameter rather than a `/feed` path deliberately — the root already serves
 // this page, and a new path would need a route on the server before a reload
 // of it could work at all.
@@ -1712,12 +1776,12 @@ function currentUrl(text = $q.value.trim(), showing = !$results.hidden) {
 
 function syncUrl() {
   if (navRestoring) return;
-  // The feed is one flag and nothing else, because it reads nothing else: a
-  // url carrying a tab or a sort this view ignores would be state that cannot
-  // be restored, which is the same lie as a control that does nothing. Every
-  // path here today leaves the feed before syncing, so this is the guard for
-  // the next caller rather than for any current one.
-  const url = onFeed() ? FEED_URL : $results.hidden ? "/" : currentUrl();
+  // The feed is the flag and the chip, and nothing else, because it reads
+  // nothing else: a url carrying a sort this view ignores would be state that
+  // cannot be restored, which is the same lie as a control that does nothing.
+  // Every path here today leaves the feed before syncing, so this is the guard
+  // for the next caller rather than for any current one.
+  const url = onFeed() ? feedUrl() : $results.hidden ? "/" : currentUrl();
   // Re-submitting the same search re-queries the relay but is not a second
   // place; pushing it would make Back appear to do nothing.
   if (url === location.pathname + location.search) return;
@@ -1754,21 +1818,25 @@ function applyUrl() {
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch
     document.title = "SearchOverTrust";
     const p = new URLSearchParams(location.search);
-    // The fourth view, and the only one that is a whole page from a single
-    // parameter: the feed takes no q, no tab and none of the bar's three
-    // extensions. So the controls go back to their DEFAULTS with the url that
-    // carries none of them — the bar is hidden here, and a `sort:rank` left
-    // over from the previous search would otherwise be applied, invisibly, to
-    // the next search typed from this page. runFeed() awaits sign-in itself,
-    // hence `true`: boot does not need to kick it a second time.
+    // The fourth view, and the only one that is a whole page from one flag and
+    // one chip: the feed takes no q and none of the bar's three extensions. So
+    // those controls go back to their DEFAULTS with the url that carries none
+    // of them — the Filters panel is hidden here, and a `sort:rank` left over
+    // from the previous search would otherwise be applied, invisibly, to the
+    // next search typed from this page. The tab is read instead of cleared,
+    // because on this view it is not a leftover: it is what the feed asked
+    // for. runFeed() awaits sign-in itself, hence `true`: boot does not need
+    // to kick it a second time.
     if (p.get("feed") === "1") {
+      tab = KIND_TABS.find((t) => t.slug === p.get("tab")) || KIND_TABS[0];
       // A hand-made `/?feed=1&q=cats&sort=rank` is a url naming two views.
       // The feed wins — it is checked first — so the address bar is corrected
       // to what is actually on screen rather than left describing a search
-      // that is not running. replaceState, not push: this is the same place,
-      // spelled properly, and it leaves the forward stack alone.
-      if (location.search !== "?feed=1") history.replaceState(null, "", FEED_URL);
-      tab = KIND_TABS[0];
+      // that is not running. Compared against the url this view WOULD write,
+      // so an unknown `tab=nonsense` is corrected too rather than left naming
+      // a chip that is not lit. replaceState, not push: this is the same
+      // place, spelled properly, and it leaves the forward stack alone.
+      if (location.search !== feedUrl().slice(1)) history.replaceState(null, "", feedUrl());
       renderChips();
       $sort.value = "";
       $spam.checked = false;
@@ -1826,9 +1894,9 @@ document.addEventListener("click", (e) => {
   // cold load all work, because it is the root with a parameter and the root
   // is the page — but a plain click renders it in place like every other
   // internal link, socket and NIP-42 auth intact. Tested before the `?q=` arm
-  // below only because an exact match is the cheaper question; `?feed=1` does
-  // not match that pattern either way.
-  if (href === FEED_URL) { e.preventDefault(); navigate(href); return; }
+  // below only because it is the cheaper question; a feed url does not match
+  // that pattern either way.
+  if (isFeedHref(href)) { e.preventDefault(); navigate(href); return; }
   // `/?q=…` is the third shape a card can link to, after "/" and the NIP-19
   // paths: a hashtag chip is a SEARCH, and applyUrl() already restores one
   // from exactly this url. Without this arm the chip still worked — as a full
@@ -1838,8 +1906,11 @@ document.addEventListener("click", (e) => {
   // The chip's url is rebuilt through currentUrl() rather than followed as
   // written: it names a query and knows nothing about the page it was clicked
   // on, and every filter it does not name is one applyUrl() would clear. From
-  // a FEED card that rebuild is already clean — the feed view resets those
-  // four — so a hashtag clicked here lands on a plain `/?q=%23tag`.
+  // a FEED card that rebuild carries the kind chip and nothing else — the feed
+  // resets the sort, the spam toggle and the lens, and keeps the tab because
+  // the tab is a filter it was itself running under. A hashtag clicked in a
+  // Media feed searches that tag in Media, which is the same rule the chip
+  // follows inside a search.
   if (/^\/\?q=/.test(href)) {
     e.preventDefault();
     navigate(currentUrl(new URLSearchParams(href.slice(1)).get("q") || "", true));

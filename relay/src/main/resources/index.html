@@ -159,17 +159,26 @@
   the network. That is also why the preview is drawn only for a signed-in
   reader — signed out the identical read is the whole mirror in time order,
   which the hero should not be handing anybody unasked — and why the feed hides
-  the bar entirely: the three filters above cannot ride on an ask with no search
-  string, and the kind chips have nothing to narrow when the kinds are the
-  view's own. A control that cannot act on the page it is drawn on is what the
+  the Filters disclosure: those three cannot ride on an ask with no search
+  string. A control that cannot act on the page it is drawn on is what the
   Filters badge exists to prevent, one level up.
+
+  The kind chips are the half of that bar which CAN act here, and they do: they
+  are the `kinds` field of that same plain read, not an extension on a search
+  string, so picking Media narrows the feed exactly as it narrows a search —
+  under the hero and on the full page alike. They used to be the other kind of
+  dead control, drawn on the landing page over a preview that ignored them. A
+  chip REPLACES the feed's content kinds rather than intersecting them, because
+  four of the seven narrowing chips share no kind with that default and would
+  have gone from ignoring the reader to answering "nothing here yet".
 
   The URL is the search. `/?q=…&tab=…&sort=…&spam=1&as=npub…` restores the
   whole results view on load, every submitted search and every filter change
   pushes a history entry, and Back walks them in order down to the hero.
-  `/?feed=1` is the one view whose whole state is a single parameter — it takes
-  none of those five, and it is a parameter on the ROOT rather than a `/feed`
-  path because the root is already served and a new path would need a route.
+  `/?feed=1&tab=…` is the one view whose whole state is a flag and a chip — it
+  takes none of the other four, and it is a parameter on the ROOT rather than a
+  `/feed` path because the root is already served and a new path would need a
+  route.
   The type-ahead popup deliberately never touches the URL — a keystroke is not a
   place. Before this, the page held all of that in JS only: Back left the
   site from the middle of a search, reload emptied it, and a result list
@@ -887,11 +896,12 @@
   .feed-more { font-size: 12.5px; font-weight: 550; color: var(--accent); text-decoration: none; white-space: nowrap; }
   .feed-more:hover { text-decoration: underline; }
   /* The feed sends no NIP-50 search string at all, so the three controls behind
-     Filters have nothing to ride on — and its kinds are its own, so the chips
-     have nothing to narrow either. The whole row goes rather than sit there
-     doing nothing; hiding the disclosure alone would leave a bar of height with
-     one chip row in it that means nothing here. */
-  body.feed .bar { display: none; }
+     Filters have nothing to ride on and go. The chips stay: `kinds` is a field
+     of the plain read this view DOES send, so they narrow the feed the same way
+     they narrow a search — and the whole row used to go with the panel, which
+     left the one working control off the page for the sake of the three that
+     could not work on it. */
+  body.feed .bar-right { display: none; }
 
   .empty, .error { padding: 40px 16px; text-align: center; color: var(--muted); font-size: 13.5px; }
   .error { color: var(--danger); }

@@ -12,8 +12,10 @@
 // even one that is nothing but `sort:` or `observer:` — is a request for an
 // ORDER, and "a query that is nothing but extensions becomes unconstrained,
 // not match-nothing". Let the bar's sort leak into this ask and the page says
-// "newest first" over a list ranked by trust. The bar therefore does not reach
-// this view at all, and the view does not show it.
+// "newest first" over a list ranked by trust. So the three controls behind
+// Filters do not reach this view and the view does not show them — but the
+// kind chips beside them are not extensions at all, they are the `kinds` array
+// of that same plain read, and the feed answers to them (feedKinds below).
 //
 // The trust gate rides on the CONNECTION rather than on the query, which is
 // what makes an empty search worth showing at all: a NIP-42 login turns even a
@@ -23,7 +25,8 @@
 // the whole mirror in time order. The hero draws its preview only for the
 // first case; the full view serves either, and says which one it is showing.
 //
-// Two exported rules and no DOM, so tools/webtest/feed.test.mjs can hold them.
+// Three exported rules and no DOM, so tools/webtest/feed.test.mjs can hold
+// them.
 
 import { replyTarget } from "./shared/parents.js";
 
@@ -39,6 +42,34 @@ import { replyTarget } from "./shared/parents.js";
  * already where diagnostics live.
  */
 export const FEED_KINDS = [1, 11, 20, 21, 22, 1063, 1222, 30023, 34235, 34236];
+
+/**
+ * Which kinds THIS feed asks for: the chip's, if one is picked.
+ *
+ * The kind chips sit on the landing page, above the preview, and used to move
+ * nothing there — `rerun()` had no query to re-run on the hero, so picking
+ * "Media" repainted the chip and left the same three notes underneath. A
+ * control that is drawn on a page it cannot act on is the one thing this
+ * codebase is most consistent about refusing to ship, and the chips are the
+ * one part of the bar that CAN act here: they are the `kinds` array of a plain
+ * NIP-01 read, not a NIP-50 extension riding on a search string this view does
+ * not send.
+ *
+ * The chip's kinds REPLACE this list rather than narrow it. Intersecting reads
+ * as the safer rule and is the wrong one: four of the seven narrowing chips
+ * (People, Code & git, Live, Lists) share not one kind with the content
+ * default, so most of the row would have gone back to doing nothing — with an
+ * empty answer this time instead of a stale one, which is worse, because
+ * "nothing here yet" is a claim about the index. What FEED_KINDS defends
+ * against is a feed nobody asked for filling up with 30382 score cards, and no
+ * chip can ask for that: KIND_TABS is a curated set of families, every kind in
+ * it has a renderer, and the diagnostic kinds appear in none of them. Asked
+ * for by name, the newest kind 0s ARE the latest people.
+ *
+ * [tabKinds] is null for the "Everything" chip, which is what the default is
+ * for: everything a person publishes to be READ, not every kind in the index.
+ */
+export const feedKinds = (tabKinds) => (tabKinds && tabKinds.length ? tabKinds : FEED_KINDS);
 
 /** Cards under the hero, and cards on the page "see more" opens. */
 export const PREVIEW_CARDS = 3;
