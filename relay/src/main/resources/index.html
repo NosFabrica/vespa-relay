@@ -745,7 +745,11 @@
      the first byte arrives and a portrait video does not read as a black band
      with a slot in it. The two caps are the card's two depths: a list of
      videos still has to scroll, a permalink is a destination. */
-  .media-frame { position: relative; display: flex; justify-content: center; margin: 4px 0 10px;
+  /* Centred, because a portrait video is narrower than the card and the text
+     around it is not: left-aligning the frame hangs the caption off the side
+     of a tall picture. Auto margins do it in both modes — the sized frame is
+     a block clamped by max-width, the unsized one is fit-content. */
+  .media-frame { position: relative; display: flex; justify-content: center; margin: 4px auto 10px;
                  width: fit-content; max-width: 100%; max-height: 360px; overflow: hidden; border-radius: 12px;
                  border: 1px solid var(--border); background: var(--surface-2); }
   .result.full .media-frame { max-height: 70vh; }
