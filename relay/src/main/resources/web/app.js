@@ -16,7 +16,7 @@ import { selfHref } from "./cards/base.js";
 import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { FEED_KINDS, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
-import { mountSearchField } from "./searchfield.js";
+import { mountSearchField, softKeyboard } from "./searchfield.js";
 
 const POPUP_LIMIT = 8;
 const FULL_LIMIT = 40;
@@ -1010,7 +1010,7 @@ function onQueryEdit() {
 // paintScores goes in for the same reason the entity page takes it: the faces
 // the field and its picker draw carry the same score chip a card's does, and
 // which lens fills it in is app state.
-const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit, paintScores });
+const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit, onSubmit: submitField, paintScores });
 
 // `hitsFor` is the text `hits` actually answers. They outlive each other:
 // results stay on screen while the box is edited, and a debounce can be
@@ -1443,6 +1443,23 @@ function reset() {
   $q.focus();
 }
 
+/**
+ * Enter in the search box, however it arrived.
+ *
+ * A function rather than the body of the keydown branch below, because a
+ * phone's action key is not reliably a keydown at all — searchfield.js takes
+ * it off the `beforeinput` a soft keyboard DOES produce and calls this. Both
+ * doors, one behaviour.
+ */
+function submitField() {
+  // An arrowed-to row is a selection, same as a click on it: Enter opens
+  // that record. A plain Enter with nothing highlighted stays the full
+  // search — the popup is a preview of it, not a gate in front of it.
+  if ($popup.classList.contains("open") && activeKey != null) { openPicked(s.hits[activeKey]); return; }
+  const text = $q.value.trim();
+  if (text) runFull(text);
+}
+
 $q.addEventListener("keydown", (e) => {
   // The picker gets first refusal on the arrows, Enter, Tab and Escape while
   // it is open — asked outright rather than by racing this listener in the
@@ -1451,12 +1468,7 @@ $q.addEventListener("keydown", (e) => {
   if (field.handleKey(e)) return;
   if (e.key === "Enter") {
     e.preventDefault();
-    // An arrowed-to row is a selection, same as a click on it: Enter opens
-    // that record. A plain Enter with nothing highlighted stays the full
-    // search — the popup is a preview of it, not a gate in front of it.
-    if ($popup.classList.contains("open") && activeKey != null) { openPicked(s.hits[activeKey]); return; }
-    const text = $q.value.trim();
-    if (text) runFull(text);
+    submitField();
   } else if (e.key === "ArrowDown") {
     if ($popup.classList.contains("open")) { e.preventDefault(); setActive((activeKey ?? -1) + 1); }
   } else if (e.key === "ArrowUp") {
@@ -1915,4 +1927,12 @@ if (!applyUrl()) ensureLogin().then(renderWhoami).catch(() => renderWhoami());
 // the attribute inconsistently across browsers, and the condition is the one
 // that was always meant: focus the box when the page IS the box — never on an
 // entity permalink, which has its own content to read.
-if ($results.hidden) $q.focus();
+//
+// And never where a caret arrives without a keyboard behind it. `focus()` from
+// script cannot raise a soft keyboard — mobile browsers raise one only for a
+// focus a finger caused — so on a phone this autofocus landed a blinking caret
+// in a field nothing could type into, and left it there: tapping the box did
+// nothing either, the element being focused already. softKeyboard() is that
+// distinction, and searchfield.js owns it because the field's own rules turn
+// on the same question.
+if ($results.hidden && !softKeyboard()) $q.focus();

@@ -36,8 +36,10 @@
 // as the text it hides, which a name and a face are not. So the field is a
 // div, and everything an input gave for free is given back here deliberately:
 // `value` (get and set), `select()`, a placeholder, single-line behaviour,
-// and paste/drop that insert TEXT rather than whatever html was on the
-// clipboard. app.js keeps writing `$q.value` and never learns the difference.
+// paste/drop that insert TEXT rather than whatever html was on the clipboard,
+// and letting go of the caret when the reader touches the page — which a
+// finger does not get from a contenteditable the way a mouse does. app.js
+// keeps writing `$q.value` and never learns the difference.
 //
 // The pickers and the results popup are mutually exclusive on purpose. All
 // three occupy the same square of screen, and a keystroke inside `from:ali` is
@@ -86,7 +88,32 @@ const DEBOUNCE_MS = 150;
  */
 const faceHtml = (pubkey, size) => avatarHtml((profiles.get(pubkey) || {}).picture, pubkey, size);
 
-export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
+/**
+ * Does this reader RAISE a keyboard to type, rather than already having one?
+ *
+ * The question two rules below both turn on, and app.js's autofocus with them,
+ * so it is asked once here. A caret and a keyboard are one thing on a phone
+ * and two on a desktop: a soft keyboard is raised only for a focus a finger
+ * caused — `focus()` from script cannot do it, on any mobile browser, by
+ * design — so anywhere the caret can arrive without one, a caret placed by
+ * script is a field that looks ready and cannot be typed into.
+ *
+ * `pointer: coarse` is the PRIMARY pointer, which is the right cut rather than
+ * "has a touchscreen": a laptop with a touch screen still types on the
+ * keyboard it has, and would lose its autofocus for nothing.
+ *
+ * Asked at the moment it matters, not cached at load — a tablet gains and
+ * loses a keyboard by being put in a case.
+ */
+export const softKeyboard = () => window.matchMedia("(pointer: coarse)").matches;
+
+// A line break, which this field has nowhere to put. Module constants because
+// the first of them is tested against every keystroke's beforeinput, and a
+// regex literal inside the handler builds a new RegExp on each of them.
+const NEWLINE = /[\r\n]/;
+const NEWLINES = /[\r\n]+/g;
+
+export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScores }) {
   let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
   let active = -1;      // which one is highlighted
@@ -717,6 +744,26 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     updateMention();
   }
 
+  /**
+   * Enter, however it arrived — true when a picker consumed it.
+   *
+   * Shared by the two doors Enter comes through, because a phone's action key
+   * is not reliably a keydown (see the beforeinput handler below) and a
+   * highlighted person or day has to be picked either way. Tab lands here too:
+   * completing the token is what Tab means over an open picker.
+   *
+   * Nothing highlighted is deliberately NOT consumed. The picker is a
+   * suggestion over the text, not a gate in front of it, so a partial date
+   * with no day chosen falls through to the page's own Enter — the search.
+   */
+  function takeEnter() {
+    if (!listOpen()) return false;
+    if (day) { if (!cursor) return false; pickDay(ymd(cursor)); return true; }
+    if (active < 0 || !hits[active]) return false;
+    pick(hits[active]);
+    return true;
+  }
+
   el.addEventListener("input", (e) => {
     const text = readValue();
     // Empty means EMPTY: the browser leaves a `<br>` behind when the last
@@ -746,6 +793,52 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
   }
   el.addEventListener("paste", (e) => insertPlain(e, (e.clipboardData || window.clipboardData).getData("text/plain")));
   el.addEventListener("drop", (e) => insertPlain(e, e.dataTransfer && e.dataTransfer.getData("text/plain"), dropIndex(e)));
+
+  /**
+   * The other door Enter comes through, and on a phone the only one.
+   *
+   * A soft keyboard's action key is not a key press. Gboard and the iOS
+   * keyboard report an IME edit, so the keydown that reaches the page carries
+   * `Unidentified` (keyCode 229) or does not arrive at all — `e.key ===
+   * "Enter"` never matched, app.js never got its preventDefault in, and the
+   * div did what a div does with a newline: grew a second line, which is why
+   * the box and the faces in it jumped. An <input> had no such failure mode
+   * because it has nowhere to put a line break.
+   *
+   * So the newline is caught here as what it actually IS — an input of a line
+   * break — whichever keyboard produced it, and refused rather than merely
+   * redirected: the field is one line by construction (`white-space: pre`,
+   * `aria-multiline="false"`), so a break has no meaning in it even when the
+   * Enter behind it is not a submit.
+   *
+   * Three things this had wrong when it was written, all of them the same
+   * mistake — treating "there is a newline in here" as "this event IS the
+   * newline":
+   *
+   *   - An IME can commit the composing word and the action key as ONE
+   *     insertion, `hello\n`. Refusing that outright dropped `hello` with the
+   *     break, which is the worst failure available: text the reader typed,
+   *     gone, with a search running to distract from it. The break is stripped
+   *     and the rest inserted, so only the newline is refused.
+   *   - insertCompositionText is deliberately absent. A pick re-renders the
+   *     field, and doing that under a live composition is exactly what the
+   *     input handler above refuses to do for the same reason.
+   *   - The regex is hoisted, because this runs on every keystroke.
+   *
+   * Desktop cannot double-submit through this: there Enter IS a keydown, and
+   * app.js's preventDefault stops the input from ever being attempted.
+   */
+  el.addEventListener("beforeinput", (e) => {
+    const t = e.inputType;
+    const typed = t === "insertText" && e.data && NEWLINE.test(e.data) ? e.data : null;
+    if (!typed && t !== "insertLineBreak" && t !== "insertParagraph") return;
+    const rest = typed ? typed.replace(NEWLINES, "") : "";
+    // insertPlain preventDefaults, splices and reports the edit; a bare
+    // newline leaves nothing to insert and is only the submit.
+    if (rest) insertPlain(e, rest); else e.preventDefault();
+    if (takeEnter()) return;
+    onSubmit && onSubmit();
+  });
 
   /**
    * A caret MOVE finishes a hashtag or a date without editing anything.
@@ -778,6 +871,16 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     // the caret is not placed at all — restoring one into an unfocused field
     // would scroll it back into view for no reader.
     syncPills(null);
+    // The SELECTION outlives the focus, and a caret is drawn from the
+    // selection. Losing focus leaves the document's only range sitting inside
+    // this div, which is a blinking caret in a field the reader has left —
+    // visible on a phone, where the compositor keeps painting it after the
+    // keyboard has gone. Dropped only when the range is ours, so a selection
+    // the same gesture made somewhere else survives. It is also what
+    // pendingMention() already documents as the unfocused state: no range in
+    // here means the caret reads as the end of the value.
+    const sel = document.getSelection();
+    if (sel && sel.rangeCount && el.contains(sel.getRangeAt(0).startContainer)) sel.removeAllRanges();
     // A click ON the picker must land before the picker disappears; mousedown
     // there has already fired by the time blur does, so the delay only has to
     // outlast the same tick.
@@ -799,6 +902,67 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     pick(hits[Number(row.dataset.i)]);
   });
 
+  /**
+   * A touch anywhere else on the page LEAVES the field — said out loud, one
+   * more thing an <input> gave for free.
+   *
+   * An input loses focus the moment a pointer goes down outside it, on every
+   * device. A contenteditable div gets that from a desktop mouse and not from
+   * a finger: with nothing focusable under the tap there is nowhere for focus
+   * to go, so the editing session is torn down when the browser is finished
+   * with the soft keyboard rather than when the reader touched the page —
+   * seconds later, with the caret still blinking in the box the whole time.
+   * (It is invisible to a desktop browser in mobile-emulation, which
+   * synthesises the tap but has no keyboard to put away, so this is one to
+   * check on a phone.)
+   *
+   * pointerdown, because that is the moment the desktop already does it, and
+   * it is ahead of the click that closeList() waits for below. Capture, so
+   * nothing between the tap and the document can strand the caret by
+   * swallowing the event. Passive, because unlike the picker's own mousedown
+   * below — which preventDefaults to keep the caret in the token a row splices
+   * into — this one never cancels anything; it is the opposite handler, and
+   * the flag says so to the browser as well as to the reader.
+   *
+   * Never inside .search-wrap: that box holds the field, both pickers and the
+   * results popup, and a row is picked with the caret still in the token.
+   * The activeElement test is first because it is the cheap one and it is
+   * false for almost every tap on the page — this runs on all of them.
+   */
+  document.addEventListener("pointerdown", (e) => {
+    if (document.activeElement !== el) return;
+    const t = e.target;
+    if (t && t.closest && t.closest(".search-wrap")) return;
+    el.blur();
+  }, { capture: true, passive: true });
+
+  /**
+   * Leaving the page takes the keyboard with it, so the field lets the caret
+   * go too.
+   *
+   * Coming BACK is where this was felt. The page freezes with the field
+   * focused, the keyboard is gone by the time it thaws, and a caret is still
+   * blinking in a box that cannot be typed into — and tapping that box does
+   * not fix it, because the element is already focused, so there is no focus
+   * change for the browser to raise a keyboard for. The only way back in was
+   * to tap somewhere else first and then return, which is a thing no reader
+   * should have to know.
+   *
+   * Three events for one rule, because no one of them fires everywhere:
+   * pagehide is the back/forward cache freeze (conn.js closes the sockets on
+   * the same signal), visibilitychange is switching apps without a navigation,
+   * and pageshow is the belt to their braces — if the page did come back with
+   * the caret still in here, this is where it goes.
+   *
+   * Only where a keyboard has to be raised at all. On a desktop the caret and
+   * the keyboard are not the same thing, and dropping a caret because the
+   * reader looked at another tab would be taking something away for nothing.
+   */
+  const releaseOnHide = () => { if (document.activeElement === el && softKeyboard()) el.blur(); };
+  window.addEventListener("pagehide", releaseOnHide);
+  window.addEventListener("pageshow", releaseOnHide);
+  document.addEventListener("visibilitychange", releaseOnHide);
+
   document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closeList(); });
 
   // ---- what app.js needs ---------------------------------------------------
@@ -810,7 +974,11 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     // value fires no input event, and it dismisses the picker because the
     // token that was being built no longer exists.
     set(v) {
-      const text = String(v ?? "");
+      // The last door a line break could come through. The keyboard's is shut
+      // on beforeinput and the clipboard's by insertPlain, but this one takes
+      // whatever `?q=` carried — and a text node holding a `\n` under
+      // `white-space: pre` is the same two-line box, arrived at from the URL.
+      const text = String(v ?? "").replace(NEWLINES, " ");
       closeList();
       // typingAt null: a URL restore or a clear is not typing, so a tag the
       // caret happens to land after still draws as the filter it already is.
@@ -876,18 +1044,20 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
         // Enter on nothing highlighted stays the page's Enter, exactly as it
         // does over the people list: the reader typed a partial date and hit
         // Enter, which is a search for what is in the box, not a pick of
-        // whatever day the grid happens to be showing.
-        if ((e.key === "Enter" || e.key === "Tab") && cursor) { e.preventDefault(); pickDay(ymd(cursor)); return true; }
+        // whatever day the grid happens to be showing. takeEnter() is that
+        // rule, for both lists and for the phones that never send this key.
+        if (e.key === "Enter" || e.key === "Tab") {
+          if (!takeEnter()) return false;
+          e.preventDefault();
+          return true;
+        }
         return false;
       }
       if (e.key === "ArrowDown") { e.preventDefault(); move(1); return true; }
       if (e.key === "ArrowUp") { e.preventDefault(); move(-1); return true; }
       if (e.key === "Enter" || e.key === "Tab") {
-        // Enter with nothing highlighted stays the page's Enter — the picker
-        // is a suggestion over the text, not a gate in front of it.
-        if (active < 0 || !hits[active]) return false;
+        if (!takeEnter()) return false;
         e.preventDefault();
-        pick(hits[active]);
         return true;
       }
       return false;
