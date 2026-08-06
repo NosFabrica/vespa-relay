@@ -58,6 +58,34 @@ import {
 const PICKER_LIMIT = 8;
 const DEBOUNCE_MS = 150;
 
+// The faces here are the CARD's face — avatarHtml, score chip and all. This
+// module used to draw its own <img>, which is how the one place that ASKS "who
+// do you mean by this person" ended up being the one place that did not say
+// what the active lens thinks of them. A picker offering eight strangers is
+// exactly where the number earns its keep.
+/**
+ * The picture a person draws with right now, from whatever profiles knows.
+ *
+ * The SIZE is the caller's — a chip inside the field is `xs`, a picker row is
+ * `lg` — which is why it is an argument rather than a constant.
+ *
+ * KEEP IT HERE, above mountSearchField and below the constants. It used to sit
+ * one line under the calendar's `QUICK` table, and when that table and the rest
+ * of the date arithmetic were lifted into shared/calendar.js the deletion
+ * overshot by exactly one declaration and took this with it — one `const` line
+ * inside a 276-line diff that was otherwise all move. Both call sites went on
+ * calling it, and the two symptoms were the two you would not guess from
+ * "undefined function":
+ *
+ *   - rowHtml() threw inside the debounced lookup, whose catch exists to keep
+ *     a failed relay read from claiming nobody matches — so the picker sent
+ *     its REQ, got its twelve answers, swallowed the error and drew nothing.
+ *   - the NEXT keystroke then threw out of updateMention() before it could
+ *     reach `++reqId`, so no further lookup was ever sent: the box stopped
+ *     asking the server halfway through a name.
+ */
+const faceHtml = (pubkey, size) => avatarHtml((profiles.get(pubkey) || {}).picture, pubkey, size);
+
 export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
   let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
@@ -176,10 +204,20 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
 
   // ---- rendering the value ------------------------------------------------
 
-  /** What a chip currently DRAWS — name and face. Unchanged means no repaint. */
+  /**
+   * What a chip currently DRAWS — name and face. Unchanged means no repaint.
+   *
+   * The separator is written as the ESCAPE `\u0000`, never typed as the byte it
+   * stands for. A literal NUL in this file is what made git call the whole
+   * module binary, and four commits of it landed as `Bin 23897 -> 23932 bytes`
+   * with nothing in them to read — which is how a refactor that deleted
+   * faceHtml() while keeping both of its call sites got reviewed and shipped.
+   * The character itself is still the right one: a space would join the pair
+   * ("Alice B", "") to the same key as ("Alice", "B") and skip a repaint.
+   */
   const chipFace = (pk) => {
     const p = profiles.get(pk);
-    return `${displayName(p) || shortNpub(pk)} ${(p && p.picture) || ""}`;
+    return `${displayName(p) || shortNpub(pk)}\u0000${(p && p.picture) || ""}`;
   };
 
   function paintChip(span) {
@@ -478,17 +516,25 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     if (!next.partial) return;
     const id = ++reqId;
     timer = setTimeout(async () => {
+      let found;
       try {
-        const found = await lookup(next.partial);
-        if (id !== reqId || !mention) return;
-        hits = Array.isArray(found) ? found.slice(0, PICKER_LIMIT) : [];
-        active = hits.length ? 0 : -1;
-        renderList(hits);
+        found = await lookup(next.partial);
       } catch (e) {
         // A failed lookup leaves the last rows (or "searching") up rather than
         // claiming nobody matches — the relay not answering is not evidence
         // that the person does not exist.
+        return;
       }
+      // OUTSIDE the catch, and that is the point. This used to be inside it,
+      // where the forgiveness meant for a relay that did not answer was also
+      // applied to a bug in the drawing: rowHtml() threw on every row, the
+      // catch ate it, and the picker sat on "Searching people…" having been
+      // handed twelve perfectly good answers. A lookup can fail; drawing what
+      // it returned cannot, and if it does the console is where that belongs.
+      if (id !== reqId || !mention) return;
+      hits = Array.isArray(found) ? found.slice(0, PICKER_LIMIT) : [];
+      active = hits.length ? 0 : -1;
+      renderList(hits);
     }, DEBOUNCE_MS);
   }
 
