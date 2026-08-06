@@ -21,8 +21,24 @@ const EMPTY = Object.freeze(Object.create(null));
 const fileOf = (ev) => imetas(ev)[0] || EMPTY;
 /** …falling back to the same field as a top-level tag, which NIP-71 also allows. */
 const fieldOf = (m, ev, name) => m[name] || tagOf(ev, name);
-/** The topics an event names, as the chips a reader can search from. */
-const topics = (ev) => tagsOf(ev, "t").filter((t) => t[1]).map((t) => `#${t[1]}`);
+/**
+ * The topics an event names, as the chips a reader can search from — each one
+ * once. `t` tags repeat in the wild (a client writing both the cased and the
+ * lowercased spelling is the common one), and two identical chips side by side
+ * read as two different topics that happen to look alike. Some clients write
+ * the `#` into the tag value and most do not, so it is normalised off here and
+ * put back once.
+ */
+function topics(ev) {
+  const seen = new Set(), out = [];
+  for (const t of tagsOf(ev, "t")) {
+    const v = String(t[1] || "").replace(/^#+/, "").trim();
+    if (!v || seen.has(v.toLowerCase())) continue;
+    seen.add(v.toLowerCase());
+    out.push(`#${v}`);
+  }
+  return out;
+}
 
 /**
  * What a media card says in words: the author's own text, then the media's
@@ -113,8 +129,11 @@ function videoFrame(m, ev, url, opts) {
   const p = m.image || imageOf(ev);
   const dur = fmtDuration(fieldOf(m, ev, "duration"));
   const src = (p || url.includes("#")) ? url : `${url}#t=0.1`;
+  // `data-src`, not `src`: app.js promotes it when the card comes near the
+  // viewport. `preload="metadata"` on every card in a list of sixty short
+  // videos is sixty range requests before the reader has passed the second.
   return mediaFrame(frameStyle(fieldOf(m, ev, "dim"), opts),
-    `<video controls playsinline preload="${p ? "none" : "metadata"}"${p ? ` poster="${esc(p)}"` : ""} src="${esc(src)}" onerror="this.parentElement.remove()"></video>` +
+    `<video controls playsinline preload="${p ? "none" : "metadata"}"${p ? ` poster="${esc(p)}"` : ""} data-src="${esc(src)}" onerror="this.parentElement.remove()"></video>` +
     (dur ? `<span class="media-chip">${esc(dur)}</span>` : ""));
 }
 

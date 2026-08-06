@@ -822,9 +822,11 @@
      until the metadata says otherwise. */
   .media-frame.sized { width: auto; }
   .media-frame.sized video { width: 100%; height: 100%; object-fit: contain; background: #000; }
-  /* A picture fills its frame exactly — the frame IS its aspect ratio — so it
-     needs no letterbox behind it the way a video's controls chrome does. */
-  .media-frame.sized img { width: 100%; height: 100%; object-fit: cover; }
+  /* `contain`, like the video: the frame IS the picture's own aspect ratio, so
+     the two agree and nothing is letterboxed — unless the `dim` tag lied, and
+     then a bar is the honest outcome. `cover` would silently crop a stranger's
+     photo to fit a number the same stranger wrote down wrong. */
+  .media-frame.sized img { width: 100%; height: 100%; object-fit: contain; }
   /* An album: NIP-68 gives a picture post one imeta per image. Square cells,
      because a grid of mixed aspect ratios reads as a mistake, and the frame
      above is what a single picture gets instead. */

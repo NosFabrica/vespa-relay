@@ -222,10 +222,19 @@ assert(!shortPreview.includes("f56d739a"), "a generated `d` is an identifier, no
 assert(shortPreview.includes("Vlogging directly from the phone"), "the caption in `content` reaches the card");
 assert(shortPreview.includes("<video") && shortPreview.includes("https://video.example/x.mp4"),
   "the video plays in the results list, not only on its permalink");
+// The url rides in `data-src` — app.js promotes it when the card nears the
+// viewport, so a list of sixty videos is not sixty range requests up front.
+assert(/data-src="https:\/\/video\.example/.test(shortPreview) && !/<video[^>]* src=/.test(shortPreview),
+  "the video url is deferred, not fetched by every card in the list");
 assert(shortPreview.includes("#t=0.1"), "with no poster, ask for the first frame rather than a black box");
 assert(shortPreview.includes("aspect-ratio: 1088 / 1920"), "`dim` reserves the frame before the video loads");
 assert(shortPreview.includes(">0:42<"), "duration reads as a clock, not as a count of seconds");
 assert(shortPreview.includes("#isleofskye"), "topic tags ride along as chips");
+// Repeated and pre-hashed `t` tags are one chip, not three that look alike.
+const dupTags = card(ev(22, [["imeta", "url https://x/v.mp4"],
+  ["t", "Scotland"], ["t", "scotland"], ["t", "#scotland"]], "hi"));
+assert.strictEqual((dupTags.match(/tag-chip/g) || []).length, 1, "one topic, one chip");
+assert(dupTags.includes(">#Scotland<"), "and it keeps the spelling the author wrote first");
 
 // With no content, the media's own description carries the card — the NIP-31
 // `alt` is a line for clients that cannot render kind 22 at all, and saying

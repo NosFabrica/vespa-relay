@@ -332,7 +332,7 @@ export function relayRows(rows, opts) {
  * tokenized it. app.js's link interceptor turns a left click on one of these
  * into a pushState render, so the socket and its NIP-42 auth survive the trip.
  */
-export const searchHref = (q) => `/?q=${encodeURIComponent(q)}`;
+export const searchHref = (q) => `/?${new URLSearchParams({ q })}`;
 /** A topic, however it was written: `t` tags carry `scotland`, cards show `#scotland`. */
 export const hashtagHref = (t) => searchHref(String(t).startsWith("#") ? t : `#${t}`);
 
