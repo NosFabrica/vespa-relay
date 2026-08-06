@@ -96,6 +96,16 @@ export const npub = (hex) => bech32("npub", hex);
 export const noteId = (hex) => bech32("note", hex);
 const shortB32 = (v) => v.slice(0, 12) + "…" + v.slice(-6);
 export const shortNpub = (hex) => shortB32(npub(hex));
+/**
+ * The npub for a place with one narrow line: `npub1eedm57z…`, prefix only.
+ *
+ * shortB32's head-and-tail form is 19 characters, which does not fit a grid
+ * cell — and what came out was ellipsed a SECOND time by the CSS, so the
+ * label read `npub1eedm57z…ag…`: two truncations, one of them meaningless.
+ * The six characters after the `npub1` are enough to tell two nameless
+ * strangers apart, and the whole key is in the title either way.
+ */
+export const tinyNpub = (hex) => npub(hex).slice(0, 12) + "…";
 export const shortNote = (hex) => shortB32(noteId(hex));
 
 /**

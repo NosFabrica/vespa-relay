@@ -929,31 +929,59 @@
   .face-strip .avatar { box-shadow: 0 0 0 2px var(--surface); }
   .face-strip .face-more { margin-left: 8px; font-size: 12px; color: var(--faint); }
   /* The people a LIST holds — its contents, not a decoration on it, so they
-     get a cell each instead of a row of overlapping thumbnails. Three columns
-     at both depths and at every width: the ask was three, and `auto-fill`
-     would quietly make it four on a wide window and one on a phone. What
-     gives instead is the face (the `--av` table below the breakpoint) and the
-     column width, which is why every cell is `minmax(0, 1fr)` — a bare `1fr`
-     is min-content, so one long name would push the other two columns out
-     rather than ellipsing itself.
+     get a cell each instead of a row of overlapping thumbnails.
 
-     The max-width is the other half of that: three columns across the whole
-     780px card put ~250px between two 64px faces, and a row of people with
-     that much air between them reads as three separate things rather than as
-     one list. */
-  .people-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
-                 gap: 14px 8px; margin-top: 10px; max-width: 480px; }
+     How many columns is the WIDTH's answer — it was `repeat(3, …)` at first,
+     which put ~250px between two 64px faces on a laptop and read as three
+     separate things per row rather than as one list. But the count STEPS
+     through divisors of the cell caps (base.js: 6 and 24) instead of flowing
+     freely, and that is the whole trick: a grid that ends in a ragged row ends
+     in an orphan, and the last cell here is the `+1.2k more` count. `auto-fill`
+     with a minimum cell was the first answer and it put that count alone on a
+     second row at every width where the columns did not divide the cap — 5 of
+     them, at ~700px. 6 and 3 divide both caps, so every row is full at every
+     width and the count always closes one.
+
+     Free auto-fill would also buy nothing above `.page`'s 780px: the card
+     cannot grow past it, so there is no wide end for the columns to keep
+     filling. `minmax(0, 1fr)` on the cells (with `min-width: 0` below) is what
+     lets a long name ellipse rather than widen its column — a bare `1fr` is
+     min-content, and one long name would push the others out.
+
+     Two depths, two densities, off the same `full` class the card frame
+     carries: a preview is one card in a list of them and keeps to a row or two
+     of smaller faces, while the permalink IS the page about this list. */
+  .people-grid { display: grid; grid-template-columns: repeat(6, minmax(0, 1fr));
+                 gap: 14px 8px; margin-top: 10px; }
+  .people-grid.full { gap: 18px 10px; }
   .person-cell { display: flex; flex-direction: column; align-items: center; gap: 7px;
                  min-width: 0; text-align: center; text-decoration: none; color: inherit; }
   .person-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-                 font-size: 13px; font-weight: 600; line-height: 1.25; }
+                 font-size: 12px; font-weight: 600; line-height: 1.25; }
+  .people-grid.full .person-name { font-size: 13px; }
   /* The npub fallback is deliberately quieter than a name: it is the absence
      of one, and it should not be the loudest text in the grid. */
   .person-name.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
-                      font-size: 11.5px; font-weight: 500; color: var(--muted); }
-  .person-cell:hover .person-name { color: var(--accent); }
-  /* the count of who did NOT fit, which must not look like the last row's caption */
-  .people-grid + .muted-note { margin-top: 9px; }
+                      font-size: 11px; font-weight: 500; color: var(--muted); }
+  .people-grid.full .person-name.mono { font-size: 11.5px; }
+  a.person-cell:hover .person-name { color: var(--accent); }
+  /* Who did NOT fit, as the last cell: the count lands where the eye already
+     is and the row stays rectangular, where a line of text under the grid read
+     as a caption for whoever happened to be last. Sized off `--av` so it tracks
+     the faces beside it at either depth. */
+  .person-cell.more .person-name { color: var(--faint); font-weight: 500; }
+  .more-face { display: flex; align-items: center; justify-content: center;
+               background: var(--surface-2); border-style: dashed; color: var(--muted);
+               font-size: calc(var(--av) * .26); font-weight: 700; letter-spacing: -.02em; }
+  /* Its own breakpoint, below the page's: six columns hold their shape down to
+     ~70px each, which is a good deal narrower than where the FACES shrink. The
+     step can only be to a divisor of the caps, so it is a halving — and the
+     max-width is what stops three columns from sprawling to 150px each on the
+     wide side of it, which is the same "one list or three things" complaint
+     that started this, one breakpoint down. */
+  @media (max-width: 525px) {
+    .people-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); max-width: 400px; }
+  }
   .relay-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
   .relay-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .relay-list .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -1051,9 +1079,10 @@
     body.searching .hero-inner { grid-template-columns: minmax(0, 1fr); }
     body.searching .brand { display: none; }
     .av-xl { --av: 40px; --chip: 16px; --chip-text: 10px; }
-    /* Three columns survive a phone; a 64px face in a ~95px column does not. */
+    /* A 64px face wants a ~116px column, which is a third of a phone. */
     .av-xxl { --av: 52px; --chip: 20px; --chip-text: 11px; }
     .people-grid { gap: 12px 6px; }
+    .people-grid.full { gap: 14px 8px; }
     .thumb { width: 72px; height: 72px; }
     .props { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
     .props dt { margin-top: 6px; font-size: 11px; }

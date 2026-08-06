@@ -411,7 +411,11 @@ async function search(text, limit, deep) {
   // sent. base.js says it plainly about the score chip: "the score is a
   // second round trip, and a face should not wait on it." A name is the same
   // round trip; it was just on the other side of the render.
-  const mentioned = events.flatMap(namedPubkeys);
+  // Called with ONE argument on purpose. namedPubkeys takes the render depth
+  // as its second, and `flatMap(namedPubkeys)` hands it the array INDEX —
+  // harmless while a number has no `.full`, and a silent depth switch the
+  // moment that argument grows a second field somebody reads.
+  const mentioned = events.flatMap((e) => namedPubkeys(e));
   const names = enrichProfiles([...events.filter(e => e.kind !== 0).map(e => e.pubkey), ...mentioned]);
   // Free, and it removes most of the asks below: a thread in the results
   // carries its own parents, and an event is ground truth about who wrote it.

@@ -128,6 +128,9 @@ async function submitForIndexing(ev, host, my) {
   }
 }
 
+/** This page's render depth — the permalink is always the whole card. */
+const FULL = { full: true };
+
 function titleFor(ev, parsed) {
   const t = ev ? (titleOf(ev) || kindLabel(ev.kind)) : parsed ? parsed.type : "not found";
   return `SearchOverTrust — ${t}`;
@@ -148,6 +151,10 @@ function titleFor(ev, parsed) {
  *
  * "Never an npub where a name exists" only holds if the profiles are actually
  * loaded before the card renders.
+ *
+ * namedPubkeys takes the DEPTH this page will render at, because some cards
+ * name more people the deeper they are drawn — a list's people grid fills more
+ * cells here than in a result row, and each of those cells is a name.
  */
 async function enrichMentions(ev) {
   const faces = [...new Set(tagsWhere(ev, () => true).map((t) => t[1]).filter((v) => /^[0-9a-f]{64}$/.test(v || "")))];
@@ -159,11 +166,11 @@ async function enrichMentions(ev) {
   // fetched, and namedPubkeys cannot declare a pubkey nothing here knows yet.
   await Promise.all([
     loadParentAuthors(unknownParents([ev])),
-    enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev)])]),
+    enrichProfiles([...new Set([ev.pubkey, ...faces.slice(0, 50), ...namedPubkeys(ev, FULL)])]),
   ]);
   // Which is what this second pass is for — the parent's own profile, and a
   // no-op when the lookup above learned nobody new.
-  await enrichProfiles(namedPubkeys(ev));
+  await enrichProfiles(namedPubkeys(ev, FULL));
 }
 
 /**
@@ -258,7 +265,7 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
       if (my !== token) return;
       $results.innerHTML = headHtml(parsed.raw) +
         `<div class="prov warn">⚠ shown from outside your web of trust — the author has no score under your lens</div>` +
-        card(gated, { full: true });
+        card(gated, FULL);
       document.title = titleFor(gated, parsed);
       paintScores();
       watchNip05();
@@ -282,7 +289,7 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
     const prov = hint
       ? `<div class="prov" id="prov">not in this relay's index — fetched from its hint <span class="mono">${esc(host)}</span>, submitting here for indexing…</div>`
       : "";
-    $results.innerHTML = headHtml(parsed.raw) + prov + card(ev, { full: true });
+    $results.innerHTML = headHtml(parsed.raw) + prov + card(ev, FULL);
     if (hint) submitForIndexing(ev, host, my);
   }
   document.title = titleFor(ev, parsed);

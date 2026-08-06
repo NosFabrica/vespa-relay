@@ -49,9 +49,15 @@ export const card = (ev, opts) => (renderers.get(ev.kind) || genericCard)(ev, op
  * list's people grid draws is not that: it draws names, so gridPeople() is
  * declared, capped at the number the card can actually draw. Bounded by the
  * grid rather than by the list, because that is the difference between a
- * follow list costing 24 profiles and costing eight thousand.
+ * follow list costing a couple of dozen profiles and costing eight thousand.
+ *
+ * `opts` is the RENDER's opts, and it is the same one the card will be drawn
+ * with — the answer is "who does this card name at this depth", not "who could
+ * it ever name". The results list only ever renders previews; asking it for
+ * the permalink's set fetched three times the profiles any card on the page
+ * could show, on every search.
  */
-export function namedPubkeys(ev) {
+export function namedPubkeys(ev, opts) {
   const out = new Set();
   const add = (v) => { if (/^[0-9a-f]{64}$/.test(v || "")) out.add(v); };
   for (const t of tagsWhere(ev, (name) => name === "d" || name === "p" || /^\d+:/.test(name))) {
@@ -62,7 +68,7 @@ export function namedPubkeys(ev) {
     else add(t[1]);                                        // a 10040's service column
   }
   // Everyone a list's grid puts a name under, and nobody past its last cell.
-  for (const pk of gridPeople(ev)) add(pk);
+  for (const pk of gridPeople(ev, opts)) add(pk);
   // Who a reply answers. Not reachable by any scan of this event either: the
   // person is named by an `e` tag's optional fifth element, by an address's
   // middle field, or by a lookup of the parent — three slots, one answer, and
