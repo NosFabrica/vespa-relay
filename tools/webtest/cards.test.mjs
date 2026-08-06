@@ -6,7 +6,7 @@ globalThis.window = { addEventListener: () => {} };
 const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
 const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { buildFilters } = await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
-const { renderers, safeUrl } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
+const { renderers, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
 const { REPLY_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
@@ -478,6 +478,37 @@ const private_ = card(ev(10000, [], "AbCdEf==?iv=xyz"), { full: true });
 assert(private_.includes("nothing public here") && private_.includes("encrypted"), "an all-private list says so");
 assert(!private_.includes("0 people"), "an encrypted list is not an empty one");
 
+// A list's PEOPLE are its contents, so they are drawn as a grid of face +
+// name — one cell per person, not a row of anonymous 30px circles. Both the
+// standard lists (this 10000's `p` section) and the follow kinds.
+const muted = card(ev(10000, [["p", pk2]]), { full: true });
+assert(muted.includes('class="people-grid"') && muted.includes('class="person-cell"'), "a list's people get a cell each");
+assert(muted.includes("av-xxl"), "…at the grid's face size, not the strip's");
+assert(muted.includes(">olga</span>"), "…with the name under the face");
+assert(!card(ev(10000, [["p", pk2]])).includes("face-strip"), "the preview draws the same grid the permalink does");
+// The caps are per depth, and what is left over is said in words rather than
+// silently dropped — a grid that stops at its last cell reads as the whole
+// list, which for a follow list of thousands is a lie.
+const crowd = Array.from({ length: PEOPLE_GRID.full + 5 }, (_, i) => i.toString(16).padStart(64, "0"));
+const cells = (html) => (html.match(/class="person-cell"/g) || []).length;
+const follows = ev(3, crowd.map((p) => ["p", p]));
+assert.strictEqual(cells(card(follows)), PEOPLE_GRID.preview, "the preview grid stops at its cap");
+assert.strictEqual(cells(card(follows, { full: true })), PEOPLE_GRID.full, "the permalink grid shows more, and stops too");
+assert(card(follows).includes(`…and ${crowd.length - PEOPLE_GRID.preview} more`), "the ones not drawn are counted out loud");
+assert(card(ev(3, [["p", pk2]])).includes("follows <b>1</b> person") &&
+  !card(ev(3, [["p", pk2]])).includes(" more"), "a list inside the cap claims nothing beyond it");
+
+// PEOPLE_GRID_KINDS is what cards.js loads profiles from, so it must be the
+// same set as the kinds whose card actually draws a grid — in BOTH directions.
+// A kind that declares one and draws none fetches profiles for nobody; a kind
+// that draws one without declaring puts an npub under every face in it, which
+// is the failure the whole enrichment claim below exists to prevent.
+for (const kind of renderers.keys()) {
+  const drawn = card(ev(kind, [["d", "x"], ["p", pk2]]), { full: true }).includes('class="people-grid"');
+  assert.strictEqual(drawn, PEOPLE_GRID_KINDS.has(kind),
+    `kind ${kind}: draws a people grid = ${drawn}, but declares one = ${PEOPLE_GRID_KINDS.has(kind)}`);
+}
+
 // A tab is a `kinds` filter, so a kind in the wrong tab is a search that
 // cannot find it under any chip. "Media" carried 31922 — a calendar date the
 // live family renders — while 1986 audio was in no tab at all.
@@ -547,9 +578,16 @@ assert(namedPubkeys(ev(9735, [["p", pk2],
   "the zap sender comes out of the stringified request, not the tags");
 assert.deepStrictEqual(namedPubkeys(ev(9735, [["description", "not json at all"]])), [],
   "a malformed receipt names nobody rather than throwing");
-// A follow list's thousands stay faces: naming them would be a profile fetch
-// per member on every result in the list.
-assert.deepStrictEqual(namedPubkeys(ev(3, [["p", pk2], ["p", pk]])), [], "faces are not names");
+// A list's people are DRAWN with names now, so they are declared — but only
+// as far as the grid reaches. Naming a follow list's thousands would be a
+// profile fetch per member on every result in the list; naming none of them
+// was the version that put an npub under every face in the grid.
+const declared = namedPubkeys(follows);
+assert.strictEqual(declared.length, PEOPLE_GRID.full, "a follow list declares exactly what its grid can draw");
+assert.deepStrictEqual(declared, crowd.slice(0, PEOPLE_GRID.full), "…and it is the ones drawn first");
+// The people a card only shows a PICTURE of stay undeclared: a face needs no
+// lookup to be right, and 34550 carries its moderators as a strip.
+assert.deepStrictEqual(namedPubkeys(ev(34550, [["d", "c"], ["p", pk2, "", "moderator"]])), [], "faces are not names");
 
 // THE ESCAPING CLAIM: nothing an event carries reaches the page as markup.
 //

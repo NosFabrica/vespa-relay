@@ -402,8 +402,8 @@ async function search(text, limit, deep) {
   // here, which meant it could only cover the slots that existed when it was
   // written; namedPubkeys lives with the renderers and is held to them by a
   // test, so a new family that names somebody cannot silently stop being
-  // enriched. Faces are excluded on purpose: list previews draw them without
-  // names, and a follow list can carry thousands.
+  // enriched — including the people a list's grid names, which arrive here
+  // capped at what one card can draw rather than at what the list carries.
   //
   // NOT awaited. This used to block the return, so the results existed and
   // the page showed a skeleton until a SECOND round trip finished — up to the

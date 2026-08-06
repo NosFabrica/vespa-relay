@@ -15,14 +15,14 @@
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import {
-  register, shell, titleHtml, bodyHtml, faceStrip, relayRows, chipRow, hashtagHref,
+  register, registerPeopleGrid, shell, titleHtml, bodyHtml, peopleGrid, relayRows, chipRow, hashtagHref,
   emojiGrid, refRows, extLink, tagsOf, tagOf,
 } from "./base.js";
 
 // What each tag holds, and how it wants to be shown. A section with no
 // renderer here cannot be declared below — the table is the whole vocabulary.
 const TAGS = {
-  p: { one: "person", many: "people", show: (v, o) => faceStrip(v.filter((pk) => /^[0-9a-f]{64}$/.test(pk)), o && o.full ? 24 : 12) },
+  p: { one: "person", many: "people", show: (v, o) => peopleGrid(v.filter((pk) => /^[0-9a-f]{64}$/.test(pk)), o) },
   e: { one: "event", many: "events", show: (v, o) => refRows(v.map((x) => ({ kind: "e", value: x })), o) },
   a: { one: "entry", many: "entries", show: (v, o) => refRows(v.map((x) => ({ kind: "a", value: x })), o) },
   // A hashtag is a search wherever it appears — on an interest list as much as
@@ -124,6 +124,13 @@ function listCard(ev, opts) {
 }
 
 register(Object.keys(LISTS).map(Number), listCard);
+// Derived from the table rather than listed again: a kind draws a people grid
+// exactly when its row carries a `p` section, so adding one to the table above
+// is all it takes for those people to be named — and enriched — as well as drawn.
+registerPeopleGrid(
+  Object.keys(LISTS)
+    .filter((k) => LISTS[k].some((e) => (Array.isArray(e) ? e[0] : e) === "p"))
+    .map(Number));
 
 // 39701 — NIP-B0 web bookmarks. Not a NIP-51 list at all, but the same
 // instinct one file over: the `d` IS the bookmarked url (without its scheme),

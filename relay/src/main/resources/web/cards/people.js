@@ -6,27 +6,27 @@
 
 import { esc, titleOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
-import { register, shell, faceStrip, personLink, noteHref, addrHref, relayRows, tagsOf, tagsWhere, tagOf, clipIf } from "./base.js";
+import { register, registerPeopleGrid, shell, peopleGrid, personLink, noteHref, addrHref, relayRows, tagsOf, tagsWhere, tagOf, clipIf } from "./base.js";
 
 const pTags = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
 
-/** 3 — the follow list: a count and a strip of faces, not 800 rows. */
+/** 3 — the follow list: a count and the first faces and names, not 800 rows. */
 function followsCard(ev, opts) {
   const pks = pTags(ev);
   const inner =
     `<div class="result-body">follows <b>${pks.length.toLocaleString()}</b> ${pks.length === 1 ? "person" : "people"}</div>` +
-    faceStrip(pks, opts && opts.full ? 24 : 12);
+    peopleGrid(pks, opts);
   return shell(ev, opts, inner);
 }
 
-/** 30000 — a named follow set: the d/title plus the same strip. */
+/** 30000 — a named follow set: the d/title plus the same grid. */
 function followSetCard(ev, opts) {
   const pks = pTags(ev);
   const title = titleOf(ev);
   const inner =
     (title ? `<h2 class="result-title">${esc(clipIf(opts, title, 120))}</h2>` : "") +
     `<div class="result-body">${pks.length.toLocaleString()} ${pks.length === 1 ? "member" : "members"}</div>` +
-    faceStrip(pks, opts && opts.full ? 24 : 12);
+    peopleGrid(pks, opts);
   return shell(ev, opts, inner);
 }
 
@@ -94,6 +94,7 @@ register([3], followsCard);
 // 39089/39092 are follow sets under another name — a named group of pubkeys
 // meant to be followed together. Same tags, same card, no second template.
 register([30000, 39089, 39092], followSetCard);
+registerPeopleGrid([3, 30000, 39089, 39092]);
 register([10002], relayListCard);
 register([30002], relaySetCard);
 register([10040], observerCard);

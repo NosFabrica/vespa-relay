@@ -697,6 +697,7 @@
   .av-md   { --av: 30px; --chip: 13px;   --chip-text: 8.5px; }   /* a face strip */
   .av-lg   { --av: 34px; --chip: 15px;   --chip-text: 9px; }     /* a result row, a card's own picture */
   .av-xl   { --av: 46px; --chip: 18px;   --chip-text: 10.5px; }  /* the profile card's header */
+  .av-xxl  { --av: 64px; --chip: 24px;   --chip-text: 12px; }    /* a people grid cell */
   /* As big as the box it was put in — the toolbar's "me" button, which is
      pinned to the field's height rather than sized in pixels. */
   .av-fill { --av: 100%; display: block; width: 100%; height: 100%; }
@@ -927,6 +928,32 @@
   /* Overlapping faces need a rim to read as separate ones. */
   .face-strip .avatar { box-shadow: 0 0 0 2px var(--surface); }
   .face-strip .face-more { margin-left: 8px; font-size: 12px; color: var(--faint); }
+  /* The people a LIST holds — its contents, not a decoration on it, so they
+     get a cell each instead of a row of overlapping thumbnails. Three columns
+     at both depths and at every width: the ask was three, and `auto-fill`
+     would quietly make it four on a wide window and one on a phone. What
+     gives instead is the face (the `--av` table below the breakpoint) and the
+     column width, which is why every cell is `minmax(0, 1fr)` — a bare `1fr`
+     is min-content, so one long name would push the other two columns out
+     rather than ellipsing itself.
+
+     The max-width is the other half of that: three columns across the whole
+     780px card put ~250px between two 64px faces, and a row of people with
+     that much air between them reads as three separate things rather than as
+     one list. */
+  .people-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr));
+                 gap: 14px 8px; margin-top: 10px; max-width: 480px; }
+  .person-cell { display: flex; flex-direction: column; align-items: center; gap: 7px;
+                 min-width: 0; text-align: center; text-decoration: none; color: inherit; }
+  .person-name { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+                 font-size: 13px; font-weight: 600; line-height: 1.25; }
+  /* The npub fallback is deliberately quieter than a name: it is the absence
+     of one, and it should not be the loudest text in the grid. */
+  .person-name.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+                      font-size: 11.5px; font-weight: 500; color: var(--muted); }
+  .person-cell:hover .person-name { color: var(--accent); }
+  /* the count of who did NOT fit, which must not look like the last row's caption */
+  .people-grid + .muted-note { margin-top: 9px; }
   .relay-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
   .relay-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .relay-list .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
@@ -1024,6 +1051,9 @@
     body.searching .hero-inner { grid-template-columns: minmax(0, 1fr); }
     body.searching .brand { display: none; }
     .av-xl { --av: 40px; --chip: 16px; --chip-text: 10px; }
+    /* Three columns survive a phone; a 64px face in a ~95px column does not. */
+    .av-xxl { --av: 52px; --chip: 20px; --chip-text: 11px; }
+    .people-grid { gap: 12px 6px; }
     .thumb { width: 72px; height: 72px; }
     .props { grid-template-columns: minmax(0, 1fr); gap: 0 0; }
     .props dt { margin-top: 6px; font-size: 11px; }

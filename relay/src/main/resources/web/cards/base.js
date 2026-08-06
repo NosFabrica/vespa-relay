@@ -384,10 +384,71 @@ export function refRows(refs, opts) {
   return `<ul class="ref-list">${shown.map((r) => `<li>${row(r)}</li>`).join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
-/** A strip of faces for list kinds — stable generated faces even before any profile loads. */
+/** A strip of faces where people are a card's CONTEXT — a poll's winners, a community's moderators. */
 export function faceStrip(pubkeys, max = 12) {
   const shown = pubkeys.slice(0, max);
   if (!shown.length) return "";
   const more = pubkeys.length - shown.length;
   return `<div class="face-strip">${shown.map((pk) => `<a href="${keyHref(pk)}">${avatarHtml(authorOf({ pubkey: pk }).picture, pk, "md")}</a>`).join("")}${more > 0 ? `<span class="face-more">+${more}</span>` : ""}</div>`;
 }
+
+/**
+ * How many people a grid draws, per depth — the preview two rows of three,
+ * the permalink eight. Multiples of three on purpose: a ragged last row in a
+ * three-column grid reads as a rendering fault rather than as a cap, and the
+ * cap already announces itself in words underneath.
+ *
+ * Exported because cards.js reads the full figure to decide whose profile the
+ * page owes itself: the number drawn and the number NAMED are the same number,
+ * and a second copy of it would drift into npubs in the last row.
+ */
+export const PEOPLE_GRID = { preview: 6, full: 24 };
+
+/**
+ * The people a list HOLDS, as a grid of face + name.
+ *
+ * A `p` tag on a list kind is not a mention — it IS the list. Rendered as a
+ * face strip it was a row of 30px thumbnails with no names at all, so a follow
+ * set of twelve people said "12 members" and then showed twelve anonymous
+ * circles: everything about WHO was in it had to be recovered by hovering, one
+ * at a time. So the people get a cell each, at the size a face is actually
+ * recognisable, with the name under it.
+ *
+ * The name is `personLink`'s ladder, minus the link markup — display name, a
+ * short npub only when the store knows no profile, never hex — and the npub
+ * always sits in the title, which is also how cards.test.mjs finds every
+ * person a card names.
+ */
+export function peopleGrid(pubkeys, opts) {
+  const shown = pubkeys.slice(0, opts && opts.full ? PEOPLE_GRID.full : PEOPLE_GRID.preview);
+  if (!shown.length) return "";
+  const more = pubkeys.length - shown.length;
+  const cell = (pk) => {
+    const nm = displayName(profiles.get(pk));
+    return `<a class="person-cell" href="${keyHref(pk)}" title="${esc(npub(pk))}">` +
+      avatarHtml(authorOf({ pubkey: pk }).picture, pk, "xxl") +
+      `<span class="person-name${nm ? "" : " mono"}">${esc(nm || shortNpub(pk))}</span></a>`;
+  };
+  return `<div class="people-grid">${shown.map(cell).join("")}</div>` +
+    (more > 0 ? `<div class="muted-note">…and ${more.toLocaleString()} more</div>` : "");
+}
+
+/**
+ * Which kinds draw that grid — declared by the families that register the
+ * renderers, not listed a second time in cards.js.
+ *
+ * A card that NAMES somebody must have that somebody's profile loaded before
+ * it renders, and cards.js is where the page asks who those people are. It
+ * used to answer "never a `p` tag on a list kind", which was true while lists
+ * drew faces and became silently wrong the moment they drew names — the exact
+ * drift its own docstring warns about. Registering the kinds beside the
+ * renderer keeps one answer: whoever draws a grid says so here.
+ */
+export const PEOPLE_GRID_KINDS = new Set();
+export const registerPeopleGrid = (kinds) => { for (const k of kinds) PEOPLE_GRID_KINDS.add(k); };
+
+/** The pubkeys [ev]'s grid can draw — capped exactly as peopleGrid caps them. */
+export const gridPeople = (ev) =>
+  PEOPLE_GRID_KINDS.has(ev.kind)
+    ? tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk || "")).slice(0, PEOPLE_GRID.full)
+    : [];
