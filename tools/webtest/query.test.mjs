@@ -202,6 +202,14 @@ assert.strictEqual(parseQuery("since:2026-01-01 since:2026-06-01").since, secs(2
 assert.strictEqual(parseQuery("since:2026-06-01 since:2026-01-01").since, secs(2026, 6, 1), "…in either order");
 assert.strictEqual(parseQuery("until:2026-06-01 until:2026-01-01").until, secs(2026, 1, 2) - 1, "the earlier until wins");
 
+// An IMPOSSIBLE window is a legal query and a distinguishable one. Nothing here
+// stops it — the reader may have meant it, and a URL can carry it in — but the
+// empty results page reads the two bounds back off the parse so it can say "the
+// window is empty" instead of "try a different term", which is advice that
+// cannot work.
+q = parseQuery("since:2026-08-06 until:2026-01-01");
+assert(q.since > q.until, "a crossed window survives the parse, so the page can tell that apart from no matches");
+
 q = parseQuery(`from:${A} #nostr since:2026-01-01 until:2026-12-31 cats`);
 assert.deepStrictEqual(
   [q.terms, q.authors, q.hashtags, q.since, q.until],

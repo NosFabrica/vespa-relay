@@ -12,7 +12,9 @@
 //   3. Typing `since:` or `until:` opens a CALENDAR in the same box, and
 //      picking a day writes `since:2026-08-06` into the text. Nothing about it
 //      goes near the network — a month grid is arithmetic — so unlike the
-//      people picker it answers instantly and has nothing to debounce.
+//      people picker it answers instantly and has nothing to debounce. WHICH
+//      days exist is shared/calendar.js's, tested there; what is here is only
+//      how they are drawn and what a click on one does.
 //      `since:2026-08-06` then draws as a pill reading `since 6 Aug 2026`:
 //      the token is the ISO day, because `06/08/2026` means two different days
 //      to two readers, and the pill is the reader's own spelling of it.
@@ -49,83 +51,13 @@ import { esc, clip } from "./shared/format.js";
 import { profiles, displayName, enrichProfiles } from "./shared/profiles.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { tokenize, mentionAt, dateAt, drawable, ymd } from "./shared/query.js";
+import {
+  DOW, dayLabel, midnight, monthGrid, quickPicks, sameMonth, shiftDays, shiftMonths, typedMonth,
+} from "./shared/calendar.js";
 
 const PICKER_LIMIT = 8;
 const DEBOUNCE_MS = 150;
 
-// ---- days, as the calendar counts them ------------------------------------
-//
-// All local, all midnight, because that is what the language means by a day
-// (query.js's dayBound says why) and because a grid that drifted by a timezone
-// would highlight the wrong square for "today".
-
-const midnight = (d) => new Date(d.getFullYear(), d.getMonth(), d.getDate());
-const shiftDays = (d, n) => new Date(d.getFullYear(), d.getMonth(), d.getDate() + n);
-const shiftMonths = (d, n) => new Date(d.getFullYear(), d.getMonth() + n, 1);
-const sameDay = (a, b) => !!a && !!b && ymd(a) === ymd(b);
-
-/**
- * Which weekday a week starts on, 0 = Sunday.
- *
- * Asked of the reader's own locale where the browser will say (Chrome, Safari
- * carry Intl.Locale.weekInfo) and ISO Monday where it will not (Firefox). A
- * calendar that starts the week on the wrong day is not wrong so much as
- * unreadable — the columns stop being where the eye expects them.
- */
-function weekStart() {
-  try {
-    // weekInfo counts 1..7 from Monday; JS dates count 0..6 from Sunday.
-    const first = new Intl.Locale(navigator.language).weekInfo?.firstDay;
-    if (first) return first % 7;
-  } catch (e) { /* no weekInfo here — ISO it is */ }
-  return 1;
-}
-
-/** The column headings, in the order this locale's week runs. 4 Jan 2026 is a Sunday. */
-const dowNames = (start) =>
-  Array.from({ length: 7 }, (_, i) => new Date(2026, 0, 4 + start + i)).map((d) => ({
-    narrow: d.toLocaleDateString(undefined, { weekday: "narrow" }),
-    long: d.toLocaleDateString(undefined, { weekday: "long" }),
-  }));
-
-/** A day in the reader's own spelling — what a pill and a calendar say out loud. */
-const dayLabel = (d) => d.toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" });
-
-/**
- * The quick picks under the grid, as offsets in DAYS from today.
- *
- * Different for the two prefixes because they answer different questions: a
- * `since` is the start of a window ("the last week"), an `until` is a cutoff
- * ("before last week"). Each resolves to an absolute day and writes that, so
- * the language stays one token shape — a saved URL reading `since:7d` would
- * mean a different search every day it was opened.
- */
-const QUICK = {
-  since: [["Today", 0], ["Last 7 days", -6], ["Last 30 days", -29], ["Last 90 days", -89]],
-  until: [["Today", 0], ["Yesterday", -1], ["A week ago", -7], ["A month ago", -30]],
-};
-
-// The faces here are the page's face — generated fallback, score chip and all.
-// This module used to draw its own <img>, which is how the one place that ASKS
-// "who do you mean by this person" ended up being the one place that did not
-// say what the active lens thinks of them. A picker offering eight strangers
-// is exactly where the number earns its keep.
-/** The picture a person draws with right now, from whatever profiles knows. */
-const faceHtml = (pubkey, size) => avatarHtml((profiles.get(pubkey) || {}).picture, pubkey, size);
-
-/**
- * Take over `el` as the rendered search field, with `list` as its picker.
- *
- * `lookup(partial)` resolves to hex pubkeys, best first — app.js supplies it,
- * because whose socket the question goes down is app.js's business, not this
- * module's. `onEdit()` is called after every human edit, once this module's
- * own state is already current: app.js reads `mentioning` inside it and would
- * otherwise be reacting to the keystroke before last.
- *
- * `paintScores()` fills the score chips on whatever faces are on screen. It is
- * a hook for the same reason it is one on the entity page: the lens a score is
- * read under is app state, and this module only draws the faces.
- */
 export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
   let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
@@ -385,18 +317,33 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     cursor = null;
     list.classList.remove("open");
     list.innerHTML = "";
-    // Handed back to the results popup, which owns them the rest of the time.
+    // Back to the shape the markup declares, so a calendar's dialog role does
+    // not outlive the calendar.
+    list.setAttribute("role", "listbox");
+    // Handed back to the results popup, which owns these the rest of the time.
     el.setAttribute("aria-expanded", "false");
     el.setAttribute("aria-controls", "popup");
     el.removeAttribute("aria-activedescendant");
+    el.removeAttribute("aria-haspopup");
   }
 
-  /** Raise the box, whichever picker filled it, and say so to a screen reader. */
-  function openList(label) {
+  /**
+   * Raise the box, whichever picker filled it, and say what is in it.
+   *
+   * The ROLE changes with the contents, and has to. A list of people is a
+   * listbox; a calendar is a nav pair, a grid and four shortcuts, and calling
+   * that a listbox puts five interactive non-options inside one — which is not
+   * a listbox a screen reader can read. So the calendar is a dialog with the
+   * listbox narrowed to the days themselves, and the combobox's aria-haspopup
+   * says which of the two it currently offers.
+   */
+  function openList(role, label) {
+    list.setAttribute("role", role);
     list.setAttribute("aria-label", label);
     list.classList.add("open");
     el.setAttribute("aria-expanded", "true");
     el.setAttribute("aria-controls", "mentions");
+    el.setAttribute("aria-haspopup", role);
   }
 
   /**
@@ -471,7 +418,7 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     else if (!rows.length) body = `<div class="popup-note">Nobody matches “${esc(clip(mention.partial, 40))}”</div>`;
     else body = rows.map(rowHtml).join("");
     list.innerHTML = head + body;
-    openList("People");
+    openList("listbox", "People");
     markActive();
     // Asked of the DOM rather than of `rows`, because a note ("type a name",
     // "nobody matches") is also a body built from a non-empty argument.
@@ -552,112 +499,114 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
 
   // ---- the calendar --------------------------------------------------------
   //
-  // Everything here is arithmetic on local dates: there is no lookup, no
-  // debounce and no request id, because a month grid is not a question anyone
-  // has to answer. That is the whole difference from the people picker beside
-  // it — same box, same keys, same splice at the end, no network in the middle.
+  // Which days exist is shared/calendar.js's business and is tested there; what
+  // is here is only how they are drawn and what a click on one does. No lookup,
+  // no debounce, no request id — a month grid is not a question anyone has to
+  // answer, which is the whole difference from the people picker beside it.
 
-  const DAY_ID = (d) => `cal-day-${ymd(d)}`;
+  const DAY_ID = (value) => `cal-day-${value}`;
+  const HEAD = { since: "Written on or after", until: "Written on or before" };
 
-  /**
-   * The month a half-typed date names, or null while it names none.
-   *
-   * `since:2026-01` should not leave the grid sitting on this month: the reader
-   * has already said which one they mean, and making them arrow back to it is
-   * the calendar ignoring what is in the box. The day half is deliberately not
-   * read — `2026-01-3` is not a day yet, and jumping the grid at the third
-   * digit of a year would make it lurch through 2 AD on the way to 2026.
-   */
-  function typedMonth(partial) {
-    const m = /^(\d{4})-(\d{2})/.exec(String(partial || ""));
-    if (!m) return null;
-    const [y, mo] = m.slice(1).map(Number);
-    if (mo < 1 || mo > 12) return null;
-    const at = new Date(y, mo - 1, 1);
-    return at.getFullYear() === y ? at : null;
-  }
-
+  // Nothing here draws the CURSOR: markDay does, on the cells this built, for
+  // the same reason markActive does it for the people rows. A grid rebuilt per
+  // arrow press throws away fifty nodes to move one highlight — the lesson the
+  // people list already paid for once.
+  //
+  // tabindex="-1" on every control, as the people rows are not focusable
+  // either: the caret has to stay in the field, because it is what a pick
+  // splices into, and thirty-one tab stops between the box and the next control
+  // is not a keyboard path anybody wants. The keyboard reaches all of this
+  // through the field instead — arrows for days, Page keys for months.
   function calendarHtml() {
     const today = midnight(new Date());
-    const start = weekStart();
-    const shown = month || shiftMonths(today, 0);
-    const lead = (new Date(shown.getFullYear(), shown.getMonth(), 1).getDay() - start + 7) % 7;
-    const days = new Date(shown.getFullYear(), shown.getMonth() + 1, 0).getDate();
-    const cells = [];
+    const grid = monthGrid(month || shiftMonths(today, 0), today);
     // The blanks before the 1st are real cells, not a margin: the grid is seven
-    // columns and the 1st has to land under its own weekday.
-    for (let i = 0; i < lead; i++) cells.push(`<span class="cal-pad" aria-hidden="true"></span>`);
-    for (let n = 1; n <= days; n++) {
-      const d = new Date(shown.getFullYear(), shown.getMonth(), n);
-      const cls = ["cal-day"];
-      if (sameDay(d, today)) cls.push("today");
-      if (sameDay(d, cursor)) cls.push("active");
-      // A future day is a legal bound — events carry the created_at their
-      // author claimed — so it is dimmed rather than disabled: rare, not wrong.
-      if (d > today) cls.push("ahead");
-      cells.push(
-        `<button type="button" class="${cls.join(" ")}" id="${DAY_ID(d)}" data-day="${ymd(d)}"` +
-        ` role="option" aria-selected="${sameDay(d, cursor)}" aria-label="${esc(dayLabel(d))}">${n}</button>`,
-      );
-    }
-    const dow = dowNames(start)
-      .map((w) => `<span class="cal-dow" title="${esc(w.long)}">${esc(w.narrow)}</span>`)
-      .join("");
-    const quick = QUICK[day.field]
-      .map(([label, off]) => `<button type="button" class="cal-pick" data-day="${ymd(shiftDays(today, off))}">${esc(label)}</button>`)
+    // columns and the 1st has to land under its own weekday. aria-hidden, so
+    // the listbox they sit in holds nothing but days.
+    const pads = Array.from({ length: grid.lead }, () => `<span class="cal-pad" aria-hidden="true"></span>`);
+    const cells = grid.days.map((d) =>
+      `<button type="button" tabindex="-1" id="${DAY_ID(d.value)}" data-day="${d.value}"` +
+      ` class="cal-day${d.today ? " today" : ""}${d.ahead ? " ahead" : ""}"` +
+      ` role="option" aria-selected="false" aria-label="${esc(dayLabel(d.at))}">${d.at.getDate()}</button>`);
+    const dow = DOW.map((w) => `<span class="cal-dow" aria-hidden="true" title="${esc(w.long)}">${esc(w.narrow)}</span>`).join("");
+    const quick = quickPicks(day.field, today)
+      .map((p) => `<button type="button" tabindex="-1" class="cal-pick" data-day="${p.value}">${esc(p.label)}</button>`)
       .join("");
     return (
       `<div class="cal">` +
       `<div class="cal-nav">` +
-      `<button type="button" class="cal-step" data-step="-1" aria-label="Previous month">&lsaquo;</button>` +
-      `<div class="cal-month">${esc(shown.toLocaleDateString(undefined, { month: "long", year: "numeric" }))}</div>` +
-      `<button type="button" class="cal-step" data-step="1" aria-label="Next month">&rsaquo;</button>` +
+      `<button type="button" tabindex="-1" class="cal-step" data-step="-1" aria-label="Previous month">&lsaquo;</button>` +
+      `<div class="cal-month">${esc(grid.label)}</div>` +
+      `<button type="button" tabindex="-1" class="cal-step" data-step="1" aria-label="Next month">&rsaquo;</button>` +
       `</div>` +
-      `<div class="cal-grid">${dow}${cells.join("")}</div>` +
+      `<div class="cal-grid" role="listbox" aria-label="Days">${dow}${pads.join("")}${cells.join("")}</div>` +
       `<div class="cal-quick">${quick}</div>` +
       `</div>`
     );
   }
 
+  /**
+   * Which day the keyboard is on, as a class flip on cells that already exist.
+   *
+   * The people list's markActive, for the grid: moving the highlight must not
+   * cost a render. It is also the only writer of aria-activedescendant on this
+   * side, so the announced day and the filled square cannot disagree.
+   */
+  function markDay() {
+    const on = cursor ? ymd(cursor) : null;
+    let found = null;
+    for (const cell of list.querySelectorAll(".cal-day")) {
+      const is = cell.dataset.day === on;
+      cell.classList.toggle("active", is);
+      cell.setAttribute("aria-selected", String(is));
+      if (is) found = cell;
+    }
+    if (found) el.setAttribute("aria-activedescendant", found.id);
+    else el.removeAttribute("aria-activedescendant");
+  }
+
   function renderCalendar() {
     if (!day) return;
-    const head =
-      `<div class="popup-head"><span>${day.field === "since" ? "Written on or after" : "Written on or before"}</span>` +
-      `<span class="timing">${esc(day.field)}:</span></div>`;
-    list.innerHTML = head + calendarHtml();
-    // A listbox of days rather than a grid: the field is a combobox, the two
-    // pickers share its aria-activedescendant, and one honest pattern that both
-    // fit beats a second one that only this half implements properly.
-    openList("Dates");
-    const on = cursor && list.querySelector(".cal-day.active");
-    if (on) el.setAttribute("aria-activedescendant", on.id);
-    else el.removeAttribute("aria-activedescendant");
+    list.innerHTML =
+      `<div class="popup-head"><span>${HEAD[day.field]}</span><span class="timing">${esc(day.field)}:</span></div>` +
+      calendarHtml();
+    openList("dialog", HEAD[day.field]);
+    markDay();
+  }
+
+  /**
+   * Point the grid at a month, dropping a cursor that would fall off it.
+   *
+   * The one invariant the three callers below all need: the highlighted day is
+   * either on screen or gone. A cursor left behind in a month nobody is looking
+   * at is a day Enter would pick sight unseen.
+   */
+  function setMonth(next) {
+    month = next;
+    if (!sameMonth(cursor, month)) cursor = null;
   }
 
   /** Re-read the `since:`/`until:` token under the caret and keep the grid in step. */
   function showCalendar(next) {
-    const same = !!day && day.field === next.field && day.start === next.start;
     // Idempotent for the same reason updateMention() is: this runs on every
     // caret move as well as every edit, and a grid that rebuilt itself for an
     // unchanged token would throw away the month the reader had stepped to.
-    if (same && day.partial === next.partial && listOpen()) return;
+    const same = !!day && day.field === next.field && day.start === next.start && listOpen();
+    if (same && day.partial === next.partial) return;
     day = next;
     if (mention) { clearTimeout(timer); mention = null; hits = []; active = -1; }
     // The typed month wins whenever the partial names one, so the grid follows
-    // the box; otherwise it holds where the reader last stepped it, and opens
-    // on this month.
-    month = typedMonth(next.partial) || (same && month) || shiftMonths(midnight(new Date()), 0);
-    if (!same) cursor = null;
-    // A cursor the reader has stepped off the shown month is not on screen and
-    // must not stay highlighted in the dark; Enter would pick a day nobody saw.
-    if (cursor && (cursor.getFullYear() !== month.getFullYear() || cursor.getMonth() !== month.getMonth())) cursor = null;
+    // what the box says. Failing that, the same token keeps wherever the reader
+    // had stepped it, and a calendar only just opened starts on this month.
+    setMonth(typedMonth(next.partial) || (same ? month : null) || shiftMonths(midnight(new Date()), 0));
+    // Always a full draw, even for an unchanged month: the head and the
+    // shortcuts belong to the TOKEN, and `since`→`until` changes both.
     renderCalendar();
   }
 
   function stepMonth(by) {
     if (!day) return;
-    month = shiftMonths(month || midnight(new Date()), by);
-    if (cursor) cursor = null;
+    setMonth(shiftMonths(month || midnight(new Date()), by));
     renderCalendar();
   }
 
@@ -668,15 +617,23 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
    * it is in view, the 1st of the shown month otherwise. Starting from "today"
    * unconditionally would put the cursor off-screen the moment somebody
    * arrowed after stepping back a year.
+   *
+   * The month is set from the day rather than the other way round, so setMonth
+   * is not in a position to throw away the cursor it was just handed.
    */
   function moveDay(by) {
     if (!day) return;
     const today = midnight(new Date());
     const shown = month || today;
-    const inShown = today.getFullYear() === shown.getFullYear() && today.getMonth() === shown.getMonth();
-    cursor = cursor ? shiftDays(cursor, by) : inShown ? today : new Date(shown.getFullYear(), shown.getMonth(), 1);
+    cursor = cursor ? shiftDays(cursor, by)
+      : sameMonth(today, shown) ? today
+        : new Date(shown.getFullYear(), shown.getMonth(), 1);
+    const crossed = !sameMonth(month, cursor);
     month = shiftMonths(cursor, 0);
-    renderCalendar();
+    // A step inside the month is a class flip, not a grid: the rule the people
+    // list already follows, and the reason an arrow press costs what it does.
+    if (crossed) renderCalendar();
+    else markDay();
   }
 
   function pickDay(value) {
@@ -853,6 +810,11 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
      * than a list — sideways is a day, up and down are a week, which is what
      * the shape on screen promises. Two more are its own: Page keys are how a
      * reader gets to last March without forty presses.
+     *
+     * That does cost Left and Right, which the people list leaves to the caret;
+     * Escape is what hands them back, and it hands them back for good — one
+     * press moves the caret INTO the token, where dateAt stops reporting a
+     * partial and nothing reopens.
      */
     handleKey(e) {
       if (!listOpen()) return false;

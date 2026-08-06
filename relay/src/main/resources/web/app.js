@@ -949,10 +949,31 @@ const skelRows = (n) => Array.from({ length: n }, () =>
      </div>
    </div>`).join("");
 
+/**
+ * Nothing came back — but "nothing matched" and "nothing COULD match" are two
+ * different answers, and only one of them is worth trying a different term for.
+ *
+ * A window whose `until` is before its `since` is the second: it excludes every
+ * event that has ever existed, and the relay returning zero is not evidence
+ * about the search. It is easy to build without noticing — pick a `since`, then
+ * pick an `until` from the same calendar a month too early — and easier still
+ * to inherit from a shared URL, so the check is on the query rather than on the
+ * picker that usually makes it.
+ */
+function emptyWindow(text) {
+  const q = parseQuery(text || "");
+  return q.since != null && q.until != null && q.since > q.until;
+}
+
 function statusBody(placeholder) {
   if (s.error) return `<div class="error">${esc(s.error)}</div>`;
   if (s.loading && !s.hits.length) return placeholder;
-  if (!s.hits.length) return `<div class="empty"><b>No results</b>Try a different term, or widen the filter above.</div>`;
+  if (!s.hits.length) {
+    const why = emptyWindow(s.hitsFor)
+      ? "The window is empty — until: is before since:, so nothing can fall inside it."
+      : "Try a different term, or widen the filter above.";
+    return `<div class="empty"><b>No results</b>${esc(why)}</div>`;
+  }
   return null;
 }
 
