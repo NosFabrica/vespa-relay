@@ -36,8 +36,10 @@
 // as the text it hides, which a name and a face are not. So the field is a
 // div, and everything an input gave for free is given back here deliberately:
 // `value` (get and set), `select()`, a placeholder, single-line behaviour,
-// and paste/drop that insert TEXT rather than whatever html was on the
-// clipboard. app.js keeps writing `$q.value` and never learns the difference.
+// paste/drop that insert TEXT rather than whatever html was on the clipboard,
+// and letting go of the caret when the reader touches the page — which a
+// finger does not get from a contenteditable the way a mouse does. app.js
+// keeps writing `$q.value` and never learns the difference.
 //
 // The pickers and the results popup are mutually exclusive on purpose. All
 // three occupy the same square of screen, and a keystroke inside `from:ali` is
@@ -732,6 +734,16 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     // the caret is not placed at all — restoring one into an unfocused field
     // would scroll it back into view for no reader.
     syncPills(null);
+    // The SELECTION outlives the focus, and a caret is drawn from the
+    // selection. Losing focus leaves the document's only range sitting inside
+    // this div, which is a blinking caret in a field the reader has left —
+    // visible on a phone, where the compositor keeps painting it after the
+    // keyboard has gone. Dropped only when the range is ours, so a selection
+    // the same gesture made somewhere else survives. It is also what
+    // pendingMention() already documents as the unfocused state: no range in
+    // here means the caret reads as the end of the value.
+    const sel = document.getSelection();
+    if (sel && sel.rangeCount && el.contains(sel.getRangeAt(0).startContainer)) sel.removeAllRanges();
     // A click ON the picker must land before the picker disappears; mousedown
     // there has already fired by the time blur does, so the delay only has to
     // outlast the same tick.
@@ -752,6 +764,35 @@ export function mountSearchField(el, list, { lookup, onEdit, paintScores }) {
     e.preventDefault();
     pick(hits[Number(row.dataset.i)]);
   });
+
+  /**
+   * A touch anywhere else on the page LEAVES the field — said out loud, one
+   * more thing an <input> gave for free.
+   *
+   * An input loses focus the moment a pointer goes down outside it, on every
+   * device. A contenteditable div gets that from a desktop mouse and not from
+   * a finger: with nothing focusable under the tap there is nowhere for focus
+   * to go, so the editing session is torn down when the browser is finished
+   * with the soft keyboard rather than when the reader touched the page —
+   * seconds later, with the caret still blinking in the box the whole time.
+   * (It is invisible to a desktop browser in mobile-emulation, which
+   * synthesises the tap but has no keyboard to put away, so this is one to
+   * check on a phone.)
+   *
+   * pointerdown, because that is the moment the desktop already does it, and
+   * it is ahead of the click that closeList() waits for below. Capture, so
+   * nothing between the tap and the document can strand the caret by
+   * swallowing the event. Never inside .search-wrap: that box holds both
+   * pickers and the results popup, whose rows are picked with the caret still
+   * in the token they splice into — see the mousedown handler above, which
+   * preventDefaults for exactly that reason.
+   */
+  document.addEventListener("pointerdown", (e) => {
+    if (document.activeElement !== el) return;
+    const t = e.target;
+    if (t && t.closest && t.closest(".search-wrap")) return;
+    el.blur();
+  }, true);
 
   document.addEventListener("click", (e) => { if (!e.target.closest(".search-wrap")) closeList(); });
 
