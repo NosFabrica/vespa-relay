@@ -49,6 +49,8 @@ const ANSWER_KINDS = [1622, 1111, 1];
 
 /** How much of each list a page draws before it says how much it left. */
 const SECTION_CAP = 20;
+/** How much the relay is asked for — and so where a count stops being exact. */
+const ASK_LIMIT = 120;
 /** The one ask, and it must not hold the page: the card is already on screen. */
 export const RELATED_TIMEOUT_MS = 6000;
 
@@ -67,12 +69,12 @@ export function relatedAsk(ev) {
     const d = (ev.tags || []).find((t) => Array.isArray(t) && t[0] === "d" && t[1]);
     if (!d) return null;
     return [
-      { "#a": [`30617:${ev.pubkey}:${d[1]}`], kinds: REPO_ITEM_KINDS, limit: 120 },
+      { "#a": [`30617:${ev.pubkey}:${d[1]}`], kinds: REPO_ITEM_KINDS, limit: ASK_LIMIT },
       { kinds: [30618], authors: [ev.pubkey], "#d": [d[1]], limit: 1 },
     ];
   }
   if (THREAD_KINDS.includes(ev.kind) && /^[0-9a-f]{64}$/.test(ev.id || "")) {
-    return [{ "#e": [ev.id], kinds: [...STATUS_KINDS, ...ANSWER_KINDS], limit: 120 }];
+    return [{ "#e": [ev.id], kinds: [...STATUS_KINDS, ...ANSWER_KINDS], limit: ASK_LIMIT }];
   }
   return null;
 }
@@ -94,9 +96,18 @@ export function relatedShape(ev, events) {
   const fresh = [];
   for (const e of events || []) {
     if (!e || !e.id || seen.has(e.id) || !Number.isFinite(Number(e.created_at))) continue;
+    if (onlyMentions(e, ev.id)) continue;
     seen.add(e.id);
     fresh.push(e);
   }
+  // Whether the relay had more to say. `#e`/`#a` asks are capped, and a count
+  // taken off a capped read is a claim the page cannot support: "20 issues"
+  // when the ask stopped at its limit means "at least 20", and the heads say
+  // so rather than quietly rounding a project's backlog down to the number
+  // that fitted. `complete` is the client's EOSE flag — a TIMED-OUT read is
+  // truncated too, and for a reason the reader has even less way to see.
+  const partial = (events || []).length >= ASK_LIMIT || (events && events.complete === false);
+  const count = (n, one, many) => `${n}${partial ? "+" : ""} ${n === 1 && !partial ? one : many}`;
   const newestFirst = [...fresh].sort((a, b) => b.created_at - a.created_at);
   // Which repository these cards are already UNDER. Every one of them belongs
   // to it — that is what the ask selected on — so the line each card draws to
@@ -115,7 +126,7 @@ export function relatedShape(ev, events) {
       const inSection = newestFirst.filter((e) => s.kinds.includes(e.kind));
       if (!inSection.length) continue;
       sections.push({
-        head: `${inSection.length} ${inSection.length === 1 ? singular(s.head) : s.head}`,
+        head: count(inSection.length, singular(s.head), s.head),
         events: inSection.slice(0, SECTION_CAP),
         more: Math.max(0, inSection.length - SECTION_CAP),
       });
@@ -130,7 +141,7 @@ export function relatedShape(ev, events) {
     .sort((a, b) => a.created_at - b.created_at);
   const sections = replies.length
     ? [{
-        head: `${replies.length} ${replies.length === 1 ? "reply" : "replies"}`,
+        head: count(replies.length, "reply", "replies"),
         events: replies.slice(0, SECTION_CAP),
         more: Math.max(0, replies.length - SECTION_CAP),
       }]
@@ -139,6 +150,19 @@ export function relatedShape(ev, events) {
 }
 
 const singular = (s) => (s === "issues" ? "issue" : s === "patches" ? "patch" : s === "releases" ? "release" : s.replace(/s$/, ""));
+
+/**
+ * An event that only MENTIONS the one this page is about.
+ *
+ * A `#e` ask returns everything carrying the id, and NIP-10 marks a reference
+ * that is a citation rather than an answer. Listing those as replies puts
+ * somebody quoting an issue elsewhere into its thread, under a heading
+ * counting them as answers to it.
+ */
+function onlyMentions(e, id) {
+  const es = (e.tags || []).filter((t) => Array.isArray(t) && t[0] === "e" && t[1] === id);
+  return es.length > 0 && es.every((t) => String(t[3] || "").toLowerCase() === "mention");
+}
 
 /** A 30617's own address — what its page IS, and so what its cards are within. */
 function selfAddr(ev) {

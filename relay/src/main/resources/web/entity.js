@@ -197,7 +197,10 @@ async function paintRelated(ev, my, { paintScores, setHits }) {
   const html = relatedHtml(shape);
   if (!html) return;
   const $results = document.getElementById("results");
-  if (!$results) return;
+  // Appending, so "has one already" is the guard the token cannot give: the
+  // gated card's "Show it anyway" repaints the view and calls this again under
+  // the SAME token, and a reader who clicks it twice got two issue lists.
+  if (!$results || $results.querySelector(".related")) return;
   $results.insertAdjacentHTML("beforeend", html);
   setHits && setHits([ev, ...shape.events]);
   paintScores();

@@ -85,59 +85,89 @@ const CODE_LINES = 14;
  *
  * Not `clip()`, which trims: leading whitespace is INDENTATION here, and the
  * shared clipper flattened every preview of every snippet against the margin.
+ *
+ * And not `/\s+$/` for the trailing blank lines it used to drop, which is the
+ * textbook quadratic regex: every start position inside a run of whitespace is
+ * tried against `$`, so a snippet carrying 80k spaces in the MIDDLE of a line
+ * froze the tab for five seconds — per card, on the main thread, from a
+ * stranger's event. Counting back over whole lines is linear and says the same
+ * thing.
  */
 const LINE_CHARS = 200;
-function clipLines(opts, text, n) {
-  const lines = String(text || "").replace(/\s+$/, "").split("\n");
-  if (opts && opts.full) return { text: lines.join("\n"), more: 0 };
-  return {
-    text: lines.slice(0, n).map((l) => (l.length > LINE_CHARS ? l.slice(0, LINE_CHARS - 1) + "…" : l)).join("\n"),
-    more: Math.max(0, lines.length - n),
-  };
+function clipLines(opts, src, n) {
+  const all = Array.isArray(src) ? src : String(src || "").split("\n");
+  let end = all.length;
+  while (end > 0 && !all[end - 1].trim()) end--;
+  if (opts && opts.full) return { lines: all.slice(0, end), more: 0 };
+  const lines = all.slice(0, Math.min(n, end))
+    .map((l) => (l.length > LINE_CHARS ? l.slice(0, LINE_CHARS - 1) + "…" : l));
+  return { lines, more: end - lines.length };
+}
+
+/** The `diff --git` preamble lines, which are about the file rather than in it. */
+const DIFF_META = /^(index |new file|deleted file|old mode|new mode|similarity |rename |copy |Binary files )/;
+
+/**
+ * A diff read once: how big it is, and which voice each of its first [upTo]
+ * lines speaks in.
+ *
+ * ONE pass, because the stat has to see every line and the tint only the ones
+ * that reach the card — walking twice meant two passes over a patch that can
+ * be megabytes, and the honest count is not the optional half.
+ *
+ * The state is `inHunk`, and it is what makes `+++`/`---` readable at all:
+ * OUTSIDE a hunk they are the file headers, INSIDE one they are ordinary added
+ * and removed lines whose text happens to start with `--`. Stateless, a
+ * markdown rule `-------` deleted from a file read as a file header — grey
+ * where it should be red, and missing from a stat claiming to be the size of
+ * the change.
+ */
+function readDiff(lines, upTo) {
+  let files = 0, headers = 0, add = 0, del = 0, inHunk = false;
+  const classes = [];
+  for (let n = 0; n < lines.length; n++) {
+    const ln = lines[n];
+    let cls = "";
+    if (ln.startsWith("diff --git ")) { files++; inHunk = false; cls = "d-file"; }
+    else if (ln.startsWith("@@")) { inHunk = true; cls = "d-hunk"; }
+    // A bare `diff -u` names its next file with no `diff --git` to reset us,
+    // so the `--- `/`+++ ` PAIR is what ends the hunk before it.
+    else if (ln.startsWith("--- ") && String(lines[n + 1] || "").startsWith("+++ ")) { inHunk = false; cls = "d-file"; }
+    else if (!inHunk) {
+      if (ln.startsWith("+++")) { headers++; cls = "d-file"; }
+      else if (ln.startsWith("---") || DIFF_META.test(ln)) cls = "d-file";
+    } else if (ln.startsWith("+")) { add++; cls = "d-add"; }
+    else if (ln.startsWith("-")) { del++; cls = "d-del"; }
+    if (n < upTo) classes.push(cls);
+  }
+  // A plain `diff -u` names its files only in the `+++` line.
+  return { files: files || headers, add, del, classes };
 }
 
 /**
- * Which of a diff's voices a line speaks in. Order matters twice: `+++`/`---`
- * are file headers and not a one-line addition and deletion, and `--- ` is
- * tested before the bare `-`.
- */
-function diffClass(ln) {
-  if (/^(diff --git |index |new file|deleted file|old mode|new mode|similarity |rename |copy |Binary files )/.test(ln)) return "d-file";
-  if (ln.startsWith("+++") || ln.startsWith("---")) return "d-file";
-  if (ln.startsWith("@@")) return "d-hunk";
-  if (ln.startsWith("+")) return "d-add";
-  if (ln.startsWith("-")) return "d-del";
-  return "";
-}
-
-/**
- * The diff, tinted. TEXT colour only, never a filled row: the block scrolls
- * sideways, and a background stops at the fold — so a wide diff would show
- * green lines that go grey halfway across.
- */
-const diffHtml = (text) =>
-  text.split("\n").map((ln) => {
-    const cls = diffClass(ln);
-    return cls ? `<span class="${cls}">${esc(ln)}</span>` : esc(ln);
-  }).join("\n");
-
-/**
- * A code block, optionally with the file's name ON it.
+ * A code block, optionally with the file's name ON it and its lines tinted.
  *
  * The header bar is where every code host in the world puts a filename, and it
  * is the reason a snippet's `name` and `l` left the props table: a filename
  * under the code it names, in a two-column table beside the word "name", is a
  * fact about the card rather than a label on the file.
+ *
+ * `classes` tints per line — TEXT colour only, never a filled row: the block
+ * scrolls sideways, and a background stops at the fold, so a wide diff would
+ * show green lines going grey halfway across.
  */
-function codeBlock(opts, text, { name = null, lang = null, diff = false } = {}) {
-  const { text: shown, more } = clipLines(opts, text, CODE_LINES);
-  if (!shown) return "";
+function codeBlock(opts, src, { name = null, lang = null, classes = null } = {}) {
+  const { lines, more } = clipLines(opts, src, CODE_LINES);
+  if (!lines.length) return "";
   const head = name || lang
     ? `<div class="code-head">${name ? `<span class="code-name">${esc(clip(name, 60))}</span>` : ""}` +
       `${lang ? `<span class="code-lang">${esc(clip(lang, 24))}</span>` : ""}</div>`
     : "";
+  const body = classes
+    ? lines.map((ln, n) => (classes[n] ? `<span class="${classes[n]}">${esc(ln)}</span>` : esc(ln))).join("\n")
+    : esc(lines.join("\n"));
   return head +
-    `<pre class="codeblock${head ? " headed" : ""}${diff ? " diff" : ""}">${diff ? diffHtml(shown) : esc(shown)}</pre>` +
+    `<pre class="codeblock${head ? " headed" : ""}${classes ? " diff" : ""}">${body}</pre>` +
     (more ? `<div class="muted-note">…${more} more line${more === 1 ? "" : "s"}</div>` : "");
 }
 
@@ -157,7 +187,12 @@ function codeBlock(opts, text, { name = null, lang = null, diff = false } = {}) 
  * tag and the raw content, which is what the card showed before.
  */
 export function parsePatch(text) {
-  const lines = String(text || "").replace(/\r\n/g, "\n").split("\n");
+  // Split once and stay in LINES from here: `diffLines` is a view of this same
+  // array, so a megabyte patch is one copy rather than one per stage. The
+  // preview only ever renders fourteen of them, and joining the whole diff
+  // back into a string to re-split it downstream was three more full copies of
+  // a card nobody had scrolled to yet.
+  const lines = String(text || "").split(/\r?\n/);
   const head = Object.create(null);   // a stranger's header names, so no prototype
   let i = 0;
   // A mail only if it opens like one. `From <sha> <date>` is git's own first
@@ -165,24 +200,26 @@ export function parsePatch(text) {
   if (/^From [0-9a-f]{7,40} /.test(lines[0] || "")) {
     let name = null;
     for (i = 1; i < lines.length; i++) {
-      if (lines[i] === "") { i++; break; }
+      // The blank line ENDS the headers — and so does the diff, for a mail
+      // that never wrote one. Without this the header scan ate the patch and
+      // the card rendered a title over nothing.
+      if (lines[i] === "" || isDiffStart(lines, i)) { if (lines[i] === "") i++; break; }
       if (/^[ \t]/.test(lines[i]) && name) { head[name] += " " + lines[i].trim(); continue; }
       const m = /^([A-Za-z][A-Za-z-]*):[ \t]*(.*)$/.exec(lines[i]);
-      name = m ? m[1].toLowerCase() : null;
-      if (m && !(name in head)) head[name] = m[2];
+      // A repeat of a header we already have keeps the first value and takes
+      // no continuation: folding the SECOND `Subject`'s wrapped line onto the
+      // first one would build a sentence neither of them wrote.
+      name = m && !(m[1].toLowerCase() in head) ? m[1].toLowerCase() : null;
+      if (name) head[name] = m[2];
     }
   }
-  // Where the diff starts. `diff --git` is git's; the `--- a/…` pair is what a
-  // hand-rolled or `diff -u` patch opens with.
   let at = lines.length;
-  for (let n = i; n < lines.length; n++) {
-    if (lines[n].startsWith("diff --git ") ||
-        (/^--- /.test(lines[n]) && /^\+\+\+ /.test(lines[n + 1] || ""))) { at = n; break; }
-  }
+  for (let n = i; n < lines.length; n++) if (isDiffStart(lines, n)) { at = n; break; }
   // The message ends at git's `---` separator, whose diffstat we do not keep:
-  // the one below is counted from the diff being shown, so it cannot disagree
-  // with it. Searched from the diff BACKWARDS — a `---` rule inside the commit
-  // message is prose, and the separator is the last one before the patch.
+  // the one on the card is counted from the diff being shown, so it cannot
+  // disagree with it. Searched from the diff BACKWARDS — a `---` rule inside
+  // the commit message is prose, and the separator is the last one before the
+  // patch.
   let end = at;
   for (let n = at - 1; n >= i; n--) if (lines[n] === "---") { end = n; break; }
   const subject = stripMarkers(head.subject || "");
@@ -190,9 +227,14 @@ export function parsePatch(text) {
     subject: subject.text,
     markers: subject.markers,
     message: lines.slice(i, end).join("\n").trim(),
-    diff: lines.slice(at).join("\n").trim(),
+    diffLines: lines.slice(at),
   };
 }
+
+/** Where a patch stops being prose: git's own header, or a `--- `/`+++ ` pair. */
+const isDiffStart = (lines, n) =>
+  lines[n].startsWith("diff --git ") ||
+  (lines[n].startsWith("--- ") && String(lines[n + 1] || "").startsWith("+++ "));
 
 /**
  * `[PATCH v2 2/3] router: yield ingest` -> `{markers: ["PATCH v2 2/3"], text:
@@ -212,24 +254,6 @@ function stripMarkers(subject) {
     text = text.slice(m[0].length);
   }
   return { markers, text };
-}
-
-/**
- * What the diff being shown adds and removes — counted here rather than read
- * off git's own `--- 2 files changed…` block, so the numbers describe the lines
- * on the card even when the patch arrived without a stat block at all.
- */
-function diffStat(diff) {
-  let files = 0, headers = 0, add = 0, del = 0;
-  for (const ln of String(diff || "").split("\n")) {
-    if (ln.startsWith("diff --git ")) files++;
-    else if (ln.startsWith("+++")) headers++;
-    else if (ln.startsWith("---")) continue;
-    else if (ln.startsWith("+")) add++;
-    else if (ln.startsWith("-")) del++;
-  }
-  files = files || headers;   // a plain `diff -u` names its files only in the +++ line
-  return files || add || del ? { files, add, del } : null;
 }
 
 const statLine = (st) =>
@@ -286,25 +310,39 @@ function patchCard(ev, opts) {
   // one thing, one of them able to contradict the other, is worse than either.
   const marks = p.markers.length
     ? p.markers
-    : tagsOf(ev, "t").map((t) => t[1]).filter((v) => v === "root" || v === "root-revision");
-  const st = diffStat(p.diff);
+    : tagsOf(ev, "t").map((t) => t[1]).filter((v) => SERIES_MARKS.has(v));
   // What goes in the block. The parse recognised nothing at all — no mail, no
-  // diff — for content this card cannot read, and showing it verbatim beats
-  // showing a card with a byline and nothing under it. Guarded on the WHOLE
-  // parse rather than on the subject: a message with no diff is already
-  // rendered as prose above, and content would draw it a second time.
-  const block = p.diff || (p.subject || p.message || p.markers.length ? "" : ev.content);
+  // diff — for content this card cannot read, and showing it verbatim beats a
+  // card with a byline and nothing under it. Guarded on the WHOLE parse rather
+  // than on the subject: a message with no diff is already rendered as prose
+  // above, and the content would draw it a second time.
+  const block = p.diffLines.length || p.subject || p.message || p.markers.length
+    ? p.diffLines
+    : String(ev.content || "").split(/\r?\n/);
+  const st = readDiff(block, opts && opts.full ? block.length : CODE_LINES);
+  const isDiff = !!(st.files || st.add || st.del);
   const inner =
     repoLine(ev, opts) +
     titleWith(opts, subject, marks.slice(0, 3).map((m) => pill(clip(m, 40))).join("")) +
-    (st ? statLine(st) : "") +
+    (isDiff ? statLine(st) : "") +
     bodyHtml(opts, p.message, 400) +
-    codeBlock(opts, block, { diff: true });
+    // Tinted only when it IS a diff. The fallback block above is a patch whose
+    // content this card could not read, and colouring a prose line red because
+    // it opens with a dash is a claim about a change nobody made.
+    codeBlock(opts, block, { classes: isDiff ? st.classes : null });
   return shell(ev, opts, inner, opts && opts.full ? [
     ["commit", shortSha(tagOf(ev, "commit"))],
     ["parent", shortSha(tagOf(ev, "parent-commit"))],
   ] : []);
 }
+
+/**
+ * NIP-34's structural `t` values, which say where a patch sits in its series
+ * rather than labelling anything. They are the patch card's marker pill — and
+ * on a pull request, which carries the same tag, they were also appearing as a
+ * chip in the label row reading "root", beside real labels like "bug".
+ */
+const SERIES_MARKS = new Set(["root", "root-revision"]);
 
 /**
  * 1621 — an issue: a subject and prose, in a repository, under its labels. A
@@ -316,7 +354,7 @@ function patchCard(ev, opts) {
  * are the same tag, so they are the same search.
  */
 function issueCard(ev, opts) {
-  const labels = [...new Set(tagsOf(ev, "t").map((t) => t[1]).filter(Boolean))];
+  const labels = [...new Set(tagsOf(ev, "t").map((t) => t[1]).filter((v) => v && !SERIES_MARKS.has(v)))];
   const inner =
     repoLine(ev, opts) +
     titleWith(opts, tagOf(ev, "subject")) +
@@ -349,7 +387,7 @@ function gitStatusCard(ev, opts) {
   // The ROOT `e` tag is what the status is about; NIP-34 lets a status also
   // name the patch revisions and the earlier statuses it supersedes, and the
   // first hex `e` on the event is as likely to be one of those as the target.
-  const es = tagsWhere(ev, (n) => n === "e").filter((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
+  const es = tagsOf(ev, "e").filter((t) => /^[0-9a-f]{64}$/.test(t[1] || ""));
   const t = es.find((x) => x[3] === "root") || es[0];
   const inner =
     repoLine(ev, opts) +

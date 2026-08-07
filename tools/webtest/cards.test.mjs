@@ -247,16 +247,28 @@ assert.strictEqual(parsed.subject, "router: yield ingest while the relay is unde
 assert.deepStrictEqual(parsed.markers, ["PATCH v2 2/3"], "the bracket is metadata, not words in the title");
 assert.strictEqual(parsed.message, "The poller did nothing with the mean it got back.",
   "the commit message is prose, and stops at git's `---`");
-assert(parsed.diff.startsWith("diff --git "), "the diff starts at the diff");
-assert(!parsed.diff.includes("1 file changed"), "git's own stat block is not part of it");
+assert(parsed.diffLines[0].startsWith("diff --git "), "the diff starts at the diff");
+assert(!parsed.diffLines.some((l) => l.includes("1 file changed")), "git's own stat block is not part of it");
+// LINES, not a string: a megabyte patch is split once and sliced, never joined
+// back together for a preview that shows fourteen of them.
+assert(Array.isArray(parsed.diffLines), "the diff stays a view of the lines it was split into");
 // A bare diff — no mail at all, which some clients send — keeps every line.
 const bare = parsePatch("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n");
 assert.strictEqual(bare.subject, "", "no mail, no subject to take from it");
-assert(bare.diff.startsWith("--- a/f") && bare.diff.includes("+b"), "and the whole diff survives");
+assert(bare.diffLines[0] === "--- a/f" && bare.diffLines.includes("+b"), "and the whole diff survives");
 // A `---` inside the message is prose; the separator is the last one before
 // the patch. Read forwards, the card lost the half of the message below it.
 const ruled = parsePatch("From abc1234 Mon Sep 17 00:00:00 2001\nSubject: t\n\nabove\n---\nbelow\n\n---\ndiff --git a/f b/f\n+x\n");
 assert(ruled.message.includes("above") && ruled.message.includes("below"), "a rule inside a commit message is message");
+// A mail with no blank line before its diff: the header scan used to eat the
+// patch, and the card drew a title over nothing.
+const unterminated = parsePatch("From abc1234 Mon Sep 17 00:00:00 2001\nSubject: t\ndiff --git a/f b/f\n@@ -1 +1 @@\n+x\n");
+assert(unterminated.subject === "t" && unterminated.diffLines.length > 1,
+  "the diff ends the headers too, for a mail that never wrote a blank line");
+// A repeated header keeps the first value AND takes no continuation from the
+// second — folding one onto the other builds a sentence neither wrote.
+const twiceHeaded = parsePatch("From abc1234 Mon Sep 17 00:00:00 2001\nSubject: first\nSubject: second\n and its fold\n\nbody\n");
+assert.strictEqual(twiceHeaded.subject, "first", "the first header wins, whole");
 // Nothing here throws on a stranger's string.
 for (const junk of ["", null, undefined, "From\n\n\n", "Subject: no from line", "\n\n\n"]) {
   assert.doesNotThrow(() => parsePatch(junk), `parsePatch(${JSON.stringify(junk)}) must not throw`);
@@ -277,6 +289,27 @@ assert(patchCard.includes("+3") && patchCard.includes("−1") && patchCard.inclu
   "the change is measured, in the line a reviewer reads first");
 assert(/class="[^"]*d-add[^"]*"/.test(patchCard) && /class="[^"]*d-hunk/.test(patchCard),
   "and the diff is tinted rather than being one grey wall");
+
+// A diff's `+++`/`---` are file headers OUTSIDE a hunk and ordinary added and
+// removed lines INSIDE one. Read without that state, a markdown rule deleted
+// from a file is grey where it should be red, and missing from a stat that
+// claims to be the size of the change.
+const rules = card(ev(1617, [], "diff --git a/R.md b/R.md\n--- a/R.md\n+++ b/R.md\n@@ -1,2 +1,2 @@\n---- old rule\n+++++ new rule\n"), { full: true });
+assert(/d-del[^>]*>---- old rule/.test(rules), "a deleted line is a deletion, whatever its text starts with");
+assert(/d-add[^>]*>\+\+\+\+\+ new rule/.test(rules), "…and so is an added one");
+assert(rules.includes("+1") && rules.includes("−1") && rules.includes("1 file"),
+  "and both are counted once, under one file");
+
+// Rendering a card must never be a way to freeze the tab. `/\s+$/` — the
+// obvious way to drop trailing blank lines — retries every start position
+// inside a run of whitespace, so 80k spaces in the MIDDLE of a line cost five
+// seconds on the main thread, per card, from a stranger's event.
+const spaces = "a" + " ".repeat(80000) + "b\nreal line\n\n\n";
+const started = Date.now();
+const wide = card(ev(1337, [], spaces));
+const took = Date.now() - started;
+assert(took < 250, `a line of 80k spaces must not cost ${took}ms to render`);
+assert(wide.includes("real line") && !/\n\s*\n\s*<\/pre>/.test(wide), "…and the trailing blank lines still go");
 
 // Code is clipped by LINES. A diff cut mid-line is not a diff, and `clip()`
 // would also have trimmed the indentation off every line it kept.

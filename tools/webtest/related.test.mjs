@@ -96,6 +96,36 @@ assert.deepStrictEqual(selfEchoed.events.map((e) => e.id), [id("5")], "the subje
 const dupes = relatedShape(ISSUE, [ev(1622, [], "hi", id("5")), ev(1622, [], "hi", id("5"))]);
 assert.strictEqual(dupes.events.length, 1, "one event, one card");
 
+// A `#e` ask returns everything carrying the id, and NIP-10 marks a reference
+// that is a CITATION rather than an answer. Counting those as replies puts
+// somebody quoting the issue elsewhere into its thread.
+const quoted = relatedShape(ISSUE, [
+  ev(1, [["e", id("9"), "", "mention"]], "look at this issue", id("7"), pk2, 10),
+  ev(1622, [["e", id("9")]], "a real answer", id("8"), pk2, 20),
+]);
+assert.deepStrictEqual(quoted.sections[0].events.map((e) => e.content), ["a real answer"],
+  "a mention is not a reply");
+// …but an event that mentions AND answers is an answer.
+assert.strictEqual(relatedShape(ISSUE, [
+  ev(1622, [["e", id("9"), "", "mention"], ["e", id("9"), "", "root"]], "both", id("7")),
+]).sections[0].events.length, 1, "one marker of many being `mention` does not disqualify it");
+
+// A count taken off a CAPPED read is a claim the page cannot support. The ask
+// stops at a limit, so "20 issues" from a full answer means "at least 20" —
+// and a project's backlog must not be quietly rounded down to what fitted.
+const many = Array.from({ length: 120 }, (_, n) =>
+  ev(1621, [["a", ADDR], ["subject", `issue ${n}`]], "", id("0").slice(0, 63) + (n % 10), pk2, n));
+const cappedRead = relatedShape(REPO, many.map((e, n) => ({ ...e, id: `${n}`.padStart(64, "0") })));
+assert(cappedRead.sections[0].head.includes("+"),
+  "a full answer is a floor, not a total — the head says so");
+// A timed-out read is truncated too, for a reason the reader can see even less.
+const timedOut = Object.assign([ev(1621, [["a", ADDR]], "", id("b"), pk2, 5)], { complete: false });
+assert(relatedShape(REPO, timedOut).sections[0].head.includes("+"),
+  "…and so is an answer the relay never finished");
+// An answer that finished under the limit counts exactly.
+assert.strictEqual(relatedShape(REPO, Object.assign([...items], { complete: true })).sections[1].head, "2 issues",
+  "a complete answer under the cap is an exact count");
+
 // Nothing back is nothing drawn: no headings over empty lists, no rule across
 // a page with nothing under it.
 assert.strictEqual(relatedHtml(relatedShape(REPO, [])), "", "an empty answer draws nothing at all");
