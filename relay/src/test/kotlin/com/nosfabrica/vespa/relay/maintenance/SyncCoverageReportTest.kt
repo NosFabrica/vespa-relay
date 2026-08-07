@@ -24,6 +24,7 @@ import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonArray
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
@@ -312,8 +313,162 @@ class SyncCoverageReportTest {
         val stream = streams(doc).single().jsonObject
         assertEquals(400, stream["relays"]!!.jsonPrimitive.longOrNull?.toInt())
         assertEquals(134, stream["reconciled"]!!.jsonPrimitive.longOrNull?.toInt())
-        // ...and the filter survives the caching intact, authors and all.
-        assertEquals(300, stream["filter"]!!.jsonObject["authors"]!!.jsonArray.size)
+        // ...and the members every leg shares survive the caching intact. The
+        // authors do not appear: they are what the group is keyed loosely on,
+        // so publishing one leg's list would name it as the stream's.
+        assertEquals(listOf(0, 10002), stream["filter"]!!.jsonObject["kinds"]!!.jsonArray.map { it.jsonPrimitive.int })
+        assertNull(stream["filter"]!!.jsonObject["authors"])
+        assertEquals(listOf("authors"), stream["narrowedBy"]!!.jsonArray.map { it.jsonPrimitive.contentOrNull })
+        // One leg per relay, so `legs` would say nothing `relays` does not.
+        assertNull(stream["legs"])
+    }
+
+    /**
+     * The bug this grouping exists to prevent.
+     *
+     * A `relaySource` binding `authors` gives every discovered relay its own
+     * filter, so a stream configured as one ask reaches the band file as one
+     * key per relay. Keyed on the filter's exact members those were 3 groups of
+     * 1 relay each, all printing the same `kinds 30023` label — which is the
+     * card claiming three streams where the operator configured one.
+     */
+    @Test
+    fun `relays a narrow gave their own authors are one stream, not one each`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    "wss://a.example/ {\"kinds\":[30023],\"authors\":[\"aa\"]}" to band(5_000, 9_000, true),
+                    "wss://b.example/ {\"kinds\":[30023],\"authors\":[\"bb\"]}" to band(1_000, 9_000, true),
+                    "wss://c.example/ {\"kinds\":[30023],\"authors\":[\"cc\",\"dd\"]}" to band(3_000, 9_000, false),
+                ),
+                null,
+                now,
+            )
+        val stream = streams(doc).single().jsonObject
+        assertEquals(3, stream["relays"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(2, stream["reconciled"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(3, rowsOf(stream).size)
+    }
+
+    /**
+     * `authorsPerLeg` chops one relay's ask into several, so the SAME relay
+     * arrives several times inside one group. Overwriting charted whichever
+     * author the file happened to write last as that relay's whole coverage.
+     */
+    @Test
+    fun `several legs against one relay merge into one row`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    "wss://a.example/ {\"kinds\":[30382],\"authors\":[\"aa\"]}" to band(1_000, 4_000, true),
+                    "wss://a.example/ {\"kinds\":[30382],\"authors\":[\"bb\"]}" to band(3_000, 9_000, false),
+                ),
+                null,
+                now,
+            )
+        val stream = streams(doc).single().jsonObject
+        assertEquals(1, stream["relays"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(2, stream["legs"]!!.jsonPrimitive.longOrNull?.toInt())
+        // The outer edges union — between them is ground walked for something —
+        // and one paged leg costs the relay its `reconciled` tone.
+        val row = rowsOf(stream).single()
+        assertEquals(1_000L, row["min"]!!.jsonPrimitive.longOrNull)
+        assertEquals(9_000L, row["max"]!!.jsonPrimitive.longOrNull)
+        assertEquals(false, row["complete"]!!.jsonPrimitive.booleanOrNull)
+        assertEquals(0, stream["reconciled"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(1, stream["paged"]!!.jsonPrimitive.longOrNull?.toInt())
+        // The legs overlap at 3,000–4,000, and that is the only span neither of
+        // them is missing from.
+        assertEquals(3_000L, row["everyKindMin"]!!.jsonPrimitive.longOrNull)
+        assertEquals(4_000L, row["everyKindMax"]!!.jsonPrimitive.longOrNull)
+    }
+
+    /**
+     * Loose on the narrowed members, strict on everything else. "Ask this relay
+     * for kind 30023 from these two authors" and "ask it for kind 30023,
+     * everyone" are different asks, and the second being covered says nothing
+     * about the first.
+     */
+    @Test
+    fun `an unnarrowed filter is not folded into the narrowed one`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    "wss://a.example/ {\"kinds\":[30023],\"authors\":[\"aa\"]}" to band(5_000, 9_000, true),
+                    "wss://a.example/ {\"kinds\":[30023]}" to band(1_000, 9_000, true),
+                    "wss://a.example/ {\"kinds\":[30023],\"#t\":[\"nostr\"]}" to band(2_000, 9_000, true),
+                ),
+                null,
+                now,
+            )
+        assertEquals(3, streams(doc).size)
+    }
+
+    /**
+     * `legs` is compared against the BAND-bearing relays, not against every
+     * relay in the group. A relay sweeping its first leg has no band, so it
+     * inflates the relay count without contributing a leg — and against that
+     * count the merge below (2 legs, 1 relay) disappeared.
+     */
+    @Test
+    fun `a relay sweeping its first leg cannot hide a merge`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    "wss://a.example/ {\"kinds\":[30382],\"authors\":[\"aa\"]}" to band(1_000, 4_000, true),
+                    "wss://a.example/ {\"kinds\":[30382],\"authors\":[\"bb\"]}" to band(3_000, 9_000, true),
+                ),
+                """{"peers":{},"sweeps":{"wss://b.example/|{\"kinds\":[30382],\"authors\":[\"cc\"]}":{"downTo":900,"upTo":4000,"at":$now}}}""",
+                now,
+            )
+        val stream = streams(doc).single().jsonObject
+        assertEquals(2, stream["relays"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(2, stream["legs"]!!.jsonPrimitive.longOrNull?.toInt(), "two bands on one relay is a merge worth stating")
+    }
+
+    /**
+     * Windowed reconciliation writes a band per window, so `since`/`until` on
+     * the leg that happened to parse first are that WINDOW's bounds. The group
+     * key already drops them; publishing them would put one window's bounds on
+     * the page as the stream's own ask.
+     */
+    @Test
+    fun `a window's own time bounds are not published as the stream's`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    "wss://a.example/ {\"kinds\":[1],\"since\":1000,\"until\":2000}" to band(1_000, 2_000, true),
+                    "wss://b.example/ {\"kinds\":[1],\"since\":2000,\"until\":3000}" to band(2_000, 3_000, true),
+                ),
+                null,
+                now,
+            )
+        val filter = streams(doc).single().jsonObject["filter"]!!.jsonObject
+        assertEquals(listOf(1), filter["kinds"]!!.jsonArray.map { it.jsonPrimitive.int })
+        assertNull(filter["since"])
+        assertNull(filter["until"])
+    }
+
+    /** A sweep on each leg is one relay moving, not two. */
+    @Test
+    fun `several cursors against one relay merge into one slice`() {
+        val doc =
+            SyncCoverageReport.build(
+                null,
+                """{"peers":{},"sweeps":{
+                    "wss://a.example/|{\"kinds\":[30382],\"authors\":[\"aa\"]}":{"downTo":2000,"upTo":6000,"at":${now - 90}},
+                    "wss://a.example/|{\"kinds\":[30382],\"authors\":[\"bb\"]}":{"downTo":900,"upTo":4000,"at":$now}
+                }}""",
+                now,
+            )
+        val stream = streams(doc).single().jsonObject
+        assertEquals(1, stream["sweeping"]!!.jsonPrimitive.longOrNull?.toInt())
+        val sweep = rowsOf(stream).single()["sweep"]!!.jsonObject
+        assertEquals(900L, sweep["downTo"]!!.jsonPrimitive.longOrNull)
+        assertEquals(6_000L, sweep["upTo"]!!.jsonPrimitive.longOrNull)
+        // The most recent advance: "last advanced 90s ago" would be a quieter
+        // claim than the truth about a relay that moved a moment ago.
+        assertEquals(now, sweep["at"]!!.jsonPrimitive.longOrNull)
     }
 
     @Test

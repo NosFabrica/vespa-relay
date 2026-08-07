@@ -103,6 +103,18 @@
     padding: 1rem 1.1rem; margin-bottom: 1rem;
   }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
+  /* A titled row of tiles standing on the page background instead of inside a
+     card — see trustCard. A .card here would put the tiles' own border inside
+     the card's, on the same surface colour, and the four numbers would read as
+     boxes in a box rather than as the same kind of headline the corpus totals
+     directly above them are. Only the heading needs a rule: the tiles carry
+     their own bottom margin. */
+  .panel > h2 { margin-bottom: .5rem; }
+  /* Prose the panel ENDS on — the "no pubkey carries trust state" warning —
+     needs the gap a card would have given it. Without this it inherits `.err`'s
+     zero bottom margin and sits closer to the next card than to the tiles it is
+     about, which on a page of stacked cards reads as that card's subtitle. */
+  .panel > p:last-child { margin-bottom: 1rem; }
   .tile { background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; padding: .9rem 1.1rem; }
   .tile .v { font-size: 1.9rem; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15; }
   .tile .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
@@ -181,13 +193,40 @@
   .grp:last-child { margin-bottom: 0; }
   /* Pinned under the axis: 900 rows into a fan-out, "which stream is this" is
      the other question the numbers stop answering. */
+  /* `nowrap`, so the head is one line whatever the filter holds. It used to
+     wrap, which meant a stream naming twenty kinds pushed its own counts onto a
+     second line — and this head is sticky, so those lines are taken off the top
+     of the rows scrolling under it. The filter chip is the item that gives:
+     it ellipsises (below), the counts do not. */
   .grp-head {
-    display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; flex-wrap: wrap;
+    display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; flex-wrap: nowrap;
     position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface); padding: .35rem 0 .3rem;
   }
-  .grp-name { font-weight: 650; font-size: .85rem; }
-  .grp-name code { background: var(--bar); padding: .05rem .3rem; border-radius: .25rem; font-size: .75rem; }
-  .grp-stat { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+  /* ONE line, ellipsised. A stream filtering a dozen kinds prints a chip that
+     wrapped to three lines, and this head is STICKY — every wrapped line is
+     taken off the top of the coverage rows scrolling under it, on every group,
+     for a list of numbers whose tail is the least informative part of it. The
+     full list is on the title, same bargain as .spark-kind. `min-width: 0`
+     is what lets it shrink at all: a flex item floors at its content width
+     without it, and the chip would push the stat off the card instead. */
+  .grp-name { font-weight: 650; font-size: .85rem; flex: 1 1 auto; min-width: 0; }
+  /* `inline-block` with a cap, not `block`: a block chip stretches to the whole
+     flex item and paints a full-width bar behind "every kind". This shrinks to
+     its text and ellipsises only once the text outgrows the row. */
+  .grp-name code {
+    background: var(--bar); padding: .05rem .3rem; border-radius: .25rem; font-size: .75rem;
+    display: inline-block; max-width: 100%; vertical-align: bottom;
+    overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  }
+  .grp-stat { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto; }
+  /* On a phone the counts alone are wider than the card, and `nowrap` had them
+     running off its right edge with the chip crushed to an ellipsis beside
+     them. Below this width they take their own row — which still leaves the
+     filter on ONE line, now a full-width one. */
+  @media (max-width: 45rem) {
+    .grp-head { flex-wrap: wrap; }
+    .grp-stat { flex-basis: 100%; }
+  }
   /* How many of a group's relays cover each bucket — the mark that answers
      "how much of the list is in sync" for a fan-out, where a row each is
      reachable but not readable. Indented to the track: it is a chart on the
@@ -273,6 +312,30 @@
 import { kindLabel } from "/web/shared/kinds.js";
 
 const fmt = (n) => Number(n).toLocaleString();
+
+/**
+ * The same number, short enough to label a chart with.
+ *
+ * "1.2M" where `fmt` says "1,234,567". Grouped digits are the right answer
+ * everywhere a reader might compare or quote the number — a tile, a table cell,
+ * a tooltip — and the wrong one on an AXIS, where the label is a ruler mark: a
+ * y-axis reading 1,234,567 / 617,284 / 0 spends a third of the plot width
+ * spelling precision nobody reads off a gridline, and the per-kind sparklines
+ * put their peak in a head that already truncates.
+ *
+ * Exact values are never only here. Every mark carries its full count on the
+ * hover tooltip, which is what this page treats as the number of record.
+ *
+ * The formatter is HOISTED, unlike `fmt`'s. `toLocaleString(undefined, opts)`
+ * constructs a fresh `Intl.NumberFormat` per call, and options are what defeat
+ * the engine's cache for the argument-less form: measured over 20,000 calls in
+ * this page's own Chromium, 429ms inline against 12ms through one kept
+ * instance, where `fmt`'s bare `toLocaleString()` is 12ms either way. Today's
+ * axes make two dozen calls and would never notice; a label moved onto a
+ * per-bar or per-row path would, and this costs one line to make impossible.
+ */
+const COMPACT = new Intl.NumberFormat(undefined, { notation: "compact", maximumFractionDigits: 1 });
+const short = (n) => COMPACT.format(Number(n));
 
 /**
  * What to call a kind, best source first.
@@ -402,7 +465,10 @@ function tickStride(points, plotW) {
 function barChart(points, { label, height = 130 }) {
   // Geometry in a fixed viewBox, scaled by CSS — so the chart is responsive
   // without re-measuring on resize, and the bar caps stay round at any width.
-  const W = 720, H = height, PAD_L = 46, PAD_B = 20, PAD_T = 8;
+  // PAD_L is the y-label gutter, and it is sized for the widest label `short`
+  // can produce ("1.2M", ~25px at the 10px tick size) plus the 6px the label is
+  // inset from the plot. It was 46 when those labels were spelled out in full.
+  const W = 720, H = height, PAD_L = 34, PAD_B = 20, PAD_T = 8;
   const plotW = W - PAD_L, plotH = H - PAD_B - PAD_T;
   const svg = svgEl("svg", { class: "chart", viewBox: `0 0 ${W} ${H}`, role: "img", "aria-label": label });
 
@@ -418,7 +484,7 @@ function barChart(points, { label, height = 130 }) {
   // as the top and drew an axis reading "1 / 1 / 0".
   const drawn = new Set();
   for (const v of [0, tick / 2, tick]) {
-    const label = fmt(Math.round(v));
+    const label = short(Math.round(v));
     if (drawn.has(label)) continue;
     drawn.add(label);
     svg.appendChild(svgEl("line", { class: "grid", x1: PAD_L, x2: W, y1: y(v), y2: y(v) }));
@@ -775,7 +841,7 @@ function kindActivityCard(section) {
     label.title = `${name} — kind ${k.kind}`;
     head.appendChild(label);
     const peak = Math.max(0, ...k.days.map((x) => x.events));
-    head.appendChild(el("span", "spark-peak", `peak ${fmt(peak)}/day`));
+    head.appendChild(el("span", "spark-peak", `peak ${short(peak)}/day`));
     cell.appendChild(head);
     cell.appendChild(sparkline(k.days.map((x) => ({ label: x.day, value: x.events }))));
     grid.appendChild(cell);
@@ -793,16 +859,29 @@ function kindActivityCard(section) {
  * about exactly this failure: "a corpus mirrored before its provider lists
  * arrived stays silently unprojected, and every ranked search comes back
  * empty." A relay in that state looks perfectly healthy on the charts above.
+ *
+ * Drawn as a bare `.panel`, not a `.card`: four headline counts are the same
+ * kind of mark as the corpus totals immediately above, so they get the same
+ * bare tiles on the page background. In a card they were tiles-in-a-box —
+ * their border inside the card's, both on `--surface` — which made the one
+ * panel that can report the relay broken read as the busiest thing on screen.
  */
 function trustCard(section) {
   const d = (section && section.data) || {};
-  const card = el("div", "card");
+  const card = el("div", "panel");
   cardHead(card, "Trust", null, section);
 
-  const row = el("div", "tiles inline");
+  // Plain `.tiles`, matching the corpus row's 11rem track rather than the 8rem
+  // one the in-card rows use: standing on the same background at the same
+  // width, the two rows have to size their tiles identically or the seam shows.
+  const row = el("div", "tiles");
   for (const [key, label, help] of [
     ["observers", "Observers", "Distinct authors of a kind-10040 list naming a score provider"],
-    ["providers", "Providers", "Distinct authors of kind-30382 scores"],
+    // "Service Keys", not "Providers". The count is of KEYS that signed
+    // kind-30382 scores, and one provider may sign under several of them — the
+    // pubkey is what a kind-10040 list names and what this number can actually
+    // vouch for, so it is what the label says.
+    ["providers", "Service Keys", "Distinct authors of kind-30382 scores"],
     ["scores", "Scores", "Stored kind-30382 events"],
     ["scoredPubkeys", "Scored pubkeys", "Pubkeys carrying projected trust state — what a ranked search can order by"],
   ]) {
@@ -1008,12 +1087,33 @@ function syncCard(section) {
     // the filter is what actually determines coverage, and the name lives in a
     // config file this relay does not read.
     const kinds = (s.filter && s.filter.kinds) || [];
-    name.appendChild(el("code", null, kinds.length ? `kinds ${kinds.join(", ")}` : "every kind"));
+    // What the group's legs were split BY, spelled out. A `relaySource` that
+    // binds authors gives every relay its own filter, so this one group is
+    // thousands of per-author asks — and without saying so, its chip is
+    // indistinguishable from the same kinds asked of every relay whole, which
+    // is a different and much stronger claim.
+    const narrowedBy = s.narrowedBy || [];
+    // Singular, because the phrase is "per author" — the member's name is the
+    // filter's plural array and reads as "per authors" straight out of it.
+    const per = (m) => (m.startsWith("#") ? `tag ${m.slice(1)}` : m.replace(/s$/, ""));
+    const label =
+      (kinds.length ? `kinds ${kinds.join(", ")}` : "every kind") +
+      (narrowedBy.length ? ` · per ${narrowedBy.map(per).join(" + ")}` : "");
+    const chip = el("code", null, label);
+    // The chip is clipped to one line, so the full list has to live somewhere:
+    // "kinds 1, 6, 7, 16, 1111, …" and "kinds 1, 6, 7, 16, 30023, …" are two
+    // different streams and the ellipsis is exactly where they differ.
+    chip.title = label;
+    name.appendChild(chip);
     head.appendChild(name);
     head.appendChild(el("div", "grp-stat",
       `${fmt(s.reconciled || 0)} reconciled · ${fmt(s.paged || 0)} paged` +
       (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
-      ` · ${fmt(s.relays || 0)} relays walked`));
+      ` · ${fmt(s.relays || 0)} relays walked` +
+      // Present only when a narrow asked one relay more than once, and then it
+      // is the number that explains the other three: these counts are per
+      // RELAY, and a relay counts as reconciled only when every leg of it did.
+      (s.legs ? ` · ${fmt(s.legs)} legs` : "")));
     box.appendChild(head);
     const rows = s.rows || [];
     if (rows.length > 24) box.appendChild(depthStrip(rows));
@@ -1271,16 +1371,18 @@ function render(doc) {
   bodyEl.appendChild(activityWrap);
 
   bodyEl.appendChild(kindActivityCard(doc.kindActivity));
+  bodyEl.appendChild(zapsCard(doc.zaps));
+  bodyEl.appendChild(relaysCard(doc.relayDistribution));
+  // The two reference panels last, in the order of how far you have to scroll
+  // to get past them: every kind in the store rather than a top-50, then a
+  // coverage row per relay the sync has touched. Both run to hundreds of rows
+  // on a real deployment, and a table nobody scrolls past is worse placed above
+  // the charts everyone reads.
+  bodyEl.appendChild(kindsCard(doc.kinds));
   // Only when a router has written state we can read. A serve-only relay does
   // not mirror, and an empty coverage card there would read as a broken mirror
   // rather than as no mirror.
   if (doc.sync) bodyEl.appendChild(syncCard(doc.sync));
-  bodyEl.appendChild(zapsCard(doc.zaps));
-  bodyEl.appendChild(relaysCard(doc.relayDistribution));
-  // Last, because it is now the longest thing on the page by an order of
-  // magnitude — every kind in the store rather than a top-50 — and a reference
-  // table nobody scrolls past is worse placed above the charts everyone reads.
-  bodyEl.appendChild(kindsCard(doc.kinds));
   if (typed) {
     const box = bodyEl.querySelector("input[type=search]");
     if (box) {
