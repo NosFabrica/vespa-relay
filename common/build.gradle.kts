@@ -13,11 +13,13 @@ configurations.all {
 
 dependencies {
     // api: RelayIdentity returns quartz signer types, so consumers see quartz
-    // in this module's signatures. The store is implementation-only —
-    // SchemaDeploy's surface is all Strings, the SchemaDeployer stays local,
-    // and both apps declare the store themselves for their own use.
+    // in this module's signatures. The store went the same way when
+    // STORE_WRITERS arrived — the writer topology is a fact about this
+    // deployment that BOTH processes must hand to `open()`, and its type is the
+    // store's. SchemaDeploy is still all Strings and the SchemaDeployer stays
+    // local; both apps also declare the store themselves for their own use.
     api(libs.quartz)
-    implementation(libs.vespa.eventstore.store)
+    api(libs.vespa.eventstore.store)
     testImplementation(kotlin("test"))
 }
 

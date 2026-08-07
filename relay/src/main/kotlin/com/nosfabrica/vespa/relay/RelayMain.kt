@@ -34,12 +34,12 @@ import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
+import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
-import com.nosfabrica.vespa.relay.maintenance.requireDeletionGuards
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
@@ -106,11 +106,6 @@ fun main() {
                 "relay: ${it.joinToString()} — read by the sync process, not the relay; set them on that service or they do nothing",
             )
         }
-    // NIP-09 and NIP-62 hold across BOTH writers or they do not hold: the
-    // store's guard-owner cache is per instance, and the deletions this relay
-    // must honour are largely ones the sync process mirrored.
-    requireDeletionGuards(env)
-
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
     val port = env["RELAY_PORT"]?.toIntOrNull() ?: 7777
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — this relay's own ws url (NIP-42 identity / NIP-62 vanish scope).")
@@ -159,7 +154,11 @@ fun main() {
         System.err.println("schema: deployed and serving")
     }
 
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl)
+    // STORE_WRITERS, not the store's default, because the answer is a property
+    // of this deployment and not of the library: the sync process writes the
+    // same index, and the deletions this relay must honour are largely ones it
+    // mirrored.
+    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl, writers = STORE_WRITERS)
 
     // Background maintenance. Everything here runs BEHIND the server and is
     // awaited nowhere: blocking the port on any of it turns every restart

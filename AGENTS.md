@@ -500,9 +500,16 @@ exactly what the two levers above cannot promise. The catch is that the store's
 fast path caches "authors known to have a stored kind 5/62" **per instance**,
 which is exact for one writer and wrong for this deployment's two: the relay's
 copy never hears about what the router mirrored, and the router's never hears
-about what a client published here. Both entrypoints therefore refuse to boot
-unless `GUARD_OWNERS_DISABLE=1` (set by the image and by both `run` tasks), so
-NIP-09/NIP-62 are checked against the store rather than a half-informed cache.
-Not a performance knob — the cost shows up as the `guards` stage on the router's
-ingest line, and the fix that would earn the cache back is a refreshable guard
-set upstream in the store, not a flag here.
+about what a client published here. Both entrypoints therefore open the store
+with `writers = STORE_WRITERS` (`SHARED_STRICT`), so NIP-09/NIP-62 are checked
+against the store rather than a half-informed cache. **The topology is an
+argument, not an env var** — it is a fact about this deployment that the library
+cannot detect, and `:common` holds the one copy of the reasoning. `SHARED` only
+bounds the window (its rebuild is a corpus-wide visit, hours here), and
+`SINGLE_WRITER` is simply false for us.
+
+The open cost is the guard read on the pure-record bulk path: it asks for every
+tombstone by the batch's authors with no narrowing and no limit, so it scales
+with one author's whole deletion history rather than with the batch. The mixed
+path already narrows the same probe to the batch's own ids — until the record
+path does too, a prolific deleter is the thing to watch on the `guards` stage.
