@@ -202,11 +202,26 @@
   /* line-height 1, not the body's 1.5: a .78rem label in a 1.5 line box is
      taller than the 12px track beside it, and the overflow slid under the
      sticky header above — every group's first row lost its top third. */
+  /* `direction: rtl` is here to put the ELLIPSIS ON THE LEFT — the inline
+     direction decides which end overflows, and for a relay url the tail is the
+     end worth keeping. It must not reach the text itself, though: the url is an
+     LTR construct full of bidi-NEUTRAL characters (`/ : . [ ] @ ? &`), and in an
+     rtl paragraph a trailing neutral takes the paragraph's direction and moves
+     to the other side. That is not a truncation artefact, it mis-renders urls
+     that FIT — `nos.lol/` drew as `/nos.lol`, and an IPv6 authority
+     `[2001:db8:85a3::8a2e:370:7334]:7777/` reordered into a plausible but
+     DIFFERENT address, which is worse than clipping because a reader cannot see
+     that anything was lost. So the url goes inside an LTR isolate (see `row`)
+     and only the box stays rtl. */
   .cov-lab {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; line-height: 1;
     color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left;
   }
+  /* Belt and braces with `row`'s `dir` attribute: the UA stylesheet gives
+     `[dir]` an isolate, but saying it here means the rule cannot be lost to a
+     future refactor that drops the attribute. */
+  .cov-lab > span { direction: ltr; unicode-bidi: isolate; }
   /* `overflow: hidden` is load-bearing, not tidiness. Every mark carries a
      minimum width so a one-day band is still visible, and a band that starts
      at the frame's right edge — a future-dated `created_at`, which quartz
@@ -327,9 +342,18 @@
      its own — the number is the data, this is only its shape. */
   td.share { position: relative; min-width: 6rem; }
   td.share i { display: block; height: .5rem; border-radius: 0 2px 2px 0; background: var(--bar); }
+  /* The "nothing here to draw" states, in the same muted register as
+     `.card-sub` — "Not in this document." is the same KIND of line. This rule
+     was scoped to `.pending`, so the identical sentence in a chart card had NO
+     styling at all: it fell through to the UA's `margin: 1em 0` and the body's
+     full size and colour, which printed an absence louder than the numbers
+     around it and left those cards 15px of extra floor. Unscoping it also lets
+     `h2 + :not(.card-sub)` reach these paragraphs, which `.pending .why` was
+     outspecifying — that is why the pending card kept the 2.4px gap the rest of
+     the page had already lost. */
+  .why { color: var(--muted); font-size: .85rem; margin: 0; }
   .pending { border-style: dashed; }
   .pending h2 { color: var(--muted); }
-  .pending .why { color: var(--muted); font-size: .85rem; margin: 0; }
   .badge {
     display: inline-block; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
     padding: .1rem .4rem; border-radius: .25rem; background: var(--bar); color: var(--muted);
@@ -791,13 +815,17 @@ function tiles(corpus) {
  * newest event predated the window rendered a page with the daily charts simply
  * missing and no indication anything was wrong.
  */
-function chartCard(title, sub, points, section) {
+function chartCard(title, sub, points, section, noun = "events") {
   const card = el("div", "card");
   cardHead(card, title, sub, section);
   if (!points.length) {
     card.appendChild(el("p", "why", "Not in this document."));
   } else if (points.every((p) => !p.value)) {
-    card.appendChild(el("p", "err", "No events in this window."));
+    // [noun] names what the series counts, because this sentence is the whole
+    // finding when a window is empty and it was hardcoded to "events" — so the
+    // pubkeys chart reported "No events in this window." over a chart that is
+    // not counting events, next to an events chart that might be full of them.
+    card.appendChild(el("p", "err", `No ${noun} in this window.`));
   } else {
     card.appendChild(barChart(points, { label: title }));
   }
@@ -820,10 +848,17 @@ const GRAINS = [
   // unambiguous one — and for weeks it has to say WHICH day that key is, since
   // a week bucket is keyed by the Monday it starts on and "Jul 9" alone would
   // read as a single day's bar.
-  { key: "days", label: "Daily", unit: "day", span: (d) => `${d.windowDays} days`, tick: dayTick, tip: (p) => p },
-  { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, tick: dayTick, tip: (p) => `week of ${p}` },
-  { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, tick: monthTick, tip: (p) => p },
+  // [span] returns NULL rather than a string built around a missing field. When
+  // the whole activity section fails the engine, `data` is absent and every one
+  // of these read `undefined` straight into the card title — "Events per day ·
+  // last undefined days", printed in bold above the badge that already said
+  // `failed`. A window this page cannot state is one it should not mention.
+  { key: "days", label: "Daily", unit: "day", span: (d) => (d.windowDays == null ? null : `${d.windowDays} days`), tick: dayTick, tip: (p) => p },
+  { key: "weeks", label: "Weekly", unit: "week", span: (d) => (d.windowWeeks == null ? null : `${d.windowWeeks} weeks`), tick: dayTick, tip: (p) => `week of ${p}` },
+  { key: "months", label: "Monthly", unit: "month", span: (d) => (d.windowMonths == null ? null : `${d.windowMonths} months`), tick: monthTick, tip: (p) => p },
 ];
+/** "· last 30 days" when the document says, and nothing at all when it does not. */
+const lastSpan = (span) => (span ? ` · last ${span}` : "");
 let grain = null;
 
 /** The granularities this document actually carries, finest first. */
@@ -878,7 +913,7 @@ function activityCards(activity) {
   // The window is in the title because it is the one thing a bare "Events per
   // day" cannot be read without: 30 days and 30 months are the same 30 bars.
   out.push(chartCard(
-    `Events per ${g.unit} · last ${span}`,
+    `Events per ${g.unit}${lastSpan(span)}`,
     null,
     series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.events })),
     activity,
@@ -889,10 +924,11 @@ function activityCards(activity) {
   // a correlation that is not in the data.
   if (series.some((x) => x.pubkeys != null)) {
     out.push(chartCard(
-      `Publishing pubkeys per ${g.unit} · last ${span}`,
+      `Publishing pubkeys per ${g.unit}${lastSpan(span)}`,
       null,
       series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.pubkeys || 0 })),
       null,
+      "publishing pubkeys",
     ));
   }
 
@@ -900,7 +936,7 @@ function activityCards(activity) {
   // whose every other axis label is one. The tooltip names the whole hour and
   // the zone, because "14:00" alone invites the reader to apply their own.
   out.push(chartCard(
-    `Events by hour of day · last ${d.hourWindowDays} days`,
+    `Events by hour of day${lastSpan(d.hourWindowDays == null ? null : `${d.hourWindowDays} days`)}`,
     null,
     hours.map((x) => {
       const hh = String(x.hour).padStart(2, "0");
@@ -1129,7 +1165,14 @@ function syncCard(section) {
 
   const row = (r) => {
     const wrap = el("div", "cov-row");
-    const lab = el("div", "cov-lab", String(r.relay).replace(/^wss:\/\//, ""));
+    const lab = el("div", "cov-lab");
+    // The url in its own LTR isolate inside the rtl box — see `.cov-lab`. The
+    // box being rtl is what puts the ellipsis on the left; the isolate is what
+    // stops that direction leaking into the url's own punctuation and quietly
+    // rewriting the address.
+    const url = el("span", null, String(r.relay).replace(/^wss:\/\//, ""));
+    url.dir = "ltr";
+    lab.appendChild(url);
     lab.title = r.relay;
     wrap.appendChild(lab);
     const track = el("div", "track");
@@ -1178,10 +1221,8 @@ function syncCard(section) {
     const strip = el("div", "depth");
     const step = span / buckets;
     const n = new Int32Array(buckets), done = new Int32Array(buckets);
-    let covering = 0;
     for (const r of rows) {
       if (r.min == null || r.max == null) continue;
-      covering++;
       const lo = Math.max(0, Math.floor((r.min - from) / step));
       const hi = Math.min(buckets - 1, Math.floor((r.max - from) / step));
       for (let i = lo; i <= hi; i++) {
@@ -1191,7 +1232,15 @@ function syncCard(section) {
     }
     for (let b = 0; b < buckets; b++) {
       const i = el("i", done[b] ? null : "thin");
-      i.style.height = Math.max(1, (n[b] / Math.max(1, covering)) * 24) + "px";
+      // OVER EVERY ROW IN THE GROUP, which is the same denominator the tooltip
+      // prints. The height used to divide by the relays that have a band at all,
+      // so a bucket every banded relay covered drew FULL while its own tooltip
+      // read "14 of 28 relays" — a mark claiming the list is in sync over a
+      // number saying half of it is. A relay nobody has got a band from covers
+      // nothing, and this card exists to make that visible rather than to
+      // normalise it away; it is the closest this page gets to the "never asked"
+      // count SyncCoverageReport says it cannot give.
+      i.style.height = Math.max(1, (n[b] / Math.max(1, rows.length)) * 24) + "px";
       i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays (${fmt(done[b])} reconciled)`;
       strip.appendChild(i);
     }
@@ -1599,11 +1648,30 @@ async function load() {
     if (!res.ok) throw new Error(`GET /stats.json — ${res.status} ${res.statusText}`);
     render(await res.json());
   } catch (e) {
+    const why = String(e && e.message ? e.message : e);
+    // A FAILED POLL IS NOT A FAILED PAGE. This wiped the body unconditionally,
+    // which meant one blip on a five-minute timer — a relay restart, a proxy
+    // 502, a dropped wifi — replaced nine cards of good numbers with a single
+    // error line, and took the reader's filter text and scroll position with it.
+    // The document already on screen is still the last thing this relay
+    // computed, and saying so beats destroying it: the numbers were never
+    // claimed to be live, and the footer is already where this page admits to
+    // their age.
+    if (renderedAt) {
+      // Replaced, not appended: polls keep failing while a relay is down, and a
+      // footer that grows a line every five minutes is its own bug.
+      const note = el("p", "err", `Could not refresh: ${why}. The numbers above are from the last successful read.`);
+      note.dataset.refresh = "";
+      const prior = footEl.querySelector("[data-refresh]");
+      if (prior) prior.replaceWith(note);
+      else footEl.appendChild(note);
+      return;
+    }
     scopeEl.textContent = "Could not load the statistics document.";
     renderedAt = null;
     bodyEl.replaceChildren();
     const c = el("div", "card");
-    c.appendChild(el("p", "err", String(e && e.message ? e.message : e)));
+    c.appendChild(el("p", "err", why));
     bodyEl.appendChild(c);
   }
 }
