@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.maintenance
 
 import com.nosfabrica.vespa.relay.server.StatsSnapshot
+import com.vitorpamplona.quartz.kinds.KindNames
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -235,6 +236,27 @@ internal class StatsRollup(
         }
 
     /**
+     * What a kind is CALLED, from Quartz's registry rather than this repo's.
+     *
+     * [KindNames] is the protocol-wide table Quartz maintains — 287 kinds and
+     * their NIPs, updated whenever the pin moves. The web UI's `kinds.js`
+     * carries about 117, which is the right size for what IT is: badge text
+     * for the cards this relay can render, kept short and lowercase so a mixed
+     * feed stays scannable. That set is a statement about our renderers; this
+     * table's job is the opposite one — it ENUMERATES the store, so it holds
+     * kinds nobody here has ever written a card for, and naming them from a
+     * registry of renderers meant 180 of them could only ever read "kind N".
+     *
+     * Emitted INTO the document rather than resolved in the page, because
+     * /stats.json is the artifact and a reader charting it elsewhere should
+     * not have to carry a copy of this table to label an axis. The page still
+     * falls back to `kinds.js` for the ten kinds Quartz does not name yet
+     * (`1630`-`1633` git statuses, `30024`, `30040`…), so the two sources
+     * compose instead of one replacing the other.
+     */
+    private fun kindName(kind: Int): String? = KindNames.nameFor(kind)
+
+    /**
      * The per-kind table: documents, distinct authors, and the span of
      * `created_at`, as three queries rather than one combined pipeline.
      *
@@ -278,7 +300,9 @@ internal class StatsRollup(
                         .forEach { (kind, events) ->
                             add(
                                 buildJsonObject {
-                                    put("kind", kind.toIntOrNull() ?: -1)
+                                    val n = kind.toIntOrNull() ?: -1
+                                    put("kind", n)
+                                    kindName(n)?.let { put("name", it) }
                                     put("events", events)
                                     authors?.get(kind)?.let { put("pubkeys", it) }
                                     spans?.get(kind)?.let { (first, last) ->
@@ -367,7 +391,19 @@ internal class StatsRollup(
                     ?: return@section buildJsonObject { }
             // A 10002 may carry tags other than `r`; keep the relay urls and
             // drop the rest rather than charting whatever else was on the event.
-            val relays = pairs.mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { it to count } }.toMap()
+            //
+            // SUMMED per canonical url, not `toMap()`. The grouping returns one
+            // row per distinct string, and `wss://nos.lol` and `wss://nos.lol/`
+            // are two strings for one relay — `toMap()` kept whichever came last
+            // and threw the other's count away, so the relay both understated
+            // its lists AND sat too low in a table sorted by them. See
+            // [StatsYql.canonicalRelay] for why the normalizer is the one the
+            // router dials with.
+            val relays =
+                pairs
+                    .mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { StatsYql.canonicalRelay(it) to count } }
+                    .groupingBy { it.first }
+                    .fold(0L) { sum, (_, count) -> sum + count }
             buildJsonObject {
                 put("total", relays.size)
                 put("shown", minOf(relays.size, topRelays))
@@ -476,6 +512,7 @@ internal class StatsRollup(
                         add(
                             buildJsonObject {
                                 put("kind", kind)
+                                kindName(kind)?.let { put("name", it) }
                                 putJsonArray("days") {
                                     byDay.entries.sortedBy { it.key }.forEach { (day, count) ->
                                         add(

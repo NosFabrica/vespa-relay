@@ -38,11 +38,12 @@
   an identical label.
 
   TWO PANELS ARE COMPUTED BUT INCOMPLETE — zaps and relay distribution — and
-  each carries a `note` saying what it leaves out and why. That note is the
-  point of those panels being honest rather than merely present: satoshis and
-  the read/write split are exactly the fields a reader of a network-wide
-  dashboard arrives looking for, and an unannotated panel reads as "this relay
-  has none of that".
+  each carries a `note` in the document saying what it leaves out and why.
+  This page does not print those notes, or any of the per-panel prose it used
+  to carry: the caveats stay in /stats.json for a reader who wants them, and
+  the page stays a page of numbers. Only states are still written out — an
+  empty window, a missing section, an engine error — because those are facts
+  about the document rather than commentary on it.
 
   THE KINDS TABLE IS LAST AND COMPLETE, and it is what replaced
   kind_stats.html. That page could only count kinds it already knew to name —
@@ -113,9 +114,10 @@
   .chart .hit { fill: transparent; }
   .chart .mark.on { fill: var(--text); }
   .wrap { overflow-x: auto; }
-  /* Every kind in the store is thousands of rows. Bounded height with a sticky
-     header, so the table is scannable without owning the whole page — and so
-     the column labels are still there when you are 400 rows down. */
+  /* The long tables — every kind in the store is thousands of rows, and the
+     relay list runs to the cap. Bounded height with a sticky header, so a
+     table is scannable without owning the whole page, and so the column
+     labels are still there when you are 400 rows down. */
   .wrap.tall { max-height: 32rem; overflow-y: auto; }
   .wrap.tall thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
   .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
@@ -148,7 +150,6 @@
   }
   .badge.bad { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
   .err { color: var(--warn); font-size: .85rem; margin: .4rem 0 0; }
-  .note { color: var(--muted); font-size: .82rem; margin: 0 0 .9rem; border-left: 2px solid var(--line); padding-left: .6rem; }
   /* The granularity toggle: one row above the series it drives. */
   .seg { display: inline-flex; gap: 0; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: .4rem; overflow: hidden; background: var(--surface); }
   .seg button {
@@ -192,6 +193,23 @@
 import { kindLabel } from "/web/shared/kinds.js";
 
 const fmt = (n) => Number(n).toLocaleString();
+
+/**
+ * What to call a kind, best source first.
+ *
+ * The document's own `name` leads, and it comes from Quartz's `KindNames` —
+ * the protocol-wide registry, 287 kinds deep, which is the only one big enough
+ * for a table that enumerates the whole store. `kinds.js` is the fallback and
+ * not the primary: it is the search UI's BADGE registry, sized to the kinds
+ * this relay can render a card for, so on its own it left 180 kinds reading
+ * "kind N" — including the long tail this table exists to reveal.
+ *
+ * Kept as a fallback rather than dropped, because the two sets are not nested:
+ * `kinds.js` names ten kinds Quartz has not registered yet (the `1630`-`1633`
+ * git statuses, `30024` drafts, `30040`/`30041` publications), and a document
+ * rolled up before this field existed carries no names at all.
+ */
+const kindName = (kind, given) => given || kindLabel(kind);
 
 /**
  * A duration as an age — "4m ago", "6d ago".
@@ -267,6 +285,39 @@ const STALE_AFTER_MS = 6 * 3600 * 1000;
  */
 const SCHEMA = 1;
 
+const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Axis labels for the bucket keys the rollup emits.
+ *
+ * SLICED OFF THE STRING, never parsed through Date. A bare `yyyy-mm-dd` is
+ * parsed as UTC midnight and then printed in the READER's zone, so every label
+ * west of Greenwich slides one day into the past — on a page whose every
+ * number is documented as UTC, and against a tooltip that would still be
+ * printing the raw key. The rollup already bucketed by UTC; the axis only has
+ * to spell what it bucketed.
+ */
+const dayTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}`;
+/** "2025-07" → "Jul ’25". The year is on every month label because a 12-month window crosses one. */
+const monthTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ’${iso.slice(2, 4)}`;
+
+/**
+ * How many bars apart the x labels stand.
+ *
+ * Measured from the width the labels ACTUALLY need — the longest one present,
+ * at the 10px tick size — rather than a per-chart constant, so 24 hours, 30
+ * days and 12 months each get as many labels as they can carry without a
+ * collision, and none of them needs to know about the others.
+ */
+function tickStride(points, plotW) {
+  const widest = points.reduce((m, p) => Math.max(m, (p.tick || "").length), 0);
+  if (!widest) return points.length;
+  // ~6.2px per character at font-size 10, plus a gutter that keeps neighbours
+  // from touching. Two labels is the floor: first and last still beats none.
+  const room = Math.max(2, Math.floor(plotW / (widest * 6.2 + 18)));
+  return Math.max(1, Math.ceil(points.length / room));
+}
+
 /** A bar chart of one series. See the header for why single-series and why never two y-axes. */
 function barChart(points, { label, height = 130 }) {
   // Geometry in a fixed viewBox, scaled by CSS — so the chart is responsive
@@ -337,17 +388,25 @@ function barChart(points, { label, height = 130 }) {
     svg.appendChild(hit);
   });
 
-  // Sparse x labels: first, last, and the middle. A tick under every one of 30
-  // days is unreadable at this width, and the tooltip carries the rest.
-  const at = [0, Math.floor((points.length - 1) / 2), points.length - 1];
-  [...new Set(at)].forEach((i) => {
+  // Labelled from the END backwards, at a stride the width can hold.
+  //
+  // Two things this fixes. It was first/middle/last, so reading "the fourth
+  // Tuesday" off a 30-bar chart meant counting bars from a label 15 bars away.
+  // And walking forwards from index 0 leaves the LAST bucket unlabelled
+  // whenever the length is not a multiple of the stride — the most recent day
+  // is the one every reader looks at first, so the walk starts there and the
+  // stride runs backwards into the past.
+  for (let i = points.length - 1; i >= 0; i -= tickStride(points, plotW)) {
     const p = points[i];
-    if (!p) return;
-    const anchor = i === 0 ? "start" : i === points.length - 1 ? "end" : "middle";
+    if (!p.tick) continue;
+    // Anchored to keep the two end labels inside the plot: centred text under
+    // the last band hangs off the right edge, and under the first it runs back
+    // over the y-axis numbers.
+    const anchor = i === points.length - 1 ? "end" : i === 0 ? "start" : "middle";
     const t = svgEl("text", { class: "tick", x: PAD_L + i * band + band / 2, y: H - 6, "text-anchor": anchor });
-    t.textContent = p.label;
+    t.textContent = p.tick;
     svg.appendChild(t);
-  });
+  }
   return svg;
 }
 
@@ -371,13 +430,10 @@ function cardHead(parent, title, sub, section) {
   // that is not partial.
   if (status && status !== "ok") h.appendChild(el("span", status === "ok" ? "badge" : "badge bad", status));
   parent.appendChild(h);
+  // [sub] is a STATE, not a description: "no kind histogram in this document",
+  // or how much of a truncated list is on screen. The panels no longer explain
+  // themselves — the document's own `note` is where a caveat lives now.
   if (sub) parent.appendChild(el("p", "card-sub", sub));
-  // A `note` on a section that SUCCEEDED: what it deliberately leaves out and
-  // why. Not an error and not a pending state — the numbers above it are real.
-  // It is here because the omissions are exactly the fields a reader of a
-  // network-wide dashboard comes looking for (satoshis, read/write), and an
-  // unannotated panel reads as "this relay has none of that".
-  if (section && section.note) parent.appendChild(el("p", "note", section.note));
   // The engine's own message, and the query that produced it — enough to
   // correct a rejected pipeline without attaching a debugger to the relay.
   if (section && section.errors) {
@@ -425,18 +481,11 @@ function tiles(corpus) {
   }
   out.push(wrap);
 
-  // Counted, not hidden. created_at is author-signed, so a corpus accumulates
-  // events dated years out; they are why every freshness number on this page is
-  // bounded, and a count that grows is something upstream publishing garbage.
-  if (d.futureDated) {
-    const strip = el("div", "card");
-    const p = el("p", "note");
-    p.textContent =
-      `${fmt(d.futureDated)} stored event(s) are dated in the future. created_at is whatever the author signed, ` +
-      `so this is clock skew or spam rather than a fault here — every "newest" on this page excludes them.`;
-    strip.appendChild(p);
-    out.push(strip);
-  }
+  // `corpus.futureDated` is deliberately NOT drawn. It is still counted, and it
+  // is still in /stats.json for anyone watching it grow, but a card that only
+  // ever says "some authors signed a bad clock" is a caveat about the Nostr
+  // protocol rather than a fact about this relay, and it was sitting between
+  // the totals and everything worth reading.
 
   // The totals have no card header for cardHead to hang an error on, and
   // without this an em dash where a number belongs is the ONLY sign anything
@@ -489,9 +538,14 @@ function chartCard(title, sub, points, section) {
  * three series it returns — it never adds days together to make a week.
  */
 const GRAINS = [
-  { key: "days", label: "Daily", unit: "day", span: (d) => `${d.windowDays} days`, slice: (p) => p.slice(5) },
-  { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, slice: (p) => p.slice(5) },
-  { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, slice: (p) => p },
+  // [tick] is the axis label, [tip] the hover. They differ on purpose: the axis
+  // gets the shortest form that still reads ("Jul 9"), the tooltip gets the
+  // unambiguous one — and for weeks it has to say WHICH day that key is, since
+  // a week bucket is keyed by the Monday it starts on and "Jul 9" alone would
+  // read as a single day's bar.
+  { key: "days", label: "Daily", unit: "day", span: (d) => `${d.windowDays} days`, tick: dayTick, tip: (p) => p },
+  { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, tick: dayTick, tip: (p) => `week of ${p}` },
+  { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, tick: monthTick, tip: (p) => p },
 ];
 let grain = null;
 
@@ -544,10 +598,12 @@ function activityCards(activity) {
   const span = g.span(d);
   const out = [];
 
+  // The window is in the title because it is the one thing a bare "Events per
+  // day" cannot be read without: 30 days and 30 months are the same 30 bars.
   out.push(chartCard(
-    `Events per ${g.unit}`,
-    `Events stored with a created_at in each ${g.unit} of the last ${span}, UTC.`,
-    series.map((x) => ({ label: g.slice(x.period), value: x.events })),
+    `Events per ${g.unit} · last ${span}`,
+    null,
+    series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.events })),
     activity,
   ));
 
@@ -556,18 +612,23 @@ function activityCards(activity) {
   // a correlation that is not in the data.
   if (series.some((x) => x.pubkeys != null)) {
     out.push(chartCard(
-      `Publishing pubkeys per ${g.unit}`,
-      `Distinct authors with at least one stored event in that ${g.unit}, UTC. Asked of the engine per ${g.unit} — ` +
-        `distinct authors do not add up across buckets the way events do.`,
-      series.map((x) => ({ label: g.slice(x.period), value: x.pubkeys || 0 })),
+      `Publishing pubkeys per ${g.unit} · last ${span}`,
+      null,
+      series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.pubkeys || 0 })),
       null,
     ));
   }
 
+  // "14:00", not "14": a bare number under a bar reads as a count on a page
+  // whose every other axis label is one. The tooltip names the whole hour and
+  // the zone, because "14:00" alone invites the reader to apply their own.
   out.push(chartCard(
-    "Events by hour of day",
-    `When events are authored, folded over the last ${d.hourWindowDays} days. Hour of created_at, UTC.`,
-    hours.map((x) => ({ label: String(x.hour).padStart(2, "0"), value: x.events })),
+    `Events by hour of day · last ${d.hourWindowDays} days`,
+    null,
+    hours.map((x) => {
+      const hh = String(x.hour).padStart(2, "0");
+      return { label: `${hh}:00–${hh}:59 UTC`, tick: `${hh}:00`, value: x.events };
+    }),
     null,
   ));
   return out;
@@ -602,13 +663,16 @@ function kindActivityCard(section) {
   const d = (section && section.data) || {};
   const kinds = d.kinds || [];
   const card = el("div", "card");
+  // "peak N/day" on every cell is what stands in for the removed sentence about
+  // per-kind scales. Do not drop it as prose: without a stated peak a reader
+  // assumes one shared axis and compares heights across cells, which is the one
+  // thing this panel does not mean.
   cardHead(
     card,
-    "Event types over time",
     kinds.length
-      ? `The ${kinds.length} largest kinds, each over the last ${d.windowDays} days. Each has its own vertical scale — ` +
-        `the peak is on the card, because kind 1 would otherwise flatten the rest.`
-      : "No per-kind series in this document.",
+      ? `Event types over time · ${kinds.length} largest kinds, last ${d.windowDays} days`
+      : "Event types over time",
+    kinds.length ? null : "No per-kind series in this document.",
     section,
   );
   if (!kinds.length) return card;
@@ -617,7 +681,16 @@ function kindActivityCard(section) {
   for (const k of kinds) {
     const cell = el("div", "spark-cell");
     const head = el("div", "spark-head");
-    head.appendChild(el("span", "spark-kind", `${kindLabel(k.kind)} · ${k.kind}`));
+    // Number FIRST, name second — same order as the Kinds table, and it is the
+    // order that survives the ellipsis. These heads truncate (a narrow column
+    // beside a "peak N/day"), and with the name leading, Quartz's longer
+    // registry names pushed the kind NUMBER off the end: "Outbox Relays ·…"
+    // drops the one part of the label that is unambiguous. The full text is on
+    // the title, since this is the string most likely to be cut.
+    const name = kindName(k.kind, k.name);
+    const label = el("span", "spark-kind", `${k.kind} · ${name}`);
+    label.title = `${name} — kind ${k.kind}`;
+    head.appendChild(label);
     const peak = Math.max(0, ...k.days.map((x) => x.events));
     head.appendChild(el("span", "spark-peak", `peak ${fmt(peak)}/day`));
     cell.appendChild(head);
@@ -641,13 +714,7 @@ function kindActivityCard(section) {
 function trustCard(section) {
   const d = (section && section.data) || {};
   const card = el("div", "card");
-  cardHead(
-    card,
-    "Trust",
-    "The NIP-85 web of trust this relay ranks with: observers name score providers, providers publish scores, " +
-      "and scores project onto the pubkeys a ranked search can then order.",
-    section,
-  );
+  cardHead(card, "Trust", null, section);
 
   const row = el("div", "tiles inline");
   for (const [key, label, help] of [
@@ -681,15 +748,20 @@ function relaysCard(section) {
   cardHead(
     card,
     "Relay distribution",
+    // The one sub that survives as more than an empty state: a capped list and
+    // a complete one are different facts, and only this line tells them apart.
     top.length
-      ? `${shownOf(d.shown, d.total, "relays", "most-named")} named by the NIP-65 lists this store holds.`
+      ? `${shownOf(d.shown, d.total, "relays", "most-named")}.`
       : "No relay distribution in this document.",
     section,
   );
   if (!top.length) return card;
 
   const max = Math.max(...top.map((r) => r.lists));
-  const wrap = el("div", "wrap");
+  // Bounded and scrolling, like the Kinds table: this list is capped at the
+  // most-named but the cap is generous, and a card that runs for a screen and
+  // a half pushes everything under it out of reach.
+  const wrap = el("div", "wrap tall");
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
@@ -717,14 +789,18 @@ function relaysCard(section) {
 function zapsCard(section) {
   const d = (section && section.data) || {};
   const card = el("div", "card");
-  cardHead(card, "Zaps", `NIP-57 zap receipts (kind 9735) this store holds.`, section);
+  cardHead(card, "Zaps", null, section);
 
   const row = el("div", "tiles inline");
-  for (const [key, label] of [["receipts", "Receipts"], ["wallets", "Wallets"]]) {
+  // "Zap services", not "wallets" and emphatically not "senders". Under NIP-57
+  // the receipt is signed by the LNURL service that settled the invoice, so
+  // this counts the handful of services our receipts came through — never the
+  // people who zapped, whose keys are in the `description` tag the rollup does
+  // not walk. "Wallets" was the JSON field's name and it read as the zappers'
+  // wallets, which is off by a whole party to the transaction.
+  for (const [key, label] of [["receipts", "Receipts"], ["wallets", "Zap services"]]) {
     const t = el("div", "tile");
     t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
-    // "Wallets" and not "senders": under NIP-57 the receipt is signed by the
-    // LNURL service that settled the invoice, not by the person who zapped.
     t.appendChild(el("div", "k", label));
     wrapTitle(t, key === "wallets" ? "Distinct authors of zap receipts — the LNURL services that settled them, not the people who zapped" : "");
     row.appendChild(t);
@@ -737,7 +813,10 @@ function zapsCard(section) {
   } else if (days.every((x) => !x.receipts)) {
     card.appendChild(el("p", "err", "No zap receipts in this window."));
   } else {
-    card.appendChild(barChart(days.map((x) => ({ label: x.day.slice(5), value: x.receipts })), { label: "Zap receipts per day" }));
+    card.appendChild(barChart(
+      days.map((x) => ({ label: x.day, tick: dayTick(x.day), value: x.receipts })),
+      { label: "Zap receipts per day" },
+    ));
   }
   return card;
 }
@@ -766,12 +845,10 @@ function kindsCard(kinds) {
   const card = el("div", "card");
   const d = (kinds && kinds.data) || {};
   const all = d.all || [];
-  cardHead(
-    card,
-    "Kinds",
-    all.length ? `All ${fmt(d.total)} kinds this relay holds, largest first.` : "No kind histogram in this document.",
-    kinds,
-  );
+  // No count in the sub: the filter row below prints "N kinds" and keeps
+  // printing "n of N" once the reader types, so the total is on screen either
+  // way and a header saying it too was the same fact twice.
+  cardHead(card, "Kinds", all.length ? null : "No kind histogram in this document.", kinds);
   if (!all.length) return card;
 
   // A corpus carries thousands of distinct kinds, most of them a handful of
@@ -807,7 +884,7 @@ function kindsCard(kinds) {
   for (const k of top) {
     const tr = el("tr");
     tr.appendChild(el("td", "kind", String(k.kind)));
-    tr.appendChild(el("td", "name", kindLabel(k.kind)));
+    tr.appendChild(el("td", "name", kindName(k.kind, k.name)));
     tr.appendChild(el("td", "n", fmt(k.events)));
     const share = el("td", "share");
     const bar = el("i");
@@ -834,7 +911,10 @@ function kindsCard(kinds) {
     let shown = 0;
     rows.forEach((tr, i) => {
       const k = top[i];
-      const hit = !q || String(k.kind).includes(q) || kindLabel(k.kind).toLowerCase().includes(q);
+      // Filtered on the name that is ON SCREEN. Searching kindLabel() while
+      // rendering the document's name means typing what you can see hides the
+      // row you are looking at, on the 180 kinds where the two disagree.
+      const hit = !q || String(k.kind).includes(q) || kindName(k.kind, k.name).toLowerCase().includes(q);
       tr.hidden = !hit;
       if (hit) shown++;
     });
@@ -853,6 +933,14 @@ function render(doc) {
   bodyEl.replaceChildren();
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
 
+  // Trust sits SECOND, right under the corpus totals, because it is the only
+  // panel here that can report the relay broken. A store with no projected
+  // trust state answers every ranked search unranked, and nothing else on this
+  // page changes when that happens — the charts above and below it look
+  // identical either way. Buried under the charts it was a panel you found
+  // after you already had a theory; here it is one of the first things read.
+  bodyEl.appendChild(trustCard(doc.trust));
+
   // The toggle and the two series it drives are re-rendered together, so
   // switching granularity cannot leave the control and the charts disagreeing.
   settleGrain(doc.activity);
@@ -867,7 +955,6 @@ function render(doc) {
   bodyEl.appendChild(activityWrap);
 
   bodyEl.appendChild(kindActivityCard(doc.kindActivity));
-  bodyEl.appendChild(trustCard(doc.trust));
   bodyEl.appendChild(zapsCard(doc.zaps));
   bodyEl.appendChild(relaysCard(doc.relayDistribution));
   // Last, because it is now the longest thing on the page by an order of

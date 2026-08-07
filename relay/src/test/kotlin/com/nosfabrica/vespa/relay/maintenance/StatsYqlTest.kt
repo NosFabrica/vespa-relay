@@ -275,6 +275,65 @@ class StatsYqlTest {
         for (bad in listOf("", "r", "r:", "rr:x", ":x")) assertNull(StatsYql.tagValue(bad, 'r'), "must refuse '$bad'")
     }
 
+    /**
+     * The spellings a hand-written relay list carries collapse onto one relay.
+     *
+     * This is what makes the distribution a count of RELAYS. Sorted by count,
+     * a relay split across a trailing slash and a capitalised host sits below
+     * relays it actually outnumbers, and neither row is its real total.
+     */
+    @Test
+    fun `relay urls that name one relay canonicalise to one string`() {
+        val canonical = StatsYql.canonicalRelay("wss://nos.lol")
+        for (spelling in listOf("wss://nos.lol", "wss://nos.lol/", "wss://NOS.LOL", "  wss://nos.lol  ")) {
+            assertEquals(canonical, StatsYql.canonicalRelay(spelling), "'$spelling' is the same relay")
+        }
+        // Idempotent, or a second pass over a rolled-up value would drift.
+        assertEquals(canonical, StatsYql.canonicalRelay(canonical))
+        // Displayed without the normalizer's trailing slash.
+        assertEquals("wss://nos.lol", canonical)
+    }
+
+    /**
+     * Different relays stay different — the failure mode a normalizer invites
+     * is over-merging, which silently ADDS counts to the wrong row.
+     *
+     * `wss://nos.lol:443` is in here rather than in the merged set above, and
+     * that is Quartz's call, not ours: its normalizer preserves an explicit
+     * port even when it is the scheme's default, and `RelayOnionAuthTest` pins
+     * exactly that ("the normalizer keeps the two strings apart") because a
+     * relay is identified by the url a client dialled and AUTH'd against.
+     * Stripping the port here would be a THIRD identity rule, disagreeing with
+     * the router on the one page that reports what the router sees, to merge a
+     * spelling that is vanishingly rare in real relay lists.
+     */
+    @Test
+    fun `a path, a port and a scheme are not normalised away`() {
+        val distinct =
+            listOf(
+                "wss://nos.lol",
+                "wss://relay.nos.lol",
+                "wss://nos.lol/nostr",
+                "wss://nos.lol:444",
+                "wss://nos.lol:443",
+                "ws://nos.lol",
+            ).map { StatsYql.canonicalRelay(it) }
+        assertEquals(distinct.size, distinct.toSet().size, "these are six different endpoints: $distinct")
+    }
+
+    /**
+     * A url the normalizer cannot parse keeps its place in the census.
+     *
+     * The panel says how many relays our lists name; dropping the unparseable
+     * ones would make `total` a count of the well-formed ones under a heading
+     * that claims otherwise.
+     */
+    @Test
+    fun `an unparseable relay url survives as itself`() {
+        assertEquals("not a url at all", StatsYql.canonicalRelay("  not a url at all  "))
+        assertEquals("", StatsYql.canonicalRelay(""))
+    }
+
     // ---- the queries --------------------------------------------------------
 
     @Test
