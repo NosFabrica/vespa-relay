@@ -37,6 +37,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import java.io.File
 import java.time.Instant
 
 /**
@@ -87,6 +88,13 @@ internal class StatsRollup(
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
+    /**
+     * The router's two state files, read off the volume both containers mount.
+     * Null in a serve-only deployment, and null is the normal case rather than
+     * an error — see [SyncCoverageReport].
+     */
+    private val syncBandsFile: File? = null,
+    private val syncSweepsFile: File? = null,
 ) {
     /** Compute the whole document. Never throws: a section that fails says so in the document. */
     suspend fun compute(): JsonObject {
@@ -103,6 +111,7 @@ internal class StatsRollup(
         val relays = relaysSection()
         val zaps = zapsSection()
         val trust = trustSection()
+        val sync = syncSection()
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
             put("relay", relayUrl)
@@ -122,8 +131,44 @@ internal class StatsRollup(
             put("relayDistribution", relays)
             put("zaps", zaps)
             put("trust", trust)
+            // Absent, not empty, when there is no router: a serve-only relay has
+            // no sync to report and a card saying "0 relays" would read as a
+            // broken mirror rather than as no mirror.
+            sync?.let { put("sync", it) }
         }
     }
+
+    /**
+     * The router's coverage, read off the shared volume.
+     *
+     * The one section that queries NOTHING — it is two file reads and a fold,
+     * and it is here rather than in its own endpoint because `/stats.json` is
+     * where a reader already looks and because the rollup already has a timer,
+     * a snapshot, and an ETag. [SyncCoverageReport] carries the argument for
+     * reading the router's files at all.
+     *
+     * Wrapped so that no failure here can cost the document: an unreadable file
+     * (wrong permissions, a volume that is not mounted, a half-written temp) is
+     * reported as a failed section beside working ones, which is the same
+     * contract every queried section has.
+     */
+    private suspend fun syncSection(): JsonObject? {
+        if (syncBandsFile == null && syncSweepsFile == null) return null
+        var data: JsonObject? = null
+        val section =
+            section { attempts ->
+                attempt(attempts, "sync") {
+                    data = SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds())
+                    data
+                }
+                data ?: buildJsonObject { }
+            }
+        // Nothing read AND nothing failed means no router has ever written here.
+        return if (data == null && section["errors"] == null) null else section
+    }
+
+    /** Missing is the normal case; unreadable is not, and is allowed to throw into [attempt]. */
+    private fun readOrNull(file: File?): String? = file?.takeIf { it.isFile }?.readText()
 
     /**
      * The newest `created_at` anywhere in the store, taken as the maximum over

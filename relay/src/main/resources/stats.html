@@ -120,6 +120,80 @@
      labels are still there when you are 400 rows down. */
   .wrap.tall { max-height: 32rem; overflow-y: auto; }
   .wrap.tall thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+
+  /* ---- sync coverage -----------------------------------------------------
+     A row is a FRAME plus what is covered, drawn as percentages rather than
+     SVG so the whole thing reflows with the card and never re-measures.
+
+     The frame is full width on purpose. A bar sized to its own extent makes
+     every relay look finished; against a common frame the uncovered time is
+     the loud part, which is the question this card is here to answer. */
+  .cov { --lab: 11rem; }
+  .cov-row { display: grid; grid-template-columns: var(--lab) 1fr; gap: .6rem; align-items: center; margin-bottom: 3px; }
+  /* line-height 1, not the body's 1.5: a .78rem label in a 1.5 line box is
+     taller than the 12px track beside it, and the overflow slid under the
+     sticky header above — every group's first row lost its top third. */
+  .cov-lab {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; line-height: 1;
+    color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    direction: rtl; text-align: left;
+  }
+  .track { position: relative; height: 12px; background: var(--grid); border-radius: 2px; }
+  .track > i { position: absolute; top: 0; bottom: 0; border-radius: 2px; display: block; }
+  /* Walked by paging: we asked and stored what came back, and cannot claim
+     nothing was missed. */
+  .cov-seg.paged { background: var(--bar); }
+  /* Reconciled — a finished negentropy pass. The strong tone is the point:
+     this is the only bar that means "provably identical". */
+  .cov-seg.done { background: var(--accent); }
+  /* Still sweeping. Warm, because it is the only mark here that will look
+     different in a minute. */
+  .cov-seg.live { background: var(--warn); opacity: .55; }
+  .cov-seg.edge { width: 2px; border-radius: 0; background: var(--warn); }
+  /* The window no kind in the filter is missing from — drawn only when the
+     per-kind spans disagree, which is the band bug made visible. */
+  .cov-seg.every { top: 4px; bottom: 4px; background: var(--text); opacity: .35; border-radius: 1px; }
+
+  .axis-track { position: relative; height: 1.15rem; margin-left: calc(var(--lab) + .6rem); }
+  .axis-track span {
+    position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .axis-track span.first { transform: none; }
+  .axis-track span.last { transform: translateX(-100%); }
+  /* Two elements, not one. The opaque strip must span the FULL width or relay
+     labels scroll up through the gap beside the ticks; the ticks themselves
+     are percentages of the TRACK, which starts after the label column. And it
+     lives INSIDE the scroll box, like `thead th` does — an axis above would
+     keep the scrollbar's width while the tracks below lost it, putting every
+     bar a few pixels off the date that labels it. */
+  .axis.pin {
+    position: sticky; top: 0; z-index: 3; background: var(--surface);
+    padding: .15rem 0 .3rem; border-bottom: 1px solid var(--line);
+  }
+  .grp { margin-bottom: 1.1rem; }
+  .grp:last-child { margin-bottom: 0; }
+  /* Pinned under the axis: 900 rows into a fan-out, "which stream is this" is
+     the other question the numbers stop answering. */
+  .grp-head {
+    display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; flex-wrap: wrap;
+    position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface); padding: .35rem 0 .3rem;
+  }
+  .grp-name { font-weight: 650; font-size: .85rem; }
+  .grp-name code { background: var(--bar); padding: .05rem .3rem; border-radius: .25rem; font-size: .75rem; }
+  .grp-stat { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+  /* How many of a group's relays cover each bucket — the mark that answers
+     "how much of the list is in sync" for a fan-out, where a row each is
+     reachable but not readable. Indented to the track: it is a chart on the
+     SAME axis, and flush left its 2023 bucket sat over the rows' 2022. */
+  .depth {
+    position: relative; height: 24px; margin: 0 0 .3rem calc(var(--lab) + .6rem);
+    display: flex; align-items: flex-end;
+  }
+  .depth i { display: block; flex: 1 1 0; min-width: 0; background: var(--accent); }
+  .depth i.thin { background: var(--bar); }
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); margin: 0 0 .8rem; }
+  .legend b { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px; vertical-align: -.05em; margin-right: .3rem; }
   .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
   .bar-row input {
     font: inherit; font-size: .9rem; padding: .35rem .6rem; border-radius: .4rem;
@@ -741,6 +815,177 @@ function trustCard(section) {
   return card;
 }
 
+/**
+ * How much of each stream's relay list is in sync, and how far the current
+ * sweeps have got.
+ *
+ * Three facts per relay, on one mark. The bar's EXTENT is the created_at span
+ * already walked; its TONE is whether that span was reconciled (negentropy
+ * finished — provably identical) or merely paged (we asked and stored what came
+ * back); and its right edge against `now` is freshness. The sweep cursor rides
+ * the same row in a warm tone with a leading edge at `downTo`, because a sweep
+ * killed at 80% records no band at all — without the cursor a relay mid-walk is
+ * indistinguishable from one nobody has touched, which is the state this card
+ * exists to reveal.
+ *
+ * THE FRAME IS NOT A TARGET. These filters carry no `since`, so "100% covered"
+ * is not a defined quantity; the frame is the oldest span anything here reaches
+ * and exists to make two relays comparable, not to grade them. The note under
+ * the card says so, and should not be trimmed for the same reason the scope
+ * line under the title is not.
+ *
+ * `relays` counts the relays this filter has TOUCHED, never the relays its
+ * stream was configured with — that list is in `router.conf`, which this relay
+ * does not read. A "never asked" count would be the honest headline and it is
+ * not available here; see SyncCoverageReport.
+ */
+function syncCard(section) {
+  const d = (section && section.data) || {};
+  const streams = d.streams || [];
+  const card = el("div", "card");
+  cardHead(card, "Sync coverage", streams.length ? null : "No sync state in this document.", section);
+  if (!streams.length) return card;
+
+  const from = d.from, to = d.to;
+  const span = Math.max(1, to - from);
+  const pct = (t) => ((t - from) / span) * 100;
+  const day = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+
+  const legend = el("div", "legend");
+  for (const [tone, text] of [
+    ["done", "reconciled — negentropy finished"],
+    ["paged", "paged — walked, not proven exhaustive"],
+    ["live", "sweeping now"],
+  ]) {
+    const s = el("span");
+    const b = el("b");
+    b.style.background = tone === "paged" ? "var(--bar)" : tone === "done" ? "var(--accent)" : "var(--warn)";
+    if (tone === "live") b.style.opacity = ".55";
+    s.appendChild(b);
+    s.append(text);
+    legend.appendChild(s);
+  }
+  card.appendChild(legend);
+
+  /** Year ticks, plus the two ends — the frame spans years, so months would be a smear. */
+  const axis = () => {
+    const outer = el("div", "axis");
+    const track = el("div", "axis-track");
+    outer.appendChild(track);
+    const marks = [[from, day(from)]];
+    for (let y = new Date(from * 1000).getUTCFullYear() + 1; y <= new Date(to * 1000).getUTCFullYear(); y++) {
+      marks.push([Date.UTC(y, 0, 1) / 1000, String(y)]);
+    }
+    marks.push([to, "now"]);
+    marks.forEach(([t, label], i) => {
+      if (t < from || t > to) return;
+      const s = el("span", i === 0 ? "first" : i === marks.length - 1 ? "last" : null, label);
+      s.style.left = pct(t) + "%";
+      track.appendChild(s);
+    });
+    return outer;
+  };
+
+  const row = (r) => {
+    const wrap = el("div", "cov-row");
+    const lab = el("div", "cov-lab", String(r.relay).replace(/^wss:\/\//, ""));
+    lab.title = r.relay;
+    wrap.appendChild(lab);
+    const track = el("div", "track");
+    if (r.min != null && r.max != null) {
+      const seg = el("i", `cov-seg ${r.complete ? "done" : "paged"}`);
+      seg.style.left = pct(r.min) + "%";
+      seg.style.width = Math.max(0.3, pct(r.max) - pct(r.min)) + "%";
+      seg.title =
+        `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
+        (r.complete ? "reconciled — negentropy finished over this span" : "paged — walked, not proven exhaustive") +
+        (r.target ? `\nwindow ${fmt(r.target)}${r.cap ? ` (peer cap ${fmt(r.cap)})` : ""}` : "");
+      track.appendChild(seg);
+      // Present only when the per-kind spans disagree — one band holds a span
+      // per kind and min/max are the outer edges, so a long-lived kind vouches
+      // for a short-lived one. This is the part no kind is missing from.
+      if (r.everyKindMin != null) {
+        const inner = el("i", "cov-seg every");
+        inner.style.left = pct(r.everyKindMin) + "%";
+        inner.style.width = Math.max(0.3, pct(r.everyKindMax) - pct(r.everyKindMin)) + "%";
+        inner.title = `every kind in this filter is covered only from ${day(r.everyKindMin)} to ${day(r.everyKindMax)}`;
+        track.appendChild(inner);
+      }
+    }
+    if (r.sweep) {
+      const live = el("i", "cov-seg live");
+      live.style.left = pct(r.sweep.downTo) + "%";
+      live.style.width = Math.max(0.3, pct(r.sweep.upTo) - pct(r.sweep.downTo)) + "%";
+      live.title = `sweeping — reconciled down to ${day(r.sweep.downTo)}, last advanced ${ago(r.sweep.at)}`;
+      track.appendChild(live);
+      const edge = el("i", "cov-seg edge");
+      edge.style.left = pct(r.sweep.downTo) + "%";
+      track.appendChild(edge);
+    }
+    wrap.appendChild(track);
+    return wrap;
+  };
+
+  /** For each bucket, how many of the group's relays cover it. */
+  const depthStrip = (rows, buckets = 96) => {
+    const strip = el("div", "depth");
+    const step = span / buckets;
+    const covering = rows.filter((r) => r.min != null);
+    for (let b = 0; b < buckets; b++) {
+      const t0 = from + b * step, t1 = t0 + step;
+      const n = covering.filter((r) => r.min <= t1 && r.max >= t0).length;
+      const done = covering.filter((r) => r.complete && r.min <= t1 && r.max >= t0).length;
+      const i = el("i", done ? null : "thin");
+      i.style.height = Math.max(1, (n / Math.max(1, covering.length)) * 24) + "px";
+      i.title = `${day(t0)} — ${fmt(n)} of ${fmt(rows.length)} relays (${fmt(done)} reconciled)`;
+      strip.appendChild(i);
+    }
+    return strip;
+  };
+
+  // One scroll box for every stream, and one axis pinned at its top: the frame
+  // is shared by design — that is what makes two streams comparable — so a
+  // per-stream axis would be the same ruler drawn N times and would stop being
+  // sticky the moment its stream scrolled past.
+  const scroll = el("div", "wrap tall cov");
+  const pinned = axis();
+  pinned.classList.add("pin");
+  scroll.appendChild(pinned);
+
+  for (const s of streams) {
+    const box = el("div", "grp");
+    const head = el("div", "grp-head");
+    const name = el("div", "grp-name");
+    // Labelled by FILTER, not by stream name: a band is keyed by the filter, so
+    // the filter is what actually determines coverage, and the name lives in a
+    // config file this relay does not read.
+    const kinds = (s.filter && s.filter.kinds) || [];
+    name.appendChild(el("code", null, kinds.length ? `kinds ${kinds.join(", ")}` : "every kind"));
+    head.appendChild(name);
+    head.appendChild(el("div", "grp-stat",
+      `${fmt(s.reconciled || 0)} reconciled · ${fmt(s.paged || 0)} paged` +
+      (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
+      ` · ${fmt(s.relays || 0)} relays walked`));
+    box.appendChild(head);
+    const rows = s.rows || [];
+    if (rows.length > 24) box.appendChild(depthStrip(rows));
+    // EVERY relay, no top-N: the relays a cap would drop are the ones the
+    // question is about. Same argument as the Kinds table.
+    for (const r of rows) box.appendChild(row(r));
+    scroll.appendChild(box);
+  }
+  card.appendChild(scroll);
+  // Measured, not guessed: a hardcoded rem offset is wrong at any root font
+  // size but the author's, and 2px out hides a sliver of one sticky element
+  // behind the other.
+  requestAnimationFrame(() => scroll.style.setProperty("--pin-h", pinned.getBoundingClientRect().height + "px"));
+
+  card.appendChild(el("p", "card-sub",
+    `Frame: ${day(from)} → now. Not a target — these filters carry no lower bound, so a full row means ` +
+    `"as deep as anything here reaches", not "done". Counts relays this filter has walked, not the relays its stream names.`));
+  return card;
+}
+
 function relaysCard(section) {
   const d = (section && section.data) || {};
   const top = d.top || [];
@@ -955,6 +1200,10 @@ function render(doc) {
   bodyEl.appendChild(activityWrap);
 
   bodyEl.appendChild(kindActivityCard(doc.kindActivity));
+  // Only when a router has written state we can read. A serve-only relay does
+  // not mirror, and an empty coverage card there would read as a broken mirror
+  // rather than as no mirror.
+  if (doc.sync) bodyEl.appendChild(syncCard(doc.sync));
   bodyEl.appendChild(zapsCard(doc.zaps));
   bodyEl.appendChild(relaysCard(doc.relayDistribution));
   // Last, because it is now the longest thing on the page by an order of

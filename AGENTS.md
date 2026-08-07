@@ -300,6 +300,15 @@ behaviour upstream, not here**, or the next quartz bump reverts it. The
 on-disk shape (`{key: {min, max, complete, fullAt}}`) is this repo's and is
 pinned by a test.
 
+**Both state files are now READ by the relay**, off the `/var/lib/vespa-relay`
+mount both containers share, and charted as the *Sync coverage* card on
+`/stats.html` — see `SyncCoverageReport`. The router is still the only writer.
+Two traps if you touch either format: the two files key the same pair
+differently (a **space** in the band file, a **pipe** in the sweep file, whose
+key also strips `since`/`until`/`limit`), and a band's `min`/`max` are the outer
+edges across every kind — the card draws the per-kind *intersection* on top,
+which is the multi-kind bug below made visible rather than charted as coverage.
+
 **Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
 reconcile call, and the division of labour with quartz is the thing to
 understand before touching it. It moved once already: quartz used to take a
