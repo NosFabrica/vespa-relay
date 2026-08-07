@@ -4,34 +4,31 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# Kept at or AHEAD of the quartz the store was built against (7caf4a8a25 at the
-# current store pin), so the store never runs on a quartz missing something it
-# compiled to. Verified as a class-level superset, not assumed: 35f96a936d drops
-# nothing 7caf4a8a25 had and carries all 11 classes 7caf4a8a25 added.
+# IDENTICAL to the quartz the store pin below compiles against, which is the
+# state to hold: one quartz on the classpath, and `force` restating the
+# resolution rather than overriding it. Equality is the easy case, not the
+# required one — the invariant is at or AHEAD, because a store running on a
+# quartz OLDER than it compiled to fails at the call site in production and at
+# no point during assembly. It was behind for exactly one commit here and
+# nothing in either build noticed.
 #
-# This hash sorts LOWEST of the three in play ('3' < '7' < '9'), so `force` is
-# now doing real work rather than restating a conflict Gradle would resolve the
-# same way — the store's transitive 7caf4a8a25 would otherwise WIN. Every module
-# forces it independently (:common, :relay, :sync); a new module needs its own.
+# So on any bump of EITHER pin, check the direction. The forces stay regardless:
+# they are per-module (:common, :relay, :sync), a new module needs its own, and
+# they are what stops a store bump from silently dragging its own quartz in.
 quartz = "35f96a936d"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-# 057d52d690 = store PR #56, the coverage-guard fix: a response is judged by
-# Vespa's own isDegraded(), not by its `full`. The two disagree in both
-# directions — `full: false` at a rounded 100% with no reason named was refused
-# on every read (this relay's empty-search feeds), and `full: true` below
-# targetActive was served silently at any coverage. Also carries #54/#55.
-#
-# The store compiles against quartz 7caf4a8a25; the pin above is at or ahead of
-# that, which is the invariant to preserve when either moves. It was BEHIND for
-# one commit here, and nothing in either build noticed — a store running on a
-# quartz older than it compiled to fails at the call, in production, not at
-# assembly. Check the direction on every bump of either pin.
+# 5ad77faa53 = store main through PR #57. Carries the coverage-guard fix (#56):
+# a response is judged by Vespa's own isDegraded(), not by its `full`, which
+# disagrees in BOTH directions — `full: false` at a rounded 100% with no reason
+# named was refused on every read (this relay's empty-search feeds), and
+# `full: true` below targetActive was served silently at any coverage. #57
+# brings the store's own quartz to the pin above, so the two now match.
 #
 # VERIFY the hash resolved rather than reading this line: Gradle breaks a version
-# conflict lexicographically, and this one sorts LOW ('0'), so anything dragging
-# the store in at an older, higher-spelling hash wins silently.
+# conflict lexicographically, so a hash that sorts below one dragged in
+# transitively loses silently and the bump does nothing.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
-vespaEventStore = "057d52d690"
+vespaEventStore = "5ad77faa53"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
