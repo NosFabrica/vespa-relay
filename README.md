@@ -177,9 +177,10 @@ Served on the relay's own port, next to the search UI:
   websocket with anonymous NIP-45 COUNTs — so the page also *tests* NIP-45 the
   way a client would.
 - **`/relay_stats.html`** — what the store holds and how it is filling: totals,
-  a per-kind table with distinct authors, and events and publishing pubkeys per
-  UTC day. Charted from **`GET /stats.json`**, a public document a background
-  rollup recomputes with Vespa grouping queries.
+  a per-kind table with distinct authors, events and publishing pubkeys per UTC
+  day/week/month, the hour-of-day shape, a daily series per kind, the relays our
+  NIP-65 lists name, and zap receipts. Charted from **`GET /stats.json`**, a
+  public document a background rollup recomputes with Vespa grouping queries.
 
   The JSON is the artifact and the page is one reader of it — publish it and
   anyone can chart this relay's coverage, or diff it against a network-wide

@@ -425,6 +425,21 @@ statement about someone else's server.
   the same corpus, from structurally identical responses. Nothing distinguishes
   them and neither errors: the only thing keeping events out of a column
   labelled users is calling the right builder.
+- **Grouping expressions take ARITHMETIC**, which is usually the better bucket.
+  `group(created_at / 604800)` renders as `div(created_at, 604800)` and yields a
+  plain integer, so it inherits none of `time.date`'s padding problem and sorts
+  correctly before anything formats it. Two uses worth knowing: weeks need
+  `(created_at + 259200) / 604800`, because epoch second 0 is a THURSDAY and the
+  un-shifted division buckets Thursday-to-Wednesday under a chart every reader
+  will assume starts on Monday; and months, which cannot be an even division of
+  seconds, fold into one sortable integer as
+  `time.year(created_at) * 12 + time.monthofyear(created_at)` rather than a
+  two-level `time.year`/`time.monthofyear` nest the readers would have to descend.
+- **A coarser time bucket is not the finer one re-added.** Events sum across
+  buckets; DISTINCT AUTHORS DO NOT — someone posting every day is one author in
+  the week and seven in the sum of that week's days. Every granularity has to be
+  asked of the engine at that granularity, which is why `activitySection`
+  issues three pairs of queries instead of summing one.
 - **The bundled query profile is what makes any of this work.**
   `grouping.globalMaxGroups: -1` in `search/query-profiles/default.xml` is why a
   `max()`-less pipeline is legal at all, and the per-request

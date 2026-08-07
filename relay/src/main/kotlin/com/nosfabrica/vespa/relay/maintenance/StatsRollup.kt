@@ -25,9 +25,13 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
+import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.add
+import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.intOrNull
+import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -73,8 +77,15 @@ internal class StatsRollup(
     /** Wall clock in epoch seconds; injected so the window bounds are assertable. */
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
     private val windowDays: Int = DEFAULT_WINDOW_DAYS,
+    // In weeks and months, not days: these are what the page prints, and a
+    // window stated as "the last 744 days" on a monthly chart is a number no
+    // reader converts. The seconds are derived where the query is built.
+    private val weekWindowWeeks: Int = DEFAULT_WEEK_WINDOW_WEEKS,
+    private val monthWindowMonths: Int = DEFAULT_MONTH_WINDOW_MONTHS,
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
     private val topKinds: Int = DEFAULT_TOP_KINDS,
+    private val topRelays: Int = DEFAULT_TOP_RELAYS,
+    private val kindSeries: Int = DEFAULT_KIND_SERIES,
 ) {
     /** Compute the whole document. Never throws: a section that fails says so in the document. */
     suspend fun compute(): JsonObject {
@@ -82,6 +93,12 @@ internal class StatsRollup(
         val corpus = corpusSection()
         val kinds = kindsSection()
         val activity = activitySection()
+        // The per-kind series follow the histogram the kinds section just
+        // computed, so the panel tracks the corpus rather than a hardcoded list
+        // that would go stale in the direction of hiding whatever grew.
+        val kindActivity = kindActivitySection(topKindNumbers(kinds))
+        val relays = relaysSection()
+        val zaps = zapsSection()
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
             put("relay", relayUrl)
@@ -97,6 +114,9 @@ internal class StatsRollup(
             put("corpus", corpus)
             put("kinds", kinds)
             put("activity", activity)
+            put("kindActivity", kindActivity)
+            put("relayDistribution", relays)
+            put("zaps", zaps)
             // Declared, not computed. Each names what it needs rather than
             // being absent — a panel missing from the document is
             // indistinguishable from one the reader's page is too old to know
@@ -113,24 +133,25 @@ internal class StatsRollup(
                 "retention",
                 pending("Cohorts are built on the same per-pubkey first-seen as newUsers; it lands with that rollup."),
             )
-            put(
-                "zaps",
-                pending(
-                    "Counts and distinct senders/recipients are groupable, but sats are not: the amount lives in " +
-                        "the `bolt11` and `description` tags, whose names are multi-character and therefore absent " +
-                        "from tag_index by construction, and `content` is summary-only. Needs a walk over kind 9735.",
-                ),
-            )
-            put(
-                "relayDistribution",
-                pending(
-                    "NIP-65 read/write markers are the THIRD element of an `r` tag, and tag_index stores only " +
-                        "`<letter>:<value>` — so the marker is not queryable. Needs a walk over kind 10002, which is " +
-                        "cheap (one event per user).",
-                ),
-            )
         }
     }
+
+    /**
+     * The kinds to draw a per-kind series for: the largest few from the
+     * histogram [kindsSection] just computed.
+     *
+     * Reads the section's own output rather than re-querying — the histogram is
+     * already sorted and already paid for. An empty list when that section
+     * failed is the right answer: no series is better than a series over kinds
+     * we could not count.
+     */
+    private fun topKindNumbers(kinds: JsonObject): List<Int> =
+        (kinds["data"] as? JsonObject)
+            ?.get("top")
+            ?.let { it as? JsonArray }
+            ?.mapNotNull { entry -> (entry as? JsonObject)?.get("kind")?.jsonPrimitive?.intOrNull }
+            ?.take(kindSeries)
+            .orEmpty()
 
     // ---- sections -----------------------------------------------------------
 
@@ -188,31 +209,36 @@ internal class StatsRollup(
             }
         }
 
-    /** The time series: events and distinct authors per UTC day, plus the hour-of-day shape. */
+    /**
+     * The time series: events and distinct authors per UTC day, week and month,
+     * plus the hour-of-day shape.
+     *
+     * Three granularities rather than one, because a coarser bucket is NOT the
+     * finer one re-added. Events sum, but distinct authors do not: someone who
+     * posts every day is one author in the week and seven in the sum of its
+     * days. So a weekly "publishing pubkeys" has to be asked of the engine at
+     * weekly granularity, and the page's Daily/Weekly/Monthly toggle switches
+     * between three answers rather than re-aggregating one.
+     */
     private suspend fun activitySection(): JsonObject =
         section { errors ->
             val now = nowSeconds()
-            val dayWindow = StatsYql.window(now - windowDays * DAY_SECONDS, now)
             val hourWindow = StatsYql.window(now - hourWindowDays * DAY_SECONDS, now)
-            val events = attempt(errors, "days.events") { byIsoDay(StatsYql.countsBy(StatsYql.DAY), dayWindow, distinct = false) }
-            val authors = attempt(errors, "days.pubkeys") { byIsoDay(StatsYql.distinctAuthorsBy(StatsYql.DAY), dayWindow, distinct = true) }
+            val days = series(errors, "days", StatsYql.DAY, StatsYql::isoDay, now, windowDays)
+            val weeks = series(errors, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, now, weekWindowWeeks * 7)
+            // 31 days a month, so the window reaches at least this many whole
+            // calendar months back. Over-reaching costs a leading partial
+            // month; under-reaching would silently drop one.
+            val months = series(errors, "months", StatsYql.MONTH, StatsYql::isoMonth, now, monthWindowMonths * 31)
             val hours = attempt(errors, "hours") { longsByGroup(StatsYql.countsBy(StatsYql.HOUR), hourWindow) }
             buildJsonObject {
                 put("windowDays", windowDays)
+                put("windowWeeks", weekWindowWeeks)
+                put("windowMonths", monthWindowMonths)
                 put("hourWindowDays", hourWindowDays)
-                events?.let { byDay ->
-                    putJsonArray("days") {
-                        byDay.entries.sortedBy { it.key }.forEach { (day, count) ->
-                            add(
-                                buildJsonObject {
-                                    put("day", day)
-                                    put("events", count)
-                                    authors?.get(day)?.let { put("pubkeys", it) }
-                                },
-                            )
-                        }
-                    }
-                }
+                days?.let { put("days", it) }
+                weeks?.let { put("weeks", it) }
+                months?.let { put("months", it) }
                 hours?.let { byHour ->
                     putJsonArray("hours") {
                         // Every hour, including the empty ones: a chart that
@@ -231,6 +257,192 @@ internal class StatsRollup(
             }
         }
 
+    /**
+     * The relay urls this store's NIP-65 lists name, and how many lists name
+     * each — the "where do our users read and write" panel.
+     *
+     * One grouping over `tag_index` filtered to kind 10002, which is affordable
+     * exactly because of what a relay list is: few tags per event, and the
+     * values repeat across users, so the distinct set is relay urls (thousands)
+     * rather than event ids (millions). The same pipeline on kind 1 would try to
+     * return every `e` and `p` tag in the corpus.
+     *
+     * `lists` and not `users`: kind 10002 is replaceable, so the store holds one
+     * per author and the two are equal today — but that equality is the store's
+     * supersession behaving, not something this query establishes, and a column
+     * headed "users" would be asserting it.
+     */
+    private suspend fun relaysSection(): JsonObject =
+        section(
+            note =
+                "How many stored NIP-65 lists name each relay. NOT split by read/write: that marker is an `r` tag's " +
+                    "THIRD element and tag_index holds only `<letter>:<value>`, so it is not queryable — it needs a " +
+                    "walk over kind 10002.",
+        ) { errors ->
+            val pairs =
+                attempt(errors, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = 10002") }
+                    ?: return@section buildJsonObject { }
+            // A 10002 may carry tags other than `r`; keep the relay urls and
+            // drop the rest rather than charting whatever else was on the event.
+            val relays = pairs.mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { it to count } }.toMap()
+            buildJsonObject {
+                put("total", relays.size)
+                put("shown", minOf(relays.size, topRelays))
+                putJsonArray("top") {
+                    relays.entries
+                        .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key })
+                        .take(topRelays)
+                        .forEach { (url, lists) ->
+                            add(
+                                buildJsonObject {
+                                    put("relay", url)
+                                    put("lists", lists)
+                                },
+                            )
+                        }
+                }
+            }
+        }
+
+    /**
+     * Zap receipts: how many, from how many wallets, and their shape over time.
+     *
+     * Deliberately NOT sats. The amount lives in the `bolt11` tag and in the
+     * kind-9734 request nested in `description`, both multi-character tag names
+     * that `tag_index` cannot address, and `content` is summary-only — so no
+     * grouping query can reach a number of satoshis, and a total here would have
+     * to be invented. Senders and recipients are the same story for a different
+     * reason: they ARE addressable (`P:` and `p:`, cased and single-letter), but
+     * grouping `tag_index` over kind 9735 would emit every `e:` tag with them,
+     * which is one distinct value per zap.
+     *
+     * `wallets` is the receipt's own author — under NIP-57 that is the LNURL
+     * service that settled the invoice, not the person who zapped. Worth having
+     * on its own terms; it is not a user count and is not labelled as one.
+     */
+    private suspend fun zapsSection(): JsonObject =
+        section(
+            note =
+                "Receipt counts only. Sats are unreachable by any grouping — the amount is in the `bolt11` and " +
+                    "`description` tags, whose multi-character names are absent from tag_index — and senders/recipients " +
+                    "would drag every `e:` tag along with them. Both need a walk over kind 9735.",
+        ) { errors ->
+            val now = nowSeconds()
+            val window = StatsYql.window(now - windowDays * DAY_SECONDS, now)
+            val receipts = attempt(errors, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = 9735")) }
+            val wallets = attempt(errors, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = 9735")) }
+            val days =
+                attempt(errors, "days") {
+                    bucketed(StatsYql.countsBy(StatsYql.DAY), "kind = 9735 and $window", StatsYql::isoDay, distinct = false)
+                }
+            buildJsonObject {
+                receipts?.let { put("receipts", it) }
+                wallets?.let { put("wallets", it) }
+                put("windowDays", windowDays)
+                days?.let { byDay ->
+                    putJsonArray("days") {
+                        byDay.entries.sortedBy { it.key }.forEach { (day, count) ->
+                            add(
+                                buildJsonObject {
+                                    put("day", day)
+                                    put("receipts", count)
+                                },
+                            )
+                        }
+                    }
+                }
+            }
+        }
+
+    /**
+     * A daily series per kind, for the largest few — the mirror filling, broken
+     * out by what it is filling with.
+     *
+     * The reference dashboard declares this panel and ships it empty. Ours is
+     * one query per kind, which is why it is capped: the cost is linear in the
+     * number of series and nobody reads twenty sparklines.
+     *
+     * Takes the kinds from [kindsSection]'s own histogram rather than a list
+     * here, so the panel follows the corpus instead of an opinion about it that
+     * would go stale in the direction of hiding whatever grew.
+     */
+    private suspend fun kindActivitySection(topByEvents: List<Int>): JsonObject =
+        section { errors ->
+            val now = nowSeconds()
+            val since = now - windowDays * DAY_SECONDS
+            // Queried first, assembled second: the JSON builders are not
+            // coroutine bodies, so a suspending call cannot run inside one.
+            val perKind =
+                topByEvents.map { kind ->
+                    kind to
+                        attempt(errors, "kind $kind") {
+                            bucketed(
+                                StatsYql.countsBy(StatsYql.DAY),
+                                StatsYql.windowOfKind(kind, since, now),
+                                StatsYql::isoDay,
+                                distinct = false,
+                            )
+                        }
+                }
+            buildJsonObject {
+                put("windowDays", windowDays)
+                putJsonArray("kinds") {
+                    perKind.forEach { (kind, byDay) ->
+                        if (byDay == null) return@forEach
+                        add(
+                            buildJsonObject {
+                                put("kind", kind)
+                                putJsonArray("days") {
+                                    byDay.entries.sortedBy { it.key }.forEach { (day, count) ->
+                                        add(
+                                            buildJsonObject {
+                                                put("day", day)
+                                                put("events", count)
+                                            },
+                                        )
+                                    }
+                                }
+                            },
+                        )
+                    }
+                }
+            }
+        }
+
+    /**
+     * One bucketed series — events and distinct authors per bucket — as the
+     * array the page charts.
+     *
+     * [decode] turns the engine's bucket value into the label the page sorts and
+     * prints. Every bucket pipeline here needs one and none of them agree: a day
+     * arrives unpadded, a week as an epoch-relative integer, a month as
+     * `year * 12 + month`. Routing all three through this parameter is what
+     * keeps [StatsYql.isoDay]'s trap from having to be re-remembered per series.
+     */
+    private suspend fun series(
+        errors: MutableMap<String, String>,
+        name: String,
+        bucket: String,
+        decode: (String) -> String?,
+        now: Long,
+        spanDays: Int,
+    ): JsonArray? {
+        val where = StatsYql.window(now - spanDays * DAY_SECONDS, now)
+        val events = attempt(errors, "$name.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) } ?: return null
+        val authors = attempt(errors, "$name.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
+        return buildJsonArray {
+            events.entries.sortedBy { it.key }.forEach { (label, count) ->
+                add(
+                    buildJsonObject {
+                        put("period", label)
+                        put("events", count)
+                        authors?.get(label)?.let { put("pubkeys", it) }
+                    },
+                )
+            }
+        }
+    }
+
     // ---- section plumbing ---------------------------------------------------
 
     /**
@@ -241,8 +453,19 @@ internal class StatsRollup(
      *   partial  some of it did; `data` holds that, `errors` names the rest
      *   failed   none of it did
      *   pending  not computed by this build at all — see [pending]
+     *
+     * [note] is a caveat on a section that SUCCEEDED — what it deliberately does
+     * not contain, and why. Distinct from `errors`, which is what broke, and
+     * from `pending`, which is a section with no data at all. Zaps and relay
+     * distribution both need one: each answers a real question while leaving out
+     * the field a reader of the reference dashboard would come looking for
+     * (satoshis; the read/write split), and an unannotated number is how someone
+     * concludes we hold no zap amounts rather than that we cannot query them.
      */
-    private suspend fun section(body: suspend (MutableMap<String, String>) -> JsonObject): JsonObject {
+    private suspend fun section(
+        note: String? = null,
+        body: suspend (MutableMap<String, String>) -> JsonObject,
+    ): JsonObject {
         val errors = LinkedHashMap<String, String>()
         val startedMs = System.currentTimeMillis()
         val data = body(errors)
@@ -256,6 +479,7 @@ internal class StatsRollup(
             put("status", status)
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put("tookMs", System.currentTimeMillis() - startedMs)
+            note?.let { put("note", it) }
             put("data", data)
             if (errors.isNotEmpty()) {
                 putJsonObject("errors") { errors.forEach { (k, v) -> put(k, v) } }
@@ -322,22 +546,29 @@ internal class StatsRollup(
     }
 
     /**
-     * The same as [longsByGroup]/[distinctByGroup] for a [StatsYql.DAY]
-     * pipeline, rekeyed to ISO dates — see [StatsYql.isoDay] for why the raw
-     * group value cannot be used as a chart label or a sort key.
+     * A bucketed pipeline, rekeyed by [decode] — the one path every time series
+     * goes through.
+     *
+     * The decoder is not optional formatting. No bucket pipeline here returns a
+     * value that can be used as a chart label or a sort key as it stands: a day
+     * arrives unpadded ([StatsYql.isoDay]), a week as an epoch-relative bucket
+     * index, a month as `year * 12 + month`. A bucket the decoder rejects is
+     * DROPPED rather than passed through, so an engine that changes a format
+     * loses points visibly instead of scrambling an axis.
      */
-    private suspend fun byIsoDay(
+    private suspend fun bucketed(
         pipeline: String,
         where: String,
+        decode: (String) -> String?,
         distinct: Boolean,
     ): Map<String, Long> {
         val root = vespa.group(pipeline, where)
         return StatsYql
             .topGroups(root)
             .mapNotNull { g ->
-                val day = StatsYql.valueOf(g)?.let(StatsYql::isoDay) ?: return@mapNotNull null
+                val label = StatsYql.valueOf(g)?.let(decode) ?: return@mapNotNull null
                 val count = (if (distinct) StatsYql.distinctCountOf(g) else StatsYql.aggOf(g, "count()")) ?: return@mapNotNull null
-                day to count
+                label to count
             }.toMap()
     }
 
@@ -366,8 +597,21 @@ internal class StatsRollup(
         const val SCHEMA_VERSION = 1
 
         const val DEFAULT_WINDOW_DAYS = 30
+
+        /** The spans the reference dashboard's own Weekly/Monthly toggle covers. */
+        const val DEFAULT_WEEK_WINDOW_WEEKS = 26
+        const val DEFAULT_MONTH_WINDOW_MONTHS = 24
+
         const val DEFAULT_HOUR_WINDOW_DAYS = 7
         const val DEFAULT_TOP_KINDS = 50
+        const val DEFAULT_TOP_RELAYS = 50
+
+        /**
+         * How many kinds get their own daily series. One query each, so this is
+         * the panel's whole cost — and past a handful nobody reads the
+         * sparklines anyway.
+         */
+        const val DEFAULT_KIND_SERIES = 8
         private const val DAY_SECONDS = 86_400L
     }
 }

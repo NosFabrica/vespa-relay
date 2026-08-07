@@ -37,18 +37,32 @@
   query under an operator's own lens answers a smaller, different question under
   an identical label.
 
-  FOUR PANELS ARE NOT COMPUTED YET (new users, retention, zaps, relay
-  distribution). They are drawn as stated gaps rather than omitted, because a
-  panel that is simply absent is indistinguishable from one this page is too old
-  to know about — and "we have not built this" is a different fact from "this
-  relay holds none of that". Each shows the reason the rollup gives.
+  TWO PANELS ARE NOT COMPUTED YET (new pubkeys, retention — both need
+  per-pubkey first-seen across the whole corpus). They are drawn as stated gaps
+  rather than omitted, because a panel that is simply absent is
+  indistinguishable from one this page is too old to know about, and "we have
+  not built this" is a different fact from "this relay holds none of that". Two
+  more — zaps and relay distribution — ARE computed but incompletely, and carry
+  a `note` saying what they leave out and why. That note is the point of those
+  panels being honest rather than merely present: satoshis and the read/write
+  split are exactly the fields a reader of a network-wide dashboard arrives
+  looking for, and an unannotated panel reads as "this relay has none of that".
 
   CHARTS: single-series, one hue, no legend (the title names the series), thin
   bars with a rounded data-end, hairline solid gridlines, a 2px surface gap
-  doing the separating rather than a stroke. Events and publishing pubkeys are
-  two charts and never two y-axes on one plot: their scales differ by orders of
-  magnitude and a shared plot would invent a correlation out of the arbitrary
-  alignment of the two scales.
+  doing the separating rather than a stroke.
+
+  Two rules that took a wrong turn to find:
+
+  * Events and publishing pubkeys are TWO charts, never two y-axes on one plot.
+    Their scales differ by orders of magnitude and a shared plot would invent a
+    correlation out of the arbitrary alignment of the two scales.
+
+  * The Daily/Weekly/Monthly toggle switches between THREE SERIES the rollup
+    computed separately — it never re-aggregates one into another. Events sum
+    across buckets; distinct authors do not. Someone posting every day is one
+    author in the week and seven in the sum of that week's days, so a weekly
+    pubkey count has to be asked of the engine at weekly granularity.
 -->
 <style>
   :root {
@@ -112,6 +126,23 @@
   }
   .badge.bad { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
   .err { color: var(--warn); font-size: .85rem; margin: .4rem 0 0; }
+  .note { color: var(--muted); font-size: .82rem; margin: 0 0 .9rem; border-left: 2px solid var(--line); padding-left: .6rem; }
+  /* The granularity toggle: one row above the series it drives. */
+  .seg { display: inline-flex; gap: 0; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: .4rem; overflow: hidden; background: var(--surface); }
+  .seg button {
+    font: inherit; font-size: .85rem; padding: .35rem .8rem; border: 0; cursor: pointer;
+    background: transparent; color: var(--muted); border-right: 1px solid var(--line);
+  }
+  .seg button:last-child { border-right: 0; }
+  .seg button.on { background: var(--bar); color: var(--text); font-weight: 600; }
+  .sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .9rem 1.2rem; }
+  .spark-cell { min-width: 0; }
+  .spark-head { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; font-size: .8rem; margin-bottom: .2rem; }
+  .spark-kind { color: var(--text); font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .spark-peak { color: var(--muted); font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .chart.spark { height: 2.5rem; }
+  .tiles.inline { grid-template-columns: repeat(auto-fit, minmax(8rem, 1fr)); margin-bottom: 1rem; }
+  td.relay { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; word-break: break-all; }
   .err code { word-break: break-all; }
   footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
   code { background: var(--bar); padding: .1rem .3rem; border-radius: .25rem; }
@@ -139,6 +170,16 @@
 import { kindLabel } from "/web/shared/kinds.js";
 
 const fmt = (n) => Number(n).toLocaleString();
+/**
+ * "All 11" vs "the 50 largest of 3,702".
+ *
+ * A capped list and a complete one are different facts, and "the 10 largest of
+ * 10 kinds" states a truncation that did not happen — which matters here more
+ * than it reads, because the whole panel exists to answer "what does this relay
+ * hold" and a phantom cap invites the reader to wonder what was left out.
+ */
+const shownOf = (shown, total, noun, superlative) =>
+  shown >= total ? `All ${fmt(total)} ${noun}` : `The ${fmt(shown)} ${superlative} of ${fmt(total)} ${noun}`;
 const el = (tag, cls, text) => {
   const n = document.createElement(tag);
   if (cls) n.className = cls;
@@ -254,6 +295,12 @@ function cardHead(parent, title, sub, section) {
   if (status && status !== "ok") h.appendChild(el("span", status === "partial" ? "badge bad" : "badge", status));
   parent.appendChild(h);
   if (sub) parent.appendChild(el("p", "card-sub", sub));
+  // A `note` on a section that SUCCEEDED: what it deliberately leaves out and
+  // why. Not an error and not a pending state — the numbers above it are real.
+  // It is here because the omissions are exactly the fields a reader of a
+  // network-wide dashboard comes looking for (satoshis, read/write), and an
+  // unannotated panel reads as "this relay has none of that".
+  if (section && section.note) parent.appendChild(el("p", "note", section.note));
   // The engine's own message, and the query that produced it — enough to
   // correct a rejected pipeline without attaching a debugger to the relay.
   if (section && section.errors) {
@@ -320,27 +367,65 @@ function chartCard(title, sub, points, section) {
   return card;
 }
 
+/**
+ * The three granularities, and why they are three separate answers rather than
+ * one re-aggregated.
+ *
+ * Events sum across buckets; DISTINCT AUTHORS DO NOT. Someone posting every day
+ * is one author in the week and seven in the sum of that week's days, so a
+ * weekly "publishing pubkeys" has to be asked of the engine at weekly
+ * granularity. The rollup does exactly that, and this toggle picks between the
+ * three series it returns — it never adds days together to make a week.
+ */
+const GRAINS = [
+  { key: "days", label: "Daily", unit: "day", span: (d) => `${d.windowDays} days`, slice: (p) => p.slice(5) },
+  { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, slice: (p) => p.slice(5) },
+  { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, slice: (p) => p },
+];
+let grain = "days";
+
+function grainToggle(activity, onChange) {
+  const d = (activity && activity.data) || {};
+  const row = el("div", "seg");
+  // Only the granularities the document actually carries — a control that
+  // switches to an empty chart is worse than one that is not offered.
+  const available = GRAINS.filter((g) => (d[g.key] || []).length);
+  if (available.length < 2) return null;
+  for (const g of available) {
+    const b = el("button", g.key === grain ? "on" : null, g.label);
+    b.addEventListener("click", () => {
+      grain = g.key;
+      onChange();
+    });
+    row.appendChild(b);
+  }
+  return row;
+}
+
 function activityCards(activity) {
   const d = (activity && activity.data) || {};
-  const days = d.days || [];
+  const g = GRAINS.find((x) => x.key === grain) || GRAINS[0];
+  const series = d[g.key] || [];
   const hours = d.hours || [];
+  const span = g.span(d);
   const out = [];
 
   out.push(chartCard(
-    "Events per day",
-    `Events stored with a created_at in each of the last ${d.windowDays} days, UTC.`,
-    days.map((x) => ({ label: x.day.slice(5), value: x.events })),
+    `Events per ${g.unit}`,
+    `Events stored with a created_at in each ${g.unit} of the last ${span}, UTC.`,
+    series.map((x) => ({ label: g.slice(x.period), value: x.events })),
     activity,
   ));
 
   // A SECOND chart, never a second y-axis on the first: events and pubkeys
   // differ by orders of magnitude, and aligning two scales on one plot invents
   // a correlation that is not in the data.
-  if (days.some((x) => x.pubkeys != null)) {
+  if (series.some((x) => x.pubkeys != null)) {
     out.push(chartCard(
-      "Publishing pubkeys per day",
-      "Distinct authors with at least one stored event that day, UTC.",
-      days.map((x) => ({ label: x.day.slice(5), value: x.pubkeys || 0 })),
+      `Publishing pubkeys per ${g.unit}`,
+      `Distinct authors with at least one stored event in that ${g.unit}, UTC. Asked of the engine per ${g.unit} — ` +
+        `distinct authors do not add up across buckets the way events do.`,
+      series.map((x) => ({ label: g.slice(x.period), value: x.pubkeys || 0 })),
       null,
     ));
   }
@@ -354,6 +439,133 @@ function activityCards(activity) {
   return out;
 }
 
+/**
+ * A compact bar chart with no axis — the small-multiple mark.
+ *
+ * Each kind gets its OWN vertical scale, and the peak is printed beside the
+ * title because of it. A shared scale is the obvious default and it is wrong
+ * here: kind 1 outnumbers the rest by an order of magnitude, so a common axis
+ * would flatten every other kind to a line of pixels and the panel would show
+ * one series and seven blanks. Shape is what this panel is for — the levels are
+ * in the Kinds table above it — but a reader will assume a shared scale unless
+ * told, so the peak is on every card.
+ */
+function sparkline(points) {
+  const W = 240, H = 40;
+  const svg = svgEl("svg", { class: "chart spark", viewBox: `0 0 ${W} ${H}`, preserveAspectRatio: "none" });
+  const max = Math.max(1, ...points.map((p) => p.value));
+  const band = W / Math.max(1, points.length);
+  const w = Math.max(1, Math.min(10, band - 1));
+  points.forEach((p, i) => {
+    if (!p.value) return;
+    const h = Math.max(1, (p.value / max) * H);
+    svg.appendChild(svgEl("rect", { class: "mark", x: i * band + (band - w) / 2, y: H - h, width: w, height: h, rx: 1 }));
+  });
+  return svg;
+}
+
+function kindActivityCard(section) {
+  const d = (section && section.data) || {};
+  const kinds = d.kinds || [];
+  const card = el("div", "card");
+  cardHead(
+    card,
+    "Event types over time",
+    kinds.length
+      ? `The ${kinds.length} largest kinds, each over the last ${d.windowDays} days. Each has its own vertical scale — ` +
+        `the peak is on the card, because kind 1 would otherwise flatten the rest.`
+      : "No per-kind series in this document.",
+    section,
+  );
+  if (!kinds.length) return card;
+
+  const grid = el("div", "sparks");
+  for (const k of kinds) {
+    const cell = el("div", "spark-cell");
+    const head = el("div", "spark-head");
+    head.appendChild(el("span", "spark-kind", `${kindLabel(k.kind)} · ${k.kind}`));
+    const peak = Math.max(0, ...k.days.map((x) => x.events));
+    head.appendChild(el("span", "spark-peak", `peak ${fmt(peak)}/day`));
+    cell.appendChild(head);
+    cell.appendChild(sparkline(k.days.map((x) => ({ label: x.day, value: x.events }))));
+    grid.appendChild(cell);
+  }
+  card.appendChild(grid);
+  return card;
+}
+
+function relaysCard(section) {
+  const d = (section && section.data) || {};
+  const top = d.top || [];
+  const card = el("div", "card");
+  cardHead(
+    card,
+    "Relay distribution",
+    top.length
+      ? `${shownOf(d.shown, d.total, "relays", "most-named")} named by the NIP-65 lists this store holds.`
+      : "No relay distribution in this document.",
+    section,
+  );
+  if (!top.length) return card;
+
+  const max = Math.max(...top.map((r) => r.lists));
+  const wrap = el("div", "wrap");
+  const table = el("table");
+  const thead = el("thead");
+  const hr = el("tr");
+  for (const [label, cls] of [["Relay", ""], ["Lists", "n"], ["", ""]]) hr.appendChild(el("th", cls, label));
+  thead.appendChild(hr);
+  table.appendChild(thead);
+  const tbody = el("tbody");
+  for (const r of top) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "relay", r.relay));
+    tr.appendChild(el("td", "n", fmt(r.lists)));
+    const share = el("td", "share");
+    const bar = el("i");
+    bar.style.width = Math.max(2, (r.lists / max) * 100) + "%";
+    share.appendChild(bar);
+    tr.appendChild(share);
+    tbody.appendChild(tr);
+  }
+  table.appendChild(tbody);
+  wrap.appendChild(table);
+  card.appendChild(wrap);
+  return card;
+}
+
+function zapsCard(section) {
+  const d = (section && section.data) || {};
+  const card = el("div", "card");
+  cardHead(card, "Zaps", `NIP-57 zap receipts (kind 9735) this store holds.`, section);
+
+  const row = el("div", "tiles inline");
+  for (const [key, label] of [["receipts", "Receipts"], ["wallets", "Wallets"]]) {
+    const t = el("div", "tile");
+    t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
+    // "Wallets" and not "senders": under NIP-57 the receipt is signed by the
+    // LNURL service that settled the invoice, not by the person who zapped.
+    t.appendChild(el("div", "k", label));
+    wrapTitle(t, key === "wallets" ? "Distinct authors of zap receipts — the LNURL services that settled them, not the people who zapped" : "");
+    row.appendChild(t);
+  }
+  card.appendChild(row);
+
+  const days = d.days || [];
+  if (!days.length) {
+    card.appendChild(el("p", "why", "No daily series in this document."));
+  } else if (days.every((x) => !x.receipts)) {
+    card.appendChild(el("p", "err", "No zap receipts in this window."));
+  } else {
+    card.appendChild(barChart(days.map((x) => ({ label: x.day.slice(5), value: x.receipts })), { label: "Zap receipts per day" }));
+  }
+  return card;
+}
+
+function wrapTitle(node, title) {
+  if (title) node.title = title;
+}
+
 function kindsCard(kinds, nowSeconds) {
   const card = el("div", "card");
   const d = (kinds && kinds.data) || {};
@@ -361,7 +573,7 @@ function kindsCard(kinds, nowSeconds) {
   cardHead(
     card,
     "Kinds",
-    top.length ? `The ${fmt(d.shown)} largest of ${fmt(d.total)} kinds this relay holds.` : "No kind histogram in this document.",
+    top.length ? `${shownOf(d.shown, d.total, "kinds", "largest")} this relay holds.` : "No kind histogram in this document.",
     kinds,
   );
   if (!top.length) return card;
@@ -429,12 +641,25 @@ function render(doc) {
   bodyEl.replaceChildren();
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
   bodyEl.appendChild(kindsCard(doc.kinds, nowSeconds));
-  for (const card of activityCards(doc.activity)) bodyEl.appendChild(card);
+
+  // The toggle and the two series it drives are re-rendered together, so
+  // switching granularity cannot leave the control and the charts disagreeing.
+  const activityWrap = el("div");
+  const drawActivity = () => {
+    activityWrap.replaceChildren();
+    const toggle = grainToggle(doc.activity, drawActivity);
+    if (toggle) activityWrap.appendChild(toggle);
+    for (const card of activityCards(doc.activity)) activityWrap.appendChild(card);
+  };
+  drawActivity();
+  bodyEl.appendChild(activityWrap);
+
+  bodyEl.appendChild(kindActivityCard(doc.kindActivity));
+  bodyEl.appendChild(zapsCard(doc.zaps));
+  bodyEl.appendChild(relaysCard(doc.relayDistribution));
   for (const [key, title] of [
     ["newUsers", "New pubkeys"],
     ["retention", "Retention"],
-    ["zaps", "Zaps"],
-    ["relayDistribution", "Relay distribution"],
   ]) {
     if (doc[key] && doc[key].status === "pending") bodyEl.appendChild(pendingCard(title, doc[key]));
   }

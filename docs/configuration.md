@@ -37,23 +37,43 @@ codebase forbids.
 
 ## Corpus statistics (`GET /stats.json`, `/relay_stats.html`)
 
-A background rollup counts what this relay's store holds — totals, a per-kind
-table, and events/authors per UTC day — with Vespa grouping queries, publishes
-it as a public JSON document, and charts it on a page. Everything is counted
-**anonymously**: the store gates an authenticated reader to authors that reader
-has scored, so the same query under an operator's lens would answer a smaller,
-different question under an identical label.
+A background rollup counts what this relay's store holds with Vespa grouping
+queries, publishes it as a public JSON document, and charts it on a page:
+
+- **corpus** — events, distinct pubkeys, distinct kinds
+- **kinds** — the largest kinds, with distinct authors and the `created_at` span
+- **activity** — events and publishing pubkeys per UTC day, week and month, plus
+  the hour-of-day shape. Three granularities and not one re-aggregated: events
+  sum across buckets, distinct authors do not, so a weekly author count has to
+  be asked of the engine per week
+- **kindActivity** — a daily series per kind, for the largest few
+- **relayDistribution** — the relays this store's NIP-65 lists name
+- **zaps** — kind-9735 receipt counts, and the wallets that signed them
+
+Everything is counted **anonymously**: the store gates an authenticated reader to
+authors that reader has scored, so the same query under an operator's lens would
+answer a smaller, different question under an identical label.
 
 The numbers describe **this relay's store**, not the Nostr network. Read against
 a network-wide dashboard they are a coverage ratio, which is the useful number
 for a mirroring relay — but a total below one is not a fault, and the document
 says so in its own `scope` field.
 
-Four sections (new pubkeys, retention, zaps, relay distribution) are declared
-with `"status": "pending"` and the reason they are not computed: each needs
-either per-pubkey first-seen across the corpus or a walk over tag values that
-`tag_index` cannot address. They are named rather than omitted so a reader can
-tell "not built yet" from "this relay holds none of that".
+Two sections — **new pubkeys** and **retention** — are declared with
+`"status": "pending"` rather than omitted, so a reader can tell "not built yet"
+from "this relay holds none of that". Both need first-seen (`min(created_at)`)
+per pubkey across the whole corpus, which is one group per author and therefore
+a nightly job rather than a query this endpoint can run.
+
+Two more are computed but incomplete, and carry a `note` saying what they leave
+out. **Zaps** has receipt counts but no satoshis: the amount lives in the
+`bolt11` tag and in the kind-9734 request nested in `description`, both
+multi-character tag names that `tag_index` cannot address, and `content` is
+summary-only — so no grouping query can reach it. **Relay distribution** counts
+how many lists name each relay but cannot split read from write: that marker is
+an `r` tag's *third* element, and `tag_index` stores only `<letter>:<value>`.
+Both want a walk over their kind, which is the same job as the nightly rollup
+above.
 
 | var | meaning | default |
 |---|---|---|

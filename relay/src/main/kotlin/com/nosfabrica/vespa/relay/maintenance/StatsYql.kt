@@ -27,6 +27,8 @@ import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
+import java.time.Instant
+import java.time.ZoneOffset
 
 /**
  * The dashboard's aggregation queries: the YQL this relay asks Vespa for its
@@ -172,6 +174,93 @@ internal object StatsYql {
 
     /** The UTC hour-of-day of `created_at`, 0–23 — the shape of a day, folded over the window. */
     const val HOUR = "time.hourofday(created_at)"
+
+    /** Seconds in a 7-day bucket. */
+    private const val WEEK_SECONDS = 604_800L
+
+    /** Epoch second 0 back to the preceding Monday, 1969-12-29 — see [WEEK]. */
+    private const val WEEK_SHIFT = 259_200L
+
+    /**
+     * Monday-aligned 7-day buckets, as one integer.
+     *
+     * Grouping expressions take ARITHMETIC — verified on 8.733, where this
+     * renders as `div(add(created_at, 259200), 604800)` — which is worth more
+     * than it looks: a bucket that is a plain integer needs no `time.*` function
+     * and therefore inherits none of [isoDay]'s padding problem, and it sorts
+     * correctly as a number before anyone formats it.
+     *
+     * The shift is what puts the boundary on a Monday. Epoch second 0 is a
+     * THURSDAY, so `created_at / 604800` alone buckets Thursday-to-Wednesday —
+     * which is not wrong, but every reader of a weekly chart will assume weeks
+     * start on Monday and none of them will check. [WEEK_SHIFT] is the distance
+     * back to the Monday before the epoch (1969-12-29), so bucket 0 starts
+     * there and every bucket after it starts on a Monday. Shifting FORWARD to
+     * the first Monday after the epoch would be the same idea with negative
+     * bucket indices for 1970-1974, and negative integer division is not a
+     * thing to bet a chart on.
+     */
+    const val WEEK = "(created_at + $WEEK_SHIFT) / $WEEK_SECONDS"
+
+    /** The Monday a [WEEK] bucket starts on, ISO-8601; null if the value is not a bucket index. */
+    fun isoWeekStart(value: String): String? {
+        val bucket = value.toLongOrNull() ?: return null
+        val startsAt = bucket * WEEK_SECONDS - WEEK_SHIFT
+        if (startsAt < 0) return null
+        return Instant
+            .ofEpochSecond(startsAt)
+            .atOffset(ZoneOffset.UTC)
+            .toLocalDate()
+            .toString()
+    }
+
+    /**
+     * Calendar months, as one sortable integer: `year * 12 + month`.
+     *
+     * Months are the one bucket that cannot be an even division of seconds, and
+     * the obvious spelling — nesting `time.year` inside `time.monthofyear` —
+     * works but answers in a two-level tree that every reader here would then
+     * have to descend. Folding both into one arithmetic expression keeps the
+     * response the same flat one-leaf-per-bucket shape as everything else: 2026
+     * April comes back as `24316`, and [isoMonth] is the only thing that has to
+     * know that.
+     */
+    const val MONTH = "time.year(created_at) * 12 + time.monthofyear(created_at)"
+
+    /** A [MONTH] bucket as `YYYY-MM`; null if the value is not a month index. */
+    fun isoMonth(value: String): String? {
+        val index = value.toLongOrNull()?.takeIf { it > 0 } ?: return null
+        // `- 1` before the split because month is 1-based: December 2026 is
+        // year*12 + 12, which must decode to that year and not to January next.
+        val year = (index - 1) / 12
+        val month = (index - 1) % 12 + 1
+        if (year < 1970 || year > 9999) return null
+        return "%04d-%02d".format(year, month)
+    }
+
+    /**
+     * The derived `<letter>:<value>` tag pairs — the only tag shape a filter or
+     * a grouping can address.
+     *
+     * Grouping this emits EVERY pair on every matched document, so it is only
+     * affordable behind a `kind` filter whose events carry few tags and whose
+     * values repeat: NIP-65 relay lists (`r:` on kind 10002) are the case it
+     * exists for, where the distinct values are relay urls and there are
+     * thousands, not millions. Do not reach for it on kind 1.
+     *
+     * Single-letter names only, and CASED — so NIP-57's `P` (sender) and `p`
+     * (recipient) are distinct pairs. Multi-character names (`bolt11`,
+     * `description`, `emoji`) are absent by construction, and so is every tag
+     * element past the second: NIP-65's read/write marker is an `r` tag's THIRD
+     * element and cannot be recovered from here at all.
+     */
+    const val TAG = "tag_index"
+
+    /** The value of a `<letter>:<value>` pair when its letter is [letter], else null. */
+    fun tagValue(
+        pair: String,
+        letter: Char,
+    ): String? = if (pair.length > 2 && pair[0] == letter && pair[1] == ':') pair.substring(2) else null
 
     // ---- the query ----------------------------------------------------------
 

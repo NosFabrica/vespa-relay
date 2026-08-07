@@ -22,8 +22,11 @@ package com.nosfabrica.vespa.relay.maintenance
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
+import java.time.DayOfWeek
+import java.time.LocalDate
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -168,6 +171,64 @@ class StatsYqlTest {
         }
         // A response with no grouping at all is empty, not an exception.
         assertEquals(emptyList(), StatsYql.topGroups(root("""{"id":"toplevel","fields":{"totalCount":0}}""")))
+    }
+
+    // ---- the other bucket decoders ------------------------------------------
+
+    /**
+     * Week buckets land on Mondays.
+     *
+     * The shift is the whole content of [StatsYql.WEEK]: epoch second 0 is a
+     * THURSDAY, so the un-shifted `created_at / 604800` buckets
+     * Thursday-to-Wednesday — which produces a chart no reader would question
+     * and every reader would misread, because a weekly axis is assumed to start
+     * on Monday. These bucket indices came back from a real node over the
+     * seeded corpus.
+     */
+    @Test
+    fun `week buckets start on monday`() {
+        assertEquals("2026-04-06", StatsYql.isoWeekStart("2936"))
+        assertEquals("2026-04-13", StatsYql.isoWeekStart("2937"))
+        assertEquals("2026-04-20", StatsYql.isoWeekStart("2938"))
+        // Consecutive buckets are exactly seven days apart, and all Mondays.
+        for (bucket in 2900..2960) {
+            val day = assertNotNull(StatsYql.isoWeekStart(bucket.toString()))
+            assertEquals(DayOfWeek.MONDAY, LocalDate.parse(day).dayOfWeek, "bucket $bucket is $day")
+        }
+        assertEquals(0, StatsYql.WEEK.count { it == '%' }, "the pipeline is a literal expression, not a format string")
+    }
+
+    /**
+     * Month buckets decode `year * 12 + month`, and December is the case that
+     * breaks a naive split: `year * 12 + 12` must stay in that year rather than
+     * rolling into January of the next.
+     */
+    @Test
+    fun `month buckets decode year and month, december included`() {
+        assertEquals("2026-04", StatsYql.isoMonth("24316"), "the value a real node returned for April 2026")
+        assertEquals("2026-12", StatsYql.isoMonth((2026 * 12 + 12).toString()))
+        assertEquals("2027-01", StatsYql.isoMonth((2027 * 12 + 1).toString()))
+        // Consecutive indices are consecutive months, across the year boundary.
+        val run: List<String> = (2026 * 12 + 10..2027 * 12 + 2).mapNotNull { StatsYql.isoMonth(it.toString()) }
+        assertEquals(listOf("2026-10", "2026-11", "2026-12", "2027-01", "2027-02"), run)
+        // Sortable as text, which is the entire reason for the zero padding.
+        assertEquals(run.sorted(), run)
+        for (bad in listOf("", "0", "-5", "x", "1")) assertNull(StatsYql.isoMonth(bad), "must refuse $bad")
+    }
+
+    /**
+     * `tag_index` pairs are `<letter>:<value>`, CASED — so NIP-57's `P` (sender)
+     * and `p` (recipient) are different tags and must not collapse.
+     */
+    @Test
+    fun `tag pairs are split by letter, case sensitively`() {
+        assertEquals("wss://nos.lol", StatsYql.tagValue("r:wss://nos.lol", 'r'))
+        assertNull(StatsYql.tagValue("r:wss://nos.lol", 'e'), "a relay list must not be read as an event reference")
+        assertEquals("abc", StatsYql.tagValue("P:abc", 'P'))
+        assertNull(StatsYql.tagValue("P:abc", 'p'), "P (zap sender) and p (recipient) are different tags")
+        // A url contains colons of its own; only the first one delimits.
+        assertEquals("wss://a.example:444/path", StatsYql.tagValue("r:wss://a.example:444/path", 'r'))
+        for (bad in listOf("", "r", "r:", "rr:x", ":x")) assertNull(StatsYql.tagValue(bad, 'r'), "must refuse '$bad'")
     }
 
     // ---- the queries --------------------------------------------------------
