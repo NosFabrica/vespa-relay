@@ -174,6 +174,16 @@ services:
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").
       VESPA_QUERY_FANOUT: ${VESPA_QUERY_FANOUT:-}
+      # Check NIP-09/NIP-62 on every insert rather than only for authors THIS
+      # process has watched store a kind 5/62. The store keeps that set per
+      # instance and there are two writers here: the router mirrors kind 5 and
+      # 62 (see router.conf.example), and this process never learns of them, so
+      # without this a client could republish an event a mirrored deletion
+      # covers and be accepted until the relay restarts. On the serving side
+      # the price is a couple of extra queries per client publish; the sync
+      # process deliberately keeps the default, where the same probes would run
+      # on every ingest batch under the store's writer lock.
+      GUARD_OWNERS_DISABLE: ${RELAY_GUARD_OWNERS_DISABLE:-${GUARD_OWNERS_DISABLE:-1}}
       # Quartz's own log floor (it defaults to DEBUG, which makes malformed
       QUARTZ_LOG_LEVEL: ${QUARTZ_LOG_LEVEL:-}
       # This relay's own keypair: NIP-11 self, NIP-42 auth. The sync service
@@ -245,8 +255,17 @@ services:
       # one whose writes a drifted schema silently discards.
       AUTO_DEPLOY: ${AUTO_DEPLOY:-}
       # The served relay's ws url — mirrored events are stored as that relay's,
-      # whichever process writes them.
+      # whichever process writes them. It is also what a mirrored kind 62 is
+      # judged against: a vanish request naming this url (or ALL_RELAYS) sweeps
+      # its author's history here, one naming some other relay is stored inert.
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
+      # Off by default here, unlike the relay: this process learns of every
+      # kind 5/62 it mirrors itself, so its own re-downloads are already
+      # guarded. Setting it to 1 closes the mirror image — deletions clients
+      # publish to the RELAY, which this process cannot see — and pays for it
+      # on every ingest batch, under the store's writer lock. Measure before
+      # arming it on a wide fan-out.
+      GUARD_OWNERS_DISABLE: ${SYNC_GUARD_OWNERS_DISABLE:-${GUARD_OWNERS_DISABLE:-}}
       # The streams to mirror. The profile is the on-switch, so this defaults
       # to the mounted path instead of empty; SYNC_CONFIG_LOCAL (below) picks
       # which local file is mounted there. The nested ROUTER_ fallback stays
