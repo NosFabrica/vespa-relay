@@ -157,7 +157,15 @@ relay/src/main/resources/
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
                         entity.js
-                        renders /npub1…//note1…//naddr1… paths; feed.js is the
+                        renders /npub1…//note1…//naddr1… paths, with related.js
+                        the second ask a git permalink makes AFTER its card is
+                        up — a repository's state, issues, patches and releases
+                        (`#a` its address), an issue's or a patch's verdict and
+                        thread (`#e` its id). Never awaited by the paint and
+                        silent on failure: the page is complete without it. The
+                        cards it draws are the SAME cards at preview depth, so
+                        they click, walk under j/k and toggle their json for
+                        free — app.js delegates all three off #results; feed.js is the
                         latest feed — three cards under the hero for a signed-in
                         reader, a hundred at /?feed=1 — and is an EMPTY SEARCH:
                         buildFilters() with no words and none of the bar's
@@ -179,6 +187,13 @@ relay/src/main/resources/
                         label or a family tone. The NIP-51 lists and sets are
                         one table in cards/lists.js rather than one renderer
                         each: they differ only in which tags carry their items.
+                        cards/code.js is the one that PARSES: NIP-34 puts `git
+                        format-patch` output in a patch's content, so the mail
+                        is taken apart (subject, series marker, commit message,
+                        diff) rather than dumped — its title used to be git's
+                        own `From <sha> Mon Sep 17 00:00:00 2001`. Code clips
+                        by LINES there, never by characters: `clip()` trims, and
+                        indentation is the code.
                         index.html's header records the rules and why "one
                         file" ended.
   observer_stats.html   an operator diagnostic carrying its own tiny relay

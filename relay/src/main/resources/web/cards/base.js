@@ -511,3 +511,18 @@ export const registerPeopleGrid = (kinds) => { for (const k of kinds) PEOPLE_GRI
  */
 export const gridPeople = (ev, opts) =>
   PEOPLE_GRID_KINDS.has(ev.kind) ? gridCells(peopleOf(ev), opts).shown : [];
+
+/**
+ * The same declaration, for a card that names people from somewhere no scan of
+ * `p` tags reaches — a repository's `["maintainers", <pk>, <pk>, …]`, where the
+ * people are the tag's VALUES rather than one tag each.
+ *
+ * A renderer registers the very function it draws with, so the set named and
+ * the set declared are one expression evaluated twice, not two lists to keep
+ * in step. Depth is passed through for the same reason gridPeople takes it:
+ * a preview names fewer of them than the permalink does.
+ */
+export const NAMED_PEOPLE = new Map(); // kind -> (ev, opts) -> pubkeys
+export const registerNamedPeople = (kinds, fn) => { for (const k of kinds) NAMED_PEOPLE.set(k, fn); };
+export const namedPeople = (ev, opts) => (NAMED_PEOPLE.get(ev.kind) || NOBODY)(ev, opts);
+const NOBODY = () => [];
