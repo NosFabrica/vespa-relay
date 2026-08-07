@@ -98,7 +98,8 @@ back to paged REQ — and a paged fetch has no such memory. It walks `created_at
 newest-first and re-reads everything it read last time, every restart.
 
 Set `SYNC_STATE_FILE` and the router remembers the band it has covered per
-relay and per filter, then asks only for what lies outside it:
+stream, per filter and per relay — the three levels the file nests under — then
+asks only for what lies outside it:
 
 ```
 stored band:        |<-------- covered -------->|

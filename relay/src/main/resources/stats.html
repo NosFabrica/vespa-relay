@@ -218,6 +218,11 @@
     display: inline-block; max-width: 100%; vertical-align: bottom;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* The stream's name, ahead of its filter chip: the name is what a reader
+     matches against `router.conf`, so it leads and the chip explains it. Not
+     ellipsised — a name is short, and clipping the one identifier the config
+     shares with this page would defeat the point. */
+  .grp-stream { margin-right: .4rem; }
   .grp-stat { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto; }
   /* On a phone the counts alone are wider than the card, and `nowrap` had them
      running off its right edge with the chip crushed to an ellipsis beside
@@ -922,10 +927,10 @@ function trustCard(section) {
  * the card says so, and should not be trimmed for the same reason the scope
  * line under the title is not.
  *
- * `relays` counts the relays this filter has TOUCHED, never the relays its
- * stream was configured with — that list is in `router.conf`, which this relay
- * does not read. A "never asked" count would be the honest headline and it is
- * not available here; see SyncCoverageReport.
+ * `relays` counts the relays a stream has TOUCHED, never the relays it was
+ * configured with — that list is in `router.conf`, which this relay does not
+ * read. A "never asked" count would be the honest headline and it is not
+ * available here; see SyncCoverageReport.
  */
 function syncCard(section) {
   const d = (section && section.data) || {};
@@ -1083,9 +1088,15 @@ function syncCard(section) {
     const box = el("div", "grp");
     const head = el("div", "grp-head");
     const name = el("div", "grp-name");
-    // Labelled by FILTER, not by stream name: a band is keyed by the filter, so
-    // the filter is what actually determines coverage, and the name lives in a
-    // config file this relay does not read.
+    // The router's own stream name, when the state files carry one. They did
+    // not before the format nested by stream, so a group read from a
+    // pre-stream key still falls back to being labelled by its filter alone —
+    // which is what every group used to be.
+    if (s.name) {
+      const who = el("span", "grp-stream", s.name);
+      who.title = `router stream "${s.name}"`;
+      name.appendChild(who);
+    }
     const kinds = (s.filter && s.filter.kinds) || [];
     // What the group's legs were split BY, spelled out. A `relaySource` that
     // binds authors gives every relay its own filter, so this one group is
@@ -1130,7 +1141,7 @@ function syncCard(section) {
 
   card.appendChild(el("p", "card-sub",
     `Frame: ${day(from)} → now. Not a target — these filters carry no lower bound, so a full row means ` +
-    `"as deep as anything here reaches", not "done". Counts relays this filter has walked, not the relays its stream names.`));
+    `"as deep as anything here reaches", not "done". Counts relays each stream has walked, not the relays it names.`));
   return card;
 }
 

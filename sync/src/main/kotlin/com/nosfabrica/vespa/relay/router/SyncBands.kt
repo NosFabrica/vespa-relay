@@ -26,16 +26,18 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
-import kotlinx.serialization.json.boolean
+import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
+import java.util.concurrent.ConcurrentHashMap
 
 /**
  * The router's sync bands: file persistence around quartz's [SyncCoverage].
@@ -51,9 +53,10 @@ import java.nio.file.StandardCopyOption
  * needs NOTHING widen the shared snapshot to the full filter, and
  * [SyncCoverage.legs] learned that a COMPLETE band still owes an older leg when
  * the caller's floor now reaches below it — and both bugs sat here, in a file
- * whose comments still described them as solved. `SYNC_STATE_FILE`'s on-disk
- * shape is identical either way (`{key: {min, max, complete, fullAt}}`), so an
- * existing deployment's bands load across this change untouched.
+ * whose comments still described them as solved. What a band CONTAINS
+ * (`{min, max, complete, fullAt, spans}`) is identical either way; only how
+ * `SYNC_STATE_FILE` keys them has changed since, and a file written before that
+ * still loads (see the shim below).
  *
  * Persistence is deliberately the CALLER's in quartz: [SyncCoverage.export] and
  * [SyncCoverage.restore] hand over the whole map, and `onChange` fires when a
@@ -61,16 +64,63 @@ import java.nio.file.StandardCopyOption
  * `SyncCoverageFile` is the same wrapper for geode; this one differs only where
  * the router needs it to — a null [file] for the in-memory mode the engine
  * defaults to, and a failed write that re-arms rather than being dropped.
+ *
+ * ## One coverage per stream
+ *
+ * quartz keys a band by (relay, filter) and knows nothing about streams, so the
+ * stream is expressed HERE, as one [SyncCoverage] per stream name. That is what
+ * lets the file nest by stream, and it makes the identity honest: two streams
+ * that ask one relay the same filter walk it separately, at their own moments,
+ * and neither may resume from the other's claim.
+ *
+ * The file follows the same three levels:
+ *
+ * ```json
+ * { "<stream>": { "<filter>": { "wss://relay/": { "min": …, "max": …, "complete": …, "fullAt": …, "spans": {…} } } } }
+ * ```
+ *
+ * The two inner levels are quartz's own key taken apart: it builds
+ * `"<relay-url> <filter.toJson()>"`, so splitting at the FIRST space and
+ * rejoining with one round-trips exactly, whatever quartz does inside. A
+ * normalized relay url can contain neither a space nor a pipe — `RelayDiscovery`
+ * rejects any url with whitespace before it is ever dialled.
  */
 class SyncBands(
     private val file: File?,
-    fullResyncSeconds: Long = SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
+    private val fullResyncSeconds: Long = SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
 ) : AutoCloseable {
     @Volatile private var dirty = false
 
     @Volatile private var flusher: Thread? = null
 
-    private val coverage = SyncCoverage(fullResyncSeconds, onChange = { dirty = true })
+    private val streams = ConcurrentHashMap<String, SyncCoverage>()
+
+    /**
+     * MIGRATION SHIM — bands read from a file written before the format nested,
+     * held by quartz's flat key because it never said which stream wrote them.
+     *
+     * Kept as the raw JSON rather than parsed: an unclaimed band is re-written
+     * verbatim, which is also how a member this build does not know about
+     * survives the round trip. They are claimed by the first stream to ask
+     * about that (relay, filter) — which is the stream that wrote them, bar two
+     * streams sharing a filter, where first-ask-wins is what the flat file did
+     * anyway. Delete this map, [claim], the flat branch in [load] and the flat
+     * branch in [save] together once every deployment has started once on a
+     * build that writes the nested shape.
+     */
+    private val preStream = ConcurrentHashMap<String, JsonObject>()
+
+    /**
+     * MIGRATION SHIM — the relays [preStream] holds anything for, so an ask
+     * about any other relay never renders its filter.
+     *
+     * Without it, every `legs()` in a cycle serialises a discovery filter's
+     * thousands of authors just to look for a leftover that is not there —
+     * thousands of times per cycle, and forever, because an entry no live
+     * stream ever asks about never drains. Membership is set once at load and
+     * not pruned: a stale hit costs one key that misses, never a wrong answer.
+     */
+    private val preStreamRelays = HashSet<String>()
 
     init {
         load()
@@ -79,16 +129,27 @@ class SyncBands(
         dirty = false
     }
 
+    /**
+     * The bands of one stream. Created on first use: a stream that never syncs
+     * costs nothing, and the engine does not announce its stream list here.
+     */
+    private fun coverage(stream: String): SyncCoverage = streams.computeIfAbsent(stream) { SyncCoverage(fullResyncSeconds, onChange = { dirty = true }) }
+
     // ---- the band arithmetic, upstream's ------------------------------------
     // Delegated rather than exposing `coverage` directly: these five calls are
     // the entire surface the router uses, and naming them keeps that visible.
 
     fun legs(
+        stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): List<Filter> = coverage.legs(url, filter)
+    ): List<Filter> {
+        claim(stream, url, filter)
+        return coverage(stream).legs(url, filter)
+    }
 
     fun record(
+        stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
         observedMin: Long?,
@@ -100,25 +161,66 @@ class SyncBands(
         // and every multi-kind stream here would stop resuming. A reconcile
         // ignores it — it compares the whole filter in one pass.
         observedByKind: Map<Int, SyncCoverage.Span>? = null,
-    ) = coverage.record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind)
+    ) {
+        // Before the record, so what this walk observed WIDENS the pre-stream
+        // band instead of replacing it — quartz widens, and a claim that landed
+        // after would be the older, wider claim overwriting the newer one.
+        claim(stream, url, filter)
+        coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind)
+    }
 
     fun coveringWindow(
+        stream: String,
         urls: List<NormalizedRelayUrl>,
         filter: Filter,
-    ): Filter = coverage.coveringWindow(urls, filter)
+    ): Filter {
+        urls.forEach { claim(stream, it, filter) }
+        return coverage(stream).coveringWindow(urls, filter)
+    }
 
     /** Whether ANY of [urls] still has work outside its band. */
     fun anyOutstanding(
+        stream: String,
         urls: List<NormalizedRelayUrl>,
         filter: Filter,
-    ): Boolean = urls.any { coverage.legs(it, filter).isNotEmpty() }
+    ): Boolean = urls.any { legs(stream, it, filter).isNotEmpty() }
 
     fun band(
+        stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): SyncCoverage.Band? = coverage.band(url, filter)
+    ): SyncCoverage.Band? {
+        claim(stream, url, filter)
+        return coverage(stream).band(url, filter)
+    }
 
-    fun size(): Int = coverage.size()
+    fun size(): Int = streams.values.sumOf { it.size() } + preStream.size
+
+    /**
+     * MIGRATION SHIM — adopt a pre-stream band for this pair, once, into the
+     * stream that asked for it.
+     *
+     * [SyncCoverage.restore] sets one key at a time rather than replacing the
+     * map, so a single-entry restore is what an insert would be if quartz had
+     * one — which is why claiming is affordable per ask rather than needing the
+     * stream list up front.
+     */
+    private fun claim(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ) {
+        // The overwhelming case, once a deployment has migrated: no file to
+        // read, or one already drained. Both checks come before the key is
+        // built, because building it renders the filter.
+        if (preStream.isEmpty() || url.url !in preStreamRelays) return
+        val key = "${url.url} ${filter.toJson()}"
+        val raw = preStream.remove(key) ?: return
+        bandOf(raw)?.let {
+            coverage(stream).restore(mapOf(key to it))
+            dirty = true
+        }
+    }
 
     // ---- the file ------------------------------------------------------------
 
@@ -169,23 +271,72 @@ class SyncBands(
         if (!f.isFile) return
         runCatching {
             val root = Json.parseToJsonElement(f.readText()).jsonObject
-            coverage.restore(
-                root.mapValues { (_, v) ->
-                    val o = v.jsonObject
-                    SyncCoverage.Band(
-                        spansOf(o),
-                        // Absent in files written before coverage was tracked:
-                        // reads as "span only" and stale, so the first run after
-                        // an upgrade re-walks once and records the real thing.
-                        o["complete"]?.jsonPrimitive?.boolean ?: false,
-                        o["fullAt"]?.jsonPrimitive?.long ?: 0L,
-                    )
-                },
-            )
+            root.forEach { (streamOrFlatKey, v) ->
+                val o = v.jsonObject
+                // MIGRATION SHIM. Told apart by SHAPE, not by the key: a
+                // pre-stream entry is the band itself, a stream is filters all
+                // the way down. A filter can never be named `min` — it is
+                // serialised JSON and starts with `{`.
+                if (o["min"] != null) {
+                    preStream[streamOrFlatKey] = o
+                    val at = streamOrFlatKey.indexOf(' ')
+                    if (at > 0) preStreamRelays += streamOrFlatKey.substring(0, at)
+                    return@forEach
+                }
+                val restored = LinkedHashMap<String, SyncCoverage.Band>()
+                o.forEach { (filter, byRelay) ->
+                    byRelay.jsonObject.forEach { (relay, band) ->
+                        // Rejoined into quartz's own key, which is where the
+                        // two inner levels came from.
+                        bandOf(band.jsonObject)?.let { restored["$relay $filter"] = it }
+                    }
+                }
+                if (restored.isNotEmpty()) coverage(streamOrFlatKey).restore(restored)
+            }
         }.onFailure {
             // A corrupt cursor file costs one re-sync; exiting costs the mirror.
             System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
         }
+    }
+
+    /** One band, as it is written. */
+    private fun bandOf(band: SyncCoverage.Band): JsonObject =
+        buildJsonObject {
+            // min/max are the outer edges across every kind, written for two
+            // readers: a human debugging why a relay re-synced, and a ROLLBACK
+            // — a build from before per-kind spans reads these and behaves as
+            // it always did rather than failing to parse.
+            put("min", band.minCreatedAt)
+            put("max", band.maxCreatedAt)
+            put("complete", band.complete)
+            put("fullAt", band.fullAt)
+            put(
+                "spans",
+                buildJsonObject {
+                    band.spans.forEach { (kind, span) ->
+                        put(
+                            kind.toString(),
+                            buildJsonObject {
+                                put("min", span.min)
+                                put("max", span.max)
+                            },
+                        )
+                    }
+                },
+            )
+        }
+
+    /** One band as it is written, or null for an entry too damaged to restore. */
+    private fun bandOf(o: JsonObject): SyncCoverage.Band? {
+        val spans = runCatching { spansOf(o) }.getOrNull() ?: return null
+        return SyncCoverage.Band(
+            spans,
+            // Absent in files written before coverage was tracked: reads as
+            // "span only" and stale, so the first run after an upgrade
+            // re-walks once and records the real thing.
+            o["complete"]?.jsonPrimitive?.booleanOrNull ?: false,
+            o["fullAt"]?.jsonPrimitive?.longOrNull ?: 0L,
+        )
     }
 
     /**
@@ -219,36 +370,37 @@ class SyncBands(
         return runCatching {
             val snapshot: JsonObject =
                 buildJsonObject {
-                    coverage.export().forEach { (k, band) ->
+                    streams.forEach { (stream, coverage) ->
+                        // quartz's key taken apart into the two inner levels.
+                        // A key with no space is not one this build wrote and
+                        // is dropped rather than nested under a filter of "".
+                        val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
+                        coverage.export().forEach { (k, band) ->
+                            val at = k.indexOf(' ')
+                            if (at <= 0 || at == k.length - 1) return@forEach
+                            byFilter
+                                .getOrPut(k.substring(at + 1)) { LinkedHashMap() }[k.substring(0, at)] = band
+                        }
                         put(
-                            k,
+                            stream,
                             buildJsonObject {
-                                // min/max are the outer edges across every kind,
-                                // written for two readers: a human debugging why a
-                                // relay re-synced, and a ROLLBACK — a build from
-                                // before per-kind spans reads these and behaves as
-                                // it always did rather than failing to parse.
-                                put("min", band.minCreatedAt)
-                                put("max", band.maxCreatedAt)
-                                put("complete", band.complete)
-                                put("fullAt", band.fullAt)
-                                put(
-                                    "spans",
-                                    buildJsonObject {
-                                        band.spans.forEach { (kind, span) ->
-                                            put(
-                                                kind.toString(),
-                                                buildJsonObject {
-                                                    put("min", span.min)
-                                                    put("max", span.max)
-                                                },
-                                            )
-                                        }
-                                    },
-                                )
+                                byFilter.forEach { (filter, byRelay) ->
+                                    put(
+                                        filter,
+                                        buildJsonObject {
+                                            byRelay.forEach { (relay, band) -> put(relay, bandOf(band)) }
+                                        },
+                                    )
+                                }
                             },
                         )
                     }
+                    // MIGRATION SHIM: unclaimed pre-stream bands go back out
+                    // flat and verbatim, because there is still no stream to
+                    // file them under and losing one costs a re-walked corpus.
+                    // They drain as their streams reach them; goes when the
+                    // reader above does.
+                    preStream.forEach { (k, raw) -> put(k, raw) }
                 }
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")

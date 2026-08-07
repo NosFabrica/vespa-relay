@@ -220,7 +220,7 @@ internal class DeleteMissingSync(
         ask: Filter,
     ): Int {
         var downloaded = 0
-        for (leg in bands.legs(url, ask)) {
+        for (leg in bands.legs(stream.name, url, ask)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             // Per-kind spans, which quartz's SyncCoverage requires before it
@@ -245,7 +245,7 @@ internal class DeleteMissingSync(
             } finally {
                 paging.finish(walk)
             }
-            bands.record(url, ask, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+            bands.record(stream.name, url, ask, seenMin, seenMax, paged = true, observedByKind = seenByKind)
         }
         return downloaded
     }

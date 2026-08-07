@@ -247,7 +247,7 @@ internal class StaticBackfill(
         upstream: SyncUpstream,
         live: AtomicLong,
     ): Int {
-        val legs = bands.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             return 0
@@ -295,7 +295,7 @@ internal class StaticBackfill(
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
                 paging.finish(walk)
-                bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                bands.record(upstream.streamName, upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
             }
             progress.done(idx, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
@@ -380,13 +380,13 @@ internal class StaticBackfill(
         // coveringWindow cannot help here, because once no relay needs anything
         // there is no window to narrow TO and it correctly hands back the whole
         // filter. Asking first is the only place the saving exists.
-        if (!bands.anyOutstanding(urls, filter)) {
+        if (!bands.anyOutstanding(group.first().streamName, urls, filter)) {
             System.err.println(
                 "router: static backfill ${group.first().streamName} — all ${group.size} relay(s) already cover the filter, skipping the snapshot",
             )
             return StreamSnapshot(emptyList(), nowSeconds())
         }
-        val window = bands.coveringWindow(urls, filter)
+        val window = bands.coveringWindow(group.first().streamName, urls, filter)
         val startedMs = System.currentTimeMillis()
         val takenAt = startedMs / 1000
         val name = group.first().streamName
@@ -449,7 +449,7 @@ internal class StaticBackfill(
         idx: Int,
         upstream: SyncUpstream,
     ): Int {
-        val legs = bands.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
@@ -482,6 +482,7 @@ internal class StaticBackfill(
                 val here = downloaded
                 val outcome =
                     pager.sweep(
+                        stream = upstream.streamName,
                         url = upstream.url,
                         shape = upstream.filter,
                         leg = leg,
@@ -513,7 +514,7 @@ internal class StaticBackfill(
                     paging.finish(walk)
                     pagedWindows++
                     legsDone++
-                    bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                    bands.record(upstream.streamName, upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
                     continue
                 }
                 if (!outcome.complete) continue
@@ -524,6 +525,7 @@ internal class StaticBackfill(
                 // claim untrue for the leg.
                 val paged = outcome.pagedWindows > 0
                 bands.record(
+                    upstream.streamName,
                     upstream.url,
                     upstream.filter,
                     seenMin,
@@ -556,7 +558,7 @@ internal class StaticBackfill(
         upstream: SyncUpstream,
         snapshot: StreamSnapshot,
     ): Int {
-        val legs = bands.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
@@ -604,6 +606,7 @@ internal class StaticBackfill(
                 // compared against, and erring early only costs a small
                 // re-fetch, never a gap.
                 bands.record(
+                    upstream.streamName,
                     upstream.url,
                     upstream.filter,
                     seenMin,
@@ -617,7 +620,7 @@ internal class StaticBackfill(
                 )
             }
             progress.done(idx, downloaded)
-            val band = bands.band(upstream.url, upstream.filter)
+            val band = bands.band(upstream.streamName, upstream.url, upstream.filter)
             System.err.println(
                 "router: static backfill ${upstream.url.url} downloaded $downloaded" +
                     (if (paged) " (paged REQ fallback — no NIP-77)" else " (negentropy)") +
