@@ -83,6 +83,9 @@ class SyncEngine(
     audit: ParseAudit? = null,
     // Resume state for paged relays, so a restart is not a re-download.
     private val bands: SyncBands = SyncBands(null),
+    // Per-peer negentropy window sizes and the in-progress sweep cursor. In
+    // memory by default: correct, but a restart re-learns both.
+    private val sweepState: SweepState = SweepState(null),
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
     signer: NostrSigner? = null,
     // SYNC_WIRE_LOG: "" (errors only) / "sent" / "full".
@@ -200,7 +203,25 @@ class SyncEngine(
     private val phases = StreamPhases()
     private val paging = PagingProgress()
     private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
-    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, streamGate, transferring, scope)
+
+    /**
+     * The automatic window chunker. A peer's cap arrives through quartz —
+     * `NegentropySyncResult.peerCap`, parsed off the relay's own refusal — so
+     * nothing here has to watch the wire for it.
+     */
+    private val pager =
+        NegentropyPager(
+            StoreWindowIndex(store),
+            ClientWindowSync(client),
+            sweepState,
+            NegPageTuning(
+                target = config.negPageTarget,
+                minTarget = config.negPageMin,
+                maxTarget = config.negPageMax,
+                slackSeconds = config.negPageSlackSec,
+            ),
+        )
+    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope)
     private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, tor, scope)
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
@@ -418,6 +439,9 @@ class SyncEngine(
     override fun close() {
         // First: a backfill killed mid-flight still keeps the ground it gained.
         runCatching { bands.flush() }
+        // The same reasoning one level finer — a sweep killed between windows
+        // resumes at the window it reached, not at the top of the range.
+        runCatching { sweepState.flush() }
         // Bounded flush of the monitor's liveness records: the engine being
         // unreachable is a normal way for a relay to be going down, and that
         // client has no read deadline — unbounded would hang exactly when it

@@ -301,6 +301,15 @@ services:
       # How long a recorded sync window narrows work before the whole filter is
       # walked again. Nothing is capped — the full pass is periodic, not skipped.
       SYNC_FULL_RESYNC_SECONDS: ${SYNC_FULL_RESYNC_SECONDS:-${ROUTER_FULL_RESYNC_SECONDS:-604800}}
+      # Automatic negentropy paging. Past SYNC_NEG_PAGE_TARGET local events on a
+      # stream's filter, a backfill reconciles it in created_at windows instead
+      # of one whole-filter pass — bounding the id snapshot we build and making
+      # a killed sync resumable. The window size is learned per peer (shrunk on
+      # a refusal, grown on a clean window) and kept in the sweep state file,
+      # which belongs in the volume for the same reason the band file does.
+      SYNC_NEG_PAGE_TARGET: ${SYNC_NEG_PAGE_TARGET:-}
+      SYNC_NEG_PAGE_SLACK_SECONDS: ${SYNC_NEG_PAGE_SLACK_SECONDS:-}
+      SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
       # How many engine queries the store's bulk stages keep in flight — the
       # dedup preload on this side is an id-only lookup and far lighter than
       # the relay's summaries, so this is worth sweeping on a deployment whose

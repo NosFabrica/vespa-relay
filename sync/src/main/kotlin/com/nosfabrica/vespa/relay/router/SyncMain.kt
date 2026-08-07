@@ -135,6 +135,10 @@ fun main() {
     // restart resumes instead of re-reading the corpus.
     val bands = SyncBands.fromEnv(env)
 
+    // One level finer than the bands: what each peer will reconcile in one
+    // window, and how far down the timeline the running sweep already got.
+    val sweepState = SweepState.fromEnv(env)
+
     // Clients first, across the process boundary: the relay serves its mean
     // read latency and ingest yields to it. Explicitly opt-in — a sync
     // running without a relay (a fill-only box) has no readers to yield to —
@@ -159,6 +163,7 @@ fun main() {
             config,
             audit = parseAudit,
             bands = bands,
+            sweepState = sweepState,
             signer = identity,
             wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
@@ -173,6 +178,7 @@ fun main() {
             parseAudit?.close()
             poller?.close()
             bands.close()
+            sweepState.close()
             store.close()
         },
     )

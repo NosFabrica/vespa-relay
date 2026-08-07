@@ -60,6 +60,21 @@ data class RouterConfig(
     // how long a relay gets to answer the NIP-45 COUNT that measures it.
     // From SYNC_NEG_MIN_EVENTS.
     val negMinEvents: Int = 5_000,
+    /**
+     * Automatic negentropy paging: how many events one reconcile window aims to
+     * hold, the floor and ceiling the learned per-peer size moves between, and
+     * how far below `now` a sweep stops (the seam with the live tail).
+     *
+     * A stream holding more than [negPageTarget] events reconciles in windows
+     * instead of one whole-filter pass — see `NegentropyPager`. `0` turns
+     * paging off and restores the single shared snapshot per stream, which is
+     * correct but holds the stream's entire id set for the length of the sync.
+     * From SYNC_NEG_PAGE_TARGET / _MIN / _MAX / _SLACK_SECONDS.
+     */
+    val negPageTarget: Int = 100_000,
+    val negPageMin: Int = 1_000,
+    val negPageMax: Int = 1_000_000,
+    val negPageSlackSec: Long = 60,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.DOWN)

@@ -258,6 +258,33 @@ behaviour upstream, not here**, or the next quartz bump reverts it. The
 on-disk shape (`{key: {min, max, complete, fullAt}}`) is this repo's and is
 pinned by a test.
 
+**Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
+reconcile call, and the division of labour with quartz is the thing to
+understand before touching it. It moved once already: quartz used to take a
+materialised id list and know nothing about our side, so this class did the
+pre-split, sniffed the peer's cap off the wire, and re-tried windows around a
+dense second. All three now live upstream (`NegentropyLocalIndex`,
+`targetWindow`, `NegentropySyncResult.peerCap`, `onUnreconcilableWindow` — see
+amethyst#3871), and this class shrank to what survives a call:
+
+- **the cursor** (`SweepState`), written per finished window, because quartz
+  forgets everything between calls and a band is only recorded per leg;
+- **the per-peer window size**, learned from `peerCap` across syncs and
+  persisted, so a restart does not re-walk the ladder;
+- **the order windows are walked in** — strictly newest-first, which is what
+  keeps the finished region contiguous, which is the only reason the cursor can
+  be one timestamp instead of a set of intervals. Every push preserves it; check
+  that before adding one.
+
+Everything inside a call is quartz's: splitting a window it cannot reconcile,
+bounding what it reads from the index (`PrimedIndex` hands it the count this
+layer already took, so the same window is not counted twice), and draining a
+second no window size will fit through the hook this class passes it. Engaged
+automatically by `StaticBackfill` once our own count passes
+`SYNC_NEG_PAGE_TARGET`; the dynamic fan-out deliberately still shares one
+snapshot across its 16k relays, where per-peer windowing would multiply the
+store work by the fan-out.
+
 **Known open bug (now upstream's):** a band holds one span for every kind in
 the filter, so a long-lived kind (0) vouches for a short-lived one (30382) and
 `legs()` skips the interior. The fix is per-kind spans *inside* the

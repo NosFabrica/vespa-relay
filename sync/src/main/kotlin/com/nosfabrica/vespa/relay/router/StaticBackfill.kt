@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
+import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
@@ -38,6 +39,7 @@ import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.async
 import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
@@ -68,6 +70,8 @@ internal class StaticBackfill(
     private val ingest: IngestPipeline,
     private val phases: StreamPhases,
     private val paging: PagingProgress,
+    // Windowed reconciliation for streams too big to snapshot in one piece.
+    private val pager: NegentropyPager,
     // One stream reconciles at a time, across static and dynamic both: a
     // stream holds its whole id set from snapshot start to its last relay, so
     // concurrent streams would hold their sets simultaneously (measured: three
@@ -127,8 +131,25 @@ internal class StaticBackfill(
             return
         }
         phases.set(name, StreamPhases.Phase.Queued(reconcilers.size))
+        // One snapshot for the stream, or one right-sized window at a time?
+        //
+        // Decided by OUR count, because that is what the shared snapshot costs:
+        // below the target the whole set fits in one window anyway and sharing
+        // it across the group is strictly cheaper (one id walk, not one per
+        // relay). Above it, that single walk is the multi-gigabyte hold this
+        // package's stream gate exists to contain — and it is also the thing a
+        // crash throws away. See [NegentropyPager].
+        val sweeping = config.negPageTarget > 0 && ours > config.negPageTarget
         try {
             streamGate.withPermit {
+                if (sweeping) {
+                    System.err.println(
+                        "router: static backfill $name reconciling in windows of ~${fmtCount(config.negPageTarget)} event(s)" +
+                            " — ${fmtCount(ours)} local event(s) is past the point where one shared snapshot pays for itself",
+                    )
+                    sweepAll(name, reconcilers, eventsEarly, early)
+                    return@withPermit
+                }
                 val snapshot = snapshotForStream(reconcilers.map { it.value }, filter)
                 // Awaited inside the permit: the id set stays live until the last
                 // relay is done with it, so releasing at the fan-out would let the
@@ -383,6 +404,151 @@ internal class StaticBackfill(
                 " — shared by ${group.size} relay(s)",
         )
         return StreamSnapshot(local, takenAt)
+    }
+
+    /**
+     * The windowed path: every relay in the group sweeps its own legs, each
+     * against ids read one window at a time. No shared snapshot exists here —
+     * the whole point is that it never gets built.
+     */
+    private suspend fun sweepAll(
+        name: String,
+        reconcilers: List<IndexedValue<SyncUpstream>>,
+        eventsEarly: AtomicLong,
+        early: Job?,
+    ) {
+        val done = AtomicInteger()
+        val events = AtomicLong()
+        phases.set(name, StreamPhases.Phase.Syncing(0, reconcilers.size, 0, 0, 0))
+        coroutineScope {
+            reconcilers.forEach { (idx, upstream) ->
+                launch {
+                    val got = sweepOne(idx, upstream)
+                    events.addAndGet(got.toLong())
+                    phases.set(
+                        name,
+                        StreamPhases.Phase.Syncing(done.incrementAndGet(), reconcilers.size, events.get(), 0, 0),
+                    )
+                }
+            }
+        }
+        early?.join()
+        phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), null))
+    }
+
+    /**
+     * One relay, swept leg by leg through [NegentropyPager].
+     *
+     * The band bookkeeping is the same as [reconcileOne]'s and for the same
+     * reasons; what differs is where the coverage claim comes from. A leg is
+     * only recorded once the sweep reports it COMPLETE — a sweep that stopped
+     * early has already written its cursor, and recording a band from a partial
+     * leg would let the next boot skip the part that never happened.
+     */
+    private suspend fun sweepOne(
+        idx: Int,
+        upstream: SyncUpstream,
+    ): Int {
+        val legs = bands.legs(upstream.url, upstream.filter)
+        if (legs.isEmpty()) {
+            progress.done(idx, 0)
+            System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
+            return 0
+        }
+        transferring.incrementAndGet()
+        return try {
+            var downloaded = 0
+            var windows = 0
+            var pagedWindows = 0
+            var legsDone = 0
+            for (leg in legs) {
+                var seenMin: Long? = null
+                var seenMax: Long? = null
+                val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
+                // Stamped before the first window: every window reconciles
+                // against ids read at or after this moment, so it is the
+                // conservative claim. Erring early costs a re-fetch, never a gap.
+                val startedAt = nowSeconds()
+                val onEvent: suspend (Event) -> Unit = { event ->
+                    if (upstream.filter.match(event)) {
+                        if (SyncCoverage.isPlausible(event.createdAt)) {
+                            seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                            seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                        }
+                        SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
+                        ingest.submit(event, upstream.trusted)
+                    }
+                }
+                val here = downloaded
+                val outcome =
+                    pager.sweep(
+                        url = upstream.url,
+                        shape = upstream.filter,
+                        leg = leg,
+                        onProgress = { need, got -> progress.update(idx, need, here + got) },
+                        onEvent = onEvent,
+                    )
+                downloaded += outcome.downloaded
+                windows += outcome.reconciledWindows + outcome.pagedWindows
+                pagedWindows += outcome.pagedWindows
+                if (!outcome.negentropyUsable) {
+                    // The relay never reconciled a single window — the same
+                    // "try negentropy, else page" fallback the non-windowed path
+                    // gets from `negentropySyncOrFetch`, made here because the
+                    // pager deliberately leaves the choice to its caller.
+                    // Only what the sweep has NOT already covered: a resumed
+                    // sweep may be most of the way down the leg, and paging the
+                    // whole thing would throw that away.
+                    val rest = outcome.outstanding ?: leg
+                    val walk = "${upstream.streamName}|${upstream.url.url}"
+                    paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                    downloaded +=
+                        client.fetchAllPages(
+                            upstream.url,
+                            listOf(rest),
+                            NEG_IDLE_MS,
+                            onNewPage = { until -> paging.mark(walk, until) },
+                            onEvent = onEvent,
+                        )
+                    paging.finish(walk)
+                    pagedWindows++
+                    legsDone++
+                    bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                    continue
+                }
+                if (!outcome.complete) continue
+                legsDone++
+                // A leg with any paged window in it is recorded as PAGED: the
+                // reconcile claim covers a whole range compared at once, and one
+                // second that had to be walked instead is enough to make that
+                // claim untrue for the leg.
+                val paged = outcome.pagedWindows > 0
+                bands.record(
+                    upstream.url,
+                    upstream.filter,
+                    seenMin,
+                    seenMax,
+                    paged,
+                    reconciledThrough = startedAt.takeUnless { paged },
+                    observedByKind = seenByKind,
+                )
+            }
+            progress.done(idx, downloaded)
+            System.err.println(
+                "router: static backfill ${upstream.url.url} downloaded $downloaded over $windows window(s)" +
+                    (if (pagedWindows > 0) " ($pagedWindows paged)" else "") +
+                    " [$legsDone/${legs.size} leg(s) complete]",
+            )
+            downloaded
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            progress.done(idx, 0)
+            System.err.println("router: static backfill ${upstream.url.url} sweep failed: ${e.message}")
+            0
+        } finally {
+            transferring.decrementAndGet()
+        }
     }
 
     private suspend fun reconcileOne(
