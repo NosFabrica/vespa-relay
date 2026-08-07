@@ -37,13 +37,13 @@
   query under an operator's own lens answers a smaller, different question under
   an identical label.
 
-  TWO PANELS ARE NOT COMPUTED YET (new pubkeys, retention — both need
-  per-pubkey first-seen across the whole corpus). They are drawn as stated gaps
-  rather than omitted, because a panel that is simply absent is
-  indistinguishable from one this page is too old to know about, and "we have
-  not built this" is a different fact from "this relay holds none of that". Two
-  more — zaps and relay distribution — ARE computed but incompletely, and carry
-  a `note` saying what they leave out and why. That note is the point of those
+  ONE PANEL IS NOT COMPUTED YET (new pubkeys, which needs per-pubkey first-seen
+  across the whole corpus). It is drawn as a stated gap rather than omitted,
+  because a panel that is simply absent is indistinguishable from one this page
+  is too old to know about, and "we have not built this" is a different fact
+  from "this relay holds none of that". Two more — zaps and relay distribution —
+  ARE computed but incompletely, and carry a `note` saying what they leave out
+  and why. That note is the point of those
   panels being honest rather than merely present: satoshis and the read/write
   split are exactly the fields a reader of a network-wide dashboard arrives
   looking for, and an unannotated panel reads as "this relay has none of that".
@@ -208,6 +208,17 @@ const tipEl = document.getElementById("tip");
  * likely explanation than "it is between runs", for any sane interval.
  */
 const STALE_AFTER_MS = 6 * 3600 * 1000;
+
+/**
+ * The document schema this page was written against — see SCHEMA_VERSION in
+ * StatsRollup, which bumps when a field changes meaning or leaves.
+ *
+ * One constant because it was two: the comparison and the sentence it prints
+ * both carried a literal `1`, and raising the rollup to 2 left the page
+ * comparing against one number while offering to explain itself in terms of
+ * another. A version check that can disagree with itself is worse than none.
+ */
+const SCHEMA = 2;
 
 /** A bar chart of one series. See the header for why single-series and why never two y-axes. */
 function barChart(points, { label, height = 130 }) {
@@ -657,10 +668,7 @@ function render(doc) {
   bodyEl.appendChild(kindActivityCard(doc.kindActivity));
   bodyEl.appendChild(zapsCard(doc.zaps));
   bodyEl.appendChild(relaysCard(doc.relayDistribution));
-  for (const [key, title] of [
-    ["newUsers", "New pubkeys"],
-    ["retention", "Retention"],
-  ]) {
+  for (const [key, title] of [["newUsers", "New pubkeys"]]) {
     if (doc[key] && doc[key].status === "pending") bodyEl.appendChild(pendingCard(title, doc[key]));
   }
 
@@ -685,7 +693,9 @@ function render(doc) {
   footEl.append(` (schema ${doc.schema}).`);
   // A document written by a newer relay may mean things this page does not
   // know; saying so beats charting fields we are guessing at.
-  if (doc.schema > 1) footEl.appendChild(el("p", "err", "This page was written for schema 1 — some panels may be missing or misread."));
+  if (doc.schema > SCHEMA) {
+    footEl.appendChild(el("p", "err", `This page was written for schema ${SCHEMA} — some panels may be missing or misread.`));
+  }
 }
 
 async function load() {

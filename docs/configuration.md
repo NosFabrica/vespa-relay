@@ -59,11 +59,11 @@ a network-wide dashboard they are a coverage ratio, which is the useful number
 for a mirroring relay — but a total below one is not a fault, and the document
 says so in its own `scope` field.
 
-Two sections — **new pubkeys** and **retention** — are declared with
-`"status": "pending"` rather than omitted, so a reader can tell "not built yet"
-from "this relay holds none of that". Both need first-seen (`min(created_at)`)
-per pubkey across the whole corpus, which is one group per author and therefore
-a nightly job rather than a query this endpoint can run.
+One section — **new pubkeys** — is declared with `"status": "pending"` rather
+than omitted, so a reader can tell "not built yet" from "this relay holds none
+of that". It needs first-seen (`min(created_at)`) per pubkey across the whole
+corpus, which is one group per author and therefore a nightly job rather than a
+query this endpoint can run.
 
 Two more are computed but incomplete, and carry a `note` saying what they leave
 out. **Zaps** has receipt counts but no satoshis: the amount lives in the

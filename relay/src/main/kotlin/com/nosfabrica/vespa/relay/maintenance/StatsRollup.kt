@@ -117,21 +117,17 @@ internal class StatsRollup(
             put("kindActivity", kindActivity)
             put("relayDistribution", relays)
             put("zaps", zaps)
-            // Declared, not computed. Each names what it needs rather than
-            // being absent — a panel missing from the document is
-            // indistinguishable from one the reader's page is too old to know
-            // about, and "we have not built this" is a different fact from
-            // "this relay holds none of that".
+            // Declared, not computed. Names what it needs rather than being
+            // absent — a panel missing from the document is indistinguishable
+            // from one the reader's page is too old to know about, and "we have
+            // not built this" is a different fact from "this relay holds none
+            // of that".
             put(
                 "newUsers",
                 pending(
                     "Needs first-seen (min created_at) per pubkey across the whole corpus — one group per author, " +
                         "so a nightly rollup rather than a query this endpoint can run.",
                 ),
-            )
-            put(
-                "retention",
-                pending("Cohorts are built on the same per-pubkey first-seen as newUsers; it lands with that rollup."),
             )
         }
     }
@@ -593,8 +589,16 @@ internal class StatsRollup(
          * the page reads what it knows and ignores the rest, so additions are
          * already safe. A reader that sees a schema above the one it was
          * written for should say so rather than chart fields it is guessing at.
+         *
+         * 2 — `retention` removed. It only ever carried a `pending` placeholder,
+         * so nothing charted from it and the temptation is to call this an
+         * addition-shaped change and leave the number alone. The rule above says
+         * a field that LEAVES bumps, and it says that because a reader coding
+         * against a key has no way to distinguish "the relay dropped this" from
+         * "this rollup happened to fail" without one. Applying it to the cheap
+         * case is what makes it trustworthy in the expensive one.
          */
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         const val DEFAULT_WINDOW_DAYS = 30
 
