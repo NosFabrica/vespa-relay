@@ -111,8 +111,23 @@ streams {
     contentViaOutbox {
         dir = "down"
         sync = "fetch"
+        # 5 (NIP-09 deletion request) and 62 (NIP-62 request to vanish) travel
+        # with the content they retract. The store enforces both AT INSERT: a
+        # mirrored kind 5 erases the targets it names, a kind 62 sweeps that
+        # author's history off this relay — so an author who deleted a note on
+        # their own write relay does not keep a copy here.
+        #
+        # Storing the request is the other half of it, and the half that lasts:
+        # the tombstone is what the NEXT cycle's inserts are checked against, so
+        # the note stays gone instead of coming back on the following walk. That
+        # is what a `deleteMissing` drop cannot do — absence leaves nothing
+        # behind to check the re-download against.
+        #
+        # Adding kinds re-keys the stream's sync bands (they are keyed by the
+        # whole filter), so the first cycle after this edit re-walks every
+        # discovered relay rather than resuming.
         filter = { "kinds": [
-            0, 1, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 1010, 1063,
+            0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063,
             1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617,
             1618, 1621, 1622, 1630, 1808, 1985, 2003, 2004, 2473, 3302, 5050,
             5100, 5129, 5250, 5302, 5303, 6969, 8333, 9002, 9041, 9321, 9734,

@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
+import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
 import com.nosfabrica.vespa.relay.maintenance.StatsVespa
 import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
@@ -157,7 +158,11 @@ fun main() {
         System.err.println("schema: deployed and serving")
     }
 
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl)
+    // STORE_WRITERS, not the store's default, because the answer is a property
+    // of this deployment and not of the library: the sync process writes the
+    // same index, and the deletions this relay must honour are largely ones it
+    // mirrored.
+    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl, writers = STORE_WRITERS)
 
     // Background maintenance. Everything here runs BEHIND the server and is
     // awaited nowhere: blocking the port on any of it turns every restart
