@@ -532,6 +532,14 @@ async function run() {
     if (!raw) return null;
     const t = String(raw).trim();
     if (!t || /\s/.test(t)) return null;
+    // A scheme that is not ws/wss is refused HERE, before the fallback below
+    // can paper over it. Prepending `wss://` to a string that already has a
+    // scheme produces a url that parses and means nothing: `wss://` +
+    // `http://localhost:7778` is `wss://http//localhost:7778`, whose HOST is
+    // "http" — so the loopback rule two lines down never saw the localhost it
+    // was written to catch, and this page dialled it. The comment above has
+    // claimed that url was dropped since it was written; it was not.
+    if (/^[a-z][a-z0-9+.-]*:/i.test(t) && !/^wss?:\/\//i.test(t)) return null;
     let u;
     try { u = new URL(/^wss?:\/\//i.test(t) ? t : "wss://" + t); } catch { return null; }
     if (u.protocol !== "ws:" && u.protocol !== "wss:") return null;

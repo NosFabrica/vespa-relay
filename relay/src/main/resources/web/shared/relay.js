@@ -4,11 +4,38 @@
 
 const REQ_TIMEOUT_MS = 10000;
 
+/**
+ * How long a COUNT may stay SILENT before we give up on it — an idle window,
+ * not a deadline, reset by any message on the connection.
+ *
+ * The distinction is the one quartz made to its accessory timeouts in
+ * 1622bd7109 and observer_stats.html re-learned by measurement: a relay
+ * answers serially, so a cheap COUNT queued behind an expensive one expires on
+ * a deadline while the socket is busy delivering somebody else's answer.
+ * Measured there — 146 services, 4 in flight — a 15s deadline scored 55
+ * answered and 91 "timed out" with a median answer of 75ms, and ZERO of the 91
+ * were ever refused.
+ *
+ * Shorter than that page's 60s because the waiter is different: it is an
+ * operator watching a run there, and here it is a panel under somebody's
+ * search box. Giving up early costs a denominator and says so, which is the
+ * safe direction — the alternative is a bar drawn on a guess.
+ */
+const COUNT_IDLE_MS = 20000;
+
+/** The relay answered something that was not a count. Its answer, not our budget. */
+export const REFUSED = { unanswered: "refused" };
+
+/** It went quiet with the ask outstanding. Our budget, not its answer. */
+export const TIMED_OUT = { unanswered: "timeout" };
+
 export class Relay {
   constructor(url) {
     this.url = url;
     this.ws = null;
     this.subs = new Map();       // subId -> { onEvent, finish }
+    this.counts = new Map();     // subId -> resolver for its COUNT
+    this.countIdle = null;       // ONE idle watchdog for every outstanding count
     this.okWaiters = new Map();  // event id -> resolver for its OK
     this.nextId = 1;
     this.challenge = null;       // the connection's NIP-42 challenge
@@ -59,6 +86,10 @@ export class Relay {
         this.authed = false;
         for (const s of this.subs.values()) s.finish(new Error("connection closed"));
         this.subs.clear();
+        // A count outstanding on a socket that is gone is REFUSED, not timed
+        // out: we are not waiting any more, and the caller must not read it as
+        // "the relay is thinking".
+        this.failCounts(REFUSED);
         // A challenge that will now never arrive: wake the waiters with the
         // answer instead of leaving them to age out. The caller's next step is
         // to reconnect and ask again, and it should not spend its whole budget
@@ -74,13 +105,65 @@ export class Relay {
   }
 
   handle(msg) {
+    // Traffic of ANY kind is proof the relay is still working through its
+    // queue, including a message for somebody else's ask. Bumped before the
+    // switch for that reason — see COUNT_IDLE_MS.
+    this.bumpCountIdle();
     switch (msg[0]) {
       case "EVENT": { const s = this.subs.get(msg[1]); if (s) s.onEvent(msg[2]); break; }
       case "EOSE": { const s = this.subs.get(msg[1]); if (s) s.finish(null); break; }
-      case "CLOSED": { const s = this.subs.get(msg[1]); if (s) s.finish(new Error(msg[2] || "subscription closed")); break; }
+      case "CLOSED": {
+        const s = this.subs.get(msg[1]);
+        if (s) { s.finish(new Error(msg[2] || "subscription closed")); break; }
+        // A relay that does not serve NIP-45 commonly answers the COUNT by
+        // closing its subscription. That is an ANSWER — it declined — and it
+        // must not be reported as our impatience.
+        const c = this.counts.get(msg[1]);
+        if (c) c(REFUSED);
+        break;
+      }
+      case "COUNT": {
+        const c = this.counts.get(msg[1]);
+        // `{"count": n}` or nothing usable. A COUNT frame carrying no number
+        // is the relay declining in a different dialect.
+        if (c) c(typeof msg[2]?.count === "number" ? msg[2].count : REFUSED);
+        break;
+      }
+      // NIP-01's NOTICE carries no subscription id, so it cannot be addressed
+      // to the ask it is about — and answering an unsupported COUNT with one is
+      // exactly what the relays that do not implement NIP-45 do (measured:
+      // nip85.brainstorm.world, on all 45 of the services it serves). The only
+      // thing we can do is attribute it to what is outstanding, and counts are
+      // the only ask this client ever has outstanding on a probe connection.
+      // Wrong in the safe direction: a false "no COUNT" costs a denominator,
+      // where a false count would be a number no relay ever stated.
+      case "NOTICE": this.failCounts(REFUSED); break;
       case "AUTH": this.challenge = msg[1]; this.wakeChallengeWaiters(); break;
       case "OK": { const w = this.okWaiters.get(msg[1]); if (w) { this.okWaiters.delete(msg[1]); w(msg); } break; }
     }
+  }
+
+  /** Arm the idle watchdog while anything is outstanding, and only then. */
+  bumpCountIdle() {
+    if (this.countIdle) { clearTimeout(this.countIdle); this.countIdle = null; }
+    if (!this.counts.size) return;
+    this.countIdle = setTimeout(() => this.failCounts(TIMED_OUT), COUNT_IDLE_MS);
+  }
+
+  /**
+   * Hand every outstanding count the same non-answer.
+   *
+   * A SNAPSHOT of the resolvers, and the map is emphatically NOT cleared first:
+   * each one is the `finish` from count(), which begins `if
+   * (!this.counts.delete(id)) return;` to make itself idempotent. Clearing here
+   * made every one of those early-return without resolving, so a relay that
+   * answered a COUNT with a NOTICE — the exact case this path exists for — left
+   * the caller awaiting a promise nothing would ever settle. Each finish
+   * removes its own entry, so the map is empty when the loop ends.
+   */
+  failCounts(reason) {
+    if (!this.counts.size) return;
+    for (const finish of [...this.counts.values()]) finish(reason);
   }
 
   /** Hand the current challenge (or its absence) to everyone waiting on one. */
@@ -170,6 +253,34 @@ export class Relay {
       const timer = setTimeout(() => finish(null, false), timeoutMs);
       this.subs.set(id, { onEvent: (ev) => events.push(ev), finish });
       this.ws.send(JSON.stringify(["REQ", id, ...(Array.isArray(filter) ? filter : [filter])]));
+    });
+  }
+
+  /**
+   * NIP-45 COUNT: the number, or [REFUSED] / [TIMED_OUT] — never a throw.
+   *
+   * The two non-answers are values rather than exceptions because the caller
+   * has to TELL THEM APART and render each: "the relay declined" and "we
+   * stopped waiting" lead to different conclusions, and collapsing them into
+   * one catch is how a status page ends up saying zero when it means silence.
+   */
+  async count(filter) {
+    await this.connect();
+    const id = "cnt" + this.nextId++;
+    return await new Promise((resolve) => {
+      const finish = (v) => {
+        if (!this.counts.delete(id)) return;
+        // Closed however we leave: relays cap concurrent subscriptions, and an
+        // abandoned one is a later ask rejected for a reason nothing on the
+        // page would explain.
+        try { this.ws && this.ws.send(JSON.stringify(["CLOSE", id])); } catch (e) {}
+        this.bumpCountIdle();
+        resolve(v);
+      };
+      this.counts.set(id, finish);
+      this.bumpCountIdle();
+      try { this.ws.send(JSON.stringify(["COUNT", id, filter])); }
+      catch (e) { finish(REFUSED); }
     });
   }
 

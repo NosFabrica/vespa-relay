@@ -12,9 +12,21 @@
   serves it, searches with NIP-50 REQs (so the filter chips are literal `kinds`
   filters and the sort menu appends NIP-50 `sort:`/`include:spam` extensions),
   signs in automatically with NIP-07 against the relay's NIP-42 challenge —
-  which ranks every search by YOUR web of trust and enrols you as a sync
-  observer. Without an extension it stays anonymous and shows the whole corpus,
-  unranked; there is no house lens standing in for you.
+  which ranks every search by YOUR web of trust. Without an extension it stays
+  anonymous and shows the whole corpus, unranked; there is no house lens
+  standing in for you.
+
+  Signing in does NOT enrol you in anything — this header claimed it did, and
+  so did app.js, while the relay's enrolment hook was wired to nothing. The
+  store treats your lens as a FILTER, so a reader whose trust chain has not
+  been mirrored here gets an empty ranked search rather than a degraded one,
+  and the page said nothing at all about that. web/readiness.js is the panel
+  that does: which link of the chain is missing (your relay list, your kind
+  10040, your provider's scores), how far the import has got as a percentage
+  when a denominator honestly exists, and — for the one failure that cannot
+  fix itself, a relay that has never seen your kind 10002 — a field to name a
+  relay you post to, so the page can read your lists off it and copy them here
+  verbatim for the router to pick up.
 
   This file is the markup and the styles; the behavior is native ES modules
   under /web, served straight off the classpath — view-source is still the real
@@ -231,6 +243,7 @@
 <link rel="modulepreload" href="/web/cards/social.js" />
 <link rel="modulepreload" href="/web/entity.js" />
 <link rel="modulepreload" href="/web/feed.js" />
+<link rel="modulepreload" href="/web/readiness.js" />
 <link rel="modulepreload" href="/web/related.js" />
 <link rel="modulepreload" href="/web/searchfield.js" />
 <link rel="modulepreload" href="/web/shared/avatar.js" />
@@ -244,7 +257,9 @@
 <link rel="modulepreload" href="/web/shared/parents.js" />
 <link rel="modulepreload" href="/web/shared/profiles.js" />
 <link rel="modulepreload" href="/web/shared/query.js" />
+<link rel="modulepreload" href="/web/shared/readiness.js" />
 <link rel="modulepreload" href="/web/shared/relay.js" />
+<link rel="modulepreload" href="/web/shared/relayurl.js" />
 <script type="module" src="/web/app.js"></script>
 <style>
   /* ---- tokens ------------------------------------------------------------ */
@@ -265,11 +280,21 @@
     /* a diff's two colours, and the git verdicts that borrow them */
     --add: #1a7f37;
     --del: #b42318;
+    /* The green observer_stats.html marks a SYNCED service with, to the digit:
+       two pages that both say "this is in sync" should not say it in two
+       colours. Near-identical to --add and deliberately not merged with it —
+       that one is a diff's added-line green, tuned against a tinted row, and
+       the two vocabularies are free to drift apart. */
+    --ok: #1a7f4b;
     --ring: rgba(37, 99, 235, .35);
     --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
     --shadow-md: 0 4px 16px rgba(16, 24, 40, .08);
     --shadow-lg: 0 18px 44px rgba(16, 24, 40, .14);
     --radius: 12px;
+    /* The stack was written out at every use — five of them by the time the
+       readiness panel wanted a sixth. One name, because a monospace face is a
+       decision about this page and not about one rule in it. */
+    --mono: ui-monospace, SFMono-Regular, Menlo, monospace;
     --skel: linear-gradient(90deg, var(--surface-2) 25%, #e7eaf0 37%, var(--surface-2) 63%);
   }
   @media (prefers-color-scheme: dark) {
@@ -289,6 +314,7 @@
       --warn: #d99b56;
       --add: #57ab5a;
       --del: #f47067;
+      --ok: #6dd39b;
       --ring: rgba(122, 162, 255, .4);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
       --shadow-md: 0 4px 16px rgba(0, 0, 0, .45);
@@ -535,6 +561,154 @@
   .whoami b { color: var(--fg); font-weight: 600; }
   .whoami .err { color: var(--danger); }
 
+  /* ---- "is search ready for you yet" ------------------------------------ */
+  /* One card, seven states. The state is a DOT beside the sentence that
+     states it, not a tinted bar down the edge of the card: the severity
+     belongs next to the words, and a rail puts it everywhere except there. */
+  .readiness { width: 100%; margin-top: 12px; }
+  .readiness[hidden] { display: none; }
+  .rdy {
+    display: flex; flex-direction: column; gap: 10px;
+    padding: 14px 16px 15px;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-sm);
+    text-align: left;
+  }
+  .rdy-top { display: flex; align-items: flex-start; gap: 10px; }
+  .rdy-dot {
+    width: 9px; height: 9px; border-radius: 50%; flex: 0 0 auto; margin-top: 6px;
+    background: var(--faint);
+  }
+  .rdy.is-blocked .rdy-dot { background: var(--danger); }
+  .rdy.is-working .rdy-dot { background: var(--accent); }
+  .rdy.is-partial .rdy-dot { background: var(--warn); }
+  .rdy.is-ok .rdy-dot { background: var(--ok); }
+  .rdy-headline { margin: 0; flex: 1 1 auto; font-size: 15px; font-weight: 620; letter-spacing: -.01em; }
+  .rdy-state {
+    padding-top: 4px; white-space: nowrap;
+    font: 500 10.5px/1 var(--mono); letter-spacing: .09em; text-transform: uppercase;
+    color: var(--faint);
+  }
+  .rdy-x {
+    border: 0; background: none; padding: 0 0 0 4px; margin-top: -1px;
+    color: var(--faint); font-size: 16px; line-height: 1; cursor: pointer;
+  }
+  .rdy-x:hover { color: var(--fg); }
+  /* 19px = the dot's 9 plus the row's 10 gap, so everything under the headline
+     hangs off the same left edge as the headline itself. */
+  .rdy-body { margin: 0 0 0 19px; color: var(--muted); font-size: 13.5px; max-width: 62ch; }
+  .rdy-body b { color: var(--fg); font-weight: 600; }
+  .rdy-body code, .rdy-figures code {
+    font-family: var(--mono); font-size: .9em;
+    background: var(--surface-2); border-radius: 4px; padding: .5px 4px;
+  }
+  .rdy-hint { margin: 0 0 0 19px; color: var(--faint); font-size: 12.5px; max-width: 60ch; }
+
+  .rdy-meter { margin-left: 19px; display: flex; flex-direction: column; gap: 6px; }
+  .rdy-track { height: 5px; border-radius: 3px; background: var(--surface-2); overflow: hidden; }
+  /* Warn until parity and green only AT it, so "partly there" can never read
+     as "done" from across the room. */
+  .rdy-fill { height: 100%; border-radius: 3px; background: var(--warn); }
+  .rdy.is-working .rdy-fill { background: var(--accent); }
+  .rdy.is-ok .rdy-fill { background: var(--ok); }
+  .rdy-figures {
+    margin: 0 0 0 19px; display: flex; flex-wrap: wrap; gap: 4px 10px;
+    font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; color: var(--faint);
+  }
+  .rdy-meter .rdy-figures { margin-left: 0; }
+  .rdy-figures b { color: var(--muted); font-weight: 600; }
+
+  .rdy-actions { margin-left: 19px; display: flex; flex-wrap: wrap; gap: 8px; align-items: center; }
+  .rdy-field {
+    flex: 1 1 15rem; min-width: 0; font: inherit; font-size: 13.5px; padding: 8px 11px;
+    border: 1px solid var(--border-strong); border-radius: 8px;
+    background: var(--surface); color: var(--fg);
+  }
+  .rdy-field::placeholder { color: var(--faint); }
+  .rdy-field:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px var(--ring); }
+  .rdy-btn {
+    display: inline-flex; align-items: center; gap: 6px;
+    font: inherit; font-size: 13.5px; font-weight: 600;
+    padding: 8px 14px; border: 1px solid transparent; border-radius: 8px;
+    background: var(--accent); color: var(--accent-fg);
+    cursor: pointer; white-space: nowrap; text-decoration: none;
+  }
+  .rdy-btn:hover { filter: brightness(1.06); }
+  .rdy-btn.quiet {
+    background: var(--surface); color: var(--muted); border-color: var(--border); font-weight: 500;
+  }
+  .rdy-btn.quiet:hover { color: var(--fg); border-color: var(--border-strong); filter: none; }
+  .rdy-ext { font-size: 11px; opacity: .75; }
+  .rdy-more {
+    margin-left: 19px; align-self: flex-start;
+    font: inherit; font-size: 12.5px; color: var(--muted);
+    background: none; border: 0; padding: 0; cursor: pointer;
+  }
+  .rdy-more:hover { color: var(--fg); }
+
+  /* The chain. The gates are a real dependency chain — your relay list is how
+     the router finds your write relays, those are where your scores list is
+     read, and that names the service whose scores get imported — so the list
+     draws one: solid down to the link that broke, dashed below it, because
+     everything under a break is WAITING and not failing. */
+  .rdy-chain { margin: 2px 0 0 19px; display: flex; flex-direction: column; }
+  .rdy-chain[hidden] { display: none; }
+  .rdy-link { display: grid; grid-template-columns: 16px 1fr auto; gap: 0 10px; align-items: start; }
+  .rdy-rail { position: relative; width: 16px; align-self: stretch; }
+  .rdy-rail::before {
+    content: ""; position: absolute; left: 7px; top: 14px; bottom: -4px; width: 2px;
+    background: var(--ok);
+  }
+  .rdy-link:last-child .rdy-rail::before { display: none; }
+  /* The segment BELOW a link takes that link's colour: a green run of rail
+     under an amber mark reads as "everything past here is fine", which is the
+     opposite of what a partial link means. */
+  .rdy-link.partial .rdy-rail::before, .rdy-link.aside .rdy-rail::before { background: var(--warn); }
+  .rdy-link.waiting .rdy-rail::before,
+  .rdy-link.broken .rdy-rail::before { background: none; width: 0; border-left: 2px dashed var(--border-strong); }
+  .rdy-mark {
+    position: absolute; left: 0; top: 4px; width: 16px; height: 16px; border-radius: 50%;
+    display: grid; place-items: center; font-size: 10px; font-weight: 700; line-height: 1;
+    background: var(--ok); color: var(--surface);
+  }
+  .rdy-link.broken .rdy-mark { background: var(--danger); }
+  .rdy-link.partial .rdy-mark, .rdy-link.aside .rdy-mark { background: var(--warn); }
+  .rdy-link.waiting .rdy-mark { background: none; border: 2px dashed var(--border-strong); }
+  .rdy-what { padding: 2px 0 12px; font-size: 13.5px; }
+  .rdy-what small { display: block; color: var(--muted); font-size: 12.5px; }
+  .rdy-link.waiting .rdy-what, .rdy-link.waiting .rdy-what small { color: var(--faint); }
+  .rdy-verdict {
+    padding-top: 3px; text-align: right; white-space: nowrap;
+    font: 12px/1.4 var(--mono); font-variant-numeric: tabular-nums; color: var(--muted);
+  }
+  .rdy-link.broken .rdy-verdict { color: var(--danger); }
+  .rdy-link.partial .rdy-verdict { color: var(--warn); }
+  .rdy-link.waiting .rdy-verdict { color: var(--faint); }
+  .rdy-link.aside { opacity: .82; }
+
+  .rdy-found { margin: 0 0 0 19px; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 5px; }
+  .rdy-found li { display: flex; align-items: baseline; gap: 8px; font-size: 13px; color: var(--muted); }
+  .rdy-found b { color: var(--fg); font-weight: 600; }
+  .rdy-found .tick { color: var(--ok); font-weight: 700; width: 1em; }
+  .rdy-found .cross { color: var(--warn); font-weight: 700; width: 1em; }
+  .rdy-found .dash { color: var(--faint); width: 1em; }
+  .rdy-found .kind { font: 11.5px/1 var(--mono); color: var(--faint); }
+
+  .rdy-spinner {
+    width: 13px; height: 13px; border-radius: 50%; flex: 0 0 auto; margin-top: 4px;
+    border: 2px solid var(--border-strong); border-top-color: var(--accent);
+    animation: rdy-spin .8s linear infinite;
+  }
+  @keyframes rdy-spin { to { transform: rotate(360deg); } }
+  @media (prefers-reduced-motion: reduce) { .rdy-spinner { animation-duration: 3s; } }
+
+  @media (max-width: 620px) {
+    .rdy-state { display: none; }
+    .rdy-actions .rdy-btn { flex: 1 1 auto; justify-content: center; }
+  }
+
   /* ---- type-ahead popup --------------------------------------------------- */
   .popup {
     position: absolute;
@@ -715,7 +889,7 @@
   .raw-body {
     margin: 8px 0 0; padding: 10px; max-height: 320px; overflow: auto;
     background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
-    font: 11px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; color: var(--fg);
+    font: 11px/1.5 var(--mono); color: var(--fg);
     white-space: pre-wrap; word-break: break-word;
   }
 
@@ -888,7 +1062,7 @@
   .props { display: grid; grid-template-columns: max-content minmax(0, 1fr); gap: 4px 14px; font-size: 12.5px; margin: 10px 0 0; }
   .props dt { color: var(--faint); }
   .props dd { margin: 0; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .props .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .props .mono { font-family: var(--mono); font-size: 12px; }
   .props a { color: var(--accent); text-decoration: none; }
   .props a:hover { text-decoration: underline; }
 
@@ -931,7 +1105,7 @@
                 overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .reply-line a { color: var(--accent); text-decoration: none; font-weight: 550; }
   .reply-line a:hover { text-decoration: underline; }
-  .reply-line a.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; font-weight: 400; }
+  .reply-line a.mono { font-family: var(--mono); font-size: 12px; font-weight: 400; }
   /* The permalink is a destination: its title carries the page and earns a
      size the list variant deliberately doesn't have. */
   .result.full .result-title { font-size: 20px; }
@@ -940,7 +1114,7 @@
   /* Where a hint-fetched event came from, and this relay's verdict on it —
      or, in .warn, that the reader chose to step outside their lens. */
   .prov { margin: 0 2px 10px; font-size: 12.5px; color: var(--muted); }
-  .prov .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11.5px; }
+  .prov .mono { font-family: var(--mono); font-size: 11.5px; }
   .prov.warn { color: var(--warn); }
   /* The entity page narrates its wait; the pulse says "working", the text
      says on what. Reduced-motion zeroes the pulse via the global rule. */
@@ -952,7 +1126,7 @@
   .reveal-btn:hover { border-color: var(--accent); color: var(--accent); }
   .entity-head a { color: var(--muted); text-decoration: none; white-space: nowrap; }
   .entity-head a:hover { color: var(--accent); }
-  .entity-head .ident { flex: 1; text-align: center; color: var(--faint); font: 12px ui-monospace, SFMono-Regular, Menlo, monospace;
+  .entity-head .ident { flex: 1; text-align: center; color: var(--faint); font: 12px var(--mono);
                         overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .byline a.by-name { font-size: 12.5px; font-weight: 550; color: var(--muted); text-decoration: none;
                       overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1006,7 +1180,7 @@
                 letter-spacing: .02em; pointer-events: none; }
   .codeblock { margin: 6px 0 0; padding: 12px; overflow: auto; max-height: 60vh;
                background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
-               font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre; }
+               font: 12px/1.5 var(--mono); white-space: pre; }
   /* ---- code & git ---------------------------------------------------------
      A file's name belongs ON the file — a bar across the top of the block, the
      way every code host draws one. It used to be a props row reading "name",
@@ -1015,7 +1189,7 @@
                background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0;
                border-radius: 8px 8px 0 0; font-size: 12px; }
   .code-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
-               font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-weight: 620; }
+               font-family: var(--mono); font-weight: 620; }
   .code-lang { margin-left: auto; flex: none; color: var(--faint); }
   .codeblock.headed { margin-top: 0; border-radius: 0 0 8px 8px; }
   /* A diff's two voices, as TEXT colour and never as a filled row: the block
@@ -1027,7 +1201,7 @@
   .codeblock.diff .d-file { color: var(--muted); font-weight: 620; }
   /* How big the change is, in the one line a reviewer reads first. */
   .diffstat { display: flex; gap: 12px; margin: 6px 0 0; font-size: 12px; color: var(--faint);
-              font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+              font-family: var(--mono); }
   .diffstat .d-add { color: var(--add); }
   .diffstat .d-del { color: var(--del); }
   /* Which repository an event belongs to, and who keeps it — context above the
@@ -1039,9 +1213,9 @@
   .meta-line { margin: 8px 0 0; }
   .repo-line a, .meta-line a { color: var(--accent); text-decoration: none; font-weight: 550; }
   .repo-line a:hover, .meta-line a:hover { text-decoration: underline; }
-  .repo-line .mono, .meta-line .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .repo-line .mono, .meta-line .mono { font-family: var(--mono); font-size: 12px; }
   /* A ref carries its commit: same chip, the id trailing in the quiet voice. */
-  .ref-chip .mono { margin-left: 7px; color: var(--faint); font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+  .ref-chip .mono { margin-left: 7px; color: var(--faint); font-family: var(--mono); }
   .ref-chip.head { border-color: var(--border-strong); color: var(--fg); }
   /* ---- what a permalink shows under its card (web/related.js) -------------
      A repository's issues, a patch's replies: the same cards a search draws,
@@ -1096,7 +1270,7 @@
   .people-grid.full .person-name { font-size: 13px; }
   /* The npub fallback is deliberately quieter than a name: it is the absence
      of one, and it should not be the loudest text in the grid. */
-  .person-name.mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  .person-name.mono { font-family: var(--mono);
                       font-size: 11px; font-weight: 500; color: var(--muted); }
   .people-grid.full .person-name.mono { font-size: 11.5px; }
   a.person-cell:hover .person-name { color: var(--accent); }
@@ -1119,7 +1293,7 @@
   }
   .relay-list { margin: 6px 0 0; padding: 0; list-style: none; font-size: 12.5px; }
   .relay-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .relay-list .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .relay-list .mono { font-family: var(--mono); font-size: 12px; }
   .relay-list a { color: var(--accent); text-decoration: none; }
   .muted-note { color: var(--faint); font-size: 11.5px; }
   .emoji-grid { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 8px; }
@@ -1151,7 +1325,7 @@
   .ref-list li { padding: 2px 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ref-list a { color: var(--accent); text-decoration: none; }
   .ref-list a:hover { text-decoration: underline; }
-  .ref-list .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 12px; }
+  .ref-list .mono { font-family: var(--mono); font-size: 12px; }
   /* hashtags, muted words, git branches, supported NIPs — short values that
      read as a wrapped row, never as a table of one-word rows */
   /* NOT `.chip` — that is the filter tab above, and this rule sits later in
@@ -1342,6 +1516,15 @@
     </div>
 
     <div id="whoami" class="whoami" aria-live="polite"></div>
+    <!--
+      Whether this relay can RANK for the reader who just signed in. Signing in
+      switches search to their web of trust and the store treats that lens as a
+      filter, so a reader whose trust chain has not been mirrored here gets an
+      empty ranked search — and until this panel there was nothing on screen
+      that could tell that apart from a broken relay. web/readiness.js fills it,
+      and leaves it hidden for everyone whose chain is complete.
+    -->
+    <div id="readiness" class="readiness" aria-live="polite" hidden></div>
   </div>
 </header>
 

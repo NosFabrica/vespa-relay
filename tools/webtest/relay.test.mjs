@@ -143,4 +143,105 @@ assert.strictEqual(t.calls, 1);
   assert.strictEqual(await dead, null, "close wakes waiters with the absence");
 }
 
-console.log("auth-required resend + publish + complete flag + multi-filter REQ + challenge delivery: all assertions passed");
+// count(): every way a COUNT can end is an ANSWER the caller has to tell apart.
+//
+// The three non-answers are the point. A relay that does not implement NIP-45
+// declines in one of two dialects — it closes the subscription, or it sends a
+// NOTICE, which carries no subscription id and so cannot be addressed to the
+// ask it is about — and a socket that dies is a third. Every one of them must
+// SETTLE the promise: the readiness panel awaits these before it can say
+// anything, and a count that never settles is a panel that never appears.
+{
+  const { REFUSED, TIMED_OUT } = await import(new URL("../../relay/src/main/resources/web/shared/relay.js", import.meta.url));
+  const armed = () => {
+    const r = new Relay("ws://unused/");
+    r.connect = async () => {};
+    const sent = [];
+    r.ws = { send: (m) => sent.push(JSON.parse(m)) };
+    return { r, sent };
+  };
+
+  // The ordinary answer.
+  {
+    const { r, sent } = armed();
+    const p = r.count({ kinds: [30382] });
+    await new Promise((res) => setTimeout(res, 0));
+    assert.strictEqual(sent[0][0], "COUNT", "count sends COUNT");
+    r.handle(["COUNT", sent[0][1], { count: 145968 }]);
+    assert.strictEqual(await p, 145968);
+    assert(sent.some((m) => m[0] === "CLOSE"), "the subscription is closed however it ends");
+  }
+
+  // CLOSED: the relay declined. Its answer, not our budget.
+  {
+    const { r, sent } = armed();
+    const p = r.count({});
+    await new Promise((res) => setTimeout(res, 0));
+    r.handle(["CLOSED", sent[0][1], "unsupported"]);
+    assert.strictEqual(await p, REFUSED);
+  }
+
+  // A COUNT frame with no number in it is the same refusal in a third dialect.
+  {
+    const { r, sent } = armed();
+    const p = r.count({});
+    await new Promise((res) => setTimeout(res, 0));
+    r.handle(["COUNT", sent[0][1], {}]);
+    assert.strictEqual(await p, REFUSED);
+  }
+
+  // NOTICE: unaddressable, so it is attributed to what is outstanding.
+  //
+  // This is the regression. failCounts() used to clear the map before calling
+  // the resolvers, and each resolver begins by deleting its own entry to stay
+  // idempotent — so every one of them returned early without resolving, and
+  // the caller awaited a promise nothing would ever settle. Measured against a
+  // stubbed nip85.brainstorm.world, which answers exactly this way: the panel
+  // never appeared at all.
+  {
+    const { r } = armed();
+    const p = r.count({});
+    await new Promise((res) => setTimeout(res, 0));
+    r.handle(["NOTICE", "COUNT not supported"]);
+    assert.strictEqual(await p, REFUSED, "a NOTICE settles the outstanding count");
+    assert.strictEqual(r.counts.size, 0, "and leaves nothing behind in the map");
+  }
+
+  // Two outstanding at once: one NOTICE settles both, and neither is dropped.
+  {
+    const { r } = armed();
+    const both = Promise.all([r.count({}), r.count({})]);
+    await new Promise((res) => setTimeout(res, 0));
+    r.handle(["NOTICE", "no"]);
+    assert.deepStrictEqual(await both, [REFUSED, REFUSED]);
+  }
+
+  // The idle watchdog is an idle window, not a deadline: a message on the
+  // connection about something else entirely is proof the relay is still
+  // working through its queue, so it postpones the give-up.
+  {
+    const { r, sent } = armed();
+    r.countIdle = null;
+    const p = r.count({});
+    await new Promise((res) => setTimeout(res, 0));
+    const first = r.countIdle;
+    r.handle(["EVENT", "somebody-elses-sub", { id: "x" }]);
+    assert.notStrictEqual(r.countIdle, first, "traffic re-arms the window");
+    r.handle(["COUNT", sent[0][1], { count: 1 }]);
+    assert.strictEqual(await p, 1);
+    assert.strictEqual(r.countIdle, null, "and it disarms when nothing is outstanding");
+  }
+
+  // TIMED_OUT is reachable and distinct — it is what "we stopped waiting"
+  // resolves to, and the panel draws it differently from a refusal.
+  {
+    const { r } = armed();
+    const p = r.count({});
+    await new Promise((res) => setTimeout(res, 0));
+    r.failCounts(TIMED_OUT);
+    assert.strictEqual(await p, TIMED_OUT);
+    assert.notStrictEqual(TIMED_OUT, REFUSED, "the two non-answers are never the same value");
+  }
+}
+
+console.log("auth-required resend + publish + complete flag + multi-filter REQ + challenge delivery + COUNT non-answers: all assertions passed");
