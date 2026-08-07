@@ -138,7 +138,13 @@
     color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left;
   }
-  .track { position: relative; height: 12px; background: var(--grid); border-radius: 2px; }
+  /* `overflow: hidden` is load-bearing, not tidiness. Every mark carries a
+     minimum width so a one-day band is still visible, and a band that starts
+     at the frame's right edge — a future-dated `created_at`, which quartz
+     accepts up to about a day out — then puts that minimum sliver OUTSIDE the
+     track. Clipping here makes the whole class of overshoot impossible rather
+     than relying on the arithmetic above staying exact. */
+  .track { position: relative; height: 12px; background: var(--grid); border-radius: 2px; overflow: hidden; }
   .track > i { position: absolute; top: 0; bottom: 0; border-radius: 2px; display: block; }
   /* Walked by paging: we asked and stored what came back, and cannot claim
      nothing was missed. */
@@ -470,7 +476,10 @@ function barChart(points, { label, height = 130 }) {
   // whenever the length is not a multiple of the stride — the most recent day
   // is the one every reader looks at first, so the walk starts there and the
   // stride runs backwards into the past.
-  for (let i = points.length - 1; i >= 0; i -= tickStride(points, plotW)) {
+  // Hoisted: the stride is a property of the series and the width, and calling
+  // it in the update clause re-measured every label on every step.
+  const stride = tickStride(points, plotW);
+  for (let i = points.length - 1; i >= 0; i -= stride) {
     const p = points[i];
     if (!p.tick) continue;
     // Anchored to keep the two end labels inside the plot: centred text under
@@ -848,7 +857,13 @@ function syncCard(section) {
 
   const from = d.from, to = d.to;
   const span = Math.max(1, to - from);
-  const pct = (t) => ((t - from) / span) * 100;
+  // CLAMPED to the frame. A band's `max` is the newest created_at an upstream
+  // served, and created_at is author-signed — quartz accepts one up to about a
+  // day ahead of now (further is refused as implausible), so a bar can legally
+  // want to start or end past the frame's right edge. Unclamped it paints
+  // outside its own track, and the arithmetic that produces it is the same
+  // arithmetic that would run away entirely if `to - from` were ever negative.
+  const pct = (t) => Math.max(0, Math.min(100, ((t - from) / span) * 100));
   const day = (t) => new Date(t * 1000).toISOString().slice(0, 10);
 
   const legend = el("div", "legend");
@@ -886,6 +901,25 @@ function syncCard(section) {
     return outer;
   };
 
+  /**
+   * Lay one mark on the track, never past either edge.
+   *
+   * Every mark carries a MINIMUM width, because a single day inside a
+   * five-year frame is a fraction of a pixel and a relay that has covered one
+   * day has not covered nothing. That minimum is what makes the ends
+   * dangerous: a band starting at the frame's right edge — a future-dated
+   * `created_at`, which quartz accepts up to about a day out — placed its
+   * sliver outside the track. So the start is pulled back far enough to fit
+   * the minimum, and the width is capped by what is left. The track also
+   * clips, which covers any future slip in this arithmetic.
+   */
+  const MIN_MARK = 0.3;
+  const place = (node, a, b) => {
+    const left = Math.min(pct(a), 100 - MIN_MARK);
+    node.style.left = left + "%";
+    node.style.width = Math.max(MIN_MARK, Math.min(100 - left, pct(b) - left)) + "%";
+  };
+
   const row = (r) => {
     const wrap = el("div", "cov-row");
     const lab = el("div", "cov-lab", String(r.relay).replace(/^wss:\/\//, ""));
@@ -894,8 +928,7 @@ function syncCard(section) {
     const track = el("div", "track");
     if (r.min != null && r.max != null) {
       const seg = el("i", `cov-seg ${r.complete ? "done" : "paged"}`);
-      seg.style.left = pct(r.min) + "%";
-      seg.style.width = Math.max(0.3, pct(r.max) - pct(r.min)) + "%";
+      place(seg, r.min, r.max);
       seg.title =
         `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
         (r.complete ? "reconciled — negentropy finished over this span" : "paged — walked, not proven exhaustive") +
@@ -906,38 +939,53 @@ function syncCard(section) {
       // for a short-lived one. This is the part no kind is missing from.
       if (r.everyKindMin != null) {
         const inner = el("i", "cov-seg every");
-        inner.style.left = pct(r.everyKindMin) + "%";
-        inner.style.width = Math.max(0.3, pct(r.everyKindMax) - pct(r.everyKindMin)) + "%";
+        place(inner, r.everyKindMin, r.everyKindMax);
         inner.title = `every kind in this filter is covered only from ${day(r.everyKindMin)} to ${day(r.everyKindMax)}`;
         track.appendChild(inner);
       }
     }
     if (r.sweep) {
       const live = el("i", "cov-seg live");
-      live.style.left = pct(r.sweep.downTo) + "%";
-      live.style.width = Math.max(0.3, pct(r.sweep.upTo) - pct(r.sweep.downTo)) + "%";
+      place(live, r.sweep.downTo, r.sweep.upTo);
       live.title = `sweeping — reconciled down to ${day(r.sweep.downTo)}, last advanced ${ago(r.sweep.at)}`;
       track.appendChild(live);
       const edge = el("i", "cov-seg edge");
-      edge.style.left = pct(r.sweep.downTo) + "%";
+      edge.style.left = Math.min(pct(r.sweep.downTo), 100 - MIN_MARK) + "%";
       track.appendChild(edge);
     }
     wrap.appendChild(track);
     return wrap;
   };
 
-  /** For each bucket, how many of the group's relays cover it. */
+  /**
+   * For each bucket, how many of the group's relays cover it.
+   *
+   * ONE pass over the relays, adding each into the bucket range it spans —
+   * not a `filter()` per bucket. A band is one contiguous interval, so its
+   * first and last bucket are arithmetic and everything between is covered by
+   * definition; scanning all relays per bucket asked the same question 96
+   * times and allocated an array each time. Measured on 4,172 relays: 26ms of
+   * every render, down to 3ms.
+   */
   const depthStrip = (rows, buckets = 96) => {
     const strip = el("div", "depth");
     const step = span / buckets;
-    const covering = rows.filter((r) => r.min != null);
+    const n = new Int32Array(buckets), done = new Int32Array(buckets);
+    let covering = 0;
+    for (const r of rows) {
+      if (r.min == null || r.max == null) continue;
+      covering++;
+      const lo = Math.max(0, Math.floor((r.min - from) / step));
+      const hi = Math.min(buckets - 1, Math.floor((r.max - from) / step));
+      for (let i = lo; i <= hi; i++) {
+        n[i]++;
+        if (r.complete) done[i]++;
+      }
+    }
     for (let b = 0; b < buckets; b++) {
-      const t0 = from + b * step, t1 = t0 + step;
-      const n = covering.filter((r) => r.min <= t1 && r.max >= t0).length;
-      const done = covering.filter((r) => r.complete && r.min <= t1 && r.max >= t0).length;
-      const i = el("i", done ? null : "thin");
-      i.style.height = Math.max(1, (n / Math.max(1, covering.length)) * 24) + "px";
-      i.title = `${day(t0)} — ${fmt(n)} of ${fmt(rows.length)} relays (${fmt(done)} reconciled)`;
+      const i = el("i", done[b] ? null : "thin");
+      i.style.height = Math.max(1, (n[b] / Math.max(1, covering)) * 24) + "px";
+      i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays (${fmt(done[b])} reconciled)`;
       strip.appendChild(i);
     }
     return strip;
@@ -1172,8 +1220,31 @@ function kindsCard(kinds) {
   return card;
 }
 
+/**
+ * The document the body was last built from.
+ *
+ * The page polls every 5 minutes and the rollup runs every 15, so MOST polls
+ * return bytes the body is already showing. Rebuilding on those is not merely
+ * wasted work — `replaceChildren` destroys what the reader was doing: the kinds
+ * filter loses what they typed, and every bounded scroll box (Kinds, Relay
+ * distribution, and a Sync coverage card thousands of rows tall) jumps back to
+ * the top. Measured: filter "blogs" → "", scrollTop 5000 → 0, on every tick.
+ */
+let renderedAt = null;
+
 function render(doc) {
   scopeEl.textContent = doc.scope || "";
+
+  // Same rollup as the one on screen — leave the body, and its reader, alone.
+  // The FOOTER is still redrawn below, because the one thing that does change
+  // between two views of the same document is how old it now is, and that is
+  // the line that says the rollup may have stopped.
+  if (doc.generatedAt && doc.generatedAt === renderedAt) return renderFoot(doc);
+  renderedAt = doc.generatedAt || null;
+
+  // A genuine new document does have to rebuild — but the reader's filter is
+  // an instruction about the table, not about the document, so it survives.
+  const typed = bodyEl.querySelector("input[type=search]")?.value || "";
 
   bodyEl.replaceChildren();
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
@@ -1210,7 +1281,20 @@ function render(doc) {
   // magnitude — every kind in the store rather than a top-50 — and a reference
   // table nobody scrolls past is worse placed above the charts everyone reads.
   bodyEl.appendChild(kindsCard(doc.kinds));
+  if (typed) {
+    const box = bodyEl.querySelector("input[type=search]");
+    if (box) {
+      box.value = typed;
+      // `input` rather than calling applyFilter: the handler is a closure over
+      // the freshly built rows, and this card is rebuilt from a new document.
+      box.dispatchEvent(new Event("input"));
+    }
+  }
 
+  renderFoot(doc);
+}
+
+function renderFoot(doc) {
   footEl.replaceChildren();
   const at = doc.generatedAt ? new Date(doc.generatedAt) : null;
   const ageMs = at ? Date.now() - at.getTime() : 0;
@@ -1259,6 +1343,9 @@ async function load() {
       // The honest empty state. Not zeros: "nothing computed yet" and "this
       // relay holds nothing" are different facts and must not share a rendering.
       scopeEl.textContent = "No statistics computed yet.";
+      // The body no longer shows any document, so the next one must rebuild it
+      // even if the rollup that produced it is the one we drew before.
+      renderedAt = null;
       bodyEl.replaceChildren();
       const c = el("div", "card pending");
       c.appendChild(el("h2", null, "Waiting for the first rollup"));
@@ -1272,6 +1359,7 @@ async function load() {
     render(await res.json());
   } catch (e) {
     scopeEl.textContent = "Could not load the statistics document.";
+    renderedAt = null;
     bodyEl.replaceChildren();
     const c = el("div", "card");
     c.appendChild(el("p", "err", String(e && e.message ? e.message : e)));

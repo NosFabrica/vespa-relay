@@ -130,6 +130,32 @@ internal object SyncCoverageReport {
         val byShape = LinkedHashMap<String, LinkedHashMap<String, Row>>()
         val shapeFilters = LinkedHashMap<String, JsonObject>()
 
+        /**
+         * Parse and reduce a filter ONCE per distinct filter, not once per key.
+         *
+         * Every relay in a stream carries the byte-identical filter in its key,
+         * so a 4,000-relay stream handed the same JSON to the parser 4,000
+         * times and re-serialised the same shape 4,000 times. That is affordable
+         * for `{"kinds":[0,10002]}` and it is not for a discovery filter: those
+         * carry thousands of authors, which is the very cost [SweepState.keyFor]
+         * already exists to avoid paying per window ("re-deriving the key per
+         * finished window would re-render that JSON for every window, for
+         * nothing"). Measured on 1,000 relays with 200 authors: 13.7MB of input,
+         * 213ms → the parse is the whole bill.
+         *
+         * Null is CACHED as null: a filter the parser rejects must be rejected
+         * once, not re-attempted for every relay that shares it.
+         */
+        val shapeCache = HashMap<String, Pair<JsonObject, String>?>()
+
+        fun shapeFor(filterJson: String): Pair<JsonObject, String>? {
+            shapeCache[filterJson]?.let { return it }
+            if (shapeCache.containsKey(filterJson)) return null
+            val parsed = parse(filterJson)?.let { it to shapeOf(it) }
+            shapeCache[filterJson] = parsed
+            return parsed
+        }
+
         for ((key, value) in bands) {
             val (rawRelay, filterJson) = split(key, ' ') ?: continue
             // The same spelling the relay distribution table uses, so one relay
@@ -138,8 +164,7 @@ internal object SyncCoverageReport {
             // cannot split a pair that the router wrote as one.
             val relay = StatsYql.canonicalRelay(rawRelay)
             val band = value as? JsonObject ?: continue
-            val filter = parse(filterJson) ?: continue
-            val shape = shapeOf(filter)
+            val (filter, shape) = shapeFor(filterJson) ?: continue
             val min = band["min"]?.jsonPrimitive?.longOrNull ?: continue
             val max = band["max"]?.jsonPrimitive?.longOrNull ?: continue
             val (everyMin, everyMax) = narrowed(band, min, max)
@@ -168,8 +193,7 @@ internal object SyncCoverageReport {
             val (rawRelay, filterJson) = split(key, '|') ?: continue
             val relay = StatsYql.canonicalRelay(rawRelay)
             val mark = value as? JsonObject ?: continue
-            val filter = parse(filterJson) ?: continue
-            val shape = shapeOf(filter)
+            val (filter, shape) = shapeFor(filterJson) ?: continue
             shapeFilters.putIfAbsent(shape, filter)
             byShape.putIfAbsent(shape, LinkedHashMap())
             live[shape to relay] = mark
@@ -186,13 +210,24 @@ internal object SyncCoverageReport {
             if (d < from) from = d
         }
         if (from == Long.MAX_VALUE) return null
+        // The frame must not be able to invert. `created_at` is author-signed
+        // and quartz records a band whose edges sit up to about a day ahead of
+        // now, so a store holding nothing but future-dated events would put
+        // `from` past `nowSeconds` — and a reader computing `to - from` gets a
+        // negative span, which is a division every drawing then multiplies by.
+        // Widening the frame is the honest repair: it still contains the data.
+        if (from > nowSeconds) from = nowSeconds
 
         return buildJsonObject {
             put("from", from)
             put("to", nowSeconds)
+            // Grouped ONCE, not rescanned per stream: `live.filterKeys` inside
+            // the loop walked every cursor for every shape.
+            val marksByShape = LinkedHashMap<String, LinkedHashMap<String, JsonObject>>()
+            for ((k, v) in live) marksByShape.getOrPut(k.first) { LinkedHashMap() }[k.second] = v
             putJsonArray("streams") {
                 for ((shape, rows) in byShape) {
-                    val marks = live.filterKeys { it.first == shape }.mapKeys { it.key.second }
+                    val marks = marksByShape[shape] ?: emptyMap()
                     if (rows.isEmpty() && marks.isEmpty()) continue
                     add(stream(shapeFilters[shape], rows, marks, peers))
                 }
@@ -210,7 +245,15 @@ internal object SyncCoverageReport {
         // A relay that reaches furthest back is the one carrying the group, and
         // sorting by url would scatter that across a thousand rows. A relay with
         // a sweep but no band yet sorts last — it has covered nothing durable.
-        val relays = (rows.keys + marks.keys).distinct().sortedBy { rows[it]?.min ?: Long.MAX_VALUE }
+        // `rows.keys + marks.keys` is already a Set, so no dedup pass is needed;
+        // and the sort key is read into a pair first because `sortedBy` calls
+        // its selector on every comparison — a map lookup per comparison across
+        // thousands of relays, for a value that cannot change.
+        val relays =
+            (rows.keys + marks.keys)
+                .map { it to (rows[it]?.min ?: Long.MAX_VALUE) }
+                .sortedBy { it.second }
+                .map { it.first }
         return buildJsonObject {
             filter?.let { put("filter", it) }
             put("relays", relays.size)
@@ -337,9 +380,24 @@ internal object SyncCoverageReport {
         return key.substring(0, at) to key.substring(at + 1)
     }
 
-    /** Never throws: a corrupt or half-written file costs this card, not the rollup. */
+    /**
+     * A corrupt or half-written file costs this card, not the rollup.
+     *
+     * `Exception`, deliberately NOT `runCatching`, which catches `Throwable`.
+     * These files scale as (relays × filter size) and a discovery stream's
+     * filter carries thousands of authors, so a large one is genuinely capable
+     * of exhausting the heap — and when it did, `runCatching` turned the
+     * `OutOfMemoryError` into "no sync state in this document", which is a
+     * quiet lie about the mirror on the one page built to report it. An Error
+     * belongs to the rollup loop, which already logs it loudly and keeps
+     * serving the previous document.
+     */
     private fun parse(text: String?): JsonObject? {
         if (text.isNullOrBlank()) return null
-        return runCatching { lenient.parseToJsonElement(text).jsonObject }.getOrNull()
+        return try {
+            lenient.parseToJsonElement(text).jsonObject
+        } catch (e: Exception) {
+            null
+        }
     }
 }

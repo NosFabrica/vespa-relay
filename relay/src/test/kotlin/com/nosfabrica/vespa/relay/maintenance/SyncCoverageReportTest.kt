@@ -275,6 +275,47 @@ class SyncCoverageReportTest {
         assertNull(row["everyKindMin"])
     }
 
+    /**
+     * `created_at` is author-signed and quartz records a band whose edges sit
+     * up to about a day ahead of now, so a store holding only future-dated
+     * events would put `from` past `to`. A reader computes `to - from` and
+     * multiplies every bar by it; a negative span is not a smaller chart, it is
+     * a page of marks positioned at millions of percent.
+     */
+    @Test
+    fun `a future-dated band cannot invert the frame`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands("wss://a.example/ {\"kinds\":[1]}" to band(now + 3_600, now + 7_200, false)),
+                null,
+                now,
+            )
+        val from = assertNotNull(doc)["from"]!!.jsonPrimitive.longOrNull!!
+        val to = doc["to"]!!.jsonPrimitive.longOrNull!!
+        assertTrue(from <= to, "the frame must never invert: from=$from to=$to")
+    }
+
+    /**
+     * Every relay in a stream carries the byte-identical filter in its key, and
+     * a discovery filter carries thousands of authors. Parsing it once per
+     * relay is the cost `SweepState.keyFor` already exists to avoid paying per
+     * window; this pins that the grouping still works when it is paid once.
+     */
+    @Test
+    fun `many relays sharing one large filter group as one stream`() {
+        // Plain quotes — `bands()` does the JSON escaping, same as every other
+        // fixture here.
+        val authors = (0 until 300).joinToString(",") { "\"${"%064x".format(it)}\"" }
+        val filter = "{\"kinds\":[0,10002],\"authors\":[$authors]}"
+        val entries = (0 until 400).map { "wss://relay-$it.example/ $filter" to band(1_000L + it, 9_000, it % 3 == 0) }
+        val doc = SyncCoverageReport.build(bands(*entries.toTypedArray()), null, now)
+        val stream = streams(doc).single().jsonObject
+        assertEquals(400, stream["relays"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(134, stream["reconciled"]!!.jsonPrimitive.longOrNull?.toInt())
+        // ...and the filter survives the caching intact, authors and all.
+        assertEquals(300, stream["filter"]!!.jsonObject["authors"]!!.jsonArray.size)
+    }
+
     @Test
     fun `a key with no separator is skipped rather than charted as a relay`() {
         val doc = SyncCoverageReport.build("""{"nonsense-with-no-space":{"min":10,"max":20,"complete":true}}""", null, now)
