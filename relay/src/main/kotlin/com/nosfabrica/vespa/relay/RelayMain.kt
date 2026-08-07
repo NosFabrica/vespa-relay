@@ -59,6 +59,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
+import java.io.File
 
 /**
  * Run a standalone trust-ranking Nostr relay against a Vespa: open the store,
@@ -102,6 +103,14 @@ fun main() {
                 key.startsWith("SYNC_") || key.startsWith("ROUTER_") ||
                     key.startsWith("PARSE_AUDIT_") || key == "SERVING_PRESSURE_THRESHOLD_MS"
             ) &&
+                // ...except the two the relay now READS. They are still the
+                // router's files and it is still the only writer, but the stats
+                // rollup charts them off the shared volume, so the warning's
+                // premise — "read by nobody here" — is false for exactly these.
+                // Named identically on both services on purpose: one setting
+                // per file, so moving the path cannot leave the card pointed at
+                // where the router used to write.
+                key !in SYNC_FILES_THE_RELAY_READS &&
                 !env[key].isNullOrBlank()
         }.sorted()
         .takeIf { it.isNotEmpty() }
@@ -197,7 +206,16 @@ fun main() {
             // The NORMALIZED url, the same string NIP-42 and NIP-62 key off —
             // so a document fetched from two of this relay's addresses names
             // one relay rather than reading as two.
-            rollup = StatsRollup(StatsVespa(vespaUrl), relayUrl = relayUrl.url),
+            rollup =
+                StatsRollup(
+                    StatsVespa(vespaUrl),
+                    relayUrl = relayUrl.url,
+                    // Read-only, off the volume the sync service writes them to.
+                    // Absent is the normal case — a serve-only deployment has no
+                    // router — and the section is then simply not in the document.
+                    syncBandsFile = syncFile(env, "SYNC_STATE_FILE", "/var/lib/vespa-relay/sync-cursors.json"),
+                    syncSweepsFile = syncFile(env, "SYNC_SWEEP_STATE_FILE", "/var/lib/vespa-relay/sync-sweeps.json"),
+                ),
             snapshot = statsSnapshot,
             everySeconds = statsIntervalSeconds,
         )
@@ -319,3 +337,28 @@ private fun String.httpFromWs(): String =
 
 /** A bundled classpath resource, or null if it isn't there. */
 private fun resourceText(path: String): String? = object {}.javaClass.getResource(path)?.readText()
+
+/**
+ * The two router files the stats rollup charts. Shared names, not relay-side
+ * copies — see the exemption in the unused-settings warning above.
+ */
+private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_STATE_FILE", "SYNC_SWEEP_STATE_FILE")
+
+/**
+ * Where one of the router's state files lives, from the env or the path
+ * `docker-compose.yml` mounts it at.
+ *
+ * The default is not a guess: it is the same literal the compose file gives
+ * both services, so the stock deployment charts its sync with nothing set. An
+ * explicit empty value turns the card off, which is the escape hatch for a
+ * deployment that mounts the volume but does not want the relay reading it.
+ */
+private fun syncFile(
+    env: Map<String, String>,
+    key: String,
+    default: String,
+): File? =
+    when (val raw = env[key]) {
+        null -> File(default)
+        else -> raw.trim().takeIf { it.isNotEmpty() }?.let(::File)
+    }

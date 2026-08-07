@@ -38,11 +38,12 @@
   an identical label.
 
   TWO PANELS ARE COMPUTED BUT INCOMPLETE — zaps and relay distribution — and
-  each carries a `note` saying what it leaves out and why. That note is the
-  point of those panels being honest rather than merely present: satoshis and
-  the read/write split are exactly the fields a reader of a network-wide
-  dashboard arrives looking for, and an unannotated panel reads as "this relay
-  has none of that".
+  each carries a `note` in the document saying what it leaves out and why.
+  This page does not print those notes, or any of the per-panel prose it used
+  to carry: the caveats stay in /stats.json for a reader who wants them, and
+  the page stays a page of numbers. Only states are still written out — an
+  empty window, a missing section, an engine error — because those are facts
+  about the document rather than commentary on it.
 
   THE KINDS TABLE IS LAST AND COMPLETE, and it is what replaced
   kind_stats.html. That page could only count kinds it already knew to name —
@@ -113,11 +114,92 @@
   .chart .hit { fill: transparent; }
   .chart .mark.on { fill: var(--text); }
   .wrap { overflow-x: auto; }
-  /* Every kind in the store is thousands of rows. Bounded height with a sticky
-     header, so the table is scannable without owning the whole page — and so
-     the column labels are still there when you are 400 rows down. */
+  /* The long tables — every kind in the store is thousands of rows, and the
+     relay list runs to the cap. Bounded height with a sticky header, so a
+     table is scannable without owning the whole page, and so the column
+     labels are still there when you are 400 rows down. */
   .wrap.tall { max-height: 32rem; overflow-y: auto; }
   .wrap.tall thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+
+  /* ---- sync coverage -----------------------------------------------------
+     A row is a FRAME plus what is covered, drawn as percentages rather than
+     SVG so the whole thing reflows with the card and never re-measures.
+
+     The frame is full width on purpose. A bar sized to its own extent makes
+     every relay look finished; against a common frame the uncovered time is
+     the loud part, which is the question this card is here to answer. */
+  .cov { --lab: 11rem; }
+  .cov-row { display: grid; grid-template-columns: var(--lab) 1fr; gap: .6rem; align-items: center; margin-bottom: 3px; }
+  /* line-height 1, not the body's 1.5: a .78rem label in a 1.5 line box is
+     taller than the 12px track beside it, and the overflow slid under the
+     sticky header above — every group's first row lost its top third. */
+  .cov-lab {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; line-height: 1;
+    color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+    direction: rtl; text-align: left;
+  }
+  /* `overflow: hidden` is load-bearing, not tidiness. Every mark carries a
+     minimum width so a one-day band is still visible, and a band that starts
+     at the frame's right edge — a future-dated `created_at`, which quartz
+     accepts up to about a day out — then puts that minimum sliver OUTSIDE the
+     track. Clipping here makes the whole class of overshoot impossible rather
+     than relying on the arithmetic above staying exact. */
+  .track { position: relative; height: 12px; background: var(--grid); border-radius: 2px; overflow: hidden; }
+  .track > i { position: absolute; top: 0; bottom: 0; border-radius: 2px; display: block; }
+  /* Walked by paging: we asked and stored what came back, and cannot claim
+     nothing was missed. */
+  .cov-seg.paged { background: var(--bar); }
+  /* Reconciled — a finished negentropy pass. The strong tone is the point:
+     this is the only bar that means "provably identical". */
+  .cov-seg.done { background: var(--accent); }
+  /* Still sweeping. Warm, because it is the only mark here that will look
+     different in a minute. */
+  .cov-seg.live { background: var(--warn); opacity: .55; }
+  .cov-seg.edge { width: 2px; border-radius: 0; background: var(--warn); }
+  /* The window no kind in the filter is missing from — drawn only when the
+     per-kind spans disagree, which is the band bug made visible. */
+  .cov-seg.every { top: 4px; bottom: 4px; background: var(--text); opacity: .35; border-radius: 1px; }
+
+  .axis-track { position: relative; height: 1.15rem; margin-left: calc(var(--lab) + .6rem); }
+  .axis-track span {
+    position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted);
+    font-variant-numeric: tabular-nums; white-space: nowrap;
+  }
+  .axis-track span.first { transform: none; }
+  .axis-track span.last { transform: translateX(-100%); }
+  /* Two elements, not one. The opaque strip must span the FULL width or relay
+     labels scroll up through the gap beside the ticks; the ticks themselves
+     are percentages of the TRACK, which starts after the label column. And it
+     lives INSIDE the scroll box, like `thead th` does — an axis above would
+     keep the scrollbar's width while the tracks below lost it, putting every
+     bar a few pixels off the date that labels it. */
+  .axis.pin {
+    position: sticky; top: 0; z-index: 3; background: var(--surface);
+    padding: .15rem 0 .3rem; border-bottom: 1px solid var(--line);
+  }
+  .grp { margin-bottom: 1.1rem; }
+  .grp:last-child { margin-bottom: 0; }
+  /* Pinned under the axis: 900 rows into a fan-out, "which stream is this" is
+     the other question the numbers stop answering. */
+  .grp-head {
+    display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; flex-wrap: wrap;
+    position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface); padding: .35rem 0 .3rem;
+  }
+  .grp-name { font-weight: 650; font-size: .85rem; }
+  .grp-name code { background: var(--bar); padding: .05rem .3rem; border-radius: .25rem; font-size: .75rem; }
+  .grp-stat { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; }
+  /* How many of a group's relays cover each bucket — the mark that answers
+     "how much of the list is in sync" for a fan-out, where a row each is
+     reachable but not readable. Indented to the track: it is a chart on the
+     SAME axis, and flush left its 2023 bucket sat over the rows' 2022. */
+  .depth {
+    position: relative; height: 24px; margin: 0 0 .3rem calc(var(--lab) + .6rem);
+    display: flex; align-items: flex-end;
+  }
+  .depth i { display: block; flex: 1 1 0; min-width: 0; background: var(--accent); }
+  .depth i.thin { background: var(--bar); }
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); margin: 0 0 .8rem; }
+  .legend b { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px; vertical-align: -.05em; margin-right: .3rem; }
   .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
   .bar-row input {
     font: inherit; font-size: .9rem; padding: .35rem .6rem; border-radius: .4rem;
@@ -148,7 +230,6 @@
   }
   .badge.bad { background: transparent; color: var(--warn); border: 1px solid var(--warn); }
   .err { color: var(--warn); font-size: .85rem; margin: .4rem 0 0; }
-  .note { color: var(--muted); font-size: .82rem; margin: 0 0 .9rem; border-left: 2px solid var(--line); padding-left: .6rem; }
   /* The granularity toggle: one row above the series it drives. */
   .seg { display: inline-flex; gap: 0; margin-bottom: 1rem; border: 1px solid var(--line); border-radius: .4rem; overflow: hidden; background: var(--surface); }
   .seg button {
@@ -192,6 +273,23 @@
 import { kindLabel } from "/web/shared/kinds.js";
 
 const fmt = (n) => Number(n).toLocaleString();
+
+/**
+ * What to call a kind, best source first.
+ *
+ * The document's own `name` leads, and it comes from Quartz's `KindNames` —
+ * the protocol-wide registry, 287 kinds deep, which is the only one big enough
+ * for a table that enumerates the whole store. `kinds.js` is the fallback and
+ * not the primary: it is the search UI's BADGE registry, sized to the kinds
+ * this relay can render a card for, so on its own it left 180 kinds reading
+ * "kind N" — including the long tail this table exists to reveal.
+ *
+ * Kept as a fallback rather than dropped, because the two sets are not nested:
+ * `kinds.js` names ten kinds Quartz has not registered yet (the `1630`-`1633`
+ * git statuses, `30024` drafts, `30040`/`30041` publications), and a document
+ * rolled up before this field existed carries no names at all.
+ */
+const kindName = (kind, given) => given || kindLabel(kind);
 
 /**
  * A duration as an age — "4m ago", "6d ago".
@@ -267,6 +365,39 @@ const STALE_AFTER_MS = 6 * 3600 * 1000;
  */
 const SCHEMA = 1;
 
+const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * Axis labels for the bucket keys the rollup emits.
+ *
+ * SLICED OFF THE STRING, never parsed through Date. A bare `yyyy-mm-dd` is
+ * parsed as UTC midnight and then printed in the READER's zone, so every label
+ * west of Greenwich slides one day into the past — on a page whose every
+ * number is documented as UTC, and against a tooltip that would still be
+ * printing the raw key. The rollup already bucketed by UTC; the axis only has
+ * to spell what it bucketed.
+ */
+const dayTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}`;
+/** "2025-07" → "Jul ’25". The year is on every month label because a 12-month window crosses one. */
+const monthTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ’${iso.slice(2, 4)}`;
+
+/**
+ * How many bars apart the x labels stand.
+ *
+ * Measured from the width the labels ACTUALLY need — the longest one present,
+ * at the 10px tick size — rather than a per-chart constant, so 24 hours, 30
+ * days and 12 months each get as many labels as they can carry without a
+ * collision, and none of them needs to know about the others.
+ */
+function tickStride(points, plotW) {
+  const widest = points.reduce((m, p) => Math.max(m, (p.tick || "").length), 0);
+  if (!widest) return points.length;
+  // ~6.2px per character at font-size 10, plus a gutter that keeps neighbours
+  // from touching. Two labels is the floor: first and last still beats none.
+  const room = Math.max(2, Math.floor(plotW / (widest * 6.2 + 18)));
+  return Math.max(1, Math.ceil(points.length / room));
+}
+
 /** A bar chart of one series. See the header for why single-series and why never two y-axes. */
 function barChart(points, { label, height = 130 }) {
   // Geometry in a fixed viewBox, scaled by CSS — so the chart is responsive
@@ -337,17 +468,28 @@ function barChart(points, { label, height = 130 }) {
     svg.appendChild(hit);
   });
 
-  // Sparse x labels: first, last, and the middle. A tick under every one of 30
-  // days is unreadable at this width, and the tooltip carries the rest.
-  const at = [0, Math.floor((points.length - 1) / 2), points.length - 1];
-  [...new Set(at)].forEach((i) => {
+  // Labelled from the END backwards, at a stride the width can hold.
+  //
+  // Two things this fixes. It was first/middle/last, so reading "the fourth
+  // Tuesday" off a 30-bar chart meant counting bars from a label 15 bars away.
+  // And walking forwards from index 0 leaves the LAST bucket unlabelled
+  // whenever the length is not a multiple of the stride — the most recent day
+  // is the one every reader looks at first, so the walk starts there and the
+  // stride runs backwards into the past.
+  // Hoisted: the stride is a property of the series and the width, and calling
+  // it in the update clause re-measured every label on every step.
+  const stride = tickStride(points, plotW);
+  for (let i = points.length - 1; i >= 0; i -= stride) {
     const p = points[i];
-    if (!p) return;
-    const anchor = i === 0 ? "start" : i === points.length - 1 ? "end" : "middle";
+    if (!p.tick) continue;
+    // Anchored to keep the two end labels inside the plot: centred text under
+    // the last band hangs off the right edge, and under the first it runs back
+    // over the y-axis numbers.
+    const anchor = i === points.length - 1 ? "end" : i === 0 ? "start" : "middle";
     const t = svgEl("text", { class: "tick", x: PAD_L + i * band + band / 2, y: H - 6, "text-anchor": anchor });
-    t.textContent = p.label;
+    t.textContent = p.tick;
     svg.appendChild(t);
-  });
+  }
   return svg;
 }
 
@@ -371,13 +513,10 @@ function cardHead(parent, title, sub, section) {
   // that is not partial.
   if (status && status !== "ok") h.appendChild(el("span", status === "ok" ? "badge" : "badge bad", status));
   parent.appendChild(h);
+  // [sub] is a STATE, not a description: "no kind histogram in this document",
+  // or how much of a truncated list is on screen. The panels no longer explain
+  // themselves — the document's own `note` is where a caveat lives now.
   if (sub) parent.appendChild(el("p", "card-sub", sub));
-  // A `note` on a section that SUCCEEDED: what it deliberately leaves out and
-  // why. Not an error and not a pending state — the numbers above it are real.
-  // It is here because the omissions are exactly the fields a reader of a
-  // network-wide dashboard comes looking for (satoshis, read/write), and an
-  // unannotated panel reads as "this relay has none of that".
-  if (section && section.note) parent.appendChild(el("p", "note", section.note));
   // The engine's own message, and the query that produced it — enough to
   // correct a rejected pipeline without attaching a debugger to the relay.
   if (section && section.errors) {
@@ -425,18 +564,11 @@ function tiles(corpus) {
   }
   out.push(wrap);
 
-  // Counted, not hidden. created_at is author-signed, so a corpus accumulates
-  // events dated years out; they are why every freshness number on this page is
-  // bounded, and a count that grows is something upstream publishing garbage.
-  if (d.futureDated) {
-    const strip = el("div", "card");
-    const p = el("p", "note");
-    p.textContent =
-      `${fmt(d.futureDated)} stored event(s) are dated in the future. created_at is whatever the author signed, ` +
-      `so this is clock skew or spam rather than a fault here — every "newest" on this page excludes them.`;
-    strip.appendChild(p);
-    out.push(strip);
-  }
+  // `corpus.futureDated` is deliberately NOT drawn. It is still counted, and it
+  // is still in /stats.json for anyone watching it grow, but a card that only
+  // ever says "some authors signed a bad clock" is a caveat about the Nostr
+  // protocol rather than a fact about this relay, and it was sitting between
+  // the totals and everything worth reading.
 
   // The totals have no card header for cardHead to hang an error on, and
   // without this an em dash where a number belongs is the ONLY sign anything
@@ -489,9 +621,14 @@ function chartCard(title, sub, points, section) {
  * three series it returns — it never adds days together to make a week.
  */
 const GRAINS = [
-  { key: "days", label: "Daily", unit: "day", span: (d) => `${d.windowDays} days`, slice: (p) => p.slice(5) },
-  { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, slice: (p) => p.slice(5) },
-  { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, slice: (p) => p },
+  // [tick] is the axis label, [tip] the hover. They differ on purpose: the axis
+  // gets the shortest form that still reads ("Jul 9"), the tooltip gets the
+  // unambiguous one — and for weeks it has to say WHICH day that key is, since
+  // a week bucket is keyed by the Monday it starts on and "Jul 9" alone would
+  // read as a single day's bar.
+  { key: "days", label: "Daily", unit: "day", span: (d) => `${d.windowDays} days`, tick: dayTick, tip: (p) => p },
+  { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, tick: dayTick, tip: (p) => `week of ${p}` },
+  { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, tick: monthTick, tip: (p) => p },
 ];
 let grain = null;
 
@@ -544,10 +681,12 @@ function activityCards(activity) {
   const span = g.span(d);
   const out = [];
 
+  // The window is in the title because it is the one thing a bare "Events per
+  // day" cannot be read without: 30 days and 30 months are the same 30 bars.
   out.push(chartCard(
-    `Events per ${g.unit}`,
-    `Events stored with a created_at in each ${g.unit} of the last ${span}, UTC.`,
-    series.map((x) => ({ label: g.slice(x.period), value: x.events })),
+    `Events per ${g.unit} · last ${span}`,
+    null,
+    series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.events })),
     activity,
   ));
 
@@ -556,18 +695,23 @@ function activityCards(activity) {
   // a correlation that is not in the data.
   if (series.some((x) => x.pubkeys != null)) {
     out.push(chartCard(
-      `Publishing pubkeys per ${g.unit}`,
-      `Distinct authors with at least one stored event in that ${g.unit}, UTC. Asked of the engine per ${g.unit} — ` +
-        `distinct authors do not add up across buckets the way events do.`,
-      series.map((x) => ({ label: g.slice(x.period), value: x.pubkeys || 0 })),
+      `Publishing pubkeys per ${g.unit} · last ${span}`,
+      null,
+      series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.pubkeys || 0 })),
       null,
     ));
   }
 
+  // "14:00", not "14": a bare number under a bar reads as a count on a page
+  // whose every other axis label is one. The tooltip names the whole hour and
+  // the zone, because "14:00" alone invites the reader to apply their own.
   out.push(chartCard(
-    "Events by hour of day",
-    `When events are authored, folded over the last ${d.hourWindowDays} days. Hour of created_at, UTC.`,
-    hours.map((x) => ({ label: String(x.hour).padStart(2, "0"), value: x.events })),
+    `Events by hour of day · last ${d.hourWindowDays} days`,
+    null,
+    hours.map((x) => {
+      const hh = String(x.hour).padStart(2, "0");
+      return { label: `${hh}:00–${hh}:59 UTC`, tick: `${hh}:00`, value: x.events };
+    }),
     null,
   ));
   return out;
@@ -602,13 +746,16 @@ function kindActivityCard(section) {
   const d = (section && section.data) || {};
   const kinds = d.kinds || [];
   const card = el("div", "card");
+  // "peak N/day" on every cell is what stands in for the removed sentence about
+  // per-kind scales. Do not drop it as prose: without a stated peak a reader
+  // assumes one shared axis and compares heights across cells, which is the one
+  // thing this panel does not mean.
   cardHead(
     card,
-    "Event types over time",
     kinds.length
-      ? `The ${kinds.length} largest kinds, each over the last ${d.windowDays} days. Each has its own vertical scale — ` +
-        `the peak is on the card, because kind 1 would otherwise flatten the rest.`
-      : "No per-kind series in this document.",
+      ? `Event types over time · ${kinds.length} largest kinds, last ${d.windowDays} days`
+      : "Event types over time",
+    kinds.length ? null : "No per-kind series in this document.",
     section,
   );
   if (!kinds.length) return card;
@@ -617,7 +764,16 @@ function kindActivityCard(section) {
   for (const k of kinds) {
     const cell = el("div", "spark-cell");
     const head = el("div", "spark-head");
-    head.appendChild(el("span", "spark-kind", `${kindLabel(k.kind)} · ${k.kind}`));
+    // Number FIRST, name second — same order as the Kinds table, and it is the
+    // order that survives the ellipsis. These heads truncate (a narrow column
+    // beside a "peak N/day"), and with the name leading, Quartz's longer
+    // registry names pushed the kind NUMBER off the end: "Outbox Relays ·…"
+    // drops the one part of the label that is unambiguous. The full text is on
+    // the title, since this is the string most likely to be cut.
+    const name = kindName(k.kind, k.name);
+    const label = el("span", "spark-kind", `${k.kind} · ${name}`);
+    label.title = `${name} — kind ${k.kind}`;
+    head.appendChild(label);
     const peak = Math.max(0, ...k.days.map((x) => x.events));
     head.appendChild(el("span", "spark-peak", `peak ${fmt(peak)}/day`));
     cell.appendChild(head);
@@ -641,13 +797,7 @@ function kindActivityCard(section) {
 function trustCard(section) {
   const d = (section && section.data) || {};
   const card = el("div", "card");
-  cardHead(
-    card,
-    "Trust",
-    "The NIP-85 web of trust this relay ranks with: observers name score providers, providers publish scores, " +
-      "and scores project onto the pubkeys a ranked search can then order.",
-    section,
-  );
+  cardHead(card, "Trust", null, section);
 
   const row = el("div", "tiles inline");
   for (const [key, label, help] of [
@@ -674,6 +824,216 @@ function trustCard(section) {
   return card;
 }
 
+/**
+ * How much of each stream's relay list is in sync, and how far the current
+ * sweeps have got.
+ *
+ * Three facts per relay, on one mark. The bar's EXTENT is the created_at span
+ * already walked; its TONE is whether that span was reconciled (negentropy
+ * finished — provably identical) or merely paged (we asked and stored what came
+ * back); and its right edge against `now` is freshness. The sweep cursor rides
+ * the same row in a warm tone with a leading edge at `downTo`, because a sweep
+ * killed at 80% records no band at all — without the cursor a relay mid-walk is
+ * indistinguishable from one nobody has touched, which is the state this card
+ * exists to reveal.
+ *
+ * THE FRAME IS NOT A TARGET. These filters carry no `since`, so "100% covered"
+ * is not a defined quantity; the frame is the oldest span anything here reaches
+ * and exists to make two relays comparable, not to grade them. The note under
+ * the card says so, and should not be trimmed for the same reason the scope
+ * line under the title is not.
+ *
+ * `relays` counts the relays this filter has TOUCHED, never the relays its
+ * stream was configured with — that list is in `router.conf`, which this relay
+ * does not read. A "never asked" count would be the honest headline and it is
+ * not available here; see SyncCoverageReport.
+ */
+function syncCard(section) {
+  const d = (section && section.data) || {};
+  const streams = d.streams || [];
+  const card = el("div", "card");
+  cardHead(card, "Sync coverage", streams.length ? null : "No sync state in this document.", section);
+  if (!streams.length) return card;
+
+  const from = d.from, to = d.to;
+  const span = Math.max(1, to - from);
+  // CLAMPED to the frame. A band's `max` is the newest created_at an upstream
+  // served, and created_at is author-signed — quartz accepts one up to about a
+  // day ahead of now (further is refused as implausible), so a bar can legally
+  // want to start or end past the frame's right edge. Unclamped it paints
+  // outside its own track, and the arithmetic that produces it is the same
+  // arithmetic that would run away entirely if `to - from` were ever negative.
+  const pct = (t) => Math.max(0, Math.min(100, ((t - from) / span) * 100));
+  const day = (t) => new Date(t * 1000).toISOString().slice(0, 10);
+
+  const legend = el("div", "legend");
+  for (const [tone, text] of [
+    ["done", "reconciled — negentropy finished"],
+    ["paged", "paged — walked, not proven exhaustive"],
+    ["live", "sweeping now"],
+  ]) {
+    const s = el("span");
+    const b = el("b");
+    b.style.background = tone === "paged" ? "var(--bar)" : tone === "done" ? "var(--accent)" : "var(--warn)";
+    if (tone === "live") b.style.opacity = ".55";
+    s.appendChild(b);
+    s.append(text);
+    legend.appendChild(s);
+  }
+  card.appendChild(legend);
+
+  /** Year ticks, plus the two ends — the frame spans years, so months would be a smear. */
+  const axis = () => {
+    const outer = el("div", "axis");
+    const track = el("div", "axis-track");
+    outer.appendChild(track);
+    const marks = [[from, day(from)]];
+    for (let y = new Date(from * 1000).getUTCFullYear() + 1; y <= new Date(to * 1000).getUTCFullYear(); y++) {
+      marks.push([Date.UTC(y, 0, 1) / 1000, String(y)]);
+    }
+    marks.push([to, "now"]);
+    marks.forEach(([t, label], i) => {
+      if (t < from || t > to) return;
+      const s = el("span", i === 0 ? "first" : i === marks.length - 1 ? "last" : null, label);
+      s.style.left = pct(t) + "%";
+      track.appendChild(s);
+    });
+    return outer;
+  };
+
+  /**
+   * Lay one mark on the track, never past either edge.
+   *
+   * Every mark carries a MINIMUM width, because a single day inside a
+   * five-year frame is a fraction of a pixel and a relay that has covered one
+   * day has not covered nothing. That minimum is what makes the ends
+   * dangerous: a band starting at the frame's right edge — a future-dated
+   * `created_at`, which quartz accepts up to about a day out — placed its
+   * sliver outside the track. So the start is pulled back far enough to fit
+   * the minimum, and the width is capped by what is left. The track also
+   * clips, which covers any future slip in this arithmetic.
+   */
+  const MIN_MARK = 0.3;
+  const place = (node, a, b) => {
+    const left = Math.min(pct(a), 100 - MIN_MARK);
+    node.style.left = left + "%";
+    node.style.width = Math.max(MIN_MARK, Math.min(100 - left, pct(b) - left)) + "%";
+  };
+
+  const row = (r) => {
+    const wrap = el("div", "cov-row");
+    const lab = el("div", "cov-lab", String(r.relay).replace(/^wss:\/\//, ""));
+    lab.title = r.relay;
+    wrap.appendChild(lab);
+    const track = el("div", "track");
+    if (r.min != null && r.max != null) {
+      const seg = el("i", `cov-seg ${r.complete ? "done" : "paged"}`);
+      place(seg, r.min, r.max);
+      seg.title =
+        `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
+        (r.complete ? "reconciled — negentropy finished over this span" : "paged — walked, not proven exhaustive") +
+        (r.target ? `\nwindow ${fmt(r.target)}${r.cap ? ` (peer cap ${fmt(r.cap)})` : ""}` : "");
+      track.appendChild(seg);
+      // Present only when the per-kind spans disagree — one band holds a span
+      // per kind and min/max are the outer edges, so a long-lived kind vouches
+      // for a short-lived one. This is the part no kind is missing from.
+      if (r.everyKindMin != null) {
+        const inner = el("i", "cov-seg every");
+        place(inner, r.everyKindMin, r.everyKindMax);
+        inner.title = `every kind in this filter is covered only from ${day(r.everyKindMin)} to ${day(r.everyKindMax)}`;
+        track.appendChild(inner);
+      }
+    }
+    if (r.sweep) {
+      const live = el("i", "cov-seg live");
+      place(live, r.sweep.downTo, r.sweep.upTo);
+      live.title = `sweeping — reconciled down to ${day(r.sweep.downTo)}, last advanced ${ago(r.sweep.at)}`;
+      track.appendChild(live);
+      const edge = el("i", "cov-seg edge");
+      edge.style.left = Math.min(pct(r.sweep.downTo), 100 - MIN_MARK) + "%";
+      track.appendChild(edge);
+    }
+    wrap.appendChild(track);
+    return wrap;
+  };
+
+  /**
+   * For each bucket, how many of the group's relays cover it.
+   *
+   * ONE pass over the relays, adding each into the bucket range it spans —
+   * not a `filter()` per bucket. A band is one contiguous interval, so its
+   * first and last bucket are arithmetic and everything between is covered by
+   * definition; scanning all relays per bucket asked the same question 96
+   * times and allocated an array each time. Measured on 4,172 relays: 26ms of
+   * every render, down to 3ms.
+   */
+  const depthStrip = (rows, buckets = 96) => {
+    const strip = el("div", "depth");
+    const step = span / buckets;
+    const n = new Int32Array(buckets), done = new Int32Array(buckets);
+    let covering = 0;
+    for (const r of rows) {
+      if (r.min == null || r.max == null) continue;
+      covering++;
+      const lo = Math.max(0, Math.floor((r.min - from) / step));
+      const hi = Math.min(buckets - 1, Math.floor((r.max - from) / step));
+      for (let i = lo; i <= hi; i++) {
+        n[i]++;
+        if (r.complete) done[i]++;
+      }
+    }
+    for (let b = 0; b < buckets; b++) {
+      const i = el("i", done[b] ? null : "thin");
+      i.style.height = Math.max(1, (n[b] / Math.max(1, covering)) * 24) + "px";
+      i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays (${fmt(done[b])} reconciled)`;
+      strip.appendChild(i);
+    }
+    return strip;
+  };
+
+  // One scroll box for every stream, and one axis pinned at its top: the frame
+  // is shared by design — that is what makes two streams comparable — so a
+  // per-stream axis would be the same ruler drawn N times and would stop being
+  // sticky the moment its stream scrolled past.
+  const scroll = el("div", "wrap tall cov");
+  const pinned = axis();
+  pinned.classList.add("pin");
+  scroll.appendChild(pinned);
+
+  for (const s of streams) {
+    const box = el("div", "grp");
+    const head = el("div", "grp-head");
+    const name = el("div", "grp-name");
+    // Labelled by FILTER, not by stream name: a band is keyed by the filter, so
+    // the filter is what actually determines coverage, and the name lives in a
+    // config file this relay does not read.
+    const kinds = (s.filter && s.filter.kinds) || [];
+    name.appendChild(el("code", null, kinds.length ? `kinds ${kinds.join(", ")}` : "every kind"));
+    head.appendChild(name);
+    head.appendChild(el("div", "grp-stat",
+      `${fmt(s.reconciled || 0)} reconciled · ${fmt(s.paged || 0)} paged` +
+      (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
+      ` · ${fmt(s.relays || 0)} relays walked`));
+    box.appendChild(head);
+    const rows = s.rows || [];
+    if (rows.length > 24) box.appendChild(depthStrip(rows));
+    // EVERY relay, no top-N: the relays a cap would drop are the ones the
+    // question is about. Same argument as the Kinds table.
+    for (const r of rows) box.appendChild(row(r));
+    scroll.appendChild(box);
+  }
+  card.appendChild(scroll);
+  // Measured, not guessed: a hardcoded rem offset is wrong at any root font
+  // size but the author's, and 2px out hides a sliver of one sticky element
+  // behind the other.
+  requestAnimationFrame(() => scroll.style.setProperty("--pin-h", pinned.getBoundingClientRect().height + "px"));
+
+  card.appendChild(el("p", "card-sub",
+    `Frame: ${day(from)} → now. Not a target — these filters carry no lower bound, so a full row means ` +
+    `"as deep as anything here reaches", not "done". Counts relays this filter has walked, not the relays its stream names.`));
+  return card;
+}
+
 function relaysCard(section) {
   const d = (section && section.data) || {};
   const top = d.top || [];
@@ -681,15 +1041,20 @@ function relaysCard(section) {
   cardHead(
     card,
     "Relay distribution",
+    // The one sub that survives as more than an empty state: a capped list and
+    // a complete one are different facts, and only this line tells them apart.
     top.length
-      ? `${shownOf(d.shown, d.total, "relays", "most-named")} named by the NIP-65 lists this store holds.`
+      ? `${shownOf(d.shown, d.total, "relays", "most-named")}.`
       : "No relay distribution in this document.",
     section,
   );
   if (!top.length) return card;
 
   const max = Math.max(...top.map((r) => r.lists));
-  const wrap = el("div", "wrap");
+  // Bounded and scrolling, like the Kinds table: this list is capped at the
+  // most-named but the cap is generous, and a card that runs for a screen and
+  // a half pushes everything under it out of reach.
+  const wrap = el("div", "wrap tall");
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
@@ -717,14 +1082,18 @@ function relaysCard(section) {
 function zapsCard(section) {
   const d = (section && section.data) || {};
   const card = el("div", "card");
-  cardHead(card, "Zaps", `NIP-57 zap receipts (kind 9735) this store holds.`, section);
+  cardHead(card, "Zaps", null, section);
 
   const row = el("div", "tiles inline");
-  for (const [key, label] of [["receipts", "Receipts"], ["wallets", "Wallets"]]) {
+  // "Zap services", not "wallets" and emphatically not "senders". Under NIP-57
+  // the receipt is signed by the LNURL service that settled the invoice, so
+  // this counts the handful of services our receipts came through — never the
+  // people who zapped, whose keys are in the `description` tag the rollup does
+  // not walk. "Wallets" was the JSON field's name and it read as the zappers'
+  // wallets, which is off by a whole party to the transaction.
+  for (const [key, label] of [["receipts", "Receipts"], ["wallets", "Zap services"]]) {
     const t = el("div", "tile");
     t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
-    // "Wallets" and not "senders": under NIP-57 the receipt is signed by the
-    // LNURL service that settled the invoice, not by the person who zapped.
     t.appendChild(el("div", "k", label));
     wrapTitle(t, key === "wallets" ? "Distinct authors of zap receipts — the LNURL services that settled them, not the people who zapped" : "");
     row.appendChild(t);
@@ -737,7 +1106,10 @@ function zapsCard(section) {
   } else if (days.every((x) => !x.receipts)) {
     card.appendChild(el("p", "err", "No zap receipts in this window."));
   } else {
-    card.appendChild(barChart(days.map((x) => ({ label: x.day.slice(5), value: x.receipts })), { label: "Zap receipts per day" }));
+    card.appendChild(barChart(
+      days.map((x) => ({ label: x.day, tick: dayTick(x.day), value: x.receipts })),
+      { label: "Zap receipts per day" },
+    ));
   }
   return card;
 }
@@ -766,12 +1138,10 @@ function kindsCard(kinds) {
   const card = el("div", "card");
   const d = (kinds && kinds.data) || {};
   const all = d.all || [];
-  cardHead(
-    card,
-    "Kinds",
-    all.length ? `All ${fmt(d.total)} kinds this relay holds, largest first.` : "No kind histogram in this document.",
-    kinds,
-  );
+  // No count in the sub: the filter row below prints "N kinds" and keeps
+  // printing "n of N" once the reader types, so the total is on screen either
+  // way and a header saying it too was the same fact twice.
+  cardHead(card, "Kinds", all.length ? null : "No kind histogram in this document.", kinds);
   if (!all.length) return card;
 
   // A corpus carries thousands of distinct kinds, most of them a handful of
@@ -807,7 +1177,7 @@ function kindsCard(kinds) {
   for (const k of top) {
     const tr = el("tr");
     tr.appendChild(el("td", "kind", String(k.kind)));
-    tr.appendChild(el("td", "name", kindLabel(k.kind)));
+    tr.appendChild(el("td", "name", kindName(k.kind, k.name)));
     tr.appendChild(el("td", "n", fmt(k.events)));
     const share = el("td", "share");
     const bar = el("i");
@@ -834,7 +1204,10 @@ function kindsCard(kinds) {
     let shown = 0;
     rows.forEach((tr, i) => {
       const k = top[i];
-      const hit = !q || String(k.kind).includes(q) || kindLabel(k.kind).toLowerCase().includes(q);
+      // Filtered on the name that is ON SCREEN. Searching kindLabel() while
+      // rendering the document's name means typing what you can see hides the
+      // row you are looking at, on the 180 kinds where the two disagree.
+      const hit = !q || String(k.kind).includes(q) || kindName(k.kind, k.name).toLowerCase().includes(q);
       tr.hidden = !hit;
       if (hit) shown++;
     });
@@ -847,11 +1220,42 @@ function kindsCard(kinds) {
   return card;
 }
 
+/**
+ * The document the body was last built from.
+ *
+ * The page polls every 5 minutes and the rollup runs every 15, so MOST polls
+ * return bytes the body is already showing. Rebuilding on those is not merely
+ * wasted work — `replaceChildren` destroys what the reader was doing: the kinds
+ * filter loses what they typed, and every bounded scroll box (Kinds, Relay
+ * distribution, and a Sync coverage card thousands of rows tall) jumps back to
+ * the top. Measured: filter "blogs" → "", scrollTop 5000 → 0, on every tick.
+ */
+let renderedAt = null;
+
 function render(doc) {
   scopeEl.textContent = doc.scope || "";
 
+  // Same rollup as the one on screen — leave the body, and its reader, alone.
+  // The FOOTER is still redrawn below, because the one thing that does change
+  // between two views of the same document is how old it now is, and that is
+  // the line that says the rollup may have stopped.
+  if (doc.generatedAt && doc.generatedAt === renderedAt) return renderFoot(doc);
+  renderedAt = doc.generatedAt || null;
+
+  // A genuine new document does have to rebuild — but the reader's filter is
+  // an instruction about the table, not about the document, so it survives.
+  const typed = bodyEl.querySelector("input[type=search]")?.value || "";
+
   bodyEl.replaceChildren();
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
+
+  // Trust sits SECOND, right under the corpus totals, because it is the only
+  // panel here that can report the relay broken. A store with no projected
+  // trust state answers every ranked search unranked, and nothing else on this
+  // page changes when that happens — the charts above and below it look
+  // identical either way. Buried under the charts it was a panel you found
+  // after you already had a theory; here it is one of the first things read.
+  bodyEl.appendChild(trustCard(doc.trust));
 
   // The toggle and the two series it drives are re-rendered together, so
   // switching granularity cannot leave the control and the charts disagreeing.
@@ -867,14 +1271,30 @@ function render(doc) {
   bodyEl.appendChild(activityWrap);
 
   bodyEl.appendChild(kindActivityCard(doc.kindActivity));
-  bodyEl.appendChild(trustCard(doc.trust));
+  // Only when a router has written state we can read. A serve-only relay does
+  // not mirror, and an empty coverage card there would read as a broken mirror
+  // rather than as no mirror.
+  if (doc.sync) bodyEl.appendChild(syncCard(doc.sync));
   bodyEl.appendChild(zapsCard(doc.zaps));
   bodyEl.appendChild(relaysCard(doc.relayDistribution));
   // Last, because it is now the longest thing on the page by an order of
   // magnitude — every kind in the store rather than a top-50 — and a reference
   // table nobody scrolls past is worse placed above the charts everyone reads.
   bodyEl.appendChild(kindsCard(doc.kinds));
+  if (typed) {
+    const box = bodyEl.querySelector("input[type=search]");
+    if (box) {
+      box.value = typed;
+      // `input` rather than calling applyFilter: the handler is a closure over
+      // the freshly built rows, and this card is rebuilt from a new document.
+      box.dispatchEvent(new Event("input"));
+    }
+  }
 
+  renderFoot(doc);
+}
+
+function renderFoot(doc) {
   footEl.replaceChildren();
   const at = doc.generatedAt ? new Date(doc.generatedAt) : null;
   const ageMs = at ? Date.now() - at.getTime() : 0;
@@ -923,6 +1343,9 @@ async function load() {
       // The honest empty state. Not zeros: "nothing computed yet" and "this
       // relay holds nothing" are different facts and must not share a rendering.
       scopeEl.textContent = "No statistics computed yet.";
+      // The body no longer shows any document, so the next one must rebuild it
+      // even if the rollup that produced it is the one we drew before.
+      renderedAt = null;
       bodyEl.replaceChildren();
       const c = el("div", "card pending");
       c.appendChild(el("h2", null, "Waiting for the first rollup"));
@@ -936,6 +1359,7 @@ async function load() {
     render(await res.json());
   } catch (e) {
     scopeEl.textContent = "Could not load the statistics document.";
+    renderedAt = null;
     bodyEl.replaceChildren();
     const c = el("div", "card");
     c.appendChild(el("p", "err", String(e && e.message ? e.message : e)));

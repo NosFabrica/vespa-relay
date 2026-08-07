@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.maintenance
 
 import com.nosfabrica.vespa.relay.server.StatsSnapshot
+import com.vitorpamplona.quartz.kinds.KindNames
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
@@ -36,6 +37,7 @@ import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
+import java.io.File
 import java.time.Instant
 
 /**
@@ -86,6 +88,13 @@ internal class StatsRollup(
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
+    /**
+     * The router's two state files, read off the volume both containers mount.
+     * Null in a serve-only deployment, and null is the normal case rather than
+     * an error — see [SyncCoverageReport].
+     */
+    private val syncBandsFile: File? = null,
+    private val syncSweepsFile: File? = null,
 ) {
     /** Compute the whole document. Never throws: a section that fails says so in the document. */
     suspend fun compute(): JsonObject {
@@ -102,6 +111,7 @@ internal class StatsRollup(
         val relays = relaysSection()
         val zaps = zapsSection()
         val trust = trustSection()
+        val sync = syncSection()
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
             put("relay", relayUrl)
@@ -121,8 +131,44 @@ internal class StatsRollup(
             put("relayDistribution", relays)
             put("zaps", zaps)
             put("trust", trust)
+            // Absent, not empty, when there is no router: a serve-only relay has
+            // no sync to report and a card saying "0 relays" would read as a
+            // broken mirror rather than as no mirror.
+            sync?.let { put("sync", it) }
         }
     }
+
+    /**
+     * The router's coverage, read off the shared volume.
+     *
+     * The one section that queries NOTHING — it is two file reads and a fold,
+     * and it is here rather than in its own endpoint because `/stats.json` is
+     * where a reader already looks and because the rollup already has a timer,
+     * a snapshot, and an ETag. [SyncCoverageReport] carries the argument for
+     * reading the router's files at all.
+     *
+     * Wrapped so that no failure here can cost the document: an unreadable file
+     * (wrong permissions, a volume that is not mounted, a half-written temp) is
+     * reported as a failed section beside working ones, which is the same
+     * contract every queried section has.
+     */
+    private suspend fun syncSection(): JsonObject? {
+        if (syncBandsFile == null && syncSweepsFile == null) return null
+        var data: JsonObject? = null
+        val section =
+            section { attempts ->
+                attempt(attempts, "sync") {
+                    data = SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds())
+                    data
+                }
+                data ?: buildJsonObject { }
+            }
+        // Nothing read AND nothing failed means no router has ever written here.
+        return if (data == null && section["errors"] == null) null else section
+    }
+
+    /** Missing is the normal case; unreadable is not, and is allowed to throw into [attempt]. */
+    private fun readOrNull(file: File?): String? = file?.takeIf { it.isFile }?.readText()
 
     /**
      * The newest `created_at` anywhere in the store, taken as the maximum over
@@ -235,6 +281,27 @@ internal class StatsRollup(
         }
 
     /**
+     * What a kind is CALLED, from Quartz's registry rather than this repo's.
+     *
+     * [KindNames] is the protocol-wide table Quartz maintains — 287 kinds and
+     * their NIPs, updated whenever the pin moves. The web UI's `kinds.js`
+     * carries about 117, which is the right size for what IT is: badge text
+     * for the cards this relay can render, kept short and lowercase so a mixed
+     * feed stays scannable. That set is a statement about our renderers; this
+     * table's job is the opposite one — it ENUMERATES the store, so it holds
+     * kinds nobody here has ever written a card for, and naming them from a
+     * registry of renderers meant 180 of them could only ever read "kind N".
+     *
+     * Emitted INTO the document rather than resolved in the page, because
+     * /stats.json is the artifact and a reader charting it elsewhere should
+     * not have to carry a copy of this table to label an axis. The page still
+     * falls back to `kinds.js` for the ten kinds Quartz does not name yet
+     * (`1630`-`1633` git statuses, `30024`, `30040`…), so the two sources
+     * compose instead of one replacing the other.
+     */
+    private fun kindName(kind: Int): String? = KindNames.nameFor(kind)
+
+    /**
      * The per-kind table: documents, distinct authors, and the span of
      * `created_at`, as three queries rather than one combined pipeline.
      *
@@ -278,7 +345,9 @@ internal class StatsRollup(
                         .forEach { (kind, events) ->
                             add(
                                 buildJsonObject {
-                                    put("kind", kind.toIntOrNull() ?: -1)
+                                    val n = kind.toIntOrNull() ?: -1
+                                    put("kind", n)
+                                    kindName(n)?.let { put("name", it) }
                                     put("events", events)
                                     authors?.get(kind)?.let { put("pubkeys", it) }
                                     spans?.get(kind)?.let { (first, last) ->
@@ -367,7 +436,19 @@ internal class StatsRollup(
                     ?: return@section buildJsonObject { }
             // A 10002 may carry tags other than `r`; keep the relay urls and
             // drop the rest rather than charting whatever else was on the event.
-            val relays = pairs.mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { it to count } }.toMap()
+            //
+            // SUMMED per canonical url, not `toMap()`. The grouping returns one
+            // row per distinct string, and `wss://nos.lol` and `wss://nos.lol/`
+            // are two strings for one relay — `toMap()` kept whichever came last
+            // and threw the other's count away, so the relay both understated
+            // its lists AND sat too low in a table sorted by them. See
+            // [StatsYql.canonicalRelay] for why the normalizer is the one the
+            // router dials with.
+            val relays =
+                pairs
+                    .mapNotNull { (pair, count) -> StatsYql.tagValue(pair, 'r')?.let { StatsYql.canonicalRelay(it) to count } }
+                    .groupingBy { it.first }
+                    .fold(0L) { sum, (_, count) -> sum + count }
             buildJsonObject {
                 put("total", relays.size)
                 put("shown", minOf(relays.size, topRelays))
@@ -476,6 +557,7 @@ internal class StatsRollup(
                         add(
                             buildJsonObject {
                                 put("kind", kind)
+                                kindName(kind)?.let { put("name", it) }
                                 putJsonArray("days") {
                                     byDay.entries.sortedBy { it.key }.forEach { (day, count) ->
                                         add(
