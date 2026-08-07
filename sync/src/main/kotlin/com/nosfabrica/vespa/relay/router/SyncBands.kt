@@ -381,6 +381,12 @@ class SyncBands(
                             byFilter
                                 .getOrPut(k.substring(at + 1)) { LinkedHashMap() }[k.substring(0, at)] = band
                         }
+                        // A stream that has only ASKED holds no bands — its
+                        // coverage exists because `legs()` created it — and an
+                        // empty group is a stream the card would list as having
+                        // walked nothing, which is a fact the file should not
+                        // be asserting.
+                        if (byFilter.isEmpty()) return@forEach
                         put(
                             stream,
                             buildJsonObject {

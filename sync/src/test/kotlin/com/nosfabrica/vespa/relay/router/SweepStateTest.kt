@@ -224,6 +224,37 @@ class SweepStateTest {
     }
 
     @Test
+    fun `a stale pre-stream cursor is dropped, not filed under whoever asked`() {
+        // Staleness is absolute. Adopting it would park a claim nobody may act
+        // on inside one stream's map — and take it away from the stream that
+        // actually wrote it, for nothing.
+        val f = tempFile()
+        writeFlat(f, "${relay.url}|${notes.toJson()}", 1_500, 2_000)
+
+        val state = SweepState(f, staleAfterSeconds = -1)
+        assertNull(state.reconciled(SweepState.keyFor(mirror, relay, notes)), "an aged claim must be re-compared")
+        state.flush()
+
+        val sweeps = Json.parseToJsonElement(f.readText()).jsonObject["sweeps"]!!.jsonObject
+        assertEquals(0, sweeps.size, "neither flat nor filed under a stream — it is worth nothing to anyone")
+    }
+
+    @Test
+    fun `claiming widens what a sweep has already recorded, never replaces it`() {
+        // `advance` claims too, so the window that has just finished can be in
+        // the map before the pre-stream cursor is adopted. Overwriting there
+        // loses exactly the window the caller was recording.
+        val f = tempFile()
+        writeFlat(f, "${relay.url}|${notes.toJson()}", 1_500, 2_000)
+
+        val reopened = SweepState(f)
+        reopened.advance(SweepState.keyFor(mirror, relay, notes), 900, 1_499)
+        val mark = assertNotNull(reopened.reconciled(SweepState.keyFor(mirror, relay, notes)))
+        assertEquals(900, mark.downTo, "the window just finished")
+        assertEquals(2_000, mark.upTo, "and the ground the pre-stream cursor already held")
+    }
+
+    @Test
     fun `an unclaimed pre-stream cursor is written back, not dropped`() {
         // The flusher runs 30 seconds after boot, long before a slow stream
         // reaches this relay. Dropping it there costs the window it was keeping.

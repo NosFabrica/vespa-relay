@@ -251,9 +251,23 @@ class SweepState(
     private fun claim(key: Cursor): Reconciled? {
         if (preStream.isEmpty()) return null
         val mark = preStream.remove(key.filter to key.relay) ?: return null
-        sweeps[key] = mark
         dirty = true
-        return mark
+        // Staleness is absolute, not per stream: a claim this old is not worth
+        // acting on for ANY stream, so it is dropped here rather than moved
+        // into one stream's map to sit there being ignored — and dropping it
+        // leaves it claimable by nobody, which is what it is worth.
+        if (nowSeconds() - mark.at > staleAfterSeconds) return null
+        // merge(), not put: a sweep may be advancing this cursor on another
+        // coroutine right now (claim runs from advance() too), and a put would
+        // drop the window it has just finished. Same widening rule as
+        // [advance] — the low edge only ever falls.
+        return sweeps.merge(key, mark) { held, old ->
+            Reconciled(
+                downTo = minOf(held.downTo, old.downTo),
+                upTo = maxOf(held.upTo, old.upTo),
+                at = maxOf(held.at, old.at),
+            )
+        }
     }
 
     // ---- the file ------------------------------------------------------------

@@ -85,14 +85,27 @@ internal class StaticBackfill(
 
     fun begin(totalUpstreams: Int) = progress.begin(totalUpstreams)
 
-    /** Backfill every down upstream, grouped by stream (shared filter). */
+    /**
+     * Backfill every down upstream, grouped by stream — one group is one
+     * stream's relay list, and a stream carries exactly one filter.
+     *
+     * Grouped by the FILTER until bands became per stream, which read the same
+     * for every config anyone had and is now wrong for the one that motivated
+     * the change: two streams sharing a filter landed in one group, whose
+     * snapshot was narrowed from `group.first()`'s bands and then recorded into
+     * each upstream's OWN stream. The second stream's relays would be compared
+     * against a window sized for the first stream's progress — every event
+     * outside it re-downloaded, every cycle, while both bands claimed to be
+     * fine. The cost of splitting them is one id snapshot each instead of one
+     * shared, serialised behind the same gate.
+     */
     suspend fun run(upstreams: List<SyncUpstream>) {
         coroutineScope {
             upstreams
                 .withIndex()
-                .groupBy { it.value.filter }
-                .forEach { (filter, group) ->
-                    launch { backfillStream(filter, group) }
+                .groupBy { it.value.streamName }
+                .forEach { (_, group) ->
+                    launch { backfillStream(group.first().value.filter, group) }
                 }
         }
     }
