@@ -93,7 +93,7 @@ internal class StatsRollup(
         // Kinds first: its per-kind spans are where the corpus-wide newest event
         // comes from, since Vespa cannot answer a bare max() without a grouping.
         val kinds = kindsSection()
-        val corpus = corpusSection(newestOf(kinds))
+        val corpus = corpusSection(newestOf(kinds), distinctKindsOf(kinds))
         val activity = activitySection()
         // The per-kind series follow the histogram the kinds section just
         // computed, so the panel tracks the corpus rather than a hardcoded list
@@ -141,6 +141,9 @@ internal class StatsRollup(
             ?.mapNotNull { entry -> (entry as? JsonObject)?.get("lastSeen")?.jsonPrimitive?.longOrNull }
             ?.maxOrNull()
 
+    /** How many distinct kinds the histogram found — the same number `distinct("kind")` would have cost a query for. */
+    private fun distinctKindsOf(kinds: JsonObject): Int? = (kinds["data"] as? JsonObject)?.get("total")?.jsonPrimitive?.intOrNull
+
     /**
      * The kinds to draw a per-kind series for: the largest few from the
      * histogram [kindsSection] just computed.
@@ -161,22 +164,29 @@ internal class StatsRollup(
     // ---- sections -----------------------------------------------------------
 
     /** Corpus totals: independent distinct/count queries over everything. */
-    private suspend fun corpusSection(newestEvent: Long?): JsonObject =
-        section { errors ->
+    private suspend fun corpusSection(
+        newestEvent: Long?,
+        distinctKinds: Int?,
+    ): JsonObject =
+        section { attempts ->
             val now = nowSeconds()
-            val events = attempt(errors, "events") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL)) }
-            val pubkeys = attempt(errors, "pubkeys") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"))) }
-            val kinds = attempt(errors, "kinds") { StatsYql.singleCount(vespa.group(StatsYql.distinct("kind"))) }
+            val events = attempt(attempts, "events") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL)) }
+            val pubkeys = attempt(attempts, "pubkeys") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"))) }
             // Events signed for a time that has not happened. Clock skew and
             // spam both land here, and the count is worth having on its own:
             // it is the reason every freshness number on this page is bounded,
             // and a corpus where it grows is one where something upstream is
             // publishing garbage that ordinary charts would silently absorb.
-            val future = attempt(errors, "futureDated") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.after(now))) }
+            val future = attempt(attempts, "futureDated") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.after(now))) }
             buildJsonObject {
                 events?.let { put("events", it) }
                 pubkeys?.let { put("pubkeys", it) }
-                kinds?.let { put("kinds", it) }
+                // The histogram already counted these, and asking twice was not
+                // only a wasted query: two counts of the same thing taken
+                // seconds apart can disagree on a live corpus, and a page
+                // showing "412 kinds" beside a table headed "All 413 kinds" has
+                // no way to explain itself.
+                distinctKinds?.let { put("kinds", it) }
                 future?.let { put("futureDated", it) }
                 // Derived from the per-kind spans rather than asked for: a bare
                 // `max(created_at)` with no grouping level is not a query Vespa
@@ -211,11 +221,11 @@ internal class StatsRollup(
                 "`scoredPubkeys` and the corpus's `pubkeys` are INDEPENDENT populations, not a ratio: the web of " +
                     "trust scores people whose events this relay may not hold, and holds events from people nobody " +
                     "has scored. Compare their magnitudes, not their quotient.",
-        ) { errors ->
-            val scored = attempt(errors, "scoredPubkeys") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, source = StatsYql.REPUTATION)) }
-            val observers = attempt(errors, "observers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_OBSERVER")) }
-            val providers = attempt(errors, "providers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_SCORE")) }
-            val scores = attempt(errors, "scores") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = $KIND_SCORE")) }
+        ) { attempts ->
+            val scored = attempt(attempts, "scoredPubkeys") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, source = StatsYql.REPUTATION)) }
+            val observers = attempt(attempts, "observers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_OBSERVER")) }
+            val providers = attempt(attempts, "providers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_SCORE")) }
+            val scores = attempt(attempts, "scores") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = $KIND_SCORE")) }
             buildJsonObject {
                 scored?.let { put("scoredPubkeys", it) }
                 observers?.let { put("observers", it) }
@@ -249,17 +259,17 @@ internal class StatsRollup(
      * render the head first and the tail below it.
      */
     private suspend fun kindsSection(): JsonObject =
-        section { errors ->
+        section { attempts ->
             val counts =
-                attempt(errors, "events") { longsByGroup(StatsYql.countsBy("kind")) }
+                attempt(attempts, "events") { longsByGroup(StatsYql.countsBy("kind")) }
                     ?: return@section buildJsonObject { }
-            val authors = attempt(errors, "pubkeys") { distinctByGroup(StatsYql.distinctAuthorsBy("kind")) }
+            val authors = attempt(attempts, "pubkeys") { distinctByGroup(StatsYql.distinctAuthorsBy("kind")) }
             // Bounded to now: an unbounded max(created_at) reports whatever the
             // most optimistically-dated spam in that kind claims, and a "newest"
             // of 2100 makes the whole column decorative. The future-dated events
             // are counted in `corpus` instead, where they are the finding rather
             // than the noise.
-            val spans = attempt(errors, "span") { spansByGroup(StatsYql.spanBy("kind"), StatsYql.upTo(nowSeconds())) }
+            val spans = attempt(attempts, "span") { spansByGroup(StatsYql.spanBy("kind"), StatsYql.upTo(nowSeconds())) }
             buildJsonObject {
                 put("total", counts.size)
                 putJsonArray("all") {
@@ -294,16 +304,16 @@ internal class StatsRollup(
      * between three answers rather than re-aggregating one.
      */
     private suspend fun activitySection(): JsonObject =
-        section { errors ->
+        section { attempts ->
             val now = nowSeconds()
             val hourWindow = StatsYql.window(now - hourWindowDays * DAY_SECONDS, now)
-            val days = series(errors, "days", StatsYql.DAY, StatsYql::isoDay, now, windowDays)
-            val weeks = series(errors, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, now, weekWindowWeeks * 7)
+            val days = series(attempts, "days", StatsYql.DAY, StatsYql::isoDay, now, windowDays)
+            val weeks = series(attempts, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, now, weekWindowWeeks * 7)
             // 31 days a month, so the window reaches at least this many whole
             // calendar months back. Over-reaching costs a leading partial
             // month; under-reaching would silently drop one.
-            val months = series(errors, "months", StatsYql.MONTH, StatsYql::isoMonth, now, monthWindowMonths * 31)
-            val hours = attempt(errors, "hours") { longsByGroup(StatsYql.countsBy(StatsYql.HOUR), hourWindow) }
+            val months = series(attempts, "months", StatsYql.MONTH, StatsYql::isoMonth, now, monthWindowMonths * 31)
+            val hours = attempt(attempts, "hours") { longsByGroup(StatsYql.countsBy(StatsYql.HOUR), hourWindow) }
             buildJsonObject {
                 put("windowDays", windowDays)
                 put("windowWeeks", weekWindowWeeks)
@@ -351,9 +361,9 @@ internal class StatsRollup(
                 "How many stored NIP-65 lists name each relay. NOT split by read/write: that marker is an `r` tag's " +
                     "THIRD element and tag_index holds only `<letter>:<value>`, so it is not queryable — it needs a " +
                     "walk over kind 10002.",
-        ) { errors ->
+        ) { attempts ->
             val pairs =
-                attempt(errors, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = 10002") }
+                attempt(attempts, "relays") { longsByGroup(StatsYql.countsBy(StatsYql.TAG), "kind = 10002") }
                     ?: return@section buildJsonObject { }
             // A 10002 may carry tags other than `r`; keep the relay urls and
             // drop the rest rather than charting whatever else was on the event.
@@ -399,13 +409,13 @@ internal class StatsRollup(
                 "Receipt counts only. Sats are unreachable by any grouping — the amount is in the `bolt11` and " +
                     "`description` tags, whose multi-character names are absent from tag_index — and senders/recipients " +
                     "would drag every `e:` tag along with them. Both need a walk over kind 9735.",
-        ) { errors ->
+        ) { attempts ->
             val now = nowSeconds()
             val window = StatsYql.window(now - windowDays * DAY_SECONDS, now)
-            val receipts = attempt(errors, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = 9735")) }
-            val wallets = attempt(errors, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = 9735")) }
+            val receipts = attempt(attempts, "receipts") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = 9735")) }
+            val wallets = attempt(attempts, "wallets") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = 9735")) }
             val days =
-                attempt(errors, "days") {
+                attempt(attempts, "days") {
                     bucketed(StatsYql.countsBy(StatsYql.DAY), "kind = 9735 and $window", StatsYql::isoDay, distinct = false)
                 }
             buildJsonObject {
@@ -440,28 +450,29 @@ internal class StatsRollup(
      * would go stale in the direction of hiding whatever grew.
      */
     private suspend fun kindActivitySection(topByEvents: List<Int>): JsonObject =
-        section { errors ->
+        section { attempts ->
             val now = nowSeconds()
             val since = now - windowDays * DAY_SECONDS
-            // Queried first, assembled second: the JSON builders are not
-            // coroutine bodies, so a suspending call cannot run inside one.
+            if (topByEvents.isEmpty()) return@section buildJsonObject { put("windowDays", windowDays) }
+            // ONE query for every series, not one per kind. `group(kind)` with a
+            // nested `group(time.date)` answers the whole panel in a single
+            // round trip; this was eight sequential aggregations for eight
+            // sparklines, and the engine was doing the same work either way.
             val perKind =
-                topByEvents.map { kind ->
-                    kind to
-                        attempt(errors, "kind $kind") {
-                            bucketed(
-                                StatsYql.countsBy(StatsYql.DAY),
-                                StatsYql.windowOfKind(kind, since, now),
-                                StatsYql::isoDay,
-                                distinct = false,
-                            )
-                        }
-                }
+                attempt(attempts, "series") {
+                    nestedBuckets(
+                        StatsYql.nested("kind", StatsYql.DAY),
+                        "kind in (${topByEvents.joinToString(", ")}) and ${StatsYql.window(since, now)}",
+                        StatsYql::isoDay,
+                    )
+                }.orEmpty()
             buildJsonObject {
                 put("windowDays", windowDays)
                 putJsonArray("kinds") {
-                    perKind.forEach { (kind, byDay) ->
-                        if (byDay == null) return@forEach
+                    // In the histogram's order — largest first — rather than the
+                    // engine's, so the panel reads the same way as the table.
+                    topByEvents.forEach { kind ->
+                        val byDay = perKind[kind.toString()] ?: return@forEach
                         add(
                             buildJsonObject {
                                 put("kind", kind)
@@ -493,7 +504,7 @@ internal class StatsRollup(
      * keeps [StatsYql.isoDay]'s trap from having to be re-remembered per series.
      */
     private suspend fun series(
-        errors: MutableMap<String, String>,
+        attempts: Attempts,
         name: String,
         bucket: String,
         decode: (String) -> String?,
@@ -501,8 +512,8 @@ internal class StatsRollup(
         spanDays: Int,
     ): JsonArray? {
         val where = StatsYql.window(now - spanDays * DAY_SECONDS, now)
-        val events = attempt(errors, "$name.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) } ?: return null
-        val authors = attempt(errors, "$name.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
+        val events = attempt(attempts, "$name.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) } ?: return null
+        val authors = attempt(attempts, "$name.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
         return buildJsonArray {
             events.entries.sortedBy { it.key }.forEach { (label, count) ->
                 add(
@@ -536,27 +547,48 @@ internal class StatsRollup(
      */
     private suspend fun section(
         note: String? = null,
-        body: suspend (MutableMap<String, String>) -> JsonObject,
+        body: suspend (Attempts) -> JsonObject,
     ): JsonObject {
-        val errors = LinkedHashMap<String, String>()
+        val attempts = Attempts()
         val startedMs = System.currentTimeMillis()
-        val data = body(errors)
-        val status =
-            when {
-                errors.isEmpty() -> "ok"
-                data.isEmpty() -> "failed"
-                else -> "partial"
-            }
+        val data = body(attempts)
         return buildJsonObject {
-            put("status", status)
+            put("status", attempts.status())
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
             put("tookMs", System.currentTimeMillis() - startedMs)
             note?.let { put("note", it) }
             put("data", data)
-            if (errors.isNotEmpty()) {
-                putJsonObject("errors") { errors.forEach { (k, v) -> put(k, v) } }
+            if (attempts.errors.isNotEmpty()) {
+                putJsonObject("errors") { attempts.errors.forEach { (k, v) -> put(k, v) } }
             }
         }
+    }
+
+    /**
+     * What a section's queries did — how the status is decided.
+     *
+     * Counting SUCCESSES rather than inspecting `data`, which is the mistake
+     * this replaced: the status was `data.isEmpty() -> "failed"`, and every
+     * section writes some metadata of its own (`asOf`, `windowDays`, the window
+     * spans) before a single query returns. So `data` was never empty, `failed`
+     * was unreachable, and a section whose every query errored reported
+     * `partial` — the status that means "some of this is real".
+     */
+    private class Attempts {
+        val errors = LinkedHashMap<String, String>()
+        var succeeded = 0
+            private set
+
+        fun ok() {
+            succeeded++
+        }
+
+        fun status(): String =
+            when {
+                errors.isEmpty() -> "ok"
+                succeeded == 0 -> "failed"
+                else -> "partial"
+            }
     }
 
     /**
@@ -567,16 +599,16 @@ internal class StatsRollup(
      * persist a document blaming the engine for the operator stopping the relay.
      */
     private suspend fun <T> attempt(
-        errors: MutableMap<String, String>,
+        attempts: Attempts,
         key: String,
         query: suspend () -> T?,
     ): T? =
         try {
-            query()
+            query().also { attempts.ok() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            errors[key] = e.message ?: e.toString()
+            attempts.errors[key] = e.message ?: e.toString()
             null
         }
 
@@ -607,6 +639,34 @@ internal class StatsRollup(
                 val value = StatsYql.valueOf(g) ?: return@mapNotNull null
                 val count = StatsYql.distinctCountOf(g) ?: return@mapNotNull null
                 value to count
+            }.toMap()
+    }
+
+    /**
+     * A two-level pipeline: outer value -> inner label -> count.
+     *
+     * The inner labels go through [decode] for the same reason the flat ones do
+     * — a `time.date` bucket is no more sortable nested than it is at the top.
+     */
+    private suspend fun nestedBuckets(
+        pipeline: String,
+        where: String,
+        decode: (String) -> String?,
+    ): Map<String, Map<String, Long>> {
+        val root = vespa.group(pipeline, where)
+        return StatsYql
+            .topGroups(root)
+            .mapNotNull { outer ->
+                val key = StatsYql.valueOf(outer) ?: return@mapNotNull null
+                val inner =
+                    StatsYql
+                        .childGroups(outer)
+                        .mapNotNull { g ->
+                            val label = StatsYql.valueOf(g)?.let(decode) ?: return@mapNotNull null
+                            val count = StatsYql.aggOf(g, "count()") ?: return@mapNotNull null
+                            label to count
+                        }.toMap()
+                key to inner
             }.toMap()
     }
 

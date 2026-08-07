@@ -98,15 +98,10 @@ internal class StatsVespa(
                     HttpResponse.BodyHandlers.ofString(),
                 )
             }
-        require(response.statusCode() < 400) {
-            // The YQL rides along: a 400 from the grouping parser names a
-            // column and an offset, and neither means anything without the
-            // pipeline it came from.
-            "vespa ${response.statusCode()} for `$yql`: ${response.body().take(300)}"
-        }
+        if (response.statusCode() >= 400) failed("vespa ${response.statusCode()}", yql, response.body())
         val root =
             Json.parseToJsonElement(response.body()).jsonObject["root"]?.jsonObject
-                ?: error("vespa answered `$yql` with no root: ${response.body().take(300)}")
+                ?: failed("vespa answered with no root", yql, response.body())
         root.requireUndegraded(yql)
         return root
     }
@@ -134,8 +129,34 @@ internal class StatsVespa(
         val coverage = this["coverage"]?.jsonObject ?: return
         val pct = coverage["coverage"]?.let { (it as? JsonPrimitive)?.intOrNull } ?: 100
         val degraded = coverage["degraded"]?.jsonObject
-        require(pct >= 100 && degraded == null) {
-            "vespa searched only $pct% of the corpus (degraded: ${degraded ?: "unspecified"}) for `$yql` — refusing a partial statistic"
+        if (pct < 100 || degraded != null) {
+            failed("vespa searched only $pct% of the corpus — refusing a partial statistic", yql, "degraded: ${degraded ?: "unspecified"}")
         }
+    }
+
+    /**
+     * Log the whole failure, throw a message safe to publish.
+     *
+     * The distinction is the point. `/stats.json` is PUBLIC and unauthenticated,
+     * and `StatsRollup` copies an exception's message straight into the document
+     * a failed section carries — so anything in that message is served to the
+     * internet. Vespa's response body is the part that must not go: it names
+     * content nodes, container hostnames and internal ports, none of which is
+     * anyone else's business, and all of which used to ride out on the first
+     * failed aggregation.
+     *
+     * The YQL stays in the published message, deliberately. It is our own
+     * pipeline, it is in this repo already, and it is the whole diagnostic value
+     * of the field — an operator reading "which query broke" without knowing
+     * which query is reading nothing. Detail without disclosure: the pipeline
+     * and the status code are public, the engine's own words are for the log.
+     */
+    private fun failed(
+        summary: String,
+        yql: String,
+        detail: String,
+    ): Nothing {
+        System.err.println("stats: $summary for `$yql` — ${detail.take(500)}")
+        error("$summary for `$yql` (engine detail in the relay log)")
     }
 }

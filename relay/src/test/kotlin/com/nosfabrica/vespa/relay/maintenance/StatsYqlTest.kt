@@ -173,6 +173,50 @@ class StatsYqlTest {
         assertEquals(emptyList(), StatsYql.topGroups(root("""{"id":"toplevel","fields":{"totalCount":0}}""")))
     }
 
+    /**
+     * The two-level pipeline that turned eight queries into one.
+     *
+     * Its inner list does NOT collapse onto the outer group the way
+     * [StatsYql.distinctAuthorsBy]'s does — the `each()` means there are many
+     * inner values to keep rather than one aggregate to fold up — so the same
+     * response carries an outer group with no `count()` of its own and a nested
+     * list that has one per day. Reading it with the flat reader would find
+     * nothing; reading a flat response with [StatsYql.childGroups] finds nothing
+     * either. This pins both directions.
+     */
+    @Test
+    fun `a nested pipeline is read one level down`() {
+        val outer = StatsYql.topGroups(root(KIND_BY_DAY))
+        assertEquals(listOf("1", "7"), outer.map { StatsYql.valueOf(it) })
+        // The outer group of a nested pipeline carries no aggregate of its own.
+        assertNull(StatsYql.aggOf(outer.first(), "count()"))
+
+        val perKind =
+            outer.associate { g ->
+                StatsYql.valueOf(g) to
+                    StatsYql
+                        .childGroups(g)
+                        .mapNotNull { d ->
+                            StatsYql.valueOf(d)?.let(StatsYql::isoDay)?.let { day -> day to StatsYql.aggOf(d, "count()") }
+                        }.toMap()
+            }
+        assertEquals(mapOf("2026-07-10" to 17L, "2026-07-11" to 16L), perKind["1"])
+        assertEquals(mapOf("2026-07-10" to 13L, "2026-07-11" to 8L), perKind["7"])
+
+        // A FLAT response has nothing one level down — the two readers cannot be
+        // swapped and quietly return the other pipeline's numbers.
+        assertEquals(emptyList(), StatsYql.childGroups(StatsYql.topGroups(root(COUNTS_BY_KIND)).first()))
+    }
+
+    @Test
+    fun `the nested pipeline keeps an each on the inner level`() {
+        // The `each()` is what distinguishes this from distinctAuthorsBy, whose
+        // inner list has none and therefore collapses. Losing it here would turn
+        // every kind's whole series into a single distinct-day count.
+        assertEquals("all(group(kind) each(all(group(time.date(created_at)) each(output(count())))))", StatsYql.nested("kind", StatsYql.DAY))
+        assertTrue(!StatsYql.distinctAuthorsBy("kind").contains("each(output(count()))"), "the collapsing shape has no inner each()")
+    }
+
     // ---- the other bucket decoders ------------------------------------------
 
     /**
@@ -304,6 +348,11 @@ class StatsYqlTest {
         // Vespa 8.733, `all(group(kind) each(output(min(created_at), max(created_at))))`.
         const val SPAN_BY_KIND =
             """{"id": "toplevel", "relevance": 1.0, "fields": {"totalCount": 602}, "coverage": {"coverage": 100, "documents": 602, "full": true, "nodes": 1, "results": 1, "resultsFull": 1}, "children": [{"id": "group:root:0", "relevance": 1.0, "continuation": {"this": ""}, "children": [{"id": "grouplist:kind", "relevance": 1.0, "label": "kind", "children": [{"id": "group:long:0", "relevance": 0.0, "value": "0", "fields": {"min(created_at)": 1751137726, "max(created_at)": 1754581422}}, {"id": "group:long:1", "relevance": 0.0, "value": "1", "fields": {"min(created_at)": 1751277649, "max(created_at)": 1754533972}}, {"id": "group:long:3", "relevance": 0.0, "value": "3", "fields": {"min(created_at)": 1751163032, "max(created_at)": 1754565906}}]}]}]}"""
+
+        // Vespa 8.733, `all(group(kind) each(all(group(time.date(created_at)) each(output(count())))))`
+        // over two kinds, each inner list trimmed to two days.
+        const val KIND_BY_DAY =
+            """{"id": "toplevel", "relevance": 1.0, "fields": {"totalCount": 721}, "coverage": {"coverage": 100, "documents": 1500, "full": true, "nodes": 1, "results": 1, "resultsFull": 1}, "children": [{"id": "group:root:0", "relevance": 1.0, "continuation": {"this": ""}, "children": [{"id": "grouplist:kind", "relevance": 1.0, "label": "kind", "children": [{"id": "group:long:1", "relevance": 0.0, "value": "1", "children": [{"id": "grouplist:time.date(created_at)", "relevance": 1.0, "label": "time.date(created_at)", "children": [{"id": "group:string:2026-7-10", "relevance": 0.0, "value": "2026-7-10", "fields": {"count()": 17}}, {"id": "group:string:2026-7-11", "relevance": 0.0, "value": "2026-7-11", "fields": {"count()": 16}}]}]}, {"id": "group:long:7", "relevance": 0.0, "value": "7", "children": [{"id": "grouplist:time.date(created_at)", "relevance": 1.0, "label": "time.date(created_at)", "children": [{"id": "group:string:2026-7-10", "relevance": 0.0, "value": "2026-7-10", "fields": {"count()": 13}}, {"id": "group:string:2026-7-11", "relevance": 0.0, "value": "2026-7-11", "fields": {"count()": 8}}]}]}]}]}]}"""
 
         // Vespa 8.733, `all(group(time.date(created_at)) each(output(count())))` over two
         // documents nine months apart — the unpadded values, exactly as returned.

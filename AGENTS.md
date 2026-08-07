@@ -462,6 +462,17 @@ statement about someone else's server.
   years". Every `lastSeen` here carries `created_at <= now`, and the future-dated
   events are counted separately in `corpus.futureDated`, where they are the
   finding rather than the noise.
+- **A nested grouping is ONE query where the obvious shape is N.**
+  `all(group(kind) each(all(group(time.date(created_at)) each(output(count())))))`
+  returns kind → day → count in a single response — the per-kind daily series
+  was a query per kind before that. Note the inner `each()`: without one the
+  inner list COLLAPSES onto the outer group (that is what `distinctAuthorsBy`
+  relies on), so the same shape minus three characters silently turns a whole
+  series into one distinct-day count.
+- **Playwright's Chromium has no HTTP cache**, so a browser test can never
+  demonstrate a 304: repeat fetches carry no `If-None-Match` and every response
+  is a 200, including for `max-age=60` assets. Check conditional requests with
+  `curl -H "If-None-Match: …"` against the running relay instead.
 - **The bundled query profile is what makes any of this work.**
   `grouping.globalMaxGroups: -1` in `search/query-profiles/default.xml` is why a
   `max()`-less pipeline is legal at all, and the per-request

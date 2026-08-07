@@ -180,7 +180,17 @@ fun main() {
     // Seeded from the state file first, so a restart serves the last document
     // instead of a blank page for however long the first rollup takes.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
-    val statsIntervalSeconds = env["STATS_INTERVAL_SECONDS"]?.toLongOrNull() ?: 900L
+    // A value that will not parse STOPS the boot rather than falling back to the
+    // default. `STATS_INTERVAL_SECONDS=0s` or `=off` are the obvious ways an
+    // operator writes "turn this off", and `?: 900L` accepted both by silently
+    // running the rollup every fifteen minutes — a setting that was read, was
+    // wrong, and did the opposite of what it said, which is exactly the silent
+    // inertness this codebase refuses elsewhere.
+    val statsIntervalSeconds =
+        env["STATS_INTERVAL_SECONDS"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            it.toLongOrNull()
+                ?: error("STATS_INTERVAL_SECONDS='$it' is not a number of seconds. Use 0 to disable the rollup.")
+        } ?: 900L
     if (statsIntervalSeconds > 0) {
         launchStatsRollup(
             scope = maintenanceScope,

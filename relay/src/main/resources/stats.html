@@ -111,7 +111,7 @@
   .chart .tick { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
   .chart .mark { fill: var(--accent); }
   .chart .hit { fill: transparent; }
-  .chart .hit:hover + .mark, .chart .mark.on { fill: var(--text); }
+  .chart .mark.on { fill: var(--text); }
   .wrap { overflow-x: auto; }
   /* Every kind in the store is thousands of rows. Bounded height with a sticky
      header, so the table is scannable without owning the whole page — and so
@@ -308,16 +308,32 @@ function barChart(points, { label, height = 130 }) {
     // Rounded at the data end, square at the baseline: one rect with a radius
     // plus one square rect covering the baseline half.
     const r = Math.min(4, w / 2, h);
+    const marks = [];
     if (h > 0) {
-      svg.appendChild(svgEl("rect", { class: "mark", x, y: top, width: w, height: h, rx: r, ry: r }));
-      if (h > r) svg.appendChild(svgEl("rect", { class: "mark", x, y: top + r, width: w, height: h - r }));
+      marks.push(svgEl("rect", { class: "mark", x, y: top, width: w, height: h, rx: r, ry: r }));
+      if (h > r) marks.push(svgEl("rect", { class: "mark", x, y: top + r, width: w, height: h - r }));
+      marks.forEach((m) => svg.appendChild(m));
     }
     // The hit target is the whole band, not the bar — a 3px-tall bar is
     // unhoverable, and a quiet day is exactly the one worth reading.
+    //
+    // The highlight is applied to THIS bar's own marks rather than left to a
+    // CSS sibling selector. It was `.hit:hover + .mark`, which reads "the
+    // element right after the hovered hit" — and since each bar appends its
+    // marks BEFORE its hit, that is the next bar's mark. Hovering bar 4 lit up
+    // bar 5, and the last bar lit nothing at all, while the tooltip (bound to
+    // the hit itself) stayed correct. A wrong bar highlighted beside a right
+    // number reads as a rendering glitch rather than an off-by-one.
     const hit = svgEl("rect", { class: "hit", x: PAD_L + i * band, y: PAD_T, width: band, height: plotH });
-    hit.addEventListener("pointerenter", (e) => showTip(e, `${p.label} · ${fmt(p.value)}`));
+    hit.addEventListener("pointerenter", (e) => {
+      marks.forEach((m) => m.classList.add("on"));
+      showTip(e, `${p.label} · ${fmt(p.value)}`);
+    });
     hit.addEventListener("pointermove", moveTip);
-    hit.addEventListener("pointerleave", hideTip);
+    hit.addEventListener("pointerleave", () => {
+      marks.forEach((m) => m.classList.remove("on"));
+      hideTip();
+    });
     svg.appendChild(hit);
   });
 
@@ -350,7 +366,10 @@ function hideTip() { tipEl.style.opacity = "0"; }
 function cardHead(parent, title, sub, section) {
   const h = el("h2", null, title);
   const status = section && section.status;
-  if (status && status !== "ok") h.appendChild(el("span", status === "partial" ? "badge bad" : "badge", status));
+  // `failed` is worse than `partial` and used to get the QUIETER badge — the
+  // ternary read "partial ? loud : quiet", which is backwards for every status
+  // that is not partial.
+  if (status && status !== "ok") h.appendChild(el("span", status === "ok" ? "badge" : "badge bad", status));
   parent.appendChild(h);
   if (sub) parent.appendChild(el("p", "card-sub", sub));
   // A `note` on a section that SUCCEEDED: what it deliberately leaves out and
@@ -474,14 +493,37 @@ const GRAINS = [
   { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, slice: (p) => p.slice(5) },
   { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, slice: (p) => p },
 ];
-let grain = "days";
+let grain = null;
+
+/** The granularities this document actually carries, finest first. */
+const grainsIn = (activity) => {
+  const d = (activity && activity.data) || {};
+  return GRAINS.filter((g) => (d[g.key] || []).length);
+};
+
+/**
+ * Settle [grain] on something the document can actually draw.
+ *
+ * The default used to be a hardcoded "days", which is wrong whenever the daily
+ * series is the empty one — a store whose newest event predates the 30-day
+ * window opens on "Not in this document." with weekly and monthly data sitting
+ * right there. Worse, the toggle hides itself below two granularities, so a
+ * document carrying ONLY months could never be switched to and its data was
+ * unreachable. Reconciling here means the page opens on the finest granularity
+ * that has something to show, and a reader's explicit choice is kept as long as
+ * it stays valid.
+ */
+function settleGrain(activity) {
+  const available = grainsIn(activity);
+  if (!available.length) return;
+  if (!available.some((g) => g.key === grain)) grain = available[0].key;
+}
 
 function grainToggle(activity, onChange) {
-  const d = (activity && activity.data) || {};
   const row = el("div", "seg");
   // Only the granularities the document actually carries — a control that
   // switches to an empty chart is worse than one that is not offered.
-  const available = GRAINS.filter((g) => (d[g.key] || []).length);
+  const available = grainsIn(activity);
   if (available.length < 2) return null;
   for (const g of available) {
     const b = el("button", g.key === grain ? "on" : null, g.label);
@@ -496,7 +538,7 @@ function grainToggle(activity, onChange) {
 
 function activityCards(activity) {
   const d = (activity && activity.data) || {};
-  const g = GRAINS.find((x) => x.key === grain) || GRAINS[0];
+  const g = GRAINS.find((x) => x.key === grain) || grainsIn(activity)[0] || GRAINS[0];
   const series = d[g.key] || [];
   const hours = d.hours || [];
   const span = g.span(d);
@@ -746,7 +788,11 @@ function kindsCard(kinds) {
   card.appendChild(controls);
 
   const top = all;
-  const max = Math.max(...top.map((k) => k.events));
+  // reduce, not Math.max(...spread): the array is every kind in the store now,
+  // and a spread is an argument list — past the engine's limit it throws
+  // RangeError, which load()'s catch would turn into a blank page rather than
+  // one missing table.
+  const max = top.reduce((m, k) => (k.events > m ? k.events : m), 1);
   const wrap = el("div", "wrap tall");
   const table = el("table");
   const thead = el("thead");
@@ -809,6 +855,7 @@ function render(doc) {
 
   // The toggle and the two series it drives are re-rendered together, so
   // switching granularity cannot leave the control and the charts disagreeing.
+  settleGrain(doc.activity);
   const activityWrap = el("div");
   const drawActivity = () => {
     activityWrap.replaceChildren();
@@ -856,7 +903,22 @@ function render(doc) {
 
 async function load() {
   try {
-    const res = await fetch("/stats.json", { cache: "no-store" });
+    // NOT `cache: "no-store"`, which was here and quietly cost the endpoint its
+    // whole caching story: no-store tells the browser neither to keep the
+    // response nor to send `If-None-Match`, so the 304 the route was built
+    // around could never fire and every load re-downloaded the document. The
+    // route already answers `Cache-Control: no-cache` — revalidate, do not
+    // reuse blind — which is exactly the behaviour wanted, so the default
+    // fetch mode is the correct one.
+    //
+    // Do not try to verify the 304 through Playwright: its Chromium has no HTTP
+    // cache, so a repeat fetch there never carries a conditional header and
+    // every response is a 200 — /web/shared/kinds.js, which is max-age=60,
+    // behaves identically. That measures the test browser, not this page. The
+    // server side IS checkable, with curl:
+    //   ET=$(curl -sD- -o/dev/null localhost:7777/stats.json | grep -i ^etag | cut -d' ' -f2)
+    //   curl -o/dev/null -w '%{http_code}\n' -H "If-None-Match: $ET" localhost:7777/stats.json
+    const res = await fetch("/stats.json");
     if (res.status === 503) {
       // The honest empty state. Not zeros: "nothing computed yet" and "this
       // relay holds nothing" are different facts and must not share a rendering.
@@ -882,6 +944,21 @@ async function load() {
 }
 
 load();
+
+/**
+ * Re-read the document on a timer.
+ *
+ * The route was written asserting this existed — "the page polls this on a
+ * timer" is why it mints an ETag and answers 304 — and it did not, which made
+ * the claim false and the machinery unexercised. With a conditional request
+ * each poll is a header exchange until the rollup actually moves.
+ *
+ * Five minutes rather than the rollup interval, which this page cannot see:
+ * STATS_INTERVAL_SECONDS is an operator setting, and polling faster than it
+ * costs only 304s while polling slower would let a screen sit stale for no
+ * reason.
+ */
+setInterval(load, 5 * 60 * 1000);
 </script>
 </body>
 </html>

@@ -366,8 +366,18 @@ internal object StatsYql {
      * list is unambiguous for every pipeline here, each of which groups once at
      * the top.
      */
-    fun topGroups(root: JsonElement): List<JsonObject> {
-        var frontier = listOf(root)
+    fun topGroups(root: JsonElement): List<JsonObject> = shallowestGroups(listOf(root))
+
+    /**
+     * Breadth-first to the first `grouplist:` at or below [from], and its
+     * `group:` children.
+     *
+     * Shared by [topGroups] and [childGroups] so both levels of a [nested]
+     * pipeline are read the same way — and so neither counts wrapper depth,
+     * which is not part of any contract we control.
+     */
+    private fun shallowestGroups(from: List<JsonElement>): List<JsonObject> {
+        var frontier = from
         // Bounded: the deepest pipeline here nests twice, and the wrapper adds
         // one. Ten is "we are lost", not a tuning parameter.
         repeat(10) {
@@ -383,8 +393,36 @@ internal object StatsYql {
         return emptyList()
     }
 
+    /**
+     * A two-level pipeline: [outer] values, each carrying its own [inner]
+     * breakdown.
+     *
+     * One round trip where the obvious shape is N. The per-kind daily series was
+     * a query per kind — eight sequential aggregations for eight sparklines —
+     * and this asks the same thing once: verified on Vespa 8.733 returning
+     * kind → day → count in a single 310ms response.
+     *
+     * The inner list does NOT collapse onto the outer group the way
+     * [distinctAuthorsBy]'s does, because it has an `each()`: there are many
+     * inner values to keep, not one aggregate to fold up. Read it with
+     * [childGroups].
+     */
+    fun nested(
+        outer: String,
+        inner: String,
+    ) = "all(group($outer) each(all(group($inner) each(output(count())))))"
+
     /** The grouped value as text — an int for `group(kind)`, a date for `group(time.date(…))`, one reader for both. */
     fun valueOf(group: JsonObject): String? = (group["value"] as? JsonPrimitive)?.content
+
+    /**
+     * The groups of the first list nested UNDER [group] — the inner level of a
+     * [nested] pipeline.
+     *
+     * Same descent as [topGroups], started one level down, so an extra wrapper
+     * on either level costs nothing here either.
+     */
+    fun childGroups(group: JsonObject): List<JsonObject> = shallowestGroups(group.childList())
 
     /** An aggregate this group carries directly, e.g. `count()` or `max(created_at)`. */
     fun aggOf(
