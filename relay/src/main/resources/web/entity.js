@@ -31,6 +31,7 @@ import { kindLabel } from "./shared/kinds.js";
 import { nip19Parse, shortNpub } from "./shared/nip19.js";
 import { njumpFor, tagsWhere } from "./cards/base.js";
 import { card, namedPubkeys } from "./cards.js";
+import { loadRelated, relatedHtml } from "./related.js";
 
 // A token, not a flag: navigating away (or to the next entity) invalidates
 // any fetch still in flight, so a slow lookup can never paint over the view
@@ -174,11 +175,41 @@ async function enrichMentions(ev) {
 }
 
 /**
+ * What a git permalink shows under its card, once the card is already up.
+ *
+ * Deliberately AFTER the paint and never awaited by it: this is a second REQ,
+ * and a repository's issue list is not worth a blank page for. It fails
+ * silently for the same reason — the page it decorates is complete without it.
+ *
+ * The reader's lens asks when there is one, matching the fetch above: a page
+ * that trust-gated the event and then listed its answers unfiltered would be
+ * showing, under a card, exactly what it just declined to show as one.
+ *
+ * `setHits` hands the drawn events back to app.js, which is what makes their
+ * `json` toggles work — that button looks the event up by id in the page's
+ * current results, and on this view there were none.
+ */
+async function paintRelated(ev, my, { paintScores, setHits }) {
+  const conn = relay.authed ? relay : await refConn().catch(() => null);
+  if (!conn || my !== token) return;
+  const shape = await loadRelated(ev, conn);
+  if (!shape || my !== token) return;
+  const html = relatedHtml(shape);
+  if (!html) return;
+  const $results = document.getElementById("results");
+  if (!$results) return;
+  $results.insertAdjacentHTML("beforeend", html);
+  setHits && setHits([ev, ...shape.events]);
+  paintScores();
+  watchNip05();
+}
+
+/**
  * Render the entity named by [seg] (the URL path segment) into #results.
  * paintScores and ensureLogin arrive as hooks because the lens they involve
  * is app state; everything else here owns itself.
  */
-export async function showEntity(seg, { paintScores, ensureLogin }) {
+export async function showEntity(seg, { paintScores, ensureLogin, setHits }) {
   const my = ++token;
   const $results = document.getElementById("results");
   const parsed = nip19Parse(seg);
@@ -267,8 +298,10 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
         `<div class="prov warn">⚠ shown from outside your web of trust — the author has no score under your lens</div>` +
         card(gated, FULL);
       document.title = titleFor(gated, parsed);
+      setHits && setHits([gated]);
       paintScores();
       watchNip05();
+      paintRelated(gated, my, { paintScores, setHits });
     };
     return;
   } else if (!ev) {
@@ -290,7 +323,9 @@ export async function showEntity(seg, { paintScores, ensureLogin }) {
       ? `<div class="prov" id="prov">not in this relay's index — fetched from its hint <span class="mono">${esc(host)}</span>, submitting here for indexing…</div>`
       : "";
     $results.innerHTML = headHtml(parsed.raw) + prov + card(ev, FULL);
+    setHits && setHits([ev]);
     if (hint) submitForIndexing(ev, host, my);
+    paintRelated(ev, my, { paintScores, setHits });
   }
   document.title = titleFor(ev, parsed);
   paintScores();

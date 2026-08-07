@@ -7,6 +7,7 @@ const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resour
 const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { buildFilters } = await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 const { renderers, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
+const { parsePatch } = await import(new URL("../../relay/src/main/resources/web/cards/code.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
 const { REPLY_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/parents.js", import.meta.url));
@@ -129,11 +130,11 @@ const FIXTURES = [
   [1618,  ev(1618, [["subject", "Add the thing"]], "please merge"), "Add the thing"],
   [1619,  ev(1619, [["subject", "Add the thing, again"]], "rebased"), "rebased"],
   [1622,  ev(1622, [], "a git reply"), "a git reply"],
-  [1630,  ev(1630, [["e", eid]], "reopening"), "<b>open</b>"],
-  [1631,  ev(1631, [["e", eid]], "merged"), "<b>applied or merged</b>"],
-  [1632,  ev(1632, [["e", eid]], "wontfix"), "<b>closed</b>"],
-  [1633,  ev(1633, [["e", eid]], "not ready"), "<b>draft</b>"],
-  [30618, ev(30618, [["d", "repo"], ["refs/heads/master", "abc"], ["HEAD", "ref: refs/heads/master"]]), "1 branch"],
+  [1630,  ev(1630, [["e", eid]], "reopening"), "status-pill lead open"],
+  [1631,  ev(1631, [["e", eid]], "merged"), "status-pill lead merged"],
+  [1632,  ev(1632, [["e", eid]], "wontfix"), "status-pill lead closed"],
+  [1633,  ev(1633, [["e", eid]], "not ready"), "status-pill lead draft"],
+  [30618, ev(30618, [["d", "repo"], ["refs/heads/master", "abc1234"], ["HEAD", "ref: refs/heads/master"]]), "1 branch"],
   [30312, ev(30312, [["title", "The room"], ["status", "open"]]), "The room"],
   [30313, ev(30313, [["title", "The conference"], ["start", String(now + 86400)]]), "The conference"],
   [31925, ev(31925, [["a", `31923:${pk}:meetup`], ["status", "accepted"]]), "status-pill accepted"],
@@ -209,6 +210,136 @@ assert(!full.includes("clamp") && full.includes(long), "full mode renders every 
 const noUrlVideo = card(ev(21, [["title", "the only body line"]]), { full: true });
 assert.strictEqual((noUrlVideo.match(/the only body line/g) || []).length, 1, "video full/no-url: body once");
 assert(card(ev(20, [], "picture text, no url")).includes("picture text, no url"), "picture preview keeps text without a url");
+
+// ---- the git family -------------------------------------------------------
+//
+// The one card layer doing real parsing. NIP-34 puts `git format-patch` output
+// in `content`, and every field of a patch card is downstream of taking that
+// mail apart — so the parser is asserted directly, and then the card is
+// asserted on the property that made it worth writing.
+const FORMAT_PATCH = `From 4f4d5c1a9e8b7f6d5c4b3a2918273645ffee0011 Mon Sep 17 00:00:00 2001
+From: Alice <alice@example.com>
+Date: Tue, 4 Aug 2026 11:02:31 +0200
+Subject: [PATCH v2 2/3] router: yield ingest while the relay
+ is under read pressure
+
+The poller did nothing with the mean it got back.
+
+---
+ router/PressurePoller.kt | 24 ++++++---
+ 1 file changed, 3 insertions(+), 1 deletion(-)
+
+diff --git a/router/PressurePoller.kt b/router/PressurePoller.kt
+index 3a4f2b1..9c8e7d0 100644
+--- a/router/PressurePoller.kt
++++ b/router/PressurePoller.kt
+@@ -41,9 +41,15 @@ class PressurePoller(
+-    private fun sleepFor(): Duration = base
++    private fun sleepFor(): Duration {
++        val mean = pressure.mean()
++    }
+`;
+const parsed = parsePatch(FORMAT_PATCH);
+// The subject is a folded RFC2822 header, and the fold is INSIDE a sentence:
+// joined wrong it reads "the relayis under read pressure".
+assert.strictEqual(parsed.subject, "router: yield ingest while the relay is under read pressure",
+  "a folded subject is one line again, with the space the fold stood for");
+assert.deepStrictEqual(parsed.markers, ["PATCH v2 2/3"], "the bracket is metadata, not words in the title");
+assert.strictEqual(parsed.message, "The poller did nothing with the mean it got back.",
+  "the commit message is prose, and stops at git's `---`");
+assert(parsed.diff.startsWith("diff --git "), "the diff starts at the diff");
+assert(!parsed.diff.includes("1 file changed"), "git's own stat block is not part of it");
+// A bare diff — no mail at all, which some clients send — keeps every line.
+const bare = parsePatch("--- a/f\n+++ b/f\n@@ -1 +1 @@\n-a\n+b\n");
+assert.strictEqual(bare.subject, "", "no mail, no subject to take from it");
+assert(bare.diff.startsWith("--- a/f") && bare.diff.includes("+b"), "and the whole diff survives");
+// A `---` inside the message is prose; the separator is the last one before
+// the patch. Read forwards, the card lost the half of the message below it.
+const ruled = parsePatch("From abc1234 Mon Sep 17 00:00:00 2001\nSubject: t\n\nabove\n---\nbelow\n\n---\ndiff --git a/f b/f\n+x\n");
+assert(ruled.message.includes("above") && ruled.message.includes("below"), "a rule inside a commit message is message");
+// Nothing here throws on a stranger's string.
+for (const junk of ["", null, undefined, "From\n\n\n", "Subject: no from line", "\n\n\n"]) {
+  assert.doesNotThrow(() => parsePatch(junk), `parsePatch(${JSON.stringify(junk)}) must not throw`);
+}
+
+const patchCard = card(ev(1617, [["a", `30617:${pk2}:vespa-relay`], ["t", "root"]], FORMAT_PATCH), { full: true });
+// The bug that started this: the card's title was git's own first line, which
+// is the same 40 hex and the same fake date on every patch ever made.
+assert(!patchCard.includes("Mon Sep 17 00:00:00 2001"), "git's From line is not a title");
+assert(patchCard.includes("router: yield ingest while the relay is under read pressure"), "the subject is");
+assert(patchCard.includes(">PATCH v2 2/3<"), "the series rides as a pill");
+assert(!patchCard.includes(">root<"), "…and the `t` tag saying the same thing does not double it");
+assert(card(ev(1617, [["t", "root"]], "--- a/f\n+++ b/f\n@@ -1 +1 @@\n+x\n")).includes(">root<"),
+  "…but with no series in the mail, the tag is what says so");
+// The diff is counted from the diff itself, so the numbers describe the lines
+// on the card rather than a stat block that may not be there.
+assert(patchCard.includes("+3") && patchCard.includes("−1") && patchCard.includes("1 file"),
+  "the change is measured, in the line a reviewer reads first");
+assert(/class="[^"]*d-add[^"]*"/.test(patchCard) && /class="[^"]*d-hunk/.test(patchCard),
+  "and the diff is tinted rather than being one grey wall");
+
+// Code is clipped by LINES. A diff cut mid-line is not a diff, and `clip()`
+// would also have trimmed the indentation off every line it kept.
+const longCode = Array.from({ length: 40 }, (_, i) => `    line ${i}`).join("\n");
+const clipped = card(ev(1337, [["name", "F.kt"], ["l", "kotlin"]], longCode));
+assert(clipped.includes("    line 0"), "indentation is not whitespace to be trimmed, it is the code");
+assert(clipped.includes("26 more lines") && !clipped.includes("line 39"), "and the preview says what it left");
+assert(card(ev(1337, [], longCode), { full: true }).includes("line 39"), "the permalink keeps every line");
+// The filename is ON the file now, not a row in a table under it.
+assert(clipped.includes('class="code-head"') && clipped.includes(">F.kt<"), "a file is named on its header bar");
+assert(!/<dt>name<\/dt>/.test(clipped), "…and not in the props table it used to sit in");
+
+// Which repository, on every kind that names one — the fact none of these
+// cards used to show, so a page of issues from four projects read as one.
+for (const [kind, tags] of [
+  [1617, [["a", `30617:${pk2}:my-repo`]]],
+  [1621, [["a", `30617:${pk2}:my-repo`]]],
+  [1631, [["a", `30617:${pk2}:my-repo`], ["e", eid]]],
+  [30618, [["d", "my-repo"]]],                       // no `a` at all: derived from `d`
+  [30063, [["d", "my-repo@v1"], ["title", "v1"]]],   // …and from `<repo>@<version>`
+]) {
+  const html = card(ev(kind, tags), { full: true });
+  assert(html.includes("repo-line") && html.includes(">my-repo<"), `kind ${kind} must say which repository it is in`);
+}
+// An `a` tag that is not a repository is not a repository line — a NIP-22
+// comment on a patch carries the patch's address in the same slot.
+assert(!card(ev(1621, [["a", `30023:${pk2}:an-article`]])).includes("repo-line"),
+  "only a 30617 address is the repository");
+// …and a card drawn UNDER that repository's own page does not repeat it.
+assert(!card(ev(1621, [["a", `30617:${pk2}:my-repo`]]), { within: `30617:${pk2}:my-repo` }).includes("repo-line"),
+  "the page already said which repository this is");
+
+// A status is the kind, and the kind is the whole event: a pill, and what it
+// is a verdict ON. The ROOT `e` is the target — NIP-34 lets a status also name
+// the revisions and the statuses it supersedes, and the first `e` is as likely
+// to be one of those.
+const gitRootId = "a".repeat(64);
+const superseding = card(ev(1632, [["e", eid, "", "mention"], ["e", gitRootId, "", "root"]], "wontfix"), { full: true });
+assert(superseding.includes(noteId(gitRootId)), "the root `e` is what the verdict is about");
+assert(superseding.includes("supersedes 1 earlier event"), "and the others are said to be what they are");
+
+// A repository names its maintainers, from the VALUES of one tag — the slot no
+// scan of `p` tags reaches, which is why base.js grew a way to declare it.
+const repo = ev(30617, [["d", "r"], ["name", "r"], ["maintainers", pk2, "not-a-pubkey", pk]]);
+assert(card(repo, { full: true }).includes(npub(pk2)), "a maintainer is named");
+assert(namedPubkeys(repo, { full: true }).includes(pk2), "…and declared, or the name renders as an npub");
+assert(!namedPubkeys(repo, { full: true }).includes(pk), "the repo's own author is already its byline");
+
+// Branches and tags are two groups, not one row of chips in which `main` and
+// `v0.9.3` look identical — and HEAD names the default branch instead of
+// printing `ref: refs/heads/main` as a props row nobody can act on.
+const state = card(ev(30618, [["d", "r"], ["HEAD", "ref: refs/heads/main"],
+  ["refs/heads/main", "4f4d5c1aaaa"], ["refs/tags/v1", "bb22cc33ddd"]]), { full: true });
+assert(state.includes("1 branch") && state.includes("1 tag"), "each group counts itself");
+assert(state.includes("ref-chip head") && state.includes(">4f4d5c1<"), "the default branch is marked, and a ref carries its commit");
+assert(!state.includes("ref: refs/heads/main"), "HEAD is resolved, not printed");
+
+// A release's artifacts read as file names; the url stays in the href.
+const release = card(ev(30063, [["d", "r@v1"], ["url", "https://x.example/downloads/relay-1.0.jar"]]), { full: true });
+assert(release.includes(">relay-1.0.jar<"), "an artifact is named by its file");
+assert(release.includes('href="https://x.example/downloads/relay-1.0.jar"'), "and the url is where a url belongs");
+assert(card(ev(30063, [["d", "vespa-relay@v0.9.3"]]), { full: true }).includes("v0.9.3"),
+  "with no `title`, the version in `d` is the title");
 
 // ---- a video card in the FEED --------------------------------------------
 //
@@ -399,7 +530,7 @@ const linkedTo = (html) => {
 
 // pk2 is "olga" in the cache seeded above; here she is the parent's author,
 // hinted where NIP-10 puts it.
-const reply = card(ev(1, [["e", rootId, "", "root"], ["e", parentId, "wss://hint.example", "reply", pk2]], "my answer"), { full: true });
+const reply = card(ev(1, [["e", gitRootId, "", "root"], ["e", parentId, "wss://hint.example", "reply", pk2]], "my answer"), { full: true });
 assert(lineOf(reply).includes("in reply to"), "a reply says what it is");
 assert(lineOf(reply).includes(">olga</a>"), "the parent is a person, named");
 assert(!lineOf(reply).includes("npub1") || !lineOf(reply).includes(">npub1"), "a known name displaces the npub");
@@ -439,8 +570,8 @@ assert(lineOf(onArticle).includes(">olga</a>") && /href="\/naddr1/.test(lineOf(o
 // A NIP-28 channel message carries the CHANNEL in its root `e` tag. Reading
 // that as a parent would put "in reply to <whoever opened the room>" over
 // every line ever typed in it.
-assert.strictEqual(lineOf(card(ev(42, [["e", rootId, "", "root"]], "hi all"), { full: true })), "", "a channel is not a parent");
-assert.strictEqual(linkedTo(card(ev(42, [["e", rootId, "", "root"], ["e", parentId, "", "reply", pk2]], "hi"), { full: true })).id, parentId,
+assert.strictEqual(lineOf(card(ev(42, [["e", gitRootId, "", "root"]], "hi all"), { full: true })), "", "a channel is not a parent");
+assert.strictEqual(linkedTo(card(ev(42, [["e", gitRootId, "", "root"], ["e", parentId, "", "reply", pk2]], "hi"), { full: true })).id, parentId,
   "…but a reply inside one is");
 
 // REPLY_KINDS is a claim about the RENDERERS — "these kinds lead with who they
