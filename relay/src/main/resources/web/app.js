@@ -17,6 +17,7 @@ import { card, popupRow, namedPubkeys } from "./cards.js";
 import { showEntity, cancelEntity } from "./entity.js";
 import { feedKinds, PREVIEW_CARDS, PAGE_CARDS, askFor, pickFeed } from "./feed.js";
 import { mountSearchField, softKeyboard } from "./searchfield.js";
+import { checkReadiness, clearReadiness } from "./readiness.js";
 
 const POPUP_LIMIT = 8;
 const FULL_LIMIT = 40;
@@ -109,8 +110,14 @@ function writeFace() {
 }
 
 // ---- NIP-07 login -> NIP-42 auth -----------------------------------------
-// Signing the challenge switches the CONNECTION's ranking observer to you
-// (and enrolls you: the relay starts syncing your trust chain).
+// Signing the challenge switches the CONNECTION's ranking observer to you.
+//
+// It does NOT start anything syncing on your behalf — this comment used to say
+// it enrolled you, and index.html's header said the same, while the relay's
+// enrolment hook (NostrRelayServer's `onObserver`) was never wired to anything.
+// The router reaches you through the streams it already runs, on their own six-
+// hourly cycle, or not at all; readiness.js is what says which, and what to do
+// about it.
 let me = null;        // the pubkey the relay ACCEPTED a NIP-42 AUTH for
 let mePending = null; // the pubkey the extension named, before that proof
 
@@ -312,14 +319,21 @@ async function ensureLogin() {
     })().finally(() => { loginTried = true; });
   }
   await loginFlight;
-  if (!me) return;
+  if (!me) { clearReadiness(); return; }
   // Keyed on the CONNECTION's auth state, not on whether we remember a
   // pubkey: a reconnect leaves `me` set but the new socket unauthenticated,
   // and searching then really would rank by nobody — there is no default
   // observer behind it any more.
-  if (relay.authed) return;
+  if (relay.authed) { checkReadiness(me); return; }
   me = await signAndAuth();
   renderWhoami();
+  // Whether this relay can actually rank for the account that just proved
+  // itself. Asked from HERE rather than from login(), because this is the one
+  // place both paths to an authenticated socket meet — the first sign-in and
+  // the re-auth after a reconnect — and the check is about the connection's
+  // lens, not about the sign-in. It is idempotent per pubkey and it waits;
+  // see readiness.js on why nothing here is on the critical path.
+  checkReadiness(me);
 }
 
 // The resend half of NIP-42, wired to the client: if the store ever answers
@@ -884,6 +898,10 @@ $me.addEventListener("click", async () => {
     $me.classList.remove("busy");
     renderMe();
     renderWhoami();
+    // Signing OUT takes the panel down immediately: it is about one account's
+    // trust chain, and leaving it up over a signed-out page would be a claim
+    // about somebody who is no longer here.
+    me ? checkReadiness(me) : clearReadiness();
     rerun();
     // The hero's feed is a different list for a signed-in reader than for
     // anyone else — and for a signed-OUT one it is not drawn at all — so it
@@ -1812,7 +1830,11 @@ function applyUrl() {
       document.body.classList.add("searching");
       closePopup();
       $results.hidden = false;
-      showEntity(seg, { paintScores, ensureLogin });
+      // The entity view hands its drawn events BACK: the `json` toggle looks an
+      // event up by id among the page's current results, and a permalink used
+      // to leave that empty — so the one card on the page answered "no longer
+      // in the current results" about itself.
+      showEntity(seg, { paintScores, ensureLogin, setHits: (evs) => { s.hits = evs; } });
       return false; // no search running — boot still signs in eagerly
     }
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch

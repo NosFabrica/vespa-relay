@@ -157,7 +157,15 @@ relay/src/main/resources/
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
                         entity.js
-                        renders /npub1…//note1…//naddr1… paths; feed.js is the
+                        renders /npub1…//note1…//naddr1… paths, with related.js
+                        the second ask a git permalink makes AFTER its card is
+                        up — a repository's state, issues, patches and releases
+                        (`#a` its address), an issue's or a patch's verdict and
+                        thread (`#e` its id). Never awaited by the paint and
+                        silent on failure: the page is complete without it. The
+                        cards it draws are the SAME cards at preview depth, so
+                        they click, walk under j/k and toggle their json for
+                        free — app.js delegates all three off #results; feed.js is the
                         latest feed — three cards under the hero for a signed-in
                         reader, a hundred at /?feed=1 — and is an EMPTY SEARCH:
                         buildFilters() with no words and none of the bar's
@@ -179,8 +187,41 @@ relay/src/main/resources/
                         label or a family tone. The NIP-51 lists and sets are
                         one table in cards/lists.js rather than one renderer
                         each: they differ only in which tags carry their items.
+                        cards/code.js is the one that PARSES: NIP-34 puts `git
+                        format-patch` output in a patch's content, so the mail
+                        is taken apart (subject, series marker, commit message,
+                        diff) rather than dumped — its title used to be git's
+                        own `From <sha> Mon Sep 17 00:00:00 2001`. Code clips
+                        by LINES there, never by characters: `clip()` trims, and
+                        indentation is the code.
                         index.html's header records the rules and why "one
                         file" ended.
+                        readiness.js is the panel under the box that answers
+                        "can this relay rank for ME yet" — the store treats the
+                        reader's lens as a FILTER, so a signed-in reader whose
+                        trust chain has not been mirrored here gets an EMPTY
+                        search rather than a degraded one, and the page said
+                        nothing about it. It walks the chain the router walks
+                        (your 10002 → your 10040 → your provider's 30382s → a
+                        ranked read that comes back), reports the FIRST broken
+                        link and leaves the rest `waiting`, and shows here/there
+                        as a percentage — observer_stats.html's arithmetic for
+                        one reader's own row — only where a denominator honestly
+                        exists. An import within a rounded 90% of done counts as
+                        done and says NOTHING: the tail is the accounts the
+                        provider scored lowest, and "importing — 99%" nags
+                        somebody whose search is already complete. A `ready`
+                        verdict is then kept in a week-long cookie, so the seven
+                        round trips are not re-paid by a reader with nothing
+                        left to learn. shared/readiness.js is the decision, pure
+                        and tested; readiness.js is the asks and the words. Its one
+                        action is for the failure that cannot fix itself: with
+                        no 10002 stored NOTHING discovers you, ever, so the
+                        panel takes a relay url, reads your three lists off it
+                        and republishes them here VERBATIM for the next cycle to
+                        find. Signing in enrols you in nothing — the server's
+                        `onObserver` hook is wired to nothing, whatever older
+                        comments claimed.
   observer_stats.html   an operator diagnostic carrying its own tiny relay
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
