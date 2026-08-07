@@ -194,7 +194,7 @@ const PER_RELAY_CONCURRENCY = 4;
 // The whole remote path was parallelised for a reason this loop had just as
 // badly: 247 distinct services here, counted strictly serially, so the page's
 // first phase cost 247 × one COUNT before a single remote relay was dialled.
-// The bail-out reasoning that keeps kind_stats.html's pool at four applies
+// The bail-out reasoning that kept the old kind_stats page's pool at four applies
 // unchanged — a status page pointed at a relay that is also serving clients is
 // not a load generator, and four concurrent COUNTs is the same courtesy this
 // page already extends to somebody else's server.
@@ -457,7 +457,7 @@ function paintDim(d) {
  * cheap: a run lasting minutes still paid a full ~250-row reparse ten times a
  * second, and it threw away the reader's text selection each time. Writing the
  * two cells that actually changed costs nothing at any table size, so the
- * coalescing timer is gone with it — this is the same correction kind_stats.html
+ * coalescing timer is gone with it — this is the same correction kind_stats
  * already carries, for the same reason.
  */
 function build(list) {

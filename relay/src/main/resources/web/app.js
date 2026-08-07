@@ -1830,7 +1830,11 @@ function applyUrl() {
       document.body.classList.add("searching");
       closePopup();
       $results.hidden = false;
-      showEntity(seg, { paintScores, ensureLogin });
+      // The entity view hands its drawn events BACK: the `json` toggle looks an
+      // event up by id among the page's current results, and a permalink used
+      // to leave that empty — so the one card on the page answered "no longer
+      // in the current results" about itself.
+      showEntity(seg, { paintScores, ensureLogin, setHits: (evs) => { s.hits = evs; } });
       return false; // no search running — boot still signs in eagerly
     }
     cancelEntity(); // leaving the entity view invalidates its in-flight fetch

@@ -45,6 +45,7 @@ import io.ktor.server.request.host
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
+import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
@@ -80,8 +81,10 @@ data class Nip11Info(
  *   GET  /web/… -> the landing page's ES modules, straight off the classpath
  *   GET  /npub1…, /nprofile1…, /note1…, /nevent1…, /naddr1… -> [landingPage],
  *        which decodes the identifier and renders the entity itself
- *   GET  /kind_stats.html -> [statsPage] (per-kind COUNTs — an operator diagnostic)
  *   GET  /observer_stats.html -> [observerStatsPage]
+ *   GET  /stats.html -> [statsPage], the view over [statsJson]
+ *   GET  /kind_stats.html -> 301 to /stats.html, whose Kinds table replaced it
+ *   GET  /stats.json -> [statsJson], this relay's corpus statistics
  *   POST /  -> the NIP-86 management RPC, when [admin] is configured
  *
  * The NIP-11 doc is held mutably so NIP-86 change-name/description/icon RPCs
@@ -97,8 +100,12 @@ fun serveRelay(
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
     admin: Nip86Admin? = null,
     landingPage: String? = null,
-    statsPage: String? = null,
     observerStatsPage: String? = null,
+    statsPage: String? = null,
+    // The corpus statistics document, recomputed behind the server by
+    // StatsRollup. Null — or present but never yet published — makes
+    // GET /stats.json a 503 rather than a page of zeros.
+    statsJson: StatsSnapshot? = null,
     // When set, GET /pressure serves the relay's mean client-read latency, so
     // the sync process — its own container since the split — can keep yielding
     // ingest to slow reads the way it did when both shared a JVM.
@@ -115,8 +122,8 @@ fun serveRelay(
     // Hashed once at boot rather than per request: these strings are read off
     // the classpath at startup and never change while the process lives.
     val landing = landingPage?.let(::CachedPage)
-    val stats = statsPage?.let(::CachedPage)
     val observerStats = observerStatsPage?.let(::CachedPage)
+    val stats = statsPage?.let(::CachedPage)
 
     return embeddedServer(Netty, port = port) {
         // The pages are ~117KB of text — html, ES modules, css — and none of it
@@ -190,7 +197,7 @@ fun serveRelay(
             // what the identifier names — belongs to the page, which already
             // speaks bech32. Deliberately not a catch-all: /favicon.ico and
             // typos should stay 404s, not empty search pages. Ktor prefers
-            // literal routes, so /kind_stats.html and /web/… are unaffected.
+            // literal routes, so /stats.html and /web/… are unaffected.
             landing?.let { page ->
                 get("/{nip19}") {
                     if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
@@ -216,12 +223,10 @@ fun serveRelay(
                     )
                 }
             }
-            stats?.let { page ->
-                get("/kind_stats.html") { call.respondPage(page) }
-            }
             observerStats?.let { page ->
                 get("/observer_stats.html") { call.respondPage(page) }
             }
+            corpusStats(stats, statsJson)
             admin?.let { nip86Admin(it, info) }
         }
     }.start(wait = wait)
@@ -276,6 +281,66 @@ internal fun Route.webModules() {
 }
 
 /**
+ * `GET /stats.html` and `GET /stats.json` — the corpus statistics page and the
+ * document it charts.
+ *
+ * One name, two representations: the `.json` is the artifact and the `.html` is
+ * a view over it, and the shared stem is what says so — a reader who finds one
+ * can guess the other. No `<subject>_` prefix because there is no subject to
+ * name: the sibling `observer_stats.html` earns its prefix by being about
+ * observers specifically, while this page is about the relay, which on a relay
+ * is everything.
+ *
+ * The document is PUBLIC, like `/pressure` and the two other stats pages. Every
+ * number in it describes STORED EVENTS, which is what a relay already hands to
+ * anyone who asks for them over a REQ, and publishing it is most of the point:
+ * a reader charting our coverage against a network-wide dashboard should not
+ * have to scrape this page's markup for numbers the relay already computed.
+ *
+ * The line worth holding is the one `/pressure` holds. That route caps its
+ * `samples` field precisely because an uncapped one would have handed anyone the
+ * relay's queries-per-second, which its throttle never needed — so: nothing
+ * about CLIENTS goes in this document. Everything currently in it is a fact
+ * about the corpus, and a statistics endpoint is exactly where a field like
+ * "searches per hour" gets added later without anyone noticing.
+ *
+ * Its own function so a test can mount it without standing up a relay — the
+ * same reason [webModules] is one.
+ */
+internal fun Route.corpusStats(
+    page: CachedPage?,
+    snapshot: StatsSnapshot?,
+) {
+    page?.let {
+        get("/stats.html") { call.respondPage(it) }
+        // `/kind_stats.html` was the per-kind COUNT page this one's Kinds table
+        // replaced. A 301 rather than a 404 because the old url is what is
+        // bookmarked, linked from operator runbooks, and printed in this repo's
+        // own history — and because the answer genuinely moved rather than
+        // going away: the new table covers EVERY kind, where that page could
+        // only count the ones it already knew to name.
+        get("/kind_stats.html") { call.respondRedirect("/stats.html", permanent = true) }
+    }
+    snapshot?.let {
+        get("/stats.json") {
+            val doc = it.served()
+            if (doc == null) {
+                // 503, not an empty document: "no statistics yet" is a state a
+                // poller should retry, and a 200 carrying zeros is
+                // indistinguishable from a relay that genuinely holds nothing.
+                call.respondText(
+                    """{"error":"no statistics computed yet"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.ServiceUnavailable,
+                )
+            } else {
+                call.respondSnapshot(doc)
+            }
+        }
+    }
+}
+
+/**
  * A strong ETag over [bytes] — the first 16 hex of its SHA-256.
  *
  * Content-derived rather than a timestamp on purpose: a jar entry's mtime is
@@ -315,6 +380,26 @@ private suspend fun ApplicationCall.respondPage(page: CachedPage) {
         respond(HttpStatusCode.NotModified)
     } else {
         respondText(page.html, ContentType.Text.Html)
+    }
+}
+
+/**
+ * The statistics document, revalidated every time and re-sent only when the
+ * rollup actually produced something new.
+ *
+ * The 304 is the point rather than a nicety: the page polls this on a timer and
+ * the rollup is far slower than the poll, so most fetches are for bytes the
+ * reader already has. `no-cache` (revalidate, don't reuse blind) rather than a
+ * `max-age` guess, because the rollup interval is an operator setting and a
+ * cache lifetime picked here would be wrong for anyone who changed it.
+ */
+private suspend fun ApplicationCall.respondSnapshot(doc: StatsSnapshot.Served) {
+    response.header(HttpHeaders.ETag, doc.etag)
+    response.header(HttpHeaders.CacheControl, "no-cache")
+    if (matchesEtag(doc.etag)) {
+        respond(HttpStatusCode.NotModified)
+    } else {
+        respondBytes(doc.bytes, ContentType.Application.Json)
     }
 }
 

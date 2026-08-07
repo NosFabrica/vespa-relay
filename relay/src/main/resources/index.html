@@ -244,6 +244,7 @@
 <link rel="modulepreload" href="/web/entity.js" />
 <link rel="modulepreload" href="/web/feed.js" />
 <link rel="modulepreload" href="/web/readiness.js" />
+<link rel="modulepreload" href="/web/related.js" />
 <link rel="modulepreload" href="/web/searchfield.js" />
 <link rel="modulepreload" href="/web/shared/avatar.js" />
 <link rel="modulepreload" href="/web/shared/calendar.js" />
@@ -276,8 +277,14 @@
     --accent-soft: #eaf0ff;
     --danger: #c0332b;
     --warn: #a8611a;
-    /* The same green observer_stats.html marks a synced service with. Two
-       pages that both say "this is in sync" should not say it in two colours. */
+    /* a diff's two colours, and the git verdicts that borrow them */
+    --add: #1a7f37;
+    --del: #b42318;
+    /* The green observer_stats.html marks a SYNCED service with, to the digit:
+       two pages that both say "this is in sync" should not say it in two
+       colours. Near-identical to --add and deliberately not merged with it —
+       that one is a diff's added-line green, tuned against a tinted row, and
+       the two vocabularies are free to drift apart. */
     --ok: #1a7f4b;
     --ring: rgba(37, 99, 235, .35);
     --shadow-sm: 0 1px 2px rgba(16, 24, 40, .05);
@@ -305,6 +312,8 @@
       --accent-soft: #1a2233;
       --danger: #ff8a80;
       --warn: #d99b56;
+      --add: #57ab5a;
+      --del: #f47067;
       --ok: #6dd39b;
       --ring: rgba(122, 162, 255, .4);
       --shadow-sm: 0 1px 2px rgba(0, 0, 0, .4);
@@ -1172,6 +1181,55 @@
   .codeblock { margin: 6px 0 0; padding: 12px; overflow: auto; max-height: 60vh;
                background: var(--surface-2); border: 1px solid var(--border); border-radius: 8px;
                font: 12px/1.5 var(--mono); white-space: pre; }
+  /* ---- code & git ---------------------------------------------------------
+     A file's name belongs ON the file — a bar across the top of the block, the
+     way every code host draws one. It used to be a props row reading "name",
+     which is a fact ABOUT the card rather than a label on the thing. */
+  .code-head { display: flex; align-items: baseline; gap: 10px; margin: 6px 0 0; padding: 6px 12px;
+               background: var(--surface-2); border: 1px solid var(--border); border-bottom: 0;
+               border-radius: 8px 8px 0 0; font-size: 12px; }
+  .code-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+               font-family: var(--mono); font-weight: 620; }
+  .code-lang { margin-left: auto; flex: none; color: var(--faint); }
+  .codeblock.headed { margin-top: 0; border-radius: 0 0 8px 8px; }
+  /* A diff's two voices, as TEXT colour and never as a filled row: the block
+     scrolls sideways, so a background would stop at the fold and a wide diff
+     would show green lines going grey halfway across. */
+  .codeblock.diff .d-add { color: var(--add); }
+  .codeblock.diff .d-del { color: var(--del); }
+  .codeblock.diff .d-hunk { color: var(--accent); }
+  .codeblock.diff .d-file { color: var(--muted); font-weight: 620; }
+  /* How big the change is, in the one line a reviewer reads first. */
+  .diffstat { display: flex; gap: 12px; margin: 6px 0 0; font-size: 12px; color: var(--faint);
+              font-family: var(--mono); }
+  .diffstat .d-add { color: var(--add); }
+  .diffstat .d-del { color: var(--del); }
+  /* Which repository an event belongs to, and who keeps it — context above the
+     words, in the reply line's quiet voice, because it is the same kind of
+     thing: where this card sits, not what it says. */
+  .repo-line, .meta-line { font-size: 12.5px; color: var(--muted);
+                           overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .repo-line { margin: 0 0 6px; }
+  .meta-line { margin: 8px 0 0; }
+  .repo-line a, .meta-line a { color: var(--accent); text-decoration: none; font-weight: 550; }
+  .repo-line a:hover, .meta-line a:hover { text-decoration: underline; }
+  .repo-line .mono, .meta-line .mono { font-family: var(--mono); font-size: 12px; }
+  /* A ref carries its commit: same chip, the id trailing in the quiet voice. */
+  .ref-chip .mono { margin-left: 7px; color: var(--faint); font-family: var(--mono); }
+  .ref-chip.head { border-color: var(--border-strong); color: var(--fg); }
+  /* ---- what a permalink shows under its card (web/related.js) -------------
+     A repository's issues, a patch's replies: the same cards a search draws,
+     under headings that count them. The rule wants to be visible — everything
+     below it is ABOUT the card above, not more of it. */
+  .related { margin-top: 22px; border-top: 1px solid var(--border); }
+  .rel-section + .rel-section { margin-top: 20px; }
+  .rel-section .section-head { margin: 18px 2px 8px; }
+  /* The verdict on an issue or a patch — the one thing a reader opening one
+     came to find out, so it sits against the card rather than in the list. */
+  .resolution { display: flex; align-items: center; flex-wrap: wrap; gap: 2px;
+                margin: 14px 2px 0; font-size: 13px; color: var(--muted); }
+  .resolution a { color: var(--accent); text-decoration: none; }
+  .resolution a:hover { text-decoration: underline; }
   .quote { margin: 0 0 6px; padding: 8px 12px; border-left: 3px solid var(--accent);
            background: var(--surface-2); border-radius: 0 8px 8px 0; font-size: 13.5px; white-space: pre-wrap; overflow-wrap: anywhere; }
   .face-strip { display: flex; align-items: center; margin-top: 8px; }
@@ -1248,6 +1306,18 @@
   .status-pill.accepted { background: var(--accent); color: var(--accent-fg); }
   .status-pill.declined { background: var(--danger); color: #fff; }
   .status-pill.tentative { background: var(--warn); color: #fff; }
+  /* The NIP-34 verdicts. `--accent-fg` is the label colour rather than #fff
+     because these fills invert with the theme — it is the token for "the text
+     that reads on a saturated background here", light on the dark fills this
+     palette uses in day mode and dark on the pale ones it uses at night. */
+  .status-pill.open { background: var(--add); color: var(--accent-fg); }
+  .status-pill.merged { background: var(--accent); color: var(--accent-fg); }
+  .status-pill.closed { background: var(--del); color: var(--accent-fg); }
+  /* A pill that LEADS its line, rather than trailing a title. */
+  .status-pill.lead { margin-left: 0; margin-right: 4px; }
+  /* …and the row a card falls back to when it has pills but no title at all. */
+  .pill-row { margin: 0 0 4px; }
+  .pill-row .status-pill:first-child { margin-left: 0; }
   .price-line { margin: 2px 0 6px; font-size: 15px; font-weight: 650; }
   .rank-big { margin: 2px 0; font-size: 28px; font-weight: 700; color: var(--accent); }
   /* what a list POINTS AT — e tags to notes, a tags to addressable entities */

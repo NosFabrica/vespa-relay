@@ -36,6 +36,68 @@ codebase forbids.
 | `GUARD_OWNERS_DISABLE` | **nothing to set.** Both processes tell the store their writer topology in code (`STORE_WRITERS` = `SHARED_STRICT`), so NIP-09 and NIP-62 are checked against the store on every insert — see [Mirroring the deletions themselves](router.md#mirroring-the-deletions-themselves). This variable can only force that same floor, never weaken it, and the store now fails to open on a value it cannot parse | unset ⇒ the code's choice stands |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
+## Corpus statistics (`GET /stats.json`, `/stats.html`)
+
+A background rollup counts what this relay's store holds with Vespa grouping
+queries, publishes it as a public JSON document, and charts it on a page:
+
+- **corpus** — events, distinct pubkeys, distinct kinds, the age of the newest
+  event, and how many events are dated in the *future* (clock skew and spam;
+  every freshness number excludes them)
+- **trust** — observers, score providers, stored scores, and pubkeys carrying
+  projected trust state. The one section reading a second document type, and the
+  only place a silently-empty web of trust shows up: `scoredPubkeys` at zero
+  means every ranked search is falling back to unranked, which looks identical
+  to a healthy relay on every other panel
+- **kinds** — EVERY kind in the store, with distinct authors and the
+  `created_at` span. This replaced `/kind_stats.html` (whose url now 301s to the
+  page): that page asked one NIP-45 `COUNT` per kind it already knew to name, so
+  a kind nobody had registered was invisible on the only page that would have
+  revealed it — a grouping histogram enumerates instead
+- **activity** — events and publishing pubkeys per UTC day, week and month, plus
+  the hour-of-day shape. Three granularities and not one re-aggregated: events
+  sum across buckets, distinct authors do not, so a weekly author count has to
+  be asked of the engine per week
+- **kindActivity** — a daily series per kind, for the largest few
+- **relayDistribution** — the relays this store's NIP-65 lists name
+- **zaps** — kind-9735 receipt counts, and the wallets that signed them
+
+Per-kind `lastSeen` and the corpus-wide newest event are both bounded to the
+present, and the page renders them as **ages** rather than dates: "kind 1 four
+minutes ago, kind 30023 six days ago" localises which stream stalled, where a
+column of timestamps makes the reader do the subtraction.
+
+Everything is counted **anonymously**: the store gates an authenticated reader to
+authors that reader has scored, so the same query under an operator's lens would
+answer a smaller, different question under an identical label.
+
+The numbers describe **this relay's store**, not the Nostr network. Read against
+a network-wide dashboard they are a coverage ratio, which is the useful number
+for a mirroring relay — but a total below one is not a fault, and the document
+says so in its own `scope` field.
+
+Two sections are computed but incomplete, and carry a `note` saying what they leave
+out. **Zaps** has receipt counts but no satoshis: the amount lives in the
+`bolt11` tag and in the kind-9734 request nested in `description`, both
+multi-character tag names that `tag_index` cannot address, and `content` is
+summary-only — so no grouping query can reach it. **Relay distribution** counts
+how many lists name each relay but cannot split read from write: that marker is
+an `r` tag's *third* element, and `tag_index` stores only `<letter>:<value>`.
+Both want a walk over their kind, which is the job neither has yet.
+
+| var | meaning | default |
+|---|---|---|
+| `STATS_INTERVAL_SECONDS` | how often to recompute. `0` or negative disables the rollup entirely — a legitimate choice on a busy box, since the grouping competes with client reads; `/stats.json` then serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it | `900` |
+| `STATS_FILE` | where the document is persisted, so a restart serves the last one instead of a blank page while the first rollup runs. Written atomically (temp file + move). Readable on the host through the same bind mount as the FTS cursor and the parse audit | `/var/lib/vespa-relay/stats.json` |
+
+`GET /stats.json` is public, like `GET /pressure` and the other stats pages, and
+publishing it is most of the point — anyone can chart this relay's coverage
+without scraping the page's markup. It carries an `ETag` and answers `304` to a
+conditional request, which is what makes polling it cheap. The one rule to hold
+when adding fields: everything in the document is a fact about **stored events**,
+never about clients. `/pressure` caps its `samples` field for exactly that
+reason.
+
 ## Relay identity (NIP-11)
 
 | var | meaning | default |

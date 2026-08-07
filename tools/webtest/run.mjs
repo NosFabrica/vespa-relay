@@ -17,6 +17,10 @@
 //                  kind chip picks the kinds it names and survives the URL,
 //                  and that replies, future dates and duplicates never reach
 //                  a card
+// related.test.mjs what a git permalink shows UNDER its card — which filters
+//                  answer "what else belongs to this", and the shape they come
+//                  back as: a repository's lists newest-first, a thread's
+//                  replies oldest-first, and the newest status as the verdict
 // relay.test.mjs   the NIP-42 CLOSED auth-required -> auth -> resend wiring
 // profiles.test.mjs a lookup caches "no profile" only off a COMPLETE read —
 //                  the rule two separate caches have now got wrong
@@ -45,7 +49,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "readiness.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "readiness.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

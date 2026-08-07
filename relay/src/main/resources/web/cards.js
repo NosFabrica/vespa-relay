@@ -10,7 +10,7 @@ import { shortNpub } from "./shared/nip19.js";
 import { authorOf, displayName, parseProfile } from "./shared/profiles.js";
 import { replyPerson } from "./shared/parents.js";
 import { avatarHtml } from "./shared/avatar.js";
-import { renderers, badgeHtml, gridPeople, tagOf, tagsWhere } from "./cards/base.js";
+import { renderers, badgeHtml, gridPeople, namedPeople, tagOf, tagsWhere } from "./cards/base.js";
 import { genericCard } from "./cards/generic.js";
 import "./cards/profile.js";
 import "./cards/note.js";
@@ -69,6 +69,9 @@ export function namedPubkeys(ev, opts) {
   }
   // Everyone a list's grid puts a name under, and nobody past its last cell.
   for (const pk of gridPeople(ev, opts)) add(pk);
+  // …and whoever else a renderer says it names from a slot no tag scan covers:
+  // a repository's maintainers ride as the VALUES of one `maintainers` tag.
+  for (const pk of namedPeople(ev, opts)) add(pk);
   // Who a reply answers. Not reachable by any scan of this event either: the
   // person is named by an `e` tag's optional fifth element, by an address's
   // middle field, or by a lookup of the parent — three slots, one answer, and

@@ -157,7 +157,15 @@ relay/src/main/resources/
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
                         entity.js
-                        renders /npub1…//note1…//naddr1… paths; feed.js is the
+                        renders /npub1…//note1…//naddr1… paths, with related.js
+                        the second ask a git permalink makes AFTER its card is
+                        up — a repository's state, issues, patches and releases
+                        (`#a` its address), an issue's or a patch's verdict and
+                        thread (`#e` its id). Never awaited by the paint and
+                        silent on failure: the page is complete without it. The
+                        cards it draws are the SAME cards at preview depth, so
+                        they click, walk under j/k and toggle their json for
+                        free — app.js delegates all three off #results; feed.js is the
                         latest feed — three cards under the hero for a signed-in
                         reader, a hundred at /?feed=1 — and is an EMPTY SEARCH:
                         buildFilters() with no words and none of the bar's
@@ -179,6 +187,13 @@ relay/src/main/resources/
                         label or a family tone. The NIP-51 lists and sets are
                         one table in cards/lists.js rather than one renderer
                         each: they differ only in which tags carry their items.
+                        cards/code.js is the one that PARSES: NIP-34 puts `git
+                        format-patch` output in a patch's content, so the mail
+                        is taken apart (subject, series marker, commit message,
+                        diff) rather than dumped — its title used to be git's
+                        own `From <sha> Mon Sep 17 00:00:00 2001`. Code clips
+                        by LINES there, never by characters: `clip()` trims, and
+                        indentation is the code.
                         index.html's header records the rules and why "one
                         file" ended.
                         readiness.js is the panel under the box that answers
@@ -201,14 +216,56 @@ relay/src/main/resources/
                         find. Signing in enrols you in nothing — the server's
                         `onObserver` hook is wired to nothing, whatever older
                         comments claimed.
-  kind_stats.html       operator diagnostics, each carrying its own tiny relay
-  observer_stats.html   client on purpose: they must work when the app does
-                        not. kind_stats reads shared/kinds.js for the kinds to
-                        count — that list IS "which kinds do we support", and a
-                        second copy would go stale in the direction that hides
-                        events. The CLIENT is what stays self-contained; a
-                        table of integers is not worth duplicating
+  observer_stats.html   an operator diagnostic carrying its own tiny relay
+                        client on purpose: it must work when the app does not,
+                        and asking the way a client would means it also TESTS
+                        what it asks
+  stats.html            the corpus dashboard, and the ONE page here with no
+                        relay client: it charts GET /stats.json and nothing
+                        else. Neither reason observer_stats carries one applies
+                        — no aggregation on it is a protocol feature to test,
+                        and thirty days of distinct-pubkey counts is not a
+                        question to ask over a websocket. THE JSON IS THE
+                        ARTIFACT; the page is one reader of it (see
+                        maintenance/StatsRollup).
+                        Its Kinds table REPLACED kind_stats.html, whose url now
+                        301s here. That page asked one NIP-45 COUNT per kind it
+                        already knew to name — shared/kinds.js plus whatever an
+                        operator typed in — so a kind nobody had registered was
+                        invisible on the only page that would have revealed it.
+                        A grouping histogram enumerates instead, which is why
+                        the table is EVERY kind and not a top-N. What went with
+                        that page: it exercised NIP-45 over the relay's own
+                        websocket. Nothing here speaks the protocol; if that
+                        check is wanted back it wants to be a test, not a page
 ```
+
+The statistics rollup lives in `relay/maintenance/` beside the other background
+jobs, and talks to Vespa directly rather than through the store:
+
+```
+relay/src/main/kotlin/com/nosfabrica/vespa/relay/
+  maintenance/
+    StatsYql.kt      the grouping pipelines and the readers for what comes
+                     back — pure, so both halves are tested against captured
+                     engine output rather than against an assumed shape
+    StatsVespa.kt    POST to /search/, refuse a degraded answer (the same
+                     coverage question the store's SearchCoverage asks, and
+                     for the same reason: `full` answers it in neither
+                     direction)
+    StatsRollup.kt   the document, section by section, each failing on its own
+  server/
+    StatsSnapshot.kt what GET /stats.json serves — held in memory with an
+                     ETag, written through to STATS_FILE so a deploy does not
+                     blank the page for the minutes a first rollup takes
+```
+
+Four of the pipelines are `EventYql`'s own shapes, reused verbatim because this
+deployment has already run them; the rest extend them along `created_at`. It
+does NOT build on `EventYql` itself — `grouping()` is private, its pipelines are
+a fixed set, and it ships in vespa-eventstore, so every new chart would cost a
+store release plus a JitPack pin bump. The duplication is the WHERE clause and
+nothing else.
 
 `docs/configuration.md` documents every environment variable and
 `docs/router.md` the router config format. They are the reference; this file is
@@ -394,6 +451,69 @@ statement about someone else's server.
   before concluding a commit "doesn't build".
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
+- **Vespa's `time.date()` does not zero-pad.** Verified on 8.733: two documents
+  nine months apart group as `"2025-1-5"` and `"2025-10-9"`. Unpadded values
+  misorder as text wherever the digit count differs in the same position —
+  November before February, the 15th before the 5th — but NOT everywhere, since
+  `'-'` sorts below `'0'`, so `2025-1-5` beside `2025-10-9` comes out right. A
+  chart can look correct for one window and interleave in the next, with every
+  bar the right height and only the axis wrong. `StatsYql.isoDay` is the one way
+  in; a test asserts the misordering on values chosen to actually exhibit it,
+  because the pair the fixture happens to contain does not.
+- **A nested grouping and a flat one answer in the SAME shape.** Vespa collapses
+  an inner group list's aggregate onto the outer group, so
+  `all(group(kind) each(output(count())))` and
+  `all(group(kind) each(all(group(pubkey) output(count()))))` both come back as
+  one leaf per kind carrying one `count()` — 79 and 35 for the same kind over
+  the same corpus, from structurally identical responses. Nothing distinguishes
+  them and neither errors: the only thing keeping events out of a column
+  labelled users is calling the right builder.
+- **Grouping expressions take ARITHMETIC**, which is usually the better bucket.
+  `group(created_at / 604800)` renders as `div(created_at, 604800)` and yields a
+  plain integer, so it inherits none of `time.date`'s padding problem and sorts
+  correctly before anything formats it. Two uses worth knowing: weeks need
+  `(created_at + 259200) / 604800`, because epoch second 0 is a THURSDAY and the
+  un-shifted division buckets Thursday-to-Wednesday under a chart every reader
+  will assume starts on Monday; and months, which cannot be an even division of
+  seconds, fold into one sortable integer as
+  `time.year(created_at) * 12 + time.monthofyear(created_at)` rather than a
+  two-level `time.year`/`time.monthofyear` nest the readers would have to descend.
+- **A coarser time bucket is not the finer one re-added.** Events sum across
+  buckets; DISTINCT AUTHORS DO NOT — someone posting every day is one author in
+  the week and seven in the sum of that week's days. Every granularity has to be
+  asked of the engine at that granularity, which is why `activitySection`
+  issues three pairs of queries instead of summing one.
+- **A bare aggregate with no grouping level is not a query Vespa can answer.**
+  `all(output(count()))` works, so the shape looks proven — but swap the
+  aggregator and `all(output(max(created_at)))` fails with HTTP 500 and
+  `Cannot invoke SingleResultNode.max(…) because "this.max" is null`, which
+  reads like an engine bug and sends you looking in the wrong place. Anything
+  other than `count()` needs a `group(...) each(output(...))` around it. The
+  corpus-wide newest event is therefore DERIVED from the per-kind spans rather
+  than asked for.
+- **Freshness has to be bounded to the present.** `created_at` is author-signed,
+  so an unbounded `max(created_at)` reports the corpus's most optimistically
+  dated spam — a relay whose mirror died an hour ago reads as fresh "in 74
+  years". Every `lastSeen` here carries `created_at <= now`, and the future-dated
+  events are counted separately in `corpus.futureDated`, where they are the
+  finding rather than the noise.
+- **A nested grouping is ONE query where the obvious shape is N.**
+  `all(group(kind) each(all(group(time.date(created_at)) each(output(count())))))`
+  returns kind → day → count in a single response — the per-kind daily series
+  was a query per kind before that. Note the inner `each()`: without one the
+  inner list COLLAPSES onto the outer group (that is what `distinctAuthorsBy`
+  relies on), so the same shape minus three characters silently turns a whole
+  series into one distinct-day count.
+- **Playwright's Chromium has no HTTP cache**, so a browser test can never
+  demonstrate a 304: repeat fetches carry no `If-None-Match` and every response
+  is a 200, including for `max-age=60` assets. Check conditional requests with
+  `curl -H "If-None-Match: …"` against the running relay instead.
+- **The bundled query profile is what makes any of this work.**
+  `grouping.globalMaxGroups: -1` in `search/query-profiles/default.xml` is why a
+  `max()`-less pipeline is legal at all, and the per-request
+  `grouping.defaultMaxGroups`/`defaultMaxHits` are why one returns more than TEN
+  groups. Omit those two parameters and a kind histogram comes back as a
+  plausible-looking top-ten with no error anywhere.
 - **`grep` may be aliased to `ugrep`**, which silently returns nothing on some
   large files. Use `/usr/bin/grep` when a search "finds nothing" implausibly.
 - **`\n` inside a Kotlin raw string is literal**, which breaks HOCON fixtures in

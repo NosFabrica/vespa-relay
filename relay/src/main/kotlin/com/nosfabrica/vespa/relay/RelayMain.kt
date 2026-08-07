@@ -35,10 +35,13 @@ import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
+import com.nosfabrica.vespa.relay.maintenance.StatsRollup
+import com.nosfabrica.vespa.relay.maintenance.StatsVespa
 import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
+import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
@@ -46,6 +49,7 @@ import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
 import com.nosfabrica.vespa.relay.server.ServingPressure
+import com.nosfabrica.vespa.relay.server.StatsSnapshot
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -172,6 +176,38 @@ fun main() {
         // typo is not a sweep anyone should have to think twice about.
         launchOrphanScoreSweep(maintenanceScope, store, dryRun = setting.toBooleanStrictOrNull() != true)
     }
+    // The corpus statistics behind GET /stats.json and /stats.html.
+    // Seeded from the state file first, so a restart serves the last document
+    // instead of a blank page for however long the first rollup takes.
+    val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
+    // A value that will not parse STOPS the boot rather than falling back to the
+    // default. `STATS_INTERVAL_SECONDS=0s` or `=off` are the obvious ways an
+    // operator writes "turn this off", and `?: 900L` accepted both by silently
+    // running the rollup every fifteen minutes — a setting that was read, was
+    // wrong, and did the opposite of what it said, which is exactly the silent
+    // inertness this codebase refuses elsewhere.
+    val statsIntervalSeconds =
+        env["STATS_INTERVAL_SECONDS"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+            it.toLongOrNull()
+                ?: error("STATS_INTERVAL_SECONDS='$it' is not a number of seconds. Use 0 to disable the rollup.")
+        } ?: 900L
+    if (statsIntervalSeconds > 0) {
+        launchStatsRollup(
+            scope = maintenanceScope,
+            // The NORMALIZED url, the same string NIP-42 and NIP-62 key off —
+            // so a document fetched from two of this relay's addresses names
+            // one relay rather than reading as two.
+            rollup = StatsRollup(StatsVespa(vespaUrl), relayUrl = relayUrl.url),
+            snapshot = statsSnapshot,
+            everySeconds = statsIntervalSeconds,
+        )
+    } else {
+        // A zero/negative interval is "don't compute", which is a legitimate
+        // choice on a busy box — the grouping competes with client reads. Say
+        // so, because the alternative is an operator watching a page that never
+        // fills and looking for the bug in the rollup.
+        println("stats: STATS_INTERVAL_SECONDS=$statsIntervalSeconds — no rollup; /stats.json serves the state file, or 503 if there is none")
+    }
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
         maintenanceScope.launch {
             println("trust: reconciling in the background — ranked search may return less until this finishes")
@@ -267,8 +303,9 @@ fun main() {
         onionLocation = addresses::onionLocation,
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = resourceText("/index.html"),
-        statsPage = resourceText("/kind_stats.html"),
         observerStatsPage = resourceText("/observer_stats.html"),
+        statsPage = resourceText("/stats.html"),
+        statsJson = statsSnapshot,
     )
 }
 
