@@ -35,6 +35,39 @@ codebase forbids.
 | `SWEEP_ORPHAN_SCORES_ON_START` | **deletes data.** Removes every kind-30382 signed by a provider that no stored kind-10040 names — cards nothing can rank with and nobody reads, which a by-kind mirror accrues by the million. Any value other than `true` is a **dry run** that reports what it would remove and removes nothing. Pair it with narrowing the sync (see [Binding filter fields to a relay](router.md#binding-filter-fields-to-a-relay)) or the next pass re-downloads what it freed | unset ⇒ off |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
+## Corpus statistics (`GET /stats.json`, `/relay_stats.html`)
+
+A background rollup counts what this relay's store holds — totals, a per-kind
+table, and events/authors per UTC day — with Vespa grouping queries, publishes
+it as a public JSON document, and charts it on a page. Everything is counted
+**anonymously**: the store gates an authenticated reader to authors that reader
+has scored, so the same query under an operator's lens would answer a smaller,
+different question under an identical label.
+
+The numbers describe **this relay's store**, not the Nostr network. Read against
+a network-wide dashboard they are a coverage ratio, which is the useful number
+for a mirroring relay — but a total below one is not a fault, and the document
+says so in its own `scope` field.
+
+Four sections (new pubkeys, retention, zaps, relay distribution) are declared
+with `"status": "pending"` and the reason they are not computed: each needs
+either per-pubkey first-seen across the corpus or a walk over tag values that
+`tag_index` cannot address. They are named rather than omitted so a reader can
+tell "not built yet" from "this relay holds none of that".
+
+| var | meaning | default |
+|---|---|---|
+| `STATS_INTERVAL_SECONDS` | how often to recompute. `0` or negative disables the rollup entirely — a legitimate choice on a busy box, since the grouping competes with client reads; `/stats.json` then serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it | `900` |
+| `STATS_FILE` | where the document is persisted, so a restart serves the last one instead of a blank page while the first rollup runs. Written atomically (temp file + move). Readable on the host through the same bind mount as the FTS cursor and the parse audit | `/var/lib/vespa-relay/stats.json` |
+
+`GET /stats.json` is public, like `GET /pressure` and the other stats pages, and
+publishing it is most of the point — anyone can chart this relay's coverage
+without scraping the page's markup. It carries an `ETag` and answers `304` to a
+conditional request, which is what makes polling it cheap. The one rule to hold
+when adding fields: everything in the document is a fact about **stored events**,
+never about clients. `/pressure` caps its `samples` field for exactly that
+reason.
+
 ## Relay identity (NIP-11)
 
 | var | meaning | default |

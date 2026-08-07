@@ -170,6 +170,16 @@ services:
       # resumable by design and holding it only in memory cost 12.2M events
       # when one page failed.
       FTS_CURSOR_FILE: ${FTS_CURSOR_FILE:-/var/lib/vespa-relay/fts-cursor.txt}
+      # How often the corpus statistics behind GET /stats.json are recomputed.
+      # The grouping queries compete with client reads, so 0 (off) is a
+      # legitimate choice on a busy box — the endpoint then serves whatever the
+      # state file holds. Runs behind the server either way; a first pass over
+      # this corpus is minutes and no restart waits on it.
+      STATS_INTERVAL_SECONDS: ${STATS_INTERVAL_SECONDS:-}
+      # …and where that document lands. In the mounted volume for the same
+      # reason as the cursor above: a deploy would otherwise blank the page for
+      # as long as the first rollup takes, and the file is readable on the host.
+      STATS_FILE: ${STATS_FILE:-/var/lib/vespa-relay/stats.json}
       # How many engine queries the store's bulk stages keep in flight. The
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").

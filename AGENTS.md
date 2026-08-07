@@ -188,7 +188,41 @@ relay/src/main/resources/
                         second copy would go stale in the direction that hides
                         events. The CLIENT is what stays self-contained; a
                         table of integers is not worth duplicating
+  relay_stats.html      the corpus dashboard, and the ONE page here with no
+                        relay client: it charts GET /stats.json and nothing
+                        else. Neither reason the siblings carry one applies —
+                        no aggregation on it is a protocol feature to test, and
+                        thirty days of distinct-pubkey counts is not a question
+                        to ask over a websocket. THE JSON IS THE ARTIFACT; the
+                        page is one reader of it (see maintenance/StatsRollup)
 ```
+
+The statistics rollup lives in `relay/maintenance/` beside the other background
+jobs, and talks to Vespa directly rather than through the store:
+
+```
+relay/src/main/kotlin/com/nosfabrica/vespa/relay/
+  maintenance/
+    StatsYql.kt      the grouping pipelines and the readers for what comes
+                     back — pure, so both halves are tested against captured
+                     engine output rather than against an assumed shape
+    StatsVespa.kt    POST to /search/, refuse a degraded answer (the same
+                     coverage question the store's SearchCoverage asks, and
+                     for the same reason: `full` answers it in neither
+                     direction)
+    StatsRollup.kt   the document, section by section, each failing on its own
+  server/
+    StatsSnapshot.kt what GET /stats.json serves — held in memory with an
+                     ETag, written through to STATS_FILE so a deploy does not
+                     blank the page for the minutes a first rollup takes
+```
+
+Four of the pipelines are `EventYql`'s own shapes, reused verbatim because this
+deployment has already run them; the rest extend them along `created_at`. It
+does NOT build on `EventYql` itself — `grouping()` is private, its pipelines are
+a fixed set, and it ships in vespa-eventstore, so every new chart would cost a
+store release plus a JitPack pin bump. The duplication is the WHERE clause and
+nothing else.
 
 `docs/configuration.md` documents every environment variable and
 `docs/router.md` the router config format. They are the reference; this file is
@@ -374,6 +408,29 @@ statement about someone else's server.
   before concluding a commit "doesn't build".
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
+- **Vespa's `time.date()` does not zero-pad.** Verified on 8.733: two documents
+  nine months apart group as `"2025-1-5"` and `"2025-10-9"`. Unpadded values
+  misorder as text wherever the digit count differs in the same position —
+  November before February, the 15th before the 5th — but NOT everywhere, since
+  `'-'` sorts below `'0'`, so `2025-1-5` beside `2025-10-9` comes out right. A
+  chart can look correct for one window and interleave in the next, with every
+  bar the right height and only the axis wrong. `StatsYql.isoDay` is the one way
+  in; a test asserts the misordering on values chosen to actually exhibit it,
+  because the pair the fixture happens to contain does not.
+- **A nested grouping and a flat one answer in the SAME shape.** Vespa collapses
+  an inner group list's aggregate onto the outer group, so
+  `all(group(kind) each(output(count())))` and
+  `all(group(kind) each(all(group(pubkey) output(count()))))` both come back as
+  one leaf per kind carrying one `count()` — 79 and 35 for the same kind over
+  the same corpus, from structurally identical responses. Nothing distinguishes
+  them and neither errors: the only thing keeping events out of a column
+  labelled users is calling the right builder.
+- **The bundled query profile is what makes any of this work.**
+  `grouping.globalMaxGroups: -1` in `search/query-profiles/default.xml` is why a
+  `max()`-less pipeline is legal at all, and the per-request
+  `grouping.defaultMaxGroups`/`defaultMaxHits` are why one returns more than TEN
+  groups. Omit those two parameters and a kind histogram comes back as a
+  plausible-looking top-ten with no error anywhere.
 - **`grep` may be aliased to `ugrep`**, which silently returns nothing on some
   large files. Use `/usr/bin/grep` when a search "finds nothing" implausibly.
 - **`\n` inside a Kotlin raw string is literal**, which breaks HOCON fixtures in

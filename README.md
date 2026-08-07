@@ -176,6 +176,16 @@ Served on the relay's own port, next to the search UI:
 - **`/kind_stats.html`** — events per kind, counted over the relay's own
   websocket with anonymous NIP-45 COUNTs — so the page also *tests* NIP-45 the
   way a client would.
+- **`/relay_stats.html`** — what the store holds and how it is filling: totals,
+  a per-kind table with distinct authors, and events and publishing pubkeys per
+  UTC day. Charted from **`GET /stats.json`**, a public document a background
+  rollup recomputes with Vespa grouping queries.
+
+  The JSON is the artifact and the page is one reader of it — publish it and
+  anyone can chart this relay's coverage, or diff it against a network-wide
+  dashboard, without scraping markup. Which is the thing to keep in mind reading
+  it: every number describes **this relay's store**, not the Nostr network, so a
+  total below a network-wide one is a mirror's coverage rather than a fault.
 
 ## Supported NIPs
 

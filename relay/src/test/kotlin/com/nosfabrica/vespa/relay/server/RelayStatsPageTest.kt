@@ -1,0 +1,111 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.relay.server
+
+import io.ktor.client.request.get
+import io.ktor.client.request.header
+import io.ktor.client.statement.bodyAsText
+import io.ktor.http.HttpHeaders
+import io.ktor.http.HttpStatusCode
+import io.ktor.server.routing.routing
+import io.ktor.server.testing.testApplication
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.put
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
+import kotlin.test.assertTrue
+
+/** The two routes the statistics page needs, driven in-process. */
+class RelayStatsPageTest {
+    private val doc = buildJsonObject { put("schema", 1) }
+
+    @Test
+    fun `an uncomputed document is a 503, not a page of zeros`() =
+        testApplication {
+            val snapshot = StatsSnapshot()
+            application { routing { corpusStats(null, snapshot) } }
+
+            // A poller must be able to tell "ask again later" from "this relay
+            // holds nothing" — the two render completely differently and only
+            // one of them is a fact about the corpus.
+            val empty = client.get("/stats.json")
+            assertEquals(HttpStatusCode.ServiceUnavailable, empty.status)
+            assertTrue(empty.bodyAsText().contains("no statistics computed yet"))
+
+            snapshot.publish(doc)
+            assertEquals(HttpStatusCode.OK, client.get("/stats.json").status)
+        }
+
+    @Test
+    fun `the document is json, revalidated, and a repeat ask with its etag is a 304`() =
+        testApplication {
+            val snapshot = StatsSnapshot().also { it.publish(doc) }
+            application { routing { corpusStats(null, snapshot) } }
+
+            val first = client.get("/stats.json")
+            assertEquals(HttpStatusCode.OK, first.status)
+            assertEquals("application/json", first.headers[HttpHeaders.ContentType]?.substringBefore(';')?.trim())
+            // Revalidate rather than a max-age guess: the rollup interval is an
+            // operator setting this route cannot see.
+            assertEquals("no-cache", first.headers[HttpHeaders.CacheControl])
+            val etag = assertNotNull(first.headers[HttpHeaders.ETag])
+
+            // The page polls this on a timer and the rollup is far slower than
+            // the poll, so most fetches are for bytes the reader already holds.
+            assertEquals(HttpStatusCode.NotModified, client.get("/stats.json") { header(HttpHeaders.IfNoneMatch, etag) }.status)
+            assertEquals(HttpStatusCode.NotModified, client.get("/stats.json") { header(HttpHeaders.IfNoneMatch, "W/$etag") }.status)
+            assertEquals(HttpStatusCode.OK, client.get("/stats.json") { header(HttpHeaders.IfNoneMatch, "\"0000000000000000\"") }.status)
+
+            // A new rollup must break the reader's cache, or the page silently
+            // stops advancing while the relay keeps computing.
+            snapshot.publish(
+                buildJsonObject {
+                    put("schema", 1)
+                    put("corpus", buildJsonObject { put("events", 9) })
+                },
+            )
+            assertEquals(HttpStatusCode.OK, client.get("/stats.json") { header(HttpHeaders.IfNoneMatch, etag) }.status)
+        }
+
+    @Test
+    fun `the page is served and reads the document it charts`() =
+        testApplication {
+            val html = assertNotNull(javaClass.getResource("/relay_stats.html")?.readText(), "the page is on the classpath")
+            application { routing { corpusStats(CachedPage(html), StatsSnapshot().also { it.publish(doc) }) } }
+
+            val res = client.get("/relay_stats.html")
+            assertEquals(HttpStatusCode.OK, res.status)
+            val body = res.bodyAsText()
+            assertTrue(body.contains("/stats.json"), "the page fetches the document rather than carrying its own numbers")
+
+            // The scope line is load-bearing, not decoration: without it a
+            // reader compares our total against a network-wide dashboard's and
+            // reads a mirror's coverage as a broken relay.
+            assertTrue(body.contains("id=\"scope\""), "the page has somewhere to print the document's scope")
+
+            // Its one import must actually resolve — the kind names come from
+            // the search UI's registry so a second table cannot go stale.
+            for (spec in Regex("""from "(/web/[^"]+)"""").findAll(body).map { it.groupValues[1] }) {
+                assertNotNull(WebAssets.get(spec.removePrefix("/web/")), "$spec is imported but not servable")
+            }
+        }
+}

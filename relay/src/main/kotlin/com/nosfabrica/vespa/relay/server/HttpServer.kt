@@ -82,6 +82,8 @@ data class Nip11Info(
  *        which decodes the identifier and renders the entity itself
  *   GET  /kind_stats.html -> [statsPage] (per-kind COUNTs — an operator diagnostic)
  *   GET  /observer_stats.html -> [observerStatsPage]
+ *   GET  /relay_stats.html -> [relayStatsPage], which charts [statsJson]
+ *   GET  /stats.json -> [statsJson], this relay's corpus statistics
  *   POST /  -> the NIP-86 management RPC, when [admin] is configured
  *
  * The NIP-11 doc is held mutably so NIP-86 change-name/description/icon RPCs
@@ -99,6 +101,11 @@ fun serveRelay(
     landingPage: String? = null,
     statsPage: String? = null,
     observerStatsPage: String? = null,
+    relayStatsPage: String? = null,
+    // The corpus statistics document, recomputed behind the server by
+    // StatsRollup. Null — or present but never yet published — makes
+    // GET /stats.json a 503 rather than a page of zeros.
+    statsJson: StatsSnapshot? = null,
     // When set, GET /pressure serves the relay's mean client-read latency, so
     // the sync process — its own container since the split — can keep yielding
     // ingest to slow reads the way it did when both shared a JVM.
@@ -117,6 +124,7 @@ fun serveRelay(
     val landing = landingPage?.let(::CachedPage)
     val stats = statsPage?.let(::CachedPage)
     val observerStats = observerStatsPage?.let(::CachedPage)
+    val relayStats = relayStatsPage?.let(::CachedPage)
 
     return embeddedServer(Netty, port = port) {
         // The pages are ~117KB of text — html, ES modules, css — and none of it
@@ -222,6 +230,7 @@ fun serveRelay(
             observerStats?.let { page ->
                 get("/observer_stats.html") { call.respondPage(page) }
             }
+            corpusStats(relayStats, statsJson)
             admin?.let { nip86Admin(it, info) }
         }
     }.start(wait = wait)
@@ -276,6 +285,50 @@ internal fun Route.webModules() {
 }
 
 /**
+ * `GET /relay_stats.html` and `GET /stats.json` — the corpus statistics page
+ * and the document it charts.
+ *
+ * The document is PUBLIC, like `/pressure` and the two other stats pages. Every
+ * number in it describes STORED EVENTS, which is what a relay already hands to
+ * anyone who asks for them over a REQ, and publishing it is most of the point:
+ * a reader charting our coverage against a network-wide dashboard should not
+ * have to scrape this page's markup for numbers the relay already computed.
+ *
+ * The line worth holding is the one `/pressure` holds. That route caps its
+ * `samples` field precisely because an uncapped one would have handed anyone the
+ * relay's queries-per-second, which its throttle never needed — so: nothing
+ * about CLIENTS goes in this document. Everything currently in it is a fact
+ * about the corpus, and a statistics endpoint is exactly where a field like
+ * "searches per hour" gets added later without anyone noticing.
+ *
+ * Its own function so a test can mount it without standing up a relay — the
+ * same reason [webModules] is one.
+ */
+internal fun Route.corpusStats(
+    page: CachedPage?,
+    snapshot: StatsSnapshot?,
+) {
+    page?.let { get("/relay_stats.html") { call.respondPage(it) } }
+    snapshot?.let {
+        get("/stats.json") {
+            val doc = it.served()
+            if (doc == null) {
+                // 503, not an empty document: "no statistics yet" is a state a
+                // poller should retry, and a 200 carrying zeros is
+                // indistinguishable from a relay that genuinely holds nothing.
+                call.respondText(
+                    """{"error":"no statistics computed yet"}""",
+                    ContentType.Application.Json,
+                    HttpStatusCode.ServiceUnavailable,
+                )
+            } else {
+                call.respondSnapshot(doc)
+            }
+        }
+    }
+}
+
+/**
  * A strong ETag over [bytes] — the first 16 hex of its SHA-256.
  *
  * Content-derived rather than a timestamp on purpose: a jar entry's mtime is
@@ -315,6 +368,26 @@ private suspend fun ApplicationCall.respondPage(page: CachedPage) {
         respond(HttpStatusCode.NotModified)
     } else {
         respondText(page.html, ContentType.Text.Html)
+    }
+}
+
+/**
+ * The statistics document, revalidated every time and re-sent only when the
+ * rollup actually produced something new.
+ *
+ * The 304 is the point rather than a nicety: the page polls this on a timer and
+ * the rollup is far slower than the poll, so most fetches are for bytes the
+ * reader already has. `no-cache` (revalidate, don't reuse blind) rather than a
+ * `max-age` guess, because the rollup interval is an operator setting and a
+ * cache lifetime picked here would be wrong for anyone who changed it.
+ */
+private suspend fun ApplicationCall.respondSnapshot(doc: StatsSnapshot.Served) {
+    response.header(HttpHeaders.ETag, doc.etag)
+    response.header(HttpHeaders.CacheControl, "no-cache")
+    if (matchesEtag(doc.etag)) {
+        respond(HttpStatusCode.NotModified)
+    } else {
+        respondBytes(doc.bytes, ContentType.Application.Json)
     }
 }
 
