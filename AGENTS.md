@@ -181,6 +181,26 @@ relay/src/main/resources/
                         each: they differ only in which tags carry their items.
                         index.html's header records the rules and why "one
                         file" ended.
+                        readiness.js is the panel under the box that answers
+                        "can this relay rank for ME yet" — the store treats the
+                        reader's lens as a FILTER, so a signed-in reader whose
+                        trust chain has not been mirrored here gets an EMPTY
+                        search rather than a degraded one, and the page said
+                        nothing about it. It walks the chain the router walks
+                        (your 10002 → your 10040 → your provider's 30382s → a
+                        ranked read that comes back), reports the FIRST broken
+                        link and leaves the rest `waiting`, and shows here/there
+                        as a percentage — observer_stats.html's arithmetic for
+                        one reader's own row — only where a denominator honestly
+                        exists. shared/readiness.js is the decision, pure and
+                        tested; readiness.js is the asks and the words. Its one
+                        action is for the failure that cannot fix itself: with
+                        no 10002 stored NOTHING discovers you, ever, so the
+                        panel takes a relay url, reads your three lists off it
+                        and republishes them here VERBATIM for the next cycle to
+                        find. Signing in enrols you in nothing — the server's
+                        `onObserver` hook is wired to nothing, whatever older
+                        comments claimed.
   kind_stats.html       operator diagnostics, each carrying its own tiny relay
   observer_stats.html   client on purpose: they must work when the app does
                         not. kind_stats reads shared/kinds.js for the kinds to
