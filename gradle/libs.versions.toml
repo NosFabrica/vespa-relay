@@ -17,19 +17,33 @@ app = "0.1.0"
 # they are what stops a store bump from silently dragging its own quartz in.
 quartz = "35f96a936d"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-# 3efbf16e69 = store main through PR #58. Keeps #56's coverage-guard fix (a
-# response is judged by Vespa's own isDegraded(), not by its `full`, which
-# disagrees in BOTH directions) and #57's quartz alignment, and adds the one
-# this relay needed: WriterTopology on open(). The guard-owner cache that skips
-# the NIP-09/NIP-62 probes is exact only for a single writer, and this
-# deployment has two — see STORE_WRITERS in :common. Its own quartz pin is
-# 35f96a936d, so the direction above is satisfied by equality, not by luck.
+# 98972c31c2 = store main through PR #61. Carries everything 3efbf16e69 had —
+# #56's coverage guard (a response judged by Vespa's own isDegraded(), not by
+# its `full`, which disagrees in BOTH directions), #57's quartz alignment, and
+# WriterTopology on open(), which this deployment needs because the guard-owner
+# cache that skips the NIP-09/NIP-62 probes is exact only for a single writer
+# and there are two here (STORE_WRITERS in :common).
+#
+# What is new is the container access log (#59): a deployment choice rather than
+# a constant, injected into services.xml as parsed XML instead of spliced text,
+# and defaulted off — this relay passes nothing, so it keeps the behaviour it
+# had. #60 made that feature's IT poll for the log rather than race Vespa's
+# reconfiguration, and #61 cleared two compiler warnings that were dead code.
+#
+# It also DROPS engine/app/validation-overrides.xml, the stemming override —
+# the store's position is that every deployment has upgraded past needing it.
+# Ours redeploys the bundled package on boot, so a Vespa old enough to still
+# want that override would fail the deploy rather than warn.
+#
+# Its own quartz pin is still 35f96a936d, so the direction above is satisfied by
+# equality, not by luck.
 #
 # VERIFY the hash resolved rather than reading this line: Gradle breaks a version
 # conflict lexicographically, so a hash that sorts below one dragged in
-# transitively loses silently and the bump does nothing.
+# transitively loses silently and the bump does nothing. This one sorts ABOVE
+# the hash it replaces ('9' > '3'), which is the safe direction, but check.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
-vespaEventStore = "3efbf16e69"
+vespaEventStore = "98972c31c2"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
