@@ -96,8 +96,23 @@
   main { max-width: 60rem; margin: 0 auto; }
   h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
   h2 { font-size: 1rem; margin: 0 0 .15rem; }
+  /* A heading and its own `.card-sub` are ONE unit and stay at the .15rem
+     above; a heading standing directly over a chart, a table or a row of tiles
+     is a LABEL and needs the gap. Every card here was the second case, so a
+     1rem bold heading sat 2.4px off the mark below it and read as part of that
+     mark rather than as the thing naming it. Collapses with the .15rem rather
+     than adding to it, so this is 8px in both cases and not 8+2.4. */
+  h2 + :not(.card-sub) { margin-top: .5rem; }
   .sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; }
   .card-sub { color: var(--muted); font-size: .85rem; margin: 0 0 .9rem; }
+  /* A note UNDER a bounded scroll box wants its gap on the other side.
+     `.card-sub` carries all of its margin on the bottom — correct for the
+     subtitle under a heading, which is every other use — so the sync card's
+     frame note began 0px below a coverage row the box had clipped in half, and
+     a sentence starting flush against a half-cut relay name reads as that
+     row's own text. The trailing margin goes with it: as a card's last child it
+     was doubling the card's own 1rem of bottom padding. */
+  .wrap + .card-sub { margin: .7rem 0 0; }
   .card {
     background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
     padding: 1rem 1.1rem; margin-bottom: 1rem;
@@ -107,16 +122,58 @@
      card — see trustCard. A .card here would put the tiles' own border inside
      the card's, on the same surface colour, and the four numbers would read as
      boxes in a box rather than as the same kind of headline the corpus totals
-     directly above them are. Only the heading needs a rule: the tiles carry
-     their own bottom margin. */
-  .panel > h2 { margin-bottom: .5rem; }
+     directly above them are. It needs no heading rule of its own: the general
+     `h2 + :not(.card-sub)` gives this heading the same 8px it gives every
+     card's, and the tiles carry their own bottom margin. */
   /* Prose the panel ENDS on — the "no pubkey carries trust state" warning —
      needs the gap a card would have given it. Without this it inherits `.err`'s
      zero bottom margin and sits closer to the next card than to the tiles it is
      about, which on a page of stacked cards reads as that card's subtitle. */
   .panel > p:last-child { margin-bottom: 1rem; }
-  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; padding: .9rem 1.1rem; }
-  .tile .v { font-size: 1.9rem; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  /* A container, so the number inside can size itself to THIS TILE. The tiles
+     are an auto-fit grid: the track width is what the number has to fit in and
+     the viewport says nothing about it, so `vw` would be measuring the wrong
+     box. */
+  .tile {
+    background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
+    padding: .9rem 1.1rem; container-type: inline-size;
+  }
+  /* Sized from the tile's width AND from the number's own length, because a
+     fixed 1.9rem overflowed its own border on an ordinary deployment: ten
+     tabular digits are ~6.3em, the 11rem track affords 190px, and 1.9rem wants
+     192 — so "68,412,907" crossed the tile's right edge at a 1100px window, and
+     the Zaps row's narrower 8rem track cut "1,882,401" off mid-digit against
+     the tile beside it. Both are the page's headline numbers and neither was
+     recoverable by scrolling.
+     [--len] is a character count, inherited from the row — `fitTiles` sets it
+     there, from the LONGEST value in the row, so the row reads at one size. No
+     CSS unit expresses "the width of my own text", since `ch` is defined in
+     terms of the font size the declaration is trying to compute. .64 is a
+     conservative per-character
+     em for tabular digits (commas are narrower, so this over-reserves, which is
+     the safe direction). Capped at the original 1.9rem so nothing moves where
+     it already fit, floored so a phone still reads as a headline. */
+  .tile .v {
+    /* Declared TWICE on purpose. A browser too old for container queries drops
+       the `cqw` declaration whole — and an unparsed `font-size` does not fall
+       back to 1.9rem, it inherits the body's 15px and the headline stops being
+       one. The first line is what that browser keeps: the size this was before,
+       overflow and all, which is the right failure. */
+    font-size: 1.9rem;
+    font-size: clamp(1rem, calc(100cqw / (var(--len, 10) * .64)), 1.9rem);
+    font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15;
+  }
+  /* A phone spends its width on the tile's own gutters: at 360px the Zaps row's
+     two tracks are 129px each, of which the 1.1rem sides took 35 — so the
+     narrowest screen gave the longest number the least room to be a number in,
+     and the clamp floor above (a legibility floor, not a fitting one) could not
+     absorb it. Buying the digits 16px back here is what keeps that floor from
+     having to be chosen around today's largest count. A container query cannot
+     do this: `@container` styles a container's descendants, never the container
+     itself, and the box that needs the narrower padding IS the tile. */
+  @media (max-width: 30rem) {
+    .tile { padding: .9rem .75rem; }
+  }
   .tile .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
   .tile .v.stale { color: var(--warn); }
   .chart { width: 100%; display: block; overflow: visible; }
@@ -225,14 +282,25 @@
      filter on ONE line, now a full-width one. */
   @media (max-width: 45rem) {
     .grp-head { flex-wrap: wrap; }
-    .grp-stat { flex-basis: 100%; }
+    /* `nowrap` is dropped along with the row, not kept with it. It earns its
+       place at desktop widths, where the counts fit on the line it saves; here
+       they do not — on a 390px phone the string ran 50px past the card and
+       "relays walked" was clipped away entirely, which loses a number rather
+       than a line. A head that has already taken a second row can afford a
+       third. */
+    .grp-stat { flex-basis: 100%; white-space: normal; }
   }
   /* How many of a group's relays cover each bucket — the mark that answers
      "how much of the list is in sync" for a fan-out, where a row each is
      reachable but not readable. Indented to the track: it is a chart on the
-     SAME axis, and flush left its 2023 bucket sat over the rows' 2022. */
+     SAME axis, and flush left its 2023 bucket sat over the rows' 2022.
+
+     The TOP margin keeps the tallest bucket off the sticky head above it: the
+     strip is bottom-aligned and a full-depth bucket reaches the whole 24px, so
+     at 0 the bars touched the filter chip's own box and the chart read as
+     hanging off the heading rather than as the first mark under it. */
   .depth {
-    position: relative; height: 24px; margin: 0 0 .3rem calc(var(--lab) + .6rem);
+    position: relative; height: 24px; margin: .3rem 0 .3rem calc(var(--lab) + .6rem);
     display: flex; align-items: flex-end;
   }
   .depth i { display: block; flex: 1 1 0; min-width: 0; background: var(--accent); }
@@ -394,6 +462,27 @@ const el = (tag, cls, text) => {
   if (text != null) n.textContent = text;
   return n;
 };
+/**
+ * Size a row of tiles to its LONGEST number, and hand the row back.
+ *
+ * `.tile .v` sizes itself from the track it landed in and from this length, so
+ * a number can never cross its own tile's border — see the CSS for why a fixed
+ * size could not hold, and why the length cannot come from CSS (`ch` is defined
+ * in terms of the font size the declaration is trying to compute).
+ *
+ * Written once on the ROW rather than per tile, and not only because it is one
+ * line instead of four: sizing each tile to its own text left "1,882,401" a
+ * third smaller than the "27" beside it, which reads as the small number being
+ * the important one. One size per row, set by the value with the least room,
+ * keeps a row of headline numbers reading as one row. Custom properties
+ * inherit, and the grid's tracks are all `1fr`, so every tile resolves the same
+ * `cqw` against the same length and they land on the same size.
+ */
+const fitTiles = (row) => {
+  const len = [...row.querySelectorAll(".v")].reduce((m, v) => Math.max(m, v.textContent.length), 1);
+  row.style.setProperty("--len", String(len));
+  return row;
+};
 const SVG = "http://www.w3.org/2000/svg";
 const svgEl = (tag, attrs) => {
   const n = document.createElementNS(SVG, tag);
@@ -459,6 +548,45 @@ function tickStride(points, plotW) {
   // from touching. Two labels is the floor: first and last still beats none.
   const room = Math.max(2, Math.floor(plotW / (widest * 6.2 + 18)));
   return Math.max(1, Math.ceil(points.length / room));
+}
+
+/**
+ * Hide the axis ticks that would overlap — the sync frame's answer to [tickStride].
+ *
+ * That frame spans years and its axis prints every boundary, which is a legible
+ * ruler at a card's full width and a smear below it: at 390px each of "2022"
+ * through "2026" overlapped its neighbour by 2px and the frame's start date
+ * overlapped the first year by 59, drawing "20222023202420252026now" as one
+ * token. Even at 1100px the start date and the first year stood 1.9px apart and
+ * read as a single label. Same problem the charts solve with [tickStride] and
+ * the same answer — what the labels ACTUALLY measure decides how many fit —
+ * except these are positioned in percentages of a fluid track rather than in a
+ * fixed viewBox, so the measuring has to wait for layout.
+ *
+ * THE TWO ENDS WIN and the years give way to them, not the other way round.
+ * "now" is what every question on this card is asked against, and the frame's
+ * start is the one label no bare year can stand in for — it is the date the
+ * card's own "not a target" note is about. The start yields only when even the
+ * two ends cannot both fit.
+ */
+function thinTicks(track) {
+  if (!track) return;
+  const spans = [...track.children];
+  // Unhidden before measuring, because this re-runs on every resize and a tick
+  // hidden at the previous width has no box to measure at this one.
+  for (const s of spans) s.hidden = false;
+  if (spans.length < 2) return;
+  // Enough that neighbours read as two labels rather than one hyphenless word.
+  const GAP = 6;
+  const r = spans.map((s) => s.getBoundingClientRect());
+  const end = spans.length - 1;
+  const startFits = r[0].right + GAP <= r[end].left;
+  spans[0].hidden = !startFits;
+  let edge = startFits ? r[0].right : -Infinity;
+  for (let i = 1; i < end; i++) {
+    if (r[i].left - GAP >= edge && r[i].right + GAP <= r[end].left) edge = r[i].right;
+    else spans[i].hidden = true;
+  }
 }
 
 /** A bar chart of one series. See the header for why single-series and why never two y-axes. */
@@ -628,7 +756,7 @@ function tiles(corpus) {
     t.appendChild(el("div", "k", "Newest event"));
     wrap.appendChild(t);
   }
-  out.push(wrap);
+  out.push(fitTiles(wrap));
 
   // `corpus.futureDated` is deliberately NOT drawn. It is still counted, and it
   // is still in /stats.json for anyone watching it grow, but a card that only
@@ -891,7 +1019,7 @@ function trustCard(section) {
     t.title = help;
     row.appendChild(t);
   }
-  card.appendChild(row);
+  card.appendChild(fitTiles(row));
 
   // The one state worth shouting about, and the reason this panel exists.
   if (d.scoredPubkeys === 0) {
@@ -1126,7 +1254,18 @@ function syncCard(section) {
   // Measured, not guessed: a hardcoded rem offset is wrong at any root font
   // size but the author's, and 2px out hides a sliver of one sticky element
   // behind the other.
-  requestAnimationFrame(() => scroll.style.setProperty("--pin-h", pinned.getBoundingClientRect().height + "px"));
+  //
+  // On a ResizeObserver rather than the one rAF this was, because BOTH of these
+  // measurements go stale the moment the card changes width — the axis loses or
+  // regains a tick and `--pin-h` is off by whatever the pinned strip now is,
+  // which pins every group head to the wrong offset. The observer fires once on
+  // insertion too, which is all the rAF was there for.
+  const remeasure = () => {
+    const h = pinned.getBoundingClientRect().height + "px";
+    if (scroll.style.getPropertyValue("--pin-h") !== h) scroll.style.setProperty("--pin-h", h);
+    thinTicks(pinned.querySelector(".axis-track"));
+  };
+  new ResizeObserver(remeasure).observe(scroll);
 
   card.appendChild(el("p", "card-sub",
     `Frame: ${day(from)} → now. Not a target — these filters carry no lower bound, so a full row means ` +
@@ -1198,7 +1337,7 @@ function zapsCard(section) {
     wrapTitle(t, key === "wallets" ? "Distinct authors of zap receipts — the LNURL services that settled them, not the people who zapped" : "");
     row.appendChild(t);
   }
-  card.appendChild(row);
+  card.appendChild(fitTiles(row));
 
   const days = d.days || [];
   if (!days.length) {
