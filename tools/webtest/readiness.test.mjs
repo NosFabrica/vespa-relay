@@ -101,6 +101,25 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 }
 
 {
+  // The last stretch of an import is not worth a warning: what is still to
+  // come is the tail of the provider's own ranking, and "Importing your
+  // provider's scores — 99%" nags somebody whose search is, for any result
+  // they will look at, already complete.
+  const nearly = assess({ ...healthy(), scores: { here: 144508, there: 145968 } });
+  assert.equal(nearly.state, "ready");
+  assert.equal(worthShowing(nearly), false, "99% is not a warning");
+  assert.equal(statusOf(nearly, "scores"), "ok");
+  // The bar is the ROUNDED percentage, the one the words print — so no panel
+  // ever appears headlined with a number the reader was told not to worry
+  // about. 89.6% rounds to 90 and is silent; 89.4% rounds to 89 and speaks.
+  assert.equal(assess({ ...healthy(), scores: { here: 89600, there: 100000 } }).state, "ready");
+  const short = assess({ ...healthy(), scores: { here: 89400, there: 100000 } });
+  assert.equal(short.state, "importing");
+  assert.equal(Math.round(short.percent * 100), 89);
+  ok("an import within a rounded 90% of done says nothing at all");
+}
+
+{
   // Both non-answers, and both mean the same thing to the panel: no
   // denominator. The sentinels are OBJECTS, so they are truthy — the trap
   // observer_stats.html documents, and the reason nothing compares them
