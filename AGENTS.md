@@ -492,3 +492,24 @@ nothing; run that first, and read the number before believing it.
 The counterpart to both: a deletion is not a tombstone. A stream that still asks
 by kind re-downloads whatever was freed on its next walk, so reclaiming space and
 narrowing the ask are one job.
+
+**Real retractions are the third path, and the only one that leaves a
+tombstone.** `contentViaOutbox` mirrors kinds 5 and 62 with the content, and the
+store enforces them at insert — so the erase survives the next walk, which is
+exactly what the two levers above cannot promise. The catch is that the store's
+fast path caches "authors known to have a stored kind 5/62" **per instance**,
+which is exact for one writer and wrong for this deployment's two: the relay's
+copy never hears about what the router mirrored, and the router's never hears
+about what a client published here. Both entrypoints therefore open the store
+with `writers = STORE_WRITERS` (`SHARED_STRICT`), so NIP-09/NIP-62 are checked
+against the store rather than a half-informed cache. **The topology is an
+argument, not an env var** — it is a fact about this deployment that the library
+cannot detect, and `:common` holds the one copy of the reasoning. `SHARED` only
+bounds the window (its rebuild is a corpus-wide visit, hours here), and
+`SINGLE_WRITER` is simply false for us.
+
+The open cost is the guard read on the pure-record bulk path: it asks for every
+tombstone by the batch's authors with no narrowing and no limit, so it scales
+with one author's whole deletion history rather than with the batch. The mixed
+path already narrows the same probe to the batch's own ids — until the record
+path does too, a prolific deleter is the thing to watch on the `guards` stage.

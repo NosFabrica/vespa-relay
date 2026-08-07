@@ -17,18 +17,19 @@ app = "0.1.0"
 # they are what stops a store bump from silently dragging its own quartz in.
 quartz = "35f96a936d"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-# 5ad77faa53 = store main through PR #57. Carries the coverage-guard fix (#56):
-# a response is judged by Vespa's own isDegraded(), not by its `full`, which
-# disagrees in BOTH directions — `full: false` at a rounded 100% with no reason
-# named was refused on every read (this relay's empty-search feeds), and
-# `full: true` below targetActive was served silently at any coverage. #57
-# brings the store's own quartz to the pin above, so the two now match.
+# 3efbf16e69 = store main through PR #58. Keeps #56's coverage-guard fix (a
+# response is judged by Vespa's own isDegraded(), not by its `full`, which
+# disagrees in BOTH directions) and #57's quartz alignment, and adds the one
+# this relay needed: WriterTopology on open(). The guard-owner cache that skips
+# the NIP-09/NIP-62 probes is exact only for a single writer, and this
+# deployment has two — see STORE_WRITERS in :common. Its own quartz pin is
+# 35f96a936d, so the direction above is satisfied by equality, not by luck.
 #
 # VERIFY the hash resolved rather than reading this line: Gradle breaks a version
 # conflict lexicographically, so a hash that sorts below one dragged in
 # transitively loses silently and the bump does nothing.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
-vespaEventStore = "5ad77faa53"
+vespaEventStore = "3efbf16e69"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

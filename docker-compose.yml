@@ -245,7 +245,9 @@ services:
       # one whose writes a drifted schema silently discards.
       AUTO_DEPLOY: ${AUTO_DEPLOY:-}
       # The served relay's ws url — mirrored events are stored as that relay's,
-      # whichever process writes them.
+      # whichever process writes them. It is also what a mirrored kind 62 is
+      # judged against: a vanish request naming this url (or ALL_RELAYS) sweeps
+      # its author's history here, one naming some other relay is stored inert.
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # The streams to mirror. The profile is the on-switch, so this defaults
       # to the mounted path instead of empty; SYNC_CONFIG_LOCAL (below) picks

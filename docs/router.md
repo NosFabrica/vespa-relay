@@ -290,6 +290,50 @@ The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`
 `until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:
 `{ "kinds": [1], "authors": [...] }` harvests hints from your WoT's notes only.
 
+## Mirroring the deletions themselves
+
+Kinds **5** (NIP-09 deletion request) and **62** (NIP-62 request to vanish) are
+ordinary events, so a `down` stream mirrors them by naming them in its filter —
+the shipped `contentViaOutbox` stream does, alongside the content they retract:
+
+```hocon
+filter = { "kinds": [0, 1, 5, 9, 11, ..., 62, ...] }
+```
+
+Nothing else is needed, because the **store** enforces both at insert: a
+mirrored kind 5 erases the targets it names (same author, time-guarded, by id
+and by address), and a kind 62 sweeps that author's history off this relay. An
+author who deleted a note on their own write relay therefore does not keep a
+copy here.
+
+Storing the request is the half that lasts. A mirror re-asks its filter every
+cycle, so the upstream will hand the note back — and it is the stored tombstone
+that the re-download is checked against and rejected by. This is exactly what
+absence-based `deleteMissing` below cannot do: it frees space and leaves nothing
+behind, so the next walk re-downloads what it dropped.
+
+Two consequences worth knowing before you add them to a running stream:
+
+- **Adding kinds re-keys the sync bands.** They are keyed by the whole filter,
+  so the first cycle after the edit re-walks every relay in the fan-out from
+  scratch instead of resuming. That is the intended way to force a re-walk, but
+  on a wide dynamic stream it is a long cycle.
+- **Both processes check every insert, and it is stated in code, not configured.**
+  The store's fast path keeps a per-instance set of the authors known to have a
+  stored kind 5/62 and skips the guard queries for everyone else — exact for one
+  writer, wrong for this deployment's two: tombstones the *sync* process mirrors
+  never reach the *relay* process's copy of that set, and deletions clients
+  publish to the relay never reach the router's, so each would re-admit what the
+  other erased. Both entrypoints therefore open the store with
+  `writers = SHARED_STRICT` (`STORE_WRITERS` in `:common`, where the reasoning
+  lives), which is the store's own default and the only mode that needs no
+  assertion to be correct. `SHARED` would bound the exposure to a refresh
+  interval rather than remove it, and its rebuild is a corpus-wide visit — hours
+  on ours — so the window would be set by the rebuild, not by the interval. The
+  measured cost of being strict is −4.5% on per-event inserts with p50 unchanged
+  and nothing measurable on `batchInsert`; the router's share shows up as the
+  `guards` stage on the `router: ingest …` line.
+
 ## Deleting what an upstream retracted
 
 `deleteMissing` makes a stream drop records **we** hold that the upstream no
@@ -309,7 +353,10 @@ by design.
 It is **absence-based**, not NIP-09. Nothing is published upstream to learn it —
 quartz's `NegentropyStoreSync` can propagate real kind:5 retractions instead, and
 that is strictly safer, but arming it means uploading your events to someone
-else's relay and reading the rejections.
+else's relay and reading the rejections. Pulling the retractions down — the
+section above — is safer still and costs nothing but two kinds in the filter;
+what it cannot cover is a record withdrawn *without* a kind 5, which is the case
+`deleteMissing` exists for.
 
 The cost of that choice is that absence has innocent causes — a retention window,
 a relay gating reads behind AUTH, a half-served reconcile — and each looks exactly

@@ -114,6 +114,24 @@ class RouterConfExamplesTest {
     }
 
     @Test
+    fun `a stream that mirrors content mirrors the retractions too`() {
+        // By SHAPE again: a stream carrying kind 1 is mirroring what people
+        // write, and one that takes the notes without the kind 5 (NIP-09) and
+        // kind 62 (NIP-62) that retract them goes on serving what its authors
+        // deleted. The store enforces both at insert, so mirroring them is the
+        // whole mechanism — and the STORED request is what the next cycle's
+        // re-download is checked against, without which the erase is undone on
+        // the following walk.
+        val content = example.streams.filter { it.filter.kinds?.contains(1) == true }
+        assertTrue(content.isNotEmpty(), "the example mirrors no user-written content at all")
+        content.forEach { stream ->
+            val kinds = stream.filter.kinds.orEmpty()
+            assertTrue(5 in kinds, "stream '${stream.name}' mirrors notes but not the kind 5 that deletes them")
+            assertTrue(62 in kinds, "stream '${stream.name}' mirrors notes but not the kind 62 that vanishes their author")
+        }
+    }
+
+    @Test
     fun `the assertions stream names the NIP-85 services it wants`() {
         val assertions = example.dynamicStreams().first { it.name == "assertions" }
         val source = assertions.dynamic!!.sources.single()

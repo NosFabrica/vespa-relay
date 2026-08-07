@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.RelayIdentity
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
+import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
@@ -59,6 +60,7 @@ private const val DEPLOY_RETRY_SECONDS = 5L
  */
 fun main() {
     val env = System.getenv()
+
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — the served relay's own ws url; mirrored events are stored as its.")
     val relayUrl =
@@ -125,7 +127,11 @@ fun main() {
         System.err.println("schema: deployed and serving")
     }
 
-    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl)
+    // STORE_WRITERS: mirroring kind 5/62 erases what an author retracted, and
+    // the erase only stays erased if the RELAY's inserts are checked against
+    // the tombstones this process stored — which its own store instance never
+    // watched being written.
+    val store = VespaEventStore.open(vespaUrl, relay = relayUrl, autoDeploy = false, configUrl = configUrl, writers = STORE_WRITERS)
 
     // Opt-in diagnostic; also applies QUARTZ_LOG_LEVEL. The audit lives on
     // this side of the split because ingest is what feeds it.
