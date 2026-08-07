@@ -156,16 +156,16 @@ internal object SyncCoverageReport {
         fun mergedWith(other: Row): Row {
             val lo = maxOf(everyKindMin, other.everyKindMin)
             val hi = minOf(everyKindMax, other.everyKindMax)
-            val min = minOf(min, other.min)
-            val max = maxOf(max, other.max)
+            val outerMin = minOf(min, other.min)
+            val outerMax = maxOf(max, other.max)
             return Row(
                 relay = relay,
-                min = min,
-                max = max,
+                min = outerMin,
+                max = outerMax,
                 complete = complete && other.complete,
                 fullAt = maxOf(fullAt, other.fullAt),
-                everyKindMin = if (lo > hi) min else lo,
-                everyKindMax = if (lo > hi) max else hi,
+                everyKindMin = if (lo > hi) outerMin else lo,
+                everyKindMax = if (lo > hi) outerMax else hi,
             )
         }
     }
@@ -201,27 +201,40 @@ internal object SyncCoverageReport {
         /**
          * Parse and reduce a filter ONCE per distinct filter, not once per key.
          *
-         * Every relay in a stream carries the byte-identical filter in its key,
-         * so a 4,000-relay stream handed the same JSON to the parser 4,000
-         * times and re-serialised the same shape 4,000 times. That is affordable
-         * for `{"kinds":[0,10002]}` and it is not for a discovery filter: those
+         * A plain stream hands every relay the byte-identical filter, so a
+         * 4,000-relay stream handed the same JSON to the parser 4,000 times and
+         * re-serialised the same shape 4,000 times. That is affordable for
+         * `{"kinds":[0,10002]}` and it is not for a discovery filter: those
          * carry thousands of authors, which is the very cost [SweepState.keyFor]
          * already exists to avoid paying per window ("re-deriving the key per
          * finished window would re-render that JSON for every window, for
          * nothing"). Measured on 1,000 relays with 200 authors: 13.7MB of input,
          * 213ms → the parse is the whole bill.
          *
+         * ONLY THE SHAPE IS RETAINED, never the parsed filter. The narrowed
+         * streams this report groups across (see the class header) are the exact
+         * case where every relay's filter is DIFFERENT, so the cache cannot hit
+         * and holding each parsed object would turn a pure miss into a heap copy
+         * of the whole file — on a parser whose one hard rule is that it must
+         * never cost the relay its rollup. The parsed filter is needed once per
+         * SHAPE, for `filter` in the output, so it is banked here on the first
+         * leg to reach a shape and the rest are left to the collector.
+         *
          * Null is CACHED as null: a filter the parser rejects must be rejected
          * once, not re-attempted for every relay that shares it.
          */
-        val shapeCache = HashMap<String, Pair<JsonObject, String>?>()
+        val shapeCache = HashMap<String, String?>()
 
-        fun shapeFor(filterJson: String): Pair<JsonObject, String>? {
+        fun shapeFor(filterJson: String): String? {
             shapeCache[filterJson]?.let { return it }
             if (shapeCache.containsKey(filterJson)) return null
-            val parsed = parse(filterJson)?.let { it to shapeOf(it) }
-            shapeCache[filterJson] = parsed
-            return parsed
+            val filter = parse(filterJson)
+            val shape = filter?.let { shapeOf(it) }
+            shapeCache[filterJson] = shape
+            // First leg to reach this shape banks the filter the group is
+            // published with; `shared` strips what the other legs disagree on.
+            if (filter != null && shape != null) shapeFilters.putIfAbsent(shape, filter)
+            return shape
         }
 
         for ((key, value) in bands) {
@@ -232,11 +245,10 @@ internal object SyncCoverageReport {
             // cannot split a pair that the router wrote as one.
             val relay = StatsYql.canonicalRelay(rawRelay)
             val band = value as? JsonObject ?: continue
-            val (filter, shape) = shapeFor(filterJson) ?: continue
+            val shape = shapeFor(filterJson) ?: continue
             val min = band["min"]?.jsonPrimitive?.longOrNull ?: continue
             val max = band["max"]?.jsonPrimitive?.longOrNull ?: continue
             val (everyMin, everyMax) = narrowed(band, min, max)
-            shapeFilters.putIfAbsent(shape, filter)
             shapeLegs.merge(shape, 1, Int::plus)
             val row =
                 Row(
@@ -267,8 +279,7 @@ internal object SyncCoverageReport {
             val (rawRelay, filterJson) = split(key, '|') ?: continue
             val relay = StatsYql.canonicalRelay(rawRelay)
             val mark = value as? JsonObject ?: continue
-            val (filter, shape) = shapeFor(filterJson) ?: continue
-            shapeFilters.putIfAbsent(shape, filter)
+            val shape = shapeFor(filterJson) ?: continue
             byShape.putIfAbsent(shape, LinkedHashMap())
             // Same merge as the bands, for the same reason: one relay can be
             // mid-sweep on several legs of one stream at once. The widest
@@ -366,9 +377,14 @@ internal object SyncCoverageReport {
                 val varying = narrowedBy(it)
                 if (varying.isNotEmpty()) {
                     putJsonArray("narrowedBy") { for (m in varying) add(m) }
-                    // Only when it says something `relays` does not. A plain
-                    // stream has one leg per relay and the number is noise.
-                    if (legs > relays.size) put("legs", legs)
+                    // Against `rows`, not `relays`: `legs` counts BANDS, and
+                    // `relays` counts bands ∪ cursors. A group with 5 bands on 2
+                    // relays plus 3 relays sweeping their first leg has legs=5
+                    // and relays=5, and comparing those two hid the merge that
+                    // this number exists to disclose. `rows` is the band-bearing
+                    // relays, so `legs > rows.size` is exactly "some relay was
+                    // reached more than once".
+                    if (legs > rows.size) put("legs", legs)
                 }
             }
             put("relays", relays.size)
@@ -487,9 +503,14 @@ internal object SyncCoverageReport {
      *
      * The group holds one leg's parsed filter and every leg's authors are
      * different, so publishing it whole would name 1 of 4,000 author lists as if
-     * it were the stream's. What survives is what every leg agrees on.
+     * it were the stream's. What survives is what every leg agrees on — which
+     * is what the group key kept, so this drops exactly what [shapeOf] drops.
+     * `since`/`until`/`limit` are in that set for the same reason the varying
+     * members are: windowed reconciliation writes a band per window, so the
+     * bounds on the leg that happened to parse first are that WINDOW's, and
+     * publishing them would read as the stream's own.
      */
-    private fun shared(filter: JsonObject): JsonObject = JsonObject(filter.filterKeys { !varies(it) })
+    private fun shared(filter: JsonObject): JsonObject = JsonObject(filter.filterKeys { !varies(it) && it != "since" && it != "until" && it != "limit" })
 
     /** Arrays ordered too — `[0,10002]` and `[10002,0]` are one filter. */
     private fun canon(v: kotlinx.serialization.json.JsonElement): String =

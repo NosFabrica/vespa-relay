@@ -404,6 +404,51 @@ class SyncCoverageReportTest {
         assertEquals(3, streams(doc).size)
     }
 
+    /**
+     * `legs` is compared against the BAND-bearing relays, not against every
+     * relay in the group. A relay sweeping its first leg has no band, so it
+     * inflates the relay count without contributing a leg — and against that
+     * count the merge below (2 legs, 1 relay) disappeared.
+     */
+    @Test
+    fun `a relay sweeping its first leg cannot hide a merge`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    "wss://a.example/ {\"kinds\":[30382],\"authors\":[\"aa\"]}" to band(1_000, 4_000, true),
+                    "wss://a.example/ {\"kinds\":[30382],\"authors\":[\"bb\"]}" to band(3_000, 9_000, true),
+                ),
+                """{"peers":{},"sweeps":{"wss://b.example/|{\"kinds\":[30382],\"authors\":[\"cc\"]}":{"downTo":900,"upTo":4000,"at":$now}}}""",
+                now,
+            )
+        val stream = streams(doc).single().jsonObject
+        assertEquals(2, stream["relays"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(2, stream["legs"]!!.jsonPrimitive.longOrNull?.toInt(), "two bands on one relay is a merge worth stating")
+    }
+
+    /**
+     * Windowed reconciliation writes a band per window, so `since`/`until` on
+     * the leg that happened to parse first are that WINDOW's bounds. The group
+     * key already drops them; publishing them would put one window's bounds on
+     * the page as the stream's own ask.
+     */
+    @Test
+    fun `a window's own time bounds are not published as the stream's`() {
+        val doc =
+            SyncCoverageReport.build(
+                bands(
+                    "wss://a.example/ {\"kinds\":[1],\"since\":1000,\"until\":2000}" to band(1_000, 2_000, true),
+                    "wss://b.example/ {\"kinds\":[1],\"since\":2000,\"until\":3000}" to band(2_000, 3_000, true),
+                ),
+                null,
+                now,
+            )
+        val filter = streams(doc).single().jsonObject["filter"]!!.jsonObject
+        assertEquals(listOf(1), filter["kinds"]!!.jsonArray.map { it.jsonPrimitive.int })
+        assertNull(filter["since"])
+        assertNull(filter["until"])
+    }
+
     /** A sweep on each leg is one relay moving, not two. */
     @Test
     fun `several cursors against one relay merge into one slice`() {
