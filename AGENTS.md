@@ -344,11 +344,18 @@ pinned by a test.
 **Both state files are now READ by the relay**, off the `/var/lib/vespa-relay`
 mount both containers share, and charted as the *Sync coverage* card on
 `/stats.html` — see `SyncCoverageReport`. The router is still the only writer.
-Two traps if you touch either format: the two files key the same pair
+Three traps if you touch either format: the two files key the same pair
 differently (a **space** in the band file, a **pipe** in the sweep file, whose
-key also strips `since`/`until`/`limit`), and a band's `min`/`max` are the outer
+key also strips `since`/`until`/`limit`); a band's `min`/`max` are the outer
 edges across every kind — the card draws the per-kind *intersection* on top,
-which is the multi-kind bug below made visible rather than charted as coverage.
+which is the multi-kind bug below made visible rather than charted as coverage;
+and **one stream is many keys**. A `relaySource` whose select binds `authors`
+narrows the filter per discovered relay (`DiscoveredRelay.narrowed`), and
+`authorsPerLeg` chops that again, so a stream configured as one filter reaches
+the file as thousands of them. The report groups on the filter with `authors`,
+`ids`, and tag members *starred out* — everything else exact — and merges the
+legs that land on one relay (edges union, `complete` ANDs). Keyed on the exact
+filter it was one group per relay, all printing the same label.
 
 **Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
 reconcile call, and the division of labour with quartz is the thing to
