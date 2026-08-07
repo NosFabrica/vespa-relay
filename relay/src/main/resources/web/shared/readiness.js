@@ -77,9 +77,16 @@ export function assess(facts) {
   if (f.relayList == null) return checking(chain);
   const writes = f.relayList.writeRelays || [];
   if (!writes.length) {
-    link("relayList", "broken", { writeRelays: 0 });
+    // Two different facts, and telling a reader the wrong one is telling them
+    // to fix something that is not broken. NO list is the permanent failure —
+    // nothing will ever discover them. A list we cannot USE (every write relay
+    // in it is `ws://` on an https page, or loopback) is their list being
+    // unreachable from a browser, which is a different sentence and the same
+    // next step.
+    const seen = !!f.relayList.seen;
+    link("relayList", "broken", { seen, declared: f.relayList.declared || 0, writeRelays: 0 });
     waitingBelow(chain, ["scoreList", "scores", "ranked"]);
-    return { state: "no-relay-list", tone: "blocked", percent: null, chain };
+    return { state: seen ? "no-usable-relays" : "no-relay-list", tone: "blocked", percent: null, chain };
   }
   link("relayList", "ok", { writeRelays: writes.length });
 

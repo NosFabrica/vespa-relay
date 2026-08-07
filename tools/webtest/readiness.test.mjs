@@ -15,7 +15,7 @@ const ok = (name) => console.log(`  ✓ ${name}`);
 
 // A reader with everything, as the baseline every case below breaks one way.
 const healthy = () => ({
-  relayList: { writeRelays: ["wss://relay.damus.io", "wss://nos.lol"] },
+  relayList: { seen: true, declared: 2, writeRelays: ["wss://relay.damus.io", "wss://nos.lol"] },
   scoreListSeen: true,
   rankService: { service: "abc", relay: "wss://nip85.nosfabrica.com" },
   scores: { here: 145968, there: 145968 },
@@ -39,7 +39,7 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
 {
   // Broken at the top, with everything below it ALSO missing. A column of red
   // crosses would say four things are wrong when one is.
-  const v = assess({ relayList: { writeRelays: [] }, scoreListSeen: false, rankService: null });
+  const v = assess({ relayList: { seen: false, writeRelays: [] }, scoreListSeen: false, rankService: null });
   assert.equal(v.state, "no-relay-list");
   assert.equal(statusOf(v, "relayList"), "broken");
   assert.equal(statusOf(v, "scoreList"), "waiting");
@@ -47,6 +47,23 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   assert.equal(statusOf(v, "ranked"), "waiting");
   assert.equal(v.chain.filter((l) => l.status === "broken").length, 1, "exactly one link is ever broken");
   ok("the first unmet link is the verdict; every link below it waits");
+}
+
+{
+  // "No relay list" and "a relay list we cannot use" are different facts, and
+  // the panel told readers the wrong one: a list naming only `ws://` relays
+  // loses every entry on an https page (the browser refuses those connections
+  // outright), leaving the same empty array as never having published one — so
+  // somebody who HAD published a list was told we had never seen it.
+  const unusable = assess({
+    relayList: { seen: true, declared: 2, writeRelays: [] },
+    scoreListSeen: false, rankService: null,
+  });
+  assert.equal(unusable.state, "no-usable-relays");
+  assert.equal(unusable.tone, "blocked", "same severity, and the same next step");
+  assert.equal(statusOf(unusable, "relayList"), "broken");
+  assert.equal(unusable.chain[0].detail.declared, 2, "the chain can say how many it could not use");
+  ok("a relay list we cannot dial is not the same as no relay list");
 }
 
 // ---- each link, broken on its own -----------------------------------------

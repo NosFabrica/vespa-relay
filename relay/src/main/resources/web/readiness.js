@@ -51,7 +51,19 @@ const host = (url) => String(url || "").replace(/^wss?:\/\//, "");
 const many = (n, word) => `${fmt(n)} ${word}${n === 1 ? "" : "s"}`;
 
 let checkedFor = null;   // the pubkey this page has already checked
-let running = false;
+
+/**
+ * Which check is the current one.
+ *
+ * Bumped by every start and by every clear, and carried by the run itself, so
+ * a run whose reason has gone away paints nothing. Everything here is on a
+ * timer or a socket, and both outlive the reason they were started for: sign
+ * out inside the start delay and the timer still fired, still asked, and still
+ * drew a panel about an account that was no longer on screen — a claim about
+ * somebody who had left. Switching accounts in the extension is the same race
+ * with a worse result, since the panel would be RIGHT about the wrong person.
+ */
+let generation = 0;
 
 /**
  * Check [pubkey], once, in the background.
@@ -66,47 +78,59 @@ export function checkReadiness(pubkey, { force = false } = {}) {
   if (!force && checkedFor === pubkey) return;
   if (!force && rememberedReady(pubkey)) { checkedFor = pubkey; return; }
   checkedFor = pubkey;
-  setTimeout(() => { run(pubkey).catch(() => {}); }, force ? 0 : START_DELAY_MS);
+  const gen = ++generation;
+  setTimeout(() => { run(pubkey, gen).catch(() => {}); }, force ? 0 : START_DELAY_MS);
 }
 
 /** Signing out is a decision: take the panel down and forget the verdict. */
 export function clearReadiness() {
   checkedFor = null;
+  generation++;
   hide();
 }
 
-async function run(me) {
-  if (running) return;
-  running = true;
-  try {
-    const facts = {};
-    // Painted after every stage, so the chain fills in rather than appearing
-    // whole — but nothing is REVEALED until the verdict is worth showing.
-    const paint = () => render(assess(facts), me);
+/**
+ * One pass. [gen] is what makes it abandonable.
+ *
+ * The generation is the ONLY concurrency control here, deliberately: a
+ * `running` flag beside it looked like belt and braces and was a hole — press
+ * "Check again" while a pass is in flight and the new one returned early on the
+ * flag, while the old one then suppressed its own paint for being superseded,
+ * so the click did nothing at all and said nothing about it. Letting the newer
+ * pass run costs one duplicated round of asks, once, per press; the older one
+ * finishes into a paint that is dropped, and closes its sockets on the way out.
+ */
+async function run(me, gen) {
+  if (gen !== generation) return;
+  const facts = {};
+  // Painted after every stage, so the chain fills in rather than appearing
+  // whole — but nothing is REVEALED until the verdict is worth showing, and
+  // nothing at all once this pass has been superseded.
+  const paint = () => { if (gen === generation) render(assess(facts), me); };
 
-    const anon = await refConn();
-    if (!(await readLists(anon, me, facts))) return;
-    paint();
-    if (!facts.relayList.writeRelays.length || !facts.rankService) return;
+  const anon = await refConn();
+  if (!(await readLists(anon, me, facts))) return;
+  paint();
+  if (!facts.relayList.writeRelays.length || !facts.rankService) return;
 
-    facts.scores = await scoreCounts(anon, facts.rankService);
-    paint();
+  // Together: our own count and the provider relay's answer the same question
+  // about two different stores, and neither informs the other. Run in series,
+  // the local answer — Vespa, milliseconds — sat waiting on a stranger's relay
+  // that observer_stats measured at up to 47.6s for a single COUNT.
+  [facts.scores, facts.probe] = await Promise.all([
+    scoreCounts(anon, facts.rankService),
+    probe(anon),
+  ]);
+  paint();
 
-    facts.probe = await probe(anon);
-    paint();
-
-    // Only once ranking is complete: a reader still importing scores does not
-    // need a second, quieter number about a different thing.
-    const v = assess(facts);
-    if (v.state === "ready") {
-      facts.posts = await postCounts(anon, me, facts.relayList.writeRelays);
-      const after = assess(facts);
-      render(after, me);
-      if (after.state === "ready") rememberReady(me);
-    }
-  } finally {
-    running = false;
-  }
+  // Only once ranking is complete: a reader still importing scores does not
+  // need a second, quieter number about a different thing.
+  if (assess(facts).state !== "ready") return;
+  facts.posts = await postCounts(anon, me, facts.relayList.writeRelays);
+  if (gen !== generation) return;
+  const after = assess(facts);
+  render(after, me);
+  if (after.state === "ready") rememberReady(me);
 }
 
 // ---- the asks -------------------------------------------------------------
@@ -138,13 +162,17 @@ async function readLists(anon, me, facts) {
   // NIP-65: an `r` tag with no marker is both read AND write. Only the write
   // ones matter here — they are where this reader publishes, which is where
   // the router would go looking for everything else about them.
-  const writeRelays = relayList
-    ? (relayList.tags || [])
-        .filter((t) => t?.[0] === "r" && t[1] && (t[2] === "write" || t[2] == null))
-        .map((t) => normalizeRelay(t[1]))
-        .filter(Boolean)
+  const declared = relayList
+    ? (relayList.tags || []).filter((t) => t?.[0] === "r" && t[1] && (t[2] === "write" || t[2] == null))
     : [];
-  facts.relayList = { writeRelays: [...new Set(writeRelays)] };
+  const writeRelays = [...new Set(declared.map((t) => normalizeRelay(t[1])).filter(Boolean))];
+  // `seen` is not the same fact as `writeRelays.length`, and saying so cost a
+  // wrong headline. A list naming only `ws://` relays loses every one of them
+  // on an https page — the browser refuses those connections outright — and a
+  // list naming only loopback loses them too. Both left an empty array, and the
+  // panel then told a reader who HAS published a relay list that we had never
+  // seen one.
+  facts.relayList = { seen: !!relayList, declared: declared.length, writeRelays };
 
   const scoreList = newest(10040);
   facts.scoreListSeen = !!scoreList;
@@ -164,9 +192,10 @@ async function readLists(anon, me, facts) {
  */
 async function scoreCounts(anon, { service, relay: url }) {
   const filter = { kinds: [30382], authors: [service] };
-  const here = await anon.count(filter).catch(() => TIMED_OUT);
-  if (!url) return { here, there: null };
-  const there = await askRemote(url, (c) => c.count(filter));
+  const [here, there] = await Promise.all([
+    anon.count(filter).catch(() => TIMED_OUT),
+    url ? askRemote(url, (c) => c.count(filter)) : Promise.resolve(null),
+  ]);
   return { here, there };
 }
 
@@ -204,19 +233,26 @@ async function probe(anon) {
  */
 async function postCounts(anon, me, writeRelays) {
   const filter = { authors: [me] };
-  const here = await anon.count(filter).catch(() => TIMED_OUT);
   const url = writeRelays[0];
-  if (!url) return { here, there: null, relay: null };
-  const answer = await askRemote(url, async (c) => ({
-    there: await c.count(filter),
-    newest: (await c.req({ authors: [me], limit: 1 }))[0]?.created_at ?? null,
-  }));
-  const newestHere = (await anon.req({ authors: [me], limit: 1 }).catch(() => []))[0]?.created_at ?? null;
+  // All three at once. Our count, our newest and the whole remote exchange are
+  // three answers to one question, and none of them reads the others — run in
+  // series they were three waits deep, the last of them on somebody else's
+  // server.
+  const [here, newestHere, answer] = await Promise.all([
+    anon.count(filter).catch(() => TIMED_OUT),
+    anon.req({ authors: [me], limit: 1 }).catch(() => []),
+    url
+      ? askRemote(url, async (c) => {
+          const [there, newest] = await Promise.all([c.count(filter), c.req({ authors: [me], limit: 1 })]);
+          return { there, newest: newest[0]?.created_at ?? null };
+        })
+      : Promise.resolve(null),
+  ]);
   return {
     here,
     there: answer?.there ?? null,
-    relay: url,
-    newestHere,
+    relay: url || null,
+    newestHere: newestHere[0]?.created_at ?? null,
     newestThere: answer?.newest ?? null,
   };
 }
@@ -256,7 +292,7 @@ const MARK = { ok: "✓", partial: "•", working: "•", broken: "✕", waiting
 function render(v, me) {
   if (!$panel) return;
   if (!worthShowing(v)) { hide(); return; }
-  if (dismissed(me)) { hide(); return; }
+  if (dismissed(me, v.state)) { hide(); return; }
   const view = words(v);
   $panel.innerHTML = `
     <div class="rdy is-${esc(v.tone)}">
@@ -274,7 +310,7 @@ function render(v, me) {
       <div class="rdy-chain" hidden>${chainHtml(v.chain)}</div>
     </div>`;
   $panel.hidden = false;
-  wire(me);
+  wire(me, v.state);
 }
 
 /** The panel's copy, per state. One place, so the seven states read as a set. */
@@ -290,6 +326,18 @@ function words(v) {
           "This relay finds people through the relays they post to, and it has no record of yours, " +
           "so nothing about your account has been mirrored here. Name one relay you use and we’ll " +
           "read your profile, relay list and trusted-scores list from it.",
+        actions: fetchFormHtml("Read my lists"),
+        hint: "We copy the events here exactly as you signed them — nothing is rewritten, and nothing is published on your behalf.",
+      };
+
+    case "no-usable-relays":
+      return {
+        state: "blocked",
+        headline: "Search can’t rank for you yet — none of your relays can be reached from here.",
+        body:
+          "Your relay list is here, and every relay in it is one a browser on an encrypted page " +
+          "cannot open: a plain <code>ws://</code> address, or one that points at your own machine. " +
+          "Name a relay we can reach and we’ll read your lists from it.",
         actions: fetchFormHtml("Read my lists"),
         hint: "We copy the events here exactly as you signed them — nothing is rewritten, and nothing is published on your behalf.",
       };
@@ -427,7 +475,9 @@ function chainHtml(chain) {
       let sub = "";
       switch (l.key) {
         case "relayList":
-          sub = l.status === "broken" ? "no relays of yours are known here" : `${many(d.writeRelays, "write relay")}`;
+          sub = l.status !== "broken" ? many(d.writeRelays, "write relay")
+            : d.seen ? `${many(d.declared, "write relay")} named, none reachable from a browser`
+              : "no relays of yours are known here";
           break;
         case "scoreList":
           if (d.reason === "absent") sub = "none published, or none mirrored here";
@@ -493,7 +543,13 @@ function fetchFormHtml(label, { quiet = false } = {}) {
  */
 async function fetchFrom(url, me, say) {
   const dial = normalizeRelay(url);
-  if (!dial) { say({ tone: "blocked", state: "refused", headline: whyNotDialable(url), form: true, value: url }); return; }
+  // ESCAPED: every other headline on this panel is a literal with escaped
+  // inserts, and this one is the exception — whyNotDialable() quotes the url
+  // back so the reader can see what was wrong with it, and that string came
+  // out of a text field. Somebody's own typing can only attack themselves, but
+  // that is the argument observer_stats.html had already accepted once before
+  // a stranger's display name went into innerHTML raw.
+  if (!dial) { say({ tone: "blocked", state: "refused", headline: esc(whyNotDialable(url)), form: true, value: url }); return; }
   // The one relay this must never be pointed at is this one. Asking ourselves
   // what we are missing is a loop, and it would answer "nothing" every time.
   if (dial === normalizeRelay(RELAY_URL)) {
@@ -506,7 +562,11 @@ async function fetchFrom(url, me, say) {
 
   say({ tone: "working", state: "dialling", headline: `Connecting to ${esc(host(dial))}…`, spin: true });
   const found = new Map();               // event id -> event
-  const first = await askRemote(dial, (c) => c.req({ kinds: [0, 10002, 10040], authors: [me] }));
+  // Bounded, though all three kinds are replaceable and a well-behaved relay
+  // holds one of each: this is a stranger's server answering a question about
+  // us, and "it will only send three" is an assumption about somebody else's
+  // implementation rather than something we know.
+  const first = await askRemote(dial, (c) => c.req({ kinds: [0, 10002, 10040], authors: [me], limit: 10 }));
   if (first == null) {
     say({ tone: "blocked", state: "refused", headline: `${esc(host(dial))} didn’t answer.`,
           body: "It may be down, or it may not accept connections from a browser. Try another relay you use.",
@@ -554,11 +614,14 @@ async function fetchFrom(url, me, say) {
     if (!prev || prev.created_at < ev.created_at) newest.set(ev.kind, ev);
   }
   say({ tone: "working", state: "copying", spin: true, headline: "Copying them to this relay…" });
-  const results = new Map();
-  for (const [kind, ev] of newest) {
-    try { await relay.publish(ev); results.set(kind, null); }
-    catch (e) { results.set(kind, e.message || "refused"); }
-  }
+  // Together, on one socket. Three events published in series is three full
+  // round trips for three independent OKs, and NIP-01 has never required a
+  // client to wait for one before sending the next — the client already keys
+  // its OK waiters by event id.
+  const results = new Map(
+    await Promise.all([...newest].map(([kind, ev]) =>
+      relay.publish(ev).then(() => [kind, null], (e) => [kind, e.message || "refused"]))),
+  );
 
   const failed = [...results.values()].filter(Boolean);
   const copied = results.size - failed.length;
@@ -625,10 +688,11 @@ function sayFetch(me, s) {
 
 // ---- wiring ---------------------------------------------------------------
 
-function wire(me) {
+function wire(me, state) {
   const el = $panel.querySelector(".rdy");
   if (!el) return;
-  el.querySelector(".rdy-x")?.addEventListener("click", () => { dismiss(me); hide(); });
+  // A fetch panel has no verdict to dismiss — the x just puts it away.
+  el.querySelector(".rdy-x")?.addEventListener("click", () => { if (state) dismiss(me, state); hide(); });
 
   const more = el.querySelector(".rdy-more");
   const chain = el.querySelector(".rdy-chain");
@@ -680,10 +744,16 @@ const rememberReady = (pk) => writeJson(READY_KEY, { pubkey: pk, at: Date.now() 
 // the moment the state changes, so a reader who dismissed "importing — 43%"
 // still hears about it when their scores stop arriving altogether.
 const DISMISS_KEY = "sot_ready_dismissed";
-function dismiss(pk) { writeJson(DISMISS_KEY, { pubkey: pk, at: Date.now() }); }
-function dismissed(pk) {
+function dismiss(pk, state) { writeJson(DISMISS_KEY, { pubkey: pk, state, at: Date.now() }); }
+function dismissed(pk, state) {
   const v = readJson(DISMISS_KEY);
-  return !!v && v.pubkey === pk && Date.now() - v.at < READY_TTL_MS;
+  // The STATE is part of the key, which is what makes the comment above true.
+  // It was not, and the comment was the only thing saying it: one click on
+  // "importing — 43%" silenced the panel for six hours, including for the
+  // reader whose import then stopped dead or whose provider list went away —
+  // the two things they would most want to hear about, hidden by a dismissal
+  // that meant "yes, I know it is downloading".
+  return !!v && v.pubkey === pk && v.state === state && Date.now() - v.at < READY_TTL_MS;
 }
 
 // The relay a previous fetch worked from, offered back as the field's default.
