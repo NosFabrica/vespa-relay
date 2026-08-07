@@ -37,12 +37,12 @@ import kotlin.test.assertTrue
  * The statistics snapshot: what it serves, what it refuses to serve, and what
  * survives a restart.
  *
- * The route itself is exercised in [RelayStatsPageTest]; this covers the
- * holder, which is where the two mistakes live that a route test would not
- * catch — publishing bytes with a stale validator, and treating "no document
- * yet" as a document full of zeros.
+ * The routes are exercised in [StatsPageTest]; this covers the HOLDER, which is
+ * where the two mistakes live that a route test would not catch — publishing
+ * bytes with a stale validator, and treating "no document yet" as a document
+ * full of zeros.
  */
-class RelayStatsRouteTest {
+class StatsSnapshotTest {
     private fun doc(events: Int) =
         buildJsonObject {
             put("schema", 1)

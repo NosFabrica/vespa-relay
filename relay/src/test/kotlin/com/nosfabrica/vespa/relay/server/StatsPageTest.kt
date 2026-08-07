@@ -35,7 +35,7 @@ import kotlin.test.assertNotNull
 import kotlin.test.assertTrue
 
 /** The two routes the statistics page needs, driven in-process. */
-class RelayStatsPageTest {
+class StatsPageTest {
     private val doc = buildJsonObject { put("schema", 1) }
 
     @Test
@@ -89,10 +89,10 @@ class RelayStatsPageTest {
     @Test
     fun `the page is served and reads the document it charts`() =
         testApplication {
-            val html = assertNotNull(javaClass.getResource("/relay_stats.html")?.readText(), "the page is on the classpath")
+            val html = assertNotNull(javaClass.getResource("/stats.html")?.readText(), "the page is on the classpath")
             application { routing { corpusStats(CachedPage(html), StatsSnapshot().also { it.publish(doc) }) } }
 
-            val res = client.get("/relay_stats.html")
+            val res = client.get("/stats.html")
             assertEquals(HttpStatusCode.OK, res.status)
             val body = res.bodyAsText()
             assertTrue(body.contains("/stats.json"), "the page fetches the document rather than carrying its own numbers")
@@ -121,12 +121,12 @@ class RelayStatsPageTest {
     @Test
     fun `the old kind_stats url redirects to the page that replaced it`() =
         testApplication {
-            val html = assertNotNull(javaClass.getResource("/relay_stats.html")?.readText())
+            val html = assertNotNull(javaClass.getResource("/stats.html")?.readText())
             application { routing { corpusStats(CachedPage(html), null) } }
 
             // Not followed, so the status and target are both assertable.
             val res = createClient { followRedirects = false }.get("/kind_stats.html")
             assertEquals(HttpStatusCode.MovedPermanently, res.status)
-            assertEquals("/relay_stats.html", res.headers[HttpHeaders.Location])
+            assertEquals("/stats.html", res.headers[HttpHeaders.Location])
         }
 }

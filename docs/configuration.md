@@ -36,12 +36,19 @@ codebase forbids.
 | `GUARD_OWNERS_DISABLE` | **nothing to set.** Both processes tell the store their writer topology in code (`STORE_WRITERS` = `SHARED_STRICT`), so NIP-09 and NIP-62 are checked against the store on every insert — see [Mirroring the deletions themselves](router.md#mirroring-the-deletions-themselves). This variable can only force that same floor, never weaken it, and the store now fails to open on a value it cannot parse | unset ⇒ the code's choice stands |
 | `LOG_CONNECTIONS` | log the live connection count on connect/disconnect | `false` |
 
-## Corpus statistics (`GET /stats.json`, `/relay_stats.html`)
+## Corpus statistics (`GET /stats.json`, `/stats.html`)
 
 A background rollup counts what this relay's store holds with Vespa grouping
 queries, publishes it as a public JSON document, and charts it on a page:
 
-- **corpus** — events, distinct pubkeys, distinct kinds
+- **corpus** — events, distinct pubkeys, distinct kinds, the age of the newest
+  event, and how many events are dated in the *future* (clock skew and spam;
+  every freshness number excludes them)
+- **trust** — observers, score providers, stored scores, and pubkeys carrying
+  projected trust state. The one section reading a second document type, and the
+  only place a silently-empty web of trust shows up: `scoredPubkeys` at zero
+  means every ranked search is falling back to unranked, which looks identical
+  to a healthy relay on every other panel
 - **kinds** — EVERY kind in the store, with distinct authors and the
   `created_at` span. This replaced `/kind_stats.html` (whose url now 301s to the
   page): that page asked one NIP-45 `COUNT` per kind it already knew to name, so
@@ -54,6 +61,11 @@ queries, publishes it as a public JSON document, and charts it on a page:
 - **kindActivity** — a daily series per kind, for the largest few
 - **relayDistribution** — the relays this store's NIP-65 lists name
 - **zaps** — kind-9735 receipt counts, and the wallets that signed them
+
+Per-kind `lastSeen` and the corpus-wide newest event are both bounded to the
+present, and the page renders them as **ages** rather than dates: "kind 1 four
+minutes ago, kind 30023 six days ago" localises which stream stalled, where a
+column of timestamps makes the reader do the subtraction.
 
 Everything is counted **anonymously**: the store gates an authenticated reader to
 authors that reader has scored, so the same query under an operator's lens would

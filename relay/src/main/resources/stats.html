@@ -105,6 +105,7 @@
   .tile { background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; padding: .9rem 1.1rem; }
   .tile .v { font-size: 1.9rem; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15; }
   .tile .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
+  .tile .v.stale { color: var(--warn); }
   .chart { width: 100%; display: block; overflow: visible; }
   .chart .grid { stroke: var(--grid); stroke-width: 1; }
   .chart .tick { fill: var(--muted); font-size: 10px; font-variant-numeric: tabular-nums; }
@@ -191,6 +192,32 @@
 import { kindLabel } from "/web/shared/kinds.js";
 
 const fmt = (n) => Number(n).toLocaleString();
+
+/**
+ * A duration as an age — "4m ago", "6d ago".
+ *
+ * Every timestamp on this page is read as "is this relay keeping up", and a
+ * date answers that only after the reader does the subtraction. The exact
+ * instant stays available on hover, because the age is the signal and the date
+ * is the evidence.
+ */
+const ago = (seconds) => {
+  if (seconds == null) return "—";
+  const d = Math.max(0, Math.floor(Date.now() / 1000) - seconds);
+  if (d < 90) return `${d}s ago`;
+  if (d < 5400) return `${Math.round(d / 60)}m ago`;
+  if (d < 172800) return `${Math.round(d / 3600)}h ago`;
+  return `${Math.round(d / 86400)}d ago`;
+};
+const isoOf = (seconds) => (seconds == null ? "" : new Date(seconds * 1000).toISOString().replace("T", " ").slice(0, 19) + "Z");
+
+/**
+ * Past this, an age is worth colouring. NOT an assertion that the relay is
+ * broken: a serve-only deployment with no router has every right to a corpus
+ * whose newest event is old, and this page cannot see whether a mirror is even
+ * configured. It marks "look at this", and the tooltip names both readings.
+ */
+const STALE_CORPUS_SECONDS = 24 * 3600;
 /**
  * "All 11" vs "the 50 most-named of 1,204".
  *
@@ -356,7 +383,41 @@ function tiles(corpus) {
     t.appendChild(el("div", "k", label));
     wrap.appendChild(t);
   }
+
+  // Freshness as the headline it is. "Is the store still filling" is the first
+  // question an operator has and the corpus totals cannot answer it — a relay
+  // whose mirror died last week has the same impressive event count it had
+  // while working.
+  if (d.newestEvent != null) {
+    const t = el("div", "tile");
+    const age = Math.max(0, Math.floor(Date.now() / 1000) - d.newestEvent);
+    const v = el("div", "v", ago(d.newestEvent));
+    if (age > STALE_CORPUS_SECONDS) {
+      v.classList.add("stale");
+      t.title =
+        "The newest event this relay holds is over a day old. Either the mirror has stopped, or this " +
+        "deployment serves without one — this page cannot tell which.";
+    } else {
+      t.title = isoOf(d.newestEvent);
+    }
+    t.appendChild(v);
+    t.appendChild(el("div", "k", "Newest event"));
+    wrap.appendChild(t);
+  }
   out.push(wrap);
+
+  // Counted, not hidden. created_at is author-signed, so a corpus accumulates
+  // events dated years out; they are why every freshness number on this page is
+  // bounded, and a count that grows is something upstream publishing garbage.
+  if (d.futureDated) {
+    const strip = el("div", "card");
+    const p = el("p", "note");
+    p.textContent =
+      `${fmt(d.futureDated)} stored event(s) are dated in the future. created_at is whatever the author signed, ` +
+      `so this is clock skew or spam rather than a fault here — every "newest" on this page excludes them.`;
+    strip.appendChild(p);
+    out.push(strip);
+  }
 
   // The totals have no card header for cardHead to hang an error on, and
   // without this an em dash where a number belongs is the ONLY sign anything
@@ -525,6 +586,52 @@ function kindActivityCard(section) {
   return card;
 }
 
+/**
+ * Whether ranked search can rank at all.
+ *
+ * The four numbers are a CHAIN — observers name providers, providers publish
+ * scores, scores project onto pubkeys — and reading them together localises a
+ * break that every other panel on this page is blind to. `TrustReconcile` warns
+ * about exactly this failure: "a corpus mirrored before its provider lists
+ * arrived stays silently unprojected, and every ranked search comes back
+ * empty." A relay in that state looks perfectly healthy on the charts above.
+ */
+function trustCard(section) {
+  const d = (section && section.data) || {};
+  const card = el("div", "card");
+  cardHead(
+    card,
+    "Trust",
+    "The NIP-85 web of trust this relay ranks with: observers name score providers, providers publish scores, " +
+      "and scores project onto the pubkeys a ranked search can then order.",
+    section,
+  );
+
+  const row = el("div", "tiles inline");
+  for (const [key, label, help] of [
+    ["observers", "Observers", "Distinct authors of a kind-10040 list naming a score provider"],
+    ["providers", "Providers", "Distinct authors of kind-30382 scores"],
+    ["scores", "Scores", "Stored kind-30382 events"],
+    ["scoredPubkeys", "Scored pubkeys", "Pubkeys carrying projected trust state — what a ranked search can order by"],
+  ]) {
+    const t = el("div", "tile");
+    t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
+    t.appendChild(el("div", "k", label));
+    t.title = help;
+    row.appendChild(t);
+  }
+  card.appendChild(row);
+
+  // The one state worth shouting about, and the reason this panel exists.
+  if (d.scoredPubkeys === 0) {
+    card.appendChild(el("p", "err",
+      "No pubkey carries trust state, so every ranked search is falling back to unranked — " +
+      (d.scores ? "scores are stored but not projected; a trust reconcile is what fixes that."
+                : "no kind-30382 scores are stored yet; the mirror has not fetched them.")));
+  }
+  return card;
+}
+
 function relaysCard(section) {
   const d = (section && section.data) || {};
   const top = d.top || [];
@@ -613,7 +720,7 @@ function wrapTitle(node, title) {
  * protocol implementation rather than a blank cell. This table cannot say that
  * — it reads the engine directly, and never speaks the protocol at all.
  */
-function kindsCard(kinds, nowSeconds) {
+function kindsCard(kinds) {
   const card = el("div", "card");
   const d = (kinds && kinds.data) || {};
   const all = d.all || [];
@@ -644,7 +751,7 @@ function kindsCard(kinds, nowSeconds) {
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
-  for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Pubkeys", "n"], ["Newest", "n"]]) {
+  for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Pubkeys", "n"], ["Last event", "n"]]) {
     const th = el("th", cls, label);
     hr.appendChild(th);
   }
@@ -662,20 +769,12 @@ function kindsCard(kinds, nowSeconds) {
     share.appendChild(bar);
     tr.appendChild(share);
     tr.appendChild(el("td", "n", k.pubkeys == null ? "—" : fmt(k.pubkeys)));
-    // A lastSeen in the future is a real finding, not a rendering bug:
-    // created_at is whatever the author signed, so a corpus picks up events
-    // dated years out. Flagged rather than clamped — the number IS the news.
-    const newest = el("td", "n");
-    if (k.lastSeen == null) {
-      newest.textContent = "—";
-    } else {
-      const iso = new Date(k.lastSeen * 1000).toISOString().slice(0, 10);
-      newest.textContent = iso;
-      if (k.lastSeen > nowSeconds) {
-        newest.appendChild(el("span", "badge bad", "future"));
-        newest.title = "created_at is in the future — signed that way by its author, not a clock problem here";
-      }
-    }
+    // An AGE, not a date. Per kind this is the useful form: "kind 1 four
+    // minutes ago, kind 30023 six days ago" localises which stream stalled,
+    // where a column of dates makes the reader subtract thirty times. The
+    // rollup bounds lastSeen to the present, so this can never read "in".
+    const newest = el("td", "n", ago(k.lastSeen));
+    if (k.lastSeen != null) newest.title = isoOf(k.lastSeen);
     tr.appendChild(newest);
     tbody.appendChild(tr);
   }
@@ -703,7 +802,6 @@ function kindsCard(kinds, nowSeconds) {
 }
 
 function render(doc) {
-  const nowSeconds = Math.floor(Date.now() / 1000);
   scopeEl.textContent = doc.scope || "";
 
   bodyEl.replaceChildren();
@@ -722,12 +820,13 @@ function render(doc) {
   bodyEl.appendChild(activityWrap);
 
   bodyEl.appendChild(kindActivityCard(doc.kindActivity));
+  bodyEl.appendChild(trustCard(doc.trust));
   bodyEl.appendChild(zapsCard(doc.zaps));
   bodyEl.appendChild(relaysCard(doc.relayDistribution));
   // Last, because it is now the longest thing on the page by an order of
   // magnitude — every kind in the store rather than a top-50 — and a reference
   // table nobody scrolls past is worse placed above the charts everyone reads.
-  bodyEl.appendChild(kindsCard(doc.kinds, nowSeconds));
+  bodyEl.appendChild(kindsCard(doc.kinds));
 
   footEl.replaceChildren();
   const at = doc.generatedAt ? new Date(doc.generatedAt) : null;

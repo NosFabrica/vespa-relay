@@ -82,8 +82,8 @@ data class Nip11Info(
  *   GET  /npub1…, /nprofile1…, /note1…, /nevent1…, /naddr1… -> [landingPage],
  *        which decodes the identifier and renders the entity itself
  *   GET  /observer_stats.html -> [observerStatsPage]
- *   GET  /relay_stats.html -> [relayStatsPage], which charts [statsJson]
- *   GET  /kind_stats.html -> 301 to /relay_stats.html, whose Kinds table replaced it
+ *   GET  /stats.html -> [statsPage], the view over [statsJson]
+ *   GET  /kind_stats.html -> 301 to /stats.html, whose Kinds table replaced it
  *   GET  /stats.json -> [statsJson], this relay's corpus statistics
  *   POST /  -> the NIP-86 management RPC, when [admin] is configured
  *
@@ -101,7 +101,7 @@ fun serveRelay(
     admin: Nip86Admin? = null,
     landingPage: String? = null,
     observerStatsPage: String? = null,
-    relayStatsPage: String? = null,
+    statsPage: String? = null,
     // The corpus statistics document, recomputed behind the server by
     // StatsRollup. Null — or present but never yet published — makes
     // GET /stats.json a 503 rather than a page of zeros.
@@ -123,7 +123,7 @@ fun serveRelay(
     // the classpath at startup and never change while the process lives.
     val landing = landingPage?.let(::CachedPage)
     val observerStats = observerStatsPage?.let(::CachedPage)
-    val relayStats = relayStatsPage?.let(::CachedPage)
+    val stats = statsPage?.let(::CachedPage)
 
     return embeddedServer(Netty, port = port) {
         // The pages are ~117KB of text — html, ES modules, css — and none of it
@@ -197,7 +197,7 @@ fun serveRelay(
             // what the identifier names — belongs to the page, which already
             // speaks bech32. Deliberately not a catch-all: /favicon.ico and
             // typos should stay 404s, not empty search pages. Ktor prefers
-            // literal routes, so /relay_stats.html and /web/… are unaffected.
+            // literal routes, so /stats.html and /web/… are unaffected.
             landing?.let { page ->
                 get("/{nip19}") {
                     if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
@@ -226,7 +226,7 @@ fun serveRelay(
             observerStats?.let { page ->
                 get("/observer_stats.html") { call.respondPage(page) }
             }
-            corpusStats(relayStats, statsJson)
+            corpusStats(stats, statsJson)
             admin?.let { nip86Admin(it, info) }
         }
     }.start(wait = wait)
@@ -281,8 +281,15 @@ internal fun Route.webModules() {
 }
 
 /**
- * `GET /relay_stats.html` and `GET /stats.json` — the corpus statistics page
- * and the document it charts.
+ * `GET /stats.html` and `GET /stats.json` — the corpus statistics page and the
+ * document it charts.
+ *
+ * One name, two representations: the `.json` is the artifact and the `.html` is
+ * a view over it, and the shared stem is what says so — a reader who finds one
+ * can guess the other. No `<subject>_` prefix because there is no subject to
+ * name: the sibling `observer_stats.html` earns its prefix by being about
+ * observers specifically, while this page is about the relay, which on a relay
+ * is everything.
  *
  * The document is PUBLIC, like `/pressure` and the two other stats pages. Every
  * number in it describes STORED EVENTS, which is what a relay already hands to
@@ -305,14 +312,14 @@ internal fun Route.corpusStats(
     snapshot: StatsSnapshot?,
 ) {
     page?.let {
-        get("/relay_stats.html") { call.respondPage(it) }
+        get("/stats.html") { call.respondPage(it) }
         // `/kind_stats.html` was the per-kind COUNT page this one's Kinds table
         // replaced. A 301 rather than a 404 because the old url is what is
         // bookmarked, linked from operator runbooks, and printed in this repo's
         // own history — and because the answer genuinely moved rather than
         // going away: the new table covers EVERY kind, where that page could
         // only count the ones it already knew to name.
-        get("/kind_stats.html") { call.respondRedirect("/relay_stats.html", permanent = true) }
+        get("/kind_stats.html") { call.respondRedirect("/stats.html", permanent = true) }
     }
     snapshot?.let {
         get("/stats.json") {

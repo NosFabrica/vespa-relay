@@ -273,7 +273,43 @@ internal object StatsYql {
     fun query(
         pipeline: String,
         where: String = "true",
-    ) = "select * from event where $where limit 0 | $pipeline"
+        source: String = EVENTS,
+    ) = "select * from $source where $where limit 0 | $pipeline"
+
+    /** The stored events — every aggregation here except the trust one. */
+    const val EVENTS = "event"
+
+    /**
+     * The trust projection's parent documents, one per pubkey the web of trust
+     * knows anything about.
+     *
+     * A SECOND document type, and the only reason to reach for it: whether a
+     * reader's ranked search can rank at all depends on this table being
+     * populated, and nothing in the `event` corpus reveals that. `TrustReconcile`
+     * warns about exactly the failure it detects — "a corpus mirrored before its
+     * provider lists arrived stays silently unprojected, and every ranked search
+     * comes back empty" — which until now had no number attached to it.
+     *
+     * Only counted, never decomposed: the scores themselves are mapped TENSORS
+     * keyed by observer (`influence_scores`, `follower_counts`), and grouping
+     * cannot take a tensor apart. "How trusted is the average author" is not a
+     * question this endpoint can ask; "does anyone have trust state at all" is.
+     */
+    const val REPUTATION = "reputation"
+
+    /**
+     * A bare aggregate with NO grouping level — `all(output(max(created_at)))` —
+     * is not a thing Vespa can answer.
+     *
+     * It fails with HTTP 500 and `Cannot invoke SingleResultNode.max(…) because
+     * "this.max" is null`, which reads like a bug in the engine rather than a
+     * malformed request and sends you looking in the wrong place. `count()` at
+     * that level works fine, so the shape looks proven right up until you swap
+     * the aggregator. Anything else needs a `group(...) each(...)` around it —
+     * which is why the corpus-wide newest event here is derived from the
+     * per-kind spans rather than asked for directly.
+     */
+    const val NO_BARE_AGGREGATES = "group(...) each(output(...)) — see NO_BARE_AGGREGATES"
 
     /**
      * `created_at` within [since]..[until], inclusive.
@@ -296,6 +332,27 @@ internal object StatsYql {
         since: Long,
         until: Long,
     ) = "kind = $kind and ${window(since, until)}"
+
+    /**
+     * Everything signed no later than [until] — the whole corpus minus the
+     * future.
+     *
+     * What makes "the newest event we hold" mean anything. `created_at` is
+     * author-signed, so an unbounded `max(created_at)` reports whatever the most
+     * optimistically-dated spam in the corpus claims, and a relay whose mirror
+     * died an hour ago would still show a freshness of "in 74 years". Bounded,
+     * the number answers the question an operator is actually asking.
+     */
+    fun upTo(until: Long) = "created_at <= $until"
+
+    /** Events signed for a time that has not happened — clock skew and spam, counted rather than hidden. */
+    fun after(instant: Long) = "created_at > $instant"
+
+    /** One kind, bounded to the past — the honest per-kind freshness. */
+    fun kindUpTo(
+        kind: Int,
+        until: Long,
+    ) = "kind = $kind and ${upTo(until)}"
 
     // ---- readers ------------------------------------------------------------
 

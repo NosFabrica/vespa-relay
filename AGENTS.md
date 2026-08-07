@@ -185,7 +185,7 @@ relay/src/main/resources/
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
                         what it asks
-  relay_stats.html      the corpus dashboard, and the ONE page here with no
+  stats.html            the corpus dashboard, and the ONE page here with no
                         relay client: it charts GET /stats.json and nothing
                         else. Neither reason observer_stats carries one applies
                         — no aggregation on it is a protocol feature to test,
@@ -448,6 +448,20 @@ statement about someone else's server.
   the week and seven in the sum of that week's days. Every granularity has to be
   asked of the engine at that granularity, which is why `activitySection`
   issues three pairs of queries instead of summing one.
+- **A bare aggregate with no grouping level is not a query Vespa can answer.**
+  `all(output(count()))` works, so the shape looks proven — but swap the
+  aggregator and `all(output(max(created_at)))` fails with HTTP 500 and
+  `Cannot invoke SingleResultNode.max(…) because "this.max" is null`, which
+  reads like an engine bug and sends you looking in the wrong place. Anything
+  other than `count()` needs a `group(...) each(output(...))` around it. The
+  corpus-wide newest event is therefore DERIVED from the per-kind spans rather
+  than asked for.
+- **Freshness has to be bounded to the present.** `created_at` is author-signed,
+  so an unbounded `max(created_at)` reports the corpus's most optimistically
+  dated spam — a relay whose mirror died an hour ago reads as fresh "in 74
+  years". Every `lastSeen` here carries `created_at <= now`, and the future-dated
+  events are counted separately in `corpus.futureDated`, where they are the
+  finding rather than the noise.
 - **The bundled query profile is what makes any of this work.**
   `grouping.globalMaxGroups: -1` in `search/query-profiles/default.xml` is why a
   `max()`-less pipeline is legal at all, and the per-request

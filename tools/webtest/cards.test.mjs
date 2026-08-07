@@ -177,11 +177,11 @@ assert.deepStrictEqual(KNOWN_KINDS, [...registered].sort((a, b) => a - b),
 // second table. It no longer takes the LIST from here — kind_stats.html did,
 // which is exactly why it was replaced: a page that can only count the kinds it
 // already knows to name cannot answer "what does this relay hold", and the
-// grouping histogram behind relay_stats enumerates the store instead. What must
+// grouping histogram behind stats.html enumerates the store instead. What must
 // not come back is a private copy of the labels.
-const relayStats = readFileSync(new URL("../../relay/src/main/resources/relay_stats.html", import.meta.url), "utf8");
-assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\/web\/shared\/kinds\.js"/.test(relayStats),
-  "relay_stats.html must take kind names from shared/kinds.js, not carry a second copy");
+const statsPage = readFileSync(new URL("../../relay/src/main/resources/stats.html", import.meta.url), "utf8");
+assert(/import\s*\{[^}]*kindLabel[^}]*\}\s*from\s*"\/web\/shared\/kinds\.js"/.test(statsPage),
+  "stats.html must take kind names from shared/kinds.js, not carry a second copy");
 
 for (const [kind, fixture, expect] of FIXTURES) {
   for (const opts of [undefined, { full: true }]) {

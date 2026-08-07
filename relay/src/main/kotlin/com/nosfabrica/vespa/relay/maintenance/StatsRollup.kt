@@ -32,6 +32,7 @@ import kotlinx.serialization.json.buildJsonArray
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonPrimitive
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
@@ -89,8 +90,10 @@ internal class StatsRollup(
     /** Compute the whole document. Never throws: a section that fails says so in the document. */
     suspend fun compute(): JsonObject {
         val startedMs = System.currentTimeMillis()
-        val corpus = corpusSection()
+        // Kinds first: its per-kind spans are where the corpus-wide newest event
+        // comes from, since Vespa cannot answer a bare max() without a grouping.
         val kinds = kindsSection()
+        val corpus = corpusSection(newestOf(kinds))
         val activity = activitySection()
         // The per-kind series follow the histogram the kinds section just
         // computed, so the panel tracks the corpus rather than a hardcoded list
@@ -98,6 +101,7 @@ internal class StatsRollup(
         val kindActivity = kindActivitySection(topKindNumbers(kinds))
         val relays = relaysSection()
         val zaps = zapsSection()
+        val trust = trustSection()
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
             put("relay", relayUrl)
@@ -116,8 +120,26 @@ internal class StatsRollup(
             put("kindActivity", kindActivity)
             put("relayDistribution", relays)
             put("zaps", zaps)
+            put("trust", trust)
         }
     }
+
+    /**
+     * The newest `created_at` anywhere in the store, taken as the maximum over
+     * the per-kind spans [kindsSection] already computed.
+     *
+     * Derived rather than queried because a bare `max(created_at)` with no
+     * grouping level is not something Vespa will answer — see
+     * [StatsYql.NO_BARE_AGGREGATES]. The spans are bounded to the present, so
+     * this is too, which is what makes it usable as a freshness signal instead
+     * of a report on the corpus's worst-dated spam.
+     */
+    private fun newestOf(kinds: JsonObject): Long? =
+        (kinds["data"] as? JsonObject)
+            ?.get("all")
+            ?.let { it as? JsonArray }
+            ?.mapNotNull { entry -> (entry as? JsonObject)?.get("lastSeen")?.jsonPrimitive?.longOrNull }
+            ?.maxOrNull()
 
     /**
      * The kinds to draw a per-kind series for: the largest few from the
@@ -138,16 +160,67 @@ internal class StatsRollup(
 
     // ---- sections -----------------------------------------------------------
 
-    /** Corpus totals: three independent distinct/count queries over everything. */
-    private suspend fun corpusSection(): JsonObject =
+    /** Corpus totals: independent distinct/count queries over everything. */
+    private suspend fun corpusSection(newestEvent: Long?): JsonObject =
         section { errors ->
+            val now = nowSeconds()
             val events = attempt(errors, "events") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL)) }
             val pubkeys = attempt(errors, "pubkeys") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"))) }
             val kinds = attempt(errors, "kinds") { StatsYql.singleCount(vespa.group(StatsYql.distinct("kind"))) }
+            // Events signed for a time that has not happened. Clock skew and
+            // spam both land here, and the count is worth having on its own:
+            // it is the reason every freshness number on this page is bounded,
+            // and a corpus where it grows is one where something upstream is
+            // publishing garbage that ordinary charts would silently absorb.
+            val future = attempt(errors, "futureDated") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.after(now))) }
             buildJsonObject {
                 events?.let { put("events", it) }
                 pubkeys?.let { put("pubkeys", it) }
                 kinds?.let { put("kinds", it) }
+                future?.let { put("futureDated", it) }
+                // Derived from the per-kind spans rather than asked for: a bare
+                // `max(created_at)` with no grouping level is not a query Vespa
+                // can answer at all — see StatsYql.NO_BARE_AGGREGATES — and the
+                // kinds histogram has already paid for this number.
+                newestEvent?.let { put("newestEvent", it) }
+                put("asOf", now)
+            }
+        }
+
+    /**
+     * The trust view's own health — the numbers that say whether ranked search
+     * can rank at all.
+     *
+     * This is the one section that reads a SECOND document type. It exists
+     * because the failure it detects is silent and total: `TrustReconcile`'s own
+     * KDoc warns that "a corpus mirrored before its provider lists arrived stays
+     * silently unprojected, and every ranked search comes back empty", and until
+     * now that state looked identical to a healthy relay on every page we serve.
+     * A `scoredPubkeys` of zero IS that failure, stated as a number.
+     *
+     * The four counts are a chain, and reading them together localises a break:
+     * observers name providers, providers publish scores, scores project onto
+     * pubkeys. Zero observers is a mirror that never fetched a kind-10040; zero
+     * scores with observers present is a sync that has not reached kind 30382;
+     * scores present with zero scored pubkeys is the projection itself being
+     * behind, which is what a reconcile fixes.
+     */
+    private suspend fun trustSection(): JsonObject =
+        section(
+            note =
+                "`scoredPubkeys` and the corpus's `pubkeys` are INDEPENDENT populations, not a ratio: the web of " +
+                    "trust scores people whose events this relay may not hold, and holds events from people nobody " +
+                    "has scored. Compare their magnitudes, not their quotient.",
+        ) { errors ->
+            val scored = attempt(errors, "scoredPubkeys") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, source = StatsYql.REPUTATION)) }
+            val observers = attempt(errors, "observers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_OBSERVER")) }
+            val providers = attempt(errors, "providers") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"), "kind = $KIND_SCORE")) }
+            val scores = attempt(errors, "scores") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, "kind = $KIND_SCORE")) }
+            buildJsonObject {
+                scored?.let { put("scoredPubkeys", it) }
+                observers?.let { put("observers", it) }
+                providers?.let { put("providers", it) }
+                scores?.let { put("scores", it) }
             }
         }
 
@@ -181,7 +254,12 @@ internal class StatsRollup(
                 attempt(errors, "events") { longsByGroup(StatsYql.countsBy("kind")) }
                     ?: return@section buildJsonObject { }
             val authors = attempt(errors, "pubkeys") { distinctByGroup(StatsYql.distinctAuthorsBy("kind")) }
-            val spans = attempt(errors, "span") { spansByGroup(StatsYql.spanBy("kind")) }
+            // Bounded to now: an unbounded max(created_at) reports whatever the
+            // most optimistically-dated spam in that kind claims, and a "newest"
+            // of 2100 makes the whole column decorative. The future-dated events
+            // are counted in `corpus` instead, where they are the finding rather
+            // than the noise.
+            val spans = attempt(errors, "span") { spansByGroup(StatsYql.spanBy("kind"), StatsYql.upTo(nowSeconds())) }
             buildJsonObject {
                 put("total", counts.size)
                 putJsonArray("all") {
@@ -610,6 +688,12 @@ internal class StatsRollup(
          */
         const val DEFAULT_KIND_SERIES = 8
         private const val DAY_SECONDS = 86_400L
+
+        /** NIP-85: the list naming which service scores which dimension for an observer. */
+        private const val KIND_OBSERVER = 10040
+
+        /** NIP-85: one published trust score. */
+        private const val KIND_SCORE = 30382
     }
 }
 

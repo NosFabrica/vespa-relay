@@ -176,7 +176,7 @@ fun main() {
         // typo is not a sweep anyone should have to think twice about.
         launchOrphanScoreSweep(maintenanceScope, store, dryRun = setting.toBooleanStrictOrNull() != true)
     }
-    // The corpus statistics behind GET /stats.json and /relay_stats.html.
+    // The corpus statistics behind GET /stats.json and /stats.html.
     // Seeded from the state file first, so a restart serves the last document
     // instead of a blank page for however long the first rollup takes.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
@@ -294,7 +294,7 @@ fun main() {
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = resourceText("/index.html"),
         observerStatsPage = resourceText("/observer_stats.html"),
-        relayStatsPage = resourceText("/relay_stats.html"),
+        statsPage = resourceText("/stats.html"),
         statsJson = statsSnapshot,
     )
 }

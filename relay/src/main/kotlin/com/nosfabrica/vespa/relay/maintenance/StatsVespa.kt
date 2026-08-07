@@ -55,7 +55,8 @@ internal class StatsVespa(
     private val searchUrl = URI.create(vespaUrl.trimEnd('/') + "/search/")
 
     /**
-     * Run [pipeline] over the events [where] selects and return Vespa's `root`.
+     * Run [pipeline] over the [source] documents [where] selects and return
+     * Vespa's `root`.
      *
      * Throws on anything that is not a complete answer — an HTTP error, a
      * degraded response, a body without a root. A thrown aggregation shows up
@@ -65,8 +66,9 @@ internal class StatsVespa(
     suspend fun group(
         pipeline: String,
         where: String = "true",
+        source: String = StatsYql.EVENTS,
     ): JsonObject {
-        val yql = StatsYql.query(pipeline, where)
+        val yql = StatsYql.query(pipeline, where, source)
         val body =
             buildJsonObject {
                 put("yql", yql)

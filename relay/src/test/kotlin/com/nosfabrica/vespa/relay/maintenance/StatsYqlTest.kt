@@ -244,6 +244,38 @@ class StatsYqlTest {
         assertEquals("-1", StatsYql.params["grouping.defaultMaxHits"])
     }
 
+    /**
+     * The trust section reads a second document type, and the source has to
+     * reach the FROM clause rather than being assumed.
+     */
+    @Test
+    fun `an aggregation can name the document type it runs over`() {
+        assertEquals("select * from event where true limit 0 | ${StatsYql.TOTAL}", StatsYql.query(StatsYql.TOTAL))
+        assertEquals(
+            "select * from reputation where true limit 0 | ${StatsYql.TOTAL}",
+            StatsYql.query(StatsYql.TOTAL, source = StatsYql.REPUTATION),
+        )
+    }
+
+    /**
+     * Freshness is bounded to the present and the future is counted separately —
+     * the two halves of the same fact.
+     *
+     * `created_at` is author-signed, so an unbounded `max(created_at)` reports
+     * the corpus's most optimistically-dated spam and a relay whose mirror died
+     * an hour ago still shows a freshness of "in 74 years". The bound is what
+     * makes the number an answer to "is this relay keeping up".
+     */
+    @Test
+    fun `freshness excludes the future, and the future is its own question`() {
+        assertEquals("created_at <= 500", StatsYql.upTo(500))
+        assertEquals("created_at > 500", StatsYql.after(500))
+        assertEquals("kind = 1 and created_at <= 500", StatsYql.kindUpTo(1, 500))
+        // The two partition the corpus at the same instant — no event is in
+        // both, none in neither, so a total can be reassembled from the pair.
+        assertTrue(StatsYql.upTo(500).contains("<= 500") && StatsYql.after(500).contains("> 500"))
+    }
+
     @Test
     fun `the window is closed at both ends`() {
         // The upper bound is what keeps one event dated 2100 from opening a
