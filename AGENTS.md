@@ -181,20 +181,28 @@ relay/src/main/resources/
                         each: they differ only in which tags carry their items.
                         index.html's header records the rules and why "one
                         file" ended.
-  kind_stats.html       operator diagnostics, each carrying its own tiny relay
-  observer_stats.html   client on purpose: they must work when the app does
-                        not. kind_stats reads shared/kinds.js for the kinds to
-                        count — that list IS "which kinds do we support", and a
-                        second copy would go stale in the direction that hides
-                        events. The CLIENT is what stays self-contained; a
-                        table of integers is not worth duplicating
+  observer_stats.html   an operator diagnostic carrying its own tiny relay
+                        client on purpose: it must work when the app does not,
+                        and asking the way a client would means it also TESTS
+                        what it asks
   relay_stats.html      the corpus dashboard, and the ONE page here with no
                         relay client: it charts GET /stats.json and nothing
-                        else. Neither reason the siblings carry one applies —
-                        no aggregation on it is a protocol feature to test, and
-                        thirty days of distinct-pubkey counts is not a question
-                        to ask over a websocket. THE JSON IS THE ARTIFACT; the
-                        page is one reader of it (see maintenance/StatsRollup)
+                        else. Neither reason observer_stats carries one applies
+                        — no aggregation on it is a protocol feature to test,
+                        and thirty days of distinct-pubkey counts is not a
+                        question to ask over a websocket. THE JSON IS THE
+                        ARTIFACT; the page is one reader of it (see
+                        maintenance/StatsRollup).
+                        Its Kinds table REPLACED kind_stats.html, whose url now
+                        301s here. That page asked one NIP-45 COUNT per kind it
+                        already knew to name — shared/kinds.js plus whatever an
+                        operator typed in — so a kind nobody had registered was
+                        invisible on the only page that would have revealed it.
+                        A grouping histogram enumerates instead, which is why
+                        the table is EVERY kind and not a top-N. What went with
+                        that page: it exercised NIP-45 over the relay's own
+                        websocket. Nothing here speaks the protocol; if that
+                        check is wanted back it wants to be a test, not a page
 ```
 
 The statistics rollup lives in `relay/maintenance/` beside the other background

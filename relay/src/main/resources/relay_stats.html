@@ -17,14 +17,14 @@
   diff it against a network-wide one, or build a better page than this. A reader
   who wants the numbers should never have to scrape markup for them.
 
-  So, unlike its two sibling diagnostic pages, this one carries NO relay client.
-  kind_stats and observer_stats speak the protocol themselves because they must
-  work when the app is broken, and because asking for a COUNT the way a client
-  would means the page also TESTS it. Neither applies here: no aggregation on
-  this page is a protocol feature, and thirty days of distinct-pubkey counts is
-  not something to ask over a websocket — it is one grouping query per series
-  against the engine, run on a timer behind the server. What this page must
-  survive is a stale or missing rollup, and it says so rather than drawing zeros.
+  So, unlike observer_stats.html, this page carries NO relay client. That page
+  speaks the protocol itself because it must work when the app is broken, and
+  because asking the way a client would means it also TESTS what it asks.
+  Neither applies here: no aggregation on this page is a protocol feature, and
+  thirty days of distinct-pubkey counts is not something to ask over a websocket
+  — it is one grouping query per series against the engine, run on a timer
+  behind the server. What this page must survive is a stale or missing rollup,
+  and it says so rather than drawing zeros.
 
   EVERY NUMBER DESCRIBES THIS RELAY'S STORE, not the Nostr network. The two look
   identical charted, and the confusion runs one way: a reader comparing our
@@ -37,16 +37,26 @@
   query under an operator's own lens answers a smaller, different question under
   an identical label.
 
-  ONE PANEL IS NOT COMPUTED YET (new pubkeys, which needs per-pubkey first-seen
-  across the whole corpus). It is drawn as a stated gap rather than omitted,
-  because a panel that is simply absent is indistinguishable from one this page
-  is too old to know about, and "we have not built this" is a different fact
-  from "this relay holds none of that". Two more — zaps and relay distribution —
-  ARE computed but incompletely, and carry a `note` saying what they leave out
-  and why. That note is the point of those
-  panels being honest rather than merely present: satoshis and the read/write
-  split are exactly the fields a reader of a network-wide dashboard arrives
-  looking for, and an unannotated panel reads as "this relay has none of that".
+  TWO PANELS ARE COMPUTED BUT INCOMPLETE — zaps and relay distribution — and
+  each carries a `note` saying what it leaves out and why. That note is the
+  point of those panels being honest rather than merely present: satoshis and
+  the read/write split are exactly the fields a reader of a network-wide
+  dashboard arrives looking for, and an unannotated panel reads as "this relay
+  has none of that".
+
+  THE KINDS TABLE IS LAST AND COMPLETE, and it is what replaced
+  kind_stats.html. That page could only count kinds it already knew to name —
+  the search UI's card registry plus whatever an operator typed in — so a kind
+  nobody had registered was invisible on the one page that would have shown it.
+  A grouping histogram enumerates what the store actually holds, which is why
+  this table is every kind rather than a top-N, and why it is at the bottom: it
+  is a reference list, not a chart, and it is now the longest thing here.
+
+  What went with that page, and is not replaced: it asked its counts as NIP-45
+  COUNTs over the relay's own websocket, so it also TESTED the protocol — a kind
+  that came back "no COUNT" was a finding about this relay rather than a blank
+  cell. Nothing here speaks the protocol. If that check is wanted back it wants
+  to be a test, not a page.
 
   CHARTS: single-series, one hue, no legend (the title names the series), thin
   bars with a rounded data-end, hairline solid gridlines, a 2px surface gap
@@ -102,6 +112,17 @@
   .chart .hit { fill: transparent; }
   .chart .hit:hover + .mark, .chart .mark.on { fill: var(--text); }
   .wrap { overflow-x: auto; }
+  /* Every kind in the store is thousands of rows. Bounded height with a sticky
+     header, so the table is scannable without owning the whole page — and so
+     the column labels are still there when you are 400 rows down. */
+  .wrap.tall { max-height: 32rem; overflow-y: auto; }
+  .wrap.tall thead th { position: sticky; top: 0; background: var(--surface); z-index: 1; }
+  .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
+  .bar-row input {
+    font: inherit; font-size: .9rem; padding: .35rem .6rem; border-radius: .4rem;
+    border: 1px solid var(--line); background: var(--surface); color: var(--text); width: 18rem; max-width: 100%;
+  }
+  .status { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
   table { border-collapse: collapse; width: 100%; min-width: 30rem; }
   th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); }
   th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
@@ -171,12 +192,11 @@ import { kindLabel } from "/web/shared/kinds.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 /**
- * "All 11" vs "the 50 largest of 3,702".
+ * "All 11" vs "the 50 most-named of 1,204".
  *
- * A capped list and a complete one are different facts, and "the 10 largest of
- * 10 kinds" states a truncation that did not happen — which matters here more
- * than it reads, because the whole panel exists to answer "what does this relay
- * hold" and a phantom cap invites the reader to wonder what was left out.
+ * A capped list and a complete one are different facts, and stating a
+ * truncation that did not happen invites the reader to wonder what was left
+ * out. The kinds table is no longer capped at all; relay distribution still is.
  */
 const shownOf = (shown, total, noun, superlative) =>
   shown >= total ? `All ${fmt(total)} ${noun}` : `The ${fmt(shown)} ${superlative} of ${fmt(total)} ${noun}`;
@@ -211,14 +231,14 @@ const STALE_AFTER_MS = 6 * 3600 * 1000;
 
 /**
  * The document schema this page was written against — see SCHEMA_VERSION in
- * StatsRollup, which bumps when a field changes meaning or leaves.
+ * StatsRollup, which bumps when a RELEASED field changes meaning or leaves.
  *
  * One constant because it was two: the comparison and the sentence it prints
- * both carried a literal `1`, and raising the rollup to 2 left the page
- * comparing against one number while offering to explain itself in terms of
- * another. A version check that can disagree with itself is worse than none.
+ * both carried a literal, and raising the rollup's number left the page
+ * comparing against one and offering to explain itself in terms of another. A
+ * version check that can disagree with itself is worse than no check.
  */
-const SCHEMA = 2;
+const SCHEMA = 1;
 
 /** A bar chart of one series. See the header for why single-series and why never two y-axes. */
 function barChart(points, { label, height = 130 }) {
@@ -577,20 +597,50 @@ function wrapTitle(node, title) {
   if (title) node.title = title;
 }
 
+/**
+ * Every kind in the store, largest first.
+ *
+ * This card replaced kind_stats.html, and completeness is why it could. That
+ * page asked one NIP-45 COUNT per kind it already knew to name — the search
+ * UI's card registry, plus whatever an operator typed into a box — so a kind
+ * nobody had registered was invisible on the one page that would have revealed
+ * it. The rollup's histogram ENUMERATES what is there instead, which is a
+ * strictly better answer to "what does this relay hold" and is the reason this
+ * table is not a top-N.
+ *
+ * What was genuinely lost with that page: it exercised NIP-45 over the relay's
+ * own websocket, so a kind that came back "no COUNT" was a finding about the
+ * protocol implementation rather than a blank cell. This table cannot say that
+ * — it reads the engine directly, and never speaks the protocol at all.
+ */
 function kindsCard(kinds, nowSeconds) {
   const card = el("div", "card");
   const d = (kinds && kinds.data) || {};
-  const top = d.top || [];
+  const all = d.all || [];
   cardHead(
     card,
     "Kinds",
-    top.length ? `${shownOf(d.shown, d.total, "kinds", "largest")} this relay holds.` : "No kind histogram in this document.",
+    all.length ? `All ${fmt(d.total)} kinds this relay holds, largest first.` : "No kind histogram in this document.",
     kinds,
   );
-  if (!top.length) return card;
+  if (!all.length) return card;
 
+  // A corpus carries thousands of distinct kinds, most of them a handful of
+  // events in the tail. Filtering by number or name beats scrolling for the
+  // one you came to look up, which is what the page it replaced was for.
+  const controls = el("div", "bar-row");
+  const filter = el("input");
+  filter.type = "search";
+  filter.placeholder = "filter by kind number or name";
+  filter.setAttribute("aria-label", "filter kinds");
+  const count = el("span", "status");
+  controls.appendChild(filter);
+  controls.appendChild(count);
+  card.appendChild(controls);
+
+  const top = all;
   const max = Math.max(...top.map((k) => k.events));
-  const wrap = el("div", "wrap");
+  const wrap = el("div", "wrap tall");
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
@@ -632,16 +682,23 @@ function kindsCard(kinds, nowSeconds) {
   table.appendChild(tbody);
   wrap.appendChild(table);
   card.appendChild(wrap);
-  return card;
-}
 
-/** A panel the rollup declares but does not compute, showing the reason it gives. */
-function pendingCard(title, section) {
-  const card = el("div", "card pending");
-  const h = el("h2", null, title);
-  h.appendChild(el("span", "badge", "not computed"));
-  card.appendChild(h);
-  card.appendChild(el("p", "why", (section && section.note) || "Not computed by this build."));
+  const rows = [...tbody.children];
+  const applyFilter = () => {
+    const q = filter.value.trim().toLowerCase();
+    let shown = 0;
+    rows.forEach((tr, i) => {
+      const k = top[i];
+      const hit = !q || String(k.kind).includes(q) || kindLabel(k.kind).toLowerCase().includes(q);
+      tr.hidden = !hit;
+      if (hit) shown++;
+    });
+    // The denominator stays visible while filtering — a filtered table that
+    // only says "12" reads as a corpus with twelve kinds in it.
+    count.textContent = q ? `${fmt(shown)} of ${fmt(top.length)}` : `${fmt(top.length)} kinds`;
+  };
+  filter.addEventListener("input", applyFilter);
+  applyFilter();
   return card;
 }
 
@@ -651,7 +708,6 @@ function render(doc) {
 
   bodyEl.replaceChildren();
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
-  bodyEl.appendChild(kindsCard(doc.kinds, nowSeconds));
 
   // The toggle and the two series it drives are re-rendered together, so
   // switching granularity cannot leave the control and the charts disagreeing.
@@ -668,9 +724,10 @@ function render(doc) {
   bodyEl.appendChild(kindActivityCard(doc.kindActivity));
   bodyEl.appendChild(zapsCard(doc.zaps));
   bodyEl.appendChild(relaysCard(doc.relayDistribution));
-  for (const [key, title] of [["newUsers", "New pubkeys"]]) {
-    if (doc[key] && doc[key].status === "pending") bodyEl.appendChild(pendingCard(title, doc[key]));
-  }
+  // Last, because it is now the longest thing on the page by an order of
+  // magnitude — every kind in the store rather than a top-50 — and a reference
+  // table nobody scrolls past is worse placed above the charts everyone reads.
+  bodyEl.appendChild(kindsCard(doc.kinds, nowSeconds));
 
   footEl.replaceChildren();
   const at = doc.generatedAt ? new Date(doc.generatedAt) : null;

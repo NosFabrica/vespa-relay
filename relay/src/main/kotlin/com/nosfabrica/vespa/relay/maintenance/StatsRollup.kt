@@ -57,7 +57,7 @@ import java.time.Instant
  * that is the only correct choice: the store gates an AUTHENTICATED reader to
  * authors that reader has scored, so the same pipeline run under an operator's
  * own lens would answer a smaller, different question under an identical label.
- * `kind_stats.html` makes the same call for the same reason.
+ * `observer_stats.html` makes the same call for the same reason.
  *
  * ## Sections fail independently
  *
@@ -83,7 +83,6 @@ internal class StatsRollup(
     private val weekWindowWeeks: Int = DEFAULT_WEEK_WINDOW_WEEKS,
     private val monthWindowMonths: Int = DEFAULT_MONTH_WINDOW_MONTHS,
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
-    private val topKinds: Int = DEFAULT_TOP_KINDS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
 ) {
@@ -117,18 +116,6 @@ internal class StatsRollup(
             put("kindActivity", kindActivity)
             put("relayDistribution", relays)
             put("zaps", zaps)
-            // Declared, not computed. Names what it needs rather than being
-            // absent — a panel missing from the document is indistinguishable
-            // from one the reader's page is too old to know about, and "we have
-            // not built this" is a different fact from "this relay holds none
-            // of that".
-            put(
-                "newUsers",
-                pending(
-                    "Needs first-seen (min created_at) per pubkey across the whole corpus — one group per author, " +
-                        "so a nightly rollup rather than a query this endpoint can run.",
-                ),
-            )
         }
     }
 
@@ -143,7 +130,7 @@ internal class StatsRollup(
      */
     private fun topKindNumbers(kinds: JsonObject): List<Int> =
         (kinds["data"] as? JsonObject)
-            ?.get("top")
+            ?.get("all")
             ?.let { it as? JsonArray }
             ?.mapNotNull { entry -> (entry as? JsonObject)?.get("kind")?.jsonPrimitive?.intOrNull }
             ?.take(kindSeries)
@@ -173,6 +160,20 @@ internal class StatsRollup(
      * here with no proven precedent in the store. Combined, a rejection of that
      * clause would cost the whole table; split, the counts still render and the
      * authors column reads "—".
+     *
+     * EVERY kind, not a top-N. This is the table that replaced
+     * `kind_stats.html`, and the reason it could is that the grouping ENUMERATES
+     * what the store holds: that page asked one NIP-45 COUNT per kind it already
+     * knew to name — the search UI's card registry, plus whatever an operator
+     * typed in — so a kind nobody had registered was invisible to the only page
+     * that would have revealed it. A histogram has no such blind spot, and
+     * truncating it here would reintroduce one for exactly the long tail the
+     * question "what does this relay hold" is asked about.
+     *
+     * The cost is bounded by the corpus's distinct kinds, not by its events —
+     * order of thousands, one small object each, and the response gzips well
+     * because the rows are near-identical. Sorted by volume so the page can
+     * render the head first and the tail below it.
      */
     private suspend fun kindsSection(): JsonObject =
         section { errors ->
@@ -183,11 +184,9 @@ internal class StatsRollup(
             val spans = attempt(errors, "span") { spansByGroup(StatsYql.spanBy("kind")) }
             buildJsonObject {
                 put("total", counts.size)
-                put("shown", minOf(counts.size, topKinds))
-                putJsonArray("top") {
+                putJsonArray("all") {
                     counts.entries
                         .sortedWith(compareByDescending<Map.Entry<String, Long>> { it.value }.thenBy { it.key.toIntOrNull() ?: 0 })
-                        .take(topKinds)
                         .forEach { (kind, events) ->
                             add(
                                 buildJsonObject {
@@ -448,15 +447,14 @@ internal class StatsRollup(
      *   ok       everything this section asks for came back
      *   partial  some of it did; `data` holds that, `errors` names the rest
      *   failed   none of it did
-     *   pending  not computed by this build at all — see [pending]
      *
      * [note] is a caveat on a section that SUCCEEDED — what it deliberately does
-     * not contain, and why. Distinct from `errors`, which is what broke, and
-     * from `pending`, which is a section with no data at all. Zaps and relay
-     * distribution both need one: each answers a real question while leaving out
-     * the field a reader of the reference dashboard would come looking for
-     * (satoshis; the read/write split), and an unannotated number is how someone
-     * concludes we hold no zap amounts rather than that we cannot query them.
+     * not contain, and why. Distinct from `errors`, which is what broke. Zaps
+     * and relay distribution both need one: each answers a real question while
+     * leaving out the field a reader of the reference dashboard would come
+     * looking for (satoshis; the read/write split), and an unannotated number is
+     * how someone concludes we hold no zap amounts rather than that we cannot
+     * query them.
      */
     private suspend fun section(
         note: String? = null,
@@ -482,13 +480,6 @@ internal class StatsRollup(
             }
         }
     }
-
-    /** A section this build does not compute, and the reason — see the note in [compute]. */
-    private fun pending(note: String): JsonObject =
-        buildJsonObject {
-            put("status", "pending")
-            put("note", note)
-        }
 
     /**
      * Run one query, recording a failure under [key] instead of propagating it.
@@ -585,20 +576,23 @@ internal class StatsRollup(
 
     companion object {
         /**
-         * Bumped when a field CHANGES MEANING or leaves, not when one is added:
-         * the page reads what it knows and ignores the rest, so additions are
-         * already safe. A reader that sees a schema above the one it was
-         * written for should say so rather than chart fields it is guessing at.
+         * Bumped when a RELEASED field changes meaning or leaves, not when one
+         * is added: a reader takes what it knows and ignores the rest, so
+         * additions are already safe. A reader that sees a schema above the one
+         * it was written for should say so rather than chart fields it is
+         * guessing at.
          *
-         * 2 — `retention` removed. It only ever carried a `pending` placeholder,
-         * so nothing charted from it and the temptation is to call this an
-         * addition-shaped change and leave the number alone. The rule above says
-         * a field that LEAVES bumps, and it says that because a reader coding
-         * against a key has no way to distinguish "the relay dropped this" from
-         * "this rollup happened to fail" without one. Applying it to the cheap
-         * case is what makes it trustworthy in the expensive one.
+         * "Released" is the word that matters, and it was missing here for a
+         * while. This endpoint has never shipped, and in the course of building
+         * it the document lost `retention`, then `newUsers`, then `kinds.shown`
+         * — each a field that LEAVES, each dutifully bumping the number, none of
+         * them ever fetched by anyone. That would land the first public version
+         * at 4 with no 1, 2 or 3 to point at, which teaches a reader that the
+         * number tracks our editing rather than their contract. A version
+         * describes what consumers can depend on; there are none until this
+         * merges, so it stays at 1 until the first change AFTER that.
          */
-        const val SCHEMA_VERSION = 2
+        const val SCHEMA_VERSION = 1
 
         const val DEFAULT_WINDOW_DAYS = 30
 
@@ -607,7 +601,6 @@ internal class StatsRollup(
         const val DEFAULT_MONTH_WINDOW_MONTHS = 24
 
         const val DEFAULT_HOUR_WINDOW_DAYS = 7
-        const val DEFAULT_TOP_KINDS = 50
         const val DEFAULT_TOP_RELAYS = 50
 
         /**

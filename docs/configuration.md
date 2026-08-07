@@ -41,7 +41,11 @@ A background rollup counts what this relay's store holds with Vespa grouping
 queries, publishes it as a public JSON document, and charts it on a page:
 
 - **corpus** — events, distinct pubkeys, distinct kinds
-- **kinds** — the largest kinds, with distinct authors and the `created_at` span
+- **kinds** — EVERY kind in the store, with distinct authors and the
+  `created_at` span. This replaced `/kind_stats.html` (whose url now 301s to the
+  page): that page asked one NIP-45 `COUNT` per kind it already knew to name, so
+  a kind nobody had registered was invisible on the only page that would have
+  revealed it — a grouping histogram enumerates instead
 - **activity** — events and publishing pubkeys per UTC day, week and month, plus
   the hour-of-day shape. Three granularities and not one re-aggregated: events
   sum across buckets, distinct authors do not, so a weekly author count has to
@@ -59,21 +63,14 @@ a network-wide dashboard they are a coverage ratio, which is the useful number
 for a mirroring relay — but a total below one is not a fault, and the document
 says so in its own `scope` field.
 
-One section — **new pubkeys** — is declared with `"status": "pending"` rather
-than omitted, so a reader can tell "not built yet" from "this relay holds none
-of that". It needs first-seen (`min(created_at)`) per pubkey across the whole
-corpus, which is one group per author and therefore a nightly job rather than a
-query this endpoint can run.
-
-Two more are computed but incomplete, and carry a `note` saying what they leave
+Two sections are computed but incomplete, and carry a `note` saying what they leave
 out. **Zaps** has receipt counts but no satoshis: the amount lives in the
 `bolt11` tag and in the kind-9734 request nested in `description`, both
 multi-character tag names that `tag_index` cannot address, and `content` is
 summary-only — so no grouping query can reach it. **Relay distribution** counts
 how many lists name each relay but cannot split read from write: that marker is
 an `r` tag's *third* element, and `tag_index` stores only `<letter>:<value>`.
-Both want a walk over their kind, which is the same job as the nightly rollup
-above.
+Both want a walk over their kind, which is the job neither has yet.
 
 | var | meaning | default |
 |---|---|---|

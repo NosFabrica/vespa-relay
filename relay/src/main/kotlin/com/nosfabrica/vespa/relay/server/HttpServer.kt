@@ -45,6 +45,7 @@ import io.ktor.server.request.host
 import io.ktor.server.response.header
 import io.ktor.server.response.respond
 import io.ktor.server.response.respondBytes
+import io.ktor.server.response.respondRedirect
 import io.ktor.server.response.respondText
 import io.ktor.server.routing.Route
 import io.ktor.server.routing.get
@@ -80,9 +81,9 @@ data class Nip11Info(
  *   GET  /web/… -> the landing page's ES modules, straight off the classpath
  *   GET  /npub1…, /nprofile1…, /note1…, /nevent1…, /naddr1… -> [landingPage],
  *        which decodes the identifier and renders the entity itself
- *   GET  /kind_stats.html -> [statsPage] (per-kind COUNTs — an operator diagnostic)
  *   GET  /observer_stats.html -> [observerStatsPage]
  *   GET  /relay_stats.html -> [relayStatsPage], which charts [statsJson]
+ *   GET  /kind_stats.html -> 301 to /relay_stats.html, whose Kinds table replaced it
  *   GET  /stats.json -> [statsJson], this relay's corpus statistics
  *   POST /  -> the NIP-86 management RPC, when [admin] is configured
  *
@@ -99,7 +100,6 @@ fun serveRelay(
     supportedNips: List<Int> = BASE_SUPPORTED_NIPS,
     admin: Nip86Admin? = null,
     landingPage: String? = null,
-    statsPage: String? = null,
     observerStatsPage: String? = null,
     relayStatsPage: String? = null,
     // The corpus statistics document, recomputed behind the server by
@@ -122,7 +122,6 @@ fun serveRelay(
     // Hashed once at boot rather than per request: these strings are read off
     // the classpath at startup and never change while the process lives.
     val landing = landingPage?.let(::CachedPage)
-    val stats = statsPage?.let(::CachedPage)
     val observerStats = observerStatsPage?.let(::CachedPage)
     val relayStats = relayStatsPage?.let(::CachedPage)
 
@@ -198,7 +197,7 @@ fun serveRelay(
             // what the identifier names — belongs to the page, which already
             // speaks bech32. Deliberately not a catch-all: /favicon.ico and
             // typos should stay 404s, not empty search pages. Ktor prefers
-            // literal routes, so /kind_stats.html and /web/… are unaffected.
+            // literal routes, so /relay_stats.html and /web/… are unaffected.
             landing?.let { page ->
                 get("/{nip19}") {
                     if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
@@ -223,9 +222,6 @@ fun serveRelay(
                         ContentType.Application.Json,
                     )
                 }
-            }
-            stats?.let { page ->
-                get("/kind_stats.html") { call.respondPage(page) }
             }
             observerStats?.let { page ->
                 get("/observer_stats.html") { call.respondPage(page) }
@@ -308,7 +304,16 @@ internal fun Route.corpusStats(
     page: CachedPage?,
     snapshot: StatsSnapshot?,
 ) {
-    page?.let { get("/relay_stats.html") { call.respondPage(it) } }
+    page?.let {
+        get("/relay_stats.html") { call.respondPage(it) }
+        // `/kind_stats.html` was the per-kind COUNT page this one's Kinds table
+        // replaced. A 301 rather than a 404 because the old url is what is
+        // bookmarked, linked from operator runbooks, and printed in this repo's
+        // own history — and because the answer genuinely moved rather than
+        // going away: the new table covers EVERY kind, where that page could
+        // only count the ones it already knew to name.
+        get("/kind_stats.html") { call.respondRedirect("/relay_stats.html", permanent = true) }
+    }
     snapshot?.let {
         get("/stats.json") {
             val doc = it.served()

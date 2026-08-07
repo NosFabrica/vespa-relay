@@ -288,7 +288,6 @@ fun main() {
         onionLocation = addresses::onionLocation,
         // The bundled web UI (a NIP-50 client) — served on a plain browser GET.
         landingPage = resourceText("/index.html"),
-        statsPage = resourceText("/kind_stats.html"),
         observerStatsPage = resourceText("/observer_stats.html"),
         relayStatsPage = resourceText("/relay_stats.html"),
         statsJson = statsSnapshot,

@@ -108,4 +108,25 @@ class RelayStatsPageTest {
                 assertNotNull(WebAssets.get(spec.removePrefix("/web/")), "$spec is imported but not servable")
             }
         }
+
+    /**
+     * The url of the page this one's Kinds table replaced still resolves.
+     *
+     * A 301 rather than a 404 because the answer MOVED — the new table covers
+     * every kind in the store, where `kind_stats.html` could only count the ones
+     * it already knew to name — and because that url is what is bookmarked and
+     * what this repo's own history points at. A dead operator link is a bad way
+     * to announce an improvement.
+     */
+    @Test
+    fun `the old kind_stats url redirects to the page that replaced it`() =
+        testApplication {
+            val html = assertNotNull(javaClass.getResource("/relay_stats.html")?.readText())
+            application { routing { corpusStats(CachedPage(html), null) } }
+
+            // Not followed, so the status and target are both assertable.
+            val res = createClient { followRedirects = false }.get("/kind_stats.html")
+            assertEquals(HttpStatusCode.MovedPermanently, res.status)
+            assertEquals("/relay_stats.html", res.headers[HttpHeaders.Location])
+        }
 }

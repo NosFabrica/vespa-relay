@@ -173,14 +173,18 @@ Served on the relay's own port, next to the search UI:
   kind-30382 score counts here and on the relay its 10040 names, side by side.
   This answers "is the trust sync actually working" — a local count alone reads
   as healthy until you learn the source holds 45× more.
-- **`/kind_stats.html`** — events per kind, counted over the relay's own
-  websocket with anonymous NIP-45 COUNTs — so the page also *tests* NIP-45 the
-  way a client would.
 - **`/relay_stats.html`** — what the store holds and how it is filling: totals,
   a per-kind table with distinct authors, events and publishing pubkeys per UTC
   day/week/month, the hour-of-day shape, a daily series per kind, the relays our
-  NIP-65 lists name, and zap receipts. Charted from **`GET /stats.json`**, a
-  public document a background rollup recomputes with Vespa grouping queries.
+  NIP-65 lists name, zap receipts, and — last on the page — **every kind in the
+  store**, with its events, distinct authors and `created_at` span. Charted from
+  **`GET /stats.json`**, a public document a background rollup recomputes with
+  Vespa grouping queries.
+
+  The kinds table replaced `/kind_stats.html` (which now redirects here). That
+  page asked one NIP-45 `COUNT` per kind it already knew to name, so a kind
+  nobody had registered was invisible on the one page that would have shown it;
+  a grouping histogram enumerates what the store actually holds.
 
   The JSON is the artifact and the page is one reader of it — publish it and
   anyone can chart this relay's coverage, or diff it against a network-wide
