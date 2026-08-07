@@ -7,6 +7,7 @@
 // has already got wrong somewhere else: an unfinished read is not an absence,
 // a non-answer is not a zero, and a missing denominator is not a percentage.
 import assert from "node:assert/strict";
+import { readFileSync } from "node:fs";
 import {
   assess, fraction, counted, worthShowing, REFUSED, TIMED_OUT,
 } from "../../relay/src/main/resources/web/shared/readiness.js";
@@ -47,6 +48,47 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   assert.equal(statusOf(v, "ranked"), "waiting");
   assert.equal(v.chain.filter((l) => l.status === "broken").length, 1, "exactly one link is ever broken");
   ok("the first unmet link is the verdict; every link below it waits");
+}
+
+// ---- a link that waits says NOTHING about itself --------------------------
+//
+// The ordering above was right in the verdict column and contradicted one
+// column to its left. `chainHtml` reads each link's `detail` to write its
+// subtitle, a waiting link carries none, and every branch of that switch
+// treated an absent detail as the healthy case — so the panel headlined
+// "search can't rank for you yet" and then printed, as its own evidence,
+// "Ranked search — returns results" and "Your trusted-scores list — names a
+// service for rank". Two halves hold the property, because it takes two
+// modules to break it.
+{
+  // Half one, here: a waiting link carries no detail to write words from.
+  for (const facts of [
+    { relayList: { seen: false, writeRelays: [] }, scoreListSeen: false, rankService: null },
+    { ...healthy(), scoreListSeen: false },
+    { ...healthy(), rankService: null },
+    { ...healthy(), scores: { here: 0, there: 145968 } },
+  ]) {
+    for (const l of assess(facts).chain) {
+      if (l.status !== "waiting") continue;
+      assert.equal(l.detail, null, `waiting link \`${l.key}\` carried a detail to describe itself with`);
+    }
+  }
+
+  // Half two, in readiness.js: the switch that turns detail into words is not
+  // entered for a waiting link at all. Asserted against the SOURCE, the way
+  // avatar.test.mjs checks the stylesheet it cannot import — readiness.js
+  // reads the document at import and cannot be loaded here.
+  const src = readFileSync(
+    new URL("../../relay/src/main/resources/web/readiness.js", import.meta.url), "utf8"
+  );
+  const chainFn = src.slice(src.indexOf("function chainHtml"), src.indexOf("function fetchFormHtml"));
+  assert.ok(chainFn, "chainHtml has moved — this assertion no longer reads it");
+  assert.match(
+    chainFn,
+    /if \(l\.status !== "waiting"\)\s*switch \(l\.key\)/,
+    "chainHtml builds a subtitle for a link it never checked"
+  );
+  ok("a link below the break describes neither itself nor a check that never ran");
 }
 
 {

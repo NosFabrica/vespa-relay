@@ -495,7 +495,15 @@ function chainHtml(chain) {
     .map((l) => {
       const d = l.detail || {};
       let sub = "";
-      switch (l.key) {
+      // A link below the break was never asked, so it has nothing to report.
+      // Every case below reads `detail`, and a waiting link carries none — so
+      // each one fell through to its own HEALTHY branch: "Ranked search …
+      // returns results" and "Your trusted-scores list … names a service for
+      // rank", printed under a headline saying search cannot rank for you at
+      // all. The ordering rule the whole chain exists for — first break wins,
+      // everything below it waits — was right in the verdict column and
+      // contradicted one column to its left.
+      if (l.status !== "waiting") switch (l.key) {
         case "relayList":
           sub = l.status !== "broken" ? many(d.writeRelays, "write relay")
             : d.seen ? `${many(d.declared, "write relay")} named, none reachable from a browser`
