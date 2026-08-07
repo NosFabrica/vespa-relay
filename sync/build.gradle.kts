@@ -40,6 +40,14 @@ application {
     applicationName = "vespa-sync"
 }
 
+// `./gradlew :sync:run` has to match the image: both entrypoints refuse to boot
+// without the store's per-insert NIP-09/NIP-62 checks, because two processes
+// write one Vespa here and its guard-owner cache is per instance. See the
+// Dockerfile's ENV and common/maintenance/DeletionGuards.kt.
+tasks.named<JavaExec>("run") {
+    environment("GUARD_OWNERS_DISABLE", "1")
+}
+
 tasks.test {
     useJUnitPlatform()
 }

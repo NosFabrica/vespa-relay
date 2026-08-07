@@ -16,5 +16,12 @@ COPY --from=build /src/relay/build/install/vespa-relay /app/relay
 COPY --from=build /src/sync/build/install/vespa-sync /app/sync
 # The NIP-50 websocket + NIP-11 + web UI (RELAY_PORT, default 7777).
 EXPOSE 7777
+# NIP-09 / NIP-62 checked against the store on every insert. Not tuning: this
+# image carries TWO processes that write one Vespa, and the store's guard-owner
+# cache is per instance — the relay's copy never learns of the deletions the
+# router mirrors, so without this each would re-admit what the other erased.
+# Both entrypoints refuse to boot if it is missing, so it lives here rather
+# than in compose, where an operator's .env could drop it.
+ENV GUARD_OWNERS_DISABLE=1
 # The serving relay is the default; /app/sync/bin/vespa-sync is the mirror.
 ENTRYPOINT ["/app/relay/bin/vespa-relay"]

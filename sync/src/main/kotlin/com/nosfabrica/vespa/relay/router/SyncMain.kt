@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.config.RelayIdentity
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
+import com.nosfabrica.vespa.relay.maintenance.requireDeletionGuards
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.config.syncEnv
@@ -59,6 +60,13 @@ private const val DEPLOY_RETRY_SECONDS = 5L
  */
 fun main() {
     val env = System.getenv()
+
+    // Mirroring kind 5/62 erases what an author retracted, and the erase only
+    // stays erased if every insert is checked against the stored request —
+    // including the relay's, whose own copy of the store's guard-owner cache
+    // never sees what this process wrote.
+    requireDeletionGuards(env)
+
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — the served relay's own ws url; mirrored events are stored as its.")
     val relayUrl =

@@ -318,18 +318,18 @@ Two consequences worth knowing before you add them to a running stream:
   so the first cycle after the edit re-walks every relay in the fan-out from
   scratch instead of resuming. That is the intended way to force a re-walk, but
   on a wide dynamic stream it is a long cycle.
-- **The two processes hold separate deletion guards.** The store keeps a
-  per-instance set of the authors who have a stored kind 5/62, so everyone
-  else's inserts skip the guard queries entirely. It is loaded once and then
-  kept current by the writes that instance makes — so tombstones the *sync*
-  process mirrors are invisible to the *relay* process's copy, and a client
-  republishing an event a mirrored deletion covers would be admitted until the
-  relay restarts. Set `GUARD_OWNERS_DISABLE=1` on the relay to probe on every
-  insert instead; on the serving side that is a couple of extra queries per
-  client publish. Setting it on the sync process closes the mirror image of the
-  same gap (deletions clients publish *here*, invisible to the router) at a much
-  higher price — those probes land on every ingest batch, under the store's
-  writer lock.
+- **Both processes check every insert, and that is not optional.** The store's
+  fast path keeps a per-instance set of the authors known to have a stored kind
+  5/62 and skips the guard queries for everyone else — exact for a store with
+  one writer, wrong for this one. There are two: tombstones the *sync* process
+  mirrors never reach the *relay* process's copy of that set, and deletions
+  clients publish to the relay never reach the router's, so each would re-admit
+  what the other erased. Both entrypoints therefore refuse to boot unless
+  `GUARD_OWNERS_DISABLE=1` (the image and the Gradle `run` tasks set it), which
+  makes NIP-09 and NIP-62 hold against the store itself rather than against a
+  cache that only one writer maintains. The cost is on the router's side, where
+  the guard reads are batched per owner-chunk under the writer lock and show up
+  as the `guards` stage on the `router: ingest …` line.
 
 ## Deleting what an upstream retracted
 

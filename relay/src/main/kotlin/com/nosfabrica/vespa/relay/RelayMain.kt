@@ -39,6 +39,7 @@ import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
+import com.nosfabrica.vespa.relay.maintenance.requireDeletionGuards
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
 import com.nosfabrica.vespa.relay.server.Nip11Info
@@ -105,6 +106,11 @@ fun main() {
                 "relay: ${it.joinToString()} — read by the sync process, not the relay; set them on that service or they do nothing",
             )
         }
+    // NIP-09 and NIP-62 hold across BOTH writers or they do not hold: the
+    // store's guard-owner cache is per instance, and the deletions this relay
+    // must honour are largely ones the sync process mirrored.
+    requireDeletionGuards(env)
+
     val vespaUrl = env["VESPA_URL"] ?: "http://localhost:8080"
     val port = env["RELAY_PORT"]?.toIntOrNull() ?: 7777
     val relayUrlRaw = env["RELAY_URL"] ?: error("RELAY_URL is required — this relay's own ws url (NIP-42 identity / NIP-62 vanish scope).")
