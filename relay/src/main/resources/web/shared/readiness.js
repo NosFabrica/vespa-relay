@@ -54,6 +54,27 @@ export function fraction(here, there) {
 }
 
 /**
+ * How much of a provider's scores counts as all of them.
+ *
+ * The last few per cent of an import buy a reader almost nothing — the cards
+ * still to come are the tail of the service's own ranking, the accounts it
+ * scored lowest — while a panel saying "Importing your provider's scores —
+ * 99%" is a warning about a search that is, for any result they will actually
+ * look at, already complete. The failure mode of a status panel is nagging
+ * people who are fine, so the last stretch is treated as done: search is
+ * ranked, nothing is theirs to fix, and the panel stays down.
+ *
+ * Compared against the ROUNDED percentage, the one the words print. Straight
+ * against the fraction, an import at 0.897 is short and would draw a panel
+ * headlined "90%" — a number the reader was told is not worth showing. This
+ * way the rule and the sentence agree: no panel ever prints 90% or more.
+ */
+const SCORES_ENOUGH_PCT = 90;
+
+/** Short of the bar above, and only when there is an honest denominator. */
+const shortOfEnough = (pct) => pct != null && Math.round(pct * 100) < SCORES_ENOUGH_PCT;
+
+/**
  * The whole verdict, from everything that could be learned.
  *
  * `facts` carries only answers, never asks:
@@ -121,7 +142,7 @@ export function assess(facts) {
     waitingBelow(chain, ["ranked"]);
     return { state: "no-scores-yet", tone: "blocked", percent: 0, chain };
   }
-  const short = pct != null && pct < 1;
+  const short = shortOfEnough(pct);
   link("scores", short ? "partial" : "ok", { here, there: scores.there, percent: pct });
 
   // --- link 4: does a ranked read actually come back? ---------------------

@@ -17,9 +17,11 @@
 //     the first paint have the sockets to themselves;
 //   * it stops at the FIRST broken link — the counts and the probe are never
 //     sent for a reader who has no relay list;
-//   * a `ready` verdict is remembered for six hours, which is the router's own
-//     refresh interval. Nothing it measures can change faster than that, so a
-//     returning reader pays nothing at all.
+//   * a `ready` verdict is remembered for a WEEK, in a cookie the browser
+//     expires by itself. A complete chain has nothing left to learn — every
+//     link is an event already here — so a returning reader pays nothing at all
+//     until the next one. A verdict short of ready is never remembered: that is
+//     the one that changes, on the router's six-hour pass.
 
 import { relay, refConn, RELAY_URL } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
@@ -41,9 +43,29 @@ const PROVIDER_URL = "https://brainstorm.world";
  */
 const START_DELAY_MS = 1500;
 
-/** How long a `ready` verdict is trusted. The router's own refresh interval. */
-const READY_TTL_MS = 6 * 60 * 60 * 1000;
-const READY_KEY = "sot_ready";
+/**
+ * How long a `ready` verdict is trusted — a week, in a cookie.
+ *
+ * A reader whose chain is complete has nothing left to learn from this check:
+ * every link is an event already mirrored here, and the only way back out of
+ * `ready` is their own republished list, which they will have done deliberately
+ * and can force a recheck for. The check itself is seven round trips, two of
+ * them to somebody else's relay, so the ceiling on how often it is worth paying
+ * is set by how often the answer could change, not by the router's six-hour
+ * refresh — that interval is what makes a NOT-ready verdict worth re-asking.
+ *
+ * A cookie rather than localStorage, matching app.js's signed-in preference:
+ * same-origin, survives a page switch, and expires by itself, so the week is
+ * enforced by the browser rather than by arithmetic we have to get right. It
+ * rides along on requests to this relay; the relay reads no cookies at all, and
+ * a signed-in reader has already named the same pubkey over NIP-42 on the
+ * socket, so it tells the server nothing it was not told directly.
+ */
+const READY_TTL_DAYS = 7;
+const READY_COOKIE = "sot_ready";
+
+/** How long a DISMISSAL is trusted. The router's own refresh interval. */
+const DISMISS_TTL_MS = 6 * 60 * 60 * 1000;
 
 const fmt = (n) => Number(n).toLocaleString();
 const host = (url) => String(url || "").replace(/^wss?:\/\//, "");
@@ -727,18 +749,39 @@ function hide() {
 
 // ---- what the page remembers ----------------------------------------------
 //
-// All three are per pubkey, because all three are facts about one account, and
-// a shared key would carry one reader's dismissal to the next person to sign in
-// on the same browser.
+// The verdict and the dismissal are per pubkey, because both are facts about
+// one account, and a shared key would carry one reader's dismissal to the next
+// person to sign in on the same browser. They keep different homes for
+// different reasons: the verdict is a cookie so the browser enforces its week,
+// the dismissal is localStorage because it is compared against a STATE as well
+// as a clock and a cookie holds one string.
 
 const readJson = (key) => { try { return JSON.parse(localStorage.getItem(key) || "null"); } catch (e) { return null; } };
 const writeJson = (key, v) => { try { localStorage.setItem(key, JSON.stringify(v)); } catch (e) {} };
 
+/**
+ * The one that is a cookie, so the browser expires it for us.
+ *
+ * Still per pubkey: the value is the account the verdict was about, and a
+ * different reader signing in on the same browser matches nothing and pays for
+ * their own check. Signing out does NOT clear it — the verdict stays true about
+ * the person it names, and they should not re-pay for it on their way back in.
+ */
 function rememberedReady(pk) {
-  const v = readJson(READY_KEY);
-  return !!v && v.pubkey === pk && Date.now() - v.at < READY_TTL_MS;
+  // Built from the constant rather than written out, so renaming the cookie
+  // cannot leave a reader silently re-checking every load against a name that
+  // is never set any more.
+  const m = document.cookie.match(new RegExp(`(?:^|;\\s*)${READY_COOKIE}=([^;]*)`));
+  return !!m && decodeURIComponent(m[1]) === pk;
 }
-const rememberReady = (pk) => writeJson(READY_KEY, { pubkey: pk, at: Date.now() });
+function rememberReady(pk) {
+  // `secure` only on https: setting it on an http page — a local relay, or the
+  // dev server — makes the browser drop the cookie silently, so the check would
+  // run again on every load with nothing to show for it.
+  const secure = location.protocol === "https:" ? "; Secure" : "";
+  document.cookie =
+    `${READY_COOKIE}=${encodeURIComponent(pk)}; path=/; max-age=${READY_TTL_DAYS * 24 * 60 * 60}; SameSite=Lax${secure}`;
+}
 
 // Dismissal is a decision about a state, not about the feature: it is cleared
 // the moment the state changes, so a reader who dismissed "importing — 43%"
@@ -753,7 +796,7 @@ function dismissed(pk, state) {
   // reader whose import then stopped dead or whose provider list went away —
   // the two things they would most want to hear about, hidden by a dismissal
   // that meant "yes, I know it is downloading".
-  return !!v && v.pubkey === pk && v.state === state && Date.now() - v.at < READY_TTL_MS;
+  return !!v && v.pubkey === pk && v.state === state && Date.now() - v.at < DISMISS_TTL_MS;
 }
 
 // The relay a previous fetch worked from, offered back as the field's default.

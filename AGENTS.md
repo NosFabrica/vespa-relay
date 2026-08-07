@@ -207,8 +207,14 @@ relay/src/main/resources/
                         link and leaves the rest `waiting`, and shows here/there
                         as a percentage — observer_stats.html's arithmetic for
                         one reader's own row — only where a denominator honestly
-                        exists. shared/readiness.js is the decision, pure and
-                        tested; readiness.js is the asks and the words. Its one
+                        exists. An import within a rounded 90% of done counts as
+                        done and says NOTHING: the tail is the accounts the
+                        provider scored lowest, and "importing — 99%" nags
+                        somebody whose search is already complete. A `ready`
+                        verdict is then kept in a week-long cookie, so the seven
+                        round trips are not re-paid by a reader with nothing
+                        left to learn. shared/readiness.js is the decision, pure
+                        and tested; readiness.js is the asks and the words. Its one
                         action is for the failure that cannot fix itself: with
                         no 10002 stored NOTHING discovers you, ever, so the
                         panel takes a relay url, reads your three lists off it
