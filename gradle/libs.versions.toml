@@ -3,9 +3,32 @@ kotlin = "2.4.0"
 # The relay application's version (image tag / --version display).
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
-quartz = "7caf4a8a25"
+#
+# IDENTICAL to the quartz the store pin below compiles against, which is the
+# state to hold: one quartz on the classpath, and `force` restating the
+# resolution rather than overriding it. Equality is the easy case, not the
+# required one — the invariant is at or AHEAD, because a store running on a
+# quartz OLDER than it compiled to fails at the call site in production and at
+# no point during assembly. It was behind for exactly one commit here and
+# nothing in either build noticed.
+#
+# So on any bump of EITHER pin, check the direction. The forces stay regardless:
+# they are per-module (:common, :relay, :sync), a new module needs its own, and
+# they are what stops a store bump from silently dragging its own quartz in.
+quartz = "35f96a936d"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-vespaEventStore = "ec9a9b5340"
+# 5ad77faa53 = store main through PR #57. Carries the coverage-guard fix (#56):
+# a response is judged by Vespa's own isDegraded(), not by its `full`, which
+# disagrees in BOTH directions — `full: false` at a rounded 100% with no reason
+# named was refused on every read (this relay's empty-search feeds), and
+# `full: true` below targetActive was served silently at any coverage. #57
+# brings the store's own quartz to the pin above, so the two now match.
+#
+# VERIFY the hash resolved rather than reading this line: Gradle breaks a version
+# conflict lexicographically, so a hash that sorts below one dragged in
+# transitively loses silently and the bump does nothing.
+# `./gradlew :relay:dependencies --configuration runtimeClasspath`
+vespaEventStore = "5ad77faa53"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
