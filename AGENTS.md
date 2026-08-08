@@ -533,6 +533,18 @@ a clobbered verdict on the next fold is gone with it. `RelayAliasRecordTest`
 holds the merge from both directions, so a pin that regressed it would fail the
 build rather than quietly lose verdicts again.
 
+Verified against Vespa rather than only `InMemoryEventIndex`, which is the run
+that matters here — replaceable-event ordering is the store's behaviour, not the
+index's. One 225-url NIP-65 list, real urls from a real polluted event, folded to
+97 relays; the fold signed 128 verdicts at ~19:19:45 and quartz's monitor flushed
+over the same addresses at 19:23:54, i.e. it wrote LAST — the direction that used
+to erase us. 83 records came back carrying both a `redirect` and the monitor's
+`n` / `rtt-open` / `rtt-read`, 0 records had a duplicated tag (replace, not
+append), and 178 `d` addresses served 178 records with none served twice. The
+5-minute `RelayMonitor.DEFAULT_FLUSH_INTERVAL_MS` is why a check run a minute
+after the fold sees 128 redirect-only records and concludes nothing merged; wait
+out a flush before reading anything into it.
+
 **No false positives in 4,551 folds.** Every path that looks like a real
 endpoint — `/relay`, `/invoices`, `/outbox`, `/inbox`, `/all`, `/v1`, `/v2`,
 `/nostr` — folded at 0.997–1.000, i.e. served an identical event set, so
