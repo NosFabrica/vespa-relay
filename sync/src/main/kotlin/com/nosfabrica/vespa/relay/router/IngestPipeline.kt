@@ -33,6 +33,8 @@ import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
+import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
@@ -494,26 +496,38 @@ internal class IngestPipeline(
      * batch wide.
      */
     private suspend fun dropSuperseded(batch: List<Inbound>): List<Inbound> {
-        // Winner per address, by first appearance so the batch keeps its
-        // order: a kind 5 in a mixed batch is replayed against the events
-        // AROUND it, and reordering would change what it deletes.
+        // NOT for a batch carrying a deletion or a vanish. Those take the
+        // store's replay path, where an event's fate depends on its POSITION
+        // among the others: `[v1, delete(v2), v2]` stores v1, because v2 lands
+        // on its own tombstone. Choosing v2 here and dropping v1 would leave
+        // that address empty. [dropDuplicates] needs no such guard — it only
+        // ever drops an event identical to one already held, and a deletion
+        // reaching either copy reaches both — but this one CHOOSES between
+        // distinct events, and the replay is entitled to disagree. Keyed on
+        // the KIND, not the type: an Event that never went through quartz's
+        // factory is a plain Event whatever its kind, and `is DeletionEvent`
+        // would wave it through.
+        if (batch.any { it.event.kind == DeletionEvent.KIND || it.event.kind == RequestToVanishEvent.KIND }) return batch
+
+        // Winner per address, by first appearance so the batch keeps its order.
+        val keys = arrayOfNulls<Pair<Int, String>>(batch.size)
         val winners = LinkedHashMap<Pair<Int, String>, Int>()
         var candidates = 0
         batch.forEachIndexed { i, msg ->
             val e = msg.event
             if (!e.kind.isReplaceable() || e.kind.isAddressable()) return@forEachIndexed
             candidates++
+            // Held rather than rebuilt on the second pass: one Pair per
+            // candidate, not two, on a path that runs per batch forever.
             val key = e.kind to e.pubKey
+            keys[i] = key
             val held = winners[key]
             if (held == null || beats(e, batch[held].event)) winners[key] = i
         }
         if (candidates == 0) return batch
 
         val drop = BooleanArray(batch.size)
-        batch.forEachIndexed { i, msg ->
-            val e = msg.event
-            if (e.kind.isReplaceable() && !e.kind.isAddressable() && winners[e.kind to e.pubKey] != i) drop[i] = true
-        }
+        keys.forEachIndexed { i, key -> if (key != null && winners[key] != i) drop[i] = true }
         var dropped = candidates - winners.size
 
         val probe = newestVersions
@@ -558,7 +572,7 @@ internal class IngestPipeline(
             IngestStats.timed("versions.pre") {
                 addresses
                     .groupBy({ it.first }, { it.second })
-                    .flatMap { (kind, authors) -> authors.chunked(DEDUP_CHUNK).map { kind to it } }
+                    .flatMap { (kind, authors) -> authors.chunked(CHECK_CHUNK).map { kind to it } }
                     .mapBounded(QUERY_FANOUT) { (kind, authors) -> probe(kind, authors).mapKeys { (author, _) -> kind to author } }
                     .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
             }
@@ -623,6 +637,33 @@ internal class IngestPipeline(
     }
 
     /**
+     * What each drop-probe is currently doing, for the stats line. Without it
+     * a gated-off probe is invisible: ingest slows, the `dedup.pre` and
+     * `versions.pre` stages simply stop appearing, and nothing says whether
+     * that is a converged stream (working as designed) or a probe that was
+     * never wired. Empty until a gate has judged anything.
+     */
+    fun probeStatus(): String {
+        val parts =
+            listOfNotNull(
+                describeGate("id", idGate, knownIds != null),
+                describeGate("version", versionGate, newestVersions != null),
+            )
+        return if (parts.isEmpty()) "" else "router: ingest probes ${parts.joinToString(", ")}"
+    }
+
+    private fun describeGate(
+        name: String,
+        gate: ProbeGate,
+        wired: Boolean,
+    ): String? {
+        if (!wired) return "$name off (not wired)"
+        val rate = gate.hitRate()
+        if (rate == 0.0 && !gate.hasJudged()) return null
+        return "$name ${"%.0f".format(rate * 100)}% dropped${if (gate.paying()) "" else ", sampling only"}"
+    }
+
+    /**
      * What the rejections actually were, for the stats line — the bare total
      * hides whether you are looking at routine duplicates or a failing store.
      */
@@ -670,6 +711,15 @@ internal class IngestPipeline(
          * already caught — off the engine the relay serves reads from.
          */
         private const val PROBE_MIN_VERIFIABLE = 128
+
+        /**
+         * Authors per version query. Deliberately NOT [DEDUP_CHUNK]: that is
+         * stage B's width and carries `VESPA_DEDUP_CHUNK`, which widens the id
+         * check alone. Widening a version query is a different trade — the
+         * store keeps it at its own CHECK_CHUNK — and riding the dedup knob
+         * would silently retune this one too.
+         */
+        private const val CHECK_CHUNK = 500
 
         /**
          * Ids per probe query. Read from the store's OWN knob, not a private

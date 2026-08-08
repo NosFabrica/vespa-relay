@@ -433,6 +433,9 @@ class SyncEngine(
             // Where the minute actually went, per ingest stage — this is what
             // identified a projection read-back as 90% of ingest.
             IngestStats.statusLine().takeIf { it.isNotEmpty() }?.let { System.err.println("router: ingest $it") }
+            // Beside the stages, because a probe that gated itself off shows up
+            // there only as a stage that stopped appearing.
+            ingest.probeStatus().takeIf { it.isNotEmpty() }?.let { System.err.println(it) }
         }
     }
 

@@ -264,6 +264,23 @@ class IngestDedupTest {
         assertTrue(pipeline.rejectionBreakdown().contains("replaced"), pipeline.rejectionBreakdown())
     }
 
+    @Test
+    fun `a batch carrying a deletion keeps every version, because position decides their fate`() {
+        val author = NostrSignerSync()
+        val v1 = profile(author, 1_700_000_000L)
+        val v2 = profile(author, 1_700_001_000L)
+        // v2 lands on its own tombstone and is rejected; v1 is what survives.
+        // Collapsing the batch to "v2, the newest" would leave this address
+        // EMPTY — so the collapse must stand down for a batch like this.
+        val delete = author.sign<Event>(1_700_002_000L, 5, arrayOf(arrayOf("e", v2.id)), "")
+
+        val (pipeline, store, _) = ingest(preload = emptyList(), offer = listOf(v1, delete, v2))
+
+        val kept = runBlocking { store.query<Event>(Filter(kinds = listOf(0))) }
+        assertEquals(listOf(v1.id), kept.map { it.id }, "the replay's outcome was changed by collapsing the batch")
+        assertTrue(pipeline.accepted.get() >= 2, pipeline.rejectionBreakdown())
+    }
+
     private companion object {
         /** Long enough that only a hang reaches it, so a slow box fails no test. */
         const val SETTLE_TIMEOUT_MS = 30_000

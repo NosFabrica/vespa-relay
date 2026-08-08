@@ -71,6 +71,19 @@ internal class ProbeGate(
     /** Drop rate so far, for the stats line — an operator reading "probe off" wants to see why. */
     fun hitRate(): Double = judged.get().takeIf { it > 0 }?.let { dropped.get().toDouble() / it } ?: 0.0
 
+    /** Whether this gate has any evidence yet, so a status line can stay quiet rather than print 0%. */
+    fun hasJudged(): Boolean = judged.get() > 0
+
+    /**
+     * [worthIt] without the side effect. Reporting must never call [worthIt]:
+     * it advances the resample counter, so a status line printed once a minute
+     * would quietly change which batches get probed.
+     */
+    fun paying(): Boolean {
+        val seen = judged.get()
+        return seen < LEARN_EVENTS || dropped.get().toDouble() / seen >= minHitRate
+    }
+
     private companion object {
         /** Events judged before the rate is trusted — one batch's worth is noise. */
         const val LEARN_EVENTS = 50_000L
