@@ -584,12 +584,30 @@ router signing with the same key share the work.
 
 Inline, `measure` sat between "discovery finished" and the first downloaded byte
 on EVERY cycle — 1:19 for a 225-url list in the Docker run, against a production
-fan-out two orders of magnitude wider. **The cost of the split is that folding
-lags discovery by one pass:** a url seen for the first time has no verdict when
-`apply` runs, so that cycle dials it unfolded. Paying that once per new url is
-the trade. `AliasFoldingTest` asserts `apply` opens zero sockets — a regression
-that moved a probe back onto the read path would fail nothing else in the repo,
-it would just make cycles slow again.
+fan-out two orders of magnitude wider. Measured on the same 225-url list, split:
+
+```
+20:58:52  sync starts
+20:59:08  fan-out on 97 relay(s)          ? 16s, apply() folded from stored verdicts, zero dials
+20:59:19  fetching 30/97, 876 event(s)    ? the mirror is already downloading
+21:00:52  monitor's first pass begins     ? 2 min after boot, alongside the fan-out
+21:02:20  measured 59 fingerprint(s) ? 11 new alias(es), 225 url(s) now fold
+          onto 86 relay(s) (139 known, 46 unmeasured) in 1:28
+```
+
+16s to fan-out against ~90s inline, on the identical fold; the 1:28 probe pass
+cost the mirror nothing, and 97 became 86 for the next cycle.
+
+**The cost of the split is that folding lags discovery by one pass:** a url seen
+for the first time has no verdict when `apply` runs, so that cycle dials it
+unfolded. Paying that once per new url is the trade. `AliasFoldingTest` asserts
+`apply` opens zero sockets — a regression that moved a probe back onto the read
+path would fail nothing else in the repo, it would just make cycles slow again.
+
+`markDistinct` is **in memory only** — a fold is persisted as a `redirect`
+record, "this url is its own relay" is not — so every boot re-fingerprints the
+non-duplicates. That is the 59 fingerprints above on a store that already held
+128 verdicts. Pre-existing, and the reason a pass is never free.
 
 **Measured against live relays**, because the thresholds are only worth what the
 wire says. A `{"limit": 500}` probe: **85% of 60 sampled hosts answered**
