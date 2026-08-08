@@ -116,10 +116,15 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     SyncMain.kt           entrypoint; env, store, engine, block
     SyncEngine.kt         wiring, live tails, health/stats lines
     PressurePoller.kt     polls the relay's /pressure into ServingPressure
-    IngestPipeline.kt     bounded queue -> dedup -> verify -> batchInsert, poison
-                          isolation. Dedup FIRST is the point: a schnorr check is
-                          ~48us and a mirror is offered the same event once per
-                          relay holding it
+    IngestPipeline.kt     bounded queue -> dedup -> supersede -> verify ->
+                          batchInsert, poison isolation. Dropping FIRST is the
+                          point: a schnorr check is ~48us isolated and ~70-95us
+                          in situ, and a mirror is offered the same event once
+                          per relay holding it — and older VERSIONS of it from
+                          the relays that never got the newest
+    ProbeGate.kt          whether either drop-probe still earns its round trip,
+                          learned from what it drops. Replaces telling ingest
+                          which phase a stream is in
     BisectingInsert.kt    the batch-bisecting write
     StaticBackfill.kt     history catch-up for configured upstreams
     DynamicSync.kt        relaySource streams: discover, fan out, sync each relay
@@ -446,24 +451,26 @@ Reach for it first.
   Measured on a 4-core box sharing its cores with the engine, 72k-doc corpus,
   20k-event batches — the ratios are what travel, not the absolute times:
 
-  | arriving event | µs/event | where it goes |
+  | arriving event | µs/event, probe off → on | where it goes |
   |---|---:|---|
-  | fresh (written) | 603 | `write` 77%, `verify` 13% |
-  | duplicate, no probe | 56 / 49 | `verify` 67% of the work |
-  | duplicate, probe on | 21 / 16 | `dedup.pre` only — verify gone |
-  | stale replaceable | 158 | `versions` 38%, `verify` 32% |
-  | newer replaceable (written) | 1191 | `write` 66% — read-then-supersede |
+  | fresh (written) | 508 | `write` 73%, `verify` 12% |
+  | duplicate | 66 → 17, 35 → 11 | `verify` was 2/3 of it; gone |
+  | stale replaceable | 130 → 40, 68 → 34 | `versions`+`verify` were 75%; gone |
+  | newer replaceable (written) | 778 | `write` 66%; the probe is ~6% overhead |
 
-  Two things to read off it. **Verification is not a rounding error** — 13% of
-  a fresh batch and two thirds of a duplicate one — and it costs ~70-95µs in
-  situ against ~48µs isolated, because the router competes with Vespa for the
-  same cores. And **the id probe cannot see a stale replaceable version**: a
-  newer generation of a kind 0/3/10002/30382 has a different id, so it is
-  verified in full and only then rejected as `replaced`. Pricing a supersession
-  pre-filter for it: the batched version read costs 29µs/event, so it pays for
-  itself once **~20%** of replaceable arrivals are stale and is only worth the
-  build past ~60-70%. Which of those an operator is in is readable off
-  `rejectionBreakdown()` on the stats line and nowhere else.
+  Each pair is interleaved, so a warming engine cannot be read as a difference
+  between arms. **Verification is not a rounding error** — 12% of a fresh batch,
+  two thirds of a duplicate one — and it costs ~70-95µs in situ against ~48µs
+  isolated, because the router competes with Vespa for the same cores.
+
+  The asymmetry is the thing to understand before touching either probe: on a
+  stream that mostly REJECTS, both probes are worth 2-4x; on one that mostly
+  ACCEPTS they are duplicated work the store will redo, and the version probe
+  costs ~6%. Which regime a deployment is in is not knowable here and changes
+  over a backfill's life, so `ProbeGate` measures it instead of anyone
+  declaring it. The break-evens its thresholds come from: ~35% duplicates for
+  the id probe (10-23µs/id against the ~44µs a drop saves), ~20% stale for the
+  version probe (21-29µs against ~110).
 
 ## Conventions
 

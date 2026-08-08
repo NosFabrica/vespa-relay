@@ -27,7 +27,9 @@ import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
+import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
@@ -72,6 +74,13 @@ internal class IngestPipeline(
      * wrong: the store deduplicates again regardless. See [dropDuplicates].
      */
     private val knownIds: (suspend (List<String>) -> Set<String>)? = null,
+    /**
+     * The newest stored version of each `(kind, author)` address in a chunk —
+     * the read that lets a superseded replaceable be dropped before it is
+     * verified. Null disables it; the store then resolves supersession itself,
+     * as it always did. See [dropSuperseded].
+     */
+    private val newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -150,6 +159,20 @@ internal class IngestPipeline(
     // Store failures already reported in full, so the raw-event dump stays
     // one per distinct defect.
     private val poisonSeen = ConcurrentHashMap.newKeySet<String>()
+
+    /**
+     * Measured break-even for the id probe: a dropped duplicate saves ~33-44µs
+     * (the whole 49-56µs a duplicate costs, less the few it costs to drop it)
+     * and the probe costs 11-23µs per id it covers — so it stops paying below
+     * roughly a third. See `IngestCostBench`.
+     */
+    private val idGate = ProbeGate(minHitRate = 0.35)
+
+    /**
+     * And for the version probe: 29µs/event against the 123 a dropped stale
+     * replaceable saves (158 to ~35), so break-even is ~20%.
+     */
+    private val versionGate = ProbeGate(minHitRate = 0.20)
 
     fun start() {
         // Announced when the batch is capped: an operator who set
@@ -235,8 +258,9 @@ internal class IngestPipeline(
                 queued.decrementAndGet()
                 batch.add(next)
             }
-            // BEFORE verify, which is the whole point — see [dropDuplicates].
-            val fresh = dropDuplicates(batch)
+            // BEFORE verify, which is the whole point — see [dropDuplicates]
+            // and [dropSuperseded].
+            val fresh = dropSuperseded(dropDuplicates(batch))
             if (fresh.isEmpty()) continue
             val valid = ArrayList<Event>(fresh.size)
             var verifyRejected = 0
@@ -326,8 +350,9 @@ internal class IngestPipeline(
         // The count that justifies the round trip is what it would save, and it
         // saves verifications — a batch of trusted events skips those already.
         val verifiable = once.count { !it.skipVerify }
+        val probed = probe != null && verifiable >= PROBE_MIN_VERIFIABLE && idGate.worthIt()
         val stored =
-            if (probe == null || verifiable < PROBE_MIN_VERIFIABLE) {
+            if (!probed) {
                 emptySet()
             } else {
                 try {
@@ -335,7 +360,7 @@ internal class IngestPipeline(
                         once
                             .map { it.event.id }
                             .chunked(DEDUP_CHUNK)
-                            .mapBounded(QUERY_FANOUT) { probe(it) }
+                            .mapBounded(QUERY_FANOUT) { probe!!(it) }
                             .flatMapTo(HashSet()) { it }
                     }
                 } catch (e: CancellationException) {
@@ -353,6 +378,12 @@ internal class IngestPipeline(
             }
 
         val fresh = if (stored.isEmpty()) once else once.filter { it.event.id !in stored }
+        // Recorded whenever the probe RAN, including when it found nothing —
+        // a round trip that drops nothing is precisely what the gate has to
+        // learn from, and only the probe's own verdict teaches it (the
+        // in-batch pass is free and would flatter a query it says nothing
+        // about).
+        if (probed) idGate.record(once.size, once.size - fresh.size)
         dropped += once.size - fresh.size
         if (dropped > 0) {
             rejected.addAndGet(dropped.toLong())
@@ -414,6 +445,130 @@ internal class IngestPipeline(
                 lostToStore.addAndGet(batch.size.toLong())
             },
         )
+
+    /**
+     * The batch minus every replaceable event a NEWER version already beats —
+     * dropped, like a duplicate, before it can be verified.
+     *
+     * This is the arrival the id probe structurally cannot see. A newer
+     * generation of a profile is a DIFFERENT id (different `created_at`,
+     * different hash), so [dropDuplicates] calls it new, it pays full
+     * verification, and only then does the store reject it as `replaced`.
+     * Measured against a real Vespa (`IngestCostBench`): **158µs/event**, of
+     * which `versions` is 38% and `verify` 32%.
+     *
+     * It is not a rare shape. Under the outbox model different relays hold
+     * different generations of the same address — relay B never received the
+     * generation the author published to relay A — so a fan-out is offered
+     * stale versions permanently, and negentropy cannot converge them away:
+     * it reconciles ids, and a replaceable's identity is its ADDRESS. One
+     * production backfill runs at 94% replaced-or-duplicate.
+     *
+     * Two passes again, and only the second costs anything:
+     *
+     *  - **in batch**, by address. Saves only the losers' VERIFICATION — the
+     *    store's stage D already collapses an in-run group to one write, so
+     *    there is no write here to save.
+     *  - **in the store**, via [newestVersions]: 29µs/event for the batched
+     *    read, against the 158 a stale arrival costs today. It pays for itself
+     *    once ~20% of replaceable arrivals are stale, which [versionGate]
+     *    measures rather than assumes.
+     *
+     * **Plain replaceable kinds only** (0, 3, 10002, 10040 — not 30382 and the
+     * other addressables). Their version query is one `(kind, authors…)` per
+     * chunk. An addressable's is not: the store recalls it per (kind, author)
+     * with the d-set, never across authors, because a (authors × d-tags) query
+     * is a cross product that is unbounded on the ingest path and silently
+     * truncated where hits are capped — and a truncated answer here is a
+     * DROPPED event, not a slow one. Reproducing that shape in the router is
+     * the fork AGENTS.md warns about; addressables stay the store's business.
+     *
+     * **Why dropping is safe, and the one place it is not.** A superseded
+     * event is not stored either way, so its signature decides nothing. The
+     * comparison is NIP-01's own — newest `created_at`, ties to the lower id —
+     * copied from the rule stage D applies. Where this differs from letting
+     * the store decide: the store re-reads under the writer lock, and this
+     * reads before it. If a NIP-09 deletion removes the newer version in that
+     * window, the store would have accepted the older event and this drops it.
+     * The event is re-offered on the next full resync, and the window is one
+     * batch wide.
+     */
+    private suspend fun dropSuperseded(batch: List<Inbound>): List<Inbound> {
+        // Winner per address, by first appearance so the batch keeps its
+        // order: a kind 5 in a mixed batch is replayed against the events
+        // AROUND it, and reordering would change what it deletes.
+        val winners = LinkedHashMap<Pair<Int, String>, Int>()
+        var candidates = 0
+        batch.forEachIndexed { i, msg ->
+            val e = msg.event
+            if (!e.kind.isReplaceable() || e.kind.isAddressable()) return@forEachIndexed
+            candidates++
+            val key = e.kind to e.pubKey
+            val held = winners[key]
+            if (held == null || beats(e, batch[held].event)) winners[key] = i
+        }
+        if (candidates == 0) return batch
+
+        val drop = BooleanArray(batch.size)
+        batch.forEachIndexed { i, msg ->
+            val e = msg.event
+            if (e.kind.isReplaceable() && !e.kind.isAddressable() && winners[e.kind to e.pubKey] != i) drop[i] = true
+        }
+        var dropped = candidates - winners.size
+
+        val probe = newestVersions
+        if (probe != null && winners.size >= PROBE_MIN_VERIFIABLE && versionGate.worthIt()) {
+            val stored = readNewestVersions(probe, winners.keys)
+            var beaten = 0
+            for ((key, i) in winners) {
+                val held = stored[key] ?: continue
+                // Strictly beaten only: an equal stamp is the same event, and
+                // the id probe already had its chance at that.
+                if (held.createdAt > batch[i].event.createdAt ||
+                    (held.createdAt == batch[i].event.createdAt && held.id < batch[i].event.id)
+                ) {
+                    drop[i] = true
+                    beaten++
+                }
+            }
+            versionGate.record(winners.size, beaten)
+            dropped += beaten
+        }
+
+        if (dropped == 0) return batch
+        noteRejection(RejectionReason.REPLACED.take(48), dropped.toLong())
+        rejected.addAndGet(dropped.toLong())
+        return batch.filterIndexed { i, _ -> !drop[i] }
+    }
+
+    /** NIP-01 newest-wins, tie to the lower id — the rule the store's stage D resolves by. */
+    private fun beats(
+        candidate: Event,
+        incumbent: Event,
+    ): Boolean =
+        candidate.createdAt > incumbent.createdAt ||
+            (candidate.createdAt == incumbent.createdAt && candidate.id < incumbent.id)
+
+    /** One query per kind per chunk of authors, same width and fan-out the store's version stage uses. */
+    private suspend fun readNewestVersions(
+        probe: suspend (Int, List<String>) -> Map<String, Version>,
+        addresses: Set<Pair<Int, String>>,
+    ): Map<Pair<Int, String>, Version> =
+        try {
+            IngestStats.timed("versions.pre") {
+                addresses
+                    .groupBy({ it.first }, { it.second })
+                    .flatMap { (kind, authors) -> authors.chunked(DEDUP_CHUNK).map { kind to it } }
+                    .mapBounded(QUERY_FANOUT) { (kind, authors) -> probe(kind, authors).mapKeys { (author, _) -> kind to author } }
+                    .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Same rule as the id probe: a failed optimisation costs time, not
+            // correctness. The store still resolves supersession itself.
+            emptyMap()
+        }
 
     /**
      * Tally [count] rejections under [reason], keeping at most
@@ -538,3 +693,9 @@ internal class IngestPipeline(
         private const val POISON_JSON_CHARS = 4_000
     }
 }
+
+/** The newest stored version of one address — what an arriving replaceable has to beat. */
+data class Version(
+    val createdAt: Long,
+    val id: String,
+)

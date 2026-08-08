@@ -103,6 +103,10 @@ class SyncEngine(
     // Not on IEventStore — SyncMain hands over the engine index's own
     // existence check. Null just means every copy is verified, as before.
     knownIds: (suspend (List<String>) -> Set<String>)? = null,
+    // The newest stored version of each (kind, author) address, so a stale
+    // replaceable is dropped before it is verified. Same reason as knownIds:
+    // the query is the store's, the pipeline takes a function.
+    newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -207,7 +211,7 @@ class SyncEngine(
 
     private val phases = StreamPhases()
     private val paging = PagingProgress()
-    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, knownIds)
+    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, knownIds, newestVersions)
 
     /**
      * The automatic window chunker. A peer's cap arrives through quartz —

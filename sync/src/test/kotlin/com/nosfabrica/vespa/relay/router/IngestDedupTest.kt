@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -88,6 +90,21 @@ class IngestDedupTest {
                     servingPressure = null,
                     scope = scope,
                     knownIds = if (probe) index::existingIds else null,
+                    newestVersions =
+                        if (!probe) {
+                            null
+                        } else {
+                            { kind, authors ->
+                                index
+                                    .search(EventQuery(kinds = listOf(kind), authors = authors))
+                                    .groupBy { it.pubkey }
+                                    .mapValues { (_, docs) ->
+                                        docs
+                                            .maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id })
+                                            .let { Version(it.createdAt, it.id) }
+                                    }
+                            }
+                        },
                 )
             // Queued BEFORE the workers start, so the whole offer is drained as
             // one batch — this asserts what a batch does, and a batch split
@@ -103,7 +120,10 @@ class IngestDedupTest {
                 delay(5)
                 waitedMs += 5
             }
-            val stored = store.count(Filter(kinds = listOf(1))).toLong()
+            // Every kind, not just the notes: the supersession cases store
+            // kind 0, and a filter that cannot see them would read as "nothing
+            // was written" for the wrong reason.
+            val stored = store.count(Filter()).toLong()
             scope.cancel()
             pipeline.close()
             Triple(pipeline, store, stored)
@@ -162,6 +182,86 @@ class IngestDedupTest {
 
         assertEquals(50, pipeline.accepted.get())
         assertEquals(50, stored)
+    }
+
+    // ---- supersession ------------------------------------------------------
+
+    /** kind 0 for [author] at [at] — a later `at` is a NEWER version of the SAME address, with a different id. */
+    private fun profile(
+        author: NostrSignerSync,
+        at: Long,
+    ): Event = author.sign(at, 0, emptyArray(), """{"name":"a","at":$at}""")
+
+    @Test
+    fun `a replaceable the store already beats is dropped without being verified`() {
+        val people = (0 until 200).map { NostrSignerSync() }
+        val newest = people.map { profile(it, 1_700_001_000L) }
+        // Older versions of the same addresses, forged. Different ids, so the
+        // id probe cannot see them — only the version probe can. If they were
+        // verified, the breakdown would say so.
+        val stale = people.map { forge(profile(it, 1_700_000_000L)) }
+
+        val (pipeline, _, stored) = ingest(preload = newest, offer = stale)
+
+        val breakdown = pipeline.rejectionBreakdown()
+        assertFalse(breakdown.contains("bad signature"), "verified a version the store already beats: $breakdown")
+        assertTrue(breakdown.contains("replaced"), "expected the store's own wording for it, got: $breakdown")
+        assertEquals(200, pipeline.rejected.get())
+        assertEquals(0, pipeline.accepted.get())
+        assertEquals(200, stored, "the newer versions must be the only ones stored")
+    }
+
+    @Test
+    fun `a NEWER replaceable is never dropped by the version probe`() {
+        val people = (0 until 200).map { NostrSignerSync() }
+        val older = people.map { profile(it, 1_700_000_000L) }
+        val newer = people.map { profile(it, 1_700_001_000L) }
+
+        val (pipeline, _, stored) = ingest(preload = older, offer = newer)
+
+        assertEquals(200, pipeline.accepted.get(), pipeline.rejectionBreakdown())
+        assertEquals(200, stored, "one document per address — the newer version replaced the older")
+    }
+
+    @Test
+    fun `of several versions in one batch only the newest is verified and written`() {
+        val people = (0 until 200).map { NostrSignerSync() }
+        // Three generations per address, all in one batch, oldest first. Only
+        // the newest can survive NIP-01, so the other two must never be
+        // verified — they are forged, which is how the test can tell.
+        val offer =
+            people.flatMap {
+                listOf(
+                    forge(profile(it, 1_700_000_000L)),
+                    forge(profile(it, 1_700_000_500L)),
+                    profile(it, 1_700_001_000L),
+                )
+            }
+
+        val (pipeline, _, stored) = ingest(preload = emptyList(), offer = offer)
+
+        assertFalse(pipeline.rejectionBreakdown().contains("bad signature"), pipeline.rejectionBreakdown())
+        assertEquals(200, pipeline.accepted.get())
+        assertEquals(400, pipeline.rejected.get())
+        assertEquals(200, stored)
+    }
+
+    @Test
+    fun `an addressable is left to the store, whose version query the router does not reproduce`() {
+        val author = NostrSignerSync()
+        // kind 30382 at one address (same d tag), older then newer. The router
+        // must not touch these: dropping one on a query shape it got wrong
+        // would be a lost event, not a slow one.
+        val d = arrayOf(arrayOf("d", "rank"))
+        val older = author.sign<Event>(1_700_000_000L, 30382, d, "old")
+        val newer = author.sign<Event>(1_700_001_000L, 30382, d, "new")
+
+        val (pipeline, _, _) = ingest(preload = listOf(newer), offer = listOf(older), probe = false)
+
+        // Rejected by the STORE as replaced, having been verified — the
+        // behaviour that existed before the supersession pre-filter.
+        assertEquals(1, pipeline.rejected.get())
+        assertTrue(pipeline.rejectionBreakdown().contains("replaced"), pipeline.rejectionBreakdown())
     }
 
     private companion object {

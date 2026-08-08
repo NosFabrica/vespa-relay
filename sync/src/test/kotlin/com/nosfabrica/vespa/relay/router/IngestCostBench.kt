@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
@@ -98,6 +99,19 @@ class IngestCostBench {
                 servingPressure = null,
                 scope = scope,
                 knownIds = if (arm.probe) store.eventIndex::existingIds else null,
+                newestVersions =
+                    if (!arm.probe) {
+                        null
+                    } else {
+                        { kind, authors ->
+                            store.eventIndex
+                                .search(EventQuery(kinds = listOf(kind), authors = authors))
+                                .groupBy { it.pubkey }
+                                .mapValues { (_, docs) ->
+                                    docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { Version(it.createdAt, it.id) }
+                                }
+                        }
+                    },
             )
         IngestStats.statusLine() // zero the deltas
         pipeline.start()
@@ -140,12 +154,14 @@ class IngestCostBench {
             run(store, Arm("duplicate notes", base, probe = true))
 
             // 3. STALE REPLACEABLE — gen0 profiles arriving AFTER gen1 is
-            //    stored: new ids, same addresses, older. The probe cannot see
-            //    them, so they pay full verification and are rejected as
-            //    `replaced` by the store. This is the arm that says whether a
-            //    supersession pre-filter is worth building.
+            //    stored: new ids, same addresses, older. The id probe cannot
+            //    see them; the version probe is what this pair prices, and it
+            //    is the whole reason dropSuperseded exists.
             val genZero = profiles(CORPUS, gen = 0)
-            run(store, Arm("stale replaceable profiles", genZero, probe = true))
+            run(store, Arm("stale replaceable, no version probe", genZero, probe = false))
+            run(store, Arm("stale replaceable, version probe", genZero, probe = true))
+            run(store, Arm("stale replaceable, no version probe (repeat)", genZero, probe = false))
+            run(store, Arm("stale replaceable, version probe (repeat)", genZero, probe = true))
 
             // 4. NEWER REPLACEABLE — gen2 over gen1: same addresses, accepted,
             //    superseding. The write-side counterpart to arm 3.
