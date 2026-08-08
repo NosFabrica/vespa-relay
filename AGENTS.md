@@ -135,7 +135,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       Unreachability.kt     which failures may be published as NIP-66 records
       RelayAliases.kt       which discovered urls are ONE relay (see below)
       AliasProbe.kt         the fingerprint: a relay's newest events, as ids
-      AliasFolding.kt       load verdicts, probe, publish, fold — once per cycle
+      AliasFolding.kt       apply() reads verdicts; measure() earns them
+      AliasMonitor.kt       the schedule measure() runs on, off the sync cycle
       RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `redirect` tag
     progress/             observability
       StreamPhases.kt       per-stream progress reporting
@@ -568,8 +569,27 @@ monitor that already signs "I could not reach this relay" saying the other
 thing a dial can prove. It is addressable on `d`, so a re-probe replaces rather
 than appends, it is served (an operator can ask this relay why a url stopped
 being synced and get a signed answer), and it is read back on the next boot
-within a 30-day TTL. `AliasFolding` runs it once per cycle between discovery
-and fan-out, capped at 2,000 fingerprints per cycle, widest group first.
+within a 30-day TTL.
+
+**The fold is two halves that run at different times, and the split is the
+point.** `AliasFolding.apply` READS — one `#d` query per 500 urls, no sockets —
+and runs between discovery and fan-out on every cycle, which is the only place
+it can run, because a duplicate is a property of a url NEXT TO another one.
+`AliasFolding.measure` DIALS, and runs on `AliasMonitor`'s own clock (6h,
+2 minutes after boot so a restart's opening burst is past), capped at 2,000
+fingerprints per pass, widest group first. A stream `submit`s its candidate set
+and gets on with its download; the two halves communicate only through the
+store, which is what makes the arrangement survive a restart and lets a second
+router signing with the same key share the work.
+
+Inline, `measure` sat between "discovery finished" and the first downloaded byte
+on EVERY cycle — 1:19 for a 225-url list in the Docker run, against a production
+fan-out two orders of magnitude wider. **The cost of the split is that folding
+lags discovery by one pass:** a url seen for the first time has no verdict when
+`apply` runs, so that cycle dials it unfolded. Paying that once per new url is
+the trade. `AliasFoldingTest` asserts `apply` opens zero sockets — a regression
+that moved a probe back onto the read path would fail nothing else in the repo,
+it would just make cycles slow again.
 
 **Measured against live relays**, because the thresholds are only worth what the
 wire says. A `{"limit": 500}` probe: **85% of 60 sampled hosts answered**
@@ -583,10 +603,12 @@ relay truncated a 1,000 ask to 500 anyway, so `DEFAULT_PROBE_LIMIT` is 500;
 asking for more only risks the outright refusal purplepag.es gives
 (`blocked: limit too high`), which is why `AliasProbe` retries once at 100.
 
-An end-to-end cycle against a seeded store: **22 discovered urls folded onto
-10** in 20s, 12 signed `redirect` records published, and on the next boot those
-12 were adopted from the store — `0 new alias(es) from 10 fingerprint(s), 12
-known` — so the probe really is a one-off per url, not a per-cycle cost.
+An end-to-end run against a seeded store: **22 discovered urls folded onto 10**
+in 20s, 12 signed `redirect` records published, and on the next boot those 12
+were adopted from the store — `0 new alias(es) from 10 fingerprint(s), 12
+known` — so the probe really is a one-off per url, not a recurring cost. Both
+figures were measured while the fold still ran inline; the same work is now a
+monitor pass, which is why the 20s is no longer time a fan-out waits.
 
 `maxRelaysPerList` (config, per stream) drops an event naming more relays than a
 relay list plausibly holds — measured, 148 pubkeys published a kind 10002 of

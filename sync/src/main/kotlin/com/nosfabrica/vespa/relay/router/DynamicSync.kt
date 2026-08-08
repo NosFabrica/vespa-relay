@@ -25,6 +25,7 @@ import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
+import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
@@ -107,7 +108,13 @@ internal class DynamicSync(
     // NIP-66 again, saying the other thing a dial can prove: that two of the
     // discovered urls are one relay. Null when there is no identity to sign a
     // verdict with, and then every url is dialled as its own relay.
+    //
+    // Split in two on purpose: this one only READS verdicts, on the cycle's
+    // critical path, and the monitor below EARNS them somewhere else.
     private val folding: AliasFolding?,
+    // Where the dialling half of that fold lives. Null exactly when [folding]
+    // is: same identity, same reason.
+    private val aliasMonitor: AliasMonitor?,
     // The Tor transport, when configured: what makes discovered .onion urls
     // dialable at all, and what decides whether they may be dialled today.
     private val tor: TorTransport?,
@@ -169,15 +176,28 @@ internal class DynamicSync(
                 // with. [RelayAliases.fold] is that one line — and dropping a
                 // url without moving its authors onto the survivor would stop
                 // asking for those authors entirely.
+                //
+                // READ ONLY here. Applying verdicts is a store query; EARNING
+                // them is a probe pass, and that belongs to [AliasMonitor] on
+                // its own clock — inline, it sat between "discovery finished"
+                // and the first downloaded byte on every cycle. The cost of the
+                // split is that a newly discovered url is dialled unfolded once,
+                // before the pass that measures it.
+                val candidates = discovered.map { it.url }
                 val relays =
                     folding
-                        ?.clean(
-                            label = stream.name,
-                            candidates = discovered.map { it.url },
-                            canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
-                            onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
-                        )?.let { RelayAliases.foldOnto(discovered, it.aliases) }
+                        ?.apply(candidates)
+                        ?.let { RelayAliases.foldOnto(discovered, it.aliases) }
                         ?: discovered
+                // What this stream would like measured before the next cycle.
+                // Non-blocking; the callbacks are this stream's own transport
+                // guard and ingest, since the monitor has neither.
+                aliasMonitor?.submit(
+                    label = stream.name,
+                    candidates = candidates,
+                    canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
+                    onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
+                )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {

@@ -32,20 +32,38 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
- * The fold, end to end: read back what the monitor already decided, probe the
- * urls nothing is known about, publish the new verdicts, and hand the fan-out
- * the urls actually worth dialling.
+ * The fold, in two halves that run at different times and cost different
+ * things.
  *
- * Runs once per cycle, before the fan-out and after discovery, because that is
- * the only point where the whole candidate set exists — a duplicate is not a
- * property of a url, it is a property of a url NEXT TO another one.
+ * [apply] READS. It loads the verdicts already written down, collapses the
+ * candidate set, and returns. One `#d` query per 500 urls, no sockets, no
+ * dialling — cheap enough to sit on the fan-out's critical path, which is where
+ * it has to be: a duplicate is not a property of a url, it is a property of a
+ * url NEXT TO another one, so the only place the fold can be applied is the
+ * point where the whole candidate set exists.
  *
- * The cost is bounded on both axes and deliberately so. [probesPerCycle] caps
- * how many fingerprints one cycle will take, so the first cycle after this
- * ships does not turn into a five-figure probe run; the rest are learned over
- * the cycles that follow, worst case first, and every verdict is written down
- * for [RelayAliasRecord.DEFAULT_TTL_SECONDS]. A steady-state cycle probes only
- * the urls that appeared since the last one.
+ * [measure] DIALS. It fingerprints the urls nothing is known about and publishes
+ * what it learns. This is the expensive half — 179 fingerprints took 1:19 in the
+ * Docker run, and a first pass over a fully polluted store is five figures of
+ * them — so it runs on [AliasMonitor]'s own schedule rather than in front of a
+ * sync cycle that is only trying to start downloading.
+ *
+ * The two communicate through the store and nothing else. [measure] signs
+ * kind-30166 records; [apply] reads them back on the next cycle. That is what
+ * makes the split safe across a restart, and what lets a second router share the
+ * work without either one knowing about the other.
+ *
+ * The cost of [measure] is bounded on both axes and deliberately so.
+ * [probesPerCycle] caps how many fingerprints one pass will take, so the first
+ * one after this ships does not turn into a single enormous probe run; the rest
+ * are learned over the passes that follow, worst case first, and every verdict
+ * is written down for [RelayAliasRecord.DEFAULT_TTL_SECONDS]. A steady-state
+ * pass probes only the urls that appeared since the last one.
+ *
+ * **The cost of the split is that folding now lags discovery by one pass.** A
+ * url discovered for the first time has no verdict when [apply] runs, so that
+ * cycle dials it; the fold takes hold on the next one. Paying that once per new
+ * url is the trade for never making a fan-out wait on a probe.
  */
 class AliasFolding(
     private val aliases: RelayAliases,
@@ -79,12 +97,35 @@ class AliasFolding(
     )
 
     /**
-     * Urls in, deduplicated urls out — the whole component in one call.
+     * Urls in, deduplicated urls out, WITHOUT dialling anything.
      *
-     * Reads back what was already measured, fingerprints what is still unknown
-     * within this cycle's budget, publishes what it learned, and returns the
-     * collapsed set. Safe to call with anything: a url whose host wears no
-     * other url is never probed, and a set of one is returned untouched.
+     * Reads back the verdicts already published — by an earlier pass of
+     * [measure], an earlier boot, or another router signing with the same key —
+     * and collapses the candidate set against them. Everything with no verdict
+     * yet comes back in [Cleaned.dial] and [Cleaned.unmeasured], because the
+     * only safe reading of "not measured" is "dial it as it stands".
+     *
+     * This is the half that runs in front of a fan-out. It must stay cheap: one
+     * `#d` query per 500 urls and no network at all.
+     */
+    suspend fun apply(candidates: List<NormalizedRelayUrl>): Cleaned {
+        if (candidates.size < 2) return Cleaned(candidates, emptyMap(), candidates)
+        // What a previous pass — this boot or another — already measured.
+        aliases.adopt(runCatching { record.load(candidates) }.getOrDefault(emptyMap()))
+        return collapse(candidates)
+    }
+
+    /**
+     * Fingerprint what [apply] could not answer, and publish what that proves.
+     *
+     * The dialling half, and the reason the two are separate: this walks up to
+     * [probesPerCycle] fingerprints, each of which is a paged websocket
+     * conversation with somebody else's relay. Returns how many new aliases it
+     * learned, so a caller can log a pass that did nothing differently from one
+     * that never ran.
+     *
+     * Safe to call with anything: a url whose host wears no other url is never
+     * probed, and a set of one returns immediately.
      *
      * [canDial] is the caller's own transport guard — the same one its fan-out
      * applies — so a probe never dials what the caller would refuse to.
@@ -92,16 +133,16 @@ class AliasFolding(
      * a fingerprint stops being wasted bandwidth. Discard it and the probe is
      * pure overhead, which is a choice a caller is allowed to make.
      */
-    suspend fun clean(
+    suspend fun measure(
         label: String,
         candidates: List<NormalizedRelayUrl>,
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
         onEvent: suspend (Event) -> Unit = {},
-    ): Cleaned {
-        if (candidates.size < 2) return Cleaned(candidates, emptyMap(), candidates)
+    ): Int {
+        if (candidates.size < 2) return 0
         val startedMs = System.currentTimeMillis()
 
-        // What a previous run — this boot or another — already measured.
+        // What a previous pass — this boot or another — already measured.
         val fromStore = runCatching { record.load(candidates) }.getOrDefault(emptyMap())
         aliases.adopt(fromStore)
 
@@ -200,17 +241,28 @@ class AliasFolding(
             }
         }
 
-        val dial = candidates.map { aliases.canonicalOf(it) }.distinct()
-        val map = candidates.filter { aliases.canonicalOf(it) != it }.associateWith { aliases.canonicalOf(it) }
-        val unmeasured = dial.filter { !aliases.measured(it) }
-        if (learned > 0 || dial.size < candidates.size) {
+        if (probed > 0 || learned > 0) {
+            val cleaned = collapse(candidates)
             System.err.println(
-                "router: $label folded ${candidates.size} url(s) onto ${dial.size} relay(s) " +
-                    "($learned new alias(es) from $probed fingerprint(s), ${aliases.size()} known, " +
-                    "${unmeasured.size} unmeasured) in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
+                "router: $label measured $probed fingerprint(s) ? $learned new alias(es), " +
+                    "${candidates.size} url(s) now fold onto ${cleaned.dial.size} relay(s) " +
+                    "(${aliases.size()} known, ${cleaned.unmeasured.size} unmeasured) " +
+                    "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
-        return Cleaned(dial, map, unmeasured)
+        return learned
+    }
+
+    /**
+     * The candidate set as the verdicts currently in memory see it.
+     *
+     * Pure — no store, no network — so both halves end the same way and the
+     * numbers [measure] logs are the numbers the next [apply] will produce.
+     */
+    private fun collapse(candidates: List<NormalizedRelayUrl>): Cleaned {
+        val dial = candidates.map { aliases.canonicalOf(it) }.distinct()
+        val map = candidates.filter { aliases.canonicalOf(it) != it }.associateWith { aliases.canonicalOf(it) }
+        return Cleaned(dial, map, dial.filter { !aliases.measured(it) })
     }
 
     companion object {
