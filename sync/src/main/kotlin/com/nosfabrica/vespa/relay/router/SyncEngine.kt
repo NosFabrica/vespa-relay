@@ -98,6 +98,15 @@ class SyncEngine(
     // the clearnet-only deployment, where discovery drops .onion urls and a
     // configured one is a boot error — never a silent timeout.
     torSettings: TorSettings? = null,
+    // Which of these ids the store already holds, so ingest can drop a
+    // duplicate BEFORE paying to verify it (see IngestPipeline.dropDuplicates).
+    // Not on IEventStore — SyncMain hands over the engine index's own
+    // existence check. Null just means every copy is verified, as before.
+    knownIds: (suspend (List<String>) -> Set<String>)? = null,
+    // The newest stored version of each (kind, author) address, so a stale
+    // replaceable is dropped before it is verified. Same reason as knownIds:
+    // the query is the store's, the pipeline takes a function.
+    newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -202,7 +211,7 @@ class SyncEngine(
 
     private val phases = StreamPhases()
     private val paging = PagingProgress()
-    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
+    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, knownIds, newestVersions)
 
     /**
      * The automatic window chunker. A peer's cap arrives through quartz —
@@ -424,6 +433,9 @@ class SyncEngine(
             // Where the minute actually went, per ingest stage — this is what
             // identified a projection read-back as 90% of ingest.
             IngestStats.statusLine().takeIf { it.isNotEmpty() }?.let { System.err.println("router: ingest $it") }
+            // Beside the stages, because a probe that gated itself off shows up
+            // there only as a stage that stopped appearing.
+            ingest.probeStatus().takeIf { it.isNotEmpty() }?.let { System.err.println(it) }
         }
     }
 

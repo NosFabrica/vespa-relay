@@ -116,7 +116,15 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     SyncMain.kt           entrypoint; env, store, engine, block
     SyncEngine.kt         wiring, live tails, health/stats lines
     PressurePoller.kt     polls the relay's /pressure into ServingPressure
-    IngestPipeline.kt     bounded queue -> verify -> batchInsert, poison isolation
+    IngestPipeline.kt     bounded queue -> dedup -> supersede -> verify ->
+                          batchInsert, poison isolation. Dropping FIRST is the
+                          point: a schnorr check is ~48us isolated and ~70-95us
+                          in situ, and a mirror is offered the same event once
+                          per relay holding it — and older VERSIONS of it from
+                          the relays that never got the newest
+    ProbeGate.kt          whether either drop-probe still earns its round trip,
+                          learned from what it drops. Replaces telling ingest
+                          which phase a stream is in
     BisectingInsert.kt    the batch-bisecting write
     StaticBackfill.kt     history catch-up for configured upstreams
     DynamicSync.kt        relaySource streams: discover, fan out, sync each relay
@@ -424,11 +432,45 @@ Reach for it first.
 - **`SYNC_STREAMS`** — run one stream alone, so a measurement isn't three
   streams competing for one socket budget, heap and ingest queue.
 - **`ingest stages`** — per-stage timing (`dedup`, `write`, `proj.fetch`,
-  `proj.write`, `versions`). This is what identified a projection read-back as
-  90% of ingest.
+  `proj.write`, `versions`, plus the router's own `verify` and `dedup.pre`).
+  This is what identified a projection read-back as 90% of ingest. Signature
+  verification was NOT on this line for as long as it existed, so "is verify
+  the limit?" was a question no instrument here could answer; anything else
+  added to the ingest path belongs on it for the same reason.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
+- **`IngestCostBench`** — what one arriving event costs ingest, split by the
+  verdict it ends on, end to end through the real pipeline against a real
+  Vespa. Skipped unless `BENCH_VESPA_URL` names a live engine:
+  `BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :sync:test
+  --tests '*IngestCostBench*' --rerun-tasks -i` (Gradle treats env vars as
+  invisible, so without `--rerun-tasks` a second run is silently UP-TO-DATE and
+  prints the FIRST run's numbers).
+
+  Measured on a 4-core box sharing its cores with the engine, 72k-doc corpus,
+  20k-event batches — the ratios are what travel, not the absolute times:
+
+  | arriving event | µs/event, probe off → on | where it goes |
+  |---|---:|---|
+  | fresh (written) | 508 | `write` 73%, `verify` 12% |
+  | duplicate | 66 → 17, 35 → 11 | `verify` was 2/3 of it; gone |
+  | stale replaceable | 130 → 40, 68 → 34 | `versions`+`verify` were 75%; gone |
+  | newer replaceable (written) | 778 | `write` 66%; the probe is ~6% overhead |
+
+  Each pair is interleaved, so a warming engine cannot be read as a difference
+  between arms. **Verification is not a rounding error** — 12% of a fresh batch,
+  two thirds of a duplicate one — and it costs ~70-95µs in situ against ~48µs
+  isolated, because the router competes with Vespa for the same cores.
+
+  The asymmetry is the thing to understand before touching either probe: on a
+  stream that mostly REJECTS, both probes are worth 2-4x; on one that mostly
+  ACCEPTS they are duplicated work the store will redo, and the version probe
+  costs ~6%. Which regime a deployment is in is not knowable here and changes
+  over a backfill's life, so `ProbeGate` measures it instead of anyone
+  declaring it. The break-evens its thresholds come from: ~35% duplicates for
+  the id probe (10-23µs/id against the ~44µs a drop saves), ~20% stale for the
+  version probe (21-29µs against ~110).
 
 ## Conventions
 
