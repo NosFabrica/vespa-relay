@@ -415,12 +415,28 @@ narrowed to a single kind, so any multi-kind filter can walk into it again.
 **One relay behind many urls.** Most relay software serves its websocket on
 every path, so `wss://nos.lol`, `wss://nos.lol/alpha` and
 `wss://nos.lol:443/beacon-glyph` are one server, and a relay list can mint them
-without limit. Measured from a production `stats.json`: **7,333 discovered urls
-stood for 1,147 distinct endpoints, and 81% of the fan-out was one host wearing
-a fabricated path** — `nostr.oxtr.dev` 55 times, `nostr.mom` 50, `nos.lol` 40.
-Weighted by how many lists name each relay, the top 50 were dialled **10.7x**
-over. That is where a 94%-duplicate download rate comes from: the same relay
-answering the same filter, once per url.
+without limit. From a production `stats.json`: **7,333 discovered urls, 81% of
+them one host wearing a fabricated path** — `nostr.oxtr.dev` 55 times,
+`nostr.mom` 50, `nos.lol` 40. Weighted by how many lists name each relay, the
+top 50 were dialled **10.7x** over. That is where a 94%-duplicate download rate
+comes from: the same relay answering the same filter, once per url.
+
+**What the fold actually recovers, fingerprinted end to end against all 513
+multi-url hosts (6,730 urls, 15.5 GB, ~1h):**
+
+| | |
+|---|---|
+| urls in the file | 7,333 |
+| …on hosts wearing one url (nothing to fold onto) | 603 |
+| …folded away | **5,514** |
+| **dials** | **1,819 — 4.03x, 75.2% removed** |
+
+Not the 6.57x an earlier revision of this file claimed. That number was
+`GROUP BY hostname` on the stats file — it assumed every url folds, and 672 of
+them cannot: their host never answers a probe, or the path is a genuinely
+different endpoint. **Do not restate the grouping as a result.** Anything here
+with a figure attached was measured; if you change the fold, re-measure rather
+than re-deriving.
 
 `HostStrikes` cannot see it — it evicts an authority that goes SILENT, and
 every one of these answers perfectly. The duplicate only exists in what comes
@@ -464,6 +480,38 @@ failures, both real:
   about the top of the window even from the same anchor. A minute back the
   window is settled, and it absorbs publishers whose clocks run slightly fast
   into the bargain. A minute-old identity is the same identity.
+
+**The leader is probed alone, first, and decides the filter for its group.** A
+bare `{limit, until}` is refused outright by a large minority — 88 of 513 hosts
+answered `CLOSED blocked: can't handle empty filters` — and because it is the
+LEADER going silent, the whole group was unfoldable: 1,572 urls. Falling back to
+`{"kinds":[1]}` recovered **963 of them (14.3 points, 3.09x → 5.53x on the
+multi-url set)**, 81 of the 86 recovered leaders needing it. Two urls
+fingerprinted through different filters are not comparable, so whatever the
+leader had to be asked is what its group is asked — which is also why the
+leader cannot be probed concurrently with its members. It doubles as the cheap
+exit: no usable leader print means `learn` can return nothing, so the members
+are never dialled at all.
+
+What the sweep says about the thresholds, over 4,551 folds: containment min
+0.500, p1 0.855, p10 0.987, median 1.000. Overwhelmingly bimodal — but there is
+a real tail of relays whose answers are not stable ACROSS CONNECTIONS
+(multiplexers, sharded backends) scoring 0.5–0.8 where a stable relay scores
+1.000; `www.nostr.ltd` lands on exactly 0.500 with a full 1,000-id window on
+both sides. So `minOverlap` is load-bearing for roughly 20–40 urls, not
+decorative. Below it sits `espelho.girino.org`, which is not measurable at all:
+the same url walked twice from the same anchor self-scores **0.435** (nos.lol
+scores 0.998, nostr.oxtr.dev 1.000). Its 17 urls can never fold, and the fold
+reports that identically to "this is a different relay" — safe, but only one of
+those is a correct conclusion. 1 host in 513; left uncoded deliberately.
+
+**No false positives in 4,551 folds.** Every path that looks like a real
+endpoint — `/relay`, `/invoices`, `/outbox`, `/inbox`, `/all`, `/v1`, `/v2`,
+`/nostr` — folded at 0.997–1.000, i.e. served an identical event set, so
+dialling both really was redundant. The fold decides per host from evidence
+rather than by path name: `relay.nosotros.app/inbox` folded at 1.000 while
+`haven.girino.org/inbox` scored 0.003 and was kept, and `nostr.ac` — 20 paths
+each serving different content — kept all 20.
 
 Guards worth knowing before you touch the thresholds:
 a url with **no** fingerprint is never folded (silence is not evidence — a
