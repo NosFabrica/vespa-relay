@@ -71,11 +71,11 @@ streams {
         # every entry a dial). The event is dropped WHOLE, never truncated, so
         # its author cannot choose what we see by ordering it.
         #
-        # Applies to PAGED selects only. A select that names a tag and binds
-        # nothing — like the NIP-65 one below — is answered by the store's tag
-        # projection, which has no event boundaries to count against; those are
-        # covered by the duplicate-url fold instead (see AGENTS.md, "One relay
-        # behind many urls").
+        # SETTING THIS GIVES UP THE TAG PROJECTION for this source: a per-event
+        # limit needs the event, and the projection returns values already
+        # flattened across every event it matched. Unset, discovery keeps the
+        # projection (a 2.6M-event scan became its walk). Duplicate urls are
+        # folded either way — see AGENTS.md, "One relay behind many urls".
         maxRelaysPerList = 50
         exclude = [
             "wss://purplepag.es",

@@ -239,11 +239,29 @@ class RelayAliases(
 
     companion object {
         /**
-         * The newest 1,000 events. Big enough that a busy relay's window still
-         * overlaps itself between two dials seconds apart, and small enough to
-         * be one REQ that ends at EOSE.
+         * The newest 500 events, because that is what relays actually serve.
+         *
+         * Measured against 60 live hosts: `limitation.max_limit` is 500 on
+         * exactly half of the ones that advertise it, and every relay that
+         * answered a `{"limit": 1000}` probe truncated it to 500 anyway. So a
+         * bigger ask buys no more evidence — and it costs the fold outright on
+         * a relay that ENFORCES its cap rather than truncating. purplepag.es
+         * answered 1,000 with `CLOSED blocked: limit too high: 1000 (max
+         * 500)`: no events, no fingerprint, and its aliases never fold.
+         *
+         * [AliasProbe] still drops to [FALLBACK_PROBE_LIMIT] on a silent
+         * relay, which covers the caps below this one.
          */
-        const val DEFAULT_PROBE_LIMIT = 1_000
+        const val DEFAULT_PROBE_LIMIT = 500
+
+        /**
+         * The second, humbler ask. Relays advertising a cap under
+         * [DEFAULT_PROBE_LIMIT] exist (one sampled host advertises 0), and a
+         * refusal is indistinguishable from silence at this layer — so the
+         * retry is unconditional on an empty first answer rather than parsed
+         * out of a CLOSED message. Still well over [DEFAULT_MIN_SAMPLE].
+         */
+        const val FALLBACK_PROBE_LIMIT = 100
 
         /** Below 20 shared ids a match is a coincidence, not a measurement. */
         const val DEFAULT_MIN_SAMPLE = 20

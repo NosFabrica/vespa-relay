@@ -444,16 +444,34 @@ being synced and get a signed answer), and it is read back on the next boot
 within a 30-day TTL. `AliasFolding` runs it once per cycle between discovery
 and fan-out, capped at 2,000 fingerprints per cycle, widest group first.
 
-Two things this does NOT do. `maxRelaysPerList` (config, per stream) drops an
-event that names more relays than a relay list plausibly holds — measured, 148
-pubkeys published a kind 10002 of 100–10,591 entries — but it reaches **paged
-selects only**: `distinctTagValues` hands `where` one tag at a time out of a set
-already flattened across every event, so a per-event limit cannot be expressed
-there, and a NIP-65 stream reading through the projection is protected by the
-fold instead. Closing that needs a store-side projection that yields values
-grouped by event. And redundant default ports (`:443` on `wss`, `:80` on `ws`)
-are folded by string in `RelayDiscovery.normalize` rather than by probe — that
-one needs no evidence.
+**Measured against live relays**, because the thresholds are only worth what the
+wire says. A `{"limit": 500}` probe: **85% of 60 sampled hosts answered**
+(median 1.85s, p90 2.4s, ~535KB, 500 events), 13% refuse a bare filter outright
+(`blocked: filters must specify at least one kind` — personal *haven* relays,
+where a path IS real, so declining to fold them is the right answer), 2% error.
+Containment between a host and its fabricated paths came out at **0.99–1.00**
+across nos.lol, nostr.mom, nostr.oxtr.dev and relay.primal.net — the fold is not
+a close call. `max_limit` is 500 on half the hosts that advertise one and every
+relay truncated a 1,000 ask to 500 anyway, so `DEFAULT_PROBE_LIMIT` is 500;
+asking for more only risks the outright refusal purplepag.es gives
+(`blocked: limit too high`), which is why `AliasProbe` retries once at 100.
+
+An end-to-end cycle against a seeded store: **22 discovered urls folded onto
+10** in 20s, 12 signed `redirect` records published, and on the next boot those
+12 were adopted from the store — `0 new alias(es) from 10 fingerprint(s), 12
+known` — so the probe really is a one-off per url, not a per-cycle cost.
+
+`maxRelaysPerList` (config, per stream) drops an event naming more relays than a
+relay list plausibly holds — measured, 148 pubkeys published a kind 10002 of
+100–10,591 entries. **Setting it gives up the tag projection for that source**: a
+per-event limit needs the event, and `distinctTagValues` returns values already
+flattened across every event it matched. That is not a corner case — the NIP-65
+select is exactly the shape the projection claims, so before this was wired the
+cap silently did nothing on the one stream it exists for (a live run discovered
+222 urls from a seeded 200-entry list with the cap set). It is opt-in for that
+reason; unset keeps the projection. Redundant default ports (`:443` on `wss`,
+`:80` on `ws`) are folded by string in `RelayDiscovery.normalize` rather than by
+probe — that one needs no evidence.
 
 ## Instrumentation — use it before theorising
 

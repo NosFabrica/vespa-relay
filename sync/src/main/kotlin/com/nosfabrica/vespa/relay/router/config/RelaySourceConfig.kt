@@ -76,9 +76,17 @@ data class RelayDiscoveryConfig(
      * a relay list, or null for no limit.
      *
      * A real NIP-65 outbox is single digits; the ones this exists for run to
-     * five. Applies to PAGED selects only — see the KNOWN GAP in
-     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.discover] for
-     * why the tag projection cannot enforce a per-event limit.
+     * five.
+     *
+     * SETTING THIS GIVES UP THE TAG PROJECTION for the whole source: a
+     * per-event limit needs the event, and the projection hands back values
+     * already flattened across every event it matched. That is a real cost on
+     * a large store — see
+     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.discover] —
+     * which is why it is opt-in and null by default. Duplicate urls are
+     * handled downstream by
+     * [com.nosfabrica.vespa.relay.router.discovery.RelayAliases] either way;
+     * this is only about refusing to read an implausible list at all.
      */
     val maxRelaysPerList: Int? = null,
 )

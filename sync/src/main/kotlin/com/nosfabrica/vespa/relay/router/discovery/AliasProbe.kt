@@ -44,22 +44,46 @@ import kotlinx.coroutines.CancellationException
  * pay for the verdict.
  */
 class AliasProbe(
-    private val client: NostrClient,
+    /**
+     * One ask, as a function, so the retry policy below can be tested without
+     * a relay. Returns null when the url could not be asked at all.
+     */
+    private val fetch: suspend (NormalizedRelayUrl, Int) -> List<Event>?,
     private val limit: Int,
-    private val timeoutMs: Long,
+    /**
+     * What to ask for when [limit] came back with nothing. A relay may cap
+     * lower than we asked and REFUSE rather than truncate — measured,
+     * purplepag.es answers `{"limit": 1000}` with `CLOSED blocked: limit too
+     * high` — and at this layer that is indistinguishable from silence.
+     */
+    private val fallbackLimit: Int = RelayAliases.FALLBACK_PROBE_LIMIT,
 ) {
     /**
      * The ids at [url], or null when it could not be asked. Null and empty are
      * different answers and must stay that way: empty is a relay that holds
      * nothing (and is therefore no evidence of anything), null is a relay that
      * never spoke, and neither may be folded.
+     *
+     * A first ask that yields nothing is retried once, smaller. Two dials is
+     * the ceiling: a genuinely empty relay pays the extra one, once, and only
+     * while it is still in a group with no verdict.
      */
     suspend fun fingerprint(
         url: NormalizedRelayUrl,
         onEvent: suspend (Event) -> Unit,
+    ): Set<String>? {
+        val first = ask(url, limit, onEvent)
+        if (!first.isNullOrEmpty() || fallbackLimit >= limit) return first
+        return ask(url, fallbackLimit, onEvent) ?: first
+    }
+
+    private suspend fun ask(
+        url: NormalizedRelayUrl,
+        limit: Int,
+        onEvent: suspend (Event) -> Unit,
     ): Set<String>? =
         try {
-            val events = client.fetchAll(url, Filter(limit = limit), timeoutMs)
+            val events = fetch(url, limit) ?: return null
             for (event in events) onEvent(event)
             events.mapTo(HashSet()) { it.id }
         } catch (e: CancellationException) {
@@ -71,4 +95,17 @@ class AliasProbe(
             // an unprobed one is "dial it normally".
             null
         }
+
+    companion object {
+        /** The live wiring: one bare REQ per ask, over the router's own client. */
+        fun over(
+            client: NostrClient,
+            limit: Int,
+            timeoutMs: Long,
+        ): AliasProbe =
+            AliasProbe(
+                fetch = { url, n -> client.fetchAll(url, Filter(limit = n), timeoutMs) },
+                limit = limit,
+            )
+    }
 }

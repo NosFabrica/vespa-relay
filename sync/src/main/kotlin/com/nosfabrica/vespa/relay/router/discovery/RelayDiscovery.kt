@@ -99,17 +99,22 @@ object RelayDiscovery {
             // time it returns.
             val named = source.selects.filter { it.tag != null && it.bindings.isEmpty() }
             val anyTag = source.selects.filter { it.tag == null || it.bindings.isNotEmpty() }
-            val semantics = (store as? VespaEventStore)?.store
-            // KNOWN GAP: [RelayDiscoveryConfig.maxRelaysPerList] cannot reach
-            // the projection. It is a per-EVENT limit and `distinctTagValues`
-            // hands `where` one tag at a time out of a set already flattened
-            // across every matching event — by the time a value arrives, the
-            // list it came from no longer exists. The cap therefore applies to
-            // paged selects only; a NIP-65 stream reads its relays through the
-            // projection and is capped by [RelayAliases] downstream instead,
-            // which folds the duplicates a bulk list mints rather than
-            // refusing to read it. Closing this needs the store to expose a
-            // projection that yields values grouped by event.
+            // [RelayDiscoveryConfig.maxRelaysPerList] is a per-EVENT limit, and
+            // `distinctTagValues` hands `where` one tag at a time out of a set
+            // already flattened across every matching event — by the time a
+            // value arrives, the list it came from no longer exists. So a
+            // configured cap gives up the projection and pages, which is the
+            // only place the event is still whole.
+            //
+            // Measured, and not a corner case: on a real store the NIP-65
+            // select (`tag = "r"`, no bindings) is exactly the shape the
+            // projection claims, so without this the cap silently did nothing
+            // on the one stream it exists for — a live run discovered 222 urls
+            // from a seeded 200-entry bulk list with `maxRelaysPerList = 50`
+            // set. It is opt-in for that reason: leaving it unset keeps the
+            // projection (a 2.6M-event scan became its walk), and setting it
+            // buys the cap at that cost, knowingly.
+            val semantics = (store as? VespaEventStore)?.store?.takeIf { dynamic.maxRelaysPerList == null }
             if (semantics != null) {
                 for (select in named) {
                     // A select naming a kind narrows the scan to it; the
