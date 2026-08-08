@@ -15,9 +15,40 @@ app = "0.1.0"
 # So on any bump of EITHER pin, check the direction. The forces stay regardless:
 # they are per-module (:common, :relay, :sync), a new module needs its own, and
 # they are what stops a store bump from silently dragging its own quartz in.
-quartz = "35f96a936d"
+#
+# f4640b6ea1 = amethyst PR #3877, which is the reason this pin moved: it is the
+# upstream half of the sync-state nesting in :sync. SyncCoverage keyed its bands
+# by "$url $filterJson" and handed that INTERNAL key out through export()/
+# restore(); the key is a typed `SyncCoverage.BandKey(relay, filter)` now, with
+# encode()/decode() on the class for a file that still wants one joined key per
+# line. `SyncBands` here was splitting that string at the first space to nest its
+# own file by stream/filter/relay, and now asks for the halves instead.
+#
+# SOURCE-BREAKING for callers of export()/restore(), which is this repo and geode
+# and nothing else. The store does not call SyncCoverage at all (its own pin
+# comment says grep finds no reference), so the bump reaches us only through
+# `SyncBands`. The store pin below moves to the commit that pins the SAME quartz,
+# so the at-or-ahead rule above is satisfied by equality again rather than by
+# luck.
+quartz = "f4640b6ea1"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-# 98972c31c2 = store main through PR #61. Carries everything 3efbf16e69 had —
+#
+# a308d6723f = store main through PR #62, whose WHOLE range is that quartz bump:
+# two commits, one of them the merge, and no source change in any store module.
+# It is pinned here for the direction rule above — taking the new quartz without
+# it would leave the store compiled against the old SyncCoverage — not for
+# anything the store itself gained. Its `IEventStore`, `SQLiteEventStore`,
+# `IndexableFields` and `SearchFieldExtractor` are byte-identical to 98972c31c2,
+# so the store contract, filter semantics and searchable-kind table carry over
+# untouched.
+#
+# The integration gate is run against it anyway, per AGENTS.md: a store whose
+# only change is a dependency is exactly the shape of bump the relay's own
+# InMemoryEventIndex tests cannot see through. What that run found is in the
+# commit that made this bump, not here — an outcome is a point in time and a
+# comment is not.
+#
+# Previously 98972c31c2 = store main through PR #61. Carried everything 3efbf16e69 had —
 # #56's coverage guard (a response judged by Vespa's own isDegraded(), not by
 # its `full`, which disagrees in BOTH directions), #57's quartz alignment, and
 # WriterTopology on open(), which this deployment needs because the guard-owner
@@ -35,15 +66,13 @@ quartz = "35f96a936d"
 # Ours redeploys the bundled package on boot, so a Vespa old enough to still
 # want that override would fail the deploy rather than warn.
 #
-# Its own quartz pin is still 35f96a936d, so the direction above is satisfied by
-# equality, not by luck.
-#
 # VERIFY the hash resolved rather than reading this line: Gradle breaks a version
 # conflict lexicographically, so a hash that sorts below one dragged in
-# transitively loses silently and the bump does nothing. This one sorts ABOVE
-# the hash it replaces ('9' > '3'), which is the safe direction, but check.
+# transitively loses silently and the bump does nothing. Both of this bump's
+# hashes sort ABOVE the ones they replace — 'a308…' > '98972…' and 'f464…' >
+# '35f9…' — which is the safe direction, but check.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
-vespaEventStore = "98972c31c2"
+vespaEventStore = "a308d6723f"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

@@ -79,11 +79,12 @@ import java.util.concurrent.ConcurrentHashMap
  * { "<stream>": { "<filter>": { "wss://relay/": { "min": …, "max": …, "complete": …, "fullAt": …, "spans": {…} } } } }
  * ```
  *
- * The two inner levels are quartz's own key taken apart: it builds
- * `"<relay-url> <filter.toJson()>"`, so splitting at the FIRST space and
- * rejoining with one round-trips exactly, whatever quartz does inside. A
- * normalized relay url can contain neither a space nor a pipe — `RelayDiscovery`
- * rejects any url with whitespace before it is ever dialled.
+ * The two inner levels are the two halves of quartz's [SyncCoverage.BandKey],
+ * which `export`/`restore` hand over as a pair. They used to arrive joined —
+ * `"<relay-url> <filter.toJson()>"` — and this class split them at the first
+ * space, on a separator it could only learn by reading `SyncCoverage`. That is
+ * upstream's job now (amethyst#3877), which is why nothing here knows how a key
+ * is spelled any more.
  */
 class SyncBands(
     private val file: File?,
@@ -214,8 +215,8 @@ class SyncBands(
         // read, or one already drained. Both checks come before the key is
         // built, because building it renders the filter.
         if (preStream.isEmpty() || url.url !in preStreamRelays) return
-        val key = "${url.url} ${filter.toJson()}"
-        val raw = preStream.remove(key) ?: return
+        val key = SyncCoverage.BandKey(url.url, filter.toJson())
+        val raw = preStream.remove(key.encode()) ?: return
         bandOf(raw)?.let {
             coverage(stream).restore(mapOf(key to it))
             dirty = true
@@ -278,17 +279,21 @@ class SyncBands(
                 // the way down. A filter can never be named `min` — it is
                 // serialised JSON and starts with `{`.
                 if (o["min"] != null) {
+                    // Decoded by the class that mints the key, so even the shim
+                    // no longer spells the separator out. A key that names no
+                    // pair is not one any ask can ever claim, so it is dropped
+                    // rather than held for a relay nothing can look up.
+                    val key = SyncCoverage.BandKey.decode(streamOrFlatKey) ?: return@forEach
                     preStream[streamOrFlatKey] = o
-                    val at = streamOrFlatKey.indexOf(' ')
-                    if (at > 0) preStreamRelays += streamOrFlatKey.substring(0, at)
+                    preStreamRelays += key.relay
                     return@forEach
                 }
-                val restored = LinkedHashMap<String, SyncCoverage.Band>()
+                val restored = LinkedHashMap<SyncCoverage.BandKey, SyncCoverage.Band>()
                 o.forEach { (filter, byRelay) ->
                     byRelay.jsonObject.forEach { (relay, band) ->
-                        // Rejoined into quartz's own key, which is where the
-                        // two inner levels came from.
-                        bandOf(band.jsonObject)?.let { restored["$relay $filter"] = it }
+                        // Straight back into the pair, which is what the two
+                        // inner levels have always been.
+                        bandOf(band.jsonObject)?.let { restored[SyncCoverage.BandKey(relay, filter)] = it }
                     }
                 }
                 if (restored.isNotEmpty()) coverage(streamOrFlatKey).restore(restored)
@@ -371,15 +376,10 @@ class SyncBands(
             val snapshot: JsonObject =
                 buildJsonObject {
                     streams.forEach { (stream, coverage) ->
-                        // quartz's key taken apart into the two inner levels.
-                        // A key with no space is not one this build wrote and
-                        // is dropped rather than nested under a filter of "".
+                        // The key's own two halves become the two inner levels.
                         val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
                         coverage.export().forEach { (k, band) ->
-                            val at = k.indexOf(' ')
-                            if (at <= 0 || at == k.length - 1) return@forEach
-                            byFilter
-                                .getOrPut(k.substring(at + 1)) { LinkedHashMap() }[k.substring(0, at)] = band
+                            byFilter.getOrPut(k.filter) { LinkedHashMap() }[k.relay] = band
                         }
                         // A stream that has only ASKED holds no bands — its
                         // coverage exists because `legs()` created it — and an
