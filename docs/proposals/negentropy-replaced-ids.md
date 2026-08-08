@@ -153,13 +153,99 @@ and relays that provably will not heal.
 
 Two halves:
 
-- **(A)** record `(created_at, id)` for every event the store rejected as
-  *permanently unstorable*;
-- **(B)** merge that set into the local side of **down**-direction reconciles,
-  and only those.
+- **(A)** record every event the store rejected as *permanently unstorable*;
+- **(B)** consult that record on the **down** path so the event is not fetched
+  again.
 
-Once our side claims the id, the difference is empty and it never crosses the
-wire again. Zero bytes — not "cheaper bytes".
+Half A is the same question either way — see the table below. Half B has two
+implementations, and they sit at **different points in the flow**, which is what
+makes them so different in cost:
+
+|  | 3a — suppress the fetch | 3b — claim the id |
+|---|---|---|
+| structure | Bloom filter, membership test only | exact `(created_at, id)` set |
+| where it hooks | after the reconcile names `needIds`, before the REQ that fetches them | inside the local id set the reconcile compares |
+| stops | the **event bodies** | the difference itself |
+| still pays | bisection round trips + the 32-byte ids | nothing |
+| size | ~4–6 B/id | ~40 B/id |
+| risk | silent false-positive loss | none |
+| touches the id set | **no** | yes — and that is where all of Half B's hazards come from |
+
+**3a gets most of the win for a tenth of the cost, and none of the danger.**
+Take it first; 3b is an upgrade, not the plan.
+
+#### 3a — the Bloom filter, in detail
+
+The hook point is the thing to see. A reconcile produces the diff *before*
+anything is downloaded — `DeleteMissingSync.kt:126` shows the shape:
+`diff.needIds` in hand, then `fetchAll(Filter(ids = chunk))` to get the bodies.
+Filtering `needIds` through a membership test there needs no enumeration and no
+ordering, which is exactly what a Bloom filter can do.
+
+What that saves: a kind-0 profile is several hundred bytes to a couple of KB; its
+id is 32. So suppressing the fetch avoids **~95% of the transfer** while the
+reconcile still pays to identify the ids. It also avoids everything downstream of
+the download, which is not a rounding error — `verify()` per event is the ingest
+pipeline's dominant CPU cost, and ingest yields to `ServingPressure`, so wasted
+ingest is paid for in client search latency.
+
+**Concrete properties that make this small:**
+
+- **No hashing.** An event id is already a 32-byte cryptographic hash, uniformly
+  distributed. Slice `k` disjoint bit-fields straight out of it — eight 32-bit
+  indices are free, addressing up to a 512 MB filter. There is no hash function
+  to choose, tune, or get wrong.
+- **A fixed-size mmap'd file.** No sort-merge, no LSM, no eviction policy, no
+  ordering invariant, no atomic-rename dance. Set bits in a bit array. A corrupt
+  file costs downloads, not correctness — checksum it and rebuild on mismatch.
+- **Concurrent writers are safe without locking, and this is the good part.**
+  Setting a bit is idempotent and monotonic. Two processes mmap'ing the same file
+  can both write with no coordination; the only race is a lost byte-level
+  read-modify-write, and a lost bit-set is a *missed suppression* — it degrades
+  to the status quo, never to a wrong answer. **That dissolves the objection that
+  killed the state file for 3b**: the relay process can record its own refusals
+  into the same file, so a client publishing a new profile no longer leaves the
+  router blind to the id it superseded.
+- **Sizing.** ~3.6 B/id at p=10⁻⁶, ~5.4 B/id at p=10⁻⁹ — call it 10× smaller
+  than 3b. Use a *blocked* layout so a lookup touches one or two cache lines
+  rather than `k` random pages in a half-gigabyte mapping.
+
+**The one real danger: a false positive is silent, permanent data loss.** We skip
+an event we actually wanted, nothing logs it, and the same id hits the same bits
+next cycle, so it never self-corrects. Three things follow, and the third is
+mandatory:
+
+1. **Size `p` against the backfill, not the steady state.** Expected loss per
+   cycle is `|genuinely wanted| × p`. At p=10⁻⁹, a 100M-event backfill loses
+   ~0.1 events. At p=10⁻², it loses a million.
+2. **Rotate rather than delete.** Bloom filters cannot remove entries, which
+   matters for "the winner was deleted, so its losers are wanted again". Two
+   generations, retire the older one on a slow cadence: a false positive gets a
+   second chance when the generation that produced it retires, at the price of
+   re-paying the true positives once per rotation. That is a knob, and a
+   quarterly rotation still avoids ~99% of the cycles.
+3. **Count the inserts and fail open past the design capacity.** This is
+   non-negotiable. A Bloom filter sized for 50M holding 500M does not degrade
+   gracefully — p goes from 10⁻⁹ to double digits and it starts discarding a
+   sixth of everything, invisibly. Tracking `n` and disabling the filter once it
+   is over budget turns the catastrophe into "the router got slower", which is a
+   thing an operator can see and fix.
+
+**What it needs from quartz.** On the main sweep path the id-to-event fetch
+happens *inside* `negentropySync` — the signature `WindowSync.reconcile` mirrors
+(`localIndex`, `targetWindow`, `onProgress`, `onUnreconcilableWindow`,
+`onEvent`) has no hook between naming an id and fetching it. So this wants one
+upstream parameter: a `wantId: (String) -> Boolean` predicate consulted before
+the REQ. That is a much smaller upstream ask than anything else in this document,
+and AGENTS.md is explicit that reconcile behaviour is fixed upstream rather than
+forked here. `DeleteMissingSync` can do it locally today with no quartz change at
+all, which makes it the natural place to prove the idea.
+
+**What 3a does not do.** It does not make the cycle *converge* — the reconcile
+still bisects down to isolate those ids on every pass, so the protocol chatter
+and the id transfer remain, and they grow with the size of the permanent
+difference. Only 3b removes that, by making the sets actually match. Measure the
+residual after 3a before deciding 3b is worth a store release.
 
 #### How it composes with Fix 2
 
@@ -209,6 +295,11 @@ the store's snapshot.
 
 ## Half B — where the merge goes, and the three places it must not
 
+**This whole section is 3b's problem, and 3a does not have it.** A membership
+test applied to `needIds` never enters the local id set, so none of the sites
+below can see it and none of the hazards arise. That is most of why 3a is worth
+taking first. Read on when the exact set is on the table.
+
 Five call sites hold a local id set, and they mean different things:
 
 | site | merge? | consequence of getting it wrong |
@@ -229,6 +320,11 @@ An id in our set that we cannot produce is a promise to the peer, and the two
 rows above are what collects on it. Only real ids we really refused.
 
 ## Where the tombstone lives
+
+**For 3a the answer is short**: one fixed-size mmap'd bit array on the shared
+`/var/lib/vespa-relay` mount, written by both processes without locking, for the
+reasons under 3a above. The rest of this section is about **3b**, where the
+`created_at` has to be exact and the storage question gets hard.
 
 Two constraints decide this, and both point the same way.
 
@@ -371,12 +467,19 @@ Nothing above should be built on an estimate.
    prize; a first-time `REPLACED` is not recoverable by any of this.
 
 Two numbers — *"replaced x N, of which N′ we had already rejected in an earlier
-cycle"* — decide whether the table is worth a gigabyte or is a rounding error.
+cycle"* — decide whether anything past step 2 is worth building, and how big to
+size the filter that step 3 ships.
 
-That same filter is a usable **tier 0** on its own: a positive lookup skips
-`verify()` and the store round trip. It cannot feed negentropy — it cannot
-enumerate, and `entriesFor` must — so it saves CPU and ingest pressure but not a
-single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
+**The instrument and the fix are the same object.** The filter that counts
+repeats *is* 3a; the only difference is whether its answer is consulted before
+the fetch or merely tallied. So step 1 should build it at the size 3a will need
+rather than as a throwaway — measure with `p` already low, and it graduates into
+the fix by wiring one predicate.
+
+(An earlier draft of this document dismissed a Bloom filter as saving "not a
+single byte of bandwidth". That was reasoning about a lookup on the *ingest*
+path, after the download had already happened. Moving the lookup to `needIds`,
+before the fetch, is what turns it from a CPU saving into the main fix.)
 
 ## Rollout
 
@@ -387,7 +490,16 @@ single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
    off, deduped per address per cycle, with a write-closed strike rule. This is
    the population where it converges, and it is a bounded blast radius to learn
    the acceptance rate in.
-3. If the repeat count *after* step 2 still justifies it: the `refused` doc type
+3. **Fix 3a** — wire the Step 0 filter into `DeleteMissingSync`'s `needIds`
+   first, which needs no upstream change and proves the suppression on one path.
+   Then the `wantId` predicate in quartz for the main sweep. Ship it with the
+   insert counter and the fail-open ceiling from day one, and log the suppression
+   count per cycle — a filter silently doing nothing and a filter silently
+   eating everything look identical without it.
+4. Measure the **residual**: with the bodies suppressed, how much is the
+   un-converged reconcile still costing in round trips and id transfer? That
+   number, and nothing else, justifies step 5.
+5. If it does: **Fix 3b**, the `refused` doc type
    in **vespa-eventstore**, written at each decision point, populated only for
    relays that failed to heal. Read back through an opt-in argument —
    `snapshotIdsForNegentropy(…, includeRefused = false)` — never a blanket
@@ -396,8 +508,9 @@ single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
    `EXPIRED` reasoning for the serving direction. Budget a store release, a pin
    bump, and the JitPack lexicographic trap AGENTS.md warns about; the schema
    itself needs no migration step, since `SchemaDeploy` runs every boot.
-4. Chart it on the Sync coverage card, beside the bands and sweeps.
-5. Extend Fix 2 to the dynamic fan-out only if step 2's acceptance rate is high
+6. Chart the suppression count and the filter's fill ratio on the Sync coverage
+   card, beside the bands and sweeps.
+7. Extend Fix 2 to the dynamic fan-out only if step 2's acceptance rate is high
    enough to be worth 16k unsolicited publishes. It probably is not.
 
 ## Open questions
@@ -425,6 +538,11 @@ single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
   the new one", and a vanish request (kind 62) is precisely an author saying
   otherwise. The kind-62 push and the profile push may not deserve the same
   default.
+- **Does 3a want to be per-relay?** One global filter says "nobody should send us
+  this". A per-relay filter would let a relay that healed drop out of
+  suppression, and keeps one relay's junk from suppressing another's. It also
+  multiplies the storage by the fan-out, which is unaffordable at 16k relays.
+  Global is almost certainly right; worth stating rather than assuming.
 - **What does a push cost against a relay that ignores it?** An unanswered
   `EVENT` is cheap per message, but the strike rule needs a definition of
   "unaccepted" that works when a relay simply never sends `OK`. Reuse
