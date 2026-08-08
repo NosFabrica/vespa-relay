@@ -228,31 +228,118 @@ So Half B is a **decorator around the local index**, not a store change:
 An id in our set that we cannot produce is a promise to the peer, and the two
 rows above are what collects on it. Only real ids we really refused.
 
-## Representation and size
+## Where the tombstone lives
 
-This is where the proposal lives or dies. Per entry: a 32-byte id and a
-timestamp.
+Two constraints decide this, and both point the same way.
 
-- **`HashMap<String, Long>`** — ~150–200 B/entry with the hex string and boxing.
-  10M entries ≈ 2 GB heap. Not viable in a process that already serialises
-  snapshots behind a semaphore for exactly this reason (`NegentropyPager`'s
-  header: 14.9M ids for one stream, three concurrent streams heading for ~9 GiB).
-- **Packed, sorted by `created_at`** — parallel `long[]` and a raw 32-B-per-id
-  `byte[]` (raw, not hex). **40 B/entry**: 10M ≈ 400 MB, 50M ≈ 2 GB. A range
-  query is two binary searches, which is *exactly* the shape `entriesFor(window)`
-  wants, and every window is already time-bounded.
-- **The same layout in a `MappedByteBuffer`** under the shared
-  `/var/lib/vespa-relay` mount — OS page cache instead of heap, survives restart
-  for free, and the relay could chart it the way it already reads the band and
-  sweep files for the Sync coverage card (`SyncCoverageReport`).
+**The `created_at` must be exact, and it is available only at the moment of the
+decision.** Negentropy is a set of `(created_at, id)` pairs sorted by time; a
+pair filed under the wrong timestamp lands in a different bucket than the peer's
+copy, so the range fingerprints disagree, the session bisects down, and the peer
+concludes *both* that we lack the event (it sends it anyway) and that we hold
+something it lacks (we start claiming an id we cannot produce — the
+`UpstreamPush` / `DeleteMissingSync` hazard from Half B). A wrong timestamp is
+worse than no row. So the timestamp cannot be derived after the fact; it has to
+be captured where the refusal happens.
 
-Recommend the mmap'd packed layout. Writes are append-only into a small on-heap
-buffer, sort-merged into the packed region by a flusher on `SweepState`'s
-cadence.
+**Every refusal happens inside the store, and in BOTH processes.** `REPLACED` is
+decided in `BulkRecordInsert`'s supersession stage; `DELETED` / `VANISHED` in
+`Deletions.isDeleted` / `isVanished`; the sweep of already-stored victims in
+`Deletions.applyDeletion`, which resolves the doomed docs and therefore holds
+their `created_at`. The relay process makes all of these too — a client
+publishing a new profile supersedes an old version right there.
 
-**Persist it as binary, not JSON.** `SweepState` and `SyncBands` are
-pretty-printed because a human is meant to read them; 10M hex ids in pretty JSON
-is a ~700 MB file nobody will ever open.
+### The four candidate homes
+
+**1. A file in `:sync`, beside `SyncBands` and `SweepState`.** What the first
+draft of this proposal assumed. Ships without a store release, matches an
+existing precedent and lifecycle.
+
+It has a hole that only shows up on the second reading: it can only record what
+the *sync* process refuses. A profile a client pushes to the **relay** supersedes
+an old version whose id the router will then never learn — and the router is
+precisely who will be offered that id, by every upstream, forever. For a relay
+with its own users that is not an edge case. Same argument as `SHARED_STRICT` in
+AGENTS.md: per-process memory of a store-wide decision is wrong here, and for
+the same reason.
+
+Keep it as a throwaway prototype for [Step 0](#step-0-measure-first). Do not
+ship it as the destination.
+
+**2. A third Vespa document type — recommended.** There is already precedent:
+`reputation.sd` sits beside `event.sd` as a non-event doc type, and
+`SchemaDeploy` redeploys the bundled package on every boot in both processes, so
+adding a schema costs no migration step.
+
+```
+schema refused {
+    document refused {
+        field id         type string { indexing: attribute | summary
+                                       attribute: fast-search
+                                       match { cased } dictionary { hash } }
+        field created_at type long   { indexing: attribute | summary
+                                       attribute: fast-search }
+        field kind       type int    { indexing: attribute | summary }
+        field reason     type int    { indexing: attribute | summary }
+    }
+}
+```
+
+Four properties that the file cannot match:
+
+- **Idempotent by construction.** The Vespa document id *is* the event id, so
+  re-refusing the same event is an overwriting put. No dedup structure, no
+  growth from repeats, no "have I already recorded this" lookup on the ingest
+  hot path.
+- **It costs no router heap.** The mmap'd file below was competing for the
+  gigabytes `NegentropyPager`'s header already names as the router's scarcest
+  resource (14.9M ids for one stream, three concurrent heading for ~9 GiB).
+  This lives on the disk already sized for the corpus.
+- **The read path nearly exists.** `snapshotIdsForNegentropy` already walks
+  `event` via `visitIds` with a `created_at` fieldSet and a page loop, and
+  already carries the cross-source dedup set for multi-filter snapshots. A
+  parallel visit over `refused` on the same range, unioned, is a close copy of
+  code that is there.
+- **Pruning is declarative.** The time-floor bound under
+  [Bounding it](#bounding-it--the-part-that-decides-whether-this-is-safe-to-ship)
+  becomes a Vespa garbage-collection selection on the doc type instead of a
+  hand-rolled eviction policy with its own bugs.
+
+Declare it a **regular** doc type, not `global` like `reputation`. Global
+replicates to every content node and is held in memory — right at roster scale
+(10^5..10^6 pubkeys), wrong for a set that is a multiple of the event corpus.
+
+**3. A `superseded` array on the surviving event doc — rejected, but it is the
+idea that looks best on a whiteboard.** Self-cleaning (the rows go when the
+winner goes), naturally per-address, no new doc type. It breaks on the read
+path: a superseded version's `created_at` is not the winner's, so enumeration by
+window would need `superseded_at` as an `array<long>` matched by range — which
+recalls the whole winner doc if *any* element is in range, then filters
+client-side. Every window over-fetches, and one address's pairs scatter across
+many windows. It also only covers `REPLACED`: a NIP-09-deleted regular event has
+no surviving doc to hang anything on.
+
+Worth stealing one property from it, though: **deleting the winner should
+release its rows.** Under design 2 that has to be done on purpose — see the
+first open question.
+
+**4. "The kind 5 already is the tombstone" — does not work, and the reason is
+the useful part.** For `DELETED` the target ids are already stored, in the kind
+5's `e` tags, at zero extra cost. But NIP-09 records no `created_at` for its
+targets, and per the first constraint above a proxy (the kind 5's own timestamp)
+is actively harmful rather than approximate. Nothing derivable substitutes for
+capturing the real one.
+
+### If it does have to be a file first
+
+Packed, sorted by `created_at`: parallel `long[]` plus a raw 32-B-per-id
+`byte[]` — raw, not hex — for **40 B/entry**, in a `MappedByteBuffer` under the
+shared `/var/lib/vespa-relay` mount so it costs page cache rather than heap. A
+range query is two binary searches, which is exactly the shape
+`entriesFor(window)` wants. Append into a small on-heap buffer, sort-merge on
+`SweepState`'s cadence. **Binary, not JSON** — `SyncBands` and `SweepState` are
+pretty-printed because a human reads them; 10M hex ids pretty-printed is a
+~700 MB file nobody will ever open.
 
 ## Bounding it — the part that decides whether this is safe to ship
 
@@ -300,21 +387,18 @@ single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
    off, deduped per address per cycle, with a write-closed strike rule. This is
    the population where it converges, and it is a bounded blast radius to learn
    the acceptance rate in.
-3. If the repeat count *after* step 2 still justifies it: a `ReplacedIds` table
-   in `:sync`, packed and mmap'd behind `SYNC_REPLACED_IDS_FILE`, **off when
-   unset**, merged only at `StoreWindowIndex` and `Snapshots`, and populated only
-   for relays that failed to heal.
-4. Chart it on the Sync coverage card, beside the bands and sweeps it resembles.
+3. If the repeat count *after* step 2 still justifies it: the `refused` doc type
+   in **vespa-eventstore**, written at each decision point, populated only for
+   relays that failed to heal. Read back through an opt-in argument —
+   `snapshotIdsForNegentropy(…, includeRefused = false)` — never a blanket
+   change, because a blanket change breaks `UpstreamPush` and `DeleteMissingSync`
+   in the two ways tabulated in Half B, and contradicts the store's own
+   `EXPIRED` reasoning for the serving direction. Budget a store release, a pin
+   bump, and the JitPack lexicographic trap AGENTS.md warns about; the schema
+   itself needs no migration step, since `SchemaDeploy` runs every boot.
+4. Chart it on the Sync coverage card, beside the bands and sweeps.
 5. Extend Fix 2 to the dynamic fan-out only if step 2's acceptance rate is high
    enough to be worth 16k unsolicited publishes. It probably is not.
-6. **Only then** consider moving the table into vespa-eventstore. It belongs there —
-   the store is what decided `REPLACED`, and the relay serving negentropy to
-   *downstream clients* has the identical bug mirrored (a client re-offers its
-   old profile version forever). But it must arrive as an opt-in argument
-   (`snapshotIdsForNegentropy(…, includeRefused = false)`), never a blanket
-   change: a blanket change breaks `UpstreamPush` and `DeleteMissingSync` in the
-   two ways tabulated above. And it costs a store release plus a pin bump, with
-   the JitPack lexicographic trap AGENTS.md warns about.
 
 ## Open questions
 
@@ -322,7 +406,11 @@ single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
   deleted (NIP-09 on the newer event, a `deleteMissing` retraction, a kind-62
   vanish). Under a permanent row we would never re-fetch it. I think that is
   correct Nostr semantics — a superseded version is not owed resurrection — but
-  it is a behaviour change and should be stated, not discovered.
+  it is a behaviour change and should be stated, not discovered. Candidate 3
+  gets the other answer for free by hanging the rows on the winner; under the
+  recommended candidate 2, releasing them means carrying the winning address on
+  each row and sweeping by address when a winner is removed. Decide which
+  behaviour is wanted *before* choosing whether to carry that field.
 - **Does the row survive a filter edit?** Sync bands are deliberately keyed by
   the whole filter so an edit forces a re-walk. These rows are keyed by *id* and
   would survive it. That is probably right (the store's verdict didn't change),
