@@ -110,17 +110,98 @@ class RelayAliasRecord(
         sampled: Int,
         shared: Int,
     ): Event? {
+        val evidence =
+            if (sampled > 0) {
+                "$sampled newest events, $shared shared with ${canonical.url}"
+            } else {
+                "restored, last measured against ${canonical.url}"
+            }
+        return edit(alias, owned = setOf(REDIRECT_TAG), add = listOf(arrayOf(REDIRECT_TAG, canonical.url, evidence)))
+    }
+
+    /**
+     * Re-publish verdicts this process still holds whose stored record no
+     * longer carries them.
+     *
+     * The other half of the shared-address problem, and the half this repo
+     * cannot fix at the source: quartz's monitor rebuilds a relay's record from
+     * its own observations, so its next flush drops our `redirect` tag exactly
+     * as ours used to drop its rtt. Until that writer edits rather than
+     * rebuilds, a verdict is restored on the next fold rather than lost.
+     *
+     * [held] is what memory believes; [fromStore] is what the store just
+     * returned. Anything in the first and not the second was clobbered. Both
+     * are already in hand, so noticing costs no extra query.
+     */
+    suspend fun reassert(
+        held: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        fromStore: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+    ): Int {
+        if (signer == null) return 0
+        var restored = 0
+        for ((alias, canonical) in held) {
+            if (fromStore[alias] == canonical) continue
+            if (publish(alias, canonical, sampled = 0, shared = 0) != null) restored++
+        }
+        return restored
+    }
+
+    /**
+     * Edit a replaceable record: read what is there, keep everything this
+     * writer does not own, apply [add], and store it one second past whatever
+     * it replaced.
+     *
+     * **A replaceable event has one address and more than one writer, so
+     * writing is always an edit.** NIP-66's relay record is addressed by
+     * `d` = the relay url, and the passive monitor updates it every time a
+     * connection is opened. A writer that builds the record from its own tags
+     * alone silently deletes everyone else's — measured here, `[d, n,
+     * rtt-open]` became `[d, redirect]` — and nothing about the result looks
+     * wrong: still signed, still a valid NIP-66 record, just saying less than
+     * it did. Anything that reads that record downstream loses information it
+     * had no way to know was ever there.
+     *
+     * [owned] is the small set of tag names this writer is allowed to replace.
+     * Everything else is carried forward untouched, whoever wrote it and
+     * whatever it means.
+     *
+     * The timestamp is `max(now, existing + 1)` rather than `now`, because a
+     * store enforcing replaceable semantics REJECTS an edit that is not newer
+     * — and two writers seconds apart, or a clock that has not moved, are
+     * ordinary. Silently losing the write to `replaced: a newer version
+     * exists` is how a repair pass reports success having done nothing.
+     */
+    private suspend fun edit(
+        url: NormalizedRelayUrl,
+        owned: Set<String>,
+        add: List<Array<String>>,
+    ): Event? {
         val signer = signer ?: return null
-        val evidence = "$sampled newest events, $shared shared with ${canonical.url}"
+        val current = currentRecord(url)
+        val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || it.firstOrNull() in owned }.orEmpty()
+        val at = maxOf(nowSeconds(), (current?.createdAt ?: 0L) + 1)
         val template =
-            RelayDiscoveryEvent.build(alias, "", nowSeconds()) {
-                add(arrayOf(REDIRECT_TAG, canonical.url, evidence))
+            RelayDiscoveryEvent.build(url, current?.content.orEmpty(), at) {
+                for (tag in kept) add(tag)
+                for (tag in add) add(tag)
             }
         return runCatching {
             val event = signer.sign(template)
             store.insert(event)
             event
         }.getOrNull()
+    }
+
+    /** This url's current record, or null when nothing holds one yet. */
+    private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
+        val self = signer?.pubKey ?: return null
+        val held: List<Event> =
+            runCatching {
+                store.query<Event>(
+                    Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to listOf(url.url))),
+                )
+            }.getOrNull().orEmpty()
+        return held.maxByOrNull { it.createdAt }
     }
 
     companion object {

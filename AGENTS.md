@@ -512,6 +512,25 @@ scores 0.998, nostr.oxtr.dev 1.000). Its 17 urls can never fold, and the fold
 reports that identically to "this is a different relay" — safe, but only one of
 those is a correct conclusion. 1 host in 513; left uncoded deliberately.
 
+**A replaceable event has one address and more than one writer, so writing it
+is always an EDIT.** NIP-66's relay record is addressed by `d` = the relay url,
+and quartz's monitor updates it passively every time a connection is opened —
+so the fold and the monitor aim at the same slot. A writer that rebuilds the
+record from its own tags deletes everyone else's, and nothing about the result
+looks wrong: still signed, still a valid NIP-66 record, just saying less than it
+did. Measured in `RelayAliasRecordTest`, `[d, n, rtt-open]` became
+`[d, redirect]`. `RelayAliasRecord.edit` is the shape to copy — read what is
+there, keep every tag this writer does not own, and stamp
+`max(now, existing + 1)`, because a store enforcing replaceable semantics
+REJECTS an edit that is not strictly newer and two writers inside one second are
+ordinary. An edit lost that way reports success having done nothing.
+
+**KNOWN GAP, and it is upstream's:** quartz's `RelayReachabilityStore` still
+rebuilds, so its next flush drops our `redirect` tag. Until it merges,
+`RelayAliasRecord.reassert` restores a verdict on the next fold by diffing what
+memory holds against what the store returned — a signature, not a probe. The
+real fix is for that writer to edit too.
+
 **No false positives in 4,551 folds.** Every path that looks like a real
 endpoint — `/relay`, `/invoices`, `/outbox`, `/inbox`, `/all`, `/v1`, `/v2`,
 `/nostr` — folded at 0.997–1.000, i.e. served an identical event set, so

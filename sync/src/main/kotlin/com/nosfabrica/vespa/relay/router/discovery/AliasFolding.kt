@@ -102,7 +102,15 @@ class AliasFolding(
         val startedMs = System.currentTimeMillis()
 
         // What a previous run — this boot or another — already measured.
-        aliases.adopt(runCatching { record.load(candidates) }.getOrDefault(emptyMap()))
+        val fromStore = runCatching { record.load(candidates) }.getOrDefault(emptyMap())
+        val heldBefore = aliases.verdicts().filterKeys { it in candidates }
+        aliases.adopt(fromStore)
+        // A verdict this process still holds but the store no longer does was
+        // clobbered by the other writer on that address — see
+        // [RelayAliasRecord.reassert]. Restoring it costs a signature, not a
+        // probe, which is the whole point of noticing.
+        val restored = runCatching { record.reassert(heldBefore, fromStore) }.getOrDefault(0)
+        if (restored > 0) System.err.println("router: $label restored $restored alias record(s) overwritten by the monitor")
 
         val groups = aliases.unresolved(candidates)
         var learned = 0
