@@ -133,6 +133,10 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       RelayDiscovery.kt     pulling relay urls out of stored events
       HostStrikes.kt        per-authority strikes and eviction
       Unreachability.kt     which failures may be published as NIP-66 records
+      RelayAliases.kt       which discovered urls are ONE relay (see below)
+      AliasProbe.kt         the fingerprint: a relay's newest events, as ids
+      AliasFolding.kt       load verdicts, probe, publish, fold — once per cycle
+      RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `redirect` tag
     progress/             observability
       StreamPhases.kt       per-stream progress reporting
       PagingProgress.kt     time-axis progress for paged walks
@@ -407,6 +411,49 @@ the filter, so a long-lived kind (0) vouches for a short-lived one (30382) and
 filter-keyed band — not per-kind keys, which would break the invalidation
 property above. Still unfixed; it stopped biting only because `assertions`
 narrowed to a single kind, so any multi-kind filter can walk into it again.
+
+**One relay behind many urls.** Most relay software serves its websocket on
+every path, so `wss://nos.lol`, `wss://nos.lol/alpha` and
+`wss://nos.lol:443/beacon-glyph` are one server, and a relay list can mint them
+without limit. Measured from a production `stats.json`: **7,333 discovered urls
+stood for 1,147 distinct endpoints, and 81% of the fan-out was one host wearing
+a fabricated path** — `nostr.oxtr.dev` 55 times, `nostr.mom` 50, `nos.lol` 40.
+Weighted by how many lists name each relay, the top 50 were dialled **10.7x**
+over. That is where a 94%-duplicate download rate comes from: the same relay
+answering the same filter, once per url.
+
+`HostStrikes` cannot see it — it evicts an authority that goes SILENT, and
+every one of these answers perfectly. The duplicate only exists in what comes
+back, so `AliasProbe` asks each url for its newest 1,000 events and
+`RelayAliases` folds two urls together when the smaller window is ≥50%
+contained in the larger. Guards worth knowing before you touch the thresholds:
+a url with **no** fingerprint is never folded (silence is not evidence — a
+relay that is merely down has to come back), a window under 20 ids decides
+nothing, and the survivor is the pathless/`wss`/portless url so bands, cursors
+and everyone else's relay lists keep pointing at the same string. What each
+folded url was *paired with* moves onto the survivor — drop
+`wss://nos.lol/alpha` without carrying its bound authors and the stream stops
+asking for those authors entirely.
+
+The verdict is a signed **NIP-66 kind 30166** carrying
+`["redirect", "<canonical url>", "<evidence>"]` (`RelayAliasRecord`) — the same
+monitor that already signs "I could not reach this relay" saying the other
+thing a dial can prove. It is addressable on `d`, so a re-probe replaces rather
+than appends, it is served (an operator can ask this relay why a url stopped
+being synced and get a signed answer), and it is read back on the next boot
+within a 30-day TTL. `AliasFolding` runs it once per cycle between discovery
+and fan-out, capped at 2,000 fingerprints per cycle, widest group first.
+
+Two things this does NOT do. `maxRelaysPerList` (config, per stream) drops an
+event that names more relays than a relay list plausibly holds — measured, 148
+pubkeys published a kind 10002 of 100–10,591 entries — but it reaches **paged
+selects only**: `distinctTagValues` hands `where` one tag at a time out of a set
+already flattened across every event, so a per-event limit cannot be expressed
+there, and a NIP-65 stream reading through the projection is protected by the
+fold instead. Closing that needs a store-side projection that yields values
+grouped by event. And redundant default ports (`:443` on `wss`, `:80` on `ws`)
+are folded by string in `RelayDiscovery.normalize` rather than by probe — that
+one needs no evidence.
 
 ## Instrumentation — use it before theorising
 

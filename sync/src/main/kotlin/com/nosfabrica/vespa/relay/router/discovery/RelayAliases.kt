@@ -1,0 +1,305 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.relay.router.discovery
+
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import java.util.concurrent.ConcurrentHashMap
+
+/**
+ * Which discovered urls are the SAME relay wearing a different url.
+ *
+ * Most relay software serves its websocket on every path, so `wss://nos.lol`,
+ * `wss://nos.lol/alpha` and `wss://nos.lol:443/beacon-glyph` are one server
+ * behind three urls — and a relay list can mint them without limit. Measured on
+ * this store: 7,333 discovered urls stood for 1,147 distinct `host:port`
+ * endpoints, and weighting each endpoint by how many lists name it, the popular
+ * relays were dialled 10.7x over. That is not a fan-out, it is the same relay
+ * downloaded ten times.
+ *
+ * [HostStrikes] cannot help: it evicts an authority that goes SILENT, and every
+ * one of these answers perfectly well. The duplicate is only visible in what
+ * comes back, so that is what this asks for — the newest [probeLimit] events at
+ * each url. Two urls whose newest window is the same window are the same relay.
+ *
+ * The verdict is a measurement, not a guess about someone's config, which is
+ * what makes it publishable: see [RelayAliasRecord] for the NIP-66 record the
+ * monitor signs. The fold is deliberately hard to trigger — see [sameRelay] —
+ * because a wrong one silently stops mirroring a relay nobody will notice is
+ * missing.
+ */
+class RelayAliases(
+    /**
+     * How many of a relay's newest events one fingerprint asks for. The whole
+     * window is submitted to ingest, so this is a sync that also identifies —
+     * the only waste is the ids that turn out to be a duplicate's.
+     */
+    val probeLimit: Int = DEFAULT_PROBE_LIMIT,
+    /**
+     * The smallest window worth deciding on. Two relays that both answered with
+     * four events look identical and are not evidence of anything; below this,
+     * nothing is folded and both urls stay in the fan-out.
+     */
+    private val minSample: Int = DEFAULT_MIN_SAMPLE,
+    /**
+     * How much of the smaller window must appear in the larger one. Containment
+     * rather than a symmetric ratio, because the two dials are seconds apart on
+     * a live relay and one of them may be cut short by the peer's own
+     * `default_limit` — a truncated window is still the same window.
+     */
+    private val minOverlap: Double = DEFAULT_MIN_OVERLAP,
+) {
+    /** alias url -> the url we actually dial for it. Only ever holds folded urls. */
+    private val folded = ConcurrentHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+
+    /**
+     * Urls a probe already cleared: they are their own relay and must not be
+     * fingerprinted again. Without this, every url that is NOT a duplicate is
+     * the one thing we re-probe forever.
+     */
+    private val distinct = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
+    /**
+     * The urls something has been folded ONTO. Held as its own set rather than
+     * read out of [folded]'s values: [leaderOf] asks this question once per
+     * group per cycle, and a `containsValue` walks every verdict ever made to
+     * answer it.
+     */
+    private val canonicals = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
+    /** The url to dial in place of this one — itself, unless it was folded. */
+    fun canonicalOf(url: NormalizedRelayUrl): NormalizedRelayUrl = folded[url] ?: url
+
+    /** How many urls are currently folded away. */
+    fun size(): Int = folded.size
+
+    /** Every verdict held, for the monitor to publish and a restart to reload. */
+    fun verdicts(): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folded.toMap()
+
+    /**
+     * Adopt verdicts a previous run published. [RelayAliasRecord] drops the
+     * stale ones before they get here, so anything in [known] is still within
+     * its TTL.
+     */
+    fun adopt(known: Map<NormalizedRelayUrl, NormalizedRelayUrl>) {
+        for ((alias, canonical) in known) {
+            // A verdict pointing at a url that is ITSELF folded would leave the
+            // fan-out dialling a duplicate through two hops. Resolve to the end
+            // of the chain, which is where the events are.
+            if (alias == canonical) continue
+            val end = resolve(canonical)
+            folded[alias] = end
+            canonicals += end
+        }
+    }
+
+    /** This url was probed and is nobody's duplicate. Never fingerprint it again. */
+    fun markDistinct(url: NormalizedRelayUrl) {
+        distinct += url
+    }
+
+    /**
+     * The candidate urls grouped by the host they reach, keeping only the
+     * groups a probe could still learn something from.
+     *
+     * Grouped by HOSTNAME alone — not by quartz's `host:port` authority — so
+     * one pass folds all three shapes this pollution comes in: the path
+     * (`/beacon-glyph`), the redundant default port (`:443`), and the scheme
+     * (`ws://` beside `wss://` on a host that serves both). They are the same
+     * server or they are not, and only the fingerprint gets to say.
+     *
+     * A group is skipped when every member already has a verdict, and when it
+     * has only one member — there is nothing to be a duplicate OF.
+     */
+    fun unresolved(candidates: Collection<NormalizedRelayUrl>): List<List<NormalizedRelayUrl>> =
+        candidates
+            .groupBy { hostOf(it.url) }
+            .values
+            .map { group -> group.sortedWith(PREFERENCE) }
+            .filter { group -> group.size > 1 && group.any { it !in distinct && !folded.containsKey(it) } }
+
+    /**
+     * Which urls of one group still need a fingerprint: the ones with no
+     * verdict, plus the group's [leaderOf] — the yardstick they are measured
+     * against, which has to be re-measured because the window it is compared
+     * to has moved on since last cycle.
+     */
+    fun toProbe(group: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
+        val leader = leaderOf(group)
+        return (listOf(leader) + group.filter { it != leader && it !in distinct && !folded.containsKey(it) }).distinct()
+    }
+
+    /**
+     * Fold one group against the fingerprints just taken, and return only what
+     * this call learned. A url with no fingerprint (unreachable, refused,
+     * answered nothing) is left exactly as it was: silence is not evidence of
+     * duplication, and a relay that is merely down must come back into the
+     * fan-out when it recovers.
+     */
+    fun learn(
+        group: List<NormalizedRelayUrl>,
+        prints: Map<NormalizedRelayUrl, Set<String>>,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val leader = leaderOf(group)
+        val leaderPrint = prints[leader] ?: return emptyMap()
+        val learned = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        for (url in group) {
+            if (url == leader || folded.containsKey(url)) continue
+            val print = prints[url] ?: continue
+            if (sameRelay(leaderPrint, print)) {
+                folded[url] = leader
+                canonicals += leader
+                distinct -= url
+                learned[url] = leader
+            } else {
+                // Probed, and it is its own relay. Recorded so the next cycle
+                // spends its budget on urls we know nothing about.
+                markDistinct(url)
+            }
+        }
+        return learned
+    }
+
+    /**
+     * Collapse a discovered set onto the urls actually worth dialling.
+     *
+     * What each url was PAIRED with moves with it: an outbox stream binds
+     * authors to the url that named them, and dropping `wss://nos.lol/alpha`
+     * without moving its authors onto `wss://nos.lol` would stop asking for
+     * those authors entirely — a fold that loses data instead of duplicates.
+     */
+    fun fold(relays: List<DiscoveredRelay>): List<DiscoveredRelay> {
+        if (folded.isEmpty()) return relays
+        val merged = LinkedHashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
+        for (relay in relays) {
+            val into = merged.getOrPut(canonicalOf(relay.url)) { HashMap() }
+            for ((dest, values) in relay.narrow) into.getOrPut(dest) { HashSet() }.addAll(values)
+        }
+        return merged.map { (url, narrow) -> DiscoveredRelay(url, narrow.mapValues { (_, v) -> v.toSet() }) }
+    }
+
+    /**
+     * Do these two windows come from one relay?
+     *
+     * Both sides must have handed over at least [minSample] ids — the guard
+     * against calling two quiet relays identical because neither said much —
+     * and the smaller window must be [minOverlap] contained in the larger.
+     */
+    private fun sameRelay(
+        a: Set<String>,
+        b: Set<String>,
+    ): Boolean {
+        val smaller = minOf(a.size, b.size)
+        if (smaller < minSample) return false
+        val shared = if (a.size <= b.size) a.count { it in b } else b.count { it in a }
+        return shared.toDouble() / smaller >= minOverlap
+    }
+
+    /** Follow a chain of verdicts to the url at the end of it. */
+    private fun resolve(url: NormalizedRelayUrl): NormalizedRelayUrl {
+        var at = url
+        // Bounded rather than `while`: a verdict file edited by hand, or two
+        // runs that disagreed, must not spin here.
+        repeat(MAX_CHAIN) {
+            at = folded[at] ?: return at
+        }
+        return at
+    }
+
+    /**
+     * The url of a group everything else is compared against.
+     *
+     * A url this run already folded ONTO wins, so the yardstick stays put while
+     * a group grows: a new alias appearing next cycle must not re-point an
+     * existing verdict at a different member and re-key every band that
+     * mentions it. Otherwise [PREFERENCE] decides, which is a total order on
+     * the url, so a group with no history picks the same leader every time.
+     */
+    private fun leaderOf(group: List<NormalizedRelayUrl>): NormalizedRelayUrl {
+        group.firstOrNull { it in canonicals }?.let { return it }
+        return group.minWith(PREFERENCE)
+    }
+
+    companion object {
+        /**
+         * The newest 1,000 events. Big enough that a busy relay's window still
+         * overlaps itself between two dials seconds apart, and small enough to
+         * be one REQ that ends at EOSE.
+         */
+        const val DEFAULT_PROBE_LIMIT = 1_000
+
+        /** Below 20 shared ids a match is a coincidence, not a measurement. */
+        const val DEFAULT_MIN_SAMPLE = 20
+
+        /**
+         * Half. The two windows are taken seconds apart against a moving feed
+         * and one may be truncated by the peer's `default_limit`, so demanding
+         * near-identity would fold nothing on exactly the busy relays where the
+         * duplication costs the most.
+         */
+        const val DEFAULT_MIN_OVERLAP = 0.5
+
+        /** How far [resolve] will follow a verdict chain before giving up. */
+        private const val MAX_CHAIN = 8
+
+        /**
+         * Which url of a group is worth keeping, best first: no path over a
+         * path, `wss` over `ws`, no explicit port over one, then the shortest
+         * and finally the url itself so the order is total and stable.
+         *
+         * The pathless url is preferred rather than merely likelier to be real:
+         * it is the one the relay's own NIP-11 and everyone else's relay lists
+         * name, so folding onto it keeps the bands, the cursors and the NIP-66
+         * records of every other participant pointing at the same string.
+         */
+        private val PREFERENCE =
+            compareBy<NormalizedRelayUrl>(
+                { if (pathOf(it.url).isEmpty()) 0 else 1 },
+                { if (it.url.startsWith("wss://", true)) 0 else 1 },
+                { if (hasExplicitPort(it.url)) 1 else 0 },
+                { it.url.length },
+                { it.url },
+            )
+
+        /** Everything between the scheme and the first `/`, lowercased, port removed. */
+        fun hostOf(url: String): String {
+            val authority = afterScheme(url).substringBefore('/')
+            // An IPv6 literal keeps its brackets; the colons inside them are
+            // not the port separator, so only a colon AFTER the bracket is.
+            val host = if (authority.startsWith("[")) authority.substringBefore(']') + "]" else authority.substringBefore(':')
+            return host.lowercase()
+        }
+
+        /** The path, without its leading slash — empty for a bare host. */
+        fun pathOf(url: String): String = afterScheme(url).substringAfter('/', "").trim('/')
+
+        private fun hasExplicitPort(url: String): Boolean {
+            val authority = afterScheme(url).substringBefore('/')
+            return if (authority.startsWith("[")) authority.substringAfter(']').startsWith(":") else authority.contains(':')
+        }
+
+        private fun afterScheme(url: String): String =
+            when {
+                url.startsWith("wss://", true) -> url.substring(6)
+                url.startsWith("ws://", true) -> url.substring(5)
+                else -> url
+            }
+    }
+}

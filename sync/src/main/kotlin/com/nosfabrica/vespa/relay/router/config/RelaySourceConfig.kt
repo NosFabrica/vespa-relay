@@ -71,6 +71,16 @@ data class RelayDiscoveryConfig(
      * and accept that a chunk re-walks when its membership shifts.
      */
     val authorsPerLeg: Int? = null,
+    /**
+     * The most relays one event may name before the whole event is ignored as
+     * a relay list, or null for no limit.
+     *
+     * A real NIP-65 outbox is single digits; the ones this exists for run to
+     * five. Applies to PAGED selects only — see the KNOWN GAP in
+     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.discover] for
+     * why the tag projection cannot enforce a per-event limit.
+     */
+    val maxRelaysPerList: Int? = null,
 )
 
 /**

@@ -24,6 +24,10 @@ import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
+import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
+import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
+import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
+import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.server.ServingPressure
@@ -222,7 +226,23 @@ class SyncEngine(
             ),
         )
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope)
-    private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, tor, scope)
+
+    /**
+     * The duplicate-url fold, built only when there is a signer — the verdict
+     * it produces is a signed NIP-66 record, so a router with no identity has
+     * nowhere to put one and dials every url as its own relay, exactly as
+     * before this existed.
+     */
+    private val folding =
+        signer?.let {
+            AliasFolding(
+                aliases = RelayAliases(),
+                record = RelayAliasRecord(store, it),
+                probe = AliasProbe(client, RelayAliases.DEFAULT_PROBE_LIMIT, config.connectionTimeoutSec * 1000L),
+            )
+        }
+    private val dynamic =
+        DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, folding, tor, scope)
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 

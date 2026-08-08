@@ -65,6 +65,18 @@ streams {
         filter = { "kinds": [0, 10002, 10040] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 100          # relays synced at the same time
+        # Ignore any single event naming more relays than this — a real outbox
+        # list is single digits, and the ones this exists for run to five
+        # (measured: 148 pubkeys publishing kind 10002s of 100-10,591 entries,
+        # every entry a dial). The event is dropped WHOLE, never truncated, so
+        # its author cannot choose what we see by ordering it.
+        #
+        # Applies to PAGED selects only. A select that names a tag and binds
+        # nothing — like the NIP-65 one below — is answered by the store's tag
+        # projection, which has no event boundaries to count against; those are
+        # covered by the duplicate-url fold instead (see AGENTS.md, "One relay
+        # behind many urls").
+        maxRelaysPerList = 50
         exclude = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",

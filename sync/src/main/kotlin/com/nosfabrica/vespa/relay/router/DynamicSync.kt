@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.router.config.DeleteMissing
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
+import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
@@ -102,6 +103,10 @@ internal class DynamicSync(
     // Relays with a live static subscription, whose sockets must never be
     // dropped out from under their tail.
     private val pinnedUrls: Set<NormalizedRelayUrl>,
+    // NIP-66 again, saying the other thing a dial can prove: that two of the
+    // discovered urls are one relay. Null when there is no identity to sign a
+    // verdict with, and then every url is dialled as its own relay.
+    private val folding: AliasFolding?,
     // The Tor transport, when configured: what makes discovered .onion urls
     // dialable at all, and what decides whether they may be dialled today.
     private val tor: TorTransport?,
@@ -144,7 +149,7 @@ internal class DynamicSync(
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
                 phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
-                val relays =
+                val discovered =
                     RelayDiscovery.discover(
                         store,
                         dynamic,
@@ -153,6 +158,17 @@ internal class DynamicSync(
                         // reading when something can dial them.
                         allowOnion = tor != null,
                     )
+                // Before the fan-out, and before the snapshot it sizes itself
+                // against: a folded url must never reach [cycle], or it takes
+                // a socket, a cursor band and a place in the concurrency gate
+                // for events another url in the same list already delivered.
+                val relays =
+                    folding?.apply(
+                        stream = stream.name,
+                        relays = discovered,
+                        canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
+                        onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
+                    ) ?: discovered
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {
