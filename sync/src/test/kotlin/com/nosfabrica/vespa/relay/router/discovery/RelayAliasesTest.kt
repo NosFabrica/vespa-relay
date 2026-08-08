@@ -194,11 +194,12 @@ class RelayAliasesTest {
         aliases.learn(listOf(nos, nosAlpha), mapOf(nos to print, nosAlpha to print))
 
         val folded =
-            aliases.fold(
+            RelayAliases.foldOnto(
                 listOf(
                     DiscoveredRelay(nos, mapOf("authors" to setOf("a"))),
                     DiscoveredRelay(nosAlpha, mapOf("authors" to setOf("b"))),
                 ),
+                aliases.verdicts(),
             )
 
         assertEquals(1, folded.size)
@@ -232,7 +233,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         val relays = listOf(DiscoveredRelay(nos), DiscoveredRelay(nosAlpha))
 
-        assertEquals(relays, aliases.fold(relays))
+        assertEquals(relays, RelayAliases.foldOnto(relays, aliases.verdicts()))
         assertFalse(aliases.size() > 0)
     }
 }

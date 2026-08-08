@@ -55,22 +55,51 @@ class AliasFolding(
     private val concurrency: Int = DEFAULT_CONCURRENCY,
 ) {
     /**
-     * Fold [relays] onto the urls worth dialling.
+     * What a set of urls collapses to.
      *
-     * [canDial] is the caller's own transport guard — the same one the fan-out
-     * applies — so a probe never dials what a sync would refuse to.
-     * [onEvent] receives everything the probes downloaded; it is the stream's
-     * ingest, and the reason a fingerprint is not wasted bandwidth.
+     * [aliases] is handed back rather than applied, because only the caller
+     * knows what else it keys by url — a discovery stream has authors bound to
+     * each one, a monitor has records, a config has an exclude list. Applying
+     * the map is one line ([RelayAliases.fold] does it for a discovery stream);
+     * guessing at the caller's structures is not this component's business.
+     *
+     * [unmeasured] is not a failure and must not be dropped. It is "no verdict
+     * yet" — never probed, unreachable this cycle, or a relay whose answers are
+     * not reproducible — and the only safe reading of it is to dial the url as
+     * it stands. Kept separate from [dial] so that policy is the caller's
+     * explicit choice rather than a silent default inside here.
      */
-    suspend fun apply(
-        stream: String,
-        relays: List<DiscoveredRelay>,
+    data class Cleaned(
+        /** The urls worth dialling: canonical, plus everything still unmeasured. */
+        val dial: List<NormalizedRelayUrl>,
+        /** Folded url -> the url that stands in for it. */
+        val aliases: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        /** Urls with no verdict either way. A subset of [dial]. */
+        val unmeasured: List<NormalizedRelayUrl>,
+    )
+
+    /**
+     * Urls in, deduplicated urls out — the whole component in one call.
+     *
+     * Reads back what was already measured, fingerprints what is still unknown
+     * within this cycle's budget, publishes what it learned, and returns the
+     * collapsed set. Safe to call with anything: a url whose host wears no
+     * other url is never probed, and a set of one is returned untouched.
+     *
+     * [canDial] is the caller's own transport guard — the same one its fan-out
+     * applies — so a probe never dials what the caller would refuse to.
+     * [onEvent] receives everything the probes downloaded; hand it an ingest and
+     * a fingerprint stops being wasted bandwidth. Discard it and the probe is
+     * pure overhead, which is a choice a caller is allowed to make.
+     */
+    suspend fun clean(
+        label: String,
+        candidates: List<NormalizedRelayUrl>,
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit,
-    ): List<DiscoveredRelay> {
-        if (relays.size < 2) return relays
+        onEvent: suspend (Event) -> Unit = {},
+    ): Cleaned {
+        if (candidates.size < 2) return Cleaned(candidates, emptyMap(), candidates)
         val startedMs = System.currentTimeMillis()
-        val candidates = relays.map { it.url }
 
         // What a previous run — this boot or another — already measured.
         aliases.adopt(runCatching { record.load(candidates) }.getOrDefault(emptyMap()))
@@ -170,15 +199,17 @@ class AliasFolding(
             }
         }
 
-        val folded = aliases.fold(relays)
-        if (learned > 0 || folded.size < relays.size) {
+        val dial = candidates.map { aliases.canonicalOf(it) }.distinct()
+        val map = candidates.filter { aliases.canonicalOf(it) != it }.associateWith { aliases.canonicalOf(it) }
+        val unmeasured = dial.filter { !aliases.measured(it) }
+        if (learned > 0 || dial.size < candidates.size) {
             System.err.println(
-                "router: $stream folded ${relays.size} discovered url(s) onto ${folded.size} relay(s) " +
-                    "($learned new alias(es) from $probed fingerprint(s), ${aliases.size()} known) " +
-                    "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
+                "router: $label folded ${candidates.size} url(s) onto ${dial.size} relay(s) " +
+                    "($learned new alias(es) from $probed fingerprint(s), ${aliases.size()} known, " +
+                    "${unmeasured.size} unmeasured) in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
-        return folded
+        return Cleaned(dial, map, unmeasured)
     }
 
     companion object {

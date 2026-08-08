@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
+import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
@@ -162,13 +163,21 @@ internal class DynamicSync(
                 // against: a folded url must never reach [cycle], or it takes
                 // a socket, a cursor band and a place in the concurrency gate
                 // for events another url in the same list already delivered.
+                // The fold hands back an alias MAP, not a rewritten relay list:
+                // it deals in urls, and this stream is the only thing that
+                // knows each url also carries the authors its tag paired it
+                // with. [RelayAliases.fold] is that one line — and dropping a
+                // url without moving its authors onto the survivor would stop
+                // asking for those authors entirely.
                 val relays =
-                    folding?.apply(
-                        stream = stream.name,
-                        relays = discovered,
-                        canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
-                        onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
-                    ) ?: discovered
+                    folding
+                        ?.clean(
+                            label = stream.name,
+                            candidates = discovered.map { it.url },
+                            canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
+                            onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
+                        )?.let { RelayAliases.foldOnto(discovered, it.aliases) }
+                        ?: discovered
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {

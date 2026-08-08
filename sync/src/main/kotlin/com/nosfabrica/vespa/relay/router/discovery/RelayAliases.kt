@@ -111,6 +111,16 @@ class RelayAliases(
         }
     }
 
+    /**
+     * Has anything been decided about this url — folded, or probed and cleared?
+     *
+     * False is "no verdict", which is NOT "distinct": a url nothing has looked
+     * at yet and a url whose relay would not answer land here together, and
+     * both must still be dialled. The caller is told which urls these are so it
+     * can treat them as its policy requires rather than as a silent default.
+     */
+    fun measured(url: NormalizedRelayUrl): Boolean = url in distinct || url in canonicals || folded.containsKey(url)
+
     /** This url was probed and is nobody's duplicate. Never fingerprint it again. */
     fun markDistinct(url: NormalizedRelayUrl) {
         distinct += url
@@ -176,24 +186,6 @@ class RelayAliases(
             }
         }
         return learned
-    }
-
-    /**
-     * Collapse a discovered set onto the urls actually worth dialling.
-     *
-     * What each url was PAIRED with moves with it: an outbox stream binds
-     * authors to the url that named them, and dropping `wss://nos.lol/alpha`
-     * without moving its authors onto `wss://nos.lol` would stop asking for
-     * those authors entirely — a fold that loses data instead of duplicates.
-     */
-    fun fold(relays: List<DiscoveredRelay>): List<DiscoveredRelay> {
-        if (folded.isEmpty()) return relays
-        val merged = LinkedHashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
-        for (relay in relays) {
-            val into = merged.getOrPut(canonicalOf(relay.url)) { HashMap() }
-            for ((dest, values) in relay.narrow) into.getOrPut(dest) { HashSet() }.addAll(values)
-        }
-        return merged.map { (url, narrow) -> DiscoveredRelay(url, narrow.mapValues { (_, v) -> v.toSet() }) }
     }
 
     /**
@@ -292,6 +284,34 @@ class RelayAliases(
          * duplication costs the most.
          */
         const val DEFAULT_MIN_OVERLAP = 0.5
+
+        /**
+         * Apply an alias map to a discovered set — the one line a caller of
+         * [AliasFolding.clean] needs, kept here because getting it wrong is
+         * silent.
+         *
+         * What each url was PAIRED with moves with it: an outbox stream binds
+         * authors to the url that named them, and dropping
+         * `wss://nos.lol/alpha` without moving its authors onto
+         * `wss://nos.lol` would stop asking for those authors entirely — a fold
+         * that loses data instead of duplicates.
+         *
+         * Pure, and takes the map rather than reading instance state, so the
+         * component that decides aliases and the one that applies them need not
+         * be the same object.
+         */
+        fun foldOnto(
+            relays: List<DiscoveredRelay>,
+            aliases: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        ): List<DiscoveredRelay> {
+            if (aliases.isEmpty()) return relays
+            val merged = LinkedHashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
+            for (relay in relays) {
+                val into = merged.getOrPut(aliases[relay.url] ?: relay.url) { HashMap() }
+                for ((dest, values) in relay.narrow) into.getOrPut(dest) { HashSet() }.addAll(values)
+            }
+            return merged.map { (url, narrow) -> DiscoveredRelay(url, narrow.mapValues { (_, v) -> v.toSet() }) }
+        }
 
         /** How far [resolve] will follow a verdict chain before giving up. */
         private const val MAX_CHAIN = 8
