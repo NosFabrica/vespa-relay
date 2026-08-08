@@ -1386,6 +1386,14 @@
   body.searching .search-icon { left: 15px; width: 15px; height: 15px; }
   body.searching .bar { grid-column: 1 / -1; margin-top: 0; }
   body.searching .whoami { grid-column: 1 / -1; margin-top: 0; }
+  /* Every row below the first has to say `1 / -1`, and the readiness panel is
+     the widest of them. Auto-placed, it lands in column 1 — the `auto` track
+     the brand sits in — and a track sized to a card of prose takes the whole
+     line, leaving the `minmax(0, 1fr)` beside it to collapse to nothing. The
+     symptom is the SEARCH FIELD shrinking to a stub the moment the panel
+     appears, which is why this rule reads like a duplicate of the two above
+     and is not one. */
+  body.searching .readiness { grid-column: 1 / -1; margin-top: 0; }
 
   @media (max-width: 620px) {
     .hero { padding-top: 7vh; }
