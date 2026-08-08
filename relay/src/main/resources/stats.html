@@ -1466,7 +1466,11 @@ function kindsCard(kinds) {
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
-  for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Pubkeys", "n"], ["Last event", "n"]]) {
+  // No Pubkeys column: distinct authors per kind cost a grouping over the
+  // whole corpus (every event has exactly one kind, so the inner pubkey sets
+  // union to the entire store) and took the engine down. Dropped in the
+  // rollup, so `k.pubkeys` is now always absent — see StatsRollup.kindsSection.
+  for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Last event", "n"]]) {
     const th = el("th", cls, label);
     hr.appendChild(th);
   }
@@ -1483,7 +1487,6 @@ function kindsCard(kinds) {
     bar.style.width = Math.max(2, (k.events / max) * 100) + "%";
     share.appendChild(bar);
     tr.appendChild(share);
-    tr.appendChild(el("td", "n", k.pubkeys == null ? "—" : fmt(k.pubkeys)));
     // An AGE, not a date. Per kind this is the useful form: "kind 1 four
     // minutes ago, kind 30023 six days ago" localises which stream stalled,
     // where a column of dates makes the reader subtract thirty times. The

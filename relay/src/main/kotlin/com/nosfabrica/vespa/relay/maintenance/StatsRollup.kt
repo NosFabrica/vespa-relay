@@ -305,11 +305,28 @@ internal class StatsRollup(
      * The per-kind table: documents, distinct authors, and the span of
      * `created_at`, as three queries rather than one combined pipeline.
      *
-     * Split on purpose. The author count is by far the most expensive of the
-     * three — it builds a pubkey set per kind — and it is also the one shape
-     * here with no proven precedent in the store. Combined, a rejection of that
-     * clause would cost the whole table; split, the counts still render and the
-     * authors column reads "—".
+     * NO author count. It used to be here, split from the other two because it
+     * was "by far the most expensive" — that split bounded the blast radius but
+     * not the cost, and at 91.5M events the cost is the problem.
+     *
+     * `all(group(kind) each(all(group(pubkey) output(count()))))` partitions the
+     * WHOLE corpus: every event has exactly one kind, so the union of the inner
+     * groupings is every document in the store, and with
+     * `grouping.defaultMaxGroups = -1` — correctly -1, a truncated histogram is
+     * a wrong statistic — the engine materialises a pubkey set for each of 122
+     * kinds, kind 1 alone being 39.7M events. Measured 2026-08-08: rollups
+     * driving proton to allocate 2 GiB `PartialResult` buffers per match thread,
+     * container RSS into the cgroup ceiling, jdisc refusing connections, and the
+     * rollup's own later queries failing with java.net.ConnectException. Also
+     * what OOMKilled the engine at a 46Gi limit, and then again at 64Gi.
+     *
+     * The time-bucketed authors in [series] stay: they look identical but are
+     * windowed to the last 30 days, so they group a slice rather than the store.
+     *
+     * There is no cheaper way to ask this question of the engine — a distinct
+     * count over a high-cardinality field IS the group set. If the column comes
+     * back it needs a different source (a counter maintained on write, or a
+     * sketch), not a different query.
      *
      * EVERY kind, not a top-N. This is the table that replaced
      * `kind_stats.html`, and the reason it could is that the grouping ENUMERATES
@@ -330,7 +347,6 @@ internal class StatsRollup(
             val counts =
                 attempt(attempts, "events") { longsByGroup(StatsYql.countsBy("kind")) }
                     ?: return@section buildJsonObject { }
-            val authors = attempt(attempts, "pubkeys") { distinctByGroup(StatsYql.distinctAuthorsBy("kind")) }
             // Bounded to now: an unbounded max(created_at) reports whatever the
             // most optimistically-dated spam in that kind claims, and a "newest"
             // of 2100 makes the whole column decorative. The future-dated events
@@ -349,7 +365,6 @@ internal class StatsRollup(
                                     put("kind", n)
                                     kindName(n)?.let { put("name", it) }
                                     put("events", events)
-                                    authors?.get(kind)?.let { put("pubkeys", it) }
                                     spans?.get(kind)?.let { (first, last) ->
                                         put("firstSeen", first)
                                         put("lastSeen", last)
@@ -706,20 +721,6 @@ internal class StatsRollup(
             .mapNotNull { g ->
                 val value = StatsYql.valueOf(g) ?: return@mapNotNull null
                 val count = StatsYql.aggOf(g, "count()") ?: return@mapNotNull null
-                value to count
-            }.toMap()
-    }
-
-    private suspend fun distinctByGroup(
-        pipeline: String,
-        where: String = "true",
-    ): Map<String, Long> {
-        val root = vespa.group(pipeline, where)
-        return StatsYql
-            .topGroups(root)
-            .mapNotNull { g ->
-                val value = StatsYql.valueOf(g) ?: return@mapNotNull null
-                val count = StatsYql.distinctCountOf(g) ?: return@mapNotNull null
                 value to count
             }.toMap()
     }
