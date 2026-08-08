@@ -445,16 +445,25 @@ sizes are still compared at equal depth, and `DEFAULT_MAX_PAGES` has to clear
 `target / FALLBACK_PROBE_PAGE` or hosts that cap low get a shallower
 fingerprint than everyone else — the exact thing paging is for.
 
-**And the walk is ANCHORED, because "the newest N" is a moving window.** Every
-url in a group starts from one shared `until` taken before any of them is
-dialled. Without it the fold quietly fails on the busiest relays — which is
-where it matters most: measured live, `wss://nos.lol` against
-`wss://nos.lol/cipher-zulu` scored **0.41** unanchored (same server, missed),
-while the low-traffic `nostr.oxtr.dev` pair scored 0.95–0.98 in the same run.
-A thousand events span minutes on a firehose, the probes are minutes apart
-behind a 16-permit gate, and the two windows simply stop overlapping. Deeper
-paging makes this *worse*, not better, since a longer walk is a longer drift —
-which is why the anchor arrived with the paging and not before it.
+**And the walk is ANCHORED a minute back, because "the newest N" is a moving
+window.** Every url in a group starts from one shared `until`, taken before any
+of them is dialled and held `ANCHOR_LAG_SECONDS` behind the clock. Two separate
+failures, both real:
+
+- *Shared*, or the window slides between dials. Measured live, `wss://nos.lol`
+  against `wss://nos.lol/cipher-zulu` scored **0.41** unanchored — same server,
+  missed — while the low-traffic `nostr.oxtr.dev` pair scored 0.95–0.98 in the
+  same run. A thousand events span minutes on a firehose and the probes are
+  minutes apart behind a 16-permit gate. Anchoring took that pair to **0.99**.
+  Deeper paging makes it *worse*, not better: a longer walk is a longer drift,
+  which is why the anchor had to arrive with the paging rather than after it.
+- *Behind the clock*, or the newest second of the window is whatever each relay
+  had finished indexing at that instant. An event is not visible to a REQ the
+  moment its `created_at` passes — it still has to arrive, verify and index — so
+  a walk that runs immediately and one that runs two minutes later disagree
+  about the top of the window even from the same anchor. A minute back the
+  window is settled, and it absorbs publishers whose clocks run slightly fast
+  into the bargain. A minute-old identity is the same identity.
 
 Guards worth knowing before you touch the thresholds:
 a url with **no** fingerprint is never folded (silence is not evidence — a

@@ -74,6 +74,9 @@ class AliasProbeTest {
                 .filter { until == null || it.createdAt <= until }
                 .take(minOf(want, cap))
         }
+
+        /** The ids this relay holds above [ts] — what an anchor is there to exclude. */
+        fun idsNewerThan(ts: Long): Set<String> = events.filter { it.createdAt > ts }.mapTo(HashSet()) { it.id }
     }
 
     private fun probe(
@@ -210,6 +213,41 @@ class AliasProbeTest {
             // Anchored, both walks read the same slice of the timeline, so the
             // relay being busy in between changes nothing.
             assertEquals(a, b)
+        }
+
+    @Test
+    fun `an anchor a minute back settles a relay still taking writes`() =
+        runBlocking {
+            // The case a shared anchor alone does NOT fix: both walks anchor at
+            // the same instant, but the first runs before the relay has
+            // finished indexing the last few seconds and the second runs after.
+            // Modelled as the second dial simply holding events the first did
+            // not — same timestamps, later visibility.
+            val now = BASE
+            val settling = Fake(total = 5_000, cap = 500)
+            val settled = Fake(total = 5_000, cap = 500, newerBy = 30)
+
+            val anchor = AliasProbe.settledAnchor(now)
+            val a = probe(settling, target = 1_000).fingerprint(url, anchor) {}!!
+            val b = probe(settled, target = 1_000).fingerprint(url, anchor) {}!!
+
+            // Everything the late arrivals could have disturbed is above the
+            // anchor, so neither walk looks at it and the two agree exactly.
+            assertEquals(a, b)
+            assertEquals(60L, now - anchor, "the anchor is a minute behind the clock")
+        }
+
+    @Test
+    fun `nothing newer than the anchor reaches the fingerprint`() =
+        runBlocking {
+            val fake = Fake(total = 1_000, cap = 500, newerBy = 200)
+            val anchor = BASE // the 200 `newerBy` events are all above this
+
+            val print = probe(fake, target = 1_000).fingerprint(url, anchor) {}!!
+            val above = fake.idsNewerThan(anchor)
+
+            assertTrue(above.isNotEmpty(), "the fake must actually hold events above the anchor")
+            assertTrue(above.none { it in print }, "an event above the anchor is not part of the window")
         }
 
     @Test

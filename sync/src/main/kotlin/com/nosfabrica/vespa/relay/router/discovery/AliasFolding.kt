@@ -99,13 +99,21 @@ class AliasFolding(
                         }
                         val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
                         // ONE anchor for the whole group, taken before any of
-                        // it is dialled. "The newest N" is a moving window and
+                        // it is dialled, and held a minute behind the clock.
+                        //
+                        // Shared, because "the newest N" is a moving window and
                         // these walks are minutes apart behind a 16-permit
                         // gate; measured live, two urls of nos.lol scored 0.41
-                        // unanchored — the same relay, missed. Anchored, both
-                        // walks read the same slice of the timeline whenever
-                        // they actually run.
-                        val anchor = nowSeconds()
+                        // unanchored — the same relay, missed.
+                        //
+                        // Behind the clock, because an event is not visible the
+                        // instant its `created_at` passes: it still has to
+                        // arrive and be indexed. Anchored at `now`, the newest
+                        // second of the window is whatever each relay happened
+                        // to have finished writing, which differs per dial and
+                        // reintroduces the drift the anchor removes. See
+                        // [AliasProbe.ANCHOR_LAG_SECONDS].
+                        val anchor = AliasProbe.settledAnchor(nowSeconds())
                         coroutineScope {
                             for (url in wanted) {
                                 launch {

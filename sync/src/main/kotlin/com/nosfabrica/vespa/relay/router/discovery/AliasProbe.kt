@@ -199,6 +199,34 @@ class AliasProbe(
          */
         const val DEFAULT_MAX_PAGES = 32
 
+        /**
+         * How far behind the clock an anchor sits: one minute.
+         *
+         * A shared anchor already stops the window sliding, but anchoring it at
+         * `now` still straddles the moment the relay is in the middle of. An
+         * event is not visible to a REQ the instant its `created_at` passes —
+         * it has to arrive, verify, and be indexed — so an event stamped just
+         * under `now` can be missed by a walk that runs immediately and found
+         * by one that runs two minutes later, from the SAME anchor. That is the
+         * anchor failing to do the one thing it is for.
+         *
+         * A minute back, the window is settled: everything at or below it has
+         * long since landed, so every walk of a group sees the same events
+         * however staggered the dials are. It also absorbs the ordinary case of
+         * a publisher whose clock runs slightly fast, whose events would
+         * otherwise drop in and out of the top of the window.
+         *
+         * Costs nothing — a fingerprint is an identity, and a minute-old
+         * identity is the same identity.
+         */
+        const val ANCHOR_LAG_SECONDS = 60L
+
+        /**
+         * The newest `created_at` a fingerprint will look at, given the current
+         * clock — the same value for every url of a group.
+         */
+        fun settledAnchor(now: Long): Long = now - ANCHOR_LAG_SECONDS
+
         /** Consecutive pages that add nothing before the walk gives up. */
         private const val MAX_STALLS = 2
 
