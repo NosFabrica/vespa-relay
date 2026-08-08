@@ -26,7 +26,10 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.cancel
+import kotlinx.coroutines.delay
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -129,6 +132,33 @@ class AliasMonitorTest {
 
             assertFailsWith<CancellationException> { m.runPass() }
             assertEquals(1, pass.calls.get(), "the pass continued past a cancellation")
+        }
+
+    @Test
+    fun `a boot whose streams have not discovered yet retries soon, not next interval`() =
+        runBlocking {
+            // Discovery on a cold store outlasts the startup delay, so the first
+            // pass routinely lands before any stream has submitted. Sleeping the
+            // full interval on that would push the first measurement six hours
+            // out on exactly the boot with the most to learn.
+            val pass = Recording()
+            val scope = CoroutineScope(Dispatchers.Default)
+            val m =
+                AliasMonitor(
+                    pass,
+                    scope,
+                    intervalMs = 60_000,
+                    startupDelayMs = 0,
+                    emptyRetryMs = 20,
+                ).start()
+
+            // Submit only AFTER the first (empty) pass has already gone by.
+            delay(120)
+            m.submit("outbox", listOf(a, b), canDial = { true })
+            withTimeout(2_000) { while (pass.calls.get() == 0) delay(10) }
+            scope.cancel()
+
+            assertEquals(listOf(a, b), pass.passes.single().second)
         }
 
     @Test

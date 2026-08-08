@@ -63,6 +63,7 @@ class AliasMonitor(
     private val scope: CoroutineScope,
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
     private val startupDelayMs: Long = DEFAULT_STARTUP_DELAY_MS,
+    private val emptyRetryMs: Long = DEFAULT_EMPTY_RETRY_MS,
 ) {
     /**
      * All this needs of the fold: measure one stream's urls, say how many new
@@ -118,13 +119,22 @@ class AliasMonitor(
      * router restarting has every stream discovering at once, and joining that
      * with a probe pass is how a restart turns into a thundering herd against
      * the same relays the fan-out is already dialling.
+     *
+     * A pass with NOTHING SUBMITTED sleeps [emptyRetryMs] instead of the full
+     * interval. Discovery on a cold store is minutes — longer than the startup
+     * delay — so the first pass can easily land before any stream has submitted
+     * anything, and waiting the whole interval on that would push the first
+     * measurement six hours out on exactly the boot that has the most to learn.
+     * "Nothing to do yet" and "nothing to do" are different, and only the first
+     * one is worth retrying for.
      */
     fun start(): AliasMonitor {
         scope.launch {
             delay(startupDelayMs)
             while (scope.isActive) {
+                val hadWork = pending.isNotEmpty()
                 runPass()
-                delay(intervalMs)
+                delay(if (hadWork) intervalMs else emptyRetryMs)
             }
         }
         return this
@@ -173,5 +183,12 @@ class AliasMonitor(
          * rather than with every stream's opening burst.
          */
         const val DEFAULT_STARTUP_DELAY_MS = 2L * 60 * 1000
+
+        /**
+         * How long to wait before looking again when no stream has submitted
+         * anything yet. A minute — the question is only "has discovery finished
+         * on a cold store", and asking it costs a map lookup.
+         */
+        const val DEFAULT_EMPTY_RETRY_MS = 60L * 1000
     }
 }
