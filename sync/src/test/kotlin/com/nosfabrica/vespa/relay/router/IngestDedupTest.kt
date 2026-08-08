@@ -94,9 +94,15 @@ class IngestDedupTest {
             // three ways would test the channel instead.
             offer.forEach { pipeline.submit(it, skipVerify = false) }
             pipeline.start()
-            while (pipeline.queued.get() > 0) delay(5)
-            // The last batch is off the queue but may still be mid-write.
-            delay(200)
+            // Every offered event lands in exactly one of the two counters —
+            // accepted, or rejected by dedup, by verify, or by the store — so
+            // their sum is the settled condition. A fixed sleep here would be a
+            // guess about a loaded CI box.
+            var waitedMs = 0
+            while (pipeline.accepted.get() + pipeline.rejected.get() < offer.size && waitedMs < SETTLE_TIMEOUT_MS) {
+                delay(5)
+                waitedMs += 5
+            }
             val stored = store.count(Filter(kinds = listOf(1))).toLong()
             scope.cancel()
             pipeline.close()
@@ -156,5 +162,10 @@ class IngestDedupTest {
 
         assertEquals(50, pipeline.accepted.get())
         assertEquals(50, stored)
+    }
+
+    private companion object {
+        /** Long enough that only a hang reaches it, so a slow box fails no test. */
+        const val SETTLE_TIMEOUT_MS = 30_000
     }
 }

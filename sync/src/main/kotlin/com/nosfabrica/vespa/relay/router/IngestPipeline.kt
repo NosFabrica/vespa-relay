@@ -31,6 +31,7 @@ import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -142,6 +143,8 @@ internal class IngestPipeline(
     // routinely dwarfs accepts and reads like an emergency when it is the
     // system working — while a bad signature means an upstream serves junk.
     private val unverified = AtomicLong()
+
+    /** Rejections by reason. Only ever written through [noteRejection] — see there for why the ceiling matters. */
     private val rejectReasons = ConcurrentHashMap<String, Long>()
 
     // Store failures already reported in full, so the raw-event dump stays
@@ -157,6 +160,16 @@ internal class IngestPipeline(
                 "router: SYNC_INGEST_BATCH=$configuredBatch capped to $batchSize — " +
                     "$workers worker(s) share a $capacity-event queue, and a batch bigger than " +
                     "one worker's share collapses ingest to a single thread",
+            )
+        }
+        // The dedup probe needs a wide batch to be worth its round trip, so
+        // below that width every copy of an event is signature-checked before
+        // the store drops it. Silent, and the operator who lowered the batch to
+        // cut memory is the one who most needs to know they bought that.
+        if (knownIds != null && batchSize < PROBE_MIN_VERIFIABLE) {
+            System.err.println(
+                "router: ingest batch $batchSize is under the $PROBE_MIN_VERIFIABLE-event width the dedup " +
+                    "probe needs — duplicates will be verified before the store rejects them",
             )
         }
         repeat(workers) { scope.launch(pool) { loop() } }
@@ -309,10 +322,7 @@ internal class IngestPipeline(
             if (probe == null || verifiable < PROBE_MIN_VERIFIABLE) {
                 emptySet()
             } else {
-                // A failed probe must cost time, never correctness: fall
-                // through knowing nothing and let the store's stage B decide,
-                // exactly as it did before this existed.
-                runCatching {
+                try {
                     IngestStats.timed("dedup.pre") {
                         once
                             .map { it.event.id }
@@ -320,7 +330,18 @@ internal class IngestPipeline(
                             .mapBounded(QUERY_FANOUT) { probe(it) }
                             .flatMapTo(HashSet()) { it }
                     }
-                }.getOrDefault(emptySet())
+                } catch (e: CancellationException) {
+                    // NOT runCatching: it swallows this too, and shutdown
+                    // reaches the probe as a cancellation. Swallowed, the batch
+                    // would go on to verify and WRITE into a store the process
+                    // is closing. Same rethrow-first shape as insertBisecting.
+                    throw e
+                } catch (_: Throwable) {
+                    // A failed probe must cost time, never correctness: fall
+                    // through knowing nothing and let the store's stage B
+                    // decide, exactly as it did before this existed.
+                    emptySet()
+                }
             }
 
         val fresh = if (stored.isEmpty()) once else once.filter { it.event.id !in stored }
@@ -330,7 +351,7 @@ internal class IngestPipeline(
             // The store's own word for it, verbatim, so dropping a duplicate
             // here and dropping it there are ONE line on the stats breakdown
             // rather than two that have to be added up.
-            rejectReasons.merge(RejectionReason.DUPLICATE.take(48), dropped.toLong(), Long::plus)
+            noteRejection(RejectionReason.DUPLICATE.take(48), dropped.toLong())
         }
         return fresh
     }
@@ -353,7 +374,7 @@ internal class IngestPipeline(
 
                         is IEventStore.InsertOutcome.Rejected -> {
                             rejected.incrementAndGet()
-                            rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
+                            noteRejection(outcome.reason.take(48), 1L)
                         }
 
                         is IEventStore.InsertOutcome.Failed -> {
@@ -363,7 +384,7 @@ internal class IngestPipeline(
                             // lostToStore so the loss is loud on the health
                             // line instead of blending into the duplicates.
                             rejected.incrementAndGet()
-                            rejectReasons.merge("store failed: ${outcome.reason.take(40)}", 1L, Long::plus)
+                            noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
                             lostToStore.incrementAndGet()
                         }
                     }
@@ -371,7 +392,7 @@ internal class IngestPipeline(
             },
             onPoison = { event, e ->
                 rejected.incrementAndGet()
-                rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L, Long::plus)
+                noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
                 reportPoison(event, e)
             },
             onGaveUp = { batch, e ->
@@ -379,12 +400,41 @@ internal class IngestPipeline(
                 // tallied apart from the isolated ones — "we could not say
                 // which" is a different fact from "this event is bad".
                 rejected.addAndGet(batch.size.toLong())
-                rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
+                noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
                 // These are LOST, not merely rejected: the events were good,
                 // the failure is the store's, and nothing re-offers them.
                 lostToStore.addAndGet(batch.size.toLong())
             },
         )
+
+    /**
+     * Tally [count] rejections under [reason], keeping at most
+     * [REASON_LIMIT] distinct reasons.
+     *
+     * The store's own reasons are a fixed vocabulary on purpose (`Rejections`
+     * builds one constant string rather than one per field, so a tally cannot
+     * fragment). Its *throws* are not: they embed per-event content — a Vespa
+     * 400 quotes the document — so a store failing on every event mints a new
+     * key here per event. That is the same run [poisonSeen] is capped for, and
+     * this map was left uncapped two fields away from that guard: 2.3M distinct
+     * failures would have been 2.3M retained strings, during the one incident
+     * where heap is already the thing to protect.
+     *
+     * Past the ceiling everything folds into one bucket, which costs nothing
+     * real — [rejectionBreakdown] prints the top two.
+     */
+    private fun noteRejection(
+        reason: String,
+        count: Long,
+    ) {
+        // Racy by a worker or two at the boundary: the point is a bound, not an
+        // exact size, and each worker can add at most one key past it.
+        if (rejectReasons.size >= REASON_LIMIT && !rejectReasons.containsKey(reason)) {
+            rejectReasons.merge(OVERFLOW_REASON, count, Long::plus)
+        } else {
+            rejectReasons.merge(reason, count, Long::plus)
+        }
+    }
 
     /**
      * Log an event the store threw on, once per distinct failure, with the
@@ -463,6 +513,12 @@ internal class IngestPipeline(
          * that the router in front of it kept probing at the old width.
          */
         private val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
+
+        /** Distinct rejection reasons kept before [noteRejection] folds the rest into one. */
+        private const val REASON_LIMIT = 64
+
+        /** Where reasons past [REASON_LIMIT] land — named, so the line says a tally was folded rather than implying two. */
+        private const val OVERFLOW_REASON = "other store failures"
 
         // Distinct store failures to dump a raw event for; past a handful it
         // is a stuck loop, not news.
