@@ -72,34 +72,27 @@ class RelayAliasRecordTest {
             .orEmpty()
 
     @Test
-    fun `a verdict the monitor overwrote is restored on the next fold`() =
+    fun `the fold's verdict survives the monitor's next dial`() =
         runBlocking {
             val store = newStore()
             val record = RelayAliasRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
-            // The monitor sees this url again — an ordinary dial — and rebuilds
-            // the record from its own observations, dropping ours. That writer
-            // is quartz's and cannot merge from here.
+            // The monitor sees this url again — an ordinary dial, on the passive
+            // path that runs every time a connection opens. It rewrites the same
+            // address, and the only thing keeping our verdict alive is that it
+            // edits rather than rebuilds.
             monitor.recordProbed(mapOf(alias to 120L), emptySet(), nowSeconds() + 1)
-            assertTrue(RelayAliasRecord.REDIRECT_TAG !in tagNames(recordFor(store, alias.url)))
 
-            // The next fold notices memory holds a verdict the store does not.
-            val restored = record.reassert(mapOf(alias to canonical), record.load(listOf(alias)))
-
-            assertEquals(1, restored)
-            assertTrue(RelayAliasRecord.REDIRECT_TAG in tagNames(recordFor(store, alias.url)))
-        }
-
-    @Test
-    fun `a verdict the store still agrees with is not rewritten`() =
-        runBlocking {
-            val store = newStore()
-            val record = RelayAliasRecord(store, signer)
-            record.publish(alias, canonical, sampled = 500, shared = 498)
-
-            assertEquals(0, record.reassert(mapOf(alias to canonical), record.load(listOf(alias))))
+            val after = tagNames(recordFor(store, alias.url))
+            assertTrue(
+                RelayAliasRecord.REDIRECT_TAG in after,
+                "the monitor erased the fold's verdict: left $after",
+            )
+            // And it did write what it came to write, so this is a merge rather
+            // than a monitor that gave up on the record.
+            assertTrue("rtt-open" in after, "the monitor recorded nothing: left $after")
         }
 
     @Test

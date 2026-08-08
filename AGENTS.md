@@ -525,11 +525,13 @@ there, keep every tag this writer does not own, and stamp
 REJECTS an edit that is not strictly newer and two writers inside one second are
 ordinary. An edit lost that way reports success having done nothing.
 
-**KNOWN GAP, and it is upstream's:** quartz's `RelayReachabilityStore` still
-rebuilds, so its next flush drops our `redirect` tag. Until it merges,
-`RelayAliasRecord.reassert` restores a verdict on the next fold by diffing what
-memory holds against what the store returned — a signature, not a probe. The
-real fix is for that writer to edit too.
+Both quartz writers on that address — `RelayReachabilityStore` and
+`RelayProber.toDiscoveryEventTemplate` — used to rebuild too, so their next
+flush dropped our `redirect` tag. Fixed upstream in amethyst #3882 and #3883 and
+taken here with the `4f41f16db5` pin; the local repair pass that used to restore
+a clobbered verdict on the next fold is gone with it. `RelayAliasRecordTest`
+holds the merge from both directions, so a pin that regressed it would fail the
+build rather than quietly lose verdicts again.
 
 **No false positives in 4,551 folds.** Every path that looks like a real
 endpoint — `/relay`, `/invoices`, `/outbox`, `/inbox`, `/all`, `/v1`, `/v2`,

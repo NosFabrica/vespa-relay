@@ -110,40 +110,8 @@ class RelayAliasRecord(
         sampled: Int,
         shared: Int,
     ): Event? {
-        val evidence =
-            if (sampled > 0) {
-                "$sampled newest events, $shared shared with ${canonical.url}"
-            } else {
-                "restored, last measured against ${canonical.url}"
-            }
+        val evidence = "$sampled newest events, $shared shared with ${canonical.url}"
         return edit(alias, owned = setOf(REDIRECT_TAG), add = listOf(arrayOf(REDIRECT_TAG, canonical.url, evidence)))
-    }
-
-    /**
-     * Re-publish verdicts this process still holds whose stored record no
-     * longer carries them.
-     *
-     * The other half of the shared-address problem, and the half this repo
-     * cannot fix at the source: quartz's monitor rebuilds a relay's record from
-     * its own observations, so its next flush drops our `redirect` tag exactly
-     * as ours used to drop its rtt. Until that writer edits rather than
-     * rebuilds, a verdict is restored on the next fold rather than lost.
-     *
-     * [held] is what memory believes; [fromStore] is what the store just
-     * returned. Anything in the first and not the second was clobbered. Both
-     * are already in hand, so noticing costs no extra query.
-     */
-    suspend fun reassert(
-        held: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
-        fromStore: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
-    ): Int {
-        if (signer == null) return 0
-        var restored = 0
-        for ((alias, canonical) in held) {
-            if (fromStore[alias] == canonical) continue
-            if (publish(alias, canonical, sampled = 0, shared = 0) != null) restored++
-        }
-        return restored
     }
 
     /**

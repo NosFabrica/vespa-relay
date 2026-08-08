@@ -16,21 +16,36 @@ app = "0.1.0"
 # they are per-module (:common, :relay, :sync), a new module needs its own, and
 # they are what stops a store bump from silently dragging its own quartz in.
 #
-# f4640b6ea1 = amethyst PR #3877, which is the reason this pin moved: it is the
-# upstream half of the sync-state nesting in :sync. SyncCoverage keyed its bands
-# by "$url $filterJson" and handed that INTERNAL key out through export()/
-# restore(); the key is a typed `SyncCoverage.BandKey(relay, filter)` now, with
-# encode()/decode() on the class for a file that still wants one joined key per
-# line. `SyncBands` here was splitting that string at the first space to nest its
-# own file by stream/filter/relay, and now asks for the halves instead.
+# 4f41f16db5 = amethyst main through PRs #3882 and #3883, which is the reason
+# this pin moved: quartz's NIP-66 monitor was deleting this repo's fold verdicts.
 #
-# SOURCE-BREAKING for callers of export()/restore(), which is this repo and geode
-# and nothing else. The store does not call SyncCoverage at all (its own pin
-# comment says grep finds no reference), so the bump reaches us only through
-# `SyncBands`. The store pin below moves to the commit that pins the SAME quartz,
-# so the at-or-ahead rule above is satisfied by equality again rather than by
-# luck.
-quartz = "f4640b6ea1"
+# Kind 30166 is ADDRESSABLE on `d` = the relay url, so quartz's
+# `RelayReachabilityStore` and `RelayProber.toDiscoveryEventTemplate` and our
+# `RelayAliasRecord` are all writing the SAME slot for a given relay. All three
+# built the record from their own observations alone, so whichever wrote last
+# erased the others — measured here as `[d, n, rtt-open]` becoming `[d, redirect]`
+# and back again on the next dial. Nothing about the loss is visible: the record
+# is still signed, still a valid NIP-66 observation, just saying less than it did.
+# Both quartz writers now read the current record and carry across every tag they
+# did not themselves measure.
+#
+# ADDITIVE for callers: `toDiscoveryEventTemplate`'s new `current` parameter
+# defaults to null, and no signature this repo calls changed. The bump is worth
+# taking anyway because the passive monitor runs on every connection open, so
+# without it a verdict survives only until the next dial of the same url.
+#
+# DIRECTION: f4640b6ea1 (the previous pin, PR #3877) is an ancestor of this — the
+# store at a308d6723f compiles against it, so the store is now running on a quartz
+# AHEAD of what it was built against, which is the safe side of the at-or-ahead
+# invariant. The store pin below does not move.
+#
+# LEXICOGRAPHIC: this is the first bump here that goes BACKWARDS by string.
+# '4f41…' sorts BELOW the 'f464…' the store still drags in transitively, so
+# conflict resolution alone would keep the OLD quartz and this bump would do
+# nothing — the exact silent no-op the forces exist for. They are what makes this
+# land, not a formality. VERIFY the hash resolved rather than reading this line:
+# `./gradlew :relay:dependencies --configuration runtimeClasspath`
+quartz = "4f41f16db5"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # a308d6723f = store main through PR #62, whose WHOLE range is that quartz bump:
@@ -68,9 +83,9 @@ quartz = "f4640b6ea1"
 #
 # VERIFY the hash resolved rather than reading this line: Gradle breaks a version
 # conflict lexicographically, so a hash that sorts below one dragged in
-# transitively loses silently and the bump does nothing. Both of this bump's
-# hashes sort ABOVE the ones they replace — 'a308…' > '98972…' and 'f464…' >
-# '35f9…' — which is the safe direction, but check.
+# transitively loses silently and the bump does nothing. This pin sorted the safe
+# way when it moved ('a308…' > '98972…'); the quartz pin above no longer does, and
+# rides on the forces instead.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
 vespaEventStore = "a308d6723f"
 coroutines = "1.11.0"
