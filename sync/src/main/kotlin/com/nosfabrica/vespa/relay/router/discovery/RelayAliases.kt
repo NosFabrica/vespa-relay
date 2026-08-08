@@ -36,8 +36,9 @@ import java.util.concurrent.ConcurrentHashMap
  *
  * [HostStrikes] cannot help: it evicts an authority that goes SILENT, and every
  * one of these answers perfectly well. The duplicate is only visible in what
- * comes back, so that is what this asks for — the newest [probeLimit] events at
- * each url. Two urls whose newest window is the same window are the same relay.
+ * comes back, so that is what this asks for — the newest [probeTarget] events
+ * at each url, PAGED so a relay's own REQ cap sets the page size rather than the
+ * depth. Two urls whose newest window is the same window are the same relay.
  *
  * The verdict is a measurement, not a guess about someone's config, which is
  * what makes it publishable: see [RelayAliasRecord] for the NIP-66 record the
@@ -47,11 +48,11 @@ import java.util.concurrent.ConcurrentHashMap
  */
 class RelayAliases(
     /**
-     * How many of a relay's newest events one fingerprint asks for. The whole
-     * window is submitted to ingest, so this is a sync that also identifies —
-     * the only waste is the ids that turn out to be a duplicate's.
+     * How deep a fingerprint walks. The whole window is submitted to ingest, so
+     * this is a sync that also identifies — the only waste is the ids that turn
+     * out to be a duplicate's.
      */
-    val probeLimit: Int = DEFAULT_PROBE_LIMIT,
+    val probeTarget: Int = DEFAULT_PROBE_TARGET,
     /**
      * The smallest window worth deciding on. Two relays that both answered with
      * four events look identical and are not evidence of anything; below this,
@@ -239,29 +240,33 @@ class RelayAliases(
 
     companion object {
         /**
-         * The newest 500 events, because that is what relays actually serve.
+         * How deep a fingerprint goes: the newest 1,000 events.
          *
-         * Measured against 60 live hosts: `limitation.max_limit` is 500 on
-         * exactly half of the ones that advertise it, and every relay that
-         * answered a `{"limit": 1000}` probe truncated it to 500 anyway. So a
-         * bigger ask buys no more evidence — and it costs the fold outright on
-         * a relay that ENFORCES its cap rather than truncating. purplepag.es
-         * answered 1,000 with `CLOSED blocked: limit too high: 1000 (max
-         * 500)`: no events, no fingerprint, and its aliases never fold.
-         *
-         * [AliasProbe] still drops to [FALLBACK_PROBE_LIMIT] on a silent
-         * relay, which covers the caps below this one.
+         * A DEPTH, not a REQ limit — [AliasProbe] pages `until` backwards to
+         * reach it, so this is the same depth at every relay regardless of what
+         * any one of them caps a single REQ at. Deep enough that two dials
+         * seconds apart overlap heavily (the newest few events churn; a
+         * thousand do not), and cheap enough to be two or three round trips.
          */
-        const val DEFAULT_PROBE_LIMIT = 500
+        const val DEFAULT_PROBE_TARGET = 1_000
 
         /**
-         * The second, humbler ask. Relays advertising a cap under
-         * [DEFAULT_PROBE_LIMIT] exist (one sampled host advertises 0), and a
-         * refusal is indistinguishable from silence at this layer — so the
-         * retry is unconditional on an empty first answer rather than parsed
-         * out of a CLOSED message. Still well over [DEFAULT_MIN_SAMPLE].
+         * Events per REQ on the way to [DEFAULT_PROBE_TARGET]. 500 because that
+         * is the cap half the sampled hosts advertising `max_limit` publish,
+         * and asking over a relay's cap risks an outright refusal rather than a
+         * truncation — purplepag.es answers `{"limit": 1000}` with `CLOSED
+         * blocked: limit too high: 1000 (max 500)`.
          */
-        const val FALLBACK_PROBE_LIMIT = 100
+        const val DEFAULT_PROBE_PAGE = 500
+
+        /**
+         * The humbler page, tried once when the first ask comes back empty.
+         * Relays capping under [DEFAULT_PROBE_PAGE] exist (one sampled host
+         * advertises 0), and a refusal is indistinguishable from an empty relay
+         * at that layer — so the retry is unconditional rather than parsed out
+         * of a CLOSED message.
+         */
+        const val FALLBACK_PROBE_PAGE = 100
 
         /** Below 20 shared ids a match is a coincidence, not a measurement. */
         const val DEFAULT_MIN_SAMPLE = 20

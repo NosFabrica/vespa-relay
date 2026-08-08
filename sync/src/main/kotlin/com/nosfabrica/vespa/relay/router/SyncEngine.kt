@@ -238,7 +238,7 @@ class SyncEngine(
             AliasFolding(
                 aliases = RelayAliases(),
                 record = RelayAliasRecord(store, it),
-                probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_LIMIT, config.connectionTimeoutSec * 1000L),
+                probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET, config.connectionTimeoutSec * 1000L),
             )
         }
     private val dynamic =

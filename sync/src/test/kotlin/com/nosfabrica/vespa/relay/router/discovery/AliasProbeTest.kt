@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import kotlinx.coroutines.runBlocking
@@ -30,53 +31,120 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The probe's retry policy. Measured against live relays: `max_limit` is 500 on
- * half the hosts that advertise one, and a relay may REFUSE an over-large ask
- * rather than truncate it — purplepag.es answers `{"limit": 1000}` with `CLOSED
- * blocked: limit too high`. A refusal reaches this layer as an empty answer, so
- * the second, smaller ask is what keeps those hosts foldable.
+ * The fingerprint walk. A single REQ measures a relay's LIMIT rather than the
+ * relay — measured across 60 live hosts, `max_limit` is 500 on half of those
+ * advertising one and 100, 1024, 2100, 10000 or 0 on the rest — so the probe
+ * pages `until` backwards and lets each relay's cap be the page size.
+ *
+ * Every test drives a fake relay holding [Fake.total] events on descending
+ * timestamps, capping each REQ at [Fake.cap], so the walk is exercised against
+ * exactly the behaviour the live ones showed.
  */
 class AliasProbeTest {
     private val url = RelayUrlNormalizer.normalize("wss://relay.example")
     private val signer = NostrSignerSync()
 
-    private fun events(n: Int): List<Event> = (0 until n).map { signer.sign(1_700_000_000L + it, 1, emptyArray(), "e$it") }
+    /**
+     * A relay with [total] events, one per second descending from a fixed
+     * moment, that never returns more than [cap] per REQ and honours `until`
+     * inclusively — which is what makes the boundary re-read real.
+     */
+    private inner class Fake(
+        val total: Int,
+        val cap: Int = Int.MAX_VALUE,
+        val refuseOver: Int? = null,
+    ) {
+        val asks = mutableListOf<Pair<Int, Long?>>()
+        private val events: List<Event> =
+            (0 until total).map { signer.sign(BASE - it, 1, emptyArray(), "e$it") }
+
+        suspend fun fetch(
+            @Suppress("UNUSED_PARAMETER") at: NormalizedRelayUrl,
+            want: Int,
+            until: Long?,
+        ): List<Event> {
+            asks += want to until
+            // A relay that ENFORCES its cap answers nothing at all, which is
+            // what purplepag.es does to an over-large ask.
+            if (refuseOver != null && want > refuseOver) return emptyList()
+            return events
+                .filter { until == null || it.createdAt <= until }
+                .take(minOf(want, cap))
+        }
+    }
+
+    private fun probe(
+        fake: Fake,
+        target: Int,
+        page: Int = 500,
+    ) = AliasProbe(fetch = fake::fetch, target = target, page = page, fallbackPage = 100)
 
     @Test
-    fun `a full first answer is not asked twice`() =
+    fun `a relay capping every REQ still yields the full depth`() =
         runBlocking {
-            val asks = mutableListOf<Int>()
-            val probe =
-                AliasProbe(fetch = { _, n ->
-                    asks += n
-                    events(3)
-                }, limit = 500)
+            // The live case: nos.lol answered a 1,000 ask with exactly 500.
+            val fake = Fake(total = 5_000, cap = 500)
 
-            assertEquals(3, probe.fingerprint(url) {}?.size)
-            assertEquals(listOf(500), asks)
+            val print = probe(fake, target = 1_000).fingerprint(url) {}
+
+            assertEquals(1_000, print?.size)
+            assertTrue(fake.asks.size > 1, "a capped relay must be paged, not accepted at its cap")
         }
 
     @Test
-    fun `an empty first answer is retried smaller`() =
+    fun `the walk stops at the target rather than draining the relay`() =
         runBlocking {
-            val asks = mutableListOf<Int>()
-            val probe =
-                AliasProbe(
-                    fetch = { _, n ->
-                        asks += n
-                        if (n == 500) emptyList() else events(7)
-                    },
-                    limit = 500,
-                )
+            val fake = Fake(total = 100_000, cap = 500)
 
-            assertEquals(7, probe.fingerprint(url) {}?.size)
-            assertEquals(listOf(500, RelayAliases.FALLBACK_PROBE_LIMIT), asks)
+            assertEquals(1_000, probe(fake, target = 1_000).fingerprint(url) {}?.size)
+            // Two full pages plus the boundary re-read, not 200 pages.
+            assertTrue(fake.asks.size <= 4, "walked ${fake.asks.size} pages for 1,000 ids")
+        }
+
+    @Test
+    fun `a relay holding less than the target returns what it has`() =
+        runBlocking {
+            val fake = Fake(total = 137, cap = 500)
+
+            // A short walk is a fine answer — the target is a ceiling on
+            // effort, not a requirement.
+            assertEquals(137, probe(fake, target = 1_000).fingerprint(url) {}?.size)
+        }
+
+    @Test
+    fun `an ask over the relay's cap is retried at the smaller page`() =
+        runBlocking {
+            // Refuses anything over 100 outright, the shape of
+            // `CLOSED blocked: limit too high`. Target over the page size, so
+            // the first ask really is a full page rather than a trimmed one.
+            val fake = Fake(total = 1_000, cap = 100, refuseOver = 100)
+
+            val print = probe(fake, target = 1_000).fingerprint(url) {}
+
+            // The refusal cost one round trip, not the fold: the walk drops to
+            // the smaller page and still reaches the full depth.
+            assertEquals(1_000, print?.size)
+            assertEquals(500, fake.asks.first().first, "the first ask is the normal page")
+            assertEquals(100, fake.asks[1].first, "and the second drops to the fallback")
+            assertTrue(fake.asks.drop(1).all { it.first <= 100 }, "the smaller page sticks for the rest of the walk")
+        }
+
+    @Test
+    fun `the cursor walks backwards, never repeating the same window`() =
+        runBlocking {
+            val fake = Fake(total = 2_000, cap = 500)
+
+            probe(fake, target = 1_000).fingerprint(url) {}
+
+            val cursors = fake.asks.mapNotNull { it.second }
+            assertEquals(cursors.sortedDescending(), cursors, "until must move monotonically older")
+            assertEquals(cursors.distinct(), cursors, "a repeated cursor is a walk that cannot end")
         }
 
     @Test
     fun `a url that cannot be asked at all stays null, never empty`() =
         runBlocking {
-            val probe = AliasProbe(fetch = { _, _ -> null }, limit = 500)
+            val probe = AliasProbe(fetch = { _, _, _ -> null }, target = 1_000)
 
             // Null is what stops [RelayAliases] folding it. An empty set would
             // be an assertion that the relay holds nothing.
@@ -84,24 +152,59 @@ class AliasProbeTest {
         }
 
     @Test
+    fun `a walk cut short mid-way keeps what it already proved`() =
+        runBlocking {
+            var calls = 0
+            val fake = Fake(total = 5_000, cap = 500)
+            val probe =
+                AliasProbe(
+                    fetch = { u, want, until -> if (calls++ == 0) fake.fetch(u, want, until) else null },
+                    target = 1_000,
+                )
+
+            // 500 real ids beat none: the transport gave up, the measurement
+            // did not.
+            assertEquals(500, probe.fingerprint(url) {}?.size)
+        }
+
+    @Test
     fun `a relay that really is empty answers empty, not null`() =
         runBlocking {
-            val probe = AliasProbe(fetch = { _, _ -> emptyList() }, limit = 500)
+            assertEquals(emptySet(), probe(Fake(total = 0), target = 1_000).fingerprint(url) {})
+        }
 
-            assertEquals(emptySet(), probe.fingerprint(url) {})
+    @Test
+    fun `a relay stuck on one timestamp cannot page forever`() =
+        runBlocking {
+            var asks = 0
+            // Every event shares a created_at, so an inclusive `until` re-reads
+            // the same window however far the cursor is stepped.
+            val same: List<Event> = (0 until 10).map { signer.sign(BASE, 1, emptyArray(), "same$it") }
+            val probe =
+                AliasProbe(fetch = { _, _, _ ->
+                    asks++
+                    same
+                }, target = 1_000)
+
+            assertEquals(10, probe.fingerprint(url) {}?.size)
+            assertTrue(asks < AliasProbe.DEFAULT_MAX_PAGES, "gave up after $asks pages")
         }
 
     @Test
     fun `everything downloaded reaches ingest before it is counted`() =
         runBlocking {
             val seen = mutableListOf<String>()
-            val probe = AliasProbe(fetch = { _, _ -> events(4) }, limit = 500)
+            val fake = Fake(total = 700, cap = 500)
 
-            val print = probe.fingerprint(url) { seen += it.id }
+            val print = probe(fake, target = 1_000).fingerprint(url) { seen += it.id }
 
             // The probe is a sync that also identifies: nothing it pulled is
             // thrown away to pay for the verdict.
-            assertEquals(4, seen.size)
-            assertTrue(seen.toSet() == print)
+            assertEquals(700, print?.size)
+            assertEquals(700, seen.toSet().size)
         }
+
+    private companion object {
+        const val BASE = 1_700_000_000L
+    }
 }

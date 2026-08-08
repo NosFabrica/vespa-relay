@@ -25,87 +25,175 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import kotlinx.coroutines.CancellationException
 
 /**
- * One relay's newest window, as the set of ids in it — the measurement
- * [RelayAliases] folds on.
+ * One relay's newest [target] events, as the set of ids in them — the
+ * measurement [RelayAliases] folds on.
  *
- * A bare `{"limit": n}` REQ on purpose: no kinds, no authors, no `since`. The
- * question is "what is at the end of THIS url", and any narrowing invites the
- * two dials to disagree for a reason that has nothing to do with whether they
- * are the same server. It ends at EOSE, so a relay that holds fewer than [limit]
- * events answers in one round trip.
+ * **Paged, because a single REQ measures the relay's limit rather than the
+ * relay.** Every relay caps a REQ somewhere and almost none of them say where:
+ * measured across 60 live hosts, half of those advertising `max_limit` say 500,
+ * others say 100, 1024, 2100, 10000 or nothing at all, and one advertises 0. A
+ * one-shot ask therefore returns "min(what we wanted, whatever this relay
+ * allows)" — so the same fingerprint is a different depth at every host, and at
+ * a host that caps hard it is too shallow to mean anything. Worse, a relay that
+ * ENFORCES its cap refuses outright rather than truncating (purplepag.es
+ * answers `{"limit": 1000}` with `CLOSED blocked: limit too high: 1000 (max
+ * 500)`), which reaches this layer as silence and takes that host out of the
+ * fold entirely.
+ *
+ * So this walks instead: ask a page, take the oldest `created_at` it returned
+ * as the next `until`, ask again, until [target] ids are in hand. The relay's
+ * own cap becomes the page size rather than the ceiling, and the depth is ours
+ * to choose.
+ *
+ * A bare `{"limit": n, "until": …}` filter on purpose: no kinds, no authors.
+ * The question is "what is at the end of THIS url", and any narrowing invites
+ * the two dials to disagree for a reason that has nothing to do with whether
+ * they are the same server.
  *
  * Everything it downloads is handed to [onEvent] before the ids are counted.
  * The probe is a sync that also identifies: on a url that turns out to be
- * distinct, the window was worth having anyway, and on one that turns out to be
+ * distinct the window was worth having anyway, and on one that turns out to be
  * a duplicate the store drops it as already-held. Nothing is fetched twice to
  * pay for the verdict.
  */
 class AliasProbe(
     /**
-     * One ask, as a function, so the retry policy below can be tested without
-     * a relay. Returns null when the url could not be asked at all.
+     * One page, as a function, so the walk below can be tested without a relay.
+     * Takes the url, the page size, and the exclusive-to-us `until` cursor
+     * (null for the newest page). Returns null when the url could not be asked
+     * at all — which is NOT the same as an empty page.
      */
-    private val fetch: suspend (NormalizedRelayUrl, Int) -> List<Event>?,
-    private val limit: Int,
+    private val fetch: suspend (NormalizedRelayUrl, Int, Long?) -> List<Event>?,
+    /** How many ids make a fingerprint. The walk stops here. */
+    private val target: Int = RelayAliases.DEFAULT_PROBE_TARGET,
+    /** How many events one REQ asks for. Trimmed to [fallbackPage] if the first page is refused. */
+    private val page: Int = RelayAliases.DEFAULT_PROBE_PAGE,
     /**
-     * What to ask for when [limit] came back with nothing. A relay may cap
-     * lower than we asked and REFUSE rather than truncate — measured,
-     * purplepag.es answers `{"limit": 1000}` with `CLOSED blocked: limit too
-     * high` — and at this layer that is indistinguishable from silence.
+     * The humbler page size, tried once when the first ask comes back empty.
+     * A refusal and an empty relay are indistinguishable here, so this is
+     * unconditional rather than parsed out of a CLOSED message.
      */
-    private val fallbackLimit: Int = RelayAliases.FALLBACK_PROBE_LIMIT,
+    private val fallbackPage: Int = RelayAliases.FALLBACK_PROBE_PAGE,
+    /**
+     * A hard stop on the walk. Nothing should reach it — [target] / [page]
+     * pages plus a few for boundary re-reads — but a relay that answers every
+     * `until` with the same events would otherwise page forever.
+     */
+    private val maxPages: Int = DEFAULT_MAX_PAGES,
 ) {
     /**
-     * The ids at [url], or null when it could not be asked. Null and empty are
-     * different answers and must stay that way: empty is a relay that holds
-     * nothing (and is therefore no evidence of anything), null is a relay that
-     * never spoke, and neither may be folded.
+     * The ids at [url], or null when it could not be asked at all. Null and
+     * empty are different answers and must stay that way: empty is a relay that
+     * holds nothing (and is therefore no evidence of anything), null is a relay
+     * that never spoke, and [RelayAliases] folds on neither.
      *
-     * A first ask that yields nothing is retried once, smaller. Two dials is
-     * the ceiling: a genuinely empty relay pays the extra one, once, and only
-     * while it is still in a group with no verdict.
+     * A short walk is a fine answer. A relay holding 300 events returns 300,
+     * and that is still far more than the fold's minimum sample — the target is
+     * a ceiling on effort, not a requirement.
      */
     suspend fun fingerprint(
         url: NormalizedRelayUrl,
         onEvent: suspend (Event) -> Unit,
     ): Set<String>? {
-        val first = ask(url, limit, onEvent)
-        if (!first.isNullOrEmpty() || fallbackLimit >= limit) return first
-        return ask(url, fallbackLimit, onEvent) ?: first
+        // id -> created_at, because the fingerprint is "the newest [target]",
+        // and only the timestamp can say which those are. A page may arrive in
+        // any order, and two urls on the same host can page at different sizes
+        // (one relay caps at 500, another at 100) — trimmed by insertion order
+        // they would be compared at different depths, which is exactly the
+        // skew paging exists to remove.
+        val ids = HashMap<String, Long>()
+        var until: Long? = null
+        var size = page
+        var spoke = false
+        var stalls = 0
+
+        repeat(maxPages) {
+            if (ids.size >= target) return newest(ids)
+            // A FULL page every time, never trimmed to what is still missing.
+            // `until` is inclusive, so each page re-reads its boundary and
+            // yields one fewer new id than it returned; trimming the last ask
+            // to the exact remainder therefore guarantees falling short of the
+            // target by that boundary, and then asking for 1, and then for 1
+            // again. Over-fetching by at most a page costs nothing — the
+            // events go to ingest either way.
+            val events = fetch(url, size, until)
+            if (events == null) {
+                // Mid-walk the transport gave up. Keep what the walk already
+                // proved rather than throwing it away — but a walk that never
+                // got a single page has nothing to stand behind.
+                return if (spoke) newest(ids) else null
+            }
+            spoke = true
+            if (events.isEmpty()) {
+                // The first empty page is ambiguous: an empty relay, or one
+                // refusing this page size. Drop to the smaller ask once and
+                // let the next page decide which it was.
+                if (ids.isEmpty() && size > fallbackPage) {
+                    size = fallbackPage
+                    return@repeat
+                }
+                return newest(ids)
+            }
+            val before = ids.size
+            for (event in events) {
+                onEvent(event)
+                ids[event.id] = event.createdAt
+            }
+            // `until` is INCLUSIVE, so the next page re-sees everything sharing
+            // the oldest timestamp — harmless for a set, except that a page
+            // which is entirely one timestamp cannot move the cursor at all.
+            // A page that added nothing new is exactly that case: step strictly
+            // below it. The same boundary problem RelayDiscovery.scan solves,
+            // and cheaper here because duplicates simply collapse.
+            val oldest = events.minOf { it.createdAt }
+            if (ids.size == before) {
+                until = oldest - 1
+                // Two stalled pages in a row is a relay that is not walking
+                // backwards for us. Take what we have.
+                if (++stalls >= MAX_STALLS) return newest(ids)
+            } else {
+                until = oldest
+                stalls = 0
+            }
+        }
+        return newest(ids)
     }
 
-    private suspend fun ask(
-        url: NormalizedRelayUrl,
-        limit: Int,
-        onEvent: suspend (Event) -> Unit,
-    ): Set<String>? =
-        try {
-            val events = fetch(url, limit) ?: return null
-            for (event in events) onEvent(event)
-            events.mapTo(HashSet()) { it.id }
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: Exception) {
-            // A dead url in a relay list is the ordinary case here, not an
-            // incident — and unlike a sync failure it costs nothing to skip:
-            // the url simply keeps whatever verdict it already had, which for
-            // an unprobed one is "dial it normally".
-            null
+    /** The [target] newest ids of a walk that may have overshot by up to a page. */
+    private fun newest(ids: Map<String, Long>): Set<String> =
+        if (ids.size <= target) {
+            ids.keys.toSet()
+        } else {
+            ids.entries
+                .sortedByDescending { it.value }
+                .take(target)
+                .mapTo(HashSet()) { it.key }
         }
 
     companion object {
-        /** The live wiring: one bare REQ per ask, over the router's own client. */
+        /**
+         * Ceiling on pages per url. Generous on purpose: at the default page
+         * size a walk is two or three, but a relay that caps at 100 needs
+         * eleven to reach the same depth and must not be cut off at a shallower
+         * fingerprint than everyone else — that is the whole point of paging.
+         * This exists only so a misbehaving relay cannot spin.
+         */
+        const val DEFAULT_MAX_PAGES = 32
+
+        /** Consecutive pages that add nothing before the walk gives up. */
+        private const val MAX_STALLS = 2
+
+        /** The live wiring: one paged REQ per ask, over the router's own client. */
         fun over(
             client: NostrClient,
-            limit: Int,
+            target: Int,
             timeoutMs: Long,
         ): AliasProbe =
             AliasProbe(
-                fetch = { url, n -> client.fetchAll(url, Filter(limit = n), timeoutMs) },
-                limit = limit,
+                fetch = { url, size, until -> client.fetchAll(url, Filter(limit = size, until = until), timeoutMs) },
+                target = target,
             )
     }
 }

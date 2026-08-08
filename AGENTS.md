@@ -424,9 +424,28 @@ answering the same filter, once per url.
 
 `HostStrikes` cannot see it — it evicts an authority that goes SILENT, and
 every one of these answers perfectly. The duplicate only exists in what comes
-back, so `AliasProbe` asks each url for its newest 1,000 events and
-`RelayAliases` folds two urls together when the smaller window is ≥50%
-contained in the larger. Guards worth knowing before you touch the thresholds:
+back, so `AliasProbe` reads each url's newest 1,000 events and `RelayAliases`
+folds two urls together when the smaller window is ≥50% contained in the larger.
+
+**The probe pages; a one-shot REQ would measure the relay's limit, not the
+relay.** Every relay caps a REQ somewhere and almost none say where — across 60
+live hosts, `max_limit` is 500 on half of those advertising one and 100, 1024,
+2100, 10000 or nothing on the rest, and one advertises 0. A single ask returns
+`min(what we wanted, whatever this host allows)`, so the "same" fingerprint is a
+different depth at every host and too shallow to mean anything at the strict
+ones; worse, a relay that *enforces* its cap refuses outright rather than
+truncating (`CLOSED blocked: limit too high`), which arrives as silence and drops
+that host out of the fold entirely. So the walk asks a page, takes the oldest
+`created_at` back as the next `until`, and repeats — each relay's cap becomes the
+page size, the depth stays ours. Three consequences that are easy to undo by
+accident: `until` is inclusive so every page re-reads its boundary (never trim
+the last ask to the exact remainder — it can then never reach the target), the
+result is trimmed to the newest N *by timestamp* so two urls paging at different
+sizes are still compared at equal depth, and `DEFAULT_MAX_PAGES` has to clear
+`target / FALLBACK_PROBE_PAGE` or hosts that cap low get a shallower
+fingerprint than everyone else — the exact thing paging is for.
+
+Guards worth knowing before you touch the thresholds:
 a url with **no** fingerprint is never folded (silence is not evidence — a
 relay that is merely down has to come back), a window under 20 ids decides
 nothing, and the survivor is the pathless/`wss`/portless url so bands, cursors
