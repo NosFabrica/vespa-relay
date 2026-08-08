@@ -98,6 +98,11 @@ class SyncEngine(
     // the clearnet-only deployment, where discovery drops .onion urls and a
     // configured one is a boot error — never a silent timeout.
     torSettings: TorSettings? = null,
+    // Which of these ids the store already holds, so ingest can drop a
+    // duplicate BEFORE paying to verify it (see IngestPipeline.dropDuplicates).
+    // Not on IEventStore — SyncMain hands over the engine index's own
+    // existence check. Null just means every copy is verified, as before.
+    knownIds: (suspend (List<String>) -> Set<String>)? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -202,7 +207,7 @@ class SyncEngine(
 
     private val phases = StreamPhases()
     private val paging = PagingProgress()
-    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope)
+    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, knownIds)
 
     /**
      * The automatic window chunker. A peer's cap arrives through quartz —

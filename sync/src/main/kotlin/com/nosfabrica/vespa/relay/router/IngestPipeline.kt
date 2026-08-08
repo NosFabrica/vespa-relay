@@ -20,12 +20,17 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -41,8 +46,9 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * The download-to-store pipeline every mirrored event funnels through: a
  * bounded channel, a pool of workers draining it in batches through
- * [IEventStore.batchInsert], and signature verification off the download
- * threads (skipped for trusted upstreams).
+ * [IEventStore.batchInsert], with duplicates dropped and the rest signature-
+ * verified off the download threads (verification is skipped for trusted
+ * upstreams).
  *
  * The channel is bounded so a fast download (negentropy can deliver >10k/s)
  * cannot outrun Vespa ingest and pile events onto the heap: when it fills,
@@ -58,6 +64,13 @@ internal class IngestPipeline(
     // Clients first: ingest yields when their reads slow down.
     private val servingPressure: ServingPressure?,
     private val scope: CoroutineScope,
+    /**
+     * Which of these ids the store ALREADY holds — `VespaEventIndex.existingIds`
+     * in the router, the same summary-free existence check the store's own bulk
+     * path runs. Null disables the probe entirely, which is only slower, never
+     * wrong: the store deduplicates again regardless. See [dropDuplicates].
+     */
+    private val knownIds: (suspend (List<String>) -> Set<String>)? = null,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
@@ -209,13 +222,22 @@ internal class IngestPipeline(
                 queued.decrementAndGet()
                 batch.add(next)
             }
-            val valid = ArrayList<Event>(batch.size)
+            // BEFORE verify, which is the whole point — see [dropDuplicates].
+            val fresh = dropDuplicates(batch)
+            if (fresh.isEmpty()) continue
+            val valid = ArrayList<Event>(fresh.size)
             var verifyRejected = 0
-            for (msg in batch) {
-                if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
-                    valid.add(msg.event)
-                } else {
-                    verifyRejected++
+            // Booked as a stage so it lands on the same `router: ingest stages`
+            // line as the store's own dedup/guards/write. It was invisible
+            // there for as long as it existed, which made "is verification the
+            // limit?" a question no instrument in this repo could answer.
+            IngestStats.timed("verify") {
+                for (msg in fresh) {
+                    if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
+                        valid.add(msg.event)
+                    } else {
+                        verifyRejected++
+                    }
                 }
             }
             if (verifyRejected > 0) {
@@ -229,6 +251,88 @@ internal class IngestPipeline(
             audit?.let { for (event in valid) it.inspect(event) }
             insertIsolating(valid)
         }
+    }
+
+    /**
+     * The batch minus everything that cannot be written because we already hold
+     * it — dropped BEFORE the signature check, which is the entire reason this
+     * exists. A schnorr verify costs **~48µs/event** (measured on a 4-core box,
+     * quartz over JNI secp256k1; the id re-hash is 1.5µs of that and event size
+     * barely moves it), and on a duplicate every one of those microseconds buys
+     * nothing: the event is already stored, and it was verified when it first
+     * landed. Verification used to run over the whole batch, so a mirror paid it
+     * per COPY — a popular event held by 40 discovered relays was verified 40
+     * times to be stored once.
+     *
+     * Two passes, cheapest first:
+     *
+     *  - **in batch**, by id, no I/O. This is the fan-out case: the same event
+     *    arrives from every relay carrying it, usually inside one batch.
+     *    Ephemeral kinds are exempt — the store counts a repeat of one as
+     *    accepted-not-stored rather than as a duplicate, and this must not
+     *    quietly move a number the health line prints.
+     *  - **in the store**, via [knownIds]. Same existence check the store's own
+     *    stage B runs, so it costs one extra round trip (~13ms per 1000 ids,
+     *    measured) against a batch whose write costs ~900ms. Gated on
+     *    [PROBE_MIN_VERIFIABLE] because that trade only holds at width: on a
+     *    small live-tail batch the round trip can cost more than the
+     *    verifications it saves, and it adds dedup load to the engine the
+     *    relay is serving reads from.
+     *
+     * **Why this is safe.** An event dropped here is never stored, so its
+     * signature is a fact about a document nobody will read. The id it is
+     * matched on is the CLAIMED id, unverified at this point — a forged event
+     * naming an id we hold is dropped without being checked, which is the same
+     * outcome verifying it would have produced. Nothing unverified reaches
+     * [IEventStore.batchInsert]: everything that survives this is verified in
+     * full, id hash included, so a lying id cannot smuggle a document in under
+     * some other id.
+     *
+     * What it costs in exchange: an upstream serving junk that happens to
+     * collide with our corpus no longer shows up as `bad signature` on the
+     * stats line. Junk naming events we already have is the one flavour of it
+     * this relay was never going to store anyway.
+     */
+    private suspend fun dropDuplicates(batch: List<Inbound>): List<Inbound> {
+        val ids = HashSet<String>(batch.size)
+        val once = ArrayList<Inbound>(batch.size)
+        var dropped = 0
+        for (msg in batch) {
+            if (msg.event.kind.isEphemeral() || ids.add(msg.event.id)) once.add(msg) else dropped++
+        }
+
+        val probe = knownIds
+        // The count that justifies the round trip is what it would save, and it
+        // saves verifications — a batch of trusted events skips those already.
+        val verifiable = once.count { !it.skipVerify }
+        val stored =
+            if (probe == null || verifiable < PROBE_MIN_VERIFIABLE) {
+                emptySet()
+            } else {
+                // A failed probe must cost time, never correctness: fall
+                // through knowing nothing and let the store's stage B decide,
+                // exactly as it did before this existed.
+                runCatching {
+                    IngestStats.timed("dedup.pre") {
+                        once
+                            .map { it.event.id }
+                            .chunked(DEDUP_CHUNK)
+                            .mapBounded(QUERY_FANOUT) { probe(it) }
+                            .flatMapTo(HashSet()) { it }
+                    }
+                }.getOrDefault(emptySet())
+            }
+
+        val fresh = if (stored.isEmpty()) once else once.filter { it.event.id !in stored }
+        dropped += once.size - fresh.size
+        if (dropped > 0) {
+            rejected.addAndGet(dropped.toLong())
+            // The store's own word for it, verbatim, so dropping a duplicate
+            // here and dropping it there are ONE line on the stats breakdown
+            // rather than two that have to be added up.
+            rejectReasons.merge(RejectionReason.DUPLICATE.take(48), dropped.toLong(), Long::plus)
+        }
+        return fresh
     }
 
     /**
@@ -338,6 +442,27 @@ internal class IngestPipeline(
          * short of the 80,000 that killed the process.
          */
         private const val MAX_INBOUND_QUEUE = 16_384
+
+        /**
+         * How many events a batch must expect to VERIFY before the dedup probe
+         * is worth its round trip. The arithmetic: a probe answers ~100 ids in
+         * ~4ms and ~1000 in ~13ms (store benchmark, `CHECK_CHUNK=500`,
+         * `QUERY_FANOUT=4`), while a verify is ~48µs — so one probe pays for
+         * itself once ~80-270 of the ids it covers come back stored. 128 sits
+         * inside that band at the duplicate rates a wide fan-out actually
+         * produces, and keeps small live-tail batches (whose events are mostly
+         * new, and whose duplicates the in-batch pass already caught) off the
+         * engine.
+         */
+        private const val PROBE_MIN_VERIFIABLE = 128
+
+        /**
+         * Ids per probe query. Read from the store's OWN knob, not a private
+         * one: stage B chunks at `VESPA_DEDUP_CHUNK` (default 500), and a
+         * deployment that widens it for sync speed should not have to discover
+         * that the router in front of it kept probing at the old width.
+         */
+        private val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
 
         // Distinct store failures to dump a raw event for; past a handful it
         // is a stuck loop, not news.

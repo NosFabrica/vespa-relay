@@ -116,7 +116,10 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     SyncMain.kt           entrypoint; env, store, engine, block
     SyncEngine.kt         wiring, live tails, health/stats lines
     PressurePoller.kt     polls the relay's /pressure into ServingPressure
-    IngestPipeline.kt     bounded queue -> verify -> batchInsert, poison isolation
+    IngestPipeline.kt     bounded queue -> dedup -> verify -> batchInsert, poison
+                          isolation. Dedup FIRST is the point: a schnorr check is
+                          ~48us and a mirror is offered the same event once per
+                          relay holding it
     BisectingInsert.kt    the batch-bisecting write
     StaticBackfill.kt     history catch-up for configured upstreams
     DynamicSync.kt        relaySource streams: discover, fan out, sync each relay
@@ -424,8 +427,11 @@ Reach for it first.
 - **`SYNC_STREAMS`** — run one stream alone, so a measurement isn't three
   streams competing for one socket budget, heap and ingest queue.
 - **`ingest stages`** — per-stage timing (`dedup`, `write`, `proj.fetch`,
-  `proj.write`, `versions`). This is what identified a projection read-back as
-  90% of ingest.
+  `proj.write`, `versions`, plus the router's own `verify` and `dedup.pre`).
+  This is what identified a projection read-back as 90% of ingest. Signature
+  verification was NOT on this line for as long as it existed, so "is verify
+  the limit?" was a question no instrument here could answer; anything else
+  added to the ingest path belongs on it for the same reason.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.

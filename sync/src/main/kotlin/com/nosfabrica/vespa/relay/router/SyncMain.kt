@@ -174,6 +174,12 @@ fun main() {
             wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
             torSettings = torSettings,
+            // The raw engine index, not the trust-projected store: the
+            // projection's existingIds delegates straight through, and this is
+            // a pure read that counts and never mutates — the use its own
+            // KDoc names. Membership is what ingest needs to skip verifying an
+            // event it cannot write.
+            knownIds = store.eventIndex::existingIds,
         ).start()
 
     Runtime.getRuntime().addShutdownHook(
