@@ -163,7 +163,7 @@ makes them so different in cost:
 
 |  | 3a — suppress the fetch | 3b — claim the id |
 |---|---|---|
-| structure | Bloom filter, membership test only | exact `(created_at, id)` set |
+| structure | approximate membership filter (cuckoo — see below) | exact `(created_at, id)` set |
 | where it hooks | after the reconcile names `needIds`, before the REQ that fetches them | inside the local id set the reconcile compares |
 | stops | the **event bodies** | the difference itself |
 | still pays | bisection round trips + the 32-byte ids | nothing |
@@ -174,13 +174,13 @@ makes them so different in cost:
 **3a gets most of the win for a tenth of the cost, and none of the danger.**
 Take it first; 3b is an upgrade, not the plan.
 
-#### 3a — the Bloom filter, in detail
+#### 3a — the membership filter, in detail
 
 The hook point is the thing to see. A reconcile produces the diff *before*
 anything is downloaded — `DeleteMissingSync.kt:126` shows the shape:
 `diff.needIds` in hand, then `fetchAll(Filter(ids = chunk))` to get the bodies.
 Filtering `needIds` through a membership test there needs no enumeration and no
-ordering, which is exactly what a Bloom filter can do.
+ordering, which is exactly what an approximate membership filter can do.
 
 What that saves: a kind-0 profile is several hundred bytes to a couple of KB; its
 id is 32. So suppressing the fetch avoids **~95% of the transfer** while the
@@ -230,6 +230,72 @@ mandatory:
    sixth of everything, invisibly. Tracking `n` and disabling the filter once it
    is over budget turns the catastrophe into "the router got slower", which is a
    thing an operator can see and fix.
+
+#### Bloom or cuckoo?
+
+Close, and worth deciding deliberately rather than by habit. Amortised bits per
+id, at the two false-positive rates that matter here:
+
+| ε | Bloom `1.44·log₂(1/ε)` | cuckoo (b=4, α=0.95) | binary fuse |
+|---|---|---|---|
+| 10⁻⁶ | 28.7 b (3.6 B) | 24.2 b (3.0 B) | 22 b (2.8 B) |
+| 10⁻⁹ | 43.1 b (5.4 B) | 34.6 b (4.3 B) | 32.4 b (4.1 B) |
+
+Cuckoo beats Bloom on space below about ε = 3%, so both our targets are in its
+favour — by ~20%, which is real but is not the reason to pick it.
+
+**The reason to pick it is that it cannot saturate silently.** Point 3 above is
+the scariest property of the Bloom design: a filter sized for 50M holding 500M
+keeps answering, with a false-positive rate in the double digits, discarding a
+sixth of everything and logging nothing. A cuckoo filter **fails the insert** at
+~95% load, after its relocation chain gives up. The mandatory counter-and-fail-
+open becomes intrinsic to the structure instead of a discipline we have to
+remember — and better, **insert failure is an exact rotation trigger**, so the
+generational scheme in point 2 stops needing a tuned threshold. The structure
+tells you when the generation is done.
+
+**Its headline feature is useless here, though.** Cuckoo filters support
+deletion; Bloom filters do not, and that looked like the answer to "the winner
+was deleted, so its losers are wanted again". It is not. **Deleting requires the
+item** — you need the id to compute its fingerprint and buckets. When a winning
+event is removed we have no way to enumerate the superseded ids it should
+release, because not storing them is the entire point of using a filter. The
+only world where the deletion works is one where we already kept the ids, and
+that world is 3b, which does not need a filter. Rotation remains the answer
+either way.
+
+Deletion does buy one modest thing: an operator affordance. "Why don't you have
+event X?" is answerable with a one-line un-suppress instead of "rotate the
+filter or wait".
+
+**What cuckoo costs is the concurrency story**, and that was the best property of
+the Bloom design. Bloom bit-sets are idempotent and monotonic, so both processes
+can write one mmap with no locking. A cuckoo insert *relocates existing
+fingerprints*, so concurrent writers corrupt each other, and a reader can miss an
+entry mid-relocation. Two consequences:
+
+- **Cuckoo filters do not merge.** Two Bloom filters union with a bitwise OR;
+  two cuckoo tables cannot be combined at all without reinserting the original
+  items, which we do not have.
+- **The lock-free shared file is gone** — which is what made the relay's own
+  refusals recordable.
+
+**The fix keeps cuckoo viable: one file per writer, and the reader queries both.**
+Merging is not actually required — checking two tables in turn is two bucket
+pairs, still a handful of cache lines. Each process is then a single writer to
+its own file with no cross-process lock, and only the in-process ingest workers
+need a plain striped lock. The sync process reads both; the relay writes its own
+and reads nothing.
+
+**Binary fuse filters** are ~6% smaller again and are the space-optimal answer,
+but they are **immutable** — built once from the complete key set, no incremental
+insert. Making that work means buffering the generation's raw ids to freeze it
+later, which is a real design and buys 6%. Not worth it.
+
+**Verdict: cuckoo, with per-writer files** — provided the generational rotation
+in point 2 is adopted, because insert-failure-as-rotation-trigger is most of the
+value. If the design stays single-generation, take Bloom for the lock-free
+shared file and keep the counter discipline.
 
 **What it needs from quartz.** On the main sweep path the id-to-event fetch
 happens *inside* `negentropySync` — the signature `WindowSync.reconcile` mirrors
@@ -462,9 +528,9 @@ Nothing above should be built on an estimate.
 
 1. Break `REPLACED` out of `IngestPipeline.rejectReasons` (`IngestPipeline.kt:132`)
    onto the health line as its own per-stream number.
-2. Add a Bloom filter over rejected ids — ~12 MB buys 100M bits at ~1% false
-   positive — and count **repeat** rejections per cycle. Repeats are the entire
-   prize; a first-time `REPLACED` is not recoverable by any of this.
+2. Add the 3a filter over rejected ids and count **repeat** rejections per
+   cycle. Repeats are the entire prize; a first-time `REPLACED` is not
+   recoverable by any of this.
 
 Two numbers — *"replaced x N, of which N′ we had already rejected in an earlier
 cycle"* — decide whether anything past step 2 is worth building, and how big to
