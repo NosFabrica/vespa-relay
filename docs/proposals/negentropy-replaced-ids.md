@@ -54,7 +54,11 @@ The number that matters is the `REPLACED` tally, and specifically the *repeat*
 against a number nobody has. See [Step 0](#step-0-measure-first) — it is cheap,
 and it is the only honest gate on the rest.
 
-## Two fixes, and they are independent
+## Three fixes, and they compose
+
+Fix 1 stops asking. Fix 2 removes the events being offered. Fix 3 remembers our
+refusal when neither of the first two can reach. They apply to different
+populations of upstream and are worth having together.
 
 ### Fix 1 — stop asking the question (free, no new state)
 
@@ -72,7 +76,80 @@ AGENTS.md, but it removes most of the re-transfer for zero new state.
 
 **Do this first. It may be enough**, and Step 0's numbers will say.
 
-### Fix 2 — remember what we refused (the table you asked about)
+### Fix 2 — heal the upstream: push the winner back
+
+Instead of remembering that we refused an old version, **send the upstream the
+newer one**. A relay that implements NIP-01's replaceable rule drops its old
+copy on accepting ours, the sets converge, and the difference is gone — for us,
+and for every other mirror that would have paid the same transfer. O(1) state
+instead of a gigabyte, and it fixes the cause rather than the symptom.
+
+The same move covers retractions, and there it is worth more than the
+bandwidth: an upstream still serving an event our stored kind 5 deletes gets the
+**kind 5**, and one still serving a vanished author's history gets the
+**kind 62**. Deletion propagation is a known-weak part of Nostr; this is a
+mirror in a position to repair it.
+
+**It is cheaper to build than it looks.** It does not need the ingest-rejection
+path at all — a reconcile already computes *both* halves of the diff in one
+round trip. `DeleteMissingSync.kt:115` reads `diff.haveIds` (ours they lack)
+beside `diff.needIds`; the ordinary down path simply discards that half. For
+replaceable kinds, "they lack this id of ours" and "they hold a stale version"
+are nearly the same statement, because there is one live version per address.
+Going through the diff also sidesteps a store gap: `Rejected(REPLACED)` does not
+say which event *won*, so the rejection path would need a query per address or a
+store change to report the winner.
+
+#### Where it stops working
+
+Four ways the upstream does not drop its copy:
+
+1. **We cannot write.** The dominant case. The dynamic fan-out is ~16k
+   discovered relays — auth-required, paid, whitelisted, rate-limited. We have
+   write access to almost none of them.
+2. **The relay archives deliberately.** It accepts our newer version and keeps
+   both. A real population, and not misbehaviour.
+3. **Replacement is asynchronous.** It accepts, deletes eventually, and the next
+   reconcile still sees the old id.
+4. **We cannot tell 1–3 apart** without waiting a cycle to see whether the id
+   comes back.
+
+**The asymmetry is the thing to weigh.** When Fix 3 fails it has cost memory.
+When Fix 2 fails it has cost *the same download plus an upload, every cycle* —
+strictly worse than doing nothing. So it needs an observation loop and a
+give-up rule: mark a relay write-closed after N unaccepted pushes, the way
+`HostStrikes` already records per-host facts.
+
+It also cannot touch `EXPIRED` at all. No message says "this NIP-40 event has
+expired", so an upstream serving one will serve it forever.
+
+#### It is a policy change, not a performance change
+
+Today exactly one place in the router writes: `UpstreamPush`, behind an explicit
+`dir = up` on an explicitly listed relay. `down` streams never write, and the
+parser *enforces* that `relaySource` streams are down-only. This would make
+every down stream an unsolicited writer to every discovered relay, triggered by
+their data, with no configured amplitude — one popular author's profile edit
+becomes 16k publishes.
+
+There is a decent argument that it is welcome (the event is author-signed, and
+the relay already demonstrably hosts that author's data), but republishing
+people's events to relays they did not choose is a values call, not only an
+engineering one. **Per-stream opt-in, default off**, and it should be a distinct
+setting from `dir = up` — the relay list is not the same list.
+
+#### Two constraints to design in from the start
+
+- **Push per address, not per rejected event.** `UpstreamPush` paces at 40 ms
+  between publishes; 400k rejections would be 4.4 hours of pure pacing. Dedupe
+  on `(relay, kind, pubkey, d)` once per cycle.
+- **Convergence is only observable next cycle.** Which is exactly what Step 0's
+  repeat-detector measures — see the composition note under Fix 3.
+
+### Fix 3 — remember what we refused
+
+The fallback for the population Fix 2 cannot reach: relays we cannot write to,
+and relays that provably will not heal.
 
 Two halves:
 
@@ -83,6 +160,19 @@ Two halves:
 
 Once our side claims the id, the difference is empty and it never crosses the
 wire again. Zero bytes — not "cheaper bytes".
+
+#### How it composes with Fix 2
+
+Cleanly, and in one direction. **Step 0's repeat-detector is exactly the
+instrument that tells you whether a push worked**: we pushed the winner, and
+either the old id stopped being offered (healed — no row needed, ever) or it
+came back (this relay will not heal — earn the row). So the table only grows for
+relays that have demonstrated they need it, which is the strongest bound
+available and strictly better than any of the heuristics under
+[Bounding it](#bounding-it--the-part-that-decides-whether-this-is-safe-to-ship).
+
+The dependency runs one way: Fix 3 is useful without Fix 2, but Fix 2 needs
+Fix 3's instrumentation to know whether it is working at all.
 
 ## Half A — what earns a row, and what must never
 
@@ -205,11 +295,19 @@ single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
 
 1. **Fix 1** (`since` on the replaceable-kind streams) plus **Step 0**'s
    instrumentation. One cycle of data.
-2. If the repeat count justifies it: a `ReplacedIds` table in `:sync`, packed and
-   mmap'd behind `SYNC_REPLACED_IDS_FILE`, **off when unset**, merged only at
-   `StoreWindowIndex` and `Snapshots`.
-3. Chart it on the Sync coverage card, beside the bands and sweeps it resembles.
-4. **Only then** consider moving it into vespa-eventstore. It belongs there —
+2. **Fix 2 on the static upstreams only** — the `urls` in `router.conf`, where we
+   have a relationship and plausibly write access. Per-stream opt-in, default
+   off, deduped per address per cycle, with a write-closed strike rule. This is
+   the population where it converges, and it is a bounded blast radius to learn
+   the acceptance rate in.
+3. If the repeat count *after* step 2 still justifies it: a `ReplacedIds` table
+   in `:sync`, packed and mmap'd behind `SYNC_REPLACED_IDS_FILE`, **off when
+   unset**, merged only at `StoreWindowIndex` and `Snapshots`, and populated only
+   for relays that failed to heal.
+4. Chart it on the Sync coverage card, beside the bands and sweeps it resembles.
+5. Extend Fix 2 to the dynamic fan-out only if step 2's acceptance rate is high
+   enough to be worth 16k unsolicited publishes. It probably is not.
+6. **Only then** consider moving the table into vespa-eventstore. It belongs there —
    the store is what decided `REPLACED`, and the relay serving negentropy to
    *downstream clients* has the identical bug mirrored (a client re-offers its
    old profile version forever). But it must arrive as an opt-in argument
@@ -232,3 +330,14 @@ single byte of bandwidth. Forty lines, and it is the whole ingest-side saving.
   class of event. Worth a deliberate answer.
 - **Ordering.** `entriesFor` merges two sorted sequences; confirm quartz does not
   require global sort order beyond what it already sorts internally.
+- **Does Fix 2 need the author's consent?** We would be republishing someone's
+  event to a relay they did not choose. The mitigating fact is that the target
+  relay already hosts an older version from the same author, so it has already
+  accepted their data — but "already has an old copy" is not the same as "wants
+  the new one", and a vanish request (kind 62) is precisely an author saying
+  otherwise. The kind-62 push and the profile push may not deserve the same
+  default.
+- **What does a push cost against a relay that ignores it?** An unanswered
+  `EVENT` is cheap per message, but the strike rule needs a definition of
+  "unaccepted" that works when a relay simply never sends `OK`. Reuse
+  `Unreachability`'s reasoning about what a silence may be published as.
