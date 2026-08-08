@@ -240,15 +240,29 @@ class RelayAliases(
 
     companion object {
         /**
-         * How deep a fingerprint goes: the newest 1,000 events.
+         * How deep a fingerprint goes: the newest 500 events.
          *
          * A DEPTH, not a REQ limit — [AliasProbe] pages `until` backwards to
          * reach it, so this is the same depth at every relay regardless of what
-         * any one of them caps a single REQ at. Deep enough that two dials
-         * seconds apart overlap heavily (the newest few events churn; a
-         * thousand do not), and cheap enough to be two or three round trips.
+         * any one of them caps a single REQ at.
+         *
+         * 500 because 1,000 bought nothing. Re-measured over 35 hosts and 112
+         * fold decisions: 500 agreed with 1,000 on 108 of them, and all four
+         * disagreements were `espelho.girino.org` — the one relay that cannot
+         * reproduce its own answers — where the shallower window happens to
+         * fold urls that genuinely are the same relay. What it costs is not
+         * marginal: median 1.4s and 562 KB against 3.4s and 1,464 KB.
+         *
+         * Depth was never what made the fingerprint stable; the shared anchor
+         * was. Going deeper than one page only lengthens the walk, and a longer
+         * walk is a longer drift.
+         *
+         * Matching [DEFAULT_PROBE_PAGE] is the point: a relay that serves a
+         * full page answers in ONE round trip. Going below it saves nothing —
+         * 200 measured the same 520 KB, because the page is asked whole either
+         * way.
          */
-        const val DEFAULT_PROBE_TARGET = 1_000
+        const val DEFAULT_PROBE_TARGET = 500
 
         /**
          * Events per REQ on the way to [DEFAULT_PROBE_TARGET]. 500 because that

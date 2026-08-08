@@ -106,6 +106,35 @@ class AliasProbeTest {
         }
 
     @Test
+    fun `at the shipped defaults a full-page relay costs one round trip`() =
+        runBlocking {
+            // The whole reason the target matches the page size. Measured, 500
+            // decides the same folds as 1,000 at 1.4s and 562KB instead of
+            // 3.4s and 1,464KB — and that saving is exactly this: one REQ.
+            val fake = Fake(total = 50_000, cap = RelayAliases.DEFAULT_PROBE_PAGE)
+            val probe = AliasProbe(fetch = fake::fetch)
+
+            val print = probe.fingerprint(url, BASE) {}
+
+            assertEquals(RelayAliases.DEFAULT_PROBE_TARGET, print?.size)
+            assertEquals(1, fake.asks.size, "a relay that serves a full page must not be paged twice")
+        }
+
+    @Test
+    fun `a relay capping below the page still reaches the same depth`() =
+        runBlocking {
+            // The other half: a low cap becomes the page size, not the depth,
+            // so this relay is measured at exactly the depth every other one is.
+            val fake = Fake(total = 50_000, cap = 100, refuseOver = 100)
+            val probe = AliasProbe(fetch = fake::fetch)
+
+            val print = probe.fingerprint(url, BASE, AliasProbe.FALLBACK_KINDS) {}
+
+            assertEquals(RelayAliases.DEFAULT_PROBE_TARGET, print?.size)
+            assertTrue(fake.asks.size > 1, "a capped relay is paged to depth, not accepted at its cap")
+        }
+
+    @Test
     fun `the walk stops at the target rather than draining the relay`() =
         runBlocking {
             val fake = Fake(total = 100_000, cap = 500)

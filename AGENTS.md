@@ -440,7 +440,7 @@ than re-deriving.
 
 `HostStrikes` cannot see it — it evicts an authority that goes SILENT, and
 every one of these answers perfectly. The duplicate only exists in what comes
-back, so `AliasProbe` reads each url's newest 1,000 events and `RelayAliases`
+back, so `AliasProbe` reads each url's newest 500 events and `RelayAliases`
 folds two urls together when the smaller window is ≥50% contained in the larger.
 
 **The probe pages; a one-shot REQ would measure the relay's limit, not the
@@ -453,7 +453,14 @@ ones; worse, a relay that *enforces* its cap refuses outright rather than
 truncating (`CLOSED blocked: limit too high`), which arrives as silence and drops
 that host out of the fold entirely. So the walk asks a page, takes the oldest
 `created_at` back as the next `until`, and repeats — each relay's cap becomes the
-page size, the depth stays ours. Three consequences that are easy to undo by
+page size, the depth stays ours. **The depth matches the page size on purpose**:
+a relay that serves a full page answers in ONE round trip, and a relay that caps
+below it gets paged up to the same depth as everyone else. 1,000 was measured
+and bought nothing — over 112 fold decisions it agreed with 500 on 108, the four
+differences all being the one relay that cannot reproduce its own answers, at
+3.4s and 1,464 KB per walk against 1.4s and 562 KB. Depth was never what made
+the fingerprint stable; the anchor was. Below 500 saves nothing either, since
+the page is asked whole regardless. Three consequences that are easy to undo by
 accident: `until` is inclusive so every page re-reads its boundary (never trim
 the last ask to the exact remainder — it can then never reach the target), the
 result is trimmed to the newest N *by timestamp* so two urls paging at different
