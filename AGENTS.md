@@ -325,10 +325,13 @@ relay), and nothing negative is ever published about one — reaching a hidden
 service depends on our circuit as much as on their server.
 
 **Sync bands** record the `created_at` span already walked for a
-`(relay, filter)` pair, so a re-run asks only outside it. Keyed by the *whole
-filter* deliberately: edit a stream's filter and its band is invalidated, which
-is the intended way to force a re-walk. A paged fetch records `complete = false`;
-only a finished negentropy reconcile records `complete = true`.
+`(stream, filter, relay)` triple, so a re-run asks only outside it. Keyed by the
+*whole filter* deliberately: edit a stream's filter and its band is invalidated,
+which is the intended way to force a re-walk. Keyed by the *stream* too: two
+streams asking one relay the same filter walk it at their own moments and to
+their own depths, and neither may resume from the other's claim. A paged fetch
+records `complete = false`; only a finished negentropy reconcile records
+`complete = true`.
 
 **The arithmetic is quartz's** — `SyncCoverage`, in
 `nip01Core.relay.client.accessories`, beside `fetchAllPages` and
@@ -338,24 +341,37 @@ and that fork silently missed two upstream fixes — a relay needing NOTHING was
 widening the shared snapshot to the full filter, and a `complete` band was not
 re-opening its older leg when the caller's floor dropped below it. **Fix band
 behaviour upstream, not here**, or the next quartz bump reverts it. The
-on-disk shape (`{key: {min, max, complete, fullAt}}`) is this repo's and is
-pinned by a test.
+on-disk shape is this repo's and is pinned by a test: quartz keys a band
+`"<relay> <filter>"` in memory, and `SyncBands` takes that apart to write
+`{stream: {filter: {relay: {min, max, complete, fullAt, spans}}}}`, splitting at
+the FIRST space and rejoining with one. The stream level is this repo's too —
+quartz knows nothing about streams, so `SyncBands` holds one `SyncCoverage` per
+stream name.
 
 **Both state files are now READ by the relay**, off the `/var/lib/vespa-relay`
 mount both containers share, and charted as the *Sync coverage* card on
 `/stats.html` — see `SyncCoverageReport`. The router is still the only writer.
-Three traps if you touch either format: the two files key the same pair
-differently (a **space** in the band file, a **pipe** in the sweep file, whose
-key also strips `since`/`until`/`limit`); a band's `min`/`max` are the outer
-edges across every kind — the card draws the per-kind *intersection* on top,
-which is the multi-kind bug below made visible rather than charted as coverage;
-and **one stream is many keys**. A `relaySource` whose select binds `authors`
-narrows the filter per discovered relay (`DiscoveredRelay.narrowed`), and
-`authorsPerLeg` chops that again, so a stream configured as one filter reaches
-the file as thousands of them. The report groups on the filter with `authors`,
-`ids`, and tag members *starred out* — everything else exact — and merges the
-legs that land on one relay (edges union, `complete` ANDs). Keyed on the exact
-filter it was one group per relay, all printing the same label.
+Three traps if you touch either format: both files nest **stream → filter →
+relay**, and the sweep file's filter also strips `since`/`until`/`limit` (time is
+what a sweep varies) while the band file's keeps them, so joining the two still
+means reducing both to a common shape; a band's `min`/`max` are the outer edges
+across every kind — the card draws the per-kind *intersection* on top, which is
+the multi-kind bug below made visible rather than charted as coverage; and **one
+stream is many filters**. A `relaySource` whose select binds `authors` narrows
+the filter per discovered relay (`DiscoveredRelay.narrowed`), and `authorsPerLeg`
+chops that again, so a stream configured as one filter reaches the file as
+thousands of them, all under its one name. The report groups by that name,
+publishes the members every leg *agrees on* (never `authors`/`ids`/tag values —
+they are named in `narrowedBy` instead), and merges the legs that land on one
+relay (edges union, `complete` ANDs).
+
+**A file written before the format nested still loads.** Its flat keys name no
+stream, so both writers hold them aside and hand each to the first stream that
+asks for that (relay, filter) — the stream that wrote it — and write back
+whatever is still unclaimed, flat, so a restart does not lose it. Grep
+`MIGRATION SHIM`: three blocks in `SyncBands`, three in `SweepState`, two in
+`SyncCoverageReport`, all deletable together once every deployment has booted
+once on a build that writes the nested shape.
 
 **Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
 reconcile call, and the division of labour with quartz is the thing to
@@ -366,8 +382,9 @@ dense second. All three now live upstream (`NegentropyLocalIndex`,
 `targetWindow`, `NegentropySyncResult.peerCap`, `onUnreconcilableWindow` — see
 amethyst#3871), and this class shrank to what survives a call:
 
-- **the cursor** (`SweepState`), written per finished window, because quartz
-  forgets everything between calls and a band is only recorded per leg;
+- **the cursor** (`SweepState`), written per finished window under
+  `{stream: {filter: {relay: {downTo, upTo, at}}}}`, because quartz forgets
+  everything between calls and a band is only recorded per leg;
 - **the per-peer window size**, learned from `peerCap` across syncs and
   persisted, so a restart does not re-walk the ladder;
 - **the order windows are walked in** — strictly newest-first, which is what

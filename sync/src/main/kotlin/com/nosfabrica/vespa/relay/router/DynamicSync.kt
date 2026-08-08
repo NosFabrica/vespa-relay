@@ -225,7 +225,7 @@ internal class DynamicSync(
         // the start — already true anyway, since ingest is asynchronous — and
         // the store dedups on insert. Narrowed to what the hungriest relay
         // still needs ([SyncBands.coveringWindow]).
-        val snapshotWindow = bands.coveringWindow(relays.map { it.url }, window)
+        val snapshotWindow = bands.coveringWindow(stream.name, relays.map { it.url }, window)
         val snapStartedMs = System.currentTimeMillis()
 
         val local: List<IdAndTime> =
@@ -250,7 +250,7 @@ internal class DynamicSync(
                     },
                 )
                 emptyList()
-            } else if (!bands.anyOutstanding(relays.map { it.url }, window)) {
+            } else if (!bands.anyOutstanding(stream.name, relays.map { it.url }, window)) {
                 // Nothing outside any relay's band, so every syncOne below
                 // returns at its own leg check without ever reading the id set.
                 // Distinct from holdsIdSet above, which asks whether this STREAM
@@ -499,7 +499,7 @@ internal class DynamicSync(
             if (diagnose == stream.name) {
                 System.err.println(
                     "router: [diag] ${url.url} authors=${window.authors?.size ?: 0} " +
-                        "ask(s)=${asks.size} leg(s)=${asks.sumOf { bands.legs(url, it).size }} " +
+                        "ask(s)=${asks.size} leg(s)=${asks.sumOf { bands.legs(stream.name, url, it).size }} " +
                         "downloaded=$downloaded",
                 )
             }
@@ -546,7 +546,7 @@ internal class DynamicSync(
             return deleteMissingSync.reconcileAndDelete(stream, url, window, sharedAuthors)
         }
         var downloaded = 0
-        for (leg in bands.legs(url, window)) {
+        for (leg in bands.legs(stream.name, url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             // Per-kind spans, which quartz's SyncCoverage requires before it
@@ -596,6 +596,7 @@ internal class DynamicSync(
                         ).also { downloaded += it.downloaded }
                 }
             bands.record(
+                stream.name,
                 url,
                 window,
                 seenMin,
