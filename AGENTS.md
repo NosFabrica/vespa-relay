@@ -445,6 +445,17 @@ sizes are still compared at equal depth, and `DEFAULT_MAX_PAGES` has to clear
 `target / FALLBACK_PROBE_PAGE` or hosts that cap low get a shallower
 fingerprint than everyone else — the exact thing paging is for.
 
+**And the walk is ANCHORED, because "the newest N" is a moving window.** Every
+url in a group starts from one shared `until` taken before any of them is
+dialled. Without it the fold quietly fails on the busiest relays — which is
+where it matters most: measured live, `wss://nos.lol` against
+`wss://nos.lol/cipher-zulu` scored **0.41** unanchored (same server, missed),
+while the low-traffic `nostr.oxtr.dev` pair scored 0.95–0.98 in the same run.
+A thousand events span minutes on a firehose, the probes are minutes apart
+behind a 16-permit gate, and the two windows simply stop overlapping. Deeper
+paging makes this *worse*, not better, since a longer walk is a longer drift —
+which is why the anchor arrived with the paging and not before it.
+
 Guards worth knowing before you touch the thresholds:
 a url with **no** fingerprint is never folded (silence is not evidence — a
 relay that is merely down has to come back), a window under 20 ids decides

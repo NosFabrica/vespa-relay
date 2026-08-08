@@ -47,6 +47,15 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  * own cap becomes the page size rather than the ceiling, and the depth is ours
  * to choose.
  *
+ * **The walk is ANCHORED, because "the newest N" is a moving window.** On a
+ * firehose, a thousand events span minutes, so two walks taken minutes apart
+ * cover different ranges and their overlap collapses even though the relay is
+ * the same — measured live, `wss://nos.lol` against `wss://nos.lol/cipher-zulu`
+ * scored 0.41 unanchored and would have escaped the fold, on precisely the busy
+ * relay where the duplicate costs most. Every url of a group is therefore given
+ * one shared `anchor` to start from, so both walks read the same range of the
+ * timeline however far apart they actually ran.
+ *
  * A bare `{"limit": n, "until": …}` filter on purpose: no kinds, no authors.
  * The question is "what is at the end of THIS url", and any narrowing invites
  * the two dials to disagree for a reason that has nothing to do with whether
@@ -95,6 +104,14 @@ class AliasProbe(
      */
     suspend fun fingerprint(
         url: NormalizedRelayUrl,
+        /**
+         * Where the walk starts, as a `created_at`. Every url in one group is
+         * given the SAME anchor, which is what makes their fingerprints
+         * comparable — see the drift note on the class.
+         *
+         * Null walks from now, which is only correct for a lone measurement.
+         */
+        anchor: Long? = null,
         onEvent: suspend (Event) -> Unit,
     ): Set<String>? {
         // id -> created_at, because the fingerprint is "the newest [target]",
@@ -104,7 +121,7 @@ class AliasProbe(
         // they would be compared at different depths, which is exactly the
         // skew paging exists to remove.
         val ids = HashMap<String, Long>()
-        var until: Long? = null
+        var until: Long? = anchor
         var size = page
         var spoke = false
         var stalls = 0

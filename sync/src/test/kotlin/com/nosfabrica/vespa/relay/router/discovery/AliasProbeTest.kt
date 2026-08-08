@@ -53,10 +53,13 @@ class AliasProbeTest {
         val total: Int,
         val cap: Int = Int.MAX_VALUE,
         val refuseOver: Int? = null,
+        // The same relay, [newerBy] events later — what a firehose looks like
+        // by the time the second url of a group gets its turn at the gate.
+        val newerBy: Int = 0,
     ) {
         val asks = mutableListOf<Pair<Int, Long?>>()
         private val events: List<Event> =
-            (0 until total).map { signer.sign(BASE - it, 1, emptyArray(), "e$it") }
+            (-newerBy until total).map { signer.sign(BASE - it, 1, emptyArray(), "e$it") }
 
         suspend fun fetch(
             @Suppress("UNUSED_PARAMETER") at: NormalizedRelayUrl,
@@ -188,6 +191,42 @@ class AliasProbeTest {
 
             assertEquals(10, probe.fingerprint(url) {}?.size)
             assertTrue(asks < AliasProbe.DEFAULT_MAX_PAGES, "gave up after $asks pages")
+        }
+
+    @Test
+    fun `a shared anchor makes two walks of a busy relay comparable`() =
+        runBlocking {
+            // One relay, dialled through two urls — but the second walk happens
+            // after 400 new events have landed. That is the ordinary case
+            // behind a 16-permit gate on a firehose: measured live, nos.lol
+            // and nos.lol/cipher-zulu scored 0.41 unanchored.
+            val first = Fake(total = 5_000, cap = 500)
+            val later = Fake(total = 5_000, cap = 500, newerBy = 400)
+
+            val anchor = BASE - 10
+            val a = probe(first, target = 1_000).fingerprint(url, anchor) {}!!
+            val b = probe(later, target = 1_000).fingerprint(url, anchor) {}!!
+
+            // Anchored, both walks read the same slice of the timeline, so the
+            // relay being busy in between changes nothing.
+            assertEquals(a, b)
+        }
+
+    @Test
+    fun `without an anchor the same busy relay drifts apart`() =
+        runBlocking {
+            val first = Fake(total = 5_000, cap = 500)
+            val later = Fake(total = 5_000, cap = 500, newerBy = 400)
+
+            val a = probe(first, target = 1_000).fingerprint(url) {}!!
+            val b = probe(later, target = 1_000).fingerprint(url) {}!!
+
+            // The regression the anchor exists to remove: 400 of each window is
+            // the other's, so containment lands at 0.6 and a busier relay or a
+            // slower gate pushes it under the fold's bar entirely.
+            val shared = a.count { it in b }
+            assertTrue(shared < a.size, "unanchored walks of a moving relay must NOT be identical")
+            assertEquals(600, shared, "400 new events shift the window by exactly that many")
         }
 
     @Test

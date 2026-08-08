@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.relay.util.fmtDuration
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.coroutineScope
@@ -97,13 +98,21 @@ class AliasFolding(
                             return@launch
                         }
                         val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
+                        // ONE anchor for the whole group, taken before any of
+                        // it is dialled. "The newest N" is a moving window and
+                        // these walks are minutes apart behind a 16-permit
+                        // gate; measured live, two urls of nos.lol scored 0.41
+                        // unanchored — the same relay, missed. Anchored, both
+                        // walks read the same slice of the timeline whenever
+                        // they actually run.
+                        val anchor = nowSeconds()
                         coroutineScope {
                             for (url in wanted) {
                                 launch {
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit
                                         taken.incrementAndGet()
-                                        probe.fingerprint(url, onEvent)?.let { prints[url] = it }
+                                        probe.fingerprint(url, anchor, onEvent)?.let { prints[url] = it }
                                     }
                                 }
                             }
