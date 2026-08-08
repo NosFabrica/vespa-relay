@@ -218,18 +218,76 @@ mandatory:
 1. **Size `p` against the backfill, not the steady state.** Expected loss per
    cycle is `|genuinely wanted| × p`. At p=10⁻⁹, a 100M-event backfill loses
    ~0.1 events. At p=10⁻², it loses a million.
-2. **Rotate rather than delete.** Bloom filters cannot remove entries, which
-   matters for "the winner was deleted, so its losers are wanted again". Two
-   generations, retire the older one on a slow cadence: a false positive gets a
-   second chance when the generation that produced it retires, at the price of
-   re-paying the true positives once per rotation. That is a knob, and a
-   quarterly rotation still avoids ~99% of the cycles.
+2. **Partition, do not rotate on a timer** — see
+   [The set grows forever](#the-set-grows-forever-and-neither-filter-does)
+   below, which is the constraint that actually shapes this.
 3. **Count the inserts and fail open past the design capacity.** This is
    non-negotiable. A Bloom filter sized for 50M holding 500M does not degrade
    gracefully — p goes from 10⁻⁹ to double digits and it starts discarding a
    sixth of everything, invisibly. Tracking `n` and disabling the filter once it
    is over budget turns the catastrophe into "the router got slower", which is a
    thing an operator can see and fix.
+
+#### The set grows forever, and neither filter does
+
+Neither structure grows. A cuckoo filter is a fixed table — `m` buckets × `b`
+slots × `f` bits, allocated at construction — exactly as a Bloom filter is a
+fixed bit array. Both must be sized for `n` up front. What differs is only what
+happens when you exceed it, and that difference is sharper than it first looks:
+
+- **Bloom's accuracy degrades with load.** `p` rises smoothly and silently as
+  `n` grows past the design point.
+- **Cuckoo's accuracy is load-independent.** `p ≈ 2b/2^f` is fixed by the
+  fingerprint width, not by how full the table is. A half-full cuckoo filter and
+  a 94%-full one answer equally well. What degrades is the *insert success
+  probability*, and then it stops outright.
+
+So over-provisioning a cuckoo filter costs space and nothing else, and
+under-provisioning it stops loudly. That is the whole argument from the previous
+section, now with the mechanism attached.
+
+**But the set being remembered grows monotonically and without bound**, and that
+is the thing to design around. Every superseded version ever published, forever;
+nothing ever leaves it on its own. **Kind 3 is the pathological case** — a follow
+list is rewritten on every single follow and unfollow, so one active account can
+hold hundreds or thousands of superseded versions where kind 0 holds a handful.
+Across a broad fan-out that is not a large set, it is an enormous one.
+
+An unbounded set in a fixed structure means the structure is always a temporary
+answer. Two ways out:
+
+**Chained generations (scalable Bloom / chained cuckoo).** Add a new, larger
+filter whenever the current one refuses an insert; look up by checking every
+generation in turn. Grows without knowing `n`, which is exactly our situation,
+and insert-failure is the trigger — the property that made cuckoo attractive.
+Cost: lookups touch every generation, and space still grows forever.
+
+**Partition by `created_at` epoch — recommended.** One filter per slice of Nostr
+history (a quarter, say), each sized for that slice:
+
+- **Growth is bounded to ~4 new filters a year**, each sized for a period whose
+  refusal volume is roughly knowable from the last one.
+- **Retirement becomes correct rather than lossy.** An epoch entirely below the
+  lowest `since` any stream uses can be dropped outright: nothing will ever
+  generate a `needId` in that range, so the filter is never consulted there. This
+  is the time-floor bound under
+  [Bounding it](#bounding-it--the-part-that-decides-whether-this-is-safe-to-ship),
+  applied at the granularity that makes it exact instead of heuristic. A
+  timer-based rotation, by contrast, forgets true positives and re-pays them.
+- **The epoch is already known at the hook point.** `NegentropyPager.sweep` walks
+  one `created_at` window at a time (`w: LongRange`), so every `needId` it sees
+  came from a window with known bounds, and the reconcile call can close over it.
+  `DeleteMissingSync`'s ask carries `since`/`until` for the same reason. No extra
+  quartz surface is needed beyond the `wantId` predicate itself.
+
+The one wrinkle: an operator widening a stream's `since` back into a dropped
+epoch re-pays that epoch's refusals once. Same semantics as editing a filter and
+invalidating its sync band, and acceptable for the same reason.
+
+**This is also the strongest argument that Fix 1 is load-bearing rather than a
+warm-up.** Every year of history a stream stops asking for is a year of epochs
+that can be dropped. Narrowing `since` does not merely reduce the transfer — it
+bounds the memory this whole approach needs.
 
 #### Bloom or cuckoo?
 
@@ -251,8 +309,8 @@ sixth of everything and logging nothing. A cuckoo filter **fails the insert** at
 ~95% load, after its relocation chain gives up. The mandatory counter-and-fail-
 open becomes intrinsic to the structure instead of a discipline we have to
 remember — and better, **insert failure is an exact rotation trigger**, so the
-generational scheme in point 2 stops needing a tuned threshold. The structure
-tells you when the generation is done.
+chained-generation scheme above stops needing a tuned threshold. The structure
+tells you when a generation is done.
 
 **Its headline feature is useless here, though.** Cuckoo filters support
 deletion; Bloom filters do not, and that looked like the answer to "the winner
@@ -261,7 +319,7 @@ item** — you need the id to compute its fingerprint and buckets. When a winnin
 event is removed we have no way to enumerate the superseded ids it should
 release, because not storing them is the entire point of using a filter. The
 only world where the deletion works is one where we already kept the ids, and
-that world is 3b, which does not need a filter. Rotation remains the answer
+that world is 3b, which does not need a filter. Epoch partitioning remains the answer
 either way.
 
 Deletion does buy one modest thing: an operator affordance. "Why don't you have
@@ -292,9 +350,9 @@ but they are **immutable** — built once from the complete key set, no incremen
 insert. Making that work means buffering the generation's raw ids to freeze it
 later, which is a real design and buys 6%. Not worth it.
 
-**Verdict: cuckoo, with per-writer files** — provided the generational rotation
-in point 2 is adopted, because insert-failure-as-rotation-trigger is most of the
-value. If the design stays single-generation, take Bloom for the lock-free
+**Verdict: cuckoo, with per-writer files and per-epoch partitioning** — the
+epoch design needs a signal for "this partition is full", and insert failure is
+that signal exactly. If the design stays one flat filter, take Bloom for the lock-free
 shared file and keep the counter discipline.
 
 **What it needs from quartz.** On the main sweep path the id-to-event fetch
