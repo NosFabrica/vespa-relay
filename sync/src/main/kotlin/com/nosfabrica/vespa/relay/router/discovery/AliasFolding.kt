@@ -98,6 +98,7 @@ class AliasFolding(
                             return@launch
                         }
                         val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
+                        val leader = wanted.first()
                         // ONE anchor for the whole group, taken before any of
                         // it is dialled, and held a minute behind the clock.
                         //
@@ -114,21 +115,45 @@ class AliasFolding(
                         // reintroduces the drift the anchor removes. See
                         // [AliasProbe.ANCHOR_LAG_SECONDS].
                         val anchor = AliasProbe.settledAnchor(nowSeconds())
+
+                        // THE LEADER GOES FIRST, alone, for two reasons the
+                        // full-corpus sweep made expensive to ignore.
+                        //
+                        // It decides the FILTER. 46 of 229 hosts refused a bare
+                        // one outright (`CLOSED blocked: can't handle empty
+                        // filters`) and answered a kinds filter perfectly well
+                        // — but two urls fingerprinted through different
+                        // filters are not comparable, so whatever the leader
+                        // had to be asked is what its whole group is asked.
+                        //
+                        // And it decides whether to ask AT ALL. A group whose
+                        // leader has no usable fingerprint can never fold
+                        // ([RelayAliases.learn] returns nothing without one),
+                        // so dialling its members is guaranteed waste: in that
+                        // same sweep, 892 urls behind 46 leaders.
+                        val lead =
+                            gate.withPermit {
+                                if (!canDial(leader)) return@withPermit null
+                                taken.incrementAndGet()
+                                probe.leaderPrint(leader, anchor, onEvent)
+                            } ?: return@launch
+                        prints[leader] = lead.ids
+
                         coroutineScope {
-                            for (url in wanted) {
+                            for (url in wanted.drop(1)) {
                                 launch {
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit
                                         taken.incrementAndGet()
-                                        probe.fingerprint(url, anchor, onEvent)?.let { prints[url] = it }
+                                        probe.fingerprint(url, anchor, lead.kinds, onEvent)?.let { prints[url] = it }
                                     }
                                 }
                             }
                         }
-                        val leaderPrint = prints[wanted.first()]
+                        val leaderPrint = lead.ids
                         for ((alias, canonical) in aliases.learn(group, prints)) {
                             val print = prints[alias].orEmpty()
-                            val shared = leaderPrint?.count { it in print } ?: print.size
+                            val shared = leaderPrint.count { it in print }
                             newVerdicts[alias] = canonical to (print.size to shared)
                         }
                     }

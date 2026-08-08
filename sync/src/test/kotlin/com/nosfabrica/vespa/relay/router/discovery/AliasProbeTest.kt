@@ -53,6 +53,9 @@ class AliasProbeTest {
         val total: Int,
         val cap: Int = Int.MAX_VALUE,
         val refuseOver: Int? = null,
+        // Refuses a bare filter the way 46 of 229 sweep hosts did:
+        // `CLOSED blocked: can't handle empty filters`.
+        val demandsKinds: Boolean = false,
         // The same relay, [newerBy] events later — what a firehose looks like
         // by the time the second url of a group gets its turn at the gate.
         val newerBy: Int = 0,
@@ -61,12 +64,17 @@ class AliasProbeTest {
         private val events: List<Event> =
             (-newerBy until total).map { signer.sign(BASE - it, 1, emptyArray(), "e$it") }
 
+        val kindsAsked = mutableListOf<List<Int>?>()
+
         suspend fun fetch(
             @Suppress("UNUSED_PARAMETER") at: NormalizedRelayUrl,
             want: Int,
             until: Long?,
+            kinds: List<Int>?,
         ): List<Event> {
             asks += want to until
+            kindsAsked += kinds
+            if (demandsKinds && kinds == null) return emptyList()
             // A relay that ENFORCES its cap answers nothing at all, which is
             // what purplepag.es does to an over-large ask.
             if (refuseOver != null && want > refuseOver) return emptyList()
@@ -150,7 +158,7 @@ class AliasProbeTest {
     @Test
     fun `a url that cannot be asked at all stays null, never empty`() =
         runBlocking {
-            val probe = AliasProbe(fetch = { _, _, _ -> null }, target = 1_000)
+            val probe = AliasProbe(fetch = { _, _, _, _ -> null }, target = 1_000)
 
             // Null is what stops [RelayAliases] folding it. An empty set would
             // be an assertion that the relay holds nothing.
@@ -164,7 +172,7 @@ class AliasProbeTest {
             val fake = Fake(total = 5_000, cap = 500)
             val probe =
                 AliasProbe(
-                    fetch = { u, want, until -> if (calls++ == 0) fake.fetch(u, want, until) else null },
+                    fetch = { u, want, until, kinds -> if (calls++ == 0) fake.fetch(u, want, until, kinds) else null },
                     target = 1_000,
                 )
 
@@ -187,7 +195,7 @@ class AliasProbeTest {
             // the same window however far the cursor is stepped.
             val same: List<Event> = (0 until 10).map { signer.sign(BASE, 1, emptyArray(), "same$it") }
             val probe =
-                AliasProbe(fetch = { _, _, _ ->
+                AliasProbe(fetch = { _, _, _, _ ->
                     asks++
                     same
                 }, target = 1_000)
@@ -265,6 +273,42 @@ class AliasProbeTest {
             val shared = a.count { it in b }
             assertTrue(shared < a.size, "unanchored walks of a moving relay must NOT be identical")
             assertEquals(600, shared, "400 new events shift the window by exactly that many")
+        }
+
+    @Test
+    fun `a relay refusing bare filters is asked with kinds instead`() =
+        runBlocking {
+            // 46 of 229 hosts in the full-corpus sweep answered a bare filter
+            // with `CLOSED blocked: can't handle empty filters`, taking 892
+            // urls out of the fold. Every one retried answered a kinds filter.
+            val fake = Fake(total = 2_000, cap = 500, demandsKinds = true)
+
+            val lead = probe(fake, target = 1_000).leaderPrint(url, BASE) {}
+
+            assertEquals(1_000, lead?.ids?.size)
+            assertEquals(AliasProbe.FALLBACK_KINDS, lead?.kinds, "the group must be told which filter worked")
+            assertEquals(null, fake.kindsAsked.first(), "a bare filter is still tried first")
+        }
+
+    @Test
+    fun `a leader that answers bare reports no kinds, so the group stays bare`() =
+        runBlocking {
+            val fake = Fake(total = 2_000, cap = 500)
+
+            val lead = probe(fake, target = 1_000).leaderPrint(url, BASE) {}
+
+            assertEquals(1_000, lead?.ids?.size)
+            assertNull(lead?.kinds)
+            assertTrue(fake.kindsAsked.all { it == null }, "nothing narrows a filter the relay never objected to")
+        }
+
+    @Test
+    fun `a leader that answers nothing either way yields no group filter at all`() =
+        runBlocking {
+            // Neither shape works: the group cannot fold and must not be probed.
+            val probe = AliasProbe(fetch = { _, _, _, _ -> null }, target = 1_000)
+
+            assertNull(probe.leaderPrint(url, BASE) {})
         }
 
     @Test

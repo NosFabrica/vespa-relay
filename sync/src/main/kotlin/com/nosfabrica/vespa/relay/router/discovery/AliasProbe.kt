@@ -74,7 +74,7 @@ class AliasProbe(
      * (null for the newest page). Returns null when the url could not be asked
      * at all — which is NOT the same as an empty page.
      */
-    private val fetch: suspend (NormalizedRelayUrl, Int, Long?) -> List<Event>?,
+    private val fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> List<Event>?,
     /** How many ids make a fingerprint. The walk stops here. */
     private val target: Int = RelayAliases.DEFAULT_PROBE_TARGET,
     /** How many events one REQ asks for. Trimmed to [fallbackPage] if the first page is refused. */
@@ -92,6 +92,35 @@ class AliasProbe(
      */
     private val maxPages: Int = DEFAULT_MAX_PAGES,
 ) {
+    /**
+     * The leader's fingerprint AND the filter that produced it — the two things
+     * the rest of its group needs.
+     *
+     * A bare filter is tried first, because it asks the purest form of the
+     * question. When the relay refuses one, [FALLBACK_KINDS] is tried instead
+     * and reported back, so every sibling asks the SAME thing: two urls
+     * fingerprinted through different filters are not comparable, and a fold
+     * decided on that comparison would be worthless.
+     */
+    suspend fun leaderPrint(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        onEvent: suspend (Event) -> Unit,
+    ): Leader? {
+        fingerprint(url, anchor, null, onEvent)?.takeIf { it.isNotEmpty() }?.let { return Leader(it, null) }
+        // Measured: 46 of 229 hosts in a full-corpus sweep answered a bare
+        // filter with `CLOSED blocked: can't handle empty filters`, taking 892
+        // urls out of the fold — by far its largest blind spot, and every one
+        // of the twelve retried answered a kinds filter perfectly well.
+        return fingerprint(url, anchor, FALLBACK_KINDS, onEvent)?.takeIf { it.isNotEmpty() }?.let { Leader(it, FALLBACK_KINDS) }
+    }
+
+    /** What a group's leader answered, and what it had to be asked to get it. */
+    data class Leader(
+        val ids: Set<String>,
+        val kinds: List<Int>?,
+    )
+
     /**
      * The ids at [url], or null when it could not be asked at all. Null and
      * empty are different answers and must stay that way: empty is a relay that
@@ -112,6 +141,11 @@ class AliasProbe(
          * Null walks from now, which is only correct for a lone measurement.
          */
         anchor: Long? = null,
+        /**
+         * The kinds to ask for, or null for a bare filter. Set by the group's
+         * leader — see [leaderPrint] — and never chosen per url.
+         */
+        kinds: List<Int>? = null,
         onEvent: suspend (Event) -> Unit,
     ): Set<String>? {
         // id -> created_at, because the fingerprint is "the newest [target]",
@@ -135,7 +169,7 @@ class AliasProbe(
             // target by that boundary, and then asking for 1, and then for 1
             // again. Over-fetching by at most a page costs nothing — the
             // events go to ingest either way.
-            val events = fetch(url, size, until)
+            val events = fetch(url, size, until, kinds)
             if (events == null) {
                 // Mid-walk the transport gave up. Keep what the walk already
                 // proved rather than throwing it away — but a walk that never
@@ -237,8 +271,18 @@ class AliasProbe(
             timeoutMs: Long,
         ): AliasProbe =
             AliasProbe(
-                fetch = { url, size, until -> client.fetchAll(url, Filter(limit = size, until = until), timeoutMs) },
+                fetch = { url, size, until, kinds ->
+                    client.fetchAll(url, Filter(limit = size, until = until, kinds = kinds), timeoutMs)
+                },
                 target = target,
             )
+
+        /**
+         * What to ask a relay that will not take a bare filter. Kind 1 because
+         * it is the one kind every general relay holds; a relay that has none
+         * of it answers empty, which is the same "no evidence" this treats any
+         * short window as.
+         */
+        val FALLBACK_KINDS = listOf(1)
     }
 }
