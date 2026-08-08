@@ -435,6 +435,35 @@ Reach for it first.
 - **paging progress** — percentage and ETA measured on the *time axis*, because
   a paged fetch has no event denominator. Its predecessor computed
   `downloaded/downloaded` and printed `100%, ETA ~0:00` for hours.
+- **`IngestCostBench`** — what one arriving event costs ingest, split by the
+  verdict it ends on, end to end through the real pipeline against a real
+  Vespa. Skipped unless `BENCH_VESPA_URL` names a live engine:
+  `BENCH_VESPA_URL=http://localhost:8080 BENCH_N=20000 ./gradlew :sync:test
+  --tests '*IngestCostBench*' --rerun-tasks -i` (Gradle treats env vars as
+  invisible, so without `--rerun-tasks` a second run is silently UP-TO-DATE and
+  prints the FIRST run's numbers).
+
+  Measured on a 4-core box sharing its cores with the engine, 72k-doc corpus,
+  20k-event batches — the ratios are what travel, not the absolute times:
+
+  | arriving event | µs/event | where it goes |
+  |---|---:|---|
+  | fresh (written) | 603 | `write` 77%, `verify` 13% |
+  | duplicate, no probe | 56 / 49 | `verify` 67% of the work |
+  | duplicate, probe on | 21 / 16 | `dedup.pre` only — verify gone |
+  | stale replaceable | 158 | `versions` 38%, `verify` 32% |
+  | newer replaceable (written) | 1191 | `write` 66% — read-then-supersede |
+
+  Two things to read off it. **Verification is not a rounding error** — 13% of
+  a fresh batch and two thirds of a duplicate one — and it costs ~70-95µs in
+  situ against ~48µs isolated, because the router competes with Vespa for the
+  same cores. And **the id probe cannot see a stale replaceable version**: a
+  newer generation of a kind 0/3/10002/30382 has a different id, so it is
+  verified in full and only then rejected as `replaced`. Pricing a supersession
+  pre-filter for it: the batched version read costs 29µs/event, so it pays for
+  itself once **~20%** of replaceable arrivals are stale and is only worth the
+  build past ~60-70%. Which of those an operator is in is readable off
+  `rejectionBreakdown()` on the stats line and nowhere else.
 
 ## Conventions
 

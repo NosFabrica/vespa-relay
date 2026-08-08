@@ -269,13 +269,20 @@ internal class IngestPipeline(
     /**
      * The batch minus everything that cannot be written because we already hold
      * it — dropped BEFORE the signature check, which is the entire reason this
-     * exists. A schnorr verify costs **~48µs/event** (measured on a 4-core box,
-     * quartz over JNI secp256k1; the id re-hash is 1.5µs of that and event size
-     * barely moves it), and on a duplicate every one of those microseconds buys
+     * exists. A schnorr verify costs ~48µs/event isolated (quartz over JNI
+     * secp256k1; the id re-hash is 1.5µs of it and event size barely moves it)
+     * and **~70-95µs in situ**, because the router shares its cores with the
+     * engine it is feeding. On a duplicate every one of those microseconds buys
      * nothing: the event is already stored, and it was verified when it first
      * landed. Verification used to run over the whole batch, so a mirror paid it
      * per COPY — a popular event held by 40 discovered relays was verified 40
      * times to be stored once.
+     *
+     * Measured end to end against a real Vespa (`IngestCostBench`, 4 cores
+     * shared with the engine, 72k-doc corpus, 20k-event batches): a batch of
+     * duplicates went **56µs/event to 21µs/event, and 49 to 16 on the
+     * interleaved repeat — 2.7-3.1x**, with the `verify` stage disappearing
+     * from the ingest stage line entirely.
      *
      * Two passes, cheapest first:
      *
@@ -285,8 +292,9 @@ internal class IngestPipeline(
      *    accepted-not-stored rather than as a duplicate, and this must not
      *    quietly move a number the health line prints.
      *  - **in the store**, via [knownIds]. Same existence check the store's own
-     *    stage B runs, so it costs one extra round trip (~13ms per 1000 ids,
-     *    measured) against a batch whose write costs ~900ms. Gated on
+     *    stage B runs, so it costs one extra round trip — 11-23µs per id at
+     *    full batch width, against the 70-95µs a verification costs and the
+     *    ~600µs/event a fresh batch spends being written. Gated on
      *    [PROBE_MIN_VERIFIABLE] because that trade only holds at width: on a
      *    small live-tail batch the round trip can cost more than the
      *    verifications it saves, and it adds dedup load to the engine the
@@ -495,14 +503,16 @@ internal class IngestPipeline(
 
         /**
          * How many events a batch must expect to VERIFY before the dedup probe
-         * is worth its round trip. The arithmetic: a probe answers ~100 ids in
-         * ~4ms and ~1000 in ~13ms (store benchmark, `CHECK_CHUNK=500`,
-         * `QUERY_FANOUT=4`), while a verify is ~48µs — so one probe pays for
-         * itself once ~80-270 of the ids it covers come back stored. 128 sits
-         * inside that band at the duplicate rates a wide fan-out actually
-         * produces, and keeps small live-tail batches (whose events are mostly
-         * new, and whose duplicates the in-batch pass already caught) off the
-         * engine.
+         * is worth its round trip.
+         *
+         * The per-id price falls with batch width as the round trip amortises
+         * — 23µs/id over 4k ids, 11µs over 20k (`IngestCostBench`) — while a
+         * verification is a flat 70-95µs. So at full width the probe wins once
+         * roughly a sixth of the batch is duplicate, and at a single chunk's
+         * width the fixed cost of the round trip makes it about a wash. 128 is
+         * where that wash sits, and it keeps small live-tail batches — whose
+         * events are mostly new, and whose duplicates the in-batch pass has
+         * already caught — off the engine the relay serves reads from.
          */
         private const val PROBE_MIN_VERIFIABLE = 128
 
