@@ -23,6 +23,11 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 ./gradlew :relay:test              # serving-side tests
 ./gradlew :sync:test               # router tests (moved with the module)
 ./gradlew :sync:test --tests "*SyncBands*"
+
+# Dials the five real indexer relays and reports how each ENDS an empty page
+# (DRAINED / IDLE / CLOSED / …). Off by default, asserts nothing, and is the
+# only thing here that can tell our reading of a relay apart from the relay.
+./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true -i
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
@@ -422,18 +427,29 @@ combination quartz refuses to record a band for unless the caller threads
 **What a per-kind span means — and does not.** It is the envelope of the events
 actually RECEIVED for that kind, not the window that was walked. One REQ carries
 every kind in the filter, so a kind whose floor sits higher than the band's outer
-`min` usually just started existing later (kind 10002 postdates NIP-65 by two
-years), not "we stopped walking there". The card draws that intersection on top
+`min` may just have started existing later, not "we stopped walking there" — the
+two are indistinguishable from the band. The card draws that intersection on top
 of the outer edges and labels it *evidence*, deliberately — see `stats.html`.
 
-The consequence used to be a leg nothing could close: quartz recorded nothing for
-a fetch that saw no events, so the leg below a late-starting kind's floor came
-back empty every cycle, forever. `fetchAllPages` returns a `PagedFetchResult` now
+**Do not assume the leg below a floor is empty. It was measured, and it is not.**
+`RealRelayDrainProbe` asked the five `indexers` relays for kind 10002 below the
+exact floor each one's band carried: purplepag.es returned 13 events,
+directory.yabu.me returned 1,225,329. The theory that killed a day here — relay
+lists postdate NIP-65, so those legs can never return anything — is false, and it
+survived a long time because nothing had dialled a relay to check it. Reach for
+the probe before theorising about a floor.
+
+What a floor being stuck actually means is that walks are not finishing. In the
+same run purplepag.es ended `IDLE` — the relay went quiet mid-walk — and a walk
+that does not finish records nothing, so the floor crawls. `fetchAllPages`
+returns a `PagedFetchResult` now
 — `downloaded` plus an `end` naming every way a walk can stop (`DRAINED`,
 `LIMIT_REACHED`, `IDLE`, `CLOSED`, `CANNOT_CONNECT`, `UNPAGEABLE`) — and only
 `DRAINED`, an EOSE on an empty page, separates an exhausted corpus from a relay
-that capped us or went quiet. Completeness moved from the band onto the span, so
-a drained leg closes its own kinds and no others. Route every
+that capped us or went quiet — which is the distinction a floor needs, since a
+finished walk can now say so instead of the floor only ever creeping.
+Completeness moved from the band onto the span, so a drained leg closes its own
+kinds and no others. Route every
 paged call site through `drainSettlesThePast`: a drain on the NEWER leg only
 means "nothing below the ceiling we already had", and recording it as history
 would make the band skip the past it never walked.
