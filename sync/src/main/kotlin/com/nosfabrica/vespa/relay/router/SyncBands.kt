@@ -499,12 +499,34 @@ class SyncBands(
  * useless, and actively dangerous if recorded, because the band would then claim a
  * settled past it never walked and skip its history forever.
  *
- * Compared against the filter's own `since` rather than checked for null, so a
- * deliberately bounded stream still works: a filter naming a floor gets an older leg
- * carrying that same floor, and draining it settles everything that filter can ask.
+ * Compared as FLOORS, not for equality, because the two paged call sites build
+ * their leg differently and equality silently excluded one of them. [SyncCoverage.legs]
+ * hands the older leg the filter's own `since` — null for every stream in
+ * `router.conf.example` — but the sweep fallback pages [NegentropyPager]'s
+ * `outstanding()`, which materialises that null as [SyncCoverage.PLAUSIBLE_FLOOR].
+ * `null == 1577836800L` is false, so an equality test made the drain unreachable on
+ * the whole NIP-77-less backfill path while looking correct at both call sites.
+ *
+ * A null floor reads as "as deep as anything can go" on the leg side, and as the
+ * plausible floor on the filter side, which is the deepest a band may ever claim —
+ * quartz's own `isPlausible` refuses anything below it, so a leg that reaches it has
+ * reached the bottom of what this filter can ever be asked for.
+ *
+ * KNOWN LIMIT, worth reading before trusting a `since`: for a BOUNDED filter this
+ * returning true still does not close the leg. `SyncCoverage.windows` re-opens the
+ * older leg whenever `filter.since < span.min` even on a complete band — deliberately,
+ * so a caller reaching deeper than the band's floor gets its history back — and it
+ * cannot tell that floor apart from one a drain already proved empty. Every stream
+ * here is unbounded, so nothing in this deployment hits it; closing it needs `complete`
+ * to carry the floor it was earned at, which is an upstream change.
  */
 internal fun drainSettlesThePast(
     walk: PagedFetchResult?,
     leg: Filter,
     filter: Filter,
-) = walk != null && walk.drained && leg.since == filter.since
+): Boolean {
+    if (walk == null || !walk.drained) return false
+    val legFloor = leg.since ?: Long.MIN_VALUE
+    val filterFloor = filter.since ?: SyncCoverage.PLAUSIBLE_FLOOR
+    return legFloor <= filterFloor
+}

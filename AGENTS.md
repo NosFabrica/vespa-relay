@@ -27,7 +27,9 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # Dials the five real indexer relays and reports how each ENDS an empty page
 # (DRAINED / IDLE / CLOSED / …). Off by default, asserts nothing, and is the
 # only thing here that can tell our reading of a relay apart from the relay.
-./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true -i
+# `--rerun` is load-bearing: the task is up-to-date-checked, so a second
+# identical run is SKIPPED and prints nothing, which reads as a silent pass.
+./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)

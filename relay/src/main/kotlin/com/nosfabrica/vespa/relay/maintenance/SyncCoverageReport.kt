@@ -499,6 +499,11 @@ internal object SyncCoverageReport {
                 if (group.legs > rows.size) put("legs", group.legs)
             }
             put("relays", relays.size)
+            // `complete` is "nothing outstanding below this span", which a
+            // drained paged walk now earns as well as a finished reconcile —
+            // so these count SETTLED vs still-open, not negentropy vs REQ. The
+            // key keeps its name: it is published, and a reader charting it
+            // wants the series to survive this.
             put("reconciled", rows.values.count { it.complete })
             put("paged", rows.values.count { !it.complete })
             put("sweeping", marks.size)

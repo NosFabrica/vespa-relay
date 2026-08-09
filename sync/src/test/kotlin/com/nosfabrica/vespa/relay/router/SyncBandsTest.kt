@@ -713,15 +713,45 @@ class SyncBandsTest {
     }
 
     @Test
-    fun `a bounded filter's own floor still counts as reaching bottom`() {
-        // Compared against the filter's `since` rather than checked for null, so
-        // a deliberately bounded stream is not locked out of ever settling.
+    fun `the sweep fallback's leg reaches bottom even though its floor is spelled out`() {
+        // THE BUG an equality test hid. The two paged call sites build their leg
+        // differently: `legs()` gives the older one `since = null` for an
+        // unbounded filter, but the sweep fallback pages NegentropyPager's
+        // `outstanding()`, which materialises that null as PLAUSIBLE_FLOOR.
+        // `null == 1577836800L` is false, so the drain was unreachable on the
+        // whole NIP-77-less backfill path while reading correctly at both sites.
+        val sweptLeg = profiles.copy(since = SyncCoverage.PLAUSIBLE_FLOOR, until = 1_690_000_000L)
+        assertTrue(
+            drainSettlesThePast(drainedWalk, sweptLeg, profiles),
+            "a leg spelling out the plausible floor has reached the bottom of an unbounded filter",
+        )
+    }
+
+    @Test
+    fun `a bounded filter's floor settles the guard but not yet the leg`() {
+        // The guard says yes — this leg reaches everything the filter can ask.
         val bounded = Filter(kinds = listOf(0), since = 1_600_000_000L)
         val c = SyncBands(null)
         c.record(mirror, relay, bounded, 1_690_000_000L, 1_700_000_000L, paged = true)
-
         val older = c.legs(mirror, relay, bounded).first { it.since == bounded.since }
-        assertTrue(drainSettlesThePast(drainedWalk, older, bounded), "it reaches everything this filter can ask for")
+        assertTrue(drainSettlesThePast(drainedWalk, older, bounded))
+
+        // …and the leg still does NOT close, which the old version of this test
+        // never checked because it asserted the helper and stopped there.
+        // `SyncCoverage.windows` re-opens the older leg whenever
+        // `filter.since < span.min`, even complete — deliberately, so a caller
+        // reaching deeper gets its history back, and it cannot tell that floor
+        // apart from one a drain already proved empty. Pinned as a KNOWN LIMIT
+        // rather than left to look like it works: every stream here is
+        // unbounded, and closing it needs `complete` to carry the floor it was
+        // earned at, which is upstream's.
+        val drained = SyncBands(null)
+        drained.record(mirror, relay, bounded, 1_690_000_000L, 1_700_000_000L, paged = true, drained = true)
+        assertEquals(2, drained.legs(mirror, relay, bounded).size, "bounded: the older leg comes back anyway")
+
+        val unbounded = SyncBands(null)
+        unbounded.record(mirror, relay, profiles, 1_690_000_000L, 1_700_000_000L, paged = true, drained = true)
+        assertEquals(1, unbounded.legs(mirror, relay, profiles).size, "unbounded: it really does close")
     }
 
     @Test

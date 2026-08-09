@@ -1186,7 +1186,12 @@ function syncCard(section) {
       place(seg, r.min, r.max);
       seg.title =
         `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
-        (r.complete ? "reconciled — negentropy finished over this span" : "paged — walked, not proven exhaustive") +
+        // `complete` stopped meaning "negentropy" when a drained paged walk
+        // started earning it too — an EOSE on an empty page proves the same
+        // thing a finished reconcile does, that there is nothing left below.
+        // Saying "negentropy" here would report every `sync = "fetch"` relay
+        // as reconciled, which is a claim about HOW, not about what is covered.
+        (r.complete ? "settled — nothing left outstanding below this span" : "paged — walked, not proven exhaustive") +
         (r.target ? `\nwindow ${fmt(r.target)}${r.cap ? ` (peer cap ${fmt(r.cap)})` : ""}` : "");
       track.appendChild(seg);
       // Present only when the per-kind spans disagree — one band holds a span

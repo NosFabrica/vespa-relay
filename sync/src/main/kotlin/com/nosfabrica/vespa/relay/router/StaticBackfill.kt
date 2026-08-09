@@ -526,6 +526,12 @@ internal class StaticBackfill(
                     // Only what the sweep has NOT already covered: a resumed
                     // sweep may be most of the way down the leg, and paging the
                     // whole thing would throw that away.
+                    // The `?: leg` is unreachable today — the ONE path that sets
+                    // `negentropyUsable = false` always supplies `outstanding` —
+                    // but the field is nullable, so this is the type's required
+                    // handling rather than dead code. Do not "simplify" it to
+                    // `!!`: falling back to the whole leg re-pages, which is
+                    // wasteful, while `!!` would crash the stream.
                     val rest = outcome.outstanding ?: leg
                     val walk = "${upstream.streamName}|${upstream.url.url}"
                     paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
