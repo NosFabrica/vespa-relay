@@ -196,11 +196,18 @@ internal class DynamicSync(
                 // exactly one of them is being synced. See [SyncBands.dropFolded]
                 // for why they are dropped rather than merged onto the survivor.
                 cleaned?.aliases?.keys?.let { aliased ->
-                    val forgotten = bands.dropFolded(stream.name, aliased)
-                    // Only the cycle that changes something says so: after the
-                    // first, this is the same set of verdicts every time.
-                    if (forgotten > 0) {
-                        System.err.println("router: ${stream.name} stopped writing sync state for $forgotten newly folded url(s)")
+                    // Never a url a static subscription is holding: one stream
+                    // may carry both `urls` and `relaySource`, and its
+                    // backfill records under this same name. See
+                    // [SyncBands.dropFolded].
+                    val dropped = bands.dropFolded(stream.name, aliased, keep = pinnedUrls)
+                    // Only the cycle that changes something says so. After the
+                    // first these are the same verdicts every time, and after a
+                    // restart they are verdicts whose state the last process
+                    // already dropped — the count is what this pass took out of
+                    // the file, not how many urls are folded.
+                    if (dropped > 0) {
+                        System.err.println("router: ${stream.name} dropped the band state of $dropped folded url(s)")
                     }
                 }
                 val relays =

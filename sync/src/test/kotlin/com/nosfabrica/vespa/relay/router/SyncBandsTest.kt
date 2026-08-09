@@ -465,6 +465,24 @@ class SyncBandsTest {
     }
 
     @Test
+    fun `a url a static subscription holds keeps its bands, folded or not`() {
+        // One stream can carry BOTH `urls` and `relaySource` — nothing in
+        // RouterConfig separates them — so a configured upstream its fan-out
+        // folds away is still dialled by StaticBackfill, still recording under
+        // this very stream name. Filtering those out would be invisible: the
+        // relay syncs, the file says nothing, and every restart re-walks it.
+        val f = tempFile()
+        val c = SyncBands(f)
+        c.record(mirror, other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+
+        assertEquals(0, c.dropFolded(mirror, listOf(other), keep = setOf(other)))
+        c.flush()
+
+        assertEquals(1_700_001_000L, bandIn(f, mirror, other)!!["min"]!!.jsonPrimitive.long, "the pinned url keeps its progress")
+        f.delete()
+    }
+
+    @Test
     fun `a second pass over the same verdicts rewrites nothing`() {
         // apply() hands the whole alias map back every cycle, so all but the
         // first call is the same set of urls — and rewriting a file this size
@@ -479,6 +497,29 @@ class SyncBandsTest {
         assertEquals(0, c.dropFolded(mirror, listOf(other)), "nothing new was learned")
         c.flush()
         assertEquals(stamp, f.lastModified(), "so the flush is a no-op")
+        f.delete()
+    }
+
+    @Test
+    fun `a restart re-applies the same verdicts without touching the file`() {
+        // The fold is read back from the store on the first cycle after boot,
+        // so the naive count is the WHOLE verdict set — thousands of urls whose
+        // state the previous process already dropped. Reported that way it
+        // reads as a mass deletion at every boot, and marking the map dirty for
+        // it rewrites a multi-megabyte file to produce the bytes it already had.
+        val f = tempFile()
+        SyncBands(f).apply {
+            record(mirror, relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+            record(mirror, other, profiles, 1_700_003_000L, 1_700_004_000L, paged = true)
+            dropFolded(mirror, listOf(other))
+            flush()
+        }
+
+        val rebooted = SyncBands(f)
+        val stamp = f.lastModified()
+        assertEquals(0, rebooted.dropFolded(mirror, listOf(other)), "nothing was taken out of a file that never had it")
+        rebooted.flush()
+        assertEquals(stamp, f.lastModified(), "so the boot writes nothing")
         f.delete()
     }
 
