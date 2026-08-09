@@ -531,6 +531,31 @@ object RouterConfigLoader {
 
         fun ints(k: String) = if (f.hasPath(quote(k))) f.getIntList(quote(k)).map { it.toInt() } else null
 
+        // NIP-01 timestamps are unsigned and a `limit` counts events, so none of
+        // the three can be negative — and what a relay DOES with a negative one is
+        // never what the config meant. Measured across the five `indexers`:
+        // strfry kills the subscription (`CLOSED: bad req: error parsing until`),
+        // three answer a NOTICE and then never EOSE, so every page burns a full
+        // idle timeout, and purplepag.es silently drops the bound and serves its
+        // NEWEST page — the opposite end of the relay from the one asked for. A
+        // negative `limit` is quieter and worse: quartz drops the filter before
+        // the first REQ, so the stream reports LIMIT_REACHED having downloaded
+        // nothing, every cycle, looking like a relay with no events.
+        //
+        // Caught here, at the one place a human types it, because none of those
+        // failures name the config that caused them.
+        fun nonNegative(
+            key: String,
+            value: Long?,
+        ): Long? =
+            value?.also {
+                require(it >= 0) {
+                    "router: filter at ${f.origin().description()} has `$key = $it` — " +
+                        "NIP-01 has no negative timestamps or limits, and relays answer one with " +
+                        "a killed subscription, silence, or their newest events instead"
+                }
+            }
+
         val tags =
             f
                 .root()
@@ -544,9 +569,12 @@ object RouterConfigLoader {
             authors = strs("authors"),
             kinds = ints("kinds"),
             tags = tags,
-            since = if (f.hasPath("since")) f.getLong("since") else null,
-            until = if (f.hasPath("until")) f.getLong("until") else null,
-            limit = if (f.hasPath("limit")) f.getInt("limit") else null,
+            since = nonNegative("since", if (f.hasPath("since")) f.getLong("since") else null),
+            until = nonNegative("until", if (f.hasPath("until")) f.getLong("until") else null),
+            // getInt, not getLong().toInt(): HOCON range-checks an int here, and
+            // going through Long would silently truncate an out-of-range limit
+            // into a plausible-looking one.
+            limit = if (f.hasPath("limit")) f.getInt("limit").also { nonNegative("limit", it.toLong()) } else null,
             search = if (f.hasPath("search")) f.getString("search") else null,
         )
     }

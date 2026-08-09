@@ -665,6 +665,15 @@ class SyncBands(
  * this floor, so those events could never widen a band or count as coverage. Quartz's
  * side of this — a paged walk that cannot terminate when a relay ignores `until` —
  * is upstream's to fix; this makes it unreachable from here.
+ *
+ * KNOWN HOLE, and why it is left open: a filter carrying its OWN `since` is passed
+ * through untouched, so a config that writes `since = 0` — which means the same as
+ * omitting it — walks unfloored and can still run past zero. Clamping it instead
+ * would trade the loop for a leg that never closes: [drainSettlesThePast] compares
+ * the leg's floor against the FILTER's, and a leg clamped above the floor its filter
+ * asked for has not reached bottom and may not settle history. Neither branch is
+ * good, and no configuration here writes it; a real `since` is always well above
+ * this floor, where this function is correctly a no-op.
  */
 internal fun Filter.flooredForPaging(): Filter = if (since != null) this else copy(since = SyncCoverage.PLAUSIBLE_FLOOR)
 

@@ -331,6 +331,33 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `a negative since, until or limit is refused at parse time`() {
+        // None of the three can be negative under NIP-01, and every way a relay
+        // reacts to one is a failure that never names the config behind it:
+        // strfry CLOSEs the subscription, three of the five `indexers` answer a
+        // NOTICE and then never EOSE (so each page burns a whole idle timeout),
+        // and purplepag.es drops the bound and serves its NEWEST page instead —
+        // the opposite end of the relay from the one asked for.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": -1 }"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": -1 }"""))
+        }
+        // The quietest of the three: quartz drops a filter whose limit is already
+        // met before the first REQ, so the stream downloads nothing and reports
+        // LIMIT_REACHED every cycle, reading as a relay that simply has no events.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": -1 }"""))
+        }
+        // Zero is not negative and stays legal — `since = 0` and `until = 0` are
+        // the epoch, and a relay is entitled to its own reading of them.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": 0 }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
+    }
+
+    @Test
     fun `index 0 is the tag name, never the url`() {
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002] }""", """{ tag = "r", index = 0 }"""))
