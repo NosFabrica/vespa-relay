@@ -58,56 +58,46 @@ app = "0.1.0"
 # ancestor of this, so the store runs on a quartz AHEAD of its build, the safe
 # side of the at-or-ahead invariant. The store pin below does not move.
 #
-# LEXICOGRAPHIC, and the reason to run the check rather than trust this line:
-# '8755…' sorts BELOW the 'f464…' the store still drags in transitively, so
-# conflict resolution alone would keep the OLD quartz and this bump would do
-# nothing — the exact silent no-op the per-module forces exist for. They are what
-# makes it land, not a formality. Verified after bumping:
-#   ./gradlew :sync:dependencies --configuration runtimeClasspath | grep quartz
-# → `com.github.vitorpamplona.amethyst:quartz:f4640b6ea1 -> 875531afb0 (forced)`
+# LEXICOGRAPHIC: this pin sorts BELOW the 'f464…' it replaced, so while the store
+# was still dragging that in there was no conflict to win on version order and
+# the per-module forces were the only thing making the bump land. The store pin
+# below now requests this exact hash, so the conflict is gone and resolution is
+# equality — verified, and the arrow disappearing is the proof:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep quartz
+# → `com.github.vitorpamplona.amethyst:quartz:875531afb0` with no `->` anywhere.
+#
+# Do not read that as the forces being unnecessary. They are what holds this the
+# next time the two pins drift, which is every time one moves without the other,
+# and a bump in this direction fails SILENTLY without them.
 quartz = "875531afb0"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# a308d6723f = store main through PR #62, whose WHOLE range is that quartz bump:
-# two commits, one of them the merge, and no source change in any store module.
-# It is pinned here for the direction rule above — taking the new quartz without
-# it would leave the store compiled against the old SyncCoverage — not for
-# anything the store itself gained. Its `IEventStore`, `SQLiteEventStore`,
-# `IndexableFields` and `SearchFieldExtractor` are byte-identical to 98972c31c2,
-# so the store contract, filter semantics and searchable-kind table carry over
-# untouched.
+# e129c094a6 = store main through PR #64, whose whole range is its own quartz
+# bump to 875531afb0 — the same hash pinned above. That restores the EQUALITY
+# the top comment calls the state to hold: one quartz on the classpath, and the
+# forces restating the resolution rather than overriding it. It had been at-and-
+# ahead for a few commits while #3884 was in flight, which is the safe side but
+# not the tidy one.
 #
-# The integration gate is run against it anyway, per AGENTS.md: a store whose
-# only change is a dependency is exactly the shape of bump the relay's own
-# InMemoryEventIndex tests cannot see through. What that run found is in the
-# commit that made this bump, not here — an outcome is a point in time and a
-# comment is not.
+# Also carries #63, a writer-lock contention change that landed before the bump.
+# That is store-internal and this repo calls nothing new for it.
 #
-# Previously 98972c31c2 = store main through PR #61. Carried everything 3efbf16e69 had —
-# #56's coverage guard (a response judged by Vespa's own isDegraded(), not by
-# its `full`, which disagrees in BOTH directions), #57's quartz alignment, and
-# WriterTopology on open(), which this deployment needs because the guard-owner
-# cache that skips the NIP-09/NIP-62 probes is exact only for a single writer
-# and there are two here (STORE_WRITERS in :common).
-#
-# What is new is the container access log (#59): a deployment choice rather than
-# a constant, injected into services.xml as parsed XML instead of spliced text,
-# and defaulted off — this relay passes nothing, so it keeps the behaviour it
-# had. #60 made that feature's IT poll for the log rather than race Vespa's
-# reconfiguration, and #61 cleared two compiler warnings that were dead code.
-#
-# It also DROPS engine/app/validation-overrides.xml, the stemming override —
-# the store's position is that every deployment has upgraded past needing it.
-# Ours redeploys the bundled package on boot, so a Vespa old enough to still
-# want that override would fail the deploy rather than warn.
-#
-# VERIFY the hash resolved rather than reading this line: Gradle breaks a version
-# conflict lexicographically, so a hash that sorts below one dragged in
-# transitively loses silently and the bump does nothing. This pin sorted the safe
-# way when it moved ('a308…' > '98972…'); the quartz pin above no longer does, and
-# rides on the forces instead.
+# LEXICOGRAPHIC: 'e129…' > 'a308…', so unlike the quartz pin above this one
+# sorts the SAFE way and would win a conflict on its own. The forces are not
+# load-bearing here — which is exactly why the check below is still worth
+# running rather than assumed, since the two pins now differ in that respect.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
-vespaEventStore = "a308d6723f"
+#
+# Previously a308d6723f = store main through PR #62. Its `IEventStore`,
+# `SQLiteEventStore`, `IndexableFields` and `SearchFieldExtractor` were
+# byte-identical to 98972c31c2 before it, so the store contract, filter
+# semantics and searchable-kind table have carried through untouched across all
+# three. #59's container access log is a deployment choice, defaulted off, and
+# this relay passes nothing — so it keeps the behaviour it had. #62 also DROPPED
+# engine/app/validation-overrides.xml, the stemming override; ours redeploys the
+# bundled package on boot, so a Vespa old enough to want it would fail the
+# deploy rather than warn.
+vespaEventStore = "e129c094a6"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
