@@ -28,7 +28,11 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import kotlinx.coroutines.CompletableDeferred
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.withTimeout
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -217,6 +221,54 @@ class AliasFoldingTest {
             folding(store, next).measure("t", listOf(a, b, c), canDial = { true })
 
             assertTrue(next.dials.get() > 0, "a newly discovered url was never fingerprinted")
+        }
+
+    @Test
+    fun `a group's verdict is written while the pass is still running`() =
+        runBlocking {
+            // A pass is background work that yields to the fan-out, so on a cold
+            // store — nothing folded, mirror at its widest — it can run for a
+            // quarter of an hour. Measured: 13 minutes with zero verdicts in the
+            // store, because they used to be held until the whole pass ended.
+            // Anything that ends the process in that window — a restart, an OOM,
+            // a redeploy — threw away every fingerprint the pass had taken, and
+            // a cold store is exactly when that work is most expensive to redo.
+            //
+            // A pass cannot be killed from inside a test, so this asserts the
+            // property that makes the kill survivable: the first group's verdict
+            // is readable from the store while a second group is still probing.
+            val store = newStore()
+            val fast = RelayUrlNormalizer.normalize("wss://nos.lol")
+            val fastAlias = RelayUrlNormalizer.normalize("wss://nos.lol/cipher-zulu")
+            val slow = RelayUrlNormalizer.normalize("wss://slow.example")
+            val slowAlias = RelayUrlNormalizer.normalize("wss://slow.example/alpha")
+
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val release = CompletableDeferred<Unit>()
+            val up =
+                Upstreams { at ->
+                    if (at.url.contains("slow.example")) runBlocking { release.await() }
+                    corpus
+                }
+
+            val pass = launch { folding(store, up).measure("t", listOf(fast, fastAlias, slow, slowAlias), canDial = { true }) }
+            val reader = RelayAliasRecord(store, signer)
+            try {
+                withTimeout(10_000) {
+                    while (reader.load(listOf(fast, fastAlias)).aliases.isEmpty()) delay(20)
+                }
+                // Readable, and the pass has not finished.
+                assertTrue(pass.isActive, "the pass ended before the assertion, so this proves nothing")
+                assertEquals(mapOf(fastAlias to fast), reader.load(listOf(fast, fastAlias)).aliases)
+            } finally {
+                // Unconditionally, or a FAILING run leaves the pass parked on
+                // this forever and `runBlocking` waits for it — the assertion
+                // error never surfaces and the suite hangs instead of failing.
+                // Which is exactly what happened when this was checked against
+                // the unfixed code.
+                release.complete(Unit)
+                pass.join()
+            }
         }
 
     @Test

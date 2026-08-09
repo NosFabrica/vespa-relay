@@ -223,10 +223,16 @@ class AliasFolding(
                         }
                         val leaderPrint = lead.ids
                         val result = aliases.learn(group, prints)
+                        // This group's share of the pass, kept separately so it
+                        // can be written the moment the group is decided. The
+                        // pass-wide maps are only counters for the summary line.
+                        val verdicts = LinkedHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
+                        val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
                         for ((alias, canonical) in result.folded) {
                             val print = prints[alias].orEmpty()
                             val shared = leaderPrint.count { it in print }
                             newVerdicts[alias] = canonical to (print.size to shared)
+                            verdicts[alias] = canonical to (print.size to shared)
                         }
                         // The cleared half. `bestShared` is against the leader,
                         // which is the only thing this url was measured against
@@ -248,22 +254,34 @@ class AliasFolding(
                                         ?: 0
                                 }
                             newCleared[url] = Cleared(print.size, group.size - 1, shared)
+                            cleared[url] = Cleared(print.size, group.size - 1, shared)
+                        }
+
+                        // WRITTEN AS THIS GROUP FINISHES, not when the pass
+                        // does. A pass is background work that yields to the
+                        // fan-out, so on a cold store — where nothing is folded
+                        // yet and the mirror is therefore at its widest — it can
+                        // run for a quarter of an hour. Held to the end, every
+                        // fingerprint in it is lost to a restart, and a cold
+                        // store is exactly when a restart is most likely and the
+                        // work most expensive to redo. One group's verdicts are
+                        // a complete, self-contained answer; there is nothing to
+                        // wait for.
+                        //
+                        // One at a time and each guarded: these are signed public
+                        // statements about other people's servers, and a failure
+                        // to write one must not take the pass down with it.
+                        for ((alias, v) in verdicts) {
+                            runCatching { record.publish(alias, v.first, v.second.first, v.second.second) }
+                        }
+                        for ((url, c) in cleared) {
+                            runCatching { record.publishDistinct(url, c.sampled, c.peers, c.bestShared) }
                         }
                     }
                 }
             }
             probed = taken.get()
             learned = newVerdicts.size
-            // Published AFTER the probing, one at a time: these are signed
-            // public statements about other people's servers, and a failure to
-            // write one must not take a fan-out down with it.
-            for ((alias, verdict) in newVerdicts) {
-                val (canonical, evidence) = verdict
-                runCatching { record.publish(alias, canonical, evidence.first, evidence.second) }
-            }
-            for ((url, c) in newCleared) {
-                runCatching { record.publishDistinct(url, c.sampled, c.peers, c.bestShared) }
-            }
         }
 
         if (probed > 0 || learned > 0) {
