@@ -16,21 +16,33 @@ app = "0.1.0"
 # they are per-module (:common, :relay, :sync), a new module needs its own, and
 # they are what stops a store bump from silently dragging its own quartz in.
 #
-# f4640b6ea1 = amethyst PR #3877, which is the reason this pin moved: it is the
-# upstream half of the sync-state nesting in :sync. SyncCoverage keyed its bands
-# by "$url $filterJson" and handed that INTERNAL key out through export()/
-# restore(); the key is a typed `SyncCoverage.BandKey(relay, filter)` now, with
-# encode()/decode() on the class for a file that still wants one joined key per
-# line. `SyncBands` here was splitting that string at the first space to nest its
-# own file by stream/filter/relay, and now asks for the halves instead.
+# cee2a9ea4b = amethyst PR #3884, the upstream half of the drained-leg fix in
+# :sync. `fetchAllPages` returns `PagedFetchResult(downloaded, end)` instead of
+# an `Int`, naming every way a walk can stop — DRAINED, LIMIT_REACHED, IDLE,
+# CLOSED, CANNOT_CONNECT, UNPAGEABLE — and `SyncCoverage.Span` carries its own
+# `complete` so a paged leg that drained one kind cannot speak for the others.
+# `SyncCoverage.Band` lost its `complete` CONSTRUCTOR parameter and kept the
+# property, derived as all-kinds-complete.
 #
-# SOURCE-BREAKING for callers of export()/restore(), which is this repo and geode
-# and nothing else. The store does not call SyncCoverage at all (its own pin
-# comment says grep finds no reference), so the bump reaches us only through
-# `SyncBands`. The store pin below moves to the commit that pins the SAME quartz,
-# so the at-or-ahead rule above is satisfied by equality again rather than by
-# luck.
-quartz = "f4640b6ea1"
+# SOURCE-BREAKING twice over: for every caller of `fetchAllPages` that reads the
+# count (now `.downloaded`), and for anyone constructing a `Band`. Both are this
+# repo and geode. The store touches NEITHER — verified against the resolved jars
+# rather than inferred, `strings` over every class in store-a308d6723f.jar and
+# engine-a308d6723f.jar finds no `fetchAllPages`, `SyncCoverage` or
+# `PagedFetchResult` — so the at-or-ahead rule above holds with the store pin
+# staying put: cee2a9ea4b is a descendant of the f4640b6ea1 the store compiled
+# against, and nothing it compiled against moved.
+#
+# DIRECTION WARNING, and the reason to actually run the check below rather than
+# trust this line: unlike every previous bump here, this hash sorts BELOW the one
+# it replaces — 'cee2…' < 'f464…'. Gradle breaks a version conflict
+# lexicographically, so the store's transitive f4640b6ea1 WINS on its own and
+# this pin would silently do nothing. The per-module `force(libs.quartz)` is what
+# makes it take effect, and it is load-bearing here in a way it has not been
+# before. Verified after bumping:
+#   ./gradlew :sync:dependencies --configuration runtimeClasspath | grep quartz
+# → `com.github.vitorpamplona.amethyst:quartz:f4640b6ea1 -> cee2a9ea4b (forced)`
+quartz = "cee2a9ea4b"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
 # a308d6723f = store main through PR #62, whose WHOLE range is that quartz bump:

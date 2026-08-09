@@ -142,11 +142,17 @@ internal class ClientWindowSync(
             onEvent = onEvent,
         )
 
+    // The count only. A page here is a SUB-WINDOW of a leg — one slice the
+    // reconcile could not compare, or one dense second split by kind — so
+    // draining it means "nothing below this slice's own floor", which is a
+    // point inside the leg rather than the leg's bottom. Only a walk that
+    // reached the filter's floor may settle history, and that judgement lives
+    // at the leg's call site in `drainSettlesThePast`.
     override suspend fun page(
         url: NormalizedRelayUrl,
         window: Filter,
         onEvent: suspend (Event) -> Unit,
-    ): Int = client.fetchAllPages(url, listOf(window), idleTimeoutMs, onEvent = onEvent)
+    ): Int = client.fetchAllPages(url, listOf(window), idleTimeoutMs, onEvent = onEvent).downloaded
 }
 
 /** What one [NegentropyPager.sweep] did with one leg of one peer. */
