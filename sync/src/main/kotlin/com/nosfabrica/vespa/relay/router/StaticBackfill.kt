@@ -279,6 +279,10 @@ internal class StaticBackfill(
                 // value, which only lands when the walk ends; that once read
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
+                // Did the relay EOSE on an empty page — "there is nothing older" —
+                // rather than merely stop giving us more? Only that earns the band
+                // the right to close its older leg. See `drainSettlesThePast`.
+                var drained = false
                 paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                 downloaded +=
                     client.fetchAllPages(
@@ -286,6 +290,7 @@ internal class StaticBackfill(
                         listOf(window),
                         NEG_IDLE_MS,
                         onNewPage = { until -> paging.mark(walk, until) },
+                        onDrained = { drained = true },
                     ) { event ->
                         if (upstream.filter.match(event)) {
                             if (SyncCoverage.isPlausible(event.createdAt)) {
@@ -308,7 +313,16 @@ internal class StaticBackfill(
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
                 paging.finish(walk)
-                bands.record(upstream.streamName, upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                bands.record(
+                    upstream.streamName,
+                    upstream.url,
+                    upstream.filter,
+                    seenMin,
+                    seenMax,
+                    paged = true,
+                    observedByKind = seenByKind,
+                    drained = drainSettlesThePast(drained, window, upstream.filter),
+                )
             }
             progress.done(idx, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
@@ -515,6 +529,7 @@ internal class StaticBackfill(
                     // whole thing would throw that away.
                     val rest = outcome.outstanding ?: leg
                     val walk = "${upstream.streamName}|${upstream.url.url}"
+                    var drained = false
                     paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                     downloaded +=
                         client.fetchAllPages(
@@ -522,12 +537,26 @@ internal class StaticBackfill(
                             listOf(rest),
                             NEG_IDLE_MS,
                             onNewPage = { until -> paging.mark(walk, until) },
+                            onDrained = { drained = true },
                             onEvent = onEvent,
                         )
                     paging.finish(walk)
                     pagedWindows++
                     legsDone++
-                    bands.record(upstream.streamName, upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                    // Against `rest`, not `leg`: a resumed sweep leaves only the
+                    // part it had not reached, and that remainder is what was
+                    // actually paged. Its floor is the leg's whenever the sweep
+                    // was working downward, which is the only case that matters.
+                    bands.record(
+                        upstream.streamName,
+                        upstream.url,
+                        upstream.filter,
+                        seenMin,
+                        seenMax,
+                        paged = true,
+                        observedByKind = seenByKind,
+                        drained = drainSettlesThePast(drained, rest, upstream.filter),
+                    )
                     continue
                 }
                 if (!outcome.complete) continue
@@ -630,6 +659,13 @@ internal class StaticBackfill(
                     // reconcile compares the whole filter at once and earns the
                     // same span for every kind in it.
                     observedByKind = seenByKind,
+                    // No `drained` here, deliberately: the paging happens inside
+                    // quartz's `negentropySyncOrFetch`, which does not surface
+                    // `onDrained` the way `fetchAllPages` does. So a NIP-77-less
+                    // relay reached through this path keeps the old behaviour and
+                    // re-asks its older leg — the conservative direction, and not
+                    // the path a `sync = "fetch"` stream takes anyway. Thread the
+                    // signal through that helper upstream to close this last gap.
                 )
             }
             progress.done(idx, downloaded)

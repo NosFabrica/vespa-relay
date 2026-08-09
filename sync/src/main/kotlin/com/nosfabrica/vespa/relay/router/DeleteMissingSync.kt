@@ -229,10 +229,17 @@ internal class DeleteMissingSync(
             // Same time-axis reporting as every other paged walk: without it
             // these walks are the one hole in the stream's fraction/ETA line.
             val walk = "${stream.name}|${url.url}"
+            var drained = false
             paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
             try {
                 downloaded +=
-                    client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS, onNewPage = { until -> paging.mark(walk, until) }) { event ->
+                    client.fetchAllPages(
+                        url,
+                        listOf(leg),
+                        NEG_IDLE_MS,
+                        onNewPage = { until -> paging.mark(walk, until) },
+                        onDrained = { drained = true },
+                    ) { event ->
                         if (stream.filter.match(event)) {
                             if (SyncCoverage.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -245,7 +252,16 @@ internal class DeleteMissingSync(
             } finally {
                 paging.finish(walk)
             }
-            bands.record(stream.name, url, ask, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+            bands.record(
+                stream.name,
+                url,
+                ask,
+                seenMin,
+                seenMax,
+                paged = true,
+                observedByKind = seenByKind,
+                drained = drainSettlesThePast(drained, leg, ask),
+            )
         }
         return downloaded
     }

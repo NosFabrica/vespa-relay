@@ -409,12 +409,32 @@ automatically by `StaticBackfill` once our own count passes
 snapshot across its 16k relays, where per-peer windowing would multiply the
 store work by the fan-out.
 
-**Known open bug (now upstream's):** a band holds one span for every kind in
-the filter, so a long-lived kind (0) vouches for a short-lived one (30382) and
-`legs()` skips the interior. The fix is per-kind spans *inside* the
-filter-keyed band — not per-kind keys, which would break the invalidation
-property above. Still unfixed; it stopped biting only because `assertions`
-narrowed to a single kind, so any multi-kind filter can walk into it again.
+**Fixed, and worth knowing how.** A band used to hold one span for the whole
+filter, so a long-lived kind (0) vouched for a short-lived one (30382) and
+`legs()` skipped the interior. Upstream took per-kind spans *inside* the
+filter-keyed band (amethyst#3862, picked up in `94e3136`) — not per-kind keys,
+which would break the invalidation property above. Every stream in
+`router.conf.example` is multi-kind, so nothing here is shielded by luck: the
+`indexers` stream alone is `[0, 10002]` on the paged path, which is exactly the
+combination quartz refuses to record a band for unless the caller threads
+`observedByKind`.
+
+**What a per-kind span means — and does not.** It is the envelope of the events
+actually RECEIVED for that kind, not the window that was walked. One REQ carries
+every kind in the filter, so a kind whose floor sits higher than the band's outer
+`min` usually just started existing later (kind 10002 postdates NIP-65 by two
+years), not "we stopped walking there". The card draws that intersection on top
+of the outer edges and labels it *evidence*, deliberately — see `stats.html`.
+
+The consequence used to be a leg nothing could close: quartz recorded nothing for
+a fetch that saw no events, so the leg below a late-starting kind's floor came
+back empty every cycle, forever. `fetchAllPages` now reports `onDrained` when the
+relay EOSEs on an empty page — the one answer that separates an exhausted corpus
+from a relay that capped us or went quiet — and completeness moved from the band
+onto the span, so a drained leg closes its own kinds and no others. Route every
+paged call site through `drainSettlesThePast`: a drain on the NEWER leg only
+means "nothing below the ceiling we already had", and recording it as history
+would make the band skip the past it never walked.
 
 ## Instrumentation — use it before theorising
 

@@ -570,6 +570,9 @@ internal class DynamicSync(
             // for what is outside what we already walked — the band IS the
             // mechanism here, there is no id set to fall back on.
             val fetched = stream.sync == SyncMode.FETCH
+            // Set only on the fetch branch: the negentropy path below runs
+            // through `negentropySyncOrFetch`, which does not surface a drain.
+            var drained = false
             val result =
                 if (fetched) {
                     null.also {
@@ -581,6 +584,7 @@ internal class DynamicSync(
                                 listOf(leg),
                                 NEG_IDLE_MS,
                                 onNewPage = { until -> paging.mark(walk, until) },
+                                onDrained = { drained = true },
                                 onEvent = onEvent,
                             )
                         paging.finish(walk)
@@ -604,6 +608,9 @@ internal class DynamicSync(
                 paged = fetched || result?.pagedFallback == true,
                 reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
                 observedByKind = seenByKind,
+                // Against `window`, which is what the band is keyed by — the
+                // same filter [legs] derived `leg` from.
+                drained = drainSettlesThePast(drained, leg, window),
             )
         }
         return downloaded

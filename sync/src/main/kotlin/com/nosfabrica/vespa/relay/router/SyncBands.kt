@@ -162,12 +162,17 @@ class SyncBands(
         // and every multi-kind stream here would stop resuming. A reconcile
         // ignores it — it compares the whole filter in one pass.
         observedByKind: Map<Int, SyncCoverage.Span>? = null,
+        // The relay EOSEd on an empty page, so there is nothing below what this
+        // walk saw and the band may finally close its older leg. Gate every call
+        // site on [drainSettlesThePast] — a drain on the NEWER leg is not a claim
+        // about history.
+        drained: Boolean = false,
     ) {
         // Before the record, so what this walk observed WIDENS the pre-stream
         // band instead of replacing it — quartz widens, and a claim that landed
         // after would be the older, wider claim overwriting the newer one.
         claim(stream, url, filter)
-        coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind)
+        coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
     }
 
     fun coveringWindow(
@@ -324,6 +329,7 @@ class SyncBands(
                             buildJsonObject {
                                 put("min", span.min)
                                 put("max", span.max)
+                                put("complete", span.complete)
                             },
                         )
                     }
@@ -336,10 +342,6 @@ class SyncBands(
         val spans = runCatching { spansOf(o) }.getOrNull() ?: return null
         return SyncCoverage.Band(
             spans,
-            // Absent in files written before coverage was tracked: reads as
-            // "span only" and stale, so the first run after an upgrade
-            // re-walks once and records the real thing.
-            o["complete"]?.jsonPrimitive?.booleanOrNull ?: false,
             o["fullAt"]?.jsonPrimitive?.longOrNull ?: 0L,
         )
     }
@@ -354,17 +356,33 @@ class SyncBands(
      * would re-walk every upstream's corpus once on upgrade, which is the cost
      * bands exist to avoid. The first paged walk that reports per kind
      * replaces it.
+     *
+     * Completeness rides one level down for the same reason and reads the same
+     * way: a span written before it was per kind carries no `complete` of its
+     * own, so it inherits the BAND's — which is exactly what that flag used to
+     * mean for every kind at once. Absent there too it is false, which is what
+     * a file older than coverage tracking should claim: nothing.
      */
     private fun spansOf(o: JsonObject): Map<Int, SyncCoverage.Span> {
+        val bandComplete = o["complete"]?.jsonPrimitive?.booleanOrNull ?: false
         o["spans"]?.jsonObject?.let { spans ->
             return spans.entries.associate { (kind, v) ->
                 val span = v.jsonObject
-                kind.toInt() to SyncCoverage.Span(span.getValue("min").jsonPrimitive.long, span.getValue("max").jsonPrimitive.long)
+                kind.toInt() to
+                    SyncCoverage.Span(
+                        span.getValue("min").jsonPrimitive.long,
+                        span.getValue("max").jsonPrimitive.long,
+                        span["complete"]?.jsonPrimitive?.booleanOrNull ?: bandComplete,
+                    )
             }
         }
         return mapOf(
             SyncCoverage.ALL_KINDS to
-                SyncCoverage.Span(o.getValue("min").jsonPrimitive.long, o.getValue("max").jsonPrimitive.long),
+                SyncCoverage.Span(
+                    o.getValue("min").jsonPrimitive.long,
+                    o.getValue("max").jsonPrimitive.long,
+                    bandComplete,
+                ),
         )
     }
 
@@ -450,3 +468,30 @@ class SyncBands(
             ).startPeriodicFlush()
     }
 }
+
+/**
+ * Whether a drained leg says anything about HISTORY — the guard every paged call
+ * site must put between `fetchAllPages`'s `onDrained` and [SyncBands.record].
+ *
+ * `fetchAllPages` reports a drain when the relay EOSEs on an empty page: there is
+ * nothing below where this walk stopped. Whether that settles the PAST depends on
+ * how deep the leg was allowed to reach, and quartz cannot tell — [SyncBands.record]
+ * is handed the STREAM's filter, because that is what the band is keyed by, so the
+ * leg's own bounds never reach it.
+ *
+ * [SyncCoverage.legs] gives the OLDER leg the filter's own `since`, so draining it
+ * means the relay holds nothing at all below the filter's floor — exactly the claim
+ * that lets the band stop re-asking. The NEWER leg starts at the band's CEILING, so
+ * draining that one only means "nothing below the ceiling we already had": true,
+ * useless, and actively dangerous if recorded, because the band would then claim a
+ * settled past it never walked and skip its history forever.
+ *
+ * Compared against the filter's own `since` rather than checked for null, so a
+ * deliberately bounded stream still works: a filter naming a floor gets an older leg
+ * carrying that same floor, and draining it settles everything that filter can ask.
+ */
+internal fun drainSettlesThePast(
+    drained: Boolean,
+    leg: Filter,
+    filter: Filter,
+) = drained && leg.since == filter.since
