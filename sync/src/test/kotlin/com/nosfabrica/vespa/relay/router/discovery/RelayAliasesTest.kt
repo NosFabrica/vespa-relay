@@ -74,6 +74,44 @@ class RelayAliasesTest {
     }
 
     @Test
+    fun `a url that answered nothing is not called its own relay`() {
+        val aliases = RelayAliases()
+        // Measured live: relay.damus.io/lantern-oscar-dynamo answered a probe
+        // with ZERO events while its host's other paths folded normally. An
+        // empty window is not a null one, so it used to fall past the fold test
+        // and out the other side as "probed, and it is its own relay" — a claim
+        // published for thirty days on the strength of nothing at all.
+        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to emptySet()))
+
+        assertTrue(learned.folded.isEmpty())
+        assertTrue(nosAlpha !in learned.distinct, "silence was recorded as proof of a distinct relay")
+        assertTrue(!aliases.measured(nosAlpha), "a url that said nothing must come back to the fan-out")
+    }
+
+    @Test
+    fun `a window under the sample floor decides nothing either way`() {
+        val aliases = RelayAliases()
+        // The satsdisco case: 9 events, all 9 shared with the leader. Too thin
+        // to fold on — and equally too thin to call a separate relay, which is
+        // the stronger claim of the two.
+        val nine = window(9)
+        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to nine))
+
+        assertTrue(learned.folded.isEmpty())
+        assertTrue(learned.distinct.isEmpty(), "a 9-event window was published as a verdict")
+        assertTrue(!aliases.measured(nosAlpha))
+    }
+
+    @Test
+    fun `a leader that answered too thinly clears nobody, itself included`() {
+        val aliases = RelayAliases()
+        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(5), nosAlpha to window(100)))
+
+        assertTrue(learned.folded.isEmpty())
+        assertTrue(learned.distinct.isEmpty(), "a thin leader still published verdicts: ${learned.distinct}")
+    }
+
+    @Test
     fun `a window too small to mean anything folds nothing`() {
         val aliases = RelayAliases()
         // Identical, and identical is meaningless at this size: two quiet

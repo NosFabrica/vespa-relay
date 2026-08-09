@@ -193,13 +193,24 @@ class RelayAliases(
      * duplication, and a relay that is merely down must come back into the
      * fan-out when it recovers.
      *
+     * **Silence includes a window too small to mean anything, not just a
+     * missing one.** [sameRelay] already refuses to FOLD below [minSample],
+     * which used to be the end of it — the url fell through to the else branch
+     * and was called its own relay on the strength of nine events, or of none.
+     * That was survivable while the verdict lived in memory and evaporated on
+     * restart. It is not survivable now that it is published: measured live,
+     * `relay.damus.io/lantern-oscar-dynamo` answered with ZERO events and was
+     * about to be recorded, for thirty days, as a relay in its own right.
+     * Refusing to fold and proving distinctness are different claims and only
+     * one of them can be made from a thin window.
+     *
      * **The leader is cleared too, when nothing folded onto it.** It is the one
      * member never compared against anything — everything is compared against
      * IT — so without this it would be the only url in a fully decided group
      * still carrying no verdict, [unresolved] would keep returning the group
      * forever, and persisting the members' verdicts would save nothing.
      * Clearing it is sound for the same reason theirs is: it was measured
-     * against every member that answered, and matched none of them.
+     * against every member that answered enough to be measured against.
      */
     fun learn(
         group: List<NormalizedRelayUrl>,
@@ -213,24 +224,27 @@ class RelayAliases(
         for (url in group) {
             if (url == leader || folded.containsKey(url)) continue
             val print = prints[url] ?: continue
-            compared++
             if (sameRelay(leaderPrint, print)) {
+                compared++
                 folded[url] = leader
                 canonicals += leader
                 distinct -= url
                 folds[url] = leader
-            } else {
-                // Probed, and it is its own relay. Recorded so the next cycle
+            } else if (print.size >= minSample && leaderPrint.size >= minSample) {
+                // Both sides said enough to be compared, and they disagreed.
+                // Probed, and it is its own relay — recorded so the next pass
                 // spends its budget on urls we know nothing about.
+                compared++
                 markDistinct(url)
                 cleared += url
             }
         }
         // Only when something was actually held up against it: a leader whose
-        // whole group was unreachable has been compared to nothing and has
-        // proved nothing. And only when it is not a canonical — if anything
-        // folded onto it, it is the class, not a singleton.
-        if (compared > 0 && leader !in canonicals) {
+        // whole group was unreachable, or answered too thinly to compare, has
+        // been measured against nothing and has proved nothing. And only when
+        // it is not a canonical — if anything folded onto it, it is the class,
+        // not a singleton.
+        if (compared > 0 && leaderPrint.size >= minSample && leader !in canonicals) {
             markDistinct(leader)
             cleared += leader
         }
