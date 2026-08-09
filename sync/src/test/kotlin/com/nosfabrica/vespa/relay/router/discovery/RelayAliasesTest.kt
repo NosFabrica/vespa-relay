@@ -54,7 +54,7 @@ class RelayAliasesTest {
         val group = listOf(nos, nosAlpha)
         val print = window(100)
 
-        val learned = aliases.learn(group, mapOf(nos to print, nosAlpha to print))
+        val learned = aliases.learn(group, aliases.toProbe(group).first(), mapOf(nos to print, nosAlpha to print))
 
         assertEquals(mapOf(nosAlpha to nos), learned.folded)
         assertEquals(nos, aliases.canonicalOf(nosAlpha))
@@ -67,7 +67,7 @@ class RelayAliasesTest {
         val ditto = url("wss://ditto.pub")
         val dittoRelay = url("wss://ditto.pub/relay")
 
-        val learned = aliases.learn(listOf(ditto, dittoRelay), mapOf(ditto to window(100), dittoRelay to window(100, from = 500)))
+        val learned = aliases.learn(listOf(ditto, dittoRelay), aliases.toProbe(listOf(ditto, dittoRelay)).first(), mapOf(ditto to window(100), dittoRelay to window(100, from = 500)))
 
         assertTrue(learned.folded.isEmpty())
         assertEquals(dittoRelay, aliases.canonicalOf(dittoRelay))
@@ -81,7 +81,7 @@ class RelayAliasesTest {
         // empty window is not a null one, so it used to fall past the fold test
         // and out the other side as "probed, and it is its own relay" — a claim
         // published for thirty days on the strength of nothing at all.
-        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to emptySet()))
+        val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to emptySet()))
 
         assertTrue(learned.folded.isEmpty())
         assertTrue(nosAlpha !in learned.distinct, "silence was recorded as proof of a distinct relay")
@@ -95,7 +95,7 @@ class RelayAliasesTest {
         // to fold on — and equally too thin to call a separate relay, which is
         // the stronger claim of the two.
         val nine = window(9)
-        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to nine))
+        val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to nine))
 
         assertTrue(learned.folded.isEmpty())
         assertTrue(learned.distinct.isEmpty(), "a 9-event window was published as a verdict")
@@ -105,10 +105,58 @@ class RelayAliasesTest {
     @Test
     fun `a leader that answered too thinly clears nobody, itself included`() {
         val aliases = RelayAliases()
-        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(5), nosAlpha to window(100)))
+        val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(5), nosAlpha to window(100)))
 
         assertTrue(learned.folded.isEmpty())
         assertTrue(learned.distinct.isEmpty(), "a thin leader still published verdicts: ${learned.distinct}")
+    }
+
+    @Test
+    fun `two verdicts that disagree do not pin a url as its own duplicate`() {
+        val aliases = RelayAliases()
+        // A says "I am B", B says "I am A" — two passes that disagreed, or a
+        // record edited by hand. Resolving B's canonical walks back to B, and
+        // writing that would make `folded[B] = B`: not a fold, but a url marked
+        // as its own duplicate, which `measured` then answers true for forever
+        // while `unresolved` drops the group and nothing revisits it.
+        aliases.adopt(mapOf(nosAlpha to nos, nos to nosAlpha))
+
+        assertFalse(aliases.measured(nos) && aliases.canonicalOf(nos) == nos && nos in aliases.verdicts().keys)
+        assertTrue(nos !in aliases.verdicts().keys, "a url was folded onto itself: ${aliases.verdicts()}")
+    }
+
+    @Test
+    fun `forgetting a url drops every verdict held about it`() {
+        val aliases = RelayAliases()
+        val print = window(100)
+        aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to print, nosAlpha to print))
+        assertTrue(aliases.measured(nosAlpha) && aliases.measured(nos))
+
+        // The store is the record and this map is a cache of it. Without an
+        // eviction path the cache outlives the TTL: the record expires, is
+        // never republished because `measured` says there is nothing to do, and
+        // the fan-out keeps folding on evidence that no longer exists anywhere.
+        aliases.forget(listOf(nos, nosAlpha))
+
+        assertFalse(aliases.measured(nosAlpha))
+        assertFalse(aliases.measured(nos))
+        assertEquals(nosAlpha, aliases.canonicalOf(nosAlpha))
+        assertEquals(1, aliases.unresolved(listOf(nos, nosAlpha)).size, "the group must be probeable again")
+    }
+
+    @Test
+    fun `learn folds onto the leader it was given, not one it recomputes`() {
+        val aliases = RelayAliases()
+        val print = window(100)
+        // `leaderOf` prefers a url something already folded onto, and
+        // `canonicals` is mutated by every concurrent pass — so recomputing the
+        // leader here could name a different url than the one that was actually
+        // fingerprinted as the yardstick, and discard the group's whole pass.
+        val learned = aliases.learn(listOf(nos, nosAlpha, nosBeacon), nosAlpha, mapOf(nosAlpha to print, nos to print, nosBeacon to print))
+
+        assertEquals(nosAlpha, aliases.canonicalOf(nos))
+        assertEquals(nosAlpha, aliases.canonicalOf(nosBeacon))
+        assertEquals(setOf(nos, nosBeacon), learned.folded.keys)
     }
 
     @Test
@@ -118,7 +166,7 @@ class RelayAliasesTest {
         // relays holding the same four events prove nothing about each other.
         val tiny = window(4)
 
-        assertTrue(aliases.learn(listOf(nos, nosAlpha), mapOf(nos to tiny, nosAlpha to tiny)).folded.isEmpty())
+        assertTrue(aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to tiny, nosAlpha to tiny)).folded.isEmpty())
     }
 
     @Test
@@ -126,7 +174,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
 
         // Only the leader has a fingerprint. Silence is not evidence.
-        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100)))
+        val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100)))
 
         assertTrue(learned.folded.isEmpty())
         assertEquals(nosAlpha, aliases.canonicalOf(nosAlpha))
@@ -137,7 +185,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         val print = window(100)
 
-        assertTrue(aliases.learn(listOf(nos, nosAlpha, nosBeacon), mapOf(nosAlpha to print, nosBeacon to print)).folded.isEmpty())
+        assertTrue(aliases.learn(listOf(nos, nosAlpha, nosBeacon), aliases.toProbe(listOf(nos, nosAlpha, nosBeacon)).first(), mapOf(nosAlpha to print, nosBeacon to print)).folded.isEmpty())
     }
 
     @Test
@@ -145,7 +193,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         // The two dials are seconds apart on a live relay: 60 of the leader's
         // 100 ids are still in the second window, which is over the bar.
-        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to window(100, from = 40)))
+        val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to window(100, from = 40)))
 
         assertEquals(mapOf(nosAlpha to nos), learned.folded)
     }
@@ -153,7 +201,7 @@ class RelayAliasesTest {
     @Test
     fun `a window that moved on entirely does not`() {
         val aliases = RelayAliases()
-        val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to window(100, from = 80)))
+        val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to window(100, from = 80)))
 
         assertTrue(learned.folded.isEmpty())
     }
@@ -166,7 +214,7 @@ class RelayAliasesTest {
         // not by position.
         val group = listOf(nosBeacon, nosAlpha, nos)
 
-        aliases.learn(group, group.associateWith { print })
+        aliases.learn(group, aliases.toProbe(group).first(), group.associateWith { print })
 
         assertEquals(nos, aliases.canonicalOf(nosAlpha))
         assertEquals(nos, aliases.canonicalOf(nosBeacon))
@@ -179,7 +227,7 @@ class RelayAliasesTest {
         val plain = url("ws://relay.example.com")
         val print = window(100)
 
-        aliases.learn(listOf(plain, secure), mapOf(plain to print, secure to print))
+        aliases.learn(listOf(plain, secure), aliases.toProbe(listOf(plain, secure)).first(), mapOf(plain to print, secure to print))
 
         assertEquals(secure, aliases.canonicalOf(plain))
     }
@@ -206,7 +254,7 @@ class RelayAliasesTest {
     fun `a group with every verdict in hand is not probed again`() {
         val aliases = RelayAliases()
         val print = window(100)
-        aliases.learn(listOf(nos, nosAlpha), mapOf(nos to print, nosAlpha to print))
+        aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to print, nosAlpha to print))
         aliases.markDistinct(nos)
 
         assertTrue(aliases.unresolved(listOf(nos, nosAlpha)).isEmpty())
@@ -216,7 +264,7 @@ class RelayAliasesTest {
     fun `a url proved distinct is not re-probed, but the leader is`() {
         val aliases = RelayAliases()
         // nosAlpha answered with its own events last cycle, so it is settled.
-        aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to window(100, from = 500)))
+        aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(100), nosAlpha to window(100, from = 500)))
 
         val toProbe = aliases.toProbe(listOf(nos, nosAlpha, nosBeacon))
 
@@ -229,7 +277,7 @@ class RelayAliasesTest {
     fun `folding moves what each url was paired with onto the survivor`() {
         val aliases = RelayAliases()
         val print = window(100)
-        aliases.learn(listOf(nos, nosAlpha), mapOf(nos to print, nosAlpha to print))
+        aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to print, nosAlpha to print))
 
         val folded =
             RelayAliases.foldOnto(

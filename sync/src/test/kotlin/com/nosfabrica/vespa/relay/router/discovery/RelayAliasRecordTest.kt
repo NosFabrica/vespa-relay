@@ -105,7 +105,7 @@ class RelayAliasRecordTest {
             val store = newStore()
             val record = RelayAliasRecord(store, signer)
 
-            record.publishDistinct(alias, sampled = 500, peers = 3, bestShared = 2)
+            record.publishDistinct(alias, sampled = 500, comparedAgainst = "3 compared peer(s)", bestShared = 2)
 
             val held = record.load(listOf(alias))
             assertEquals(setOf(alias), held.distinct)
@@ -124,7 +124,7 @@ class RelayAliasRecordTest {
             val record = RelayAliasRecord(store, signer)
             val unslashed = RelayUrlNormalizer.normalize("wss://nos.lol")
 
-            record.publishDistinct(unslashed, sampled = 500, peers = 2, bestShared = 0)
+            record.publishDistinct(unslashed, sampled = 500, comparedAgainst = "2 compared peer(s)", bestShared = 0)
 
             assertEquals(setOf(canonical), record.load(listOf(canonical)).distinct)
         }
@@ -140,7 +140,7 @@ class RelayAliasRecordTest {
             val record = RelayAliasRecord(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
-            record.publishDistinct(alias, sampled = 500, peers = 1, bestShared = 3)
+            record.publishDistinct(alias, sampled = 500, comparedAgainst = "1 compared peer(s)", bestShared = 3)
 
             val held = record.load(listOf(alias))
             assertEquals(setOf(alias), held.distinct)
@@ -154,10 +154,10 @@ class RelayAliasRecordTest {
             val store = newStore()
             val record = RelayAliasRecord(store, signer)
 
-            record.publishDistinct(alias, sampled = 500, peers = 19, bestShared = 2)
+            record.publishDistinct(alias, sampled = 500, comparedAgainst = "19 compared peer(s)", bestShared = 2)
 
             assertEquals(
-                "500 newest events, best 2 shared of 19 peer(s) on this host",
+                "500 newest events, best 2 shared with 19 compared peer(s)",
                 recordFor(store, alias.url)?.tags?.first { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG }?.get(2),
             )
         }

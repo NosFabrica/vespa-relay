@@ -68,6 +68,11 @@ class AliasFoldingTest {
     ) {
         val dials = AtomicInteger()
 
+        /** Which relays were contacted at all — one url may cost several asks. */
+        val contacted: MutableSet<NormalizedRelayUrl> =
+            java.util.concurrent.ConcurrentHashMap
+                .newKeySet()
+
         suspend fun fetch(
             at: NormalizedRelayUrl,
             want: Int,
@@ -75,6 +80,7 @@ class AliasFoldingTest {
             @Suppress("UNUSED_PARAMETER") kinds: List<Int>?,
         ): List<Event> {
             dials.incrementAndGet()
+            contacted += at
             return corpusFor(at).filter { until == null || it.createdAt <= until }.take(want)
         }
     }
@@ -269,6 +275,53 @@ class AliasFoldingTest {
                 release.complete(Unit)
                 pass.join()
             }
+        }
+
+    @Test
+    fun `a leader too thin to be a yardstick does not drag its group onto the wire`() =
+        runBlocking {
+            // A leader that hands over three ids is under minSample: nothing can
+            // fold onto it, and since the thin-window guard nothing can be
+            // cleared against it either. Dialling its members decides nothing —
+            // and did it again every pass, forever.
+            val store = newStore()
+            val a = RelayUrlNormalizer.normalize("wss://quiet.example")
+            val b = RelayUrlNormalizer.normalize("wss://quiet.example/alpha")
+            val c = RelayUrlNormalizer.normalize("wss://quiet.example/beacon")
+            val thin: List<Event> = (0 until 3).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "t$it") }
+            val up = Upstreams { thin }
+
+            folding(store, up).measure("t", listOf(a, b, c), canDial = { true })
+
+            // The leader itself still costs a probe every pass — that is the
+            // price of noticing it has recovered — but nothing behind it does.
+            assertEquals(setOf(a), up.contacted, "members were dialled behind a leader that could decide nothing")
+        }
+
+    @Test
+    fun `a group that cannot be decided returns its probe budget`() =
+        runBlocking {
+            // The budget is reserved per group up front, so a group that bails
+            // must hand back what it did not spend. Otherwise probesPerCycle is
+            // consumed by intentions and a later group goes unprobed for it.
+            val store = newStore()
+            val dead = RelayUrlNormalizer.normalize("wss://dead.example")
+            val deadAlias = RelayUrlNormalizer.normalize("wss://dead.example/alpha")
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val up = Upstreams { at -> if (at.url.contains("dead.example")) emptyList() else corpus }
+
+            // Budget of 3: the dead host's group reserves 2 and must return
+            // them, leaving enough for nos.lol's group of 2 to be probed.
+            val fold =
+                AliasFolding(
+                    aliases = RelayAliases(),
+                    record = RelayAliasRecord(store, signer),
+                    probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
+                    probesPerCycle = 3,
+                )
+            val learned = fold.measure("t", listOf(dead, deadAlias, canonical, alias), canDial = { true })
+
+            assertEquals(1, learned, "the live group was starved by a reservation the dead group never returned")
         }
 
     @Test

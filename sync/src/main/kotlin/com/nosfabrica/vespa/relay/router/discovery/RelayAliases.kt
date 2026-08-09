@@ -106,10 +106,39 @@ class RelayAliases(
             // of the chain, which is where the events are.
             if (alias == canonical) continue
             val end = resolve(canonical)
+            // Checked AFTER resolving as well as before: two verdicts that
+            // disagree — A says B, B says A — resolve each other back to the
+            // start and would write `folded[A] = A`. That is not a fold, it is
+            // a url pinned as its own duplicate: `measured` starts answering
+            // true, `unresolved` drops the group, and nothing ever revisits it.
+            if (end == alias) continue
             folded[alias] = end
             canonicals += end
         }
     }
+
+    /**
+     * Drop every verdict held about these urls.
+     *
+     * The store is the record; this map is a cache of it, and a cache with no
+     * expiry quietly outlives what it caches. [RelayAliasRecord.load] already
+     * refuses anything past its TTL, but a verdict adopted before it expired
+     * stayed here for the life of the process: `measured` kept answering true,
+     * so the url was never re-probed and the expired verdict was never
+     * republished, and the fan-out went on folding on evidence that no longer
+     * existed anywhere. Forgetting before each adopt makes the store
+     * authoritative every pass, which is what gives the TTL its teeth.
+     */
+    fun forget(urls: Collection<NormalizedRelayUrl>) {
+        for (url in urls) {
+            folded.remove(url)
+            distinct.remove(url)
+            canonicals.remove(url)
+        }
+    }
+
+    /** Is this window big enough to be measured against at all? */
+    fun usableWindow(print: Set<String>?): Boolean = print != null && print.size >= minSample
 
     /**
      * Has anything been decided about this url — folded, or probed and cleared?
@@ -211,12 +240,18 @@ class RelayAliases(
      * forever, and persisting the members' verdicts would save nothing.
      * Clearing it is sound for the same reason theirs is: it was measured
      * against every member that answered enough to be measured against.
+     *
+     * [leader] is passed in rather than recomputed. [leaderOf] prefers a url
+     * something has already folded onto, and `canonicals` is mutated by every
+     * concurrent pass — so recomputing here could name a DIFFERENT url than the
+     * one [toProbe] had fingerprinted as the yardstick, and the whole group's
+     * work would be thrown away on a map that changed underneath it.
      */
     fun learn(
         group: List<NormalizedRelayUrl>,
+        leader: NormalizedRelayUrl,
         prints: Map<NormalizedRelayUrl, Set<String>>,
     ): Learned {
-        val leader = leaderOf(group)
         val leaderPrint = prints[leader] ?: return Learned()
         val folds = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val cleared = HashSet<NormalizedRelayUrl>()

@@ -202,12 +202,29 @@ class AliasFolding(
                         // ([RelayAliases.learn] returns nothing without one),
                         // so dialling its members is guaranteed waste: in that
                         // same sweep, 892 urls behind 46 leaders.
+                        //
+                        // "No usable fingerprint" means TOO SHORT as well as
+                        // absent. A leader that hands over three ids is under
+                        // [RelayAliases.DEFAULT_MIN_SAMPLE], so nothing can fold
+                        // onto it and — since the thin-window guard — nothing
+                        // can be cleared against it either. Accepting it as a
+                        // yardstick dialled every member of its group to decide
+                        // nothing, and did it again every pass, forever. The
+                        // leader alone still costs one dial per pass, which is
+                        // the right price for noticing it has recovered.
                         val lead =
                             gate.withPermit {
                                 if (!canDial(leader)) return@withPermit null
                                 taken.incrementAndGet()
                                 probe.leaderPrint(leader, anchor, onEvent)
-                            } ?: return@launch
+                            }
+                        if (lead == null || !aliases.usableWindow(lead.ids)) {
+                            // Hand back what this group reserved and did not
+                            // spend, or the budget is consumed by intentions and
+                            // a later group goes unprobed for it.
+                            budget.addAndGet(wanted.size - 1)
+                            return@launch
+                        }
                         prints[leader] = lead.ids
 
                         coroutineScope {
@@ -222,7 +239,7 @@ class AliasFolding(
                             }
                         }
                         val leaderPrint = lead.ids
-                        val result = aliases.learn(group, prints)
+                        val result = aliases.learn(group, leader, prints)
                         // This group's share of the pass, kept separately so it
                         // can be written the moment the group is decided. The
                         // pass-wide maps are only counters for the summary line.
@@ -234,27 +251,30 @@ class AliasFolding(
                             newVerdicts[alias] = canonical to (print.size to shared)
                             verdicts[alias] = canonical to (print.size to shared)
                         }
-                        // The cleared half. `bestShared` is against the leader,
-                        // which is the only thing this url was measured against
-                        // — see [RelayAliasRecord.publishDistinct] for what that
-                        // does and does not claim.
+                        // The cleared half, and its evidence has to name what was
+                        // actually held up against what. A member is compared to
+                        // the LEADER and to nothing else — saying "of N peers on
+                        // this host" claimed comparisons that never happened, in
+                        // a signed month-long statement about someone else's
+                        // server, which is the same over-claiming the thin-window
+                        // guard exists to stop.
+                        val compared = result.distinct.count { it != leader }
                         for (url in result.distinct) {
                             val print = prints[url].orEmpty()
-                            // For a member, how much of the leader it carried.
-                            // For the LEADER, the best any member managed against
-                            // it — writing 0 there would claim a cleaner
-                            // separation than was actually measured.
-                            val shared =
-                                if (url != leader) {
-                                    leaderPrint.count { it in print }
-                                } else {
+                            if (url != leader) {
+                                cleared[url] = Cleared(print.size, leader.url, leaderPrint.count { it in print })
+                            } else {
+                                // The leader's own separation is the best any
+                                // member managed against it; a hardcoded 0 would
+                                // claim a cleaner one than was measured.
+                                val best =
                                     result.distinct
                                         .filter { it != leader }
                                         .maxOfOrNull { other -> prints[other].orEmpty().count { it in leaderPrint } }
                                         ?: 0
-                                }
-                            newCleared[url] = Cleared(print.size, group.size - 1, shared)
-                            cleared[url] = Cleared(print.size, group.size - 1, shared)
+                                cleared[url] = Cleared(print.size, "$compared compared peer(s)", best)
+                            }
+                            newCleared[url] = cleared.getValue(url)
                         }
 
                         // WRITTEN AS THIS GROUP FINISHES, not when the pass
@@ -275,7 +295,7 @@ class AliasFolding(
                             runCatching { record.publish(alias, v.first, v.second.first, v.second.second) }
                         }
                         for ((url, c) in cleared) {
-                            runCatching { record.publishDistinct(url, c.sampled, c.peers, c.bestShared) }
+                            runCatching { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
                         }
                     }
                 }
@@ -296,10 +316,10 @@ class AliasFolding(
         return learned
     }
 
-    /** The evidence behind one cleared url, held until the probing is over. */
+    /** The evidence behind one cleared url, held until the group is decided. */
     private data class Cleared(
         val sampled: Int,
-        val peers: Int,
+        val comparedAgainst: String,
         val bestShared: Int,
     )
 
@@ -312,7 +332,17 @@ class AliasFolding(
      * empty result rather than take a fan-out down with it.
      */
     private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
-        val held = runCatching { record.load(candidates) }.getOrDefault(RelayAliasRecord.Verdicts())
+        val held = runCatching { record.load(candidates) }.getOrNull() ?: return
+        // FORGET FIRST, so the store is authoritative on every pass and its TTL
+        // means something. `load` already refuses a record past its TTL, but a
+        // verdict adopted while it was still fresh used to live in memory for
+        // the rest of the process: `measured` kept answering true, so the url
+        // was never re-probed and the expired verdict was never republished,
+        // and the fan-out went on folding on evidence that had ceased to exist
+        // anywhere. Skipped entirely when the query FAILS — a store that cannot
+        // answer is not a store saying "no verdict", and dropping what we hold
+        // on the strength of a failed read would unfold the whole fan-out.
+        aliases.forget(candidates)
         aliases.adopt(held.aliases)
         aliases.adoptDistinct(held.distinct)
     }

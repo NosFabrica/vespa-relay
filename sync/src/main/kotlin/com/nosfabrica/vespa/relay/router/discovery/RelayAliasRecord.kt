@@ -164,13 +164,19 @@ class RelayAliasRecord(
      * dialled. That is a property of leader-based grouping, present within a
      * single pass as much as across boots, and persisting the verdict neither
      * causes it nor makes it worse.
+     *
+     * [comparedAgainst] therefore names what was ACTUALLY held up against this
+     * url — the leader's own url for a member, a count of members for the
+     * leader. It once said "of N peers on this host", which counted
+     * comparisons that never happened in a signed, month-long statement about
+     * somebody else's server.
      */
     suspend fun publishDistinct(
         url: NormalizedRelayUrl,
         sampled: Int,
-        peers: Int,
+        comparedAgainst: String,
         bestShared: Int,
-    ): Event? = write(url, url, "$sampled newest events, best $bestShared shared of $peers peer(s) on this host")
+    ): Event? = write(url, url, "$sampled newest events, best $bestShared shared with $comparedAgainst")
 
     private suspend fun write(
         subject: NormalizedRelayUrl,

@@ -188,6 +188,15 @@ internal class DynamicSync(
                     folding
                         ?.apply(candidates)
                         ?.let { RelayAliases.foldOnto(discovered, it.aliases) }
+                        // A verdict's canonical is whatever the probe measured,
+                        // which is NOT necessarily a url discovery would hand
+                        // out today: `exclude` and our own url are applied when
+                        // relay lists are read, and a fold can name a url from
+                        // before that config changed. Re-applying them here is
+                        // what stops a stored verdict putting an excluded relay
+                        // — or this relay, syncing itself — back into the
+                        // fan-out through the side door.
+                        ?.filter { it.url !in dynamic.exclude && it.url != store.relay }
                         ?: discovered
                 // What this stream would like measured before the next cycle.
                 // Non-blocking; the callbacks are this stream's own transport
