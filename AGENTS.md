@@ -557,7 +557,7 @@ each serving different content — kept all 20.
 Guards worth knowing before you touch the thresholds:
 a url with **no** fingerprint is never folded (silence is not evidence — a
 relay that is merely down has to come back), a window under 20 ids decides
-nothing, and the survivor is the pathless/`wss`/portless url so bands, cursors
+nothing **in either direction**, and the survivor is the pathless/`wss`/portless url so bands, cursors
 and everyone else's relay lists keep pointing at the same string. What each
 folded url was *paired with* moves onto the survivor — drop
 `wss://nos.lol/alpha` without carrying its bound authors and the stream stops
@@ -606,6 +606,34 @@ them". Two paths on a host that duplicate EACH OTHER but not the leader are both
 recorded distinct and both keep getting dialled. That is leader-based grouping,
 present within a single pass as much as across boots — persisting the verdict
 neither causes it nor widens it.
+
+**REFUSING TO FOLD IS NOT PROOF OF DISTINCTNESS, and conflating them published
+lies.** `sameRelay` declines below `minSample`; for a long time the url then
+fell through to the else branch and was recorded as its own relay instead.
+`learn` also guarded a null fingerprint but not an EMPTY one, so a relay that
+answered with nothing took the same path. Both were survivable while the verdict
+lived in memory and evaporated on restart. Publishing it for thirty days, about
+somebody else's server, is not. Caught in the live store, not in review:
+
+```
+CLEARED relay.damus.io/lantern-oscar-dynamo   "0 newest events, best 0 shared of 4 peer(s)"
+CLEARED relay.satsdisco.com/anchor-nexus-victor  "9 newest events, best 9 shared of 4 peer(s)"
+```
+
+The first rests on zero observations; the second shares 100% of its nine events
+with the leader and is very likely the same relay. Both sides must now clear
+`minSample` before a url is cleared, and a leader too thin to be a yardstick
+clears nobody — members or itself. **The general rule when making an in-memory
+heuristic durable: re-audit every path that writes, because a guess that cost
+one cycle now costs a TTL and is signed.**
+
+**Verdicts are written as each GROUP finishes, not when the pass does.** A pass
+yields to the fan-out, so on a cold store — nothing folded, mirror at its widest
+— it can run for a quarter of an hour; measured, 13 minutes with zero verdicts in
+the store under the old batch-at-the-end write. Anything ending the process in
+that window discarded every fingerprint taken, and a cold store is when that work
+is most expensive to redo. One group's verdicts are a complete answer; there is
+nothing to wait for.
 
 **The fold is two halves that run at different times, and the split is the
 point.** `AliasFolding.apply` READS — one `#d` query per 500 urls, no sockets —
