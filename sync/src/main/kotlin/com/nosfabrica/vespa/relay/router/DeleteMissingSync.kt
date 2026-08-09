@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
@@ -229,10 +230,16 @@ internal class DeleteMissingSync(
             // Same time-axis reporting as every other paged walk: without it
             // these walks are the one hole in the stream's fraction/ETA line.
             val walk = "${stream.name}|${url.url}"
+            var walked: PagedFetchResult? = null
             paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
             try {
-                downloaded +=
-                    client.fetchAllPages(url, listOf(leg), NEG_IDLE_MS, onNewPage = { until -> paging.mark(walk, until) }) { event ->
+                val w =
+                    client.fetchAllPages(
+                        url,
+                        listOf(leg),
+                        NEG_IDLE_MS,
+                        onNewPage = { until -> paging.mark(walk, until) },
+                    ) { event ->
                         if (stream.filter.match(event)) {
                             if (SyncCoverage.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -242,10 +249,21 @@ internal class DeleteMissingSync(
                             ingest.submit(event, stream.trusted)
                         }
                     }
+                walked = w
+                downloaded += w.downloaded
             } finally {
                 paging.finish(walk)
             }
-            bands.record(stream.name, url, ask, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+            bands.record(
+                stream.name,
+                url,
+                ask,
+                seenMin,
+                seenMax,
+                paged = true,
+                observedByKind = seenByKind,
+                drained = drainSettlesThePast(walked, leg, ask),
+            )
         }
         return downloaded
     }

@@ -280,7 +280,10 @@ internal class StaticBackfill(
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
                 paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                downloaded +=
+                // The walk's own account of why it stopped. Only `DRAINED` — the
+                // relay EOSEd an empty page, so there is nothing older — earns the
+                // band the right to close its older leg. See `drainSettlesThePast`.
+                val walked =
                     client.fetchAllPages(
                         upstream.url,
                         listOf(window),
@@ -305,10 +308,20 @@ internal class StaticBackfill(
                         live.incrementAndGet()
                         progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
                     }
+                downloaded += walked.downloaded
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
                 paging.finish(walk)
-                bands.record(upstream.streamName, upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                bands.record(
+                    upstream.streamName,
+                    upstream.url,
+                    upstream.filter,
+                    seenMin,
+                    seenMax,
+                    paged = true,
+                    observedByKind = seenByKind,
+                    drained = drainSettlesThePast(walked, window, upstream.filter),
+                )
             }
             progress.done(idx, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
@@ -513,10 +526,16 @@ internal class StaticBackfill(
                     // Only what the sweep has NOT already covered: a resumed
                     // sweep may be most of the way down the leg, and paging the
                     // whole thing would throw that away.
+                    // The `?: leg` is unreachable today — the ONE path that sets
+                    // `negentropyUsable = false` always supplies `outstanding` —
+                    // but the field is nullable, so this is the type's required
+                    // handling rather than dead code. Do not "simplify" it to
+                    // `!!`: falling back to the whole leg re-pages, which is
+                    // wasteful, while `!!` would crash the stream.
                     val rest = outcome.outstanding ?: leg
                     val walk = "${upstream.streamName}|${upstream.url.url}"
                     paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                    downloaded +=
+                    val walked =
                         client.fetchAllPages(
                             upstream.url,
                             listOf(rest),
@@ -524,10 +543,24 @@ internal class StaticBackfill(
                             onNewPage = { until -> paging.mark(walk, until) },
                             onEvent = onEvent,
                         )
+                    downloaded += walked.downloaded
                     paging.finish(walk)
                     pagedWindows++
                     legsDone++
-                    bands.record(upstream.streamName, upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                    // Against `rest`, not `leg`: a resumed sweep leaves only the
+                    // part it had not reached, and that remainder is what was
+                    // actually paged. Its floor is the leg's whenever the sweep
+                    // was working downward, which is the only case that matters.
+                    bands.record(
+                        upstream.streamName,
+                        upstream.url,
+                        upstream.filter,
+                        seenMin,
+                        seenMax,
+                        paged = true,
+                        observedByKind = seenByKind,
+                        drained = drainSettlesThePast(walked, rest, upstream.filter),
+                    )
                     continue
                 }
                 if (!outcome.complete) continue
@@ -630,6 +663,13 @@ internal class StaticBackfill(
                     // reconcile compares the whole filter at once and earns the
                     // same span for every kind in it.
                     observedByKind = seenByKind,
+                    // No `drained` here, deliberately: the paging happens inside
+                    // quartz's `negentropySyncOrFetch`, which returns its own
+                    // result and does not carry the walk's `end` out. So a NIP-77-less
+                    // relay reached through this path keeps the old behaviour and
+                    // re-asks its older leg — the conservative direction, and not
+                    // the path a `sync = "fetch"` stream takes anyway. Thread the
+                    // signal through that helper upstream to close this last gap.
                 )
             }
             progress.done(idx, downloaded)

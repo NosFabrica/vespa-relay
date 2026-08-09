@@ -23,6 +23,13 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 ./gradlew :relay:test              # serving-side tests
 ./gradlew :sync:test               # router tests (moved with the module)
 ./gradlew :sync:test --tests "*SyncBands*"
+
+# Dials the five real indexer relays and reports how each ENDS an empty page
+# (DRAINED / IDLE / CLOSED / …). Off by default, asserts nothing, and is the
+# only thing here that can tell our reading of a relay apart from the relay.
+# `--rerun` is load-bearing: the task is up-to-date-checked, so a second
+# identical run is SKIPPED and prints nothing, which reads as a silent pass.
+./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
@@ -414,12 +421,56 @@ automatically by `StaticBackfill` once our own count passes
 snapshot across its 16k relays, where per-peer windowing would multiply the
 store work by the fan-out.
 
-**Known open bug (now upstream's):** a band holds one span for every kind in
-the filter, so a long-lived kind (0) vouches for a short-lived one (30382) and
-`legs()` skips the interior. The fix is per-kind spans *inside* the
-filter-keyed band — not per-kind keys, which would break the invalidation
-property above. Still unfixed; it stopped biting only because `assertions`
-narrowed to a single kind, so any multi-kind filter can walk into it again.
+**Fixed, and worth knowing how.** A band used to hold one span for the whole
+filter, so a long-lived kind (0) vouched for a short-lived one (30382) and
+`legs()` skipped the interior. Upstream took per-kind spans *inside* the
+filter-keyed band (amethyst#3862, picked up in `94e3136`) — not per-kind keys,
+which would break the invalidation property above. Every stream in
+`router.conf.example` is multi-kind, so nothing here is shielded by luck: the
+`indexers` stream alone is `[0, 10002]` on the paged path, which is exactly the
+combination quartz refuses to record a band for unless the caller threads
+`observedByKind`.
+
+**What a per-kind span means — and does not.** It is the envelope of the events
+actually RECEIVED for that kind, not the window that was walked. One REQ carries
+every kind in the filter, so a kind whose floor sits higher than the band's outer
+`min` may just have started existing later, not "we stopped walking there" — the
+two are indistinguishable from the band. The card draws that intersection on top
+of the outer edges and labels it *evidence*, deliberately — see `stats.html`.
+
+**Do not assume the leg below a floor is empty. It was measured, and it is not.**
+`RealRelayDrainProbe` asked the five `indexers` relays for kind 10002 below the
+exact floor each one's band carried, twice:
+
+| relay | ending | below the floor |
+|---|---|---|
+| purplepag.es | `IDLE` both runs | 13 events, oldest `created_at` **0** |
+| user.kindpag.es | `DRAINED` | 1 — the boundary second, re-read by design |
+| directory.yabu.me | `DRAINED` (1,225,329 events; 120s only reaches 259,616) | a real backlog |
+| profiles.nostr1.com | `DRAINED` | 1 |
+| indexer.coracle.social | `DRAINED` (hung >12min once) | 1 |
+
+The theory that cost a day here — relay lists postdate NIP-65, so those legs can
+never return anything — is false: directory.yabu.me had 1.2M events below its
+floor. It survived because nothing had dialled a relay to check it. Reach for the
+probe before theorising about a floor.
+
+A stuck floor means walks are not FINISHING, and the two ways differ. yabu.me was
+real backlog and drains once allowed to run. purplepag.es never EOSEs — it serves
+13 events, one stamped `created_at = 0` that `isPlausible` rightly refuses, then
+goes quiet — so it can never earn a drain and its leg stays open by design. That
+is the conservative branch working, not a bug to route around. `fetchAllPages`
+returns a `PagedFetchResult` now
+— `downloaded` plus an `end` naming every way a walk can stop (`DRAINED`,
+`LIMIT_REACHED`, `IDLE`, `CLOSED`, `CANNOT_CONNECT`, `UNPAGEABLE`) — and only
+`DRAINED`, an EOSE on an empty page, separates an exhausted corpus from a relay
+that capped us or went quiet — which is the distinction a floor needs, since a
+finished walk can now say so instead of the floor only ever creeping.
+Completeness moved from the band onto the span, so a drained leg closes its own
+kinds and no others. Route every
+paged call site through `drainSettlesThePast`: a drain on the NEWER leg only
+means "nothing below the ceiling we already had", and recording it as history
+would make the band skip the past it never walked.
 
 **One relay behind many urls.** Most relay software serves its websocket on
 every path, so `wss://nos.lol`, `wss://nos.lol/alpha` and

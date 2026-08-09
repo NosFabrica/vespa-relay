@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -51,6 +52,12 @@ class SyncBandsTest {
     private val mirror = "profiles"
 
     private fun now(): Long = System.currentTimeMillis() / 1000
+
+    /** A walk that ended because the relay EOSEd an empty page. */
+    private val drainedWalk = PagedFetchResult(10, PagedFetchResult.End.DRAINED)
+
+    /** One that ended because the relay went quiet — same events, no claim. */
+    private val idleWalk = PagedFetchResult(10, PagedFetchResult.End.IDLE)
 
     private fun tempFile(): File {
         val f = File.createTempFile("sync-bands", ".json")
@@ -681,4 +688,191 @@ class SyncBandsTest {
         assertTrue(reopened.legs(mirror, relay, mixed).size > 2, "and the restored band still narrows per kind")
         f.delete()
     }
+
+    // ---- draining: the leg a paged walk is finally allowed to close ---------
+
+    @Test
+    fun `only a leg reaching the filter's floor may settle the past`() {
+        // The guard between fetchAllPages' PagedFetchResult and record(). legs() gives
+        // the OLDER leg the filter's own `since` and the NEWER one the band's
+        // ceiling — and draining the newer one means only "nothing below the
+        // ceiling we already had". Recording that as history would make the
+        // band skip a past it never walked, which is the worst thing a band
+        // can do.
+        val c = SyncBands(null)
+        c.record(mirror, relay, profiles, 1_690_000_000L, 1_700_000_000L, paged = true)
+        val legs = c.legs(mirror, relay, profiles)
+        assertEquals(2, legs.size)
+
+        val older = legs.first { it.since == profiles.since }
+        val newer = legs.first { it.since != profiles.since }
+        assertTrue(drainSettlesThePast(drainedWalk, older, profiles), "the older leg reaches as deep as the filter allows")
+        assertTrue(!drainSettlesThePast(drainedWalk, newer, profiles), "the newer leg says nothing about history")
+        assertTrue(!drainSettlesThePast(idleWalk, older, profiles), "and an idle walk claims nothing")
+        assertTrue(!drainSettlesThePast(null, older, profiles), "nor does a leg that was never paged")
+    }
+
+    @Test
+    fun `the sweep fallback's leg reaches bottom even though its floor is spelled out`() {
+        // THE BUG an equality test hid. The two paged call sites build their leg
+        // differently: `legs()` gives the older one `since = null` for an
+        // unbounded filter, but the sweep fallback pages NegentropyPager's
+        // `outstanding()`, which materialises that null as PLAUSIBLE_FLOOR.
+        // `null == 1577836800L` is false, so the drain was unreachable on the
+        // whole NIP-77-less backfill path while reading correctly at both sites.
+        val sweptLeg = profiles.copy(since = SyncCoverage.PLAUSIBLE_FLOOR, until = 1_690_000_000L)
+        assertTrue(
+            drainSettlesThePast(drainedWalk, sweptLeg, profiles),
+            "a leg spelling out the plausible floor has reached the bottom of an unbounded filter",
+        )
+    }
+
+    @Test
+    fun `a bounded filter's floor settles the guard but not yet the leg`() {
+        // The guard says yes — this leg reaches everything the filter can ask.
+        val bounded = Filter(kinds = listOf(0), since = 1_600_000_000L)
+        val c = SyncBands(null)
+        c.record(mirror, relay, bounded, 1_690_000_000L, 1_700_000_000L, paged = true)
+        val older = c.legs(mirror, relay, bounded).first { it.since == bounded.since }
+        assertTrue(drainSettlesThePast(drainedWalk, older, bounded))
+
+        // …and the leg still does NOT close, which the old version of this test
+        // never checked because it asserted the helper and stopped there.
+        // `SyncCoverage.windows` re-opens the older leg whenever
+        // `filter.since < span.min`, even complete — deliberately, so a caller
+        // reaching deeper gets its history back, and it cannot tell that floor
+        // apart from one a drain already proved empty. Pinned as a KNOWN LIMIT
+        // rather than left to look like it works: every stream here is
+        // unbounded, and closing it needs `complete` to carry the floor it was
+        // earned at, which is upstream's.
+        val drained = SyncBands(null)
+        drained.record(mirror, relay, bounded, 1_690_000_000L, 1_700_000_000L, paged = true, drained = true)
+        assertEquals(2, drained.legs(mirror, relay, bounded).size, "bounded: the older leg comes back anyway")
+
+        val unbounded = SyncBands(null)
+        unbounded.record(mirror, relay, profiles, 1_690_000_000L, 1_700_000_000L, paged = true, drained = true)
+        assertEquals(1, unbounded.legs(mirror, relay, profiles).size, "unbounded: it really does close")
+    }
+
+    @Test
+    fun `a drained walk closes the older leg and the file remembers`() {
+        // The end-to-end shape: drain in, one leg out, and the claim survives a
+        // restart through SYNC_STATE_FILE rather than being re-earned every boot.
+        val f = tempFile()
+        SyncBands(f).apply {
+            record(mirror, relay, profiles, 1_690_000_000L, 1_700_000_000L, paged = true, drained = true)
+            assertEquals(1, legs(mirror, relay, profiles).size, "drained: the past is settled")
+            flush()
+        }
+
+        val reopened = SyncBands(f)
+        assertTrue(
+            reopened
+                .band(mirror, relay, profiles)!!
+                .spans
+                .getValue(0)
+                .complete,
+            "per-kind completeness round-trips",
+        )
+        assertEquals(1, reopened.legs(mirror, relay, profiles).size, "…and still settles the past after a restart")
+        f.delete()
+    }
+
+    @Test
+    fun `completeness is per kind in the file, not one flag for the band`() {
+        // Why it moved off the band: a leg that drained kinds [0] proves nothing
+        // about 30382, and the file must not flatten the two back together.
+        val mixed = Filter(kinds = listOf(0, 30382))
+        val f = tempFile()
+        SyncBands(f).apply {
+            record(mirror, relay, mixed, null, null, paged = true, observedByKind = mapOf(0 to SyncCoverage.Span(1_690_000_000L, 1_700_000_000L)), drained = true)
+            record(mirror, relay, mixed, null, null, paged = true, observedByKind = mapOf(30382 to SyncCoverage.Span(1_695_000_000L, 1_700_000_000L)))
+            flush()
+        }
+
+        val spans = SyncBands(f).band(mirror, relay, mixed)!!.spans
+        assertTrue(spans.getValue(0).complete, "kind 0 drained")
+        assertTrue(!spans.getValue(30382).complete, "kind 30382 did not")
+        f.delete()
+    }
+
+    @Test
+    fun `a span written before completeness was per kind inherits the band's`() {
+        // The compat path. An older file carries one `complete` beside min/max
+        // and spans with none of their own — which is precisely what that flag
+        // used to mean for every kind at once.
+        //
+        // The fixture is DERIVED from a real write rather than hand-built, so it
+        // cannot drift from the nesting `save()` actually produces: write a
+        // current file, then age it by stripping each span's own flag and
+        // asserting the band's at the level the old writer used.
+        val mixed = Filter(kinds = listOf(0, 30382))
+        val f = tempFile()
+        SyncBands(f).apply {
+            record(
+                mirror,
+                relay,
+                mixed,
+                null,
+                null,
+                paged = true,
+                observedByKind =
+                    mapOf(
+                        0 to SyncCoverage.Span(1_690_000_000L, 1_700_000_000L),
+                        30382 to SyncCoverage.Span(1_695_000_000L, 1_700_000_000L),
+                    ),
+            )
+            flush()
+        }
+        f.writeText(ageToBandLevelComplete(Json.parseToJsonElement(f.readText()).jsonObject).toString())
+
+        val spans = SyncBands(f).band(mirror, relay, mixed)!!.spans
+        assertTrue(spans.getValue(0).complete, "the band's flag applied to every kind")
+        assertTrue(spans.getValue(30382).complete)
+        f.delete()
+    }
+
+    /**
+     * A current file rewritten the way the pre-per-kind writer would have left
+     * it: `complete` on the band, and none on any span.
+     */
+    private fun ageToBandLevelComplete(root: JsonObject): JsonObject =
+        buildJsonObject {
+            root.forEach { (stream, byFilter) ->
+                put(
+                    stream,
+                    buildJsonObject {
+                        byFilter.jsonObject.forEach { (filter, byRelay) ->
+                            put(
+                                filter,
+                                buildJsonObject {
+                                    byRelay.jsonObject.forEach { (relayUrl, band) ->
+                                        put(
+                                            relayUrl,
+                                            buildJsonObject {
+                                                band.jsonObject.forEach { (k, v) ->
+                                                    if (k == "spans") {
+                                                        put(
+                                                            "spans",
+                                                            buildJsonObject {
+                                                                v.jsonObject.forEach { (kind, span) ->
+                                                                    put(kind, JsonObject(span.jsonObject.filterKeys { it != "complete" }))
+                                                                }
+                                                            },
+                                                        )
+                                                    } else if (k != "complete") {
+                                                        put(k, v)
+                                                    }
+                                                }
+                                                put("complete", true)
+                                            },
+                                        )
+                                    }
+                                },
+                            )
+                        }
+                    },
+                )
+            }
+        }
 }

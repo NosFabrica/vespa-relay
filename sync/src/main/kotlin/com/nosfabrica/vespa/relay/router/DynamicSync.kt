@@ -37,6 +37,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
@@ -624,12 +625,15 @@ internal class DynamicSync(
             // for what is outside what we already walked — the band IS the
             // mechanism here, there is no id set to fall back on.
             val fetched = stream.sync == SyncMode.FETCH
+            // Set only on the fetch branch: the negentropy path below runs through
+            // `negentropySyncOrFetch`, which does not surface how its paging ended.
+            var walked: PagedFetchResult? = null
             val result =
                 if (fetched) {
                     null.also {
                         val walk = "${stream.name}|${url.url}"
                         paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                        downloaded +=
+                        val w =
                             client.fetchAllPages(
                                 url,
                                 listOf(leg),
@@ -637,6 +641,8 @@ internal class DynamicSync(
                                 onNewPage = { until -> paging.mark(walk, until) },
                                 onEvent = onEvent,
                             )
+                        walked = w
+                        downloaded += w.downloaded
                         paging.finish(walk)
                     }
                 } else {
@@ -658,6 +664,9 @@ internal class DynamicSync(
                 paged = fetched || result?.pagedFallback == true,
                 reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
                 observedByKind = seenByKind,
+                // Against `window`, which is what the band is keyed by — the
+                // same filter [legs] derived `leg` from.
+                drained = drainSettlesThePast(walked, leg, window),
             )
         }
         return downloaded

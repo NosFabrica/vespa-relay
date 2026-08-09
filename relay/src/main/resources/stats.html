@@ -1186,16 +1186,30 @@ function syncCard(section) {
       place(seg, r.min, r.max);
       seg.title =
         `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
-        (r.complete ? "reconciled — negentropy finished over this span" : "paged — walked, not proven exhaustive") +
+        // `complete` stopped meaning "negentropy" when a drained paged walk
+        // started earning it too — an EOSE on an empty page proves the same
+        // thing a finished reconcile does, that there is nothing left below.
+        // Saying "negentropy" here would report every `sync = "fetch"` relay
+        // as reconciled, which is a claim about HOW, not about what is covered.
+        (r.complete ? "settled — nothing left outstanding below this span" : "paged — walked, not proven exhaustive") +
         (r.target ? `\nwindow ${fmt(r.target)}${r.cap ? ` (peer cap ${fmt(r.cap)})` : ""}` : "");
       track.appendChild(seg);
       // Present only when the per-kind spans disagree — one band holds a span
-      // per kind and min/max are the outer edges, so a long-lived kind vouches
-      // for a short-lived one. This is the part no kind is missing from.
+      // per kind and min/max are the outer edges, so the widest kind sets them.
+      // This is the intersection: the part no kind is missing evidence for.
+      //
+      // EVIDENCE, not coverage, and the wording says so. A band's span is built
+      // from the events actually received per kind, so a floor above the outer
+      // one means "the oldest event of that kind we have seen", which is not
+      // the same as "we never walked below it" — a walk that ran that deep and
+      // found nothing looks identical here. Calling it "covered only from"
+      // asserted a gap the data cannot support.
       if (r.everyKindMin != null) {
         const inner = el("i", "cov-seg every");
         place(inner, r.everyKindMin, r.everyKindMax);
-        inner.title = `every kind in this filter is covered only from ${day(r.everyKindMin)} to ${day(r.everyKindMax)}`;
+        inner.title =
+          `evidence for every kind in this filter reaches only ${day(r.everyKindMin)} → ${day(r.everyKindMax)}\n` +
+          `outside it at least one kind has none, so the band cannot vouch for it`;
         track.appendChild(inner);
       }
     }

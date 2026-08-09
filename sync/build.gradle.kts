@@ -42,4 +42,9 @@ application {
 
 tasks.test {
     useJUnitPlatform()
+    // Forwarded, not inherited: a system property on the Gradle command line
+    // reaches the DAEMON, and the tests run in a forked JVM that never sees it.
+    // `RealRelayDrainProbe` is the only gate that uses this — it dials the
+    // public internet, so it stays off unless asked for by name.
+    System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
 }
