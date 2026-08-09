@@ -97,7 +97,18 @@ quartz = "875531afb0"
 # engine/app/validation-overrides.xml, the stemming override; ours redeploys the
 # bundled package on boot, so a Vespa old enough to want it would fail the
 # deploy rather than warn.
-vespaEventStore = "e129c094a6"
+# Previously e129c094a6 = store main through PR #64 (Quartz f4640b6ea1). This
+# bump is INSTRUMENTATION ONLY — two commits, both IngestStats timers, no
+# behaviour, no lock scope, no API surface:
+#   #63  lock.ingest.wait / .hold and lock.gate.wait / .hold around the store's
+#        single writer mutex, booked after release so the timer does not
+#        lengthen the section it measures.
+#   #65  guards.apply, supersede and remove — the spans inside that mutex that
+#        were untimed. On staging the lock reads 60.0s held per 60s window with
+#        400-550s of wait across eight ingest workers, and the stages that
+#        existed accounted for only ~9-13s of it.
+# Taken so the router can attribute that gap instead of guessing at it.
+vespaEventStore = "8587db434d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
