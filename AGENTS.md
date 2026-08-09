@@ -433,15 +433,26 @@ of the outer edges and labels it *evidence*, deliberately — see `stats.html`.
 
 **Do not assume the leg below a floor is empty. It was measured, and it is not.**
 `RealRelayDrainProbe` asked the five `indexers` relays for kind 10002 below the
-exact floor each one's band carried: purplepag.es returned 13 events,
-directory.yabu.me returned 1,225,329. The theory that killed a day here — relay
-lists postdate NIP-65, so those legs can never return anything — is false, and it
-survived a long time because nothing had dialled a relay to check it. Reach for
-the probe before theorising about a floor.
+exact floor each one's band carried, twice:
 
-What a floor being stuck actually means is that walks are not finishing. In the
-same run purplepag.es ended `IDLE` — the relay went quiet mid-walk — and a walk
-that does not finish records nothing, so the floor crawls. `fetchAllPages`
+| relay | ending | below the floor |
+|---|---|---|
+| purplepag.es | `IDLE` both runs | 13 events, oldest `created_at` **0** |
+| user.kindpag.es | `DRAINED` | 1 — the boundary second, re-read by design |
+| directory.yabu.me | `DRAINED` (1,225,329 events; 120s only reaches 259,616) | a real backlog |
+| profiles.nostr1.com | `DRAINED` | 1 |
+| indexer.coracle.social | `DRAINED` (hung >12min once) | 1 |
+
+The theory that cost a day here — relay lists postdate NIP-65, so those legs can
+never return anything — is false: directory.yabu.me had 1.2M events below its
+floor. It survived because nothing had dialled a relay to check it. Reach for the
+probe before theorising about a floor.
+
+A stuck floor means walks are not FINISHING, and the two ways differ. yabu.me was
+real backlog and drains once allowed to run. purplepag.es never EOSEs — it serves
+13 events, one stamped `created_at = 0` that `isPlausible` rightly refuses, then
+goes quiet — so it can never earn a drain and its leg stays open by design. That
+is the conservative branch working, not a bug to route around. `fetchAllPages`
 returns a `PagedFetchResult` now
 — `downloaded` plus an `end` naming every way a walk can stop (`DRAINED`,
 `LIMIT_REACHED`, `IDLE`, `CLOSED`, `CANNOT_CONNECT`, `UNPAGEABLE`) — and only
