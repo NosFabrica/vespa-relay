@@ -757,6 +757,32 @@ was in memory only: a fold persisted, "this url is its own relay" did not, so
 every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
 that — see the verdict section above for the shape and what it does not claim.
 
+**A fold has to take the earlier sync's state with it.** Nothing dials a folded
+url again, so the bands it earned before the fold can never advance — but they
+stay in `SYNC_STATE_FILE`, and that file is what `SyncCoverageReport` charts. The
+symptom is a working fold that reads as one that never happened: `/stats.json`
+listing twelve urls of one host as separately walked while exactly one of them is
+being synced. `SyncBands.dropFolded`, called from `DynamicSync` as the fold is
+applied, leaves them out of the file. Three decisions in it, all of which have a
+silent failure on the other side:
+
+- **Dropped, not merged onto the survivor.** A band is a claim about a url we
+  walked. A containment measurement is enough to stop dialling a duplicate —
+  wrong, that costs a re-download — and not enough to close the survivor's legs
+  over ground it was never walked for. What dropping costs is already being paid:
+  the canonical was being walked in parallel all along, and ingest dedups.
+- **Replaced each pass, not accumulated.** Verdicts carry a 30-day TTL and
+  `RelayAliases.forget` drops them when the store stops standing behind one, at
+  which point the url is back in the fan-out. A set that only grew would go on
+  suppressing the bands it earns after that: dialled every cycle, written to no
+  file, re-walked from nothing on every restart, with no error anywhere. The band
+  stays in memory either way, so a url that comes back resumes rather than
+  starting over.
+- **Per stream, and the sweep file is left alone.** A fold is applied to one
+  dynamic stream's discovered set; a static upstream naming that same url is
+  still dialling it. Only static backfill sweeps, so a cursor for a folded url is
+  a cursor a stream that never folded it is still using.
+
 **Measured against live relays**, because the thresholds are only worth what the
 wire says. A `{"limit": 500}` probe: **85% of 60 sampled hosts answered**
 (median 1.85s, p90 2.4s, ~535KB, 500 events), 13% refuse a bare filter outright

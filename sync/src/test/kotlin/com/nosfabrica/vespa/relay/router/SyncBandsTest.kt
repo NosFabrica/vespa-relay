@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
@@ -420,6 +421,120 @@ class SyncBandsTest {
         assertEquals(listOf(profiles), reopened.legs("archive", relay, profiles), "so it still owes the whole filter")
         f.delete()
     }
+
+    // ---- urls the alias fold took out of the fan-out ------------------------
+
+    @Test
+    fun `a folded url's bands leave the file, and the survivor's stay`() {
+        // The fold stops dialling `other`, so its bands can never advance
+        // again. Left on disk they are what the stats page charts, and the
+        // coverage card goes on listing a relay nothing syncs.
+        val f = tempFile()
+        val c = SyncBands(f)
+        c.record(mirror, relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        c.record(mirror, other, profiles, 1_700_003_000L, 1_700_004_000L, paged = true)
+        c.flush()
+        assertNotNull(bandIn(f, mirror, other), "walked in its own right, before the fold")
+
+        assertEquals(1, c.dropFolded(mirror, listOf(other)))
+        c.flush()
+
+        assertNull(bandIn(f, mirror, other), "the folded url is gone")
+        assertEquals(1_700_001_000L, bandIn(f, mirror, relay)!!["min"]!!.jsonPrimitive.long, "the url it folded onto is untouched")
+        // And it stays gone across the restart, which is the only state the
+        // next boot has.
+        assertNull(SyncBands(f).band(mirror, other, profiles))
+        f.delete()
+    }
+
+    @Test
+    fun `a fold is one stream's decision, not every stream's`() {
+        // The fold is applied to a dynamic stream's discovered set. A static
+        // upstream naming the same url is still dialling it, and taking its
+        // bands would cost it a corpus.
+        val f = tempFile()
+        val c = SyncBands(f)
+        c.record(mirror, other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        c.record("archive", other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        c.dropFolded(mirror, listOf(other))
+        c.flush()
+
+        assertNull(bandIn(f, mirror, other))
+        assertNotNull(bandIn(f, "archive", other), "the stream that never folded it keeps its own")
+        f.delete()
+    }
+
+    @Test
+    fun `a second pass over the same verdicts rewrites nothing`() {
+        // apply() hands the whole alias map back every cycle, so all but the
+        // first call is the same set of urls — and rewriting a file this size
+        // for that would be a cost per cycle, forever.
+        val f = tempFile()
+        val c = SyncBands(f)
+        c.record(mirror, other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        assertEquals(1, c.dropFolded(mirror, listOf(other)))
+        c.flush()
+
+        val stamp = f.lastModified()
+        assertEquals(0, c.dropFolded(mirror, listOf(other)), "nothing new was learned")
+        c.flush()
+        assertEquals(stamp, f.lastModified(), "so the flush is a no-op")
+        f.delete()
+    }
+
+    @Test
+    fun `a url whose verdict expires is written again, from where it left off`() {
+        // A fold is not permanent: the record carries a 30-day TTL, and when
+        // the store stops standing behind it the url is back in the fan-out.
+        // A set that only ever grew would keep suppressing the bands it earns
+        // after that — dialled every cycle, written to no file, re-walked from
+        // nothing on every restart, and silent throughout.
+        val f = tempFile()
+        val c = SyncBands(f)
+        c.record(mirror, other, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        c.dropFolded(mirror, listOf(other))
+        c.flush()
+        assertNull(bandIn(f, mirror, other))
+
+        // The next cycle's verdicts no longer name it.
+        assertEquals(0, c.dropFolded(mirror, emptyList()), "nothing NEW was folded")
+        c.flush()
+        assertEquals(1_700_001_000L, bandIn(f, mirror, other)!!["min"]!!.jsonPrimitive.long, "and it resumes, rather than starting over")
+        f.delete()
+    }
+
+    @Test
+    fun `a folded url's unclaimed pre-stream band goes too`() {
+        // The one place an unclaimed pre-stream band is dropped rather than
+        // written back. The rule it bends exists because the stream that wrote
+        // one may not have reached that relay yet; a folded url is the case
+        // where no such stream can be coming, since nothing dials it.
+        val f = tempFile()
+        val key = "${other.url} ${profiles.toJson()}"
+        writeFlat(f, key, 1_700_001_000L, 1_700_002_000L)
+
+        val c = SyncBands(f)
+        c.dropFolded(mirror, listOf(other))
+        c.flush()
+
+        assertNull(Json.parseToJsonElement(f.readText()).jsonObject[key], "the flat entry is gone as well")
+        f.delete()
+    }
+
+    /** One relay's band as the file holds it, or null when the file names neither. */
+    private fun bandIn(
+        f: File,
+        stream: String,
+        url: NormalizedRelayUrl,
+    ): JsonObject? =
+        Json
+            .parseToJsonElement(f.readText())
+            .jsonObject[stream]
+            ?.jsonObject
+            ?.get(profiles.toJson())
+            ?.jsonObject
+            ?.get(url.url)
+            ?.jsonObject
 
     // ---- MIGRATION SHIM: a file written before the format nested ------------
 

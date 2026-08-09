@@ -185,9 +185,26 @@ internal class DynamicSync(
                 // split is that a newly discovered url is dialled unfolded once,
                 // before the pass that measures it.
                 val candidates = discovered.map { it.url }
+                val cleaned = folding?.apply(candidates)
+                // The state an EARLIER cycle left behind, cleared as the fold
+                // takes hold. Everything above is about what this cycle dials;
+                // this is about what the last one already did — a url that used
+                // to be dialled in its own right has bands on disk, and once it
+                // is folded nothing will ever advance them again. Left there
+                // they are what `/stats.json` charts, so the coverage card goes
+                // on naming a dozen urls of one host as separately walked while
+                // exactly one of them is being synced. See [SyncBands.dropFolded]
+                // for why they are dropped rather than merged onto the survivor.
+                cleaned?.aliases?.keys?.let { aliased ->
+                    val forgotten = bands.dropFolded(stream.name, aliased)
+                    // Only the cycle that changes something says so: after the
+                    // first, this is the same set of verdicts every time.
+                    if (forgotten > 0) {
+                        System.err.println("router: ${stream.name} stopped writing sync state for $forgotten newly folded url(s)")
+                    }
+                }
                 val relays =
-                    folding
-                        ?.apply(candidates)
+                    cleaned
                         ?.let { RelayAliases.foldOnto(discovered, it.aliases) }
                         // A verdict's canonical is whatever the probe measured,
                         // which is NOT necessarily a url discovery would hand
