@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -51,6 +52,12 @@ class SyncBandsTest {
     private val mirror = "profiles"
 
     private fun now(): Long = System.currentTimeMillis() / 1000
+
+    /** A walk that ended because the relay EOSEd an empty page. */
+    private val drainedWalk = PagedFetchResult(10, PagedFetchResult.End.DRAINED)
+
+    /** One that ended because the relay went quiet — same events, no claim. */
+    private val idleWalk = PagedFetchResult(10, PagedFetchResult.End.IDLE)
 
     private fun tempFile(): File {
         val f = File.createTempFile("sync-bands", ".json")
@@ -699,9 +706,10 @@ class SyncBandsTest {
 
         val older = legs.first { it.since == profiles.since }
         val newer = legs.first { it.since != profiles.since }
-        assertTrue(drainSettlesThePast(true, older, profiles), "the older leg reaches as deep as the filter allows")
-        assertTrue(!drainSettlesThePast(true, newer, profiles), "the newer leg says nothing about history")
-        assertTrue(!drainSettlesThePast(false, older, profiles), "and no drain, no claim")
+        assertTrue(drainSettlesThePast(drainedWalk, older, profiles), "the older leg reaches as deep as the filter allows")
+        assertTrue(!drainSettlesThePast(drainedWalk, newer, profiles), "the newer leg says nothing about history")
+        assertTrue(!drainSettlesThePast(idleWalk, older, profiles), "and an idle walk claims nothing")
+        assertTrue(!drainSettlesThePast(null, older, profiles), "nor does a leg that was never paged")
     }
 
     @Test
@@ -713,7 +721,7 @@ class SyncBandsTest {
         c.record(mirror, relay, bounded, 1_690_000_000L, 1_700_000_000L, paged = true)
 
         val older = c.legs(mirror, relay, bounded).first { it.since == bounded.since }
-        assertTrue(drainSettlesThePast(true, older, bounded), "it reaches everything this filter can ask for")
+        assertTrue(drainSettlesThePast(drainedWalk, older, bounded), "it reaches everything this filter can ask for")
     }
 
     @Test

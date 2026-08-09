@@ -279,18 +279,16 @@ internal class StaticBackfill(
                 // value, which only lands when the walk ends; that once read
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
-                // Did the relay EOSE on an empty page — "there is nothing older" —
-                // rather than merely stop giving us more? Only that earns the band
-                // the right to close its older leg. See `drainSettlesThePast`.
-                var drained = false
                 paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                downloaded +=
+                // The walk's own account of why it stopped. Only `DRAINED` — the
+                // relay EOSEd an empty page, so there is nothing older — earns the
+                // band the right to close its older leg. See `drainSettlesThePast`.
+                val walked =
                     client.fetchAllPages(
                         upstream.url,
                         listOf(window),
                         NEG_IDLE_MS,
                         onNewPage = { until -> paging.mark(walk, until) },
-                        onDrained = { drained = true },
                     ) { event ->
                         if (upstream.filter.match(event)) {
                             if (SyncCoverage.isPlausible(event.createdAt)) {
@@ -310,6 +308,7 @@ internal class StaticBackfill(
                         live.incrementAndGet()
                         progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
                     }
+                downloaded += walked.downloaded
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
                 paging.finish(walk)
@@ -321,7 +320,7 @@ internal class StaticBackfill(
                     seenMax,
                     paged = true,
                     observedByKind = seenByKind,
-                    drained = drainSettlesThePast(drained, window, upstream.filter),
+                    drained = drainSettlesThePast(walked, window, upstream.filter),
                 )
             }
             progress.done(idx, downloaded)
@@ -529,17 +528,16 @@ internal class StaticBackfill(
                     // whole thing would throw that away.
                     val rest = outcome.outstanding ?: leg
                     val walk = "${upstream.streamName}|${upstream.url.url}"
-                    var drained = false
                     paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                    downloaded +=
+                    val walked =
                         client.fetchAllPages(
                             upstream.url,
                             listOf(rest),
                             NEG_IDLE_MS,
                             onNewPage = { until -> paging.mark(walk, until) },
-                            onDrained = { drained = true },
                             onEvent = onEvent,
                         )
+                    downloaded += walked.downloaded
                     paging.finish(walk)
                     pagedWindows++
                     legsDone++
@@ -555,7 +553,7 @@ internal class StaticBackfill(
                         seenMax,
                         paged = true,
                         observedByKind = seenByKind,
-                        drained = drainSettlesThePast(drained, rest, upstream.filter),
+                        drained = drainSettlesThePast(walked, rest, upstream.filter),
                     )
                     continue
                 }

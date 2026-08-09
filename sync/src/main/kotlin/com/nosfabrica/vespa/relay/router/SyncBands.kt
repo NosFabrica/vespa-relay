@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.syncEnv
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -471,7 +472,10 @@ class SyncBands(
 
 /**
  * Whether a drained leg says anything about HISTORY — the guard every paged call
- * site must put between `fetchAllPages`'s `onDrained` and [SyncBands.record].
+ * site must put between [PagedFetchResult] and [SyncBands.record].
+ *
+ * A null [walk] is "this leg was not paged at all" — the negentropy branches pass
+ * it, and it settles nothing.
  *
  * `fetchAllPages` reports a drain when the relay EOSEs on an empty page: there is
  * nothing below where this walk stopped. Whether that settles the PAST depends on
@@ -491,7 +495,7 @@ class SyncBands(
  * carrying that same floor, and draining it settles everything that filter can ask.
  */
 internal fun drainSettlesThePast(
-    drained: Boolean,
+    walk: PagedFetchResult?,
     leg: Filter,
     filter: Filter,
-) = drained && leg.since == filter.since
+) = walk != null && walk.drained && leg.since == filter.since
