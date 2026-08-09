@@ -110,17 +110,17 @@ class RealRelayDrainProbe {
                             }
                         }
                     }
-                val reach = if (events > 0) ", oldest seen ${'$'}oldest" else ""
+                val reach = if (events > 0) ", oldest seen $oldest" else ""
                 val verdict =
                     outcome.fold(
                         onSuccess = { r ->
                             when {
-                                r == null -> "STILL GOING at ${'$'}{PER_RELAY_MS / 1000}s — ${'$'}events event(s)${'$'}reach"
-                                r.drained -> "${'$'}{r.end} (${'$'}{r.downloaded} event(s)${'$'}reach) — LEG CLOSES"
-                                else -> "${'$'}{r.end} (${'$'}{r.downloaded} event(s)${'$'}reach) — leg stays open"
+                                r == null -> "STILL GOING at ${PER_RELAY_MS / 1000}s — $events event(s)$reach"
+                                r.drained -> "${r.end} (${r.downloaded} event(s)$reach) — LEG CLOSES"
+                                else -> "${r.end} (${r.downloaded} event(s)$reach) — leg stays open"
                             }
                         },
-                        onFailure = { "threw ${'$'}{it::class.simpleName}: ${'$'}{it.message}" },
+                        onFailure = { "threw ${it::class.simpleName}: ${it.message}" },
                     )
                 println("  %-32s %s".format(url.removePrefix("wss://"), verdict))
                 println("  %-32s   until=%d, %s".format("", until, note))
