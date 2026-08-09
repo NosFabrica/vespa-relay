@@ -627,6 +627,31 @@ clears nobody — members or itself. **The general rule when making an in-memory
 heuristic durable: re-audit every path that writes, because a guess that cost
 one cycle now costs a TTL and is signed.**
 
+**End to end against live relays, audited build, fresh monitor key so the
+verdict state is genuinely cold** (`load` filters on `authors`, so a new key is
+a clean slate without touching the corpus):
+
+```
+cold   225 url(s), nothing known
+       measured 170 fingerprint(s) ? 130 alias(es), folds onto 95 relay(s), 1:12
+warm   fan-out on 95 relay(s) in 14s, ZERO dials — apply() straight from the store
+       measured  16 fingerprint(s) ?   5 alias(es), folds onto 90 relay(s), 1:04
+```
+
+**170 ? 16 fingerprints, a 10.6x drop**, and the warm pass still learned 5 new
+folds from relays that had been unreachable on the cold one. Audited every
+written record for the defect signatures: zero verdicts on an empty window, zero
+under the 20-id floor, zero stale `of N peers` phrasing, zero self-referencing
+folds.
+
+**The cleared form is unexercised on this corpus.** 13 cleared verdicts before
+the thin-window guard, **0** after — every one of them rested on evidence too
+thin to publish, and those urls correctly moved to `unmeasured` instead (56 ?
+66). So the measured win above comes from FOLDS plus the `unresolved`/`measured`
+fix, not from the cleared form. It is still needed for a host like `nostr.ac`
+with 20 genuinely distinct paths; that case just is not in this fixture, so
+treat the self-form as correct-but-unproven in the field.
+
 **Verdicts are written as each GROUP finishes, not when the pass does.** A pass
 yields to the fan-out, so on a cold store — nothing folded, mirror at its widest
 — it can run for a quarter of an hour; measured, 13 minutes with zero verdicts in
