@@ -24,9 +24,10 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 ./gradlew :sync:test               # router tests (moved with the module)
 ./gradlew :sync:test --tests "*SyncBands*"
 
-# Dials the five real indexer relays and reports how each ENDS an empty page
-# (DRAINED / IDLE / CLOSED / …). Off by default, asserts nothing, and is the
-# only thing here that can tell our reading of a relay apart from the relay.
+# Dials the five real indexer relays and reports two things: how each ENDS an
+# empty page (DRAINED / IDLE / CLOSED / …), and whether an unfloored leg can
+# TERMINATE at all. Off by default, asserts nothing, and is the only thing here
+# that can tell our reading of a relay apart from the relay.
 # `--rerun` is load-bearing: the task is up-to-date-checked, so a second
 # identical run is SKIPPED and prints nothing, which reads as a silent pass.
 ./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i
@@ -455,12 +456,50 @@ never return anything — is false: directory.yabu.me had 1.2M events below its
 floor. It survived because nothing had dialled a relay to check it. Reach for the
 probe before theorising about a floor.
 
-A stuck floor means walks are not FINISHING, and the two ways differ. yabu.me was
-real backlog and drains once allowed to run. purplepag.es never EOSEs — it serves
-13 events, one stamped `created_at = 0` that `isPlausible` rightly refuses, then
-goes quiet — so it can never earn a drain and its leg stays open by design. That
-is the conservative branch working, not a bug to route around. `fetchAllPages`
-returns a `PagedFetchResult` now
+**And the `IDLE` in that table is not what it looks like — read this before
+theorising about purplepag.es again.** "It stops EOSEing after a while" is the
+natural reading and it is wrong. purplepag.es EOSEs *every single page*, promptly,
+for as long as you keep asking; it is our walk that cannot stop. The mechanism,
+measured end to end at the wire (`onepage.py`/`pagewalk.py` reproductions, then
+`RealRelayDrainProbe.reportWhetherAnUnflooredLegCanEndAtAll` through the real
+quartz client):
+
+1. `fetchAllPages` cursors newest-first by `until = the oldest created_at it saw`.
+2. purplepag.es holds **twelve kind 10002 events stamped `created_at = 0`**. They
+   are not below some floor waiting to be reached — a single page anywhere under
+   ~`1.6e9` carries them — so the cursor lands on `0` the moment the walk gets
+   that deep.
+3. purplepag.es treats **`until <= 0` as no `until` at all** and answers with its
+   500 NEWEST events. (`{"kinds":[0,10002],"until":0}` → `max created_at`
+   1800000000. Same for `-1`, `-100000`.)
+4. Quartz checks `until` client-side (`FilterMatcher`), so none of those 500
+   matches: the page *received* 500 and *delivered* 0, which is quartz's
+   "boundary second is stuck" case, so it steps strictly past — `until = -1`.
+5. Repeat. `until` marches one second further negative per page, **forever**:
+   ~5.5 pages/s, 500 events pulled and discarded on each, EOSE on every one.
+
+Measured from a cold start, the full `indexers` leg on purplepag.es downloads
+**1,490,010 events in ~10.8 minutes** — the real corpus, arriving fine — and then
+spends the rest of the process's life in that loop. `fetchAllPages` never returns,
+so the band is never recorded, so the next boot walks all 1.49M again. The stream
+shows `Fetching` with a frozen event count (the loop delivers nothing, so nothing
+ticks) while the socket is saturated. It is not anti-DDoS: ~1,000 pages produced
+no `NOTICE`, no `CLOSED`, no throttling. The other four indexers hold nothing at
+all below `1.5e9` and drain in one page, which is why this is purplepag.es-only.
+
+The fix is `flooredForPaging()` — every filter handed to `fetchAllPages` carries
+`since = PLAUSIBLE_FLOOR` when it has no floor of its own, so the cursor can never
+reach zero and the page below the floor is an EOSE'd empty page, i.e. a DRAIN.
+Nothing is lost: `isPlausible` already refuses everything under that floor, and
+every paged call site already spelled the same floor out for its progress line.
+Quartz's half — a paged walk that cannot terminate against a relay ignoring
+`until` — is upstream's, and is unreachable from here now.
+
+Do not "simplify" this by flooring inside `SyncBands.legs`. The legs feed the
+negentropy branches too, and narrowing the remote filter while the local id
+snapshot stays wide is a false diff — on the `deleteMissing` path, a retraction.
+
+`fetchAllPages` returns a `PagedFetchResult` now
 — `downloaded` plus an `end` naming every way a walk can stop (`DRAINED`,
 `LIMIT_REACHED`, `IDLE`, `CLOSED`, `CANNOT_CONNECT`, `UNPAGEABLE`) — and only
 `DRAINED`, an EOSE on an empty page, separates an exhausted corpus from a relay

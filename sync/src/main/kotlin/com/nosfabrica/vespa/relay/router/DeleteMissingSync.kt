@@ -221,7 +221,11 @@ internal class DeleteMissingSync(
         ask: Filter,
     ): Int {
         var downloaded = 0
-        for (leg in bands.legs(stream.name, url, ask)) {
+        for (unfloored in bands.legs(stream.name, url, ask)) {
+            // Every walk below this one is paged, so the floor goes on here —
+            // without it an upstream holding a `created_at = 0` event walks past
+            // zero and never comes back. See [flooredForPaging].
+            val leg = unfloored.flooredForPaging()
             var seenMin: Long? = null
             var seenMax: Long? = null
             // Per-kind spans, which quartz's SyncCoverage requires before it

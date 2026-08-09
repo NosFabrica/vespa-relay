@@ -845,6 +845,46 @@ class SyncBandsTest {
         f.delete()
     }
 
+    // ---- the floor a paged leg must carry onto the wire ---------------------
+
+    @Test
+    fun `an unbounded leg is floored before it is walked, and a bounded one is left alone`() {
+        // The whole point: `legs()` gives the older leg of an unbounded filter
+        // `since = null`, which is what every stream in router.conf.example
+        // produces, and an unfloored walk of it cannot terminate against a relay
+        // holding an event stamped `created_at = 0` — measured on purplepag.es,
+        // which holds twelve and answers `until <= 0` with its NEWEST page.
+        val c = SyncBands(null)
+        c.record(mirror, relay, profiles, 1_690_000_000L, 1_700_000_000L, paged = true)
+        val older = c.legs(mirror, relay, profiles).first { it.since == null }
+
+        assertEquals(SyncCoverage.PLAUSIBLE_FLOOR, older.flooredForPaging().since)
+        assertEquals(older.until, older.flooredForPaging().until, "only the floor is added")
+        assertEquals(older.kinds, older.flooredForPaging().kinds, "and nothing else about the ask changes")
+
+        // A caller that asked for a floor of its own keeps it — deeper or
+        // shallower. Overriding a deeper one would silently narrow the ask;
+        // overriding a shallower one would widen it past what was configured.
+        val deep = profiles.copy(since = 1_000L)
+        assertEquals(1_000L, deep.flooredForPaging().since)
+        val shallow = profiles.copy(since = 1_700_000_000L)
+        assertEquals(1_700_000_000L, shallow.flooredForPaging().since)
+    }
+
+    @Test
+    fun `flooring a leg does not cost it the drain it would otherwise have earned`() {
+        // The fix would be worthless if it made the walk terminate but left the
+        // band unable to record it: the leg would drain, the drain would settle
+        // nothing, and the next boot would walk the same relay again. Guarded
+        // here because the two live one function apart and read independently —
+        // drainSettlesThePast compares FLOORS, and the floored leg's floor is
+        // exactly the deepest a band may ever claim.
+        val c = SyncBands(null)
+        c.record(mirror, relay, profiles, 1_690_000_000L, 1_700_000_000L, paged = true)
+        val older = c.legs(mirror, relay, profiles).first { it.since == null }
+        assertTrue(drainSettlesThePast(drainedWalk, older.flooredForPaging(), profiles))
+    }
+
     // ---- draining: the leg a paged walk is finally allowed to close ---------
 
     @Test

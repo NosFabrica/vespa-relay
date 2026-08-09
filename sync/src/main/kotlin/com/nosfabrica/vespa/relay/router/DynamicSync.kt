@@ -656,11 +656,16 @@ internal class DynamicSync(
                 if (fetched) {
                     null.also {
                         val walk = "${stream.name}|${url.url}"
-                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                        // Floored on the PAGED branch only: a walk that runs past
+                        // `created_at = 0` never returns ([flooredForPaging]), while
+                        // narrowing the negentropy branch's leg the same way would
+                        // leave the local id set wider than the remote one.
+                        val flooredLeg = leg.flooredForPaging()
+                        paging.begin(walk, flooredLeg.until ?: nowSeconds(), flooredLeg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                         val w =
                             client.fetchAllPages(
                                 url,
-                                listOf(leg),
+                                listOf(flooredLeg),
                                 NEG_IDLE_MS,
                                 onNewPage = { until -> paging.mark(walk, until) },
                                 onEvent = onEvent,

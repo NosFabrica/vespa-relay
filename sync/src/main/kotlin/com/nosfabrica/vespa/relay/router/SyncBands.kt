@@ -636,6 +636,39 @@ class SyncBands(
 }
 
 /**
+ * The leg as it goes ON THE WIRE: floored at [SyncCoverage.PLAUSIBLE_FLOOR] when it
+ * carries no `since` of its own. Apply this to every filter handed to
+ * `fetchAllPages`, and only to those — a paged walk is the one thing the floor
+ * protects, and putting it on a negentropy leg would narrow the remote set while the
+ * local id snapshot stayed wide, which on the `deleteMissing` path is a retraction.
+ *
+ * **This is not tidiness. Without it a paged walk against a real relay never ends.**
+ * `fetchAllPages` cursors newest-first by `until = oldest created_at seen`, so a
+ * single event stamped `created_at = 0` drives the cursor to zero. purplepag.es holds
+ * twelve of them — kind 10002, `created_at = 0` — and treats `until <= 0` as *no*
+ * `until`, so it answers that page with its five hundred NEWEST events. None of them
+ * matches the filter's own `until` client-side, so quartz sees a page that delivered
+ * nothing, steps strictly past the boundary to `until = -1`, and asks again. And
+ * again. Measured against the live relay: ~5.5 pages a second, 500 events fetched and
+ * discarded on each, `until` marching one second further negative every time, EOSE on
+ * every single page — for as long as the process runs. The stream never returns, so
+ * its band is never recorded and the next boot re-walks the whole relay from the top.
+ *
+ * Flooring the REQ ends it where the data ends: below the floor purplepag.es answers
+ * an empty page with an EOSE, which is a DRAIN, which closes the leg. Every paged
+ * call site already spelled this floor out for its progress line
+ * (`leg.since ?: PLAUSIBLE_FLOOR`) and [drainSettlesThePast] already accepts a leg
+ * that carries it — the walk itself was the one place the floor was assumed and never
+ * actually sent.
+ *
+ * Nothing is given up: [SyncCoverage.isPlausible] already refuses everything below
+ * this floor, so those events could never widen a band or count as coverage. Quartz's
+ * side of this — a paged walk that cannot terminate when a relay ignores `until` —
+ * is upstream's to fix; this makes it unreachable from here.
+ */
+internal fun Filter.flooredForPaging(): Filter = if (since != null) this else copy(since = SyncCoverage.PLAUSIBLE_FLOOR)
+
+/**
  * Whether a drained leg says anything about HISTORY — the guard every paged call
  * site must put between [PagedFetchResult] and [SyncBands.record].
  *

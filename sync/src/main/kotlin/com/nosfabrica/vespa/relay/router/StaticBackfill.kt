@@ -268,7 +268,11 @@ internal class StaticBackfill(
         var downloaded = 0
         transferring.incrementAndGet()
         return try {
-            for (window in legs) {
+            for (leg in legs) {
+                // Floored before it is walked, or an upstream holding an event
+                // stamped `created_at = 0` drives this walk past zero and it
+                // never returns. See [flooredForPaging].
+                val window = leg.flooredForPaging()
                 var seenMin: Long? = null
                 var seenMax: Long? = null
                 // Per-kind spans, which quartz's SyncCoverage requires before it
@@ -532,7 +536,7 @@ internal class StaticBackfill(
                     // handling rather than dead code. Do not "simplify" it to
                     // `!!`: falling back to the whole leg re-pages, which is
                     // wasteful, while `!!` would crash the stream.
-                    val rest = outcome.outstanding ?: leg
+                    val rest = (outcome.outstanding ?: leg).flooredForPaging()
                     val walk = "${upstream.streamName}|${upstream.url.url}"
                     paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                     val walked =
