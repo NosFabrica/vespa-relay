@@ -184,6 +184,24 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `a fully folded host stops being probed at all`() =
+        runBlocking {
+            // The leader everything folded ONTO has a verdict — it is the class
+            // representative — but it is nobody's alias and nobody's singleton.
+            // A group left open on that basis costs one fingerprint per pass in
+            // perpetuity, learning nothing, because there is no longer anything
+            // in the group to compare it against.
+            val store = newStore()
+            val first = upstreams()
+            assertEquals(1, folding(store, first).measure("t", listOf(canonical, alias), canDial = { true }))
+
+            val second = upstreams()
+            folding(store, second).measure("t", listOf(canonical, alias), canDial = { true })
+
+            assertEquals(0, second.dials.get(), "a settled host was re-probed with nothing left to learn")
+        }
+
+    @Test
     fun `a new url on a settled host still gets measured`() =
         runBlocking {
             // The other side of that: persisting "cleared" must not freeze the

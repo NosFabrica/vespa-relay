@@ -150,13 +150,22 @@ class RelayAliases(
      *
      * A group is skipped when every member already has a verdict, and when it
      * has only one member — there is nothing to be a duplicate OF.
+     *
+     * "Has a verdict" is [measured] and nothing narrower. Spelling the test out
+     * here instead cost a fingerprint per fully folded group per pass, forever:
+     * a leader everything else folded ONTO is a canonical, which is a verdict,
+     * but it is not a key in `folded` and not in `distinct`, so a hand-written
+     * predicate kept returning its group as unfinished. [toProbe] would then
+     * re-dial the leader alone, learn nothing — there is nothing left to compare
+     * it to — and do it again next pass. A new url on that host still reopens
+     * the group, because the new url is the thing without a verdict.
      */
     fun unresolved(candidates: Collection<NormalizedRelayUrl>): List<List<NormalizedRelayUrl>> =
         candidates
             .groupBy { hostOf(it.url) }
             .values
             .map { group -> group.sortedWith(PREFERENCE) }
-            .filter { group -> group.size > 1 && group.any { it !in distinct && !folded.containsKey(it) } }
+            .filter { group -> group.size > 1 && group.any { !measured(it) } }
 
     /**
      * Which urls of one group still need a fingerprint: the ones with no
