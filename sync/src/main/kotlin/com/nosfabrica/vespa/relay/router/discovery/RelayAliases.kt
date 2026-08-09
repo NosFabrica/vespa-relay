@@ -127,6 +127,18 @@ class RelayAliases(
     }
 
     /**
+     * Adopt cleared verdicts a previous run published, the negative half of
+     * [adopt]. A url this run has since folded wins — a fold is the stronger
+     * statement, and re-clearing it would put a duplicate back in the fan-out.
+     */
+    fun adoptDistinct(known: Set<NormalizedRelayUrl>) {
+        for (url in known) {
+            if (folded.containsKey(url)) continue
+            distinct += url
+        }
+    }
+
+    /**
      * The candidate urls grouped by the host they reach, keeping only the
      * groups a probe could still learn something from.
      *
@@ -157,35 +169,63 @@ class RelayAliases(
         return (listOf(leader) + group.filter { it != leader && it !in distinct && !folded.containsKey(it) }).distinct()
     }
 
+    /** What one group's fingerprints proved: the folds, and the urls cleared. */
+    data class Learned(
+        /** Folded url -> the leader it folded onto. */
+        val folded: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
+        /** Urls compared and found to be their own relay, the leader included. */
+        val distinct: Set<NormalizedRelayUrl> = emptySet(),
+    )
+
     /**
      * Fold one group against the fingerprints just taken, and return only what
      * this call learned. A url with no fingerprint (unreachable, refused,
      * answered nothing) is left exactly as it was: silence is not evidence of
      * duplication, and a relay that is merely down must come back into the
      * fan-out when it recovers.
+     *
+     * **The leader is cleared too, when nothing folded onto it.** It is the one
+     * member never compared against anything — everything is compared against
+     * IT — so without this it would be the only url in a fully decided group
+     * still carrying no verdict, [unresolved] would keep returning the group
+     * forever, and persisting the members' verdicts would save nothing.
+     * Clearing it is sound for the same reason theirs is: it was measured
+     * against every member that answered, and matched none of them.
      */
     fun learn(
         group: List<NormalizedRelayUrl>,
         prints: Map<NormalizedRelayUrl, Set<String>>,
-    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+    ): Learned {
         val leader = leaderOf(group)
-        val leaderPrint = prints[leader] ?: return emptyMap()
-        val learned = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val leaderPrint = prints[leader] ?: return Learned()
+        val folds = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val cleared = HashSet<NormalizedRelayUrl>()
+        var compared = 0
         for (url in group) {
             if (url == leader || folded.containsKey(url)) continue
             val print = prints[url] ?: continue
+            compared++
             if (sameRelay(leaderPrint, print)) {
                 folded[url] = leader
                 canonicals += leader
                 distinct -= url
-                learned[url] = leader
+                folds[url] = leader
             } else {
                 // Probed, and it is its own relay. Recorded so the next cycle
                 // spends its budget on urls we know nothing about.
                 markDistinct(url)
+                cleared += url
             }
         }
-        return learned
+        // Only when something was actually held up against it: a leader whose
+        // whole group was unreachable has been compared to nothing and has
+        // proved nothing. And only when it is not a canonical — if anything
+        // folded onto it, it is the class, not a singleton.
+        if (compared > 0 && leader !in canonicals) {
+            markDistinct(leader)
+            cleared += leader
+        }
+        return Learned(folds, cleared)
     }
 
     /**

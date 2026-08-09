@@ -137,7 +137,7 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       AliasProbe.kt         the fingerprint: a relay's newest events, as ids
       AliasFolding.kt       apply() reads verdicts; measure() earns them
       AliasMonitor.kt       the schedule measure() runs on, off the sync cycle
-      RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `redirect` tag
+      RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `same-as` tag
     progress/             observability
       StreamPhases.kt       per-stream progress reporting
       PagingProgress.kt     time-axis progress for paged walks
@@ -520,7 +520,7 @@ so the fold and the monitor aim at the same slot. A writer that rebuilds the
 record from its own tags deletes everyone else's, and nothing about the result
 looks wrong: still signed, still a valid NIP-66 record, just saying less than it
 did. Measured in `RelayAliasRecordTest`, `[d, n, rtt-open]` became
-`[d, redirect]`. `RelayAliasRecord.edit` is the shape to copy — read what is
+`[d, same-as]`. `RelayAliasRecord.edit` is the shape to copy — read what is
 there, keep every tag this writer does not own, and stamp
 `max(now, existing + 1)`, because a store enforcing replaceable semantics
 REJECTS an edit that is not strictly newer and two writers inside one second are
@@ -528,7 +528,7 @@ ordinary. An edit lost that way reports success having done nothing.
 
 Both quartz writers on that address — `RelayReachabilityStore` and
 `RelayProber.toDiscoveryEventTemplate` — used to rebuild too, so their next
-flush dropped our `redirect` tag. Fixed upstream in amethyst #3882 and #3883 and
+flush dropped our verdict tag. Fixed upstream in amethyst #3882 and #3883 and
 taken here with the `4f41f16db5` pin; the local repair pass that used to restore
 a clobbered verdict on the next fold is gone with it. `RelayAliasRecordTest`
 holds the merge from both directions, so a pin that regressed it would fail the
@@ -539,11 +539,11 @@ that matters here — replaceable-event ordering is the store's behaviour, not t
 index's. One 225-url NIP-65 list, real urls from a real polluted event, folded to
 97 relays; the fold signed 128 verdicts at ~19:19:45 and quartz's monitor flushed
 over the same addresses at 19:23:54, i.e. it wrote LAST — the direction that used
-to erase us. 83 records came back carrying both a `redirect` and the monitor's
+to erase us. 83 records came back carrying both the verdict tag and the monitor's
 `n` / `rtt-open` / `rtt-read`, 0 records had a duplicated tag (replace, not
 append), and 178 `d` addresses served 178 records with none served twice. The
 5-minute `RelayMonitor.DEFAULT_FLUSH_INTERVAL_MS` is why a check run a minute
-after the fold sees 128 redirect-only records and concludes nothing merged; wait
+after the fold sees 128 verdict-only records and concludes nothing merged; wait
 out a flush before reading anything into it.
 
 **No false positives in 4,551 folds.** Every path that looks like a real
@@ -563,13 +563,49 @@ folded url was *paired with* moves onto the survivor — drop
 `wss://nos.lol/alpha` without carrying its bound authors and the stream stops
 asking for those authors entirely.
 
-The verdict is a signed **NIP-66 kind 30166** carrying
-`["redirect", "<canonical url>", "<evidence>"]` (`RelayAliasRecord`) — the same
-monitor that already signs "I could not reach this relay" saying the other
-thing a dial can prove. It is addressable on `d`, so a re-probe replaces rather
-than appends, it is served (an operator can ask this relay why a url stopped
-being synced and get a signed answer), and it is read back on the next boot
-within a 30-day TTL.
+The verdict is a signed **NIP-66 kind 30166** carrying one tag in two forms
+(`RelayAliasRecord`) — the same monitor that already signs "I could not reach
+this relay" saying the other thing a dial can prove:
+
+```json
+["same-as", "wss://nos.lol/",    "500 newest events, 498 shared with wss://nos.lol/"]
+["same-as", "wss://nostr.ac/v1", "500 newest events, best 2 shared of 19 peer(s) on this host"]
+```
+
+Pointing elsewhere is a fold. Pointing at the record's OWN url is the cleared
+verdict — measured, and equivalent to nothing but itself. The two are told apart
+after normalisation, never by string, or `wss://nos.lol` vs `wss://nos.lol/`
+reads as a fold onto itself and `adopt` silently drops it.
+
+**`same-as`, not `redirect`.** A redirect is a directed edge carrying authority:
+the server told you to go elsewhere and the url you asked for is not the
+endpoint. Both halves are false — the relay said nothing, we measured it, and
+the alias serves fine. A fingerprint establishes an EQUIVALENCE, which is
+symmetric: a consumer running union-find over these tags gets the right
+partition without inheriting our opinion about which member to dial. That
+opinion is `PREFERENCE` and it stays ours.
+
+It is addressable on `d`, so a re-probe replaces rather than appends — including
+replacing a fold with a cleared verdict when a host splits one endpoint into two
+real relays. It is served (an operator can ask this relay why a url stopped being
+synced and get a signed answer), and it is read back on the next boot within a
+30-day TTL.
+
+**The cleared form is what stops the re-probing.** `unresolved` returns a group
+while ANY member lacks a verdict, so without persisting "this url is its own
+relay" every boot re-fingerprints all the non-duplicates — 59 of them in the live
+run against a store already holding 128 folds. The group's LEADER is cleared too
+when nothing folded onto it: it is the one member never compared against
+anything (everything is compared against IT), so otherwise it would be the only
+url in a fully decided group still carrying no verdict and the group would come
+back forever.
+
+**What the cleared form does not claim.** Every url is compared to its group's
+leader, not to each other, so it says "not the leader" rather than "not any of
+them". Two paths on a host that duplicate EACH OTHER but not the leader are both
+recorded distinct and both keep getting dialled. That is leader-based grouping,
+present within a single pass as much as across boots — persisting the verdict
+neither causes it nor widens it.
 
 **The fold is two halves that run at different times, and the split is the
 point.** `AliasFolding.apply` READS — one `#d` query per 500 urls, no sockets —
@@ -604,10 +640,10 @@ unfolded. Paying that once per new url is the trade. `AliasFoldingTest` asserts
 `apply` opens zero sockets — a regression that moved a probe back onto the read
 path would fail nothing else in the repo, it would just make cycles slow again.
 
-`markDistinct` is **in memory only** — a fold is persisted as a `redirect`
-record, "this url is its own relay" is not — so every boot re-fingerprints the
-non-duplicates. That is the 59 fingerprints above on a store that already held
-128 verdicts. Pre-existing, and the reason a pass is never free.
+The 59 fingerprints in that timeline are what a pass cost when `markDistinct`
+was in memory only: a fold persisted, "this url is its own relay" did not, so
+every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
+that — see the verdict section above for the shape and what it does not claim.
 
 **Measured against live relays**, because the thresholds are only worth what the
 wire says. A `{"limit": 500}` probe: **85% of 60 sampled hosts answered**
@@ -622,7 +658,7 @@ asking for more only risks the outright refusal purplepag.es gives
 (`blocked: limit too high`), which is why `AliasProbe` retries once at 100.
 
 An end-to-end run against a seeded store: **22 discovered urls folded onto 10**
-in 20s, 12 signed `redirect` records published, and on the next boot those 12
+in 20s, 12 signed verdict records published, and on the next boot those 12
 were adopted from the store — `0 new alias(es) from 10 fingerprint(s), 12
 known` — so the probe really is a one-off per url, not a recurring cost. Both
 figures were measured while the fold still ran inline; the same work is now a

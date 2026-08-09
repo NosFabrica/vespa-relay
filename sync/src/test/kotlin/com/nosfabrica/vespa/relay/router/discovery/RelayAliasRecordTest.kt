@@ -87,12 +87,79 @@ class RelayAliasRecordTest {
 
             val after = tagNames(recordFor(store, alias.url))
             assertTrue(
-                RelayAliasRecord.REDIRECT_TAG in after,
+                RelayAliasRecord.SAME_AS_TAG in after,
                 "the monitor erased the fold's verdict: left $after",
             )
             // And it did write what it came to write, so this is a merge rather
             // than a monitor that gave up on the record.
             assertTrue("rtt-open" in after, "the monitor recorded nothing: left $after")
+        }
+
+    @Test
+    fun `a cleared url reads back as cleared, not as a fold onto itself`() =
+        runBlocking {
+            // The self-form: `same-as` pointing at the record's own url. It has
+            // to come back in `distinct` and never in `aliases`, or the fan-out
+            // would resolve the url to itself through a verdict and the whole
+            // point — not re-probing it — would be lost.
+            val store = newStore()
+            val record = RelayAliasRecord(store, signer)
+
+            record.publishDistinct(alias, sampled = 500, peers = 3, bestShared = 2)
+
+            val held = record.load(listOf(alias))
+            assertEquals(setOf(alias), held.distinct)
+            assertTrue(held.aliases.isEmpty(), "a cleared url was read back as an alias: ${held.aliases}")
+        }
+
+    @Test
+    fun `the two forms are told apart after normalisation, not by string`() =
+        runBlocking {
+            // `wss://nos.lol` and `wss://nos.lol/` are one url and the store
+            // holds whichever the normalizer produced. Comparing the raw strings
+            // would read a cleared verdict as a fold of a url onto itself, which
+            // `RelayAliases.adopt` silently drops — leaving the url unmeasured
+            // and re-probed every pass, the exact bug this half exists to fix.
+            val store = newStore()
+            val record = RelayAliasRecord(store, signer)
+            val unslashed = RelayUrlNormalizer.normalize("wss://nos.lol")
+
+            record.publishDistinct(unslashed, sampled = 500, peers = 2, bestShared = 0)
+
+            assertEquals(setOf(canonical), record.load(listOf(canonical)).distinct)
+        }
+
+    @Test
+    fun `clearing a url replaces an earlier fold on the same address`() =
+        runBlocking {
+            // A host that split one endpoint into two real relays: the url used
+            // to be a duplicate and is not any more. One owned tag name means
+            // the newer verdict replaces the older rather than sitting beside it
+            // and contradicting it.
+            val store = newStore()
+            val record = RelayAliasRecord(store, signer)
+
+            record.publish(alias, canonical, sampled = 500, shared = 498)
+            record.publishDistinct(alias, sampled = 500, peers = 1, bestShared = 3)
+
+            val held = record.load(listOf(alias))
+            assertEquals(setOf(alias), held.distinct)
+            assertTrue(held.aliases.isEmpty(), "the stale fold outlived the verdict that replaced it")
+            assertEquals(1, recordFor(store, alias.url)?.tags?.count { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG })
+        }
+
+    @Test
+    fun `a cleared verdict carries the evidence it rests on`() =
+        runBlocking {
+            val store = newStore()
+            val record = RelayAliasRecord(store, signer)
+
+            record.publishDistinct(alias, sampled = 500, peers = 19, bestShared = 2)
+
+            assertEquals(
+                "500 newest events, best 2 shared of 19 peer(s) on this host",
+                recordFor(store, alias.url)?.tags?.first { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG }?.get(2),
+            )
         }
 
     @Test
@@ -108,10 +175,10 @@ class RelayAliasRecordTest {
 
             val after = tagNames(recordFor(store, alias.url))
             assertTrue(
-                after.containsAll(before - RelayAliasRecord.REDIRECT_TAG),
+                after.containsAll(before - RelayAliasRecord.SAME_AS_TAG),
                 "publishing the verdict dropped the monitor's tags: had $before, left $after",
             )
-            assertTrue(RelayAliasRecord.REDIRECT_TAG in after)
+            assertTrue(RelayAliasRecord.SAME_AS_TAG in after)
         }
 
     @Test
@@ -124,10 +191,10 @@ class RelayAliasRecordTest {
             record.publish(alias, canonical, sampled = 500, shared = 500)
 
             val held = recordFor(store, alias.url)
-            assertEquals(1, held?.tags?.count { it.firstOrNull() == RelayAliasRecord.REDIRECT_TAG })
+            assertEquals(1, held?.tags?.count { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG })
             assertEquals(
                 "500 newest events, 500 shared with ${canonical.url}",
-                held?.tags?.first { it.firstOrNull() == RelayAliasRecord.REDIRECT_TAG }?.get(2),
+                held?.tags?.first { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG }?.get(2),
             )
         }
 
@@ -145,7 +212,7 @@ class RelayAliasRecordTest {
             val written = record.publish(alias, canonical, sampled = 500, shared = 500)
 
             assertTrue(written != null, "the edit was silently lost to replaceable-event ordering")
-            assertTrue(RelayAliasRecord.REDIRECT_TAG in tagNames(recordFor(store, alias.url)))
+            assertTrue(RelayAliasRecord.SAME_AS_TAG in tagNames(recordFor(store, alias.url)))
         }
 
     @Test
@@ -172,6 +239,6 @@ class RelayAliasRecordTest {
             val record = RelayAliasRecord(store, signer)
             record.publish(alias, canonical, sampled = 500, shared = 498)
 
-            assertEquals(mapOf(alias to canonical), record.load(listOf(alias)))
+            assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
         }
 }

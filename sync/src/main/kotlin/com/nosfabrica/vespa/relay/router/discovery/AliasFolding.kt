@@ -111,7 +111,7 @@ class AliasFolding(
     suspend fun apply(candidates: List<NormalizedRelayUrl>): Cleaned {
         if (candidates.size < 2) return Cleaned(candidates, emptyMap(), candidates)
         // What a previous pass — this boot or another — already measured.
-        aliases.adopt(runCatching { record.load(candidates) }.getOrDefault(emptyMap()))
+        adopt(candidates)
         return collapse(candidates)
     }
 
@@ -143,8 +143,7 @@ class AliasFolding(
         val startedMs = System.currentTimeMillis()
 
         // What a previous pass — this boot or another — already measured.
-        val fromStore = runCatching { record.load(candidates) }.getOrDefault(emptyMap())
-        aliases.adopt(fromStore)
+        adopt(candidates)
 
         val groups = aliases.unresolved(candidates)
         var learned = 0
@@ -153,6 +152,7 @@ class AliasFolding(
             val budget = AtomicInteger(probesPerCycle)
             val gate = Semaphore(concurrency)
             val newVerdicts = ConcurrentHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
+            val newCleared = ConcurrentHashMap<NormalizedRelayUrl, Cleared>()
             val taken = AtomicInteger()
             coroutineScope {
                 // Widest group first: a host wearing 55 urls is 54 dials a
@@ -222,10 +222,20 @@ class AliasFolding(
                             }
                         }
                         val leaderPrint = lead.ids
-                        for ((alias, canonical) in aliases.learn(group, prints)) {
+                        val result = aliases.learn(group, prints)
+                        for ((alias, canonical) in result.folded) {
                             val print = prints[alias].orEmpty()
                             val shared = leaderPrint.count { it in print }
                             newVerdicts[alias] = canonical to (print.size to shared)
+                        }
+                        // The cleared half. `bestShared` is against the leader,
+                        // which is the only thing this url was measured against
+                        // — see [RelayAliasRecord.publishDistinct] for what that
+                        // does and does not claim.
+                        for (url in result.distinct) {
+                            val print = prints[url].orEmpty()
+                            val shared = if (url == leader) 0 else leaderPrint.count { it in print }
+                            newCleared[url] = Cleared(print.size, group.size - 1, shared)
                         }
                     }
                 }
@@ -239,6 +249,9 @@ class AliasFolding(
                 val (canonical, evidence) = verdict
                 runCatching { record.publish(alias, canonical, evidence.first, evidence.second) }
             }
+            for ((url, c) in newCleared) {
+                runCatching { record.publishDistinct(url, c.sampled, c.peers, c.bestShared) }
+            }
         }
 
         if (probed > 0 || learned > 0) {
@@ -251,6 +264,27 @@ class AliasFolding(
             )
         }
         return learned
+    }
+
+    /** The evidence behind one cleared url, held until the probing is over. */
+    private data class Cleared(
+        val sampled: Int,
+        val peers: Int,
+        val bestShared: Int,
+    )
+
+    /**
+     * Pull both halves of the stored verdict into memory: the folds, and the
+     * urls a previous pass cleared as their own relay.
+     *
+     * A store that cannot answer is not an error — it means "nothing known",
+     * which is already the safe state — so the query is allowed to fail into an
+     * empty result rather than take a fan-out down with it.
+     */
+    private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
+        val held = runCatching { record.load(candidates) }.getOrDefault(RelayAliasRecord.Verdicts())
+        aliases.adopt(held.aliases)
+        aliases.adoptDistinct(held.distinct)
     }
 
     /**

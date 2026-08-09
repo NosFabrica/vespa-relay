@@ -34,13 +34,28 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
  * next boot — and anyone else running an outbox crawler — can read it.
  *
  * This is the same monitor that already signs "I could not reach this relay",
- * saying the other thing a dial can prove: "this url and that url served me the
- * same events, so they are one relay". It rides on kind 30166, whose `d` tag is
- * already the relay url, and adds one tag:
+ * saying the other thing a dial can prove: which urls are ONE relay. It rides on
+ * kind 30166, whose `d` tag is already the relay url, and adds one tag in two
+ * forms:
  *
  * ```json
- * ["redirect", "wss://nos.lol/", "1000 newest events, 0.98 shared"]
+ * ["same-as", "wss://nos.lol/",             "500 newest events, 498 shared with wss://nos.lol/"]
+ * ["same-as", "wss://nostr.ac/v1",          "500 newest events, best 2 shared of 19 peer(s) on this host"]
  * ```
+ *
+ * The first says this url and that url are the same relay. The second — where
+ * the value IS the record's own url — says it was measured and found equivalent
+ * to nothing but itself, which is trivially true and therefore safe for a
+ * reader that does not know the tag.
+ *
+ * **`same-as` rather than `redirect`, which this used to be called.** A redirect
+ * is a directed edge carrying authority: the server told you to go elsewhere,
+ * and the url you asked for is not the endpoint. Both halves are false here —
+ * the relay said no such thing, we measured it, and the alias serves perfectly
+ * well. What a fingerprint establishes is an EQUIVALENCE, and equivalence is
+ * symmetric: a consumer running union-find over these tags gets the right
+ * partition without having to share our opinion about which member to dial.
+ * That opinion is [RelayAliases.PREFERENCE] and it stays ours.
  *
  * Unknown tags are ignored by every other NIP-66 consumer, so a monitor that
  * has never heard of this reads the record as an ordinary relay observation.
@@ -65,19 +80,40 @@ class RelayAliasRecord(
     private val ttlSeconds: Long = DEFAULT_TTL_SECONDS,
 ) {
     /**
-     * Every verdict this monitor published and still stands behind, as
-     * `alias url -> canonical url`.
+     * Both halves of what this monitor has decided and still stands behind.
+     *
+     * [Verdicts.aliases] are the folds; [Verdicts.distinct] are the urls a probe
+     * cleared as their own relay. The second is why this returns a pair rather
+     * than a map: without persisting "measured, and it is nobody's duplicate",
+     * every boot re-fingerprints all the NON-duplicates forever — 59 of them in
+     * the live run against a store already holding 128 folds.
+     */
+    data class Verdicts(
+        /** Folded url -> the url that stands in for it. */
+        val aliases: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
+        /** Urls proven to be their own relay. Never a key in [aliases]. */
+        val distinct: Set<NormalizedRelayUrl> = emptySet(),
+    )
+
+    /**
+     * Read back every verdict covering [candidates].
      *
      * Queried by `#d` rather than walked, because `d` is a single-letter tag
      * and therefore the only part of these records the tag index can answer on
-     * — the `redirect` tag is not queryable and has to be read off the event.
+     * — `same-as` is not queryable and has to be read off the event.
      * [candidates] bounds the query to the urls this cycle actually discovered.
+     *
+     * The two forms are told apart by comparing the tag's value to the record's
+     * own `d`: pointing elsewhere is a fold, pointing at itself is the cleared
+     * verdict. Normalising both sides first, so `wss://nos.lol` and
+     * `wss://nos.lol/` cannot read as a fold of a url onto itself.
      */
-    suspend fun load(candidates: Collection<NormalizedRelayUrl>): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
-        val self = signer?.pubKey ?: return emptyMap()
-        if (candidates.isEmpty()) return emptyMap()
+    suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
+        val self = signer?.pubKey ?: return Verdicts()
+        if (candidates.isEmpty()) return Verdicts()
         val floor = nowSeconds() - ttlSeconds
-        val out = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val aliases = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        val distinct = HashSet<NormalizedRelayUrl>()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
             val held: List<Event> =
                 runCatching {
@@ -85,14 +121,14 @@ class RelayAliasRecord(
                 }.getOrNull() ?: continue
             for (event in held) {
                 if (event.createdAt < floor) continue
-                val alias = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
-                val canonical = event.tags.firstOrNull { it.size > 1 && it[0] == REDIRECT_TAG }?.get(1) ?: continue
-                val from = RelayUrlNormalizer.normalizeOrNull(alias) ?: continue
-                val to = RelayUrlNormalizer.normalizeOrNull(canonical) ?: continue
-                if (from != to) out[from] = to
+                val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
+                val sameAs = event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.get(1) ?: continue
+                val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
+                val to = RelayUrlNormalizer.normalizeOrNull(sameAs) ?: continue
+                if (from == to) distinct += from else aliases[from] = to
             }
         }
-        return out
+        return Verdicts(aliases, distinct)
     }
 
     /**
@@ -109,10 +145,36 @@ class RelayAliasRecord(
         canonical: NormalizedRelayUrl,
         sampled: Int,
         shared: Int,
-    ): Event? {
-        val evidence = "$sampled newest events, $shared shared with ${canonical.url}"
-        return edit(alias, owned = setOf(REDIRECT_TAG), add = listOf(arrayOf(REDIRECT_TAG, canonical.url, evidence)))
-    }
+    ): Event? = write(alias, canonical, "$sampled newest events, $shared shared with ${canonical.url}")
+
+    /**
+     * Sign and store the other verdict: this url was fingerprinted against the
+     * other urls on its host and matched none of them.
+     *
+     * Written as `same-as` pointing at the record's OWN url, which is a true
+     * statement rather than a placeholder — the equivalence class of this relay
+     * contains only itself, as far as this measurement saw.
+     *
+     * **What it does not claim.** Every url in a group is compared to the
+     * group's leader, not to each other, so this says "not the leader" and not
+     * "not any of them". Two paths on a host that are duplicates OF EACH OTHER
+     * but not of the leader are both recorded distinct and both keep getting
+     * dialled. That is a property of leader-based grouping, present within a
+     * single pass as much as across boots, and persisting the verdict neither
+     * causes it nor makes it worse.
+     */
+    suspend fun publishDistinct(
+        url: NormalizedRelayUrl,
+        sampled: Int,
+        peers: Int,
+        bestShared: Int,
+    ): Event? = write(url, url, "$sampled newest events, best $bestShared shared of $peers peer(s) on this host")
+
+    private suspend fun write(
+        subject: NormalizedRelayUrl,
+        sameAs: NormalizedRelayUrl,
+        evidence: String,
+    ): Event? = edit(subject, owned = setOf(SAME_AS_TAG), add = listOf(arrayOf(SAME_AS_TAG, sameAs.url, evidence)))
 
     /**
      * Edit a replaceable record: read what is there, keep everything this
@@ -174,11 +236,17 @@ class RelayAliasRecord(
 
     companion object {
         /**
-         * The tag that carries the fold. Not a NIP-66 tag — this monitor
-         * defines it — so it is spelled out rather than abbreviated, and every
-         * other consumer skips it as an unknown tag.
+         * The tag that carries the verdict, in both forms. Not a NIP-66 tag —
+         * this monitor defines it — so it is spelled out rather than
+         * abbreviated, and every other consumer skips it as an unknown tag.
+         *
+         * Named for the relation it states rather than the action we take on
+         * it: `same-as` is an equivalence, which is what a matching fingerprint
+         * proves, while `redirect` (what this was called first) would smuggle
+         * in both an instruction the relay never gave and our own opinion about
+         * which member of the class to dial.
          */
-        const val REDIRECT_TAG = "redirect"
+        const val SAME_AS_TAG = "same-as"
 
         /**
          * Thirty days. Long enough that the probe is a one-off per url rather

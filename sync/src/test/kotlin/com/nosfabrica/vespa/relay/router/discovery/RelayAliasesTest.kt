@@ -56,7 +56,7 @@ class RelayAliasesTest {
 
         val learned = aliases.learn(group, mapOf(nos to print, nosAlpha to print))
 
-        assertEquals(mapOf(nosAlpha to nos), learned)
+        assertEquals(mapOf(nosAlpha to nos), learned.folded)
         assertEquals(nos, aliases.canonicalOf(nosAlpha))
         assertEquals(nos, aliases.canonicalOf(nos))
     }
@@ -69,7 +69,7 @@ class RelayAliasesTest {
 
         val learned = aliases.learn(listOf(ditto, dittoRelay), mapOf(ditto to window(100), dittoRelay to window(100, from = 500)))
 
-        assertTrue(learned.isEmpty())
+        assertTrue(learned.folded.isEmpty())
         assertEquals(dittoRelay, aliases.canonicalOf(dittoRelay))
     }
 
@@ -80,7 +80,7 @@ class RelayAliasesTest {
         // relays holding the same four events prove nothing about each other.
         val tiny = window(4)
 
-        assertTrue(aliases.learn(listOf(nos, nosAlpha), mapOf(nos to tiny, nosAlpha to tiny)).isEmpty())
+        assertTrue(aliases.learn(listOf(nos, nosAlpha), mapOf(nos to tiny, nosAlpha to tiny)).folded.isEmpty())
     }
 
     @Test
@@ -90,7 +90,7 @@ class RelayAliasesTest {
         // Only the leader has a fingerprint. Silence is not evidence.
         val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100)))
 
-        assertTrue(learned.isEmpty())
+        assertTrue(learned.folded.isEmpty())
         assertEquals(nosAlpha, aliases.canonicalOf(nosAlpha))
     }
 
@@ -99,7 +99,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         val print = window(100)
 
-        assertTrue(aliases.learn(listOf(nos, nosAlpha, nosBeacon), mapOf(nosAlpha to print, nosBeacon to print)).isEmpty())
+        assertTrue(aliases.learn(listOf(nos, nosAlpha, nosBeacon), mapOf(nosAlpha to print, nosBeacon to print)).folded.isEmpty())
     }
 
     @Test
@@ -109,7 +109,7 @@ class RelayAliasesTest {
         // 100 ids are still in the second window, which is over the bar.
         val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to window(100, from = 40)))
 
-        assertEquals(mapOf(nosAlpha to nos), learned)
+        assertEquals(mapOf(nosAlpha to nos), learned.folded)
     }
 
     @Test
@@ -117,7 +117,7 @@ class RelayAliasesTest {
         val aliases = RelayAliases()
         val learned = aliases.learn(listOf(nos, nosAlpha), mapOf(nos to window(100), nosAlpha to window(100, from = 80)))
 
-        assertTrue(learned.isEmpty())
+        assertTrue(learned.folded.isEmpty())
     }
 
     @Test

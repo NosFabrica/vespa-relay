@@ -56,22 +56,22 @@ class AliasFoldingTest {
     private fun newStore() = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
 
     /**
-     * A relay set where every url serves the SAME 40 events, so any two of them
-     * fold — and every dial is counted, which is what these tests assert on.
+     * A relay set that answers per url, counting every dial — which is what
+     * these tests assert on far more than they assert on the folding itself.
      */
     private class Upstreams(
-        private val corpus: List<Event>,
+        private val corpusFor: (NormalizedRelayUrl) -> List<Event>,
     ) {
         val dials = AtomicInteger()
 
         suspend fun fetch(
-            @Suppress("UNUSED_PARAMETER") at: NormalizedRelayUrl,
+            at: NormalizedRelayUrl,
             want: Int,
             until: Long?,
             @Suppress("UNUSED_PARAMETER") kinds: List<Int>?,
         ): List<Event> {
             dials.incrementAndGet()
-            return corpus.filter { until == null || it.createdAt <= until }.take(want)
+            return corpusFor(at).filter { until == null || it.createdAt <= until }.take(want)
         }
     }
 
@@ -85,7 +85,24 @@ class AliasFoldingTest {
         probe = AliasProbe(fetch = upstreams::fetch, target = 40, page = 40, fallbackPage = 40),
     )
 
-    private fun upstreams(): Upstreams = Upstreams((0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") })
+    /** Every url serves the same 40 events, so any two of them fold. */
+    private fun upstreams(): Upstreams {
+        val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+        return Upstreams { corpus }
+    }
+
+    /**
+     * Every url serves its OWN 40 events, so nothing folds however many times
+     * it is asked — a host where the paths are real relays.
+     */
+    private fun distinctUpstreams(): Upstreams {
+        val byUrl = HashMap<String, List<Event>>()
+        return Upstreams { at ->
+            byUrl.getOrPut(at.url) {
+                (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "${at.url}#$it") }
+            }
+        }
+    }
 
     @Test
     fun `apply never dials, however much there is to learn`() =
@@ -143,6 +160,45 @@ class AliasFoldingTest {
 
             assertEquals(0, learned)
             assertEquals(0, up.dials.get())
+        }
+
+    @Test
+    fun `a second process does not re-probe urls a previous pass cleared`() =
+        runBlocking {
+            // The reason the cleared verdict is persisted at all. Two paths on
+            // one host that are NOT duplicates: the first pass fingerprints
+            // them and folds nothing, and without a stored verdict every later
+            // boot pays for that same discovery again — 59 fingerprints against
+            // a store already holding 128 folds, measured.
+            val store = newStore()
+            val a = RelayUrlNormalizer.normalize("wss://nostr.ac")
+            val b = RelayUrlNormalizer.normalize("wss://nostr.ac/v1")
+            val first = distinctUpstreams()
+            assertEquals(0, folding(store, first).measure("t", listOf(a, b), canDial = { true }))
+            assertTrue(first.dials.get() > 0, "the first pass never dialled, so this proves nothing")
+
+            val second = distinctUpstreams()
+            assertEquals(0, folding(store, second).measure("t", listOf(a, b), canDial = { true }))
+
+            assertEquals(0, second.dials.get(), "a cleared url was fingerprinted again")
+        }
+
+    @Test
+    fun `a new url on a settled host still gets measured`() =
+        runBlocking {
+            // The other side of that: persisting "cleared" must not freeze the
+            // host. A url with no verdict leaves the group unresolved however
+            // many of its neighbours are settled.
+            val store = newStore()
+            val a = RelayUrlNormalizer.normalize("wss://nostr.ac")
+            val b = RelayUrlNormalizer.normalize("wss://nostr.ac/v1")
+            val c = RelayUrlNormalizer.normalize("wss://nostr.ac/v2")
+            folding(store, distinctUpstreams()).measure("t", listOf(a, b), canDial = { true })
+
+            val next = distinctUpstreams()
+            folding(store, next).measure("t", listOf(a, b, c), canDial = { true })
+
+            assertTrue(next.dials.get() > 0, "a newly discovered url was never fingerprinted")
         }
 
     @Test
