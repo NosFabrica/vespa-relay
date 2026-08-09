@@ -757,6 +757,43 @@ was in memory only: a fold persisted, "this url is its own relay" did not, so
 every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
 that — see the verdict section above for the shape and what it does not claim.
 
+**A fold has to take the earlier sync's state with it.** Nothing dials a folded
+url again, so the bands it earned before the fold can never advance — but they
+stay in `SYNC_STATE_FILE`, and that file is what `SyncCoverageReport` charts. The
+symptom is a working fold that reads as one that never happened: `/stats.json`
+listing twelve urls of one host as separately walked while exactly one of them is
+being synced. `SyncBands.dropFolded`, called from `DynamicSync` as the fold is
+applied, leaves them out of the file. Three decisions in it, all of which have a
+silent failure on the other side:
+
+- **Dropped, not merged onto the survivor.** A band is a claim about a url we
+  walked. A containment measurement is enough to stop dialling a duplicate —
+  wrong, that costs a re-download — and not enough to close the survivor's legs
+  over ground it was never walked for. What dropping costs is already being paid:
+  the canonical was being walked in parallel all along, and ingest dedups.
+- **Replaced each pass, not accumulated.** Verdicts carry a 30-day TTL and
+  `RelayAliases.forget` drops them when the store stops standing behind one, at
+  which point the url is back in the fan-out. A set that only grew would go on
+  suppressing the bands it earns after that: dialled every cycle, written to no
+  file, re-walked from nothing on every restart, with no error anywhere. The band
+  stays in memory either way, so a url that comes back resumes rather than
+  starting over.
+- **Per stream, plus an explicit `keep`, and the sweep file is left alone.** A
+  fold is applied to one dynamic stream's discovered set, so the stream name
+  scopes it — except that the name does *not* separate static from dynamic:
+  `urls` and `relaySource` may sit on ONE stream, and `downUpstreams()` hands the
+  configured urls to `StaticBackfill` under that same name. A configured upstream
+  the fan-out folds away is therefore still dialled, still recording, and would
+  have had every one of those bands filtered back out — the relay syncing while
+  the file says nothing and each restart re-walks its corpus. `dropFolded` takes
+  the pinned set for exactly that. Only static backfill sweeps, which is the same
+  reason the sweep file is untouched.
+- **Report what left the file, not what is folded.** The count is the urls this
+  stream was actually holding a band for. Counting the verdict set instead made
+  every restart log a mass deletion of thousands of urls whose state the previous
+  process had already dropped — and mark the map dirty for it, rewriting a
+  multi-megabyte file to produce the bytes it already had.
+
 **Measured against live relays**, because the thresholds are only worth what the
 wire says. A `{"limit": 500}` probe: **85% of 60 sampled hosts answered**
 (median 1.85s, p90 2.4s, ~535KB, 500 events), 13% refuse a bare filter outright

@@ -133,6 +133,28 @@ class SyncBands(
      */
     private val preStreamRelays = HashSet<String>()
 
+    /**
+     * stream -> the relays it currently folds away, whose bands are left out of
+     * the file. See [dropFolded] for why they go, why they are not merged onto
+     * the url that stands in for them, and why each pass REPLACES this rather
+     * than adding to it.
+     *
+     * A filter on the way OUT rather than a deletion, because quartz's
+     * [SyncCoverage] has no way to remove a key — `restore` and `record` are the
+     * whole write surface — and rebuilding a stream's coverage to drop one
+     * would race every leg recording into the object it replaced. Left in
+     * memory the band costs a map entry nothing reads: a folded url reaches no
+     * ask, so no [legs] or [band] call can find it. What matters is the file,
+     * which is what the next boot loads and what `/stats.json` charts — and
+     * keeping the band in memory is what lets a url whose verdict expires
+     * resume from where it was instead of re-walking.
+     *
+     * The value is REPLACED, never mutated, so the flusher reading it on
+     * another thread sees one pass's answer or the next one's, never half of
+     * either.
+     */
+    private val folded = ConcurrentHashMap<String, Set<String>>()
+
     init {
         load()
         // restore() does not fire onChange, but stay defensive: reopening a
@@ -211,6 +233,134 @@ class SyncBands(
     }
 
     fun size(): Int = streams.values.sumOf { it.size() } + preStream.size
+
+    /**
+     * Stop keeping band state for urls the alias fold proved are another url's
+     * relay. Returns how many of them this call actually took out of the file —
+     * the urls this stream was holding a band for, nested or flat — so a caller
+     * can log the pass that changed something and stay quiet on the thousands
+     * that did not.
+     *
+     * **What it returns is not "how many are folded", and the difference is the
+     * whole of every restart.** The fold is re-applied from the store on the
+     * first cycle after boot, so the naive count is the entire verdict set —
+     * thousands of urls, on a file the previous process already wrote without
+     * them. Reported that way it reads as a mass deletion at every boot, and it
+     * marks the map dirty, so the first flush rewrites a multi-megabyte file to
+     * produce the bytes it already had. Both are avoided by asking what this
+     * stream is actually holding rather than what the verdicts say.
+     *
+     * **Why the state has to go at all.** A folded url is never dialled by this
+     * stream again ([RelayAliases]), so its bands can never advance and nothing
+     * will ever ask about them. They are not inert: this file is what
+     * `SyncCoverageReport` charts on `/stats.json`, so every one of them is a
+     * relay the coverage card keeps listing as walked while no sync exists for
+     * it — which is how a fold that is working reads as a fold that never
+     * happened. On the production corpus that is 5,514 urls' worth of bands, in
+     * a file the relay re-parses on every rollup.
+     *
+     * **Dropped, not moved onto the canonical.** A band is a claim about a url
+     * we walked, and the fold's evidence is a containment measurement over one
+     * window ([RelayAliases.sameRelay]) — enough to stop dialling a duplicate,
+     * which costs a re-download if it is wrong, and NOT enough to hand the
+     * alias's claim to a url whose own legs would then close over ground it was
+     * never walked for. What dropping costs is bounded and already being paid:
+     * the canonical was being walked in parallel the whole time — that
+     * duplication is the thing the fold exists to remove — and anything
+     * re-downloaded meets the ingest's dedup.
+     *
+     * **[urls] REPLACES what this stream held, it does not add to it**, because
+     * a fold is not permanent: a verdict carries a TTL and
+     * [RelayAliases.forget] drops it when the store stops standing behind it, at
+     * which point the url is back in the fan-out and walking again. Accumulating
+     * would have kept suppressing the bands it earns after that — dialled every
+     * cycle, written to no file, and re-walked from nothing on every restart,
+     * with no error anywhere. So the set is whatever the current verdicts say,
+     * and a url that comes back writes its bands again on the next flush.
+     *
+     * **Per stream**, because that is the scope the decision has: the fold is
+     * applied to a dynamic stream's discovered set, and another stream dialling
+     * the same url keeps its own bands. The name is not the whole of it, though
+     * — which is what [keep] is for.
+     *
+     * **[keep] is the url a stream name cannot protect, and it is why this takes
+     * one at all.** `urls` and `relaySource` may name ONE stream — nothing in
+     * `RouterConfig` separates them, and `downUpstreams()` hands a configured
+     * url to `StaticBackfill` whether or not the same stream also discovers —
+     * so a configured upstream that this stream's fan-out folds away would go
+     * on being dialled and recorded under this very stream name while every one
+     * of those bands was filtered back out of the file. Nothing about that is
+     * visible: the relay syncs, the file stays silent, and each restart re-walks
+     * its whole corpus. Pass every url something static is subscribed to.
+     */
+    fun dropFolded(
+        stream: String,
+        urls: Collection<NormalizedRelayUrl>,
+        keep: Set<NormalizedRelayUrl> = emptySet(),
+    ): Int {
+        val before = folded[stream].orEmpty()
+        val now = urls.mapNotNullTo(HashSet()) { if (it in keep) null else it.url }
+        if (now.isEmpty() && before.isEmpty()) return 0
+        if (now.isEmpty()) folded.remove(stream) else folded[stream] = now
+        // Only a url whose verdict CHANGED this pass can change the file: one
+        // newly folded hides its bands, one whose verdict expired shows them
+        // again. Every steady-state cycle hands over the same set it did last
+        // time and stops here, which is what keeps this affordable on a call
+        // made once per stream per cycle.
+        val hidden = now.filterTo(HashSet()) { it !in before }
+        val shown = before.filterTo(HashSet()) { it !in now }
+        if (hidden.isEmpty() && shown.isEmpty()) return 0
+        // Which of them this stream is actually holding. `export()` copies the
+        // map, so it is asked only on a pass that learned something — and
+        // asking is the difference between reporting what changed and
+        // reporting the whole verdict set back at every boot.
+        val held =
+            streams[stream]
+                ?.export()
+                ?.keys
+                ?.mapTo(HashSet()) { it.relay }
+                .orEmpty()
+        val flat = dropPreStream(hidden)
+        val gone = hidden.count { it in held || it in flat }
+        // A url whose verdict expired is the mirror image: its band is in
+        // memory, suppressed until now, and belongs back in the file.
+        val back = shown.count { it in held }
+        if (gone > 0 || back > 0) dirty = true
+        return gone
+    }
+
+    /**
+     * MIGRATION SHIM — drop the unclaimed flat entries of urls that have just
+     * been folded away, and say whose went.
+     *
+     * This is the one place an unclaimed pre-stream band is deleted rather than
+     * written back, against the rule the rest of the shim keeps: an unclaimed
+     * entry is normally re-written verbatim, because the stream that wrote it
+     * may not have reached that relay yet and losing it costs a corpus. A
+     * FOLDED url is the case where no such stream can be coming — nothing dials
+     * it, so nothing will ever claim it. The exposure is a static upstream
+     * naming a url some dynamic stream folded, which loses at most one
+     * unclaimed band and re-walks it. Unlike the filter [dropFolded] applies,
+     * this cannot be undone by a verdict expiring; an unclaimed pre-stream band
+     * is worth exactly that one re-walk.
+     *
+     * Guarded by [preStreamRelays] the way [claim] is, and reached only for
+     * urls folded on THIS pass: entries are only ever removed here, so a url
+     * whose flat bands went last cycle has nothing left to find, and without
+     * both guards a migrated deployment would decode every leftover key on
+     * every cycle forever.
+     */
+    private fun dropPreStream(relays: Set<String>): Set<String> {
+        if (preStream.isEmpty() || relays.none { it in preStreamRelays }) return emptySet()
+        val gone = HashSet<String>()
+        // Iterated live: the map is a ConcurrentHashMap, whose iterator
+        // tolerates the removals below and [claim] running beside them.
+        for (key in preStream.keys) {
+            val relay = SyncCoverage.BandKey.decode(key)?.relay ?: continue
+            if (relay in relays && preStream.remove(key) != null) gone += relay
+        }
+        return gone
+    }
 
     /**
      * MIGRATION SHIM — adopt a pre-stream band for this pair, once, into the
@@ -406,7 +556,13 @@ class SyncBands(
                     streams.forEach { (stream, coverage) ->
                         // The key's own two halves become the two inner levels.
                         val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
+                        // A url this stream folded away is skipped rather than
+                        // written: see [dropFolded]. Filtered per entry, so a
+                        // filter whose every relay was folded contributes no
+                        // empty husk to the file.
+                        val skip = folded[stream].orEmpty()
                         coverage.export().forEach { (k, band) ->
+                            if (k.relay in skip) return@forEach
                             byFilter.getOrPut(k.filter) { LinkedHashMap() }[k.relay] = band
                         }
                         // A stream that has only ASKED holds no bands — its
