@@ -65,6 +65,18 @@ streams {
         filter = { "kinds": [0, 10002, 10040] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 100          # relays synced at the same time
+        # Ignore any single event naming more relays than this — a real outbox
+        # list is single digits, and the ones this exists for run to five
+        # (measured: 148 pubkeys publishing kind 10002s of 100-10,591 entries,
+        # every entry a dial). The event is dropped WHOLE, never truncated, so
+        # its author cannot choose what we see by ordering it.
+        #
+        # SETTING THIS GIVES UP THE TAG PROJECTION for this source: a per-event
+        # limit needs the event, and the projection returns values already
+        # flattened across every event it matched. Unset, discovery keeps the
+        # projection (a 2.6M-event scan became its walk). Duplicate urls are
+        # folded either way — see AGENTS.md, "One relay behind many urls".
+        maxRelaysPerList = 50
         exclude = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",

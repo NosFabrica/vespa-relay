@@ -146,6 +146,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       RelayDiscovery.kt     pulling relay urls out of stored events
       HostStrikes.kt        per-authority strikes and eviction
       Unreachability.kt     which failures may be published as NIP-66 records
+      RelayAliases.kt       which discovered urls are ONE relay (see below)
+      AliasProbe.kt         the fingerprint: a relay's newest events, as ids
+      AliasFolding.kt       apply() reads verdicts; measure() earns them
+      AliasMonitor.kt       the schedule measure() runs on, off the sync cycle
+      RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `same-as` tag
     progress/             observability
       StreamPhases.kt       per-stream progress reporting
       PagingProgress.kt     time-axis progress for paged walks
@@ -464,6 +469,322 @@ kinds and no others. Route every
 paged call site through `drainSettlesThePast`: a drain on the NEWER leg only
 means "nothing below the ceiling we already had", and recording it as history
 would make the band skip the past it never walked.
+
+**One relay behind many urls.** Most relay software serves its websocket on
+every path, so `wss://nos.lol`, `wss://nos.lol/alpha` and
+`wss://nos.lol:443/beacon-glyph` are one server, and a relay list can mint them
+without limit. From a production `stats.json`: **7,333 discovered urls, 81% of
+them one host wearing a fabricated path** — `nostr.oxtr.dev` 55 times,
+`nostr.mom` 50, `nos.lol` 40. Weighted by how many lists name each relay, the
+top 50 were dialled **10.7x** over. That is where a 94%-duplicate download rate
+comes from: the same relay answering the same filter, once per url.
+
+**What the fold actually recovers, fingerprinted end to end against all 513
+multi-url hosts (6,730 urls, 15.5 GB, ~1h):**
+
+| | |
+|---|---|
+| urls in the file | 7,333 |
+| …on hosts wearing one url (nothing to fold onto) | 603 |
+| …folded away | **5,514** |
+| **dials** | **1,819 — 4.03x, 75.2% removed** |
+
+Not the 6.57x an earlier revision of this file claimed. That number was
+`GROUP BY hostname` on the stats file — it assumed every url folds, and 672 of
+them cannot: their host never answers a probe, or the path is a genuinely
+different endpoint. **Do not restate the grouping as a result.** Anything here
+with a figure attached was measured; if you change the fold, re-measure rather
+than re-deriving.
+
+`HostStrikes` cannot see it — it evicts an authority that goes SILENT, and
+every one of these answers perfectly. The duplicate only exists in what comes
+back, so `AliasProbe` reads each url's newest 500 events and `RelayAliases`
+folds two urls together when the smaller window is ≥50% contained in the larger.
+
+**The probe pages; a one-shot REQ would measure the relay's limit, not the
+relay.** Every relay caps a REQ somewhere and almost none say where — across 60
+live hosts, `max_limit` is 500 on half of those advertising one and 100, 1024,
+2100, 10000 or nothing on the rest, and one advertises 0. A single ask returns
+`min(what we wanted, whatever this host allows)`, so the "same" fingerprint is a
+different depth at every host and too shallow to mean anything at the strict
+ones; worse, a relay that *enforces* its cap refuses outright rather than
+truncating (`CLOSED blocked: limit too high`), which arrives as silence and drops
+that host out of the fold entirely. So the walk asks a page, takes the oldest
+`created_at` back as the next `until`, and repeats — each relay's cap becomes the
+page size, the depth stays ours. **The depth matches the page size on purpose**:
+a relay that serves a full page answers in ONE round trip, and a relay that caps
+below it gets paged up to the same depth as everyone else. 1,000 was measured
+and bought nothing — over 112 fold decisions it agreed with 500 on 108, the four
+differences all being the one relay that cannot reproduce its own answers, at
+3.4s and 1,464 KB per walk against 1.4s and 562 KB. Depth was never what made
+the fingerprint stable; the anchor was. Below 500 saves nothing either, since
+the page is asked whole regardless. Three consequences that are easy to undo by
+accident: `until` is inclusive so every page re-reads its boundary (never trim
+the last ask to the exact remainder — it can then never reach the target), the
+result is trimmed to the newest N *by timestamp* so two urls paging at different
+sizes are still compared at equal depth, and `DEFAULT_MAX_PAGES` has to clear
+`target / FALLBACK_PROBE_PAGE` or hosts that cap low get a shallower
+fingerprint than everyone else — the exact thing paging is for.
+
+**And the walk is ANCHORED a minute back, because "the newest N" is a moving
+window.** Every url in a group starts from one shared `until`, taken before any
+of them is dialled and held `ANCHOR_LAG_SECONDS` behind the clock. Two separate
+failures, both real:
+
+- *Shared*, or the window slides between dials. Measured live, `wss://nos.lol`
+  against `wss://nos.lol/cipher-zulu` scored **0.41** unanchored — same server,
+  missed — while the low-traffic `nostr.oxtr.dev` pair scored 0.95–0.98 in the
+  same run. A thousand events span minutes on a firehose and the probes are
+  minutes apart behind a 16-permit gate. Anchoring took that pair to **0.99**.
+  Deeper paging makes it *worse*, not better: a longer walk is a longer drift,
+  which is why the anchor had to arrive with the paging rather than after it.
+- *Behind the clock*, or the newest second of the window is whatever each relay
+  had finished indexing at that instant. An event is not visible to a REQ the
+  moment its `created_at` passes — it still has to arrive, verify and index — so
+  a walk that runs immediately and one that runs two minutes later disagree
+  about the top of the window even from the same anchor. A minute back the
+  window is settled, and it absorbs publishers whose clocks run slightly fast
+  into the bargain. A minute-old identity is the same identity.
+
+**The leader is probed alone, first, and decides the filter for its group.** A
+bare `{limit, until}` is refused outright by a large minority — 88 of 513 hosts
+answered `CLOSED blocked: can't handle empty filters` — and because it is the
+LEADER going silent, the whole group was unfoldable: 1,572 urls. Falling back to
+`{"kinds":[1]}` recovered **963 of them (14.3 points, 3.09x → 5.53x on the
+multi-url set)**, 81 of the 86 recovered leaders needing it. Two urls
+fingerprinted through different filters are not comparable, so whatever the
+leader had to be asked is what its group is asked — which is also why the
+leader cannot be probed concurrently with its members. It doubles as the cheap
+exit: no usable leader print means `learn` can return nothing, so the members
+are never dialled at all.
+
+What the sweep says about the thresholds, over 4,551 folds: containment min
+0.500, p1 0.855, p10 0.987, median 1.000. Overwhelmingly bimodal — but there is
+a real tail of relays whose answers are not stable ACROSS CONNECTIONS
+(multiplexers, sharded backends) scoring 0.5–0.8 where a stable relay scores
+1.000; `www.nostr.ltd` lands on exactly 0.500 with a full 1,000-id window on
+both sides. So `minOverlap` is load-bearing for roughly 20–40 urls, not
+decorative. Below it sits `espelho.girino.org`, which is not measurable at all:
+the same url walked twice from the same anchor self-scores **0.435** (nos.lol
+scores 0.998, nostr.oxtr.dev 1.000). Its 17 urls can never fold, and the fold
+reports that identically to "this is a different relay" — safe, but only one of
+those is a correct conclusion. 1 host in 513; left uncoded deliberately.
+
+**A replaceable event has one address and more than one writer, so writing it
+is always an EDIT.** NIP-66's relay record is addressed by `d` = the relay url,
+and quartz's monitor updates it passively every time a connection is opened —
+so the fold and the monitor aim at the same slot. A writer that rebuilds the
+record from its own tags deletes everyone else's, and nothing about the result
+looks wrong: still signed, still a valid NIP-66 record, just saying less than it
+did. Measured in `RelayAliasRecordTest`, `[d, n, rtt-open]` became
+`[d, same-as]`. `RelayAliasRecord.edit` is the shape to copy — read what is
+there, keep every tag this writer does not own, and stamp
+`max(now, existing + 1)`, because a store enforcing replaceable semantics
+REJECTS an edit that is not strictly newer and two writers inside one second are
+ordinary. An edit lost that way reports success having done nothing.
+
+Both quartz writers on that address — `RelayReachabilityStore` and
+`RelayProber.toDiscoveryEventTemplate` — used to rebuild too, so their next
+flush dropped our verdict tag. Fixed upstream in amethyst #3882 and #3883 and
+taken here with the `4f41f16db5` pin; the local repair pass that used to restore
+a clobbered verdict on the next fold is gone with it. `RelayAliasRecordTest`
+holds the merge from both directions, so a pin that regressed it would fail the
+build rather than quietly lose verdicts again.
+
+Verified against Vespa rather than only `InMemoryEventIndex`, which is the run
+that matters here — replaceable-event ordering is the store's behaviour, not the
+index's. One 225-url NIP-65 list, real urls from a real polluted event, folded to
+97 relays; the fold signed 128 verdicts at ~19:19:45 and quartz's monitor flushed
+over the same addresses at 19:23:54, i.e. it wrote LAST — the direction that used
+to erase us. 83 records came back carrying both the verdict tag and the monitor's
+`n` / `rtt-open` / `rtt-read`, 0 records had a duplicated tag (replace, not
+append), and 178 `d` addresses served 178 records with none served twice. The
+5-minute `RelayMonitor.DEFAULT_FLUSH_INTERVAL_MS` is why a check run a minute
+after the fold sees 128 verdict-only records and concludes nothing merged; wait
+out a flush before reading anything into it.
+
+**No false positives in 4,551 folds.** Every path that looks like a real
+endpoint — `/relay`, `/invoices`, `/outbox`, `/inbox`, `/all`, `/v1`, `/v2`,
+`/nostr` — folded at 0.997–1.000, i.e. served an identical event set, so
+dialling both really was redundant. The fold decides per host from evidence
+rather than by path name: `relay.nosotros.app/inbox` folded at 1.000 while
+`haven.girino.org/inbox` scored 0.003 and was kept, and `nostr.ac` — 20 paths
+each serving different content — kept all 20.
+
+Guards worth knowing before you touch the thresholds:
+a url with **no** fingerprint is never folded (silence is not evidence — a
+relay that is merely down has to come back), a window under 20 ids decides
+nothing **in either direction**, and the survivor is the pathless/`wss`/portless url so bands, cursors
+and everyone else's relay lists keep pointing at the same string. What each
+folded url was *paired with* moves onto the survivor — drop
+`wss://nos.lol/alpha` without carrying its bound authors and the stream stops
+asking for those authors entirely.
+
+The verdict is a signed **NIP-66 kind 30166** carrying one tag in two forms
+(`RelayAliasRecord`) — the same monitor that already signs "I could not reach
+this relay" saying the other thing a dial can prove:
+
+```json
+["same-as", "wss://nos.lol/",    "500 newest events, 498 shared with wss://nos.lol/"]
+["same-as", "wss://nostr.ac/v1", "500 newest events, best 2 shared of 19 peer(s) on this host"]
+```
+
+Pointing elsewhere is a fold. Pointing at the record's OWN url is the cleared
+verdict — measured, and equivalent to nothing but itself. The two are told apart
+after normalisation, never by string, or `wss://nos.lol` vs `wss://nos.lol/`
+reads as a fold onto itself and `adopt` silently drops it.
+
+**`same-as`, not `redirect`.** A redirect is a directed edge carrying authority:
+the server told you to go elsewhere and the url you asked for is not the
+endpoint. Both halves are false — the relay said nothing, we measured it, and
+the alias serves fine. A fingerprint establishes an EQUIVALENCE, which is
+symmetric: a consumer running union-find over these tags gets the right
+partition without inheriting our opinion about which member to dial. That
+opinion is `PREFERENCE` and it stays ours.
+
+It is addressable on `d`, so a re-probe replaces rather than appends — including
+replacing a fold with a cleared verdict when a host splits one endpoint into two
+real relays. It is served (an operator can ask this relay why a url stopped being
+synced and get a signed answer), and it is read back on the next boot within a
+30-day TTL.
+
+**The cleared form is what stops the re-probing.** `unresolved` returns a group
+while ANY member lacks a verdict, so without persisting "this url is its own
+relay" every boot re-fingerprints all the non-duplicates — 59 of them in the live
+run against a store already holding 128 folds. The group's LEADER is cleared too
+when nothing folded onto it: it is the one member never compared against
+anything (everything is compared against IT), so otherwise it would be the only
+url in a fully decided group still carrying no verdict and the group would come
+back forever.
+
+**What the cleared form does not claim.** Every url is compared to its group's
+leader, not to each other, so it says "not the leader" rather than "not any of
+them". Two paths on a host that duplicate EACH OTHER but not the leader are both
+recorded distinct and both keep getting dialled. That is leader-based grouping,
+present within a single pass as much as across boots — persisting the verdict
+neither causes it nor widens it.
+
+**REFUSING TO FOLD IS NOT PROOF OF DISTINCTNESS, and conflating them published
+lies.** `sameRelay` declines below `minSample`; for a long time the url then
+fell through to the else branch and was recorded as its own relay instead.
+`learn` also guarded a null fingerprint but not an EMPTY one, so a relay that
+answered with nothing took the same path. Both were survivable while the verdict
+lived in memory and evaporated on restart. Publishing it for thirty days, about
+somebody else's server, is not. Caught in the live store, not in review:
+
+```
+CLEARED relay.damus.io/lantern-oscar-dynamo   "0 newest events, best 0 shared of 4 peer(s)"
+CLEARED relay.satsdisco.com/anchor-nexus-victor  "9 newest events, best 9 shared of 4 peer(s)"
+```
+
+The first rests on zero observations; the second shares 100% of its nine events
+with the leader and is very likely the same relay. Both sides must now clear
+`minSample` before a url is cleared, and a leader too thin to be a yardstick
+clears nobody — members or itself. **The general rule when making an in-memory
+heuristic durable: re-audit every path that writes, because a guess that cost
+one cycle now costs a TTL and is signed.**
+
+**End to end against live relays, audited build, fresh monitor key so the
+verdict state is genuinely cold** (`load` filters on `authors`, so a new key is
+a clean slate without touching the corpus):
+
+```
+cold   225 url(s), nothing known
+       measured 170 fingerprint(s) ? 130 alias(es), folds onto 95 relay(s), 1:12
+warm   fan-out on 95 relay(s) in 14s, ZERO dials — apply() straight from the store
+       measured  16 fingerprint(s) ?   5 alias(es), folds onto 90 relay(s), 1:04
+```
+
+**170 ? 16 fingerprints, a 10.6x drop**, and the warm pass still learned 5 new
+folds from relays that had been unreachable on the cold one. Audited every
+written record for the defect signatures: zero verdicts on an empty window, zero
+under the 20-id floor, zero stale `of N peers` phrasing, zero self-referencing
+folds.
+
+**The cleared form is unexercised on this corpus.** 13 cleared verdicts before
+the thin-window guard, **0** after — every one of them rested on evidence too
+thin to publish, and those urls correctly moved to `unmeasured` instead (56 ?
+66). So the measured win above comes from FOLDS plus the `unresolved`/`measured`
+fix, not from the cleared form. It is still needed for a host like `nostr.ac`
+with 20 genuinely distinct paths; that case just is not in this fixture, so
+treat the self-form as correct-but-unproven in the field.
+
+**Verdicts are written as each GROUP finishes, not when the pass does.** A pass
+yields to the fan-out, so on a cold store — nothing folded, mirror at its widest
+— it can run for a quarter of an hour; measured, 13 minutes with zero verdicts in
+the store under the old batch-at-the-end write. Anything ending the process in
+that window discarded every fingerprint taken, and a cold store is when that work
+is most expensive to redo. One group's verdicts are a complete answer; there is
+nothing to wait for.
+
+**The fold is two halves that run at different times, and the split is the
+point.** `AliasFolding.apply` READS — one `#d` query per 500 urls, no sockets —
+and runs between discovery and fan-out on every cycle, which is the only place
+it can run, because a duplicate is a property of a url NEXT TO another one.
+`AliasFolding.measure` DIALS, and runs on `AliasMonitor`'s own clock (6h,
+2 minutes after boot so a restart's opening burst is past), capped at 2,000
+fingerprints per pass, widest group first. A stream `submit`s its candidate set
+and gets on with its download; the two halves communicate only through the
+store, which is what makes the arrangement survive a restart and lets a second
+router signing with the same key share the work.
+
+Inline, `measure` sat between "discovery finished" and the first downloaded byte
+on EVERY cycle — 1:19 for a 225-url list in the Docker run, against a production
+fan-out two orders of magnitude wider. Measured on the same 225-url list, split:
+
+```
+20:58:52  sync starts
+20:59:08  fan-out on 97 relay(s)          ? 16s, apply() folded from stored verdicts, zero dials
+20:59:19  fetching 30/97, 876 event(s)    ? the mirror is already downloading
+21:00:52  monitor's first pass begins     ? 2 min after boot, alongside the fan-out
+21:02:20  measured 59 fingerprint(s) ? 11 new alias(es), 225 url(s) now fold
+          onto 86 relay(s) (139 known, 46 unmeasured) in 1:28
+```
+
+16s to fan-out against ~90s inline, on the identical fold; the 1:28 probe pass
+cost the mirror nothing, and 97 became 86 for the next cycle.
+
+**The cost of the split is that folding lags discovery by one pass:** a url seen
+for the first time has no verdict when `apply` runs, so that cycle dials it
+unfolded. Paying that once per new url is the trade. `AliasFoldingTest` asserts
+`apply` opens zero sockets — a regression that moved a probe back onto the read
+path would fail nothing else in the repo, it would just make cycles slow again.
+
+The 59 fingerprints in that timeline are what a pass cost when `markDistinct`
+was in memory only: a fold persisted, "this url is its own relay" did not, so
+every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
+that — see the verdict section above for the shape and what it does not claim.
+
+**Measured against live relays**, because the thresholds are only worth what the
+wire says. A `{"limit": 500}` probe: **85% of 60 sampled hosts answered**
+(median 1.85s, p90 2.4s, ~535KB, 500 events), 13% refuse a bare filter outright
+(`blocked: filters must specify at least one kind` — personal *haven* relays,
+where a path IS real, so declining to fold them is the right answer), 2% error.
+Containment between a host and its fabricated paths came out at **0.99–1.00**
+across nos.lol, nostr.mom, nostr.oxtr.dev and relay.primal.net — the fold is not
+a close call. `max_limit` is 500 on half the hosts that advertise one and every
+relay truncated a 1,000 ask to 500 anyway, so `DEFAULT_PROBE_LIMIT` is 500;
+asking for more only risks the outright refusal purplepag.es gives
+(`blocked: limit too high`), which is why `AliasProbe` retries once at 100.
+
+An end-to-end run against a seeded store: **22 discovered urls folded onto 10**
+in 20s, 12 signed verdict records published, and on the next boot those 12
+were adopted from the store — `0 new alias(es) from 10 fingerprint(s), 12
+known` — so the probe really is a one-off per url, not a recurring cost. Both
+figures were measured while the fold still ran inline; the same work is now a
+monitor pass, which is why the 20s is no longer time a fan-out waits.
+
+`maxRelaysPerList` (config, per stream) drops an event naming more relays than a
+relay list plausibly holds — measured, 148 pubkeys published a kind 10002 of
+100–10,591 entries. **Setting it gives up the tag projection for that source**: a
+per-event limit needs the event, and `distinctTagValues` returns values already
+flattened across every event it matched. That is not a corner case — the NIP-65
+select is exactly the shape the projection claims, so before this was wired the
+cap silently did nothing on the one stream it exists for (a live run discovered
+222 urls from a seeded 200-entry list with the cap set). It is opt-in for that
+reason; unset keeps the projection. Redundant default ports (`:443` on `wss`,
+`:80` on `ws`) are folded by string in `RelayDiscovery.normalize` rather than by
+probe — that one needs no evidence.
 
 ## Instrumentation — use it before theorising
 

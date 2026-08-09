@@ -24,6 +24,11 @@ import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
+import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
+import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
+import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
+import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
+import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.server.ServingPressure
@@ -231,7 +236,49 @@ class SyncEngine(
             ),
         )
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope)
-    private val dynamic = DynamicSync(client, store, bands, ingest, phases, paging, streamGate, transferring, monitor, pinnedUrls, tor, scope)
+
+    /**
+     * The duplicate-url fold, built only when there is a signer — the verdict
+     * it produces is a signed NIP-66 record, so a router with no identity has
+     * nowhere to put one and dials every url as its own relay, exactly as
+     * before this existed.
+     *
+     * ONE instance, shared by both halves, because [RelayAliases] is the
+     * in-memory cache of what has been decided: give the reader and the prober
+     * one each and the reader never sees this boot's verdicts without a store
+     * round trip, and the prober re-probes what the reader already resolved.
+     */
+    private val folding =
+        signer?.let {
+            AliasFolding(
+                aliases = RelayAliases(),
+                record = RelayAliasRecord(store, it),
+                probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET, config.connectionTimeoutSec * 1000L),
+            )
+        }
+
+    /**
+     * The dialling half of that fold, on its own schedule so a probe pass never
+     * stands between a stream finishing discovery and starting its download.
+     */
+    private val aliasMonitor = folding?.let { AliasMonitor(it::measure, scope) }
+    private val dynamic =
+        DynamicSync(
+            client,
+            store,
+            bands,
+            ingest,
+            phases,
+            paging,
+            streamGate,
+            transferring,
+            monitor,
+            pinnedUrls,
+            folding,
+            aliasMonitor,
+            tor,
+            scope,
+        )
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
@@ -295,6 +342,11 @@ class SyncEngine(
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
 
         dynamicStreams.forEach { stream -> scope.launch { dynamic.loop(stream) } }
+
+        // Only where there is something to fold for. A dynamic stream is what
+        // discovers urls off other people's relay lists; a static config names
+        // its upstreams by hand and has no duplicates to find.
+        if (dynamicStreams.isNotEmpty()) aliasMonitor?.start()
 
         // The phase report runs for the life of the engine, not inside the
         // static backfill's progress loop: a dynamic-only config has no

@@ -71,11 +71,13 @@ class RelayDiscoveryTest {
     private fun dynamic(
         vararg sources: RelaySource,
         exclude: Set<String> = emptySet(),
+        maxRelaysPerList: Int? = null,
     ) = RelayDiscoveryConfig(
         sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
         exclude = exclude.map { RelayUrlNormalizer.normalize(it) }.toSet(),
+        maxRelaysPerList = maxRelaysPerList,
     )
 
     private fun event(
@@ -299,6 +301,87 @@ class RelayDiscoveryTest {
 
         assertEquals(listOf("wss://scores.example/"), urls(list, select(index = 2)))
     }
+
+    @Test
+    fun `a default port is dropped, so one relay is not dialled twice`() {
+        val list =
+            event(
+                10002,
+                arrayOf("r", "wss://relay.example:443"),
+                arrayOf("r", "wss://relay.example"),
+                arrayOf("r", "ws://plain.example:80/alpha"),
+                // NOT a default for its scheme, and not the scheme's business
+                // to remove: this is a different listener.
+                arrayOf("r", "wss://relay.example:4443"),
+            )
+
+        val found = urls(list, select(tag = "r"))
+
+        assertEquals(listOf("wss://relay.example/", "ws://plain.example/alpha", "wss://relay.example:4443/"), found)
+    }
+
+    @Test
+    fun `an ipv6 literal keeps the colons that are not a port`() {
+        val list = event(10002, arrayOf("r", "ws://[2001:db8::1]:80/alpha"), arrayOf("r", "ws://[2001:db8::2]/beta"))
+
+        assertEquals(listOf("ws://[2001:db8::1]/alpha", "ws://[2001:db8::2]/beta"), urls(list, select(tag = "r")))
+    }
+
+    // ---- oversized lists ---------------------------------------------------
+
+    @Test
+    fun `a relay list too long to be one is dropped whole`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // The shape this exists for: measured on the live store, 148 pubkeys
+            // published a kind 10002 of 100-10,591 entries, no other tags and no
+            // content, and every entry cost the router a dial.
+            store.insert(event(10002, *Array(12) { arrayOf("r", "wss://bulk$it.example") }))
+            store.insert(event(10002, arrayOf("r", "wss://ordinary.example")))
+
+            val found =
+                RelayDiscovery
+                    .discover(store, dynamic(source(10002, selects = listOf(select(tag = "r"))), maxRelaysPerList = 10))
+                    .map { it.url.url }
+
+            // Not the first ten of the bulk list — none of it. Taking a prefix
+            // would let its author choose which relays we see by ordering them.
+            assertEquals(listOf("wss://ordinary.example/"), found)
+        }
+
+    @Test
+    fun `the cap counts the relays a select reads, not every tag on the event`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // A NIP-51 set: hundreds of `p` tags around four relays. Judged on
+            // its relays, it is an ordinary list and stays.
+            store.insert(
+                event(
+                    30002,
+                    *Array(50) { arrayOf("p", "%064d".format(it)) },
+                    arrayOf("relay", "wss://one.example"),
+                    arrayOf("relay", "wss://two.example"),
+                ),
+            )
+
+            val found =
+                RelayDiscovery
+                    .discover(store, dynamic(source(30002, selects = listOf(select(tag = "relay"))), maxRelaysPerList = 10))
+                    .map { it.url.url }
+
+            assertEquals(listOf("wss://one.example/", "wss://two.example/"), found)
+        }
+
+    @Test
+    fun `no cap configured reads every list however long`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            store.insert(event(10002, *Array(12) { arrayOf("r", "wss://bulk$it.example") }))
+
+            val found = RelayDiscovery.discover(store, dynamic(source(10002, selects = listOf(select(tag = "r")))))
+
+            assertEquals(12, found.size)
+        }
 
     // ---- bindings ----------------------------------------------------------
 

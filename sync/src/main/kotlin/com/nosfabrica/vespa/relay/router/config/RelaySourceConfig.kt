@@ -71,6 +71,24 @@ data class RelayDiscoveryConfig(
      * and accept that a chunk re-walks when its membership shifts.
      */
     val authorsPerLeg: Int? = null,
+    /**
+     * The most relays one event may name before the whole event is ignored as
+     * a relay list, or null for no limit.
+     *
+     * A real NIP-65 outbox is single digits; the ones this exists for run to
+     * five.
+     *
+     * SETTING THIS GIVES UP THE TAG PROJECTION for the whole source: a
+     * per-event limit needs the event, and the projection hands back values
+     * already flattened across every event it matched. That is a real cost on
+     * a large store — see
+     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.discover] —
+     * which is why it is opt-in and null by default. Duplicate urls are
+     * handled downstream by
+     * [com.nosfabrica.vespa.relay.router.discovery.RelayAliases] either way;
+     * this is only about refusing to read an implausible list at all.
+     */
+    val maxRelaysPerList: Int? = null,
 )
 
 /**

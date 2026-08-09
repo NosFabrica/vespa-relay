@@ -86,6 +86,10 @@ object RelayDiscovery {
         val found = LinkedHashSet<NormalizedRelayUrl>()
         // url -> destination -> values, unioned across every select and source.
         val narrowing = HashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
+        // Relay lists refused for being too long to be relay lists — reported
+        // rather than silently applied, because a cap set too low reads from
+        // outside exactly like a store that holds nothing.
+        var oversizedLists = 0
         for (source in dynamic.sources) {
             // A named tag with no bindings goes to the store's tags-only
             // projection, which streams one field instead of materializing
@@ -95,7 +99,22 @@ object RelayDiscovery {
             // time it returns.
             val named = source.selects.filter { it.tag != null && it.bindings.isEmpty() }
             val anyTag = source.selects.filter { it.tag == null || it.bindings.isNotEmpty() }
-            val semantics = (store as? VespaEventStore)?.store
+            // [RelayDiscoveryConfig.maxRelaysPerList] is a per-EVENT limit, and
+            // `distinctTagValues` hands `where` one tag at a time out of a set
+            // already flattened across every matching event — by the time a
+            // value arrives, the list it came from no longer exists. So a
+            // configured cap gives up the projection and pages, which is the
+            // only place the event is still whole.
+            //
+            // Measured, and not a corner case: on a real store the NIP-65
+            // select (`tag = "r"`, no bindings) is exactly the shape the
+            // projection claims, so without this the cap silently did nothing
+            // on the one stream it exists for — a live run discovered 222 urls
+            // from a seeded 200-entry bulk list with `maxRelaysPerList = 50`
+            // set. It is opt-in for that reason: leaving it unset keeps the
+            // projection (a 2.6M-event scan became its walk), and setting it
+            // buys the cap at that cost, knowingly.
+            val semantics = (store as? VespaEventStore)?.store?.takeIf { dynamic.maxRelaysPerList == null }
             if (semantics != null) {
                 for (select in named) {
                     // A select naming a kind narrows the scan to it; the
@@ -118,6 +137,10 @@ object RelayDiscovery {
             val stillPaged = if (semantics == null) source.selects else anyTag
             if (stillPaged.isNotEmpty()) {
                 scan(store, source.filter, pageSize) { event ->
+                    if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
+                        oversizedLists++
+                        return@scan
+                    }
                     for (select in stillPaged) {
                         if (select.kind != null && select.kind != event.kind) continue
                         bindingsIn(event, select, allowOnion) { url, bound ->
@@ -148,6 +171,13 @@ object RelayDiscovery {
                     "authors per relay min=${perRelay.minOrNull()} median=${perRelay.sorted().getOrNull(perRelay.size / 2)} " +
                     "max=${perRelay.maxOrNull()} total=${perRelay.sum()}; " +
                     "${found.size - narrowing.size} relay(s) found with NO authors attached",
+            )
+        }
+
+        if (oversizedLists > 0) {
+            System.err.println(
+                "router: discovery skipped $oversizedLists relay list(s) over ${dynamic.maxRelaysPerList} entries " +
+                    "— see RelayDiscoveryConfig.maxRelaysPerList",
             )
         }
 
@@ -228,6 +258,44 @@ object RelayDiscovery {
      * and a bounded allocation.
      */
     private const val SCAN_PAGE = 10_000
+
+    /**
+     * Is this event too long to be a relay list?
+     *
+     * Counted per SELECT-matching tag rather than over the whole tag array, so
+     * an event that is mostly something else — a NIP-51 set with hundreds of
+     * `p` tags and four relays — is judged on the relays it names, which is the
+     * only part this reads.
+     *
+     * Measured on this store: 9,418 pubkeys named a relay list of 6-20 entries
+     * and 148 named one of 100-10,591, the largest carrying no other tag and no
+     * content. A kind 10002 with ten thousand relays in it is not one user's
+     * outbox; it is a pool for someone else to draw from, and every entry costs
+     * this router a dial.
+     *
+     * Null disables it. An event that trips the cap is dropped WHOLE — no
+     * prefix of it is read — because taking the first N would let the author
+     * choose which relays we see by ordering them.
+     */
+    private fun oversized(
+        event: Event,
+        selects: List<RelaySelect>,
+        cap: Int?,
+    ): Boolean {
+        if (cap == null) return false
+        var seen = 0
+        for (tag in event.tags) {
+            for (select in selects) {
+                if (select.kind != null && select.kind != event.kind) continue
+                if (tag.size <= select.index) continue
+                if (select.tag != null && tag[0] != select.tag) continue
+                seen++
+                if (seen > cap) return true
+                break
+            }
+        }
+        return false
+    }
 
     /** The distinct relay urls one event advertises across every applicable select. */
     fun urlsIn(
@@ -370,6 +438,31 @@ object RelayDiscovery {
         if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return null
         if (!allowOnion && RelayUrlNormalizer.isOnion(url.url)) return null
         if (RelayUrlNormalizer.isLocalHost(url.url)) return null
-        return url
+        return withoutDefaultPort(url)
+    }
+
+    /**
+     * `wss://relay/` and `wss://relay:443/` are the same url written two ways,
+     * and the normalizer keeps both — so a relay list naming both costs two
+     * dials, two cursor bands and two sets of NIP-66 records for one server.
+     * Measured on this store: 861 discovered urls carried a redundant default
+     * port and 362 of them duplicated a portless url already in the set.
+     *
+     * Done here rather than left to [RelayAliases] because it needs no
+     * evidence: 443 on `wss` and 80 on `ws` are the scheme's own default, and
+     * dropping them is what every URL parser already does. The fold is for
+     * urls that only MEASUREMENT can prove equal.
+     */
+    private fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
+        val default = if (url.url.startsWith("wss://", true)) ":443" else ":80"
+        val scheme = url.url.substringBefore("://", "") + "://"
+        val rest = url.url.removePrefix(scheme)
+        val authority = rest.substringBefore('/')
+        // An IPv6 literal's colons live inside brackets; only a port sits after
+        // the closing one, so anything unbracketed is checked as written.
+        if (authority.startsWith("[") && !authority.substringAfter(']').startsWith(":")) return url
+        if (!authority.endsWith(default)) return url
+        val trimmed = scheme + authority.removeSuffix(default) + rest.substring(authority.length)
+        return RelayUrlNormalizer.normalizeOrNull(trimmed) ?: url
     }
 }
