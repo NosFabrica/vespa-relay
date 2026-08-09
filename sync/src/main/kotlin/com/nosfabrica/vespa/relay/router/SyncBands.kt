@@ -59,6 +59,12 @@ import java.util.concurrent.ConcurrentHashMap
  * `SYNC_STATE_FILE` keys them has changed since, and a file written before that
  * still loads (see the shim below).
  *
+ * `complete` is written at BOTH levels and read from the inner one. It belongs
+ * per kind — a paged leg that drained `kinds: [10002]` says nothing about kind 0
+ * — but the band-level copy stays for a rollback, and a span that carries none
+ * of its own inherits it, which is exactly what the flag used to mean for every
+ * kind at once.
+ *
  * Persistence is deliberately the CALLER's in quartz: [SyncCoverage.export] and
  * [SyncCoverage.restore] hand over the whole map, and `onChange` fires when a
  * band moves so a writer can mark itself dirty without polling. Amethyst's own
@@ -77,7 +83,10 @@ import java.util.concurrent.ConcurrentHashMap
  * The file follows the same three levels:
  *
  * ```json
- * { "<stream>": { "<filter>": { "wss://relay/": { "min": …, "max": …, "complete": …, "fullAt": …, "spans": {…} } } } }
+ * { "<stream>": { "<filter>": { "wss://relay/": {
+ *     "min": …, "max": …, "complete": …, "fullAt": …,
+ *     "spans": { "<kind>": { "min": …, "max": …, "complete": … } }
+ * } } } }
  * ```
  *
  * The two inner levels are the two halves of quartz's [SyncCoverage.BandKey],

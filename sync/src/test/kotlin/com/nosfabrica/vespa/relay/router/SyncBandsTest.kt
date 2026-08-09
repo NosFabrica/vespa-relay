@@ -693,7 +693,7 @@ class SyncBandsTest {
 
     @Test
     fun `only a leg reaching the filter's floor may settle the past`() {
-        // The guard between fetchAllPages' onDrained and record(). legs() gives
+        // The guard between fetchAllPages' PagedFetchResult and record(). legs() gives
         // the OLDER leg the filter's own `since` and the NEWER one the band's
         // ceiling — and draining the newer one means only "nothing below the
         // ceiling we already had". Recording that as history would make the

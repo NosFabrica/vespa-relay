@@ -428,10 +428,12 @@ of the outer edges and labels it *evidence*, deliberately — see `stats.html`.
 
 The consequence used to be a leg nothing could close: quartz recorded nothing for
 a fetch that saw no events, so the leg below a late-starting kind's floor came
-back empty every cycle, forever. `fetchAllPages` now reports `onDrained` when the
-relay EOSEs on an empty page — the one answer that separates an exhausted corpus
-from a relay that capped us or went quiet — and completeness moved from the band
-onto the span, so a drained leg closes its own kinds and no others. Route every
+back empty every cycle, forever. `fetchAllPages` returns a `PagedFetchResult` now
+— `downloaded` plus an `end` naming every way a walk can stop (`DRAINED`,
+`LIMIT_REACHED`, `IDLE`, `CLOSED`, `CANNOT_CONNECT`, `UNPAGEABLE`) — and only
+`DRAINED`, an EOSE on an empty page, separates an exhausted corpus from a relay
+that capped us or went quiet. Completeness moved from the band onto the span, so
+a drained leg closes its own kinds and no others. Route every
 paged call site through `drainSettlesThePast`: a drain on the NEWER leg only
 means "nothing below the ceiling we already had", and recording it as history
 would make the band skip the past it never walked.

@@ -658,8 +658,8 @@ internal class StaticBackfill(
                     // same span for every kind in it.
                     observedByKind = seenByKind,
                     // No `drained` here, deliberately: the paging happens inside
-                    // quartz's `negentropySyncOrFetch`, which does not surface
-                    // `onDrained` the way `fetchAllPages` does. So a NIP-77-less
+                    // quartz's `negentropySyncOrFetch`, which returns its own
+                    // result and does not carry the walk's `end` out. So a NIP-77-less
                     // relay reached through this path keeps the old behaviour and
                     // re-asks its older leg — the conservative direction, and not
                     // the path a `sync = "fetch"` stream takes anyway. Thread the
