@@ -136,9 +136,11 @@ class RelayAliasRecord(
      * upstream; null when there is no signer, which is also when the router
      * runs without a NIP-66 monitor at all.
      *
-     * The evidence goes in the tag and the content, not because anything parses
-     * it, but because this is a public statement about somebody else's server
-     * and the reader deserves to see what it rests on.
+     * The evidence goes in the tag's third element — not the content, which
+     * belongs to the relay's own NIP-11-ish document and is carried across
+     * edits untouched. Nothing parses the evidence; it is there because this is
+     * a public statement about somebody else's server and the reader deserves
+     * to see what it rests on.
      */
     suspend fun publish(
         alias: NormalizedRelayUrl,

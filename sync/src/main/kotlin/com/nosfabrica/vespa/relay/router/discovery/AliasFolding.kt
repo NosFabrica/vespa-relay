@@ -234,7 +234,19 @@ class AliasFolding(
                         // does and does not claim.
                         for (url in result.distinct) {
                             val print = prints[url].orEmpty()
-                            val shared = if (url == leader) 0 else leaderPrint.count { it in print }
+                            // For a member, how much of the leader it carried.
+                            // For the LEADER, the best any member managed against
+                            // it — writing 0 there would claim a cleaner
+                            // separation than was actually measured.
+                            val shared =
+                                if (url != leader) {
+                                    leaderPrint.count { it in print }
+                                } else {
+                                    result.distinct
+                                        .filter { it != leader }
+                                        .maxOfOrNull { other -> prints[other].orEmpty().count { it in leaderPrint } }
+                                        ?: 0
+                                }
                             newCleared[url] = Cleared(print.size, group.size - 1, shared)
                         }
                     }
