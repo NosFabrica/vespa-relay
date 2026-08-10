@@ -54,6 +54,59 @@ The number that matters is the `REPLACED` tally, and specifically the *repeat*
 against a number nobody has. See [Step 0](#step-0-measure-first) — it is cheap,
 and it is the only honest gate on the rest.
 
+## Prior art: what strfry does
+
+Read from the source at `hoytech/strfry@9acdaeb`, because strfry is the reference
+NIP-77 implementation and Doug Hoyte wrote negentropy itself. **It has the same
+bug and does not address it**, which is worth knowing before designing around an
+assumption that upstream will.
+
+- **A superseded replaceable event leaves no trace.** In `writeEvents`
+  (`src/events.cpp`) an incoming older version gets
+  `EventWriteStatus::Replaced` and is dropped with nothing written. When the
+  incoming version wins instead, the stored loser goes onto `levIdsToDelete`, and
+  the deletion loop calls `updateNegentropy(…, false)` — **actively removing the
+  id from the negentropy tree** — then `deleteEventBasic`. Nothing anywhere
+  records that the id was ever seen. Next sync, the peer offers it again.
+- **Its NIP-09 tombstone has exactly the limitation this proposal describes for
+  ours.** `Event__deletion` is not a side table: `golpe.yaml` defines it as an
+  index derived from stored kind-5 events, keyed `eventId + pubkey`. `writeEvents`
+  checks it and sets `EventWriteStatus::Deleted`. It blocks the **write** and
+  cannot touch the download — and being an index over `e` tags it carries no
+  `created_at` for the target, so it could never be placed in a negentropy tree.
+  That is candidate 4 above, confirmed from an independent implementation.
+- **`Event__replaceDeletion` is an address-level watermark** —
+  `sha256(a-tag) + created_at`, blocking any addressable event at or before that
+  time. The watermark design considered and rejected here for the download side,
+  used by its author exactly where it works (refusing writes) and nowhere else.
+- **`cmd_sync`'s dedup is per-run and in-memory.** `seenHave` / `seenNeed` are
+  `flat_hash_set`s that dedup within one invocation and are forgotten at exit.
+
+**Why it hurts them less: strfry's router is not a negentropy router.**
+`src/apps/mesh/cmd_router.cpp` is REQ-stream based — `dir` up/down/both over live
+subscriptions, no negentropy anywhere in it. Negentropy lives only in the
+one-shot `strfry sync`. So strfry never runs repeated reconciles against
+thousands of relays on a cycle, which is precisely the workload that turns this
+from a wart into a floor. The bug is shared; the exposure is ours.
+
+**One finding that supports Fix 2.** strfry *does* honour replacement on write —
+the winner deletes the stored loser and updates the negentropy tree — so pushing
+our newer version at a strfry upstream genuinely heals it. Given strfry's share
+of the network, Fix 2's convergence assumption holds for a large slice of it, and
+the "archival relays keep both copies" caveat is narrower than stated above.
+
+**One thing worth envying, and it is a different problem.** strfry keeps
+**persistent, incrementally-maintained negentropy BTrees** per configured filter
+(`NegentropyFilter` config → `negentropy::storage::BTreeLMDB`, updated inside
+`neFilterCache.ctx` on every write *and* every delete). When a sync's filter
+minus `since`/`until` matches a configured one, it reconciles straight off that
+tree with `SubRange` applying the time bounds; otherwise it scans into a
+`storageVector`. That is the server side of the behaviour AGENTS.md already
+documents from the client side — "a shape that stays byte-identical rides their
+index". It answers our *snapshot cost* problem, the one `NegentropyPager` and the
+stream semaphore exist to manage, and it answers nothing in this document. Worth
+its own proposal.
+
 ## Three fixes, and they compose
 
 Fix 1 stops asking. Fix 2 removes the events being offered. Fix 3 remembers our
@@ -108,7 +161,8 @@ Four ways the upstream does not drop its copy:
    discovered relays — auth-required, paid, whitelisted, rate-limited. We have
    write access to almost none of them.
 2. **The relay archives deliberately.** It accepts our newer version and keeps
-   both. A real population, and not misbehaviour.
+   both. A real population, and not misbehaviour — but a smaller one than it
+   looks: strfry, read below, does honour replacement and does heal.
 3. **Replacement is asynchronous.** It accepts, deletes eventually, and the next
    reconcile still sees the old id.
 4. **We cannot tell 1–3 apart** without waiting a cycle to see whether the id
@@ -555,7 +609,8 @@ release its rows.** Under design 2 that has to be done on purpose — see the
 first open question.
 
 **4. "The kind 5 already is the tombstone" — does not work, and the reason is
-the useful part.** For `DELETED` the target ids are already stored, in the kind
+the useful part** (and strfry reaches the same place — see
+[Prior art](#prior-art-what-strfry-does))**.** For `DELETED` the target ids are already stored, in the kind
 5's `e` tags, at zero extra cost. But NIP-09 records no `created_at` for its
 targets, and per the first constraint above a proxy (the kind 5's own timestamp)
 is actively harmful rather than approximate. Nothing derivable substitutes for
