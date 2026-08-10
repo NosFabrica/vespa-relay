@@ -199,6 +199,19 @@
      the loud part, which is the question this card is here to answer. */
   .cov { --lab: 11rem; }
   .cov-row { display: grid; grid-template-columns: var(--lab) 1fr; gap: .6rem; align-items: center; margin-bottom: 3px; }
+  /* The url filter hides rows with `[hidden]`, and `[hidden] { display: none }`
+     is a UA rule — which ANY author `display` outranks, whatever the
+     specificity, because author sheets beat the UA sheet before specificity is
+     even consulted. So `display: grid` one line up would keep every
+     filtered-out row on screen without this. The Kinds table needs no such rule
+     only because nothing here gives `tr` a display of its own. */
+  .cov-row[hidden] { display: none; }
+  /* The "your filter matched nothing" line, which stands where the whole list
+     was. `.why` is margin-free because it normally ends a card; this one is
+     followed by the frame note in the same muted register, and flush against it
+     the two read as one paragraph. Tag-qualified on purpose: `.why` is declared
+     further down this sheet, so at equal specificity it would win on order. */
+  p.cov-none { margin-bottom: .5rem; }
   /* line-height 1, not the body's 1.5: a .78rem label in a 1.5 line box is
      taller than the 12px track beside it, and the overflow slid under the
      sticky header above — every group's first row lost its top third. */
@@ -1095,6 +1108,13 @@ function trustCard(section) {
  * configured with — that list is in `router.conf`, which this relay does not
  * read. A "never asked" count would be the honest headline and it is not
  * available here; see SyncCoverageReport.
+ *
+ * The URL FILTER is the same bargain as the Kinds one: a fan-out puts thousands
+ * of rows in this card and "how far back is nos.lol" should not be a scroll.
+ * What it hides it hides EVERYWHERE — the depth strip and the group counts are
+ * recomputed over the rows still on screen, because a strip drawn over 4,000
+ * relays above three visible rows is a mark answering a question the reader is
+ * no longer asking. See [statOf] for the one number a subset cannot restate.
  */
 function syncCard(section) {
   const d = (section && section.data) || {};
@@ -1266,6 +1286,57 @@ function syncCard(section) {
     return strip;
   };
 
+  /**
+   * A group's counts, restated over whichever of its rows are on screen.
+   *
+   * Every term here is derivable from the rows themselves and agrees with the
+   * document's own numbers when nothing is filtered — one row per relay, a band
+   * carries min/max, `sweeping` is the rows with a cursor. That is why the
+   * filtered head can be recomputed at all rather than left to contradict the
+   * list under it.
+   *
+   * `legs` is the exception and is dropped the moment a filter is on: it counts
+   * BANDS across a narrow's legs, not relays, and no arithmetic over a subset of
+   * rows can recover the number for that subset. Carrying the group's total
+   * down beside three rows would be a count of something not on screen, which
+   * is the failure mode every other number on this card is arranged to avoid.
+   */
+  const statOf = (rows, total) => {
+    let reconciled = 0, paged = 0, sweeping = 0;
+    for (const r of rows) {
+      if (r.min != null && r.max != null) {
+        if (r.complete) reconciled++;
+        else paged++;
+      }
+      if (r.sweep) sweeping++;
+    }
+    return (
+      `${fmt(reconciled)} reconciled · ${fmt(paged)} paged` +
+      (sweeping ? ` · ${fmt(sweeping)} sweeping` : "") +
+      // The denominator stays visible, same rule as the Kinds table: a head
+      // reading "3 relays walked" describes a stream that walked thousands.
+      ` · ${fmt(rows.length)} of ${fmt(total)} relays walked`
+    );
+  };
+
+  // Above the list and below the legend, so the control sits against the thing
+  // it controls. Matching on the FULL url including `wss://`, not on the text
+  // the row draws with that scheme stripped: the displayed form is a substring
+  // of the full one, so this can only ever show a row the visible text also
+  // matches — while still answering a reader who typed the whole address in.
+  const controls = el("div", "bar-row");
+  const filter = el("input");
+  filter.type = "search";
+  // Named, because render() restores what was typed by name — there are two
+  // search boxes on this page now and they must not restore into each other.
+  filter.name = "sync";
+  filter.placeholder = "filter by relay url";
+  filter.setAttribute("aria-label", "filter relays by url");
+  const status = el("span", "status");
+  controls.appendChild(filter);
+  controls.appendChild(status);
+  card.appendChild(controls);
+
   // One scroll box for every stream, and one axis pinned at its top: the frame
   // is shared by design — that is what makes two streams comparable — so a
   // per-stream axis would be the same ruler drawn N times and would stop being
@@ -1275,6 +1346,7 @@ function syncCard(section) {
   pinned.classList.add("pin");
   scroll.appendChild(pinned);
 
+  const groups = [];
   for (const s of streams) {
     const box = el("div", "grp");
     const head = el("div", "grp-head");
@@ -1308,23 +1380,91 @@ function syncCard(section) {
     chip.title = label;
     name.appendChild(chip);
     head.appendChild(name);
-    head.appendChild(el("div", "grp-stat",
+    const stat = el("div", "grp-stat",
       `${fmt(s.reconciled || 0)} reconciled · ${fmt(s.paged || 0)} paged` +
       (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
       ` · ${fmt(s.relays || 0)} relays walked` +
       // Present only when a narrow asked one relay more than once, and then it
       // is the number that explains the other three: these counts are per
       // RELAY, and a relay counts as reconciled only when every leg of it did.
-      (s.legs ? ` · ${fmt(s.legs)} legs` : "")));
+      (s.legs ? ` · ${fmt(s.legs)} legs` : ""));
+    head.appendChild(stat);
     box.appendChild(head);
     const rows = s.rows || [];
-    if (rows.length > 24) box.appendChild(depthStrip(rows));
+    // The strip gets a slot of its own rather than being appended straight to
+    // the group: filtering redraws it from the surviving rows, and it comes and
+    // goes with the 24-row threshold, so the filter needs somewhere to put the
+    // new one that is still between the head and the first row.
+    const stripBox = el("div");
+    box.appendChild(stripBox);
+    if (rows.length > 24) stripBox.appendChild(depthStrip(rows));
     // EVERY relay, no top-N: the relays a cap would drop are the ones the
     // question is about. Same argument as the Kinds table.
-    for (const r of rows) box.appendChild(row(r));
+    const nodes = rows.map(row);
+    for (const node of nodes) box.appendChild(node);
     scroll.appendChild(box);
+    // Lowercased ONCE per relay rather than per keystroke: this array runs to
+    // thousands of urls on a fan-out and the filter re-reads all of them on
+    // every character typed.
+    groups.push({ box, stat, stripBox, rows, nodes, urls: rows.map((r) => String(r.relay).toLowerCase()) });
   }
   card.appendChild(scroll);
+
+  // Distinct across streams, because the same relay is a row in every stream
+  // that walked it — summing the rows would report a list several times its own
+  // length. The set is the card's denominator and does not change, so it is
+  // built once and only the matching side is recounted.
+  const every = [...new Set(groups.flatMap((g) => g.urls))];
+  // Shown only when a query empties the card. The scroll box goes with it: what
+  // is left in there is the pinned axis over nothing, which reads as a card
+  // that failed to load rather than as a filter that matched nothing.
+  const none = el("p", "why cov-none");
+  none.hidden = true;
+  card.appendChild(none);
+
+  // What the heads read as built: the document's own numbers, `legs` and all,
+  // restored verbatim when the box is emptied rather than recomputed — an
+  // unfiltered card should print exactly what SyncCoverageReport published.
+  const statText = groups.map((g) => g.stat.textContent);
+  // Whether the last pass drew a narrowed view. Without it the first render —
+  // and every keystroke that leaves the box empty — pays to rebuild strips and
+  // heads that already hold the values it is about to write back.
+  let narrowed = false;
+
+  const applyFilter = () => {
+    const q = filter.value.trim().toLowerCase();
+    let live = 0;
+    groups.forEach((g, gi) => {
+      const kept = [];
+      g.nodes.forEach((node, i) => {
+        const hit = !q || g.urls[i].includes(q);
+        node.hidden = !hit;
+        if (hit) kept.push(g.rows[i]);
+      });
+      // A stream with nothing left is hidden whole — its head and depth strip
+      // are about relays that are no longer on screen.
+      g.box.hidden = !kept.length;
+      if (kept.length) live++;
+      if (!q && !narrowed) return;
+      g.stripBox.replaceChildren();
+      const drawn = q ? kept : g.rows;
+      if (drawn.length > 24) g.stripBox.appendChild(depthStrip(drawn));
+      g.stat.textContent = q ? statOf(kept, g.rows.length) : statText[gi];
+    });
+    narrowed = !!q;
+    const hits = q ? every.reduce((n, u) => n + (u.includes(q) ? 1 : 0), 0) : every.length;
+    status.textContent =
+      (q ? `${fmt(hits)} of ${fmt(every.length)} relays` : `${fmt(every.length)} relays`) +
+      // Named only while filtering, and only when it costs the reader a group:
+      // a vanished stream is otherwise a silent omission on the one card whose
+      // job is to show what is missing.
+      (q && live < groups.length ? ` · ${fmt(live)} of ${fmt(groups.length)} streams` : "");
+    scroll.hidden = !live;
+    none.hidden = !!live;
+    if (!live) none.textContent = `No relay in this document's sync state contains “${filter.value.trim()}”.`;
+  };
+  filter.addEventListener("input", applyFilter);
+  applyFilter();
   // Measured, not guessed: a hardcoded rem offset is wrong at any root font
   // size but the author's, and 2px out hides a sliver of one sticky element
   // behind the other.
@@ -1463,6 +1603,9 @@ function kindsCard(kinds) {
   const controls = el("div", "bar-row");
   const filter = el("input");
   filter.type = "search";
+  // Named, so render() restores what was typed into THIS box and not into the
+  // one on Sync coverage — see the restore loop there.
+  filter.name = "kinds";
   filter.placeholder = "filter by kind number or name";
   filter.setAttribute("aria-label", "filter kinds");
   const count = el("span", "status");
@@ -1541,8 +1684,8 @@ function kindsCard(kinds) {
  *
  * The page polls every 5 minutes and the rollup runs every 15, so MOST polls
  * return bytes the body is already showing. Rebuilding on those is not merely
- * wasted work — `replaceChildren` destroys what the reader was doing: the kinds
- * filter loses what they typed, and every bounded scroll box (Kinds, Relay
+ * wasted work — `replaceChildren` destroys what the reader was doing: both
+ * filters lose what they typed, and every bounded scroll box (Kinds, Relay
  * distribution, and a Sync coverage card thousands of rows tall) jumps back to
  * the top. Measured: filter "blogs" → "", scrollTop 5000 → 0, on every tick.
  */
@@ -1560,7 +1703,15 @@ function render(doc) {
 
   // A genuine new document does have to rebuild — but the reader's filter is
   // an instruction about the table, not about the document, so it survives.
-  const typed = bodyEl.querySelector("input[type=search]")?.value || "";
+  //
+  // Keyed by NAME over every search box, because there are two of them now
+  // (Kinds and Sync coverage). The `querySelector` this replaced read and wrote
+  // whichever box came first in the tree, so with two it would have carried the
+  // kinds query across every poll and dropped the sync one on the floor.
+  const typed = new Map();
+  for (const box of bodyEl.querySelectorAll("input[type=search]")) {
+    if (box.value) typed.set(box.name, box.value);
+  }
 
   bodyEl.replaceChildren();
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
@@ -1599,14 +1750,13 @@ function render(doc) {
   // not mirror, and an empty coverage card there would read as a broken mirror
   // rather than as no mirror.
   if (doc.sync) bodyEl.appendChild(syncCard(doc.sync));
-  if (typed) {
-    const box = bodyEl.querySelector("input[type=search]");
-    if (box) {
-      box.value = typed;
-      // `input` rather than calling applyFilter: the handler is a closure over
-      // the freshly built rows, and this card is rebuilt from a new document.
-      box.dispatchEvent(new Event("input"));
-    }
+  for (const box of bodyEl.querySelectorAll("input[type=search]")) {
+    const was = typed.get(box.name);
+    if (!was) continue;
+    box.value = was;
+    // `input` rather than calling applyFilter: the handler is a closure over
+    // the freshly built rows, and these cards are rebuilt from a new document.
+    box.dispatchEvent(new Event("input"));
   }
 
   renderFoot(doc);
