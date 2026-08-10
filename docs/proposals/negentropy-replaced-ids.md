@@ -210,13 +210,31 @@ a repair.**
 | a **kind 5** deletion whose target they still serve | the kind 5 | **yes**, explicitly |
 | a **kind 62** carrying `relay = ALL_RELAYS` | the kind 62 | **yes**, to every relay by name |
 
-The right-hand column decides the policy question. Republishing someone's
-profile to a relay they did not choose is an inference about what they want; a
-kind 5 and an `ALL_RELAYS` kind 62 are **requests the author already addressed to
-every relay**, and most relays never received them. A mirror that holds one and
-declines to propagate it is withholding a deletion the author asked for. So the
-two retraction kinds deserve a more permissive default than the two content
-kinds, and probably a separate switch.
+The right-hand column looked like the policy question, until the trigger
+settled it. **The heal can only fire at a relay that already holds the author's
+data** — the trigger is the store rejecting *that relay's own stale copy*, so by
+construction the push never introduces an author to a new relay. It changes the
+**version** a relay serves, never the **distribution set**. The consent that
+placed the data there has already been exercised; we are synchronising state the
+relay already carries, in the direction the author moved it. And for the two
+retraction kinds it is stronger still: a kind 5 and an `ALL_RELAYS` kind 62 are
+requests the author already addressed to every relay, and a mirror that holds
+one and declines to propagate it is withholding a deletion the author asked for.
+
+The amplitude guard and the consent argument are therefore **the same
+mechanism**: triggering off the `REPLACED`/`DELETED`/`VANISHED` rejection — and
+never off `diff.haveIds` — is simultaneously what stops the healer seeding our
+corpus into peers and what guarantees every push lands where the author's data
+already lives.
+
+One edge needs an explicit guard: **a relay the author vanished from.** If we
+hold a kind 62 scoped to relay X and relay X is (non-compliantly) still serving
+that author's old events, the heal for that pair is the **kind 62 itself,
+pushed to X** — which the scoping rule already permits — and never the author's
+content, which would re-establish them on a relay they asked to leave. So:
+content pushes are blocked for any (author, relay) pair a stored vanish covers,
+and the retraction push takes over. `shouldVanishFrom` is the existing decision
+point.
 
 **A relay-scoped kind 62 must never be propagated.** NIP-62's `relay` tag is
 either `ALL_RELAYS` or one specific url — `RequestToVanishEvent.shouldVanishFrom`
@@ -291,11 +309,13 @@ every down stream an unsolicited writer to every discovered relay, triggered by
 their data, with no configured amplitude — one popular author's profile edit
 becomes 16k publishes.
 
-There is a decent argument that it is welcome (the event is author-signed, and
-the relay already demonstrably hosts that author's data), but republishing
-people's events to relays they did not choose is a values call, not only an
-engineering one. **Per-stream opt-in, default off**, and it should be a distinct
-setting from `dir = up` — the relay list is not the same list.
+The consent half of that worry is resolved by the trigger (see above): every
+push targets a relay already hosting the author's data, so no one's reach is
+expanded. What remains is operational — write amplitude toward servers we
+otherwise only read from — and that is what the switches govern: **per-stream,
+distinct from `dir = up`** (the relay list is not the same list), rolled out
+opt-in, with defaults that can honestly sit at on once the acceptance numbers
+from the static upstreams are in.
 
 #### The push must be off the hot path
 
@@ -1023,7 +1043,7 @@ it guards. Everything lands in `:sync` unless marked. Per AGENTS.md: **assert th
 property, not the implementation** — several of these describe behaviour that
 must survive a rewrite of the mechanism underneath them.
 
-Ten of these are load-bearing. They are marked **[SAFETY]**, and each one
+Eleven of these are load-bearing. They are marked **[SAFETY]**, and each one
 guards an outcome that is silent, permanent, or on someone else's server. If the
 budget runs out, these are the ones that ship.
 
@@ -1053,6 +1073,10 @@ budget runs out, these are the ones that ship.
   our inference. Assert against a `relay` tag naming a third-party url *and*
   against a malformed tag, which must also not push.
 - `a kind 62 scoped to this relay is pushed to this relay only`
+- **[SAFETY]** `an author's content is never pushed to a relay a stored vanish covers`
+  — the one case where "the relay already has their data" is not consent: the
+  author asked to leave, and the relay kept serving them anyway. The heal for
+  that pair is the kind 62, never the content that would re-establish them.
 - `with the content switch off, replaceable and addressable enqueue nothing while retractions still do`
 - `with both switches off, nothing is ever enqueued` — the
   configured-but-inert trap AGENTS.md names; assert the queue stays empty rather
@@ -1205,19 +1229,19 @@ the same window** (an overflowing window is re-asked as halves), so the merge
 must be cheap, side-effect free, and thread-safe. Verify against the pinned
 quartz commit at implementation time; the contract predates this proposal.
 
-**4. Content-push consent — decide. Recommended: outbox relays only.** The
-consent objection was that pushing an author's newer version to a relay they did
-not choose is an inference. There is a target set for which it is not an
-inference: **the relays the author's own kind 10002 names**. Those are relays
-the author explicitly publishes to, the dynamic fan-out already discovers relays
-from exactly those lists (`RelayDiscovery`), and the narrowed ask
-(`DiscoveredRelay.narrowed`) already binds authors to the relays that claim
-them. Restricting the content push to pairs where the target relay appears in
-the author's current 10002 keeps every heal inside the author's declared
-publishing surface — the consent question dissolves rather than being defaulted
-around. Relays outside the author's list stay content-unhealed (their stale ids
-take the filter path), and the retraction push is unaffected: a kind 5 and an
-`ALL_RELAYS` kind 62 are addressed to every relay by the author already.
+**4. Content-push consent — resolved: the trigger is the consent.** A heal can
+only fire at a relay that offered us its own stale copy, so the target already
+hosts the author's data and the push changes the version, never the
+distribution set (argued in full under Fix 2's trigger table). Two designs were
+considered and rejected on the way here. *Default-off-until-revisited* left the
+largest population unhealed for a worry the trigger already answers.
+*Outbox-relays-only* — restricting content pushes to relays in the author's
+current kind 10002 — sounded principled and aims at exactly the wrong set: the
+relays most likely to serve a stale profile are the ones the author **left**,
+which are precisely the relays no longer in their 10002. An outbox-only healer
+would never heal the worst offenders. The one restriction that survives is the
+vanish guard: no content push to any (author, relay) pair a stored relay-scoped
+kind 62 covers — the heal there is the kind 62 itself.
 
 **5. Global versus per-relay — resolved: global.** The filter records one fact —
 "we will refuse this id, whoever sends it" — and that fact is not per-relay. A
