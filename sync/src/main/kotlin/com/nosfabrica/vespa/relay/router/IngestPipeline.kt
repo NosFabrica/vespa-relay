@@ -246,7 +246,12 @@ internal class IngestPipeline(
                 batch.add(next)
             }
             val valid = ArrayList<Event>(batch.size)
-            val origins = HashMap<String, IngestOrigin>(batch.size)
+            // Only built when something will read it. The sink is inert unless
+            // SYNC_REFUSED_DIR is set, and the pipeline is shared by every
+            // stream, so an unconditional map made every existing deployment
+            // allocate and hash one entry per event for a lookup that never
+            // happens.
+            val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(batch.size) else null
             var verifyRejected = 0
             for (msg in batch) {
                 if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
@@ -256,7 +261,7 @@ internal class IngestPipeline(
                     // not of the signature, so the same id can arrive correctly
                     // signed from another relay. Remembering it would make one
                     // relay's corruption permanent.
-                    origins[msg.event.id] = msg.origin
+                    origins?.put(msg.event.id, msg.origin)
                 } else {
                     verifyRejected++
                 }
@@ -270,7 +275,7 @@ internal class IngestPipeline(
             // parse report raised inside batchInsert cannot be attributed to
             // one event. Inspecting here keeps the audit's ThreadLocal exact.
             audit?.let { for (event in valid) it.inspect(event) }
-            insertIsolating(valid, origins)
+            insertIsolating(valid, origins ?: emptyMap())
         }
     }
 

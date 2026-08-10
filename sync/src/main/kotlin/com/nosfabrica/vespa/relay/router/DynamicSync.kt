@@ -554,6 +554,10 @@ internal class DynamicSync(
             return deleteMissingSync.reconcileAndDelete(stream, url, window, sharedAuthors)
         }
         var downloaded = 0
+        // Invariant for the whole relay: hoisted out of the per-event callback
+        // below, which ran on every mirrored event and allocated an identical
+        // object each time.
+        val origin = originFor(stream, url)
         for (leg in bands.legs(url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
@@ -571,7 +575,7 @@ internal class DynamicSync(
                     // records no band for a multi-kind filter, so a discovery
                     // stream would re-walk every relay every cycle.
                     SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted, originFor(stream, url))
+                    ingest.submit(event, stream.trusted, origin)
                 }
             }
             // Fetch-only: the leg came off the band, so this asks only

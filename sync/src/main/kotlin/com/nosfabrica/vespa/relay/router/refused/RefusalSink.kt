@@ -83,6 +83,17 @@ data class IngestOrigin(
  * the store decided and asks one question, which is all a test needs to drive.
  */
 interface RefusalSink {
+    /**
+     * Whether [onRefused] will ever read the [IngestOrigin] it is handed.
+     *
+     * Only the heal path uses it — suppression keys on the event's own id and
+     * `created_at`. The pipeline builds a per-batch id→origin map to carry it,
+     * so a sink that answers `false` here saves every ingest batch a HashMap
+     * and one hashed insert per event. That map used to be unconditional,
+     * which billed every deployment for a lookup no stream had asked for.
+     */
+    val tracksOrigins: Boolean
+
     /** True when this event has been twice refused and should not be stored again. */
     fun isSuppressed(event: Event): Boolean
 
@@ -100,6 +111,8 @@ interface RefusalSink {
         /** Suppression off: answers no to everything and records nothing. */
         val None: RefusalSink =
             object : RefusalSink {
+                override val tracksOrigins = false
+
                 override fun isSuppressed(event: Event) = false
 
                 override fun onRefused(

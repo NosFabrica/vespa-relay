@@ -127,6 +127,9 @@ internal class DeleteMissingSync(
         // fetchAll, not fetchAllPages: an id set is not a time range, and
         // paging it by `until` re-asks for events it just received.
         var downloaded = attachedDownloaded
+        // Invariant for this (stream, relay): hoisted out of the fetch loop
+        // below rather than rebuilt per event.
+        val origin = IngestOrigin(url, stream.healContent, stream.healRetractions)
         // The one place suppression saves BANDWIDTH rather than CPU: the diff
         // names the ids before anything is fetched, so an id we have twice
         // refused never becomes a REQ at all. Everywhere else on the down path
@@ -140,7 +143,7 @@ internal class DeleteMissingSync(
         for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
                 if (stream.filter.match(event)) {
-                    ingest.submit(event, stream.trusted, IngestOrigin(url, stream.healContent, stream.healRetractions))
+                    ingest.submit(event, stream.trusted, origin)
                     downloaded++
                 }
             }
@@ -233,6 +236,8 @@ internal class DeleteMissingSync(
         ask: Filter,
     ): Int {
         var downloaded = 0
+        // Invariant for this (stream, relay), as in the reconcile path above.
+        val origin = IngestOrigin(url, stream.healContent, stream.healRetractions)
         for (leg in bands.legs(url, ask)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
@@ -252,7 +257,7 @@ internal class DeleteMissingSync(
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                             }
                             SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                            ingest.submit(event, stream.trusted, IngestOrigin(url, stream.healContent, stream.healRetractions))
+                            ingest.submit(event, stream.trusted, origin)
                         }
                     }
             } finally {

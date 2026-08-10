@@ -219,7 +219,12 @@ class SyncEngine(
     // sweep, because a dropped heal is a retry and a stalled sweep is not.
     private val healQueue = HealQueue()
     private val writeCaps = WriteCapability()
-    private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled)
+
+    // Whether any stream can heal at all decides whether ingest has to carry
+    // per-event origins; see RefusalSink.tracksOrigins. Both switches default
+    // off, so a deployment that has not opted in pays nothing.
+    private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
+    private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
     private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, refusals)
     private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 

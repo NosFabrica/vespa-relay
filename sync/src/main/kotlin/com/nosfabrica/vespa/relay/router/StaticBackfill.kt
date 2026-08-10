@@ -257,6 +257,9 @@ internal class StaticBackfill(
             return 0
         }
         var downloaded = 0
+        // Invariant for this upstream: hoisted out of the per-event
+        // callback, which allocated an identical object per event.
+        val origin = originFor(upstream)
         transferring.incrementAndGet()
         return try {
             for (window in legs) {
@@ -290,7 +293,7 @@ internal class StaticBackfill(
                             // Without this, every multi-kind stream here would
                             // stop resuming.
                             SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                            ingest.submit(event, upstream.trusted, originFor(upstream))
+                            ingest.submit(event, upstream.trusted, origin)
                         }
                         seenSoFar++
                         live.incrementAndGet()
@@ -459,6 +462,9 @@ internal class StaticBackfill(
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
+        // Invariant for this upstream: hoisted out of the per-event
+        // callback, which allocated an identical object per event.
+        val origin = originFor(upstream)
         transferring.incrementAndGet()
         return try {
             var downloaded = 0
@@ -480,7 +486,7 @@ internal class StaticBackfill(
                             seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                         }
                         SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                        ingest.submit(event, upstream.trusted, originFor(upstream))
+                        ingest.submit(event, upstream.trusted, origin)
                     }
                 }
                 val here = downloaded
@@ -566,6 +572,9 @@ internal class StaticBackfill(
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
+        // Invariant for this upstream: hoisted out of the per-event
+        // callback, which allocated an identical object per event.
+        val origin = originFor(upstream)
         transferring.incrementAndGet()
         try {
             var downloaded = 0
@@ -596,7 +605,7 @@ internal class StaticBackfill(
                                     seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                                 }
                                 SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                                ingest.submit(event, upstream.trusted, originFor(upstream))
+                                ingest.submit(event, upstream.trusted, origin)
                             }
                         },
                     )

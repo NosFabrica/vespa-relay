@@ -50,7 +50,18 @@ class RouterRefusalSink(
     private val refused: RefusedIds,
     private val queue: HealQueue,
     private val suppressionEnabled: Boolean,
+    /**
+     * Whether ANY configured stream may heal. Origins exist only to answer
+     * "which relay served this, and what is that stream allowed to do about
+     * it" — so with every `healContent`/`healRetractions` switch off there is
+     * nothing to answer and the pipeline can skip carrying them. Defaults true
+     * so a caller that forgets it errs towards doing the work rather than
+     * silently dropping the heal path.
+     */
+    healingPossible: Boolean = true,
 ) : RefusalSink {
+    override val tracksOrigins: Boolean = healingPossible
+
     override fun isSuppressed(event: Event): Boolean = suppressionEnabled && refused.suppressed(event.id, event.createdAt)
 
     override fun onRefused(
