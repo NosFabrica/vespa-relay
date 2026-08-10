@@ -153,33 +153,43 @@ AGENTS.md, but it removes most of the re-transfer for zero new state.
 
 **Do this first. It may be enough**, and Step 0's numbers will say.
 
-#### `latestOnly` — the same idea for `fetch` mode
+#### `latestOnly` — proposed for `fetch` mode, then CUT
 
-`since` narrows the *window*. A `fetch`-mode stream can be narrowed on the axis
-that actually matters instead, with a per-stream flag: for replaceable and
-addressable kinds, **decompose the ask into one filter per address with
-`limit: 1`**, batched many-to-a-REQ.
+`since` narrows the *window*. The idea here was to narrow a `fetch`-mode stream
+on the axis that actually matters: for replaceable and addressable kinds,
+decompose the ask into one `{"kinds":[0],"authors":["<one>"],"limit":1}` filter
+per address, batched many-to-a-REQ. That construction returns the author's
+newest and structurally cannot return a superseded one, on a compliant relay or
+an archival one, with no protocol extension.
 
-`{"kinds":[0],"authors":["<one>"],"limit":1}` returns that author's newest and
-structurally cannot return a superseded one — on a compliant relay *or* an
-archival one, with no protocol extension and no cooperation required. It is the
-only NIP-01 construction that expresses "latest per address"; a bare `limit` on a
-multi-author filter is newest-first *globally* and gives no such guarantee.
+**It was built, never wired up, and has now been removed.** The flag was parsed
+into `SyncStream`, documented as working, and unit-tested in isolation, while
+nothing in the router ever called `LatestOnlyAsk.decompose`. Setting
+`latestOnly = true` did nothing at all. That is a worse failure than not having
+the feature: a config that accepts a knob and silently ignores it sends an
+operator looking for the problem somewhere else.
 
-Costs, all of them real:
+It was cut rather than finished, for three reasons:
 
-- **Filter count scales with the author set.** NIP-11 advertises `max_filters`
-  and relays enforce it, so the batching has to respect it and fall back. The
-  fan-out already chops author sets with `authorsPerLeg`, so the shape is not new.
-- **It does not apply to regular kinds**, which have no "latest per address" to
-  ask for. The flag must be a no-op outside replaceable/addressable, not an error.
-- **It should record no sync band.** A band claims a `created_at` range was
-  walked; a `limit: 1` per-address ask claims something entirely different, and
-  writing one would tell the next cycle a range is covered when it was never
-  swept. Either skip the band or give this ask its own coverage record.
+- **Fetch mode is not unprotected without it.** Fix 2 heals the relay serving
+  the stale copy, so the source stops serving it. `latestOnly` only saved the
+  download in the meantime — an optimisation, not a correctness property.
+- **The design was not settled.** The implementation kept the stream's `since`
+  and `until` on the decomposed filters while its own documentation said the
+  time range was replaced; those cannot both be right. The better answer is
+  neither: a per-address `since` taken from the version *we already hold*
+  (`since = ours + 1`) asks "have you got anything newer than mine", converges,
+  costs nothing when nothing changed, and makes a stale copy unrequestable
+  rather than merely unwanted. That is a different design from the one that was
+  written, so reviving it would start from a blank file anyway.
+- **It did not scale where it would most be pointed.** Filter count is
+  `kinds x authors`: 50k authors over kinds 0/3/10002 is 150k filters and ~7,500
+  sequential REQs *per relay*, with no cap and no log when a relay rate-limits
+  partway. On a hand-configured upstream that is fine. Aimed at thousands of
+  discovered relays it is not a feature. Any revival needs an explicit bound on
+  the author set, enforced at config load.
 
-Where it applies it is strictly better than a tombstone, for the same reason
-Fix 2 is: nothing is transferred and nothing has to be remembered.
+The code is in git history if it is ever wanted.
 
 ### Fix 2 — heal the upstream: push the update back to the source
 
@@ -649,7 +659,7 @@ hook before the body arrives.
 |---|---|---|
 | **negentropy** (`NegentropyPager`, `StaticBackfill`, `DynamicSync`) | Fix 2, **plus** the filter on `needIds` before the REQ | there is a hook before the body, and it is worth ~95% of the transfer |
 | **deleteMissing** (`DeleteMissingSync`) | same — the filter on `diff.needIds` before `fetchAll` | same hook, same saving |
-| **fetch** (`fetchAllPages`) | **Fix 2 and `latestOnly` only. No filter.** | a REQ never names an id before it sends the body, so there is no hook that saves anything worth the complexity |
+| **fetch** (`fetchAllPages`) | **Fix 2 only. No filter.** | a REQ never names an id before it sends the body, so there is no hook that saves anything worth the complexity. `latestOnly` was the intended second lever here and was cut — see above |
 
 **The fetch path does not get a suppression hook, and does not need one.** The
 bytes are already spent by the time an `onEvent` predicate could fire, so all a
@@ -978,10 +988,11 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
 
 1. **Step 0's instrumentation alone.** One cycle, unchanged config — the
    baseline, for the reason above.
-2. **Fix 1** — `since` on the replaceable-kind streams, and `latestOnly` on the
-   `fetch`-mode ones. One more cycle. The delta against step 1 is the whole of
-   what the remaining work has to beat, and on the fetch path it is the *only*
-   thing that saves bandwidth at all.
+2. **Fix 1** — `since` on the replaceable-kind streams. One more cycle. The
+   delta against step 1 is the whole of what the remaining work has to beat.
+   This step originally also carried `latestOnly` on the `fetch`-mode streams,
+   which was cut; the fetch path therefore has no bandwidth saving of its own
+   and relies on Fix 2 healing the source instead.
 3. **Fix 2's healer, on the static upstreams only** — the `urls` in
    `router.conf`, where we have a relationship and plausibly write access.
    Per-stream opt-in, default off, and **two switches**: one for the retraction
@@ -1046,16 +1057,6 @@ must survive a rewrite of the mechanism underneath them.
 Eleven of these are load-bearing. They are marked **[SAFETY]**, and each one
 guards an outcome that is silent, permanent, or on someone else's server. If the
 budget runs out, these are the ones that ship.
-
-### `LatestOnlyAskTest` — Fix 1's flag
-
-- `latestOnly decomposes a replaceable ask into one limit-1 filter per address`
-- `latestOnly keys addressable filters on the d tag, so two d values are two asks`
-- `latestOnly is a no-op for regular kinds rather than an error` — a flag that
-  throws on kind 1 makes a mixed-kind stream unconfigurable.
-- `latestOnly batches within the relay's advertised max_filters and splits beyond it`
-- `latestOnly records no sync band, because limit-1 per address walked no range`
-  — a band here would tell the next cycle a range is covered that was never swept.
 
 ### `HealTriggerTest` — what becomes a push candidate
 

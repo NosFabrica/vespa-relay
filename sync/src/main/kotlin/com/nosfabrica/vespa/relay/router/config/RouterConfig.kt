@@ -115,13 +115,6 @@ data class SyncStream(
     // Whether an upstream dropping a record means we drop it too.
     val deleteMissing: DeleteMissing = DeleteMissing.OFF,
     /**
-     * Ask this stream's relays for the CURRENT version of each replaceable
-     * address (one `limit: 1` filter per author) instead of a time range. Only
-     * meaningful on a `fetch`-mode stream, where nothing can suppress a body
-     * that is already on the wire — see `LatestOnlyAsk`.
-     */
-    val latestOnly: Boolean = false,
-    /**
      * Push our newer replaceable/addressable version at a relay that served us
      * a stale one. Separate from [healRetractions] because the two differ in
      * whether the author asked: this is a version update to a relay that
