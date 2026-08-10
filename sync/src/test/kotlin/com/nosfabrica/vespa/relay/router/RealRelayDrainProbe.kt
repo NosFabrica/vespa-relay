@@ -139,9 +139,18 @@ class RealRelayDrainProbe {
      *
      * It walks each indexer twice from the same ceiling — once with the leg exactly
      * as [SyncCoverage.legs] hands it over (`since = null`, the shape every stream in
-     * `router.conf.example` produces), and once floored. Both runs report the LOWEST
-     * `until` the walk reached, which is the whole tell: a walk that ends leaves it at
-     * a real timestamp, and a walk that cannot end leaves it below zero.
+     * `router.conf.example` produces), and once floored.
+     *
+     * READ `end`, NOT `lowest until`. When this probe was written the tell was the
+     * cursor going below zero, because nothing stopped it; on the quartz pinned now
+     * it cannot, so that column can no longer discriminate. What separates the two
+     * runs today is how the walk ENDS: unfloored, purplepag.es answers above the
+     * cursor and quartz calls the walk `UNPAGEABLE` — the leg stays open, records no
+     * coverage, and the whole 1.49M-event history is re-walked on the next boot;
+     * floored, the page below the floor is an EOSE'd empty one, so the walk is
+     * `DRAINED` and the leg closes. `lowest until` is still printed because it shows
+     * how deep each run got, but note it is the `until` the walk ASKED for, not one
+     * it was answered at.
      *
      * The ceiling is deliberately just above the epoch-stamped events rather than
      * `now`: purplepag.es serves ~2,300 kind 0/10002 events a second and holds years
@@ -167,6 +176,7 @@ class RealRelayDrainProbe {
         println("=".repeat(78))
         println("Does the `indexers` leg TERMINATE? (kinds [0, 10002], from $TRAP_CEILING down)")
         println("  unfloored = the leg as legs() builds it; floored = flooredForPaging()")
+        println("  read `end`: DRAINED closes the leg, UNPAGEABLE leaves it to re-walk every boot")
         println("=".repeat(78))
         try {
             for ((url, _, _) in legs) {
@@ -199,10 +209,12 @@ class RealRelayDrainProbe {
                         outcome.fold(
                             onSuccess = { r ->
                                 when (r) {
-                                    // The bug: `until` is still descending when the
-                                    // ceiling fires. Read `lowest` — below zero means
-                                    // the walk is stepping one second at a time
-                                    // through negative time and can never come back.
+                                    // Kept, but it should no longer be reachable: the
+                                    // pinned quartz floors its cursor at 0, so a walk
+                                    // cannot run off the bottom of the time axis any
+                                    // more. If this ever prints again, the guard
+                                    // upstream has regressed — that is the finding,
+                                    // not the relay.
                                     null -> "NEVER ENDED in ${TERMINATION_MS / 1000}s"
 
                                     else -> "${r.end} (${r.downloaded} event(s))"
