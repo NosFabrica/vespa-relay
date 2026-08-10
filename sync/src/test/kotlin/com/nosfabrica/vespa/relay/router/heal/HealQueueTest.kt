@@ -116,3 +116,87 @@ class HealQueueTest {
         )
     }
 }
+
+/**
+ * The counter, which is the queue's own kill switch.
+ *
+ * `offer` refuses everything once the running total reaches its limit, so any
+ * drift upward is not a cosmetic stats bug — it is the healer switching itself
+ * off permanently, with no log line and nothing left to notice it. These are
+ * the cases where the old map-swapping drain lost track.
+ */
+class HealQueueAccountingTest {
+    private val a = RelayUrlNormalizer.normalize("wss://a.example")
+
+    private fun stale(n: Int) = StaleRef("%064x".format(n), 1_700_000_000L + n)
+
+    private fun key(n: Int) = HealKey.content(0, "pk%02d".format(n), null)
+
+    @Test
+    fun `draining every entry brings the total back to zero`() {
+        val q = HealQueue()
+        repeat(50) { q.offer(a, key(it), stale(it)) }
+        assertEquals(50, q.size())
+        assertEquals(50, q.drain(a).size)
+        assertEquals(0, q.size(), "a fully drained queue holds nothing")
+    }
+
+    @Test
+    fun `a bounded drain takes its limit and leaves the rest queued`() {
+        // The remainder used to be drained and then dropped on the floor at the
+        // healer's per-pass cap. An address whose repair is discarded that way
+        // is re-queued only when its stale copy is refused again — which stops
+        // the moment that id is suppressed, so the relay stayed stale forever.
+        val q = HealQueue()
+        repeat(10) { q.offer(a, key(it), stale(it)) }
+
+        val first = q.drain(a, limit = 4)
+        assertEquals(4, first.size)
+        assertEquals(6, q.size(), "what a pass did not attempt must still be owed")
+
+        val second = q.drain(a, limit = 100)
+        assertEquals(6, second.size)
+        assertEquals(0, q.size())
+        assertEquals(
+            (0 until 10).map { key(it) }.toSet(),
+            first.keys + second.keys,
+            "every address is handed over exactly once across the two passes",
+        )
+    }
+
+    @Test
+    fun `a drain of zero takes nothing and owes everything`() {
+        val q = HealQueue()
+        q.offer(a, key(1), stale(1))
+        assertTrue(q.drain(a, limit = 0).isEmpty())
+        assertEquals(1, q.size())
+    }
+
+    @Test
+    fun `an offer racing a drain never inflates the total`() {
+        // The regression under test. With the map swapped out wholesale, an
+        // offer that had already resolved its slot landed in the detached map
+        // AFTER the drain had subtracted the old size — the entry was lost and
+        // the counter was incremented for it anyway. Repeated, that walks the
+        // total up to the limit and every later offer is refused for good.
+        val q = HealQueue()
+        val threads =
+            (0 until 8).map { t ->
+                Thread {
+                    repeat(400) { i ->
+                        q.offer(a, key(t * 1000 + i), stale(i))
+                        if (i % 25 == 0) q.drain(a, limit = 7)
+                    }
+                }
+            }
+        threads.forEach { it.start() }
+        threads.forEach { it.join() }
+
+        // Whatever survived the interleaving, the counter must agree with the
+        // map it is counting — the invariant `offer` reads before dropping.
+        assertEquals(q.sizeFor(a), q.size(), "the running total must equal what is actually queued")
+        q.drain(a)
+        assertEquals(0, q.sizeFor(a), "a full drain leaves nothing behind")
+        assertEquals(0, q.size(), "and settles the counter at zero")
+    }
+}

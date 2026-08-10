@@ -139,11 +139,39 @@ class HealQueue(
         return true
     }
 
-    /** Take everything queued for [url]. The queue is empty for it afterwards. */
-    fun drain(url: NormalizedRelayUrl): Map<HealKey, StaleRef> {
-        val slot = byRelay.remove(url) ?: return emptyMap()
-        total.addAndGet(-slot.size)
-        return slot
+    /**
+     * Take up to [limit] repairs queued for [url], leaving any remainder for
+     * the next pass.
+     *
+     * **Entries are removed one at a time from the live map rather than by
+     * swapping the map out.** Swapping looks cheaper and is wrong: an `offer`
+     * that had already resolved its slot would land in the detached map after
+     * the swap, so its entry was lost AND [total] was incremented for it after
+     * the drain had subtracted the old size. That drift only ever goes up, and
+     * once it reached [totalLimit] every later offer was dropped — the healer
+     * silently stopping, which is the failure this whole subsystem is supposed
+     * to be the opposite of. Removing per key keeps the counter exact: each
+     * entry is counted by exactly the thread that inserted it and uncounted by
+     * exactly the thread that took it.
+     *
+     * The returned map is a private copy, so a concurrent offer cannot mutate
+     * what the caller is iterating.
+     */
+    fun drain(
+        url: NormalizedRelayUrl,
+        limit: Int = Int.MAX_VALUE,
+    ): Map<HealKey, StaleRef> {
+        if (limit <= 0) return emptyMap()
+        val slot = byRelay[url] ?: return emptyMap()
+        val taken = HashMap<HealKey, StaleRef>(minOf(limit, slot.size).coerceAtLeast(1))
+        for (key in slot.keys) {
+            if (taken.size >= limit) break
+            slot.remove(key)?.let {
+                taken[key] = it
+                total.decrementAndGet()
+            }
+        }
+        return taken
     }
 
     /** Throw away what is queued for [url] without pushing any of it. */
