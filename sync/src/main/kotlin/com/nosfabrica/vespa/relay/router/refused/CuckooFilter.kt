@@ -244,8 +244,37 @@ internal class CuckooFilter private constructor(
             val needed = (capacity / (SLOTS * TARGET_LOAD)).toLong().coerceAtLeast(1L)
             var b = 1L
             while (b < needed) b = b shl 1
-            return b.coerceAtMost(1L shl 28).toInt()
+            return b.coerceAtMost(MAX_BUCKETS.toLong()).toInt()
         }
+
+        /**
+         * The largest table a `ByteBuffer` can actually address.
+         *
+         * At 4 slots × 4 bytes this is 1 GiB plus the header, and the next
+         * power of two would be 2 GiB + 32 — past `Int.MAX_VALUE`, where
+         * `FileChannel.map` throws "Size exceeds Integer.MAX_VALUE" and
+         * `allocateDirect` gets a negative size from the truncating `toInt()`.
+         * The slot offsets in [readSlot] overflow at the same point. The cap
+         * used to be `1 shl 28`, which promised four times what either could
+         * hold and turned a large `SYNC_REFUSED_EPOCH_CAPACITY` into a crash
+         * on the first refusal rather than a bigger table.
+         *
+         * Clamping rather than throwing is deliberate: an oversized capacity
+         * is an operator asking for more headroom than one partition can give,
+         * and the honest response is the biggest partition we can build plus
+         * the SEALED warning when it fills — not a dead router.
+         */
+        const val MAX_BUCKETS = 1 shl 26
+
+        /**
+         * Ids one table of [bucketsFor] buckets holds before the relocation
+         * chain starts failing. Worth asking for rather than assuming
+         * [bucketsFor]'s input: rounding the bucket count up to a power of two
+         * routinely leaves the real ceiling well above the requested capacity
+         * (8M asked for, ~15.9M available), and quoting the request in a
+         * "table full" warning would understate it by up to 2×.
+         */
+        fun capacityOf(buckets: Int): Int = (buckets.toLong() * SLOTS * TARGET_LOAD).toInt()
 
         private const val TARGET_LOAD = 0.95
 

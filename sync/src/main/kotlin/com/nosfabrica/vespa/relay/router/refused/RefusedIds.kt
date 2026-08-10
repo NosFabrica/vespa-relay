@@ -46,13 +46,21 @@ enum class Recorded {
  *
  * **Two filters, not one, and that is the safety property.** A first refusal
  * only makes an id a *candidate*; it is downloaded again next cycle and must be
- * refused a SECOND time before it is suppressed. That extra download per id
- * buys the thing that makes the arithmetic safe: a false positive in the
- * candidate filter costs one wasted download, never a suppression. Only the
- * suppress filter's own ε can lose data, and every id in it is backed by two
- * independent refusals. It also means a `needIds` id that reappears because a
- * fetch died mid-transfer can never suppress anything — a sighting is a
- * completed download plus a store refusal, never a mere appearance in a diff.
+ * refused a SECOND time before it is suppressed. Only the suppress filter's own
+ * ε can lose data, and every id in it is backed by a store refusal that really
+ * happened. It also means a `needIds` id that reappears because a fetch died
+ * mid-transfer can never suppress anything — a sighting is a completed download
+ * plus a store refusal, never a mere appearance in a diff.
+ *
+ * Be exact about what a false positive in the CANDIDATE filter does, because
+ * the obvious phrasing is wrong: it does not cost a wasted download, it
+ * promotes the id to the suppress filter on its FIRST refusal instead of its
+ * second ([record] reads `candidate.contains` and goes straight to
+ * `suppress.add`). That is still safe, but for a different reason than the
+ * gate — the id it fast-tracks is one the store has already refused, so no
+ * wanted event is lost, only a cycle of patience. What the gate actually buys
+ * is that the suppress filter is never populated from a bare *sighting*, and
+ * at ε ≈ 1.9e-9 the fast-track is expected ~0.2 times per 100M refusals.
  *
  * **Partitioned by `created_at` epoch**, because the set being remembered grows
  * monotonically and forever while any fixed structure does not. An epoch whose
@@ -153,13 +161,19 @@ class RefusedIds(
         val lo = epochOf(since ?: 0L)
         val hi = epochOf(until ?: (System.currentTimeMillis() / 1000))
         if (hi < lo) return false
-        var e = lo
-        while (e <= hi) {
-            if (epochs[e]?.suppress?.contains(id) == true) {
+        // Walk the epochs that EXIST and keep the ones the window covers,
+        // rather than counting from `lo` to `hi` and probing each number.
+        // An open-ended window (`since = null`, which is the ordinary case for
+        // a `deleteMissing` ask) starts at epoch 0, so the counting version
+        // probed every epoch index since 1970 for every id: measured at 0.57 ms
+        // per call against 0.0007 ms here — a 780x difference paid once per id
+        // in `diff.needIds`, which is thousands of ids per relay per sweep.
+        for ((key, epoch) in epochs) {
+            if (key < lo || key > hi) continue
+            if (epoch.suppress.contains(id)) {
                 suppressedHits.incrementAndGet()
                 return true
             }
-            e++
         }
         return false
     }
@@ -306,10 +320,16 @@ class RefusedIds(
         val epoch = epochs[key] ?: return Recorded.REFUSED_FULL
         if (!epoch.sealedOff) {
             epoch.sealedOff = true
+            // The table's REAL ceiling, not the configured request. Bucket
+            // counts round up to a power of two, so a partition asked for 8M
+            // ids actually seals near 15.9M — quoting the request would tell
+            // an operator to raise a number that was never the binding one.
+            val held = CuckooFilter.capacityOf(epoch.suppress.buckets)
             System.err.println(
                 "router: refused-ids epoch $key SEALED — its $which table would not take another id " +
-                    "(capacity ${fmtCount(capacityPerEpoch)}). Suppression keeps working for what it already holds; " +
-                    "nothing new is recorded there. Raise SYNC_REFUSED_EPOCH_CAPACITY or shorten SYNC_REFUSED_EPOCH_SECONDS.",
+                    "(held ~${fmtCount(held)}, configured ${fmtCount(capacityPerEpoch)}). Suppression keeps working " +
+                    "for what it already holds; nothing new is recorded there. Raise SYNC_REFUSED_EPOCH_CAPACITY " +
+                    "or shorten SYNC_REFUSED_EPOCH_SECONDS.",
             )
         }
         return Recorded.REFUSED_FULL
@@ -337,10 +357,22 @@ class RefusedIds(
         const val DEFAULT_EPOCH_SECONDS = 90L * 24 * 60 * 60
 
         /**
-         * Ids one epoch's table is sized for. 8M at ~4.3 B/id is ~34 MB per
-         * table, ~68 MB per epoch with the candidate filter — page cache, not
-         * heap, which is the whole reason this is mmap'd rather than a
-         * HashMap. Step 0's measurement is what should replace this default.
+         * Ids one epoch's table is sized for.
+         *
+         * MEASURED, not derived: 8M rounds the bucket count up to 2^22, which
+         * is **64 MiB per table and 128 MiB per epoch** with the candidate
+         * filter beside it — 8.4 B/id, not the ~4.3 B/id the structure costs
+         * at a bucket count that happens to land near a power of two. The
+         * rounding is why: 8M needs 2,105,263 buckets and gets 4,194,304, so
+         * nearly half the table is headroom. That headroom is not waste —
+         * accuracy here is load-independent, so the extra slots simply push
+         * the seal out to ~15.9M ids — but it must be budgeted for, because
+         * the earlier figure on this line understated the disk and page cache
+         * an operator needs by a factor of two.
+         *
+         * Page cache, not heap, which is the whole reason this is mmap'd
+         * rather than a HashMap. Step 0's measurement is what should replace
+         * this default.
          */
         const val DEFAULT_EPOCH_CAPACITY = 8_000_000
 

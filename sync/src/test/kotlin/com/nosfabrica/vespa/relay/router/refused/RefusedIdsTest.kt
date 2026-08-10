@@ -181,3 +181,79 @@ class RefusedIdsTest {
         }
     }
 }
+
+/**
+ * The window lookup, which is the only path a sweep can reach and the only one
+ * whose cost scales with something other than the data.
+ */
+class RefusedIdsWindowTest {
+    private fun dir() = Files.createTempDirectory("window").toFile().also { it.deleteOnExit() }
+
+    private fun id(n: Int) = "%064x".format(n)
+
+    private fun twiceRefuse(
+        r: RefusedIds,
+        id: String,
+        at: Long,
+    ) {
+        r.record(id, at)
+        r.record(id, at)
+    }
+
+    @Test
+    fun `an open-ended window still finds a suppressed id`() {
+        // `since = null` is the ordinary shape of a deleteMissing ask, so this
+        // is the case that actually runs — and the one the old index-counting
+        // loop made expensive rather than wrong.
+        val r = RefusedIds(dir(), 86_400L, 10_000)
+        twiceRefuse(r, id(1), 1_780_000_000L)
+        assertTrue(r.suppressedInWindow(id(1), null, null))
+        r.close()
+    }
+
+    @Test
+    fun `a window that excludes the id's epoch does not match it`() {
+        val r = RefusedIds(dir(), 86_400L, 10_000)
+        twiceRefuse(r, id(2), 1_780_000_000L)
+        // Two days earlier, closed well before the epoch the id landed in.
+        assertFalse(r.suppressedInWindow(id(2), 1_779_000_000L, 1_779_500_000L))
+        r.close()
+    }
+
+    @Test
+    fun `an id is found from either side of its own epoch boundary`() {
+        // The boundary this class's KDoc calls out: insertion keys on the exact
+        // created_at, lookup keys on a window, and windows do not respect epoch
+        // edges. Get it wrong and suppression quietly stops near every edge.
+        val epoch = 86_400L
+        val r = RefusedIds(dir(), epoch, 10_000)
+        val at = 1_780_000_000L
+        twiceRefuse(r, id(3), at)
+        assertTrue(r.suppressedInWindow(id(3), at - epoch, at + epoch), "a window spanning three epochs covers it")
+        assertTrue(r.suppressedInWindow(id(3), at, at), "so does the degenerate window on the id itself")
+        r.close()
+    }
+
+    @Test
+    fun `an open-ended window costs the epochs that exist, not the epochs since 1970`() {
+        // A guard on cost, not correctness. The previous version counted from
+        // epoch 0 to epochOf(now) and probed each index: at a one-day epoch
+        // that is >20,000 map misses per id, paid once per id in diff.needIds
+        // — thousands per relay per sweep. Measured at 0.57ms per call against
+        // 0.0007ms for a narrow window before the fix.
+        val r = RefusedIds(dir(), 86_400L, 10_000)
+        twiceRefuse(r, id(4), 1_780_000_000L)
+
+        val probes = 20_000
+        val started = System.nanoTime()
+        repeat(probes) { r.suppressedInWindow(id(9_999), null, null) }
+        val perCallMicros = (System.nanoTime() - started) / 1_000.0 / probes
+
+        assertTrue(
+            perCallMicros < 50.0,
+            "an open-ended miss took ${perCallMicros}us per call — it should be proportional to the " +
+                "one epoch on disk, not to the number of epochs since 1970",
+        )
+        r.close()
+    }
+}

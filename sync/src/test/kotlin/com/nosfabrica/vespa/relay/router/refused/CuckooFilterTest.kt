@@ -168,3 +168,65 @@ class CuckooFilterTest {
         }
     }
 }
+
+/**
+ * The table's size arithmetic, which has one hard edge nothing else guards.
+ *
+ * A `ByteBuffer` cannot address more than `Int.MAX_VALUE` bytes, and neither
+ * can [CuckooFilter]'s own slot offsets. Past that, `FileChannel.map` throws
+ * and `allocateDirect` gets a negative size from a truncating `toInt()` — so a
+ * capacity chosen by an operator, not by this code, decided whether the router
+ * ran at all.
+ */
+class CuckooGeometryTest {
+    @Test
+    fun `bucket counts stay inside what a ByteBuffer can address`() {
+        listOf(1, 8_000_000, 255_013_683, 300_000_000, Int.MAX_VALUE).forEach { capacity ->
+            val buckets = CuckooFilter.bucketsFor(capacity)
+            val bytes = 32L + buckets.toLong() * CuckooFilter.SLOTS * 4
+            assertTrue(
+                bytes <= Int.MAX_VALUE,
+                "bucketsFor($capacity) = $buckets needs $bytes bytes, past what a ByteBuffer can hold",
+            )
+        }
+    }
+
+    @Test
+    fun `an oversized capacity clamps rather than asking for a table nothing can map`() {
+        // Clamping rather than failing is the deliberate choice: an operator
+        // asking for more headroom than one partition can give should get the
+        // biggest partition available plus the SEALED warning when it fills,
+        // not a router that dies on the first refusal. Before the clamp,
+        // `bucketsFor` promised 2^28 buckets — 4 GiB — and `open` raised
+        // "Size exceeds Integer.MAX_VALUE" from inside the ingest path.
+        //
+        // Asserted on the geometry rather than by opening one: a clamped table
+        // is a gigabyte, and a unit suite has no business allocating that to
+        // learn a number `bucketsFor` already knows.
+        assertEquals(CuckooFilter.MAX_BUCKETS, CuckooFilter.bucketsFor(300_000_000))
+        assertEquals(CuckooFilter.MAX_BUCKETS, CuckooFilter.bucketsFor(Int.MAX_VALUE))
+    }
+
+    @Test
+    fun `a capacity just under the clamp still gets the table it asked for`() {
+        // The other side of the edge, so the clamp cannot silently swallow
+        // ordinary sizings on its way to guarding the extreme one.
+        assertTrue(CuckooFilter.bucketsFor(8_000_000) < CuckooFilter.MAX_BUCKETS)
+        assertTrue(CuckooFilter.capacityOf(CuckooFilter.bucketsFor(8_000_000)) >= 8_000_000)
+    }
+
+    @Test
+    fun `the real ceiling is reported, not the requested one`() {
+        // Rounding the bucket count up to a power of two routinely leaves the
+        // true ceiling well above what was asked for. The seal warning quotes
+        // this, because telling an operator to raise a number that was never
+        // the binding one sends them the wrong way.
+        val buckets = CuckooFilter.bucketsFor(8_000_000)
+        val real = CuckooFilter.capacityOf(buckets)
+        assertTrue(
+            real > 8_000_000,
+            "8M rounds up to $buckets buckets, which holds $real — the request understates it",
+        )
+        assertTrue(real <= buckets.toLong() * CuckooFilter.SLOTS, "and never more than the slots that exist")
+    }
+}
