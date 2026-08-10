@@ -261,6 +261,39 @@ class SyncCoverageReportTest {
     }
 
     /**
+     * `sweeping` counts the cursors this document PLACES, never the ones it
+     * merely holds.
+     *
+     * A cursor missing an edge is unreadable — the router always writes both,
+     * so this takes a state file it did not write — and the row for it carries
+     * no `sweep`, because there is no span to draw. Counting it anyway made the
+     * head claim a sweep the same document declined to describe, which the
+     * stats page then contradicted the moment its url filter restated the count
+     * off the rows.
+     */
+    @Test
+    fun `a cursor with no readable span is not counted as sweeping`() {
+        val filter = """{"kinds":[1]}"""
+        val doc =
+            SyncCoverageReport.build(
+                "{}",
+                sweeps(
+                    leg("wss://good.example/", filter, mark(700, 900)),
+                    leg("wss://half.example/", filter, """{"upTo":900,"at":$now}"""),
+                ),
+                now,
+            )
+        val stream = streams(doc).single().jsonObject
+        // Both relays are still on the card — one was reached, and a row that
+        // can say nothing about it is the honest way to show that.
+        assertEquals(2, stream["relays"]!!.jsonPrimitive.longOrNull?.toInt())
+        assertEquals(1, stream["sweeping"]!!.jsonPrimitive.longOrNull?.toInt())
+        val byRelay = rowsOf(stream).associateBy { it["relay"]!!.jsonPrimitive.content }
+        assertEquals(700L, byRelay["wss://good.example"]!!["sweep"]!!.jsonObject["downTo"]!!.jsonPrimitive.longOrNull)
+        assertNull(byRelay["wss://half.example"]!!["sweep"], "an unreadable cursor has no span to place")
+    }
+
+    /**
      * The known open bug, made visible instead of charted as coverage: one band
      * holds a span per kind, and `min`/`max` are the OUTER edges — so kind 0
      * vouches for kind 30382 and a row drawn from them alone over-claims.
