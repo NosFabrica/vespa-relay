@@ -1,6 +1,10 @@
 # Proposal: events we will never store, re-downloaded forever
 
-**Status:** proposal, nothing implemented. Written to be argued with.
+**Status:** the shape is decided — **both** Fix 2 (push the update back to the
+source) and Fix 3a (a tombstone for when that push is refused). Nothing is
+implemented yet; the sizing, the rejection classification and the epoch
+partitioning are still open. Fix 1 and Fix 3b remain as written: one free, one
+an upgrade nobody has justified yet.
 
 ## The loop
 
@@ -129,19 +133,41 @@ AGENTS.md, but it removes most of the re-transfer for zero new state.
 
 **Do this first. It may be enough**, and Step 0's numbers will say.
 
-### Fix 2 — heal the upstream: push the winner back
+### Fix 2 — heal the upstream: push the update back to the source
 
 Instead of remembering that we refused an old version, **send the upstream the
-newer one**. A relay that implements NIP-01's replaceable rule drops its old
-copy on accepting ours, the sets converge, and the difference is gone — for us,
-and for every other mirror that would have paid the same transfer. O(1) state
-instead of a gigabyte, and it fixes the cause rather than the symptom.
+thing that supersedes it**. A relay that implements NIP-01's replaceable rule
+drops its old copy on accepting ours, the sets converge, and the difference is
+gone — for us, and for every other mirror that would have paid the same
+transfer. O(1) state instead of a gigabyte, and it fixes the cause rather than
+the symptom. strfry honours replacement on write
+([Prior art](#prior-art-what-strfry-does)), so this converges against a large
+slice of the network.
 
-The same move covers retractions, and there it is worth more than the
-bandwidth: an upstream still serving an event our stored kind 5 deletes gets the
-**kind 5**, and one still serving a vanished author's history gets the
-**kind 62**. Deletion propagation is a known-weak part of Nostr; this is a
-mirror in a position to repair it.
+**Four triggers, and they are not equally sensitive:**
+
+| we hold | we push | author asked for this? |
+|---|---|---|
+| a newer **replaceable** event (0, 3, 10002, …) | the newer version | no — inferred from the outbox model |
+| a newer **addressable** event (30xxx) | the newer version | no — same |
+| a **kind 5** deletion whose target they still serve | the kind 5 | **yes**, explicitly |
+| a **kind 62** carrying `relay = ALL_RELAYS` | the kind 62 | **yes**, to every relay by name |
+
+The right-hand column decides the policy question. Republishing someone's
+profile to a relay they did not choose is an inference about what they want; a
+kind 5 and an `ALL_RELAYS` kind 62 are **requests the author already addressed to
+every relay**, and most relays never received them. A mirror that holds one and
+declines to propagate it is withholding a deletion the author asked for. So the
+two retraction kinds deserve a more permissive default than the two content
+kinds, and probably a separate switch.
+
+**A relay-scoped kind 62 must never be propagated.** NIP-62's `relay` tag is
+either `ALL_RELAYS` or one specific url — `RequestToVanishEvent.shouldVanishFrom`
+is where the store already makes that distinction. Pushing a vanish request
+scoped to relay A onto relay B erases the author from a relay they never asked
+to leave. This is the sharpest edge in the whole proposal: it is data destruction
+on someone else's server, executed on our inference. Gate it on the tag, test it,
+and make the test the kind that fails loudly.
 
 **It is cheaper to build than it looks.** It does not need the ingest-rejection
 path at all — a reconcile already computes *both* halves of the diff in one
@@ -192,13 +218,76 @@ people's events to relays they did not choose is a values call, not only an
 engineering one. **Per-stream opt-in, default off**, and it should be a distinct
 setting from `dir = up` — the relay list is not the same list.
 
-#### Two constraints to design in from the start
+#### The push must be off the hot path
 
-- **Push per address, not per rejected event.** `UpstreamPush` paces at 40 ms
-  between publishes; 400k rejections would be 4.4 hours of pure pacing. Dedupe
-  on `(relay, kind, pubkey, d)` once per cycle.
-- **Convergence is only observable next cycle.** Which is exactly what Step 0's
-  repeat-detector measures — see the composition note under Fix 3.
+**Non-negotiable, and it shapes the design.** The hot path is reconcile →
+download → verify → `batchInsert`, and it is already the thing that competes
+with client reads: `IngestPipeline.loop()` yields on `ServingPressure` for
+exactly that reason. Publishing inline would block the sweep on a publish plus
+an `OK` round trip, serialise the walk behind `UpstreamPush`'s 40 ms pacing, and
+add write traffic to a pipeline that is already backpressured. A fix for slowness
+that makes the system slower is not a fix.
+
+So the reconcile does the cheapest possible thing and hands off:
+
+- **Enqueue an address, never an event.** On identifying a candidate the sweep
+  appends `(relay, kind, pubkey, d)` — or `(relay, eventId)` for a kind 5 / kind
+  62 — to a bounded set. No store query, no serialisation, no allocation worth
+  measuring. Resolving the winner from the store happens in the healer.
+- **Coalesce, and drop on overflow.** A `Set` keyed on the address means a
+  popular profile enqueued five thousand times is one entry. When the set is
+  full, **drop and log** — never backpressure. Losing a heal costs nothing: the
+  next cycle re-enqueues it. This is the opposite of `IngestPipeline.submit`,
+  which suspends rather than drop, and deliberately so: an event dropped there is
+  data lost, a heal dropped here is a retry.
+- **Drain per relay, after its sync, before the socket closes.** A `relaySource`
+  stream drops each relay's socket as soon as the sync returns — "these streams
+  have no live tail" — so a fully detached healer would have to re-dial thousands
+  of relays just to push. Draining that relay's queue at the end of its own sync
+  keeps the connection, bounds the work to one relay's worth, and is still off
+  the reconcile's critical path. Only a relay whose sync died mid-way needs the
+  detached re-dial path.
+- **Yield to `ServingPressure` like ingest does.** Same
+  `backoffMs()?.takeIf { it > 0 }?.let { delay(it) }`, same reason. Healing is
+  the lowest-priority work in the process and should say so in code.
+
+#### The `OK` response is the signal, and it is better than waiting
+
+The original plan was to infer a failed heal by watching whether the id came back
+next cycle. It still needs that (below), but NIP-01 gives a **synchronous,
+per-event, machine-readable** answer first, and its prefix decides whether a
+tombstone is earned:
+
+| `OK false` reason | tombstone? | why |
+|---|---|---|
+| `auth-required:` / `restricted:` / `blocked:` | **yes, immediately** | policy. Paid relay, allow list, block list. It will refuse the next one identically. |
+| `rate-limited:` | **no** | transient, and the one that would do real damage — a momentary blip would permanently blind us to a relay that was going to heal. |
+| `error:` | **no** | transient by definition. |
+| `invalid:` / `pow:` | **no** | our event or our effort, not their policy. Fixing it is a different bug. |
+| `duplicate:` | **no** | they already have our winner. Whether they *also* kept the loser is the next-cycle question, not this one. |
+| no `OK` at all (timeout) | **not before N** | ambiguous. Count strikes per relay, the way `HostStrikes` already does, and only then treat the relay as write-closed. |
+
+**Two tiers, because `OK true` is not proof of healing.** An accept means the
+relay took our event, not that it dropped the loser — an archival relay does the
+first and not the second. So:
+
+1. **`OK false`, permanent class → tombstone now.** Certain, immediate, free.
+2. **`OK true`, and the id is offered again next cycle → tombstone then.** This
+   relay accepts writes and keeps both versions. Only the observation loop can
+   see it, which is why 3a must not blind itself — see the note under Fix 3.
+
+**Two structures, two jobs.** Do not conflate them:
+
+- **A per-relay write-capability bit** (plus the reason and a strike count).
+  Bounds the *push* cost: one `auth-required` means never spend another publish
+  on that relay. Tiny — one row per relay, and `HostStrikes` is the shape to
+  copy.
+- **The per-id filter.** Bounds the *download* cost, and is still needed at a
+  write-closed relay, because being unable to heal it does not stop it offering
+  us the same ids forever.
+
+Global per id, not per relay: "nobody should send us this" is one fact, and a
+per-relay filter would multiply the storage by the fan-out.
 
 ### Fix 3 — remember what we refused
 
@@ -427,13 +516,14 @@ residual after 3a before deciding 3b is worth a store release.
 
 #### How it composes with Fix 2
 
-Cleanly, and in one direction. **Step 0's repeat-detector is exactly the
-instrument that tells you whether a push worked**: we pushed the winner, and
-either the old id stopped being offered (healed — no row needed, ever) or it
-came back (this relay will not heal — earn the row). So the table only grows for
-relays that have demonstrated they need it, which is the strongest bound
-available and strictly better than any of the heuristics under
-[Bounding it](#bounding-it--what-applies-to-which-variant).
+Tightly, and this is now the design rather than an option. **A candidate earns a
+row only once a push has been refused** — by `OK false` in the permanent class,
+immediately, or by the id being re-offered after an `OK true`, one cycle later.
+Relays that heal never cost a single entry. That is a far stronger bound than any
+heuristic under
+[Bounding it](#bounding-it--what-applies-to-which-variant), and it is what makes
+the filter's size a function of *how much of the network refuses our writes*
+rather than of how much of the network has stale copies.
 
 The dependency runs one way: Fix 3 is useful without Fix 2, but Fix 2 needs
 Fix 3's instrumentation to know whether it is working at all.
@@ -449,6 +539,11 @@ write-closed strike rule, the "populate only for relays that failed to heal"
 bound — has to be settled *before* 3b lands, or it cannot be measured afterwards.
 
 ## Half A — what earns a row, and what must never
+
+Two gates now, in series. The table below says which store refusals make an event
+a **candidate**; the `OK` classification under Fix 2 says when a candidate
+becomes a **row**. An event has to pass both — be permanently unstorable *and*
+have resisted a heal.
 
 This table is the actual content of the proposal. Getting a line wrong here
 either wastes a gigabyte or loses data permanently.
@@ -708,20 +803,23 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    baseline, for the reason above.
 2. **Fix 1** (`since` on the replaceable-kind streams). One more cycle. The delta
    against step 1 is the whole of what the remaining work has to beat.
-3. **Fix 2 on the static upstreams only** — the `urls` in `router.conf`, where we
-   have a relationship and plausibly write access. Per-stream opt-in, default
-   off, deduped per address per cycle, with a write-closed strike rule. This is
-   the population where it converges, and it is a bounded blast radius to learn
-   the acceptance rate in.
-4. **Fix 3a** — per-epoch cuckoo filters, one file per writing process. Wire
-   them into `DeleteMissingSync`'s `needIds` first, which needs no upstream
-   change and proves the suppression on one path; then the `wantId` predicate in
-   quartz for the main sweep, closing over the window's bounds to pick the
-   epoch. Log the suppression count and each epoch's load from day one — a
-   filter doing nothing and a filter eating everything look identical without it.
-   Decide up front what an insert failure does: open a new generation for that
-   epoch, or stop suppressing. Silently continuing is the one unacceptable
-   answer.
+3. **Fix 2's healer, on the static upstreams only** — the `urls` in
+   `router.conf`, where we have a relationship and plausibly write access.
+   Per-stream opt-in, default off, and **two switches**: one for the retraction
+   kinds (5 and `ALL_RELAYS` 62), one for the content kinds. Build the bounded
+   coalescing queue, the per-relay post-sync drain, the `ServingPressure` yield
+   and the `OK` classifier in this step — they are the whole mechanism, and a
+   bounded blast radius is the place to learn the real acceptance rate.
+   The relay-scoped kind-62 guard ships here, with its test.
+4. **Fix 3a** — per-epoch cuckoo filters, one file per writing process, fed by
+   the classifier from step 3 rather than by every store refusal. Wire them into
+   `DeleteMissingSync`'s `needIds` first, which needs no upstream change and
+   proves the suppression on one path; then the `wantId` predicate in quartz for
+   the main sweep, closing over the window's bounds to pick the epoch. Log the
+   suppression count and each epoch's load from day one — a filter doing nothing
+   and a filter eating everything look identical without it. Decide up front what
+   an insert failure does: open a new generation for that epoch, or stop
+   suppressing. Silently continuing is the one unacceptable answer.
 5. Measure the **residual**: with the bodies suppressed, how much is the
    un-converged reconcile still costing in round trips and id transfer? That
    number, and nothing else, justifies step 6.
@@ -760,13 +858,13 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
   class of event. Worth a deliberate answer.
 - **Ordering.** `entriesFor` merges two sorted sequences; confirm quartz does not
   require global sort order beyond what it already sorts internally.
-- **Does Fix 2 need the author's consent?** We would be republishing someone's
-  event to a relay they did not choose. The mitigating fact is that the target
-  relay already hosts an older version from the same author, so it has already
-  accepted their data — but "already has an old copy" is not the same as "wants
-  the new one", and a vanish request (kind 62) is precisely an author saying
-  otherwise. The kind-62 push and the profile push may not deserve the same
-  default.
+- **Does the content push need the author's consent?** Settled for the two
+  retraction kinds — a kind 5 and an `ALL_RELAYS` kind 62 are requests the author
+  addressed to every relay, so propagating them is honouring an instruction, not
+  inferring one. Still open for the two content kinds: republishing a profile to
+  a relay the author did not choose is an inference, mitigated only by the fact
+  that the relay already hosts an older version from them. Separate switch,
+  and the content one probably defaults off for longer.
 - **Does 3a want to be per-relay?** One global filter says "nobody should send us
   this". A per-relay filter would let a relay that healed drop out of
   suppression, and keeps one relay's junk from suppressing another's. It also
