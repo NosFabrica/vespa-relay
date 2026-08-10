@@ -396,32 +396,43 @@ internal class StatsRollup(
      * between three answers rather than re-aggregating one.
      *
      * The monthly series is the one anchored to a DATE rather than to a length —
-     * see [DEFAULT_MONTH_SERIES_START] — and it is also the only one filled to
-     * its whole span, because it is the only one that deliberately reaches back
-     * past the day this mirror started holding anything.
+     * see [DEFAULT_MONTH_SERIES_START] — which makes it the only one that is
+     * both filled to its whole span (it deliberately reaches back past the day
+     * this mirror started holding anything) and asked for A YEAR AT A TIME
+     * rather than in one query (see [StatsYql.monthSlicesFrom]).
      */
     private suspend fun activitySection(): JsonObject =
         section { attempts ->
             val now = nowSeconds()
             val hourWindow = StatsYql.window(now - hourWindowDays * DAY_SECONDS, now)
-            val monthLabels = StatsYql.isoMonthsFrom(monthSeriesStart, now)
-            val days = series(attempts, "days", StatsYql.DAY, StatsYql::isoDay, now - windowDays * DAY_SECONDS, now)
-            val weeks = series(attempts, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, now - weekWindowWeeks * 7 * DAY_SECONDS, now)
-            // An exact calendar boundary rather than a count of days back from
-            // now — see StatsYql.startOfMonth. The old window was
-            // `monthWindowMonths * 31` days precisely because it could not land
-            // on one, and paid a partial leading month for it.
+            // Windows that trail the present, so one query each and nothing to
+            // fill: 30 days and 26 weeks sit inside any live mirror's history.
+            val days = series(attempts, "days", StatsYql.DAY, StatsYql::isoDay, listOf(Slice(now - windowDays * DAY_SECONDS, now)))
+            val weeks =
+                series(attempts, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, listOf(Slice(now - weekWindowWeeks * 7 * DAY_SECONDS, now)))
+            // One slice per calendar year, on exact month boundaries — where the
+            // old window was `monthWindowMonths * 31` days back from now
+            // precisely because it could not land on one, and paid a partial
+            // leading month for it.
+            val monthSlices = StatsYql.monthSlicesFrom(monthSeriesStart, now)
             val months =
-                series(attempts, "months", StatsYql.MONTH, StatsYql::isoMonth, StatsYql.startOfMonth(monthSeriesStart), now, fill = monthLabels)
+                series(
+                    attempts,
+                    "months",
+                    StatsYql.MONTH,
+                    StatsYql::isoMonth,
+                    monthSlices.map { Slice(it.since, it.until, key = it.year.toString(), fill = it.months) },
+                )
             val hours = attempt(attempts, "hours") { longsByGroup(StatsYql.countsBy(StatsYql.HOUR), hourWindow) }
             buildJsonObject {
                 put("windowDays", windowDays)
                 put("windowWeeks", weekWindowWeeks)
-                // Derived from the labels the series is filled to rather than
-                // stated beside them: this number IS how many buckets the
-                // monthly chart draws, and two spellings of it would drift apart
-                // the first month the anchor is moved.
-                put("windowMonths", monthLabels.size)
+                // The months the WINDOW covers, which is not the same as the
+                // number of bars when a year's query fails — that year's months
+                // are then absent rather than drawn at zero, and the section's
+                // errors name it. Derived from the slices rather than stated
+                // beside them, so the two cannot disagree about the span.
+                put("windowMonths", monthSlices.sumOf { it.months.size })
                 // The anchor itself, because "44 months" is not what this window
                 // means and a reader charting /stats.json elsewhere would have
                 // to count backwards from `generatedAt` to recover the date the
@@ -625,8 +636,19 @@ internal class StatsRollup(
      * `year * 12 + month`. Routing all three through this parameter is what
      * keeps [StatsYql.isoDay]'s trap from having to be re-remembered per series.
      *
-     * [fill] is the set of labels that must appear WHETHER OR NOT the engine
-     * returned a bucket for them, emitted at zero. A grouping only returns
+     * ONE QUERY PAIR PER SLICE, merged. A series whose window is a fixed trailing
+     * length is one slice; the monthly one is a slice per calendar year, so no
+     * single query's group set grows with the anchor — the argument is in
+     * [StatsYql.monthSlicesFrom], and the reason the merge is a union of disjoint
+     * keys rather than an addition is there too.
+     *
+     * Sequentially, deliberately. Firing the years concurrently would put the
+     * same peak back into the engine at the same instant, which is the cost the
+     * slicing exists to avoid; the rollup is a background timer with nothing
+     * waiting on it.
+     *
+     * [Slice.fill] is the set of labels that must appear WHETHER OR NOT the
+     * engine returned a bucket for them, emitted at zero. A grouping only returns
      * buckets that matched something, so an empty month is not a zero-height bar
      * — it is one fewer bar, and a chart asked for 44 months silently redraws as
      * however many of them had events, starting wherever the corpus happens to
@@ -634,48 +656,101 @@ internal class StatsRollup(
      * series already makes for its 24 slots, and it weighs more here: the
      * monthly window deliberately reaches back past the day this mirror started
      * holding anything, so the empty buckets are part of the answer.
+     *
+     * ## What a failed slice costs, and why the two columns differ
+     *
+     * A slice whose events query fails contributes NOTHING — not even its fill.
+     * Zero bars for a year we could not read would be a statement about the
+     * corpus; absent bars are a gap, beside a section badge reading `partial`
+     * and an error naming the year. The whole series is null only when every
+     * slice failed, which is the same contract this had when there was one.
+     *
+     * The pubkeys column is ALL OR NOTHING across slices, because the page
+     * cannot draw a hole in it: a point with no `pubkeys` key charts at zero
+     * exactly like a real zero, so one unreadable year inside a readable series
+     * would put twelve invented zeros in the middle of a chart with nothing to
+     * mark them. Dropping the column omits the card instead, which is what a
+     * column we could not read everywhere deserves.
      */
     private suspend fun series(
         attempts: Attempts,
         name: String,
         bucket: String,
         decode: (String) -> String?,
-        since: Long,
-        now: Long,
-        fill: List<String> = emptyList(),
+        slices: List<Slice>,
     ): JsonArray? {
-        val where = StatsYql.window(since, now)
-        val events = attempt(attempts, "$name.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) } ?: return null
-        val authors = attempt(attempts, "$name.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
-        // EMPTY is not zero, and the difference is a sentence this page prints.
-        // [bucketed] drops a group it cannot read rather than throwing — which is
-        // deliberate, and means an authors response whose shape we stop
-        // understanding (StatsYql.distinctCountOf's fallback is there for exactly
-        // that engine change) arrives as an empty map, not as a failed attempt.
-        // Zero-filling THAT writes `"pubkeys": 0` onto every bucket, and
-        // stats.html's all-zero branch states it: "No publishing pubkeys in this
-        // window.", in the error colour, beside an events chart full of bars. An
-        // absent column omits the card instead, which is what a column we could
-        // not read deserves.
-        val authorsByLabel = authors?.takeIf { it.isNotEmpty() }
-        // The UNION, not [fill] alone: a bucket the engine returned from outside
-        // the filled span is a disagreement between the window and the labels,
-        // and dropping it here would hide it.
+        val events = LinkedHashMap<String, Long>()
+        val authors = LinkedHashMap<String, Long>()
+        var answered = 0
+        var authorsWhole = true
+        for (slice in slices) {
+            // "months.2024.events" when there are years to tell apart, plain
+            // "days.events" when there are not — an error key names the query
+            // that failed, and for the monthly series that is one year of it.
+            val key = slice.key?.let { "$name.$it" } ?: name
+            val where = StatsYql.window(slice.since, slice.until)
+            val counts = attempt(attempts, "$key.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) }
+            if (counts == null) {
+                // Both columns lose this slice: pubkeys without the events
+                // beside them would chart a year we just said we cannot read.
+                authorsWhole = false
+                continue
+            }
+            answered++
+            // The UNION, not the fill alone: a bucket the engine returned from
+            // outside the labels we asked for is a disagreement between the
+            // window and the enumeration, and dropping it here would hide it.
+            val labels = counts.keys + slice.fill
+            labels.forEach { events[it] = counts[it] ?: 0L }
+            // EMPTY is not zero, and the difference is a sentence this page
+            // prints. [bucketed] DROPS a group it cannot read rather than
+            // throwing — deliberate, and it means an authors response whose
+            // shape we stop understanding ([StatsYql.distinctCountOf] carries a
+            // fallback for exactly that engine change) arrives as an empty map
+            // rather than as a failed attempt. Zero-filling that writes
+            // `"pubkeys": 0` onto every bucket, and stats.html states it: "No
+            // publishing pubkeys in this window.", in the error colour, beside
+            // an events chart full of bars.
+            val byLabel =
+                attempt(attempts, "$key.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
+                    ?.takeIf { it.isNotEmpty() }
+            if (byLabel == null) {
+                authorsWhole = false
+            } else {
+                // Zero rather than absent once the column is readable: a bucket
+                // holding no documents has no distinct authors either.
+                labels.forEach { authors[it] = byLabel[it] ?: 0L }
+            }
+        }
+        if (answered == 0) return null
         return buildJsonArray {
-            (events.keys + fill).sorted().forEach { label ->
+            events.keys.sorted().forEach { label ->
                 add(
                     buildJsonObject {
                         put("period", label)
                         put("events", events[label] ?: 0L)
-                        // Zero rather than absent once that column is readable at
-                        // all: a bucket holding no documents has no distinct
-                        // authors either, and a hole reads as "not measured".
-                        authorsByLabel?.let { put("pubkeys", it[label] ?: 0L) }
+                        if (authorsWhole) authors[label]?.let { put("pubkeys", it) }
                     },
                 )
             }
         }
     }
+
+    /**
+     * One query's worth of a series: the window to ask for, the labels that
+     * window is responsible for, and a name for it when a failure has to be
+     * reported.
+     *
+     * [key] is null for a series asked in one query — its errors are then
+     * `days.events` as they always were, rather than growing a segment that
+     * would mean nothing.
+     */
+    private data class Slice(
+        val since: Long,
+        val until: Long,
+        val key: String? = null,
+        val fill: List<String> = emptyList(),
+    )
 
     // ---- section plumbing ---------------------------------------------------
 
@@ -889,19 +964,22 @@ internal class StatsRollup(
          * ever leaves, so the series length is a number the document states
          * (`windowMonths`) rather than a constant a reader can assume.
          *
-         * THE COST GROWS WITH IT, and one of the two monthly pipelines grows in
-         * the direction this file has already been burned by. `countsBy(MONTH)`
-         * is cheap at any width — one leaf group per month, whatever the match
-         * set. `distinctAuthorsBy(MONTH)` is not: it materialises a PUBKEY SET
-         * PER MONTH, which is the same shape that, partitioning the whole corpus
-         * by kind, drove 2 GiB `PartialResult` buffers per match thread and
-         * OOMKilled the engine at a 64Gi limit — see [kindsSection], where the
-         * measurement is. It is bounded here by the window rather than by the
-         * store, so at 44 months it is a fraction of that; but the bound moves
-         * one month further out every month and nothing in the request path caps
-         * it ([StatsVespa] sets no read timeout, on purpose). This is the number
-         * to watch when the rollup's `tookMs` climbs, and moving the anchor
-         * FORWARD is the lever — it costs the oldest bars and nothing else.
+         * THE COST WOULD GROW WITH IT, which is why the series is not asked for
+         * in one query. `countsBy(MONTH)` is cheap at any width — one leaf group
+         * per month, whatever the match set. `distinctAuthorsBy(MONTH)` is not:
+         * it materialises a PUBKEY SET PER MONTH, the same shape that,
+         * partitioning the whole corpus by kind, drove 2 GiB `PartialResult`
+         * buffers per match thread and OOMKilled the engine at a 64Gi limit —
+         * see [kindsSection], where the measurement is. Over an anchored window
+         * that cost would climb every month forever, with nothing in the request
+         * path to cap it ([StatsVespa] sets no read timeout, on purpose).
+         *
+         * [StatsYql.monthSlicesFrom] cuts it at calendar years, so no single
+         * query ever holds more than twelve months of pubkey sets no matter how
+         * far back the anchor sits, and moving the anchor buys bars rather than
+         * risk. What grows is the NUMBER of queries — one more year, two more
+         * groupings, once a year — and the total work over the corpus, which
+         * would have been the same asked either way.
          */
         val DEFAULT_MONTH_SERIES_START: YearMonth = YearMonth.of(2023, 1)
 

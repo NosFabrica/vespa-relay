@@ -273,7 +273,7 @@ class StatsYqlTest {
     @Test
     fun `the month axis runs from the anchor to now, in the format the buckets decode to`() {
         val jan2023 = YearMonth.of(2023, 1)
-        val labels = StatsYql.isoMonthsFrom(jan2023, at("2023-04-17T05:00:00Z"))
+        val labels = months(jan2023, at("2023-04-17T05:00:00Z"))
         assertEquals(listOf("2023-01", "2023-02", "2023-03", "2023-04"), labels, "the current month is included, whole")
         // Both ends of the axis, spelled by the decoder the engine's buckets go
         // through: same string or the fill draws a duplicate bar.
@@ -284,7 +284,7 @@ class StatsYqlTest {
         // Anchored, so the span GROWS rather than sliding: the first label is
         // the anchor at any `now`, which is the whole point of the change from a
         // rolling 24-month window.
-        val later = StatsYql.isoMonthsFrom(jan2023, at("2026-08-10T00:00:00Z"))
+        val later = months(jan2023, at("2026-08-10T00:00:00Z"))
         assertEquals("2023-01", later.first())
         assertEquals("2026-08", later.last())
         assertEquals(44, later.size, "Jan 2023 through Aug 2026 inclusive")
@@ -293,13 +293,73 @@ class StatsYqlTest {
         // December, and a window opening there returns a bucket for it.
         val start = StatsYql.startOfMonth(jan2023)
         assertEquals(at("2023-01-01T00:00:00Z"), start)
-        assertEquals("2022-12", StatsYql.isoMonthsFrom(YearMonth.of(2022, 12), start - 1).last())
+        assertEquals("2022-12", months(YearMonth.of(2022, 12), start - 1).last())
 
         // A clock behind the anchor yields no axis rather than counting
         // backwards — or generating months until the heap goes.
-        assertEquals(emptyList(), StatsYql.isoMonthsFrom(jan2023, at("2022-12-31T23:59:59Z")))
-        assertEquals(listOf("2023-01"), StatsYql.isoMonthsFrom(jan2023, start))
+        assertEquals(emptyList(), StatsYql.monthSlicesFrom(jan2023, at("2022-12-31T23:59:59Z")))
+        assertEquals(listOf("2023-01"), months(jan2023, start))
     }
+
+    /**
+     * The series is asked a calendar year at a time, and the slices have to TILE
+     * the span: every month in exactly one slice, every slice's window covering
+     * exactly its own months.
+     *
+     * The failure this pins is silent in both directions and invisible on the
+     * page. A gap between two windows drops whatever was signed in it; an
+     * overlap is worse than double-counting, because a month appearing in two
+     * slices is a month whose DISTINCT AUTHORS cannot be recombined — the same
+     * pubkey posting either side of the seam is one author and would be counted
+     * as two. Either way every bar still draws, at a plausible height.
+     */
+    @Test
+    fun `year slices tile the month span with no gap and no overlap`() {
+        val now = at("2026-08-10T14:23:00Z")
+        val slices = StatsYql.monthSlicesFrom(YearMonth.of(2023, 1), now)
+        assertEquals(listOf(2023, 2024, 2025, 2026), slices.map { it.year })
+        assertEquals(44, slices.sumOf { it.months.size })
+
+        // Contiguous to the second: each slice resumes exactly where the last
+        // one stopped, so nothing signed between them is lost.
+        slices.zipWithNext { a, b -> assertEquals(a.until + 1, b.since, "${a.year} must hand straight over to ${b.year}") }
+        assertEquals(at("2023-01-01T00:00:00Z"), slices.first().since)
+        // The last slice stops at NOW, not at the year's end — the upper bound
+        // that keeps future-dated events out of the newest bar.
+        assertEquals(now, slices.last().until)
+        assertEquals(at("2026-01-01T00:00:00Z"), slices.last().since)
+
+        // Each window covers precisely the months claimed for it: a month
+        // reported by a slice that did not ask for it would be a bar built from
+        // part of that month.
+        for (slice in slices) {
+            assertEquals(StatsYql.startOfMonth(YearMonth.parse(slice.months.first())), slice.since)
+            assertTrue(slice.months.all { it.startsWith("${slice.year}-") }, "slice ${slice.year} holds ${slice.months}")
+            val lastMonthEnds = StatsYql.endOfMonth(YearMonth.parse(slice.months.last()))
+            assertTrue(slice.until == lastMonthEnds || slice.until == now, "slice ${slice.year} ends at ${slice.until}")
+        }
+        // No month is claimed twice — the invariant the whole cut depends on.
+        val all = slices.flatMap { it.months }
+        assertEquals(all.size, all.toSet().size)
+        assertEquals(all.sorted(), all)
+
+        // A month boundary is exact at both ends, leap years included.
+        assertEquals(at("2024-02-29T23:59:59Z"), StatsYql.endOfMonth(YearMonth.of(2024, 2)))
+        assertEquals(StatsYql.startOfMonth(YearMonth.of(2024, 3)), StatsYql.endOfMonth(YearMonth.of(2024, 2)) + 1)
+        assertEquals(StatsYql.startOfMonth(YearMonth.of(2025, 1)), StatsYql.endOfMonth(YearMonth.of(2024, 12)) + 1)
+
+        // An anchor partway through a year opens its slice at the anchor, not in
+        // January: the first slice is short, and its window says so.
+        val mid = StatsYql.monthSlicesFrom(YearMonth.of(2023, 4), now).first()
+        assertEquals(listOf("2023-04", "2023-05", "2023-06", "2023-07", "2023-08", "2023-09", "2023-10", "2023-11", "2023-12"), mid.months)
+        assertEquals(at("2023-04-01T00:00:00Z"), mid.since)
+    }
+
+    /** The months of every slice, in order — the axis the chart draws. */
+    private fun months(
+        start: YearMonth,
+        nowSeconds: Long,
+    ): List<String> = StatsYql.monthSlicesFrom(start, nowSeconds).flatMap { it.months }
 
     private fun at(iso: String): Long = Instant.parse(iso).epochSecond
 
