@@ -454,6 +454,20 @@ internal object SyncCoverageReport {
         }
     }
 
+    /**
+     * A cursor's span, or null when either edge is unreadable.
+     *
+     * ONE definition of "readable", used by both the `sweeping` count and the
+     * `sweep` object on the row, so the two cannot drift into disagreeing about
+     * which cursors exist. See [widest] for why an unreadable one survives this
+     * far at all.
+     */
+    private fun span(m: JsonObject): Pair<Long, Long>? {
+        val downTo = m["downTo"]?.jsonPrimitive?.longOrNull ?: return null
+        val upTo = m["upTo"]?.jsonPrimitive?.longOrNull ?: return null
+        return downTo to upTo
+    }
+
     private fun stream(
         group: Group,
         peers: Map<String, JsonElement>,
@@ -506,7 +520,16 @@ internal object SyncCoverageReport {
             // wants the series to survive this.
             put("reconciled", rows.values.count { it.complete })
             put("paged", rows.values.count { !it.complete })
-            put("sweeping", marks.size)
+            // The cursors this object will actually DESCRIBE, not every cursor
+            // it holds. `marks` tolerates an unreadable one — [widest] keeps a
+            // cursor with a missing edge rather than poisoning the pair with it
+            // — and the row below emits `sweep` only when both edges read, so
+            // `marks.size` published a sweep the very same object then declined
+            // to place. The router always writes both edges, so this needs a
+            // state file it did not write; the page is what made the gap
+            // visible, because its url filter restates this count off the rows
+            // and a filter that hides nothing could still drop it by one.
+            put("sweeping", marks.values.count { span(it) != null })
             putJsonArray("rows") {
                 for (relay in relays) {
                     add(
@@ -534,9 +557,7 @@ internal object SyncCoverageReport {
                                 p["cap"]?.jsonPrimitive?.longOrNull?.let { put("cap", it) }
                             }
                             marks[relay]?.let { m ->
-                                val downTo = m["downTo"]?.jsonPrimitive?.longOrNull
-                                val upTo = m["upTo"]?.jsonPrimitive?.longOrNull
-                                if (downTo != null && upTo != null) {
+                                span(m)?.let { (downTo, upTo) ->
                                     put(
                                         "sweep",
                                         buildJsonObject {

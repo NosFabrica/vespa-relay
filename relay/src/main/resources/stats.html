@@ -206,6 +206,24 @@
      filtered-out row on screen without this. The Kinds table needs no such rule
      only because nothing here gives `tr` a display of its own. */
   .cov-row[hidden] { display: none; }
+  /* Off-screen rows cost nothing to lay out. A fan-out puts thousands of rows
+     in a 32rem box that shows about forty, and the url filter turns "lay them
+     all out" from a once-per-load cost into a per-keystroke one. Measured on a
+     6,025-row document, median of six cycles, three interleaved runs: CLEARING
+     the box — every row back on screen — cost 240–337ms of layout, and 57–61ms
+     with this; narrowing to two rows, 39–46ms against 18–19ms. Nothing else
+     here needs it — no other list on the page runs to thousands of rows inside
+     a scroll box.
+
+     `contain-intrinsic-size` is what keeps the scrollbar honest while those
+     rows are skipped, and the size is not a guess: a row is `max(12px, .78rem)`
+     tall by construction — the track's height against the label's font-size at
+     `line-height: 1` — which is why it is written that way rather than as the
+     12.48px it computes to at a 16px root. Measured against the same document,
+     that lands the scroll height within 0.1% of laying every row out. `auto`
+     then replaces the estimate with the real size once a row has been on
+     screen, so even that error anneals as the reader scrolls. */
+  .cov-row { content-visibility: auto; contain-intrinsic-size: auto max(12px, .78rem); }
   /* The "your filter matched nothing" line, which stands where the whole list
      was. `.why` is margin-free because it normally ends a card; this one is
      followed by the frame note in the same muted register, and flush against it
@@ -1459,9 +1477,15 @@ function syncCard(section) {
       // a vanished stream is otherwise a silent omission on the one card whose
       // job is to show what is missing.
       (q && live < groups.length ? ` · ${fmt(live)} of ${fmt(groups.length)} streams` : "");
-    scroll.hidden = !live;
-    none.hidden = !!live;
-    if (!live) none.textContent = `No relay in this document's sync state contains “${filter.value.trim()}”.`;
+    // Gated on the QUERY, not just on `live`. A document whose streams carry no
+    // rows would otherwise hide its own list and print "…contains “”" — nothing
+    // upstream can produce that shape today, but `s.rows || []` above says this
+    // function does not assume so, and "no match" and "nothing to show" are not
+    // the same state to report.
+    const empty = !!q && !live;
+    scroll.hidden = empty;
+    none.hidden = !empty;
+    if (empty) none.textContent = `No relay in this document's sync state contains “${filter.value.trim()}”.`;
   };
   filter.addEventListener("input", applyFilter);
   applyFilter();
