@@ -351,6 +351,113 @@ class RelayProtocolTest {
         }
 
     /**
+     * The search page's NIP-73 scope REQ, end to end — `site:`, `isbn:`,
+     * `doi:`, `podcast:guid:` and the rest become two kind-1111 filters, the
+     * id in `#I` (a thread's root) and `#i` (a parent), and the beliefs they
+     * rest on are the hashtag union's plus two of their own:
+     *
+     *  - A tag VALUE carrying colons and slashes — a whole url, or
+     *    `podcast:guid:<uuid>` — survives Quartz's REQ parse and the store's
+     *    tag matching byte for byte. Nothing in NIP-01 promises that; a parser
+     *    that split tag values on `:` would quietly match nothing.
+     *  - The `kinds` gate on the filter is real: a kind that is not 1111
+     *    carrying the same `I` tag stays out, which is what lets the page send
+     *    these filters under any tab without the tab's kinds on them.
+     *
+     * The two spellings of the url are the page's own ask (scopeIds toggles
+     * the trailing slash — one page, two byte-distinct tag values), so a
+     * comment written under either spelling has to come back.
+     */
+    @Test
+    fun `the search page's scope filters reach the comments on the id`() =
+        runBlocking {
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                val at = 1_700_000_100L
+
+                suspend fun publish(
+                    kind: Int,
+                    tags: Array<Array<String>>,
+                    content: String,
+                ): Event {
+                    val ev = signer.sign<Event>(at, kind, tags, content)
+                    session.receive("""["EVENT",${ev.toJson()}]""")
+                    awaitMessage(out) { it.startsWith("""["OK","${ev.id}",true""") }
+                    return ev
+                }
+
+                val url = "https://example.com/article"
+                val topLevel =
+                    publish(
+                        1111,
+                        arrayOf(arrayOf("I", url), arrayOf("K", "web"), arrayOf("i", url), arrayOf("k", "web")),
+                        "a top-level comment carries the scope in both tags",
+                    )
+                val deepReply =
+                    publish(1111, arrayOf(arrayOf("I", url), arrayOf("K", "web")), "a reply deep in the thread: root only")
+                val slashSpelled =
+                    publish(1111, arrayOf(arrayOf("I", "$url/"), arrayOf("K", "web")), "the same page, spelled with the slash")
+                val parentOnly =
+                    publish(
+                        1111,
+                        arrayOf(arrayOf("I", "https://example.com/"), arrayOf("K", "web"), arrayOf("i", url), arrayOf("k", "web")),
+                        "rooted elsewhere; the page is only its parent",
+                    )
+                val otherPage =
+                    publish(1111, arrayOf(arrayOf("I", "https://example.com/other"), arrayOf("K", "web")), "a comment on another page")
+                val notAComment =
+                    publish(1, arrayOf(arrayOf("I", url)), "a kind 1 wearing the same tag")
+                val onPodcast =
+                    publish(
+                        1111,
+                        arrayOf(arrayOf("I", "podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"), arrayOf("K", "podcast:guid")),
+                        "a comment on a podcast feed",
+                    )
+
+                // Byte for byte the shape shared/query.js builds for
+                // "site:https://example.com/article".
+                session.receive(
+                    """["REQ","sc",""" +
+                        """{"kinds":[1111],"#I":["$url","$url/"],"limit":40},""" +
+                        """{"kinds":[1111],"#i":["$url","$url/"],"limit":10}]""",
+                )
+                awaitMessage(out) { it.startsWith("""["EOSE","sc"]""") }
+                val served = synchronized(out) { out.filter { it.startsWith("""["EVENT","sc",""") } }
+
+                for (
+                (ev, why) in
+                listOf(
+                    topLevel to "the root scope tag",
+                    deepReply to "a reply that names the page only as its thread's root",
+                    slashSpelled to "the trailing-slash spelling — the ask carries both, tag values are bytes",
+                    parentOnly to "a comment whose PARENT is the page: the #i filter's whole reason",
+                )
+                ) {
+                    assertTrue(served.any { ev.id in it }, "the scope filters must serve the event matched by $why")
+                }
+                assertEquals(1, served.count { topLevel.id in it }, "an event answering both filters is served once")
+                assertTrue(served.none { otherPage.id in it }, "a comment on another page is not in this ask")
+                assertTrue(served.none { notAComment.id in it }, "the kinds gate is real: a kind 1 wearing the tag stays out")
+                assertEquals(4, served.size, "exactly the four comments the filters describe")
+
+                // The prefixed families ride the same two filters; what this
+                // adds is the value itself being colon-laden.
+                session.receive(
+                    """["REQ","pg",""" +
+                        """{"kinds":[1111],"#I":["podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"],"limit":40},""" +
+                        """{"kinds":[1111],"#i":["podcast:guid:c90e609a-df1e-596a-bd5e-57bcc8aad6cc"],"limit":10}]""",
+                )
+                awaitMessage(out) { it.startsWith("""["EOSE","pg"]""") }
+                val podcast = synchronized(out) { out.filter { it.startsWith("""["EVENT","pg",""") } }
+                assertTrue(podcast.any { onPodcast.id in it }, "a colon-laden id survives the REQ parse and matches byte for byte")
+                assertEquals(1, podcast.size, "…and nothing else answers it")
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
      * A RANKED union comes back as ONE order over all four filters, not as each
      * filter's run end to end.
      *

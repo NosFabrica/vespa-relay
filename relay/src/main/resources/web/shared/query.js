@@ -10,10 +10,21 @@
 //     since:2026-08-06   written that day or after   -> a NIP-01 `since`
 //     until:2026-08-06   written that day or before  -> a NIP-01 `until`
 //
-// …and one mark narrows it to a subject:
+// …one mark narrows it to a subject:
 //
 //     #hashtag      the topic        -> a NIP-01 `#t` filter, plus the NIP-22
 //                                       comments written ON that topic
+//
+// …and a family of prefixes narrows it to the OTHER NIP-73 subjects — the
+// external ids a comment can be about that are not hashtags:
+//
+//     site:<url>              a web page          isan:<id>      a film
+//     isbn:<id>               a book              doi:<id>       a paper
+//     geo:<geohash>           a place             podcast:guid:<guid>
+//     podcast:item:guid:<guid>                    podcast:publisher:<guid>
+//
+//                   the scope        -> the kind-1111 comments naming it
+//                                       in `i`/`I`, per NIP-22/NIP-73
 //
 // All of them are NIP-01 filter fields, not NIP-50 extensions — the store never
 // sees the prefixes at all. That is deliberate: `authors`, `#p`, `#t`, `since`
@@ -42,6 +53,21 @@ const NPUB = "npub1[qpzry9x8gf2tvdw0s3jn54khce6mua7l]{58}";
 // is the last place to guess which reader is in front of it.
 const YMD = "\\d{4}-\\d{2}-\\d{2}";
 
+// The NIP-73 scope prefixes, longest first for the reader (the alternation
+// needs no help: `podcast:guid` cannot half-match `podcast:item:guid:…`,
+// because after `podcast:` the next characters decide alone).
+const SCOPES = "podcast:item:guid|podcast:publisher|podcast:guid|site|isbn|geo|isan|doi";
+
+// A scope's VALUE: everything to the next whitespace, minus trailing sentence
+// punctuation — the greedy `\\S*` backs off until the last character is none of
+// `. , ; ! ?`, so `doi:10.1000/182.` ends at the `2` and the full stop stays
+// punctuation (tidyTerms drops it, exactly as it drops the one after a
+// hashtag). ONLY that set: brackets, quotes and semicolons-mid-value are
+// legitimately part of real ids — DOIs contain parentheses and `;`
+// (`10.1002/(SICI)…;2-F`), urls contain nearly anything — so anything beyond
+// sentence enders would cut ids that exist to help ones that do not.
+const SCOPE_VALUE = "\\S*[^\\s.,;!?]";
+
 // Every token in one scan, because they interleave and their order in the
 // string is what the field measures its caret against — two passes would have
 // to be merged back together in position order anyway.
@@ -58,6 +84,7 @@ const TOKEN = new RegExp(
   `(?<lead>^|\\s)(?:` +
     `(?<who>(?:from|to):)?(?<key>${NPUB})(?![a-z0-9])` +
     `|(?<when>(?:since|until):)(?<day>${YMD})(?![\\w-])` +
+    `|(?<ext>(?:${SCOPES}):)(?<sid>${SCOPE_VALUE})` +
     `)`,
   "gi",
 );
@@ -199,10 +226,11 @@ function tagSegments(chunk, out) {
 /**
  * The typed string as a list of segments: plain text, and the tokens in it.
  *
- *   { type: "text", text }
- *   { type: "key",  raw, field: "from" | "to" | null, pubkey }
- *   { type: "date", raw, field: "since" | "until", at }
- *   { type: "tag",  raw, tag }
+ *   { type: "text",  text }
+ *   { type: "key",   raw, field: "from" | "to" | null, pubkey }
+ *   { type: "date",  raw, field: "since" | "until", at }
+ *   { type: "tag",   raw, tag }
+ *   { type: "scope", raw, field: "site" | "isbn" | …, value }
  *
  * `raw` is the token exactly as typed, so a renderer can put it back verbatim
  * and a caret measured in characters stays measured in characters. For a tag,
@@ -210,16 +238,23 @@ function tagSegments(chunk, out) {
  * and is asked for as `nostr`, which is exactly the split a `from:npub1…` chip
  * already makes between what it shows and what it means. A date makes the same
  * split the other way round: `at` is the unix second, and the pill draws the
- * day in the reader's own spelling.
+ * day in the reader's own spelling. A scope keeps `value` VERBATIM — which
+ * spellings of it are worth asking for is [scopeIds]'s question, per family,
+ * and answering it here would leave the field and the filters free to disagree.
  *
  * An npub whose CHECKSUM fails stays text, and so does a date that is not a
  * day — `since:2026-02-31`. A corrupted value must not become a chip claiming
  * to filter for something nobody asked for: the rule nip19.js's decoder states
- * for entity pages, applied one layer up and to both kinds of token.
+ * for entity pages, applied one layer up and to both kinds of token. A scope
+ * has no checksum to fail — any non-empty value is an id somebody may have
+ * commented on — so `site:` with nothing after it is the one corrupt form,
+ * and the regex already leaves it as text.
  *
  * Hashtags are only ever found in the TEXT between the other tokens: a `#`
  * cannot occur inside an npub — bech32 has no such character — nor inside a
- * date, so scanning them for one would be looking where it cannot be.
+ * date, and one inside a scope's value (`site:https://x.example/a#frag`) is
+ * part of that token and already consumed by the scan, so scanning the
+ * remaining text is scanning everywhere a hashtag can be.
  */
 export function tokenize(text) {
   const s = String(text ?? "");
@@ -235,6 +270,8 @@ export function tokenize(text) {
       const pubkey = pubkeyParam(g.key);
       if (!pubkey) continue;
       seg = { type: "key", raw, field: g.who ? g.who.slice(0, -1).toLowerCase() : null, pubkey };
+    } else if (g.ext) {
+      seg = { type: "scope", raw, field: g.ext.slice(0, -1).toLowerCase(), value: g.sid };
     } else {
       const field = g.when.slice(0, -1).toLowerCase();
       const bound = dayBound(g.day, field);
@@ -250,7 +287,7 @@ export function tokenize(text) {
 }
 
 /** The token types that pill only once the caret has left them. */
-const SETTLES = new Set(["tag", "date"]);
+const SETTLES = new Set(["tag", "date", "scope"]);
 
 /**
  * The segments to DRAW: [tokenize]'s, minus the tag or date the caret is inside.
@@ -259,7 +296,9 @@ const SETTLES = new Set(["tag", "date"]);
  * drawing every tag would re-render the field on EVERY keystroke of one,
  * which is exactly what structureChanged() exists to avoid: it fights the
  * browser over the caret, the undo stack and IME composition, and an npub
- * only ever crosses that line once, at its 63rd character.
+ * only ever crosses that line once, at its 63rd character. A scope is a
+ * hashtag with a longer `#`: a token at `site:e` and one character longer at
+ * every keystroke after, so it settles under the same rule.
  *
  * A date is worse than a tag, not better: `since:2026-08-06` is a whole token
  * at the `6`, and one more digit takes it back to text again — so a field that
@@ -288,7 +327,7 @@ export function drawable(text, typingAt) {
 /**
  * What the relay is actually asked, from what the person typed:
  *
- *   { terms, authors, mentions, hashtags, since, until }
+ *   { terms, authors, mentions, hashtags, scopes, since, until }
  *
  * `terms` is what is left for NIP-50 — the from:/to: tokens are lifted out
  * entirely, because leaving them in would search the full-text index for the
@@ -319,6 +358,7 @@ export function parseQuery(text) {
   const authors = [];
   const mentions = [];
   const hashtags = [];
+  const scopes = [];
   let since = null;
   let until = null;
   let terms = "";
@@ -327,6 +367,12 @@ export function parseQuery(text) {
     // `#Nostr` asks for `nostr`: the segment already carries both, so the field
     // and the filters cannot disagree about which is which.
     if (seg.type === "tag") { if (!hashtags.includes(seg.tag)) hashtags.push(seg.tag); continue; }
+    // Verbatim, deduped as typed: which SPELLINGS of the id are worth asking is
+    // scopeIds's per-family question, and two answers of it dedupe there.
+    if (seg.type === "scope") {
+      if (!scopes.some((s) => s.field === seg.field && s.value === seg.value)) scopes.push({ field: seg.field, value: seg.value });
+      continue;
+    }
     if (seg.type === "date") {
       if (seg.field === "since") since = since == null ? seg.at : Math.max(since, seg.at);
       else until = until == null ? seg.at : Math.min(until, seg.at);
@@ -336,7 +382,7 @@ export function parseQuery(text) {
     if (!into) { terms += seg.raw; continue; }
     if (!into.includes(seg.pubkey)) into.push(seg.pubkey);
   }
-  return { terms: tidyTerms(terms), authors, mentions, hashtags, since, until };
+  return { terms: tidyTerms(terms), authors, mentions, hashtags, scopes, since, until };
 }
 
 // A NIP-22 comment (kind 1111) says what it is about in `I` — the thread's
@@ -362,6 +408,67 @@ const hashtagIds = (tags) => tags.flatMap((t) => [`#${t}`, t]);
 
 /** The `#t`/`#l` value list for a set of hashtags: every spelling, deduped. */
 const tagAsks = (tags) => [...new Set(tags.flatMap(tagValues))];
+
+/**
+ * The NIP-73 web ids a `site:` value may be written as, canonical first.
+ *
+ * A web scope is the one family whose id is NOT prefix-plus-value: NIP-73
+ * writes it as the bare url, normalized and fragmentless. So the fragment is
+ * dropped — a comment on `…/a#frag` is addressed to `…/a` — and a value typed
+ * without a scheme is asked as both `https://` and `http://`, because
+ * `site:example.com` is how a person types it and neither is how NIP-73 spells
+ * it. The trailing slash is asked BOTH ways for every candidate: `https://x/`
+ * and `https://x` are one page and two byte-distinct tag values, the store
+ * matches tags by byte equality, and which spelling a commenter's client wrote
+ * is not something the reader can know. A tag filter's value list is an OR
+ * compiled to one dictionary probe, so the variants cost strings, not queries.
+ */
+function siteIds(value) {
+  const bare = value.replace(/#.*$/, "");
+  if (!bare) return [];
+  const urls = /^[a-z][a-z0-9+.-]*:\/\//i.test(bare) ? [bare] : [`https://${bare}`, `http://${bare}`];
+  return [...new Set(urls.flatMap((u) => [u, u.endsWith("/") ? u.slice(0, -1) : `${u}/`]))];
+}
+
+/**
+ * Every spelling of one scope worth a tag filter's while, best first.
+ *
+ * NIP-73 fixes a canonical form per family and commenters do not reliably
+ * write it, so each family asks the canonical spelling FIRST and the value as
+ * typed beside it — the same reasoning as [tagValues], with the difference
+ * that here the spec picks the favourite:
+ *
+ *   - `isbn:` drops hyphens ("isbn:9780765382030", NIP-73's own words), so
+ *     `isbn:978-0765382030` pasted off a jacket still finds the comments.
+ *   - `geo:` and `doi:` are lowercase per NIP-73.
+ *   - `isan:` is uppercase hex in every NIP-73 example, and "without the
+ *     version part": a full 8-segment ISAN pasted from a registry is also
+ *     asked as its 5-segment root, or the canonical form could never match.
+ *   - the `podcast:*` guids are asked as typed plus lowercased — RSS
+ *     namespace guids are canonically lowercase UUIDs, and pasted ones often
+ *     are not.
+ *
+ * The value goes in VERBATIM too (deduped) for the reason hashtagIds keeps the
+ * unprefixed form: one extra string is cheaper than missing every comment
+ * written by a client that skipped the normalization.
+ */
+export function scopeIds(field, value) {
+  const v = String(value ?? "");
+  if (!v) return [];
+  if (field === "site") return siteIds(v);
+  if (field === "isbn") return [...new Set([`isbn:${v.replace(/-/g, "")}`, `isbn:${v}`])];
+  if (field === "geo") return [...new Set([`geo:${v.toLowerCase()}`, `geo:${v}`])];
+  if (field === "doi") return [...new Set([`doi:${v.toLowerCase()}`, `doi:${v}`])];
+  if (field === "isan") {
+    const parts = v.split("-");
+    const root = parts.length === 8 ? parts.slice(0, 5).join("-") : v;
+    return [...new Set([`isan:${root.toUpperCase()}`, `isan:${root}`, `isan:${v.toUpperCase()}`, `isan:${v}`])];
+  }
+  return [...new Set([`${field}:${v}`, `${field}:${v.toLowerCase()}`])];
+}
+
+/** The `#I`/`#i` value list for a set of scopes: every spelling, deduped. */
+const scopeAsks = (scopes) => [...new Set(scopes.flatMap((s) => scopeIds(s.field, s.value)))];
 
 /**
  * How many results a SECONDARY filter of a union may return.
@@ -406,6 +513,16 @@ const sideLimit = (limit) => Math.max(4, Math.round(limit / 4));
  * `t`; a comment on a topic carries neither. (Four filters for three questions:
  * `i` and `I` in one filter would AND, so the comment question needs one each.)
  *
+ * A `site:`/`isbn:`/`geo:`/… scope becomes the comment question ALONE, in the
+ * same two filters: NIP-73's other families have no `t` shorthand and no label
+ * convention riding on them — a page, a book, a paper are commented ON (kind
+ * 1111, the id in `i`/`I`), not tagged from the outside. `#I` carries the full
+ * limit because it is the question people mean — every comment in a thread on
+ * the scope names it as root — and `#i` rides at the side limit for the odd
+ * event whose PARENT is the scope while its root is something else. Two
+ * subjects in one box OR, exactly as two hashtags already do: every subject
+ * grows the union, every other token narrows it.
+ *
  * The person filters ride on EVERY filter — they narrow the same search, and
  * leaving them off the comment half would make `from:alice #nostr` return
  * everybody's comments alongside alice's notes. So do the tab's kinds, except on
@@ -414,6 +531,15 @@ const sideLimit = (limit) => Math.max(4, Math.round(limit / 4));
  * two that can only come back empty. The label filter needs no such gate — a
  * label rides on an event of any kind, so under Notes it finds self-labelled
  * notes, and under Everything it also finds the kind 1985 that labelled one.
+ *
+ * The SCOPE filters are deliberately not gated on the tab. For a hashtag the
+ * gate leaves the `t` and `l` filters standing; for `site:x` under a tab
+ * without 1111 it would leave NOTHING standing for the scope, and the leftover
+ * base filter would answer as if the token had never been typed — a filter the
+ * reader can see, silently inert, which is the one thing a token here must
+ * never be. The token names its own kind the way `from:` names its author, so
+ * it keeps kind 1111 whatever the tab says, and an off-tab scope search shows
+ * the comments rather than a lie.
  *
  * `search` is sent whenever it would CARRY something — words, or a sort/spam/
  * observer extension. It used to be dropped whenever the words were empty, on
@@ -440,16 +566,22 @@ export function buildFilters(text, { kinds = null, limit, searchString = (t) => 
   // `t` half would return this week's comments beside last year's notes.
   if (q.since != null) base.since = q.since;
   if (q.until != null) base.until = q.until;
-  if (!q.hashtags.length) return [{ ...base, limit }];
+  const scoped = scopeAsks(q.scopes);
+  if (!q.hashtags.length && !scoped.length) return [{ ...base, limit }];
 
   const side = sideLimit(limit);
-  const filters = [
-    { ...base, "#t": tagAsks(q.hashtags), limit },
-    { ...base, "#l": tagAsks(q.hashtags), limit: side },
-  ];
-  if (!kinds || kinds.includes(COMMENT_KIND)) {
-    const ids = hashtagIds(q.hashtags);
-    for (const tag of COMMENT_SCOPE_TAGS) filters.push({ ...base, kinds: [COMMENT_KIND], [tag]: ids, limit: side });
+  const filters = [];
+  if (q.hashtags.length) {
+    filters.push({ ...base, "#t": tagAsks(q.hashtags), limit });
+    filters.push({ ...base, "#l": tagAsks(q.hashtags), limit: side });
+    if (!kinds || kinds.includes(COMMENT_KIND)) {
+      const ids = hashtagIds(q.hashtags);
+      for (const tag of COMMENT_SCOPE_TAGS) filters.push({ ...base, kinds: [COMMENT_KIND], [tag]: ids, limit: side });
+    }
+  }
+  if (scoped.length) {
+    filters.push({ ...base, kinds: [COMMENT_KIND], "#I": scoped, limit });
+    filters.push({ ...base, kinds: [COMMENT_KIND], "#i": scoped, limit: side });
   }
   return filters;
 }
