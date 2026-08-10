@@ -590,7 +590,7 @@ const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "O
  * to spell what it bucketed.
  */
 const dayTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}`;
-/** "2025-07" → "Jul ’25". The year is on every month label because a 12-month window crosses one. */
+/** "2025-07" → "Jul ’25". The year is on every month label because the window spans several. */
 const monthTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ’${iso.slice(2, 4)}`;
 
 /**
@@ -889,12 +889,31 @@ const GRAINS = [
   // of these read `undefined` straight into the card title — "Events per day ·
   // last undefined days", printed in bold above the badge that already said
   // `failed`. A window this page cannot state is one it should not mention.
-  { key: "days", label: "Daily", unit: "day", span: (d) => (d.windowDays == null ? null : `${d.windowDays} days`), tick: dayTick, tip: (p) => p },
-  { key: "weeks", label: "Weekly", unit: "week", span: (d) => (d.windowWeeks == null ? null : `${d.windowWeeks} weeks`), tick: dayTick, tip: (p) => `week of ${p}` },
-  { key: "months", label: "Monthly", unit: "month", span: (d) => (d.windowMonths == null ? null : `${d.windowMonths} months`), tick: monthTick, tip: (p) => p },
+  //
+  // It is the WHOLE phrase, "last" included, and it was a bare length the
+  // caller prefixed with that word. The monthly series is anchored to a date
+  // and grows rather than trailing the present, so "last 44 months" described a
+  // rolling window this chart deliberately is not.
+  { key: "days", label: "Daily", unit: "day", span: (d) => (d.windowDays == null ? null : `last ${d.windowDays} days`), tick: dayTick, tip: (p) => p },
+  { key: "weeks", label: "Weekly", unit: "week", span: (d) => (d.windowWeeks == null ? null : `last ${d.windowWeeks} weeks`), tick: dayTick, tip: (p) => `week of ${p}` },
+  { key: "months", label: "Monthly", unit: "month", span: monthSpan, tick: monthTick, tip: (p) => p },
 ];
-/** "· last 30 days" when the document says, and nothing at all when it does not. */
-const lastSpan = (span) => (span ? ` · last ${span}` : "");
+
+/**
+ * "since Jan ’23" — the monthly window stated as where it starts.
+ *
+ * Falls back to the count for a document written before `monthsSince` existed,
+ * rather than dropping the window from the title entirely: an older rollup's
+ * monthly chart really was a rolling N months, and that is what its own field
+ * says.
+ */
+function monthSpan(d) {
+  if (d.monthsSince) return `since ${monthTick(d.monthsSince)}`;
+  return d.windowMonths == null ? null : `last ${d.windowMonths} months`;
+}
+
+/** "· last 30 days" when the document states a window, and nothing at all when it does not. */
+const spanNote = (span) => (span ? ` · ${span}` : "");
 let grain = null;
 
 /** The granularities this document actually carries, finest first. */
@@ -949,7 +968,7 @@ function activityCards(activity) {
   // The window is in the title because it is the one thing a bare "Events per
   // day" cannot be read without: 30 days and 30 months are the same 30 bars.
   out.push(chartCard(
-    `Events per ${g.unit}${lastSpan(span)}`,
+    `Events per ${g.unit}${spanNote(span)}`,
     null,
     series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.events })),
     activity,
@@ -960,7 +979,7 @@ function activityCards(activity) {
   // a correlation that is not in the data.
   if (series.some((x) => x.pubkeys != null)) {
     out.push(chartCard(
-      `Publishing pubkeys per ${g.unit}${lastSpan(span)}`,
+      `Publishing pubkeys per ${g.unit}${spanNote(span)}`,
       null,
       series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.pubkeys || 0 })),
       null,
@@ -972,7 +991,7 @@ function activityCards(activity) {
   // whose every other axis label is one. The tooltip names the whole hour and
   // the zone, because "14:00" alone invites the reader to apply their own.
   out.push(chartCard(
-    `Events by hour of day${lastSpan(d.hourWindowDays == null ? null : `${d.hourWindowDays} days`)}`,
+    `Events by hour of day${spanNote(d.hourWindowDays == null ? null : `last ${d.hourWindowDays} days`)}`,
     null,
     hours.map((x) => {
       const hh = String(x.hour).padStart(2, "0");

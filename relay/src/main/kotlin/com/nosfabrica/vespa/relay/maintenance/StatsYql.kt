@@ -29,6 +29,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.time.Instant
+import java.time.YearMonth
 import java.time.ZoneOffset
 
 /**
@@ -238,6 +239,105 @@ internal object StatsYql {
         if (year < 1970 || year > 9999) return null
         return "%04d-%02d".format(year, month)
     }
+
+    /**
+     * One calendar year of a monthly series: the months in it, and the window
+     * that asks for exactly those months.
+     *
+     * [months] are the labels [isoMonth] would produce, so a filled series and
+     * the engine's own buckets spell a month identically — the only thing that
+     * keeps a zero-filled chart from drawing one month twice.
+     */
+    data class MonthSlice(
+        val year: Int,
+        val months: List<String>,
+        val since: Long,
+        val until: Long,
+    )
+
+    /**
+     * The monthly series from [start] to now, CUT INTO ONE SLICE PER CALENDAR
+     * YEAR — one query's worth each, rather than one query for the whole span.
+     *
+     * ## Why the cut is at a year and not at an arbitrary width
+     *
+     * Because a [MONTH] bucket must fall ENTIRELY inside one slice. Events could
+     * survive a bucket split across two windows — they sum — but the other half
+     * of this series cannot: [distinctAuthorsBy] answers distinct pubkeys, and
+     * someone who posted in both halves of a split month is one author in the
+     * month and two in the sum of its pieces. Years divide months exactly, so
+     * every slice's counts are final and merging them is a union of disjoint
+     * keys rather than an addition that would quietly overcount authors.
+     *
+     * The windows are derived from the months themselves — first instant of the
+     * first month, last instant of the last — so they tile the span with no gap
+     * and no overlap by construction rather than by arithmetic that has to be
+     * kept in step with the label enumeration.
+     *
+     * ## What the slicing buys
+     *
+     * A bound on ANY ONE query. `distinctAuthorsBy(MONTH)` materialises a pubkey
+     * set per bucket, which is the shape whose whole-corpus form OOMKilled this
+     * engine twice (see `StatsRollup.kindsSection`). Asked once over an anchored
+     * window, that cost grows every month, forever, with nothing in the request
+     * path to cap it. Asked a year at a time it is CONSTANT — twelve months of
+     * one year, whatever the anchor is — and only the NUMBER of queries grows,
+     * by one a year. Total work over the corpus is the same either way; the peak
+     * is what moves, and the peak is what kills a container.
+     *
+     * It also localises failure: a year that the engine refuses costs that
+     * year's bars and names itself in the section's errors, instead of taking
+     * the whole series with it.
+     *
+     * The last slice ends at [nowSeconds], not at the year's end — the upper
+     * bound every window here carries, for the reason in [window].
+     *
+     * Empty when [start] is in the future rather than counting backwards. The
+     * rollup's clock is injected, so a clock behind the anchor is a state a test
+     * can reach, and this is what keeps the sequence finite.
+     */
+    fun monthSlicesFrom(
+        start: YearMonth,
+        nowSeconds: Long,
+    ): List<MonthSlice> {
+        val current = YearMonth.from(Instant.ofEpochSecond(nowSeconds).atOffset(ZoneOffset.UTC))
+        if (current < start) return emptyList()
+        return generateSequence(start) { it.plusMonths(1) }
+            .takeWhile { it <= current }
+            .groupBy { it.year }
+            .map { (year, months) ->
+                MonthSlice(
+                    year = year,
+                    months = months.map { it.toString() },
+                    since = startOfMonth(months.first()),
+                    // Clipped, so the current year's slice stops at the present
+                    // rather than reaching into the rest of the year and
+                    // collecting whatever future-dated spam is signed for it.
+                    until = minOf(endOfMonth(months.last()), nowSeconds),
+                )
+            }
+    }
+
+    /**
+     * The first instant of [month] in UTC — a monthly window's lower bound.
+     *
+     * An exact calendar boundary, and it has to be: [MONTH] buckets on
+     * `time.monthofyear`, so a window that opens partway through a month still
+     * returns that whole month's bucket carrying only the part of it that fell
+     * inside — a leading bar that is short for a reason nothing on the page can
+     * state. UTC for the same reason [DAY] is.
+     */
+    fun startOfMonth(month: YearMonth): Long = month.atDay(1).atStartOfDay(ZoneOffset.UTC).toEpochSecond()
+
+    /**
+     * The last instant of [month] in UTC — a monthly window's upper bound.
+     *
+     * The second BEFORE the next month starts, because [window] is inclusive at
+     * both ends: spelling this as the next month's first instant would put one
+     * second of January in December's slice as well as its own, and that second
+     * carries whatever events it carries.
+     */
+    fun endOfMonth(month: YearMonth): Long = startOfMonth(month.plusMonths(1)) - 1
 
     /**
      * The derived `<letter>:<value>` tag pairs — the only tag shape a filter or
