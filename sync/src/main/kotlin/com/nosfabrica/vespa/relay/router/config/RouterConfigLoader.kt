@@ -346,7 +346,7 @@ object RouterConfigLoader {
         RelayExcludes(
             raw.map { pattern ->
                 try {
-                    Regex(pattern)
+                    Regex(pattern, RegexOption.IGNORE_CASE)
                 } catch (e: PatternSyntaxException) {
                     throw IllegalArgumentException(
                         "router: stream '$stream' has an exclude entry '$pattern' that does not compile as a regex — ${e.message}",

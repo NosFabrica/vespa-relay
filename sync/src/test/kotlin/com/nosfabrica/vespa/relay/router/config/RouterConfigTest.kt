@@ -301,14 +301,14 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `an exclude entry is a regex matched anywhere in the discovered url`() {
+    fun `an exclude entry is a regex that must match the whole url ignoring case`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
                 streams {
                     outbox {
                         filter  = { "kinds": [10002] }
-                        exclude = [ "wss://filter.nostr.wine/" ]
+                        exclude = [ "WSS://purplepag.es", "wss://filter.nostr.wine/npub.*" ]
                         relaySource = [
                             {
                                 select = [ { tag = "r" } ]
@@ -324,9 +324,15 @@ class RouterConfigTest {
                 .single()
                 .dynamic!!
                 .exclude
-        // The bare host and every per-user url it mints, in one entry.
-        assertTrue(RelayUrlNormalizer.normalize("wss://filter.nostr.wine") in exclude)
+        // A plain url names exactly one relay, whatever case it was typed in
+        // and with the normalizer's trailing slash optional...
+        assertTrue(RelayUrlNormalizer.normalize("wss://purplepag.es") in exclude)
+        // ...and never a longer url it happens to sit inside.
+        assertFalse(RelayUrlNormalizer.normalize("wss://purplepag.es.evil.example") in exclude)
+        // A wildcard is spelled out, and reaches only what it names: the
+        // per-user urls the host mints, not the relay itself.
         assertTrue(RelayUrlNormalizer.normalize("wss://filter.nostr.wine/npub1xyz") in exclude)
+        assertFalse(RelayUrlNormalizer.normalize("wss://filter.nostr.wine") in exclude)
         assertFalse(RelayUrlNormalizer.normalize("wss://nostr.wine") in exclude)
     }
 

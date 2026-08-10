@@ -93,18 +93,22 @@ data class RelayDiscoveryConfig(
 )
 
 /**
- * A stream's `exclude` list compiled: each entry is a regex, matched ANYWHERE
- * in a discovered relay's normalized url rather than compared to it whole. A
- * plain url like `"wss://purplepag.es"` still excludes the one relay it always
- * named, while `"wss://filter.nostr.wine/"` also drops every per-user url that
- * host mints (`wss://filter.nostr.wine/npub1…`) — a shape no literal list can
- * keep up with, because every relay list in the wild names a different one.
- * Anchor with `^`/`$` to mean exactly one url.
+ * A stream's `exclude` list compiled: each entry is a regex that must match
+ * the WHOLE of a discovered relay's normalized url, ignoring case. A plain
+ * url like `"wss://purplepag.es/"` therefore excludes exactly the relay it
+ * names — never a longer url it happens to sit inside — and a wildcard is
+ * spelled out: `"wss://filter.nostr.wine/npub.*"` drops every per-user url
+ * that host mints (`wss://filter.nostr.wine/npub1…`) without touching the
+ * relay itself, a shape no literal list can keep up with, because every relay
+ * list in the wild names a different one.
+ *
+ * The url's trailing slash is optional in the match: the normalizer appends
+ * one to a bare host, and every pre-regex config named relays without it.
  */
 class RelayExcludes(
     val patterns: List<Regex>,
 ) {
-    operator fun contains(url: NormalizedRelayUrl): Boolean = patterns.any { it.containsMatchIn(url.url) }
+    operator fun contains(url: NormalizedRelayUrl): Boolean = patterns.any { it.matches(url.url) || it.matches(url.url.removeSuffix("/")) }
 
     companion object {
         val NONE = RelayExcludes(emptyList())

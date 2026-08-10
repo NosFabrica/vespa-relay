@@ -644,6 +644,7 @@ class RelayDiscoveryTest {
                     10002,
                     arrayOf("r", "wss://filter.nostr.wine/npub1aaa", "write"),
                     arrayOf("r", "wss://filter.nostr.wine/npub1bbb", "write"),
+                    arrayOf("r", "wss://filter.nostr.wine", "write"),
                     arrayOf("r", "wss://keep.example", "write"),
                 ),
             )
@@ -653,10 +654,11 @@ class RelayDiscoveryTest {
                     store,
                     dynamic(
                         source(10002, selects = listOf(select(tag = "r", where = marker("write")))),
-                        exclude = setOf("wss://filter\\.nostr\\.wine/"),
+                        exclude = setOf("wss://filter\\.nostr\\.wine/npub.*"),
                     ),
                 )
-            assertEquals(listOf("wss://keep.example/"), kept.map { it.url.url })
+            // The per-user urls fall; the relay itself and everything else stay.
+            assertEquals(listOf("wss://filter.nostr.wine/", "wss://keep.example/"), kept.map { it.url.url })
         }
 
     @Test
