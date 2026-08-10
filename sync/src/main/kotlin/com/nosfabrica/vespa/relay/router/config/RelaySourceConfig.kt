@@ -53,13 +53,14 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  *   no wall-clock cap: every client timeout is measured from the last message,
  *   so a silent relay is dropped in seconds and a delivering one is doing the
  *   work the slot exists for.
- * @param exclude relays to skip however many sources name them.
+ * @param exclude patterns for relays to skip however many sources name them —
+ *   see [RelayExcludes] for how an entry matches.
  */
 data class RelayDiscoveryConfig(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
     val concurrency: Int,
-    val exclude: Set<NormalizedRelayUrl>,
+    val exclude: RelayExcludes,
     /**
      * How many bound `authors` go into ONE ask, and therefore into one cursor
      * band. Null keeps them all in a single filter.
@@ -90,6 +91,25 @@ data class RelayDiscoveryConfig(
      */
     val maxRelaysPerList: Int? = null,
 )
+
+/**
+ * A stream's `exclude` list compiled: each entry is a regex, matched ANYWHERE
+ * in a discovered relay's normalized url rather than compared to it whole. A
+ * plain url like `"wss://purplepag.es"` still excludes the one relay it always
+ * named, while `"wss://filter.nostr.wine/"` also drops every per-user url that
+ * host mints (`wss://filter.nostr.wine/npub1…`) — a shape no literal list can
+ * keep up with, because every relay list in the wild names a different one.
+ * Anchor with `^`/`$` to mean exactly one url.
+ */
+class RelayExcludes(
+    val patterns: List<Regex>,
+) {
+    operator fun contains(url: NormalizedRelayUrl): Boolean = patterns.any { it.containsMatchIn(url.url) }
+
+    companion object {
+        val NONE = RelayExcludes(emptyList())
+    }
+}
 
 /**
  * One scan of the store: the [selects] saying which relay urls to pull out,

@@ -20,9 +20,11 @@
  */
 package com.nosfabrica.vespa.relay.router.config
 
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -252,7 +254,7 @@ class RouterConfigTest {
         val outbox = cfg.streams.first { it.name == "outbox" }.dynamic!!
         assertEquals(3600L, outbox.refreshSeconds)
         assertEquals(4, outbox.concurrency)
-        assertEquals(listOf("wss://skip.example/"), outbox.exclude.map { it.url })
+        assertEquals(listOf("wss://skip.example"), outbox.exclude.patterns.map { it.pattern })
         assertEquals(2, outbox.sources.size)
 
         // One scan over three kinds, three selects sorting them out.
@@ -296,6 +298,61 @@ class RouterConfigTest {
         assertEquals(2, cfg.dynamicStreams().size)
         assertTrue(cfg.downUpstreams().isEmpty())
         assertTrue(cfg.upUpstreams().isEmpty())
+    }
+
+    @Test
+    fun `an exclude entry is a regex matched anywhere in the discovered url`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    outbox {
+                        filter  = { "kinds": [10002] }
+                        exclude = [ "wss://filter.nostr.wine/" ]
+                        relaySource = [
+                            {
+                                select = [ { tag = "r" } ]
+                                filter = { "kinds": [10002] }
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent(),
+            )
+        val exclude =
+            cfg.streams
+                .single()
+                .dynamic!!
+                .exclude
+        // The bare host and every per-user url it mints, in one entry.
+        assertTrue(RelayUrlNormalizer.normalize("wss://filter.nostr.wine") in exclude)
+        assertTrue(RelayUrlNormalizer.normalize("wss://filter.nostr.wine/npub1xyz") in exclude)
+        assertFalse(RelayUrlNormalizer.normalize("wss://nostr.wine") in exclude)
+    }
+
+    @Test
+    fun `a broken exclude regex refuses the config naming the stream and the entry`() {
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    """
+                    streams {
+                        outbox {
+                            filter  = { "kinds": [10002] }
+                            exclude = [ "wss://filter.nostr.wine/[" ]
+                            relaySource = [
+                                {
+                                    select = [ { tag = "r" } ]
+                                    filter = { "kinds": [10002] }
+                                }
+                            ]
+                        }
+                    }
+                    """.trimIndent(),
+                )
+            }
+        assertTrue("outbox" in e.message!!, "the error names the stream: ${e.message}")
+        assertTrue("wss://filter.nostr.wine/[" in e.message!!, "the error names the entry: ${e.message}")
     }
 
     /** A one-source `relaySource` list, with [filter] as the scan. */

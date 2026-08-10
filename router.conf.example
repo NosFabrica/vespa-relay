@@ -77,12 +77,18 @@ streams {
         # projection (a 2.6M-event scan became its walk). Duplicate urls are
         # folded either way — see AGENTS.md, "One relay behind many urls".
         maxRelaysPerList = 50
+        # Each entry is a regex matched anywhere in a discovered url. A plain
+        # url still excludes the one relay it names, and a host prefix like
+        # "wss://filter.nostr.wine/" also drops every per-user url that host
+        # mints (wss://filter.nostr.wine/npub1.../) — a shape no literal list
+        # could keep up with. Anchor with ^/$ to mean exactly one url.
         exclude = [
             "wss://purplepag.es",
             "wss://profiles.nostr1.com",
             "wss://indexer.coracle.social",
             "wss://user.kindpag.es",
-            "wss://directory.yabu.me"
+            "wss://directory.yabu.me",
+            "wss://filter.nostr.wine/"
         ]
         relaySource = [
             {
@@ -107,7 +113,7 @@ streams {
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 8            # relays synced at the same time
-        exclude = []               # relays to skip however many sources name them
+        exclude = []               # regexes for relays to skip however many sources name them
         relaySource = [
             {
                 select = [
@@ -160,7 +166,8 @@ streams {
             "wss://profiles.nostr1.com",
             "wss://indexer.coracle.social",
             "wss://user.kindpag.es",
-            "wss://directory.yabu.me"
+            "wss://directory.yabu.me",
+            "wss://filter.nostr.wine/"
         ]
         relaySource = [
             {

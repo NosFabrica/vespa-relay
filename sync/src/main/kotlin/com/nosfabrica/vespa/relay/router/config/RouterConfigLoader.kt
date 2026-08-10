@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
+import java.util.regex.PatternSyntaxException
 
 /**
  * Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling. The old
@@ -326,11 +327,33 @@ object RouterConfigLoader {
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
-            exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
+            exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
         )
     }
+
+    /**
+     * `exclude` entries compile as regexes — see [RelayExcludes] for how one
+     * matches. Compiled here, at the one place a human types them, so a broken
+     * pattern refuses the config naming the stream and the entry instead of
+     * surfacing as a stack trace mid-cycle.
+     */
+    private fun parseExcludes(
+        stream: String,
+        raw: List<String>,
+    ): RelayExcludes =
+        RelayExcludes(
+            raw.map { pattern ->
+                try {
+                    Regex(pattern)
+                } catch (e: PatternSyntaxException) {
+                    throw IllegalArgumentException(
+                        "router: stream '$stream' has an exclude entry '$pattern' that does not compile as a regex — ${e.message}",
+                    )
+                }
+            },
+        )
 
     /** One `{ select = [ ], filter = { } }` entry: what to pull out, and the scan to pull it from. */
     private fun parseRelaySource(
