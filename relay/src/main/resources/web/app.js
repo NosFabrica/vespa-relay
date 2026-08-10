@@ -738,6 +738,10 @@ function exportText() {
   // next as a NIP-22 comment on the topic, and the next as a NIP-32 label —
   // three different claims, ranked into one list.
   if (q.hashtags.length) L.push(`  hashtags      ${q.hashtags.map((t) => `#${t}`).join(", ")}`);
+  // As typed, not as asked: the id spellings the filter actually carries are in
+  // the full filter lines below, and a reader auditing the order needs to see
+  // both — what the person meant, and what the relay was asked for it.
+  if (q.scopes.length) L.push(`  scopes        ${q.scopes.map((s) => `${s.field}:${s.value}`).join(", ")}`);
   // The window, as both the second the filter carries and the moment it stands
   // for. A reader auditing an order has to be able to tell an empty page from a
   // window that excluded everything, and a bare epoch second cannot say which.

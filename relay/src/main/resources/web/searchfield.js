@@ -27,7 +27,10 @@
 //      query.js's drawable(), and the comment there on why a pill that
 //      appeared at `#n` would re-render the field on every keystroke. A date
 //      pill settles on the same rule, and needs it more: one more digit after
-//      `since:2026-08-06` takes the whole token back to text.
+//      `since:2026-08-06` takes the whole token back to text. A NIP-73 scope
+//      (`site:…`, `isbn:…`, `doi:…`, …) is the hashtag's rule again with a
+//      longer `#`: no picker — the value is a url or an id off a jacket, and
+//      there is nothing to look up — just the pill, once the caret leaves.
 //
 // Why a contenteditable rather than the <input> this used to be: an input's
 // value is a string of characters and nothing else — there is no way to put a
@@ -52,7 +55,7 @@ import { npub, shortNpub } from "./shared/nip19.js";
 import { esc, clip } from "./shared/format.js";
 import { profiles, displayName, enrichProfiles } from "./shared/profiles.js";
 import { avatarHtml } from "./shared/avatar.js";
-import { tokenize, mentionAt, dateAt, drawable, ymd } from "./shared/query.js";
+import { tokenize, mentionAt, dateAt, drawable, ymd, scopeIds } from "./shared/query.js";
 import {
   DOW, dayLabel, midnight, monthGrid, quickPicks, sameMonth, shiftDays, shiftMonths, typedMonth,
 } from "./shared/calendar.js";
@@ -277,6 +280,19 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
       span.title = seg.raw.slice(1) === seg.tag
         ? `tag filter — this word is a #t/#l/#i filter, not a search term`
         : `tag filter for “${seg.tag}”`;
+      return span;
+    }
+    if (seg.type === "scope") {
+      // The date pill's shape — the prefix bold, the value beside it — because
+      // the token splits the same way: `site:` is the language's word and the
+      // value is the reader's. The value draws AS TYPED; what is actually
+      // asked may be spelled differently (isbn: drops hyphens, doi: lowers),
+      // and the hover is where a chip puts the truth — same rule as the
+      // `#Nostr`-asks-for-`nostr` title below.
+      span.className = "scopepill";
+      span.innerHTML = `<b>${esc(seg.field)}:</b><span class="scope-id">${esc(seg.value)}</span>`;
+      const asks = scopeIds(seg.field, seg.value);
+      span.title = `${seg.raw} — a NIP-73 scope filter: comments written on ${asks[0] || seg.value}`;
       return span;
     }
     if (seg.type === "date") {
@@ -841,7 +857,7 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
   });
 
   /**
-   * A caret MOVE finishes a hashtag or a date without editing anything.
+   * A caret MOVE finishes a hashtag, a date or a scope without editing anything.
    *
    * `#nos|` is text while the caret is in it and a pill the moment the caret
    * leaves — so clicking away, arrowing past it or tabbing out has to re-read

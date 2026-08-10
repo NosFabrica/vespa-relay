@@ -170,7 +170,12 @@ relay/src/main/resources/
                         the REQ builder too: buildFilters() turns `#hashtag`
                         into the three ways Nostr writes a topic (`#t`, a
                         kind-1111 comment naming it in `i`/`I` per NIP-73, and a
-                        `#l` label per NIP-32), ORed in one REQ, with the page
+                        `#l` label per NIP-32), ORed in one REQ, and gives the
+                        OTHER NIP-73 subjects their own prefixes — `site:`,
+                        `isbn:`, `geo:`, `isan:`, `doi:`, `podcast:guid:`,
+                        `podcast:item:guid:`, `podcast:publisher:` — which
+                        become the comment pair alone (scopeIds spells each id
+                        the way NIP-73 fixes it, plus as typed), with the page
                         state passed IN so the whole thing is testable —
                         tools/webtest/query.test.mjs asserts the filters, and
                         RelayProtocolTest asserts the relay answers them;
