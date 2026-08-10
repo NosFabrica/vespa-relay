@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -37,6 +38,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -291,6 +293,15 @@ internal class IngestPipeline(
         events = events,
         write = { store.batchInsert(it) },
         onOutcomes = { written, outcomes ->
+            // Positional alignment between the batch and its outcomes is the
+            // store's contract, and this is the one place where being wrong
+            // about it is unrecoverable: a rejection attributed to the wrong
+            // row suppresses an id we wanted, silently and permanently. The
+            // counters below would survive a mismatch; the refusal sink would
+            // not. So it is checked rather than trusted, and attribution — and
+            // only attribution — is withheld when it fails.
+            val aligned = outcomes.size == written.size
+            if (!aligned) reportMisalignment(written.size, outcomes.size)
             for ((i, outcome) in outcomes.withIndex()) {
                 when (outcome) {
                     is IEventStore.InsertOutcome.Accepted -> {
@@ -305,9 +316,11 @@ internal class IngestPipeline(
                         // STORE's fault and the event is good, so recording
                         // it would turn a transient fault into permanent
                         // silent loss.
-                        written.getOrNull(i)?.let { event ->
-                            if (outcome.reason.startsWith("replaced:")) replacedRejects.incrementAndGet()
-                            refusals.onRefused(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
+                        if (aligned) {
+                            written.getOrNull(i)?.let { event ->
+                                if (outcome.reason.startsWith(RejectionReason.PREFIX_REPLACED)) replacedRejects.incrementAndGet()
+                                refusals.onRefused(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
+                            }
                         }
                     }
 
@@ -363,6 +376,29 @@ internal class IngestPipeline(
                 "router: the event, verbatim: ${event.toJson().take(POISON_JSON_CHARS)}",
         )
     }
+
+    /**
+     * The store returned a different number of outcomes than it was handed.
+     *
+     * Reported once and loudly: it means the assumption every per-event
+     * attribution rests on has broken, so refusals stop being recorded until
+     * it is fixed. Better a filter that learns nothing than one that learns
+     * the wrong ids.
+     */
+    private fun reportMisalignment(
+        sent: Int,
+        got: Int,
+    ) {
+        if (misalignmentReported.compareAndSet(false, true)) {
+            System.err.println(
+                "router: BUG — batchInsert returned $got outcome(s) for $sent event(s). Rejections cannot be " +
+                    "attributed to the events that earned them, so refused-id recording is suppressed for " +
+                    "these batches. Counters remain correct.",
+            )
+        }
+    }
+
+    private val misalignmentReported = AtomicBoolean(false)
 
     /** The two numbers Step 0 exists to produce, for the health line. */
     fun suppressionBreakdown(): String =

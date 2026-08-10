@@ -102,10 +102,24 @@ class Healer(
     private val passes = AtomicLong()
 
     /**
-     * Push everything queued for [url]. Called at the end of that relay's sync,
-     * before the socket is released — a `relaySource` stream keeps no live
-     * tail, so a fully detached healer would have to re-dial thousands of
+     * Push what is queued for [url]. Called at the end of that relay's sync,
+     * while its connection is still live — a `relaySource` stream keeps no
+     * live tail, so a fully detached healer would have to re-dial thousands of
      * relays just to publish.
+     *
+     * **What it pushes is usually the PREVIOUS cycle's discoveries, not this
+     * one's, and that is expected.** `ingest.submit` hands the event to a
+     * channel; the store write, the refusal, and the enqueue all happen later
+     * on an ingest worker. By the time the sweep reaches this call, most of
+     * what this relay just served is still in flight, so its repairs land in
+     * the queue after the drain has run and wait for the next one.
+     *
+     * Nothing is lost by that — the queue persists and coalesces — and the
+     * alternative is worse. Quiescing ingest here would mean waiting on a
+     * pipeline shared by every stream, so one relay's drain would block the
+     * whole fan-out on unrelated work. A cycle of latency on a repair is a
+     * fair price; the earlier wording of this comment simply claimed a
+     * synchrony that was never there.
      */
     suspend fun drain(url: NormalizedRelayUrl) {
         if (caps.isClosed(url)) {
@@ -153,9 +167,20 @@ class Healer(
                 val result = client.publishAndCollectResults(event, setOf(url), settings.okTimeoutSeconds)[url] ?: continue
                 pushed.incrementAndGet()
 
-                when (OkClassifier.classify(result.accepted, result.message, result.isTransportFailure)) {
+                val verdict = OkClassifier.classify(result.accepted, result.message, result.isTransportFailure)
+
+                // ANY answer refutes the doubt `strike` accumulates, because
+                // that doubt is specifically about silence — and a relay that
+                // said "duplicate" or "invalid" is demonstrably not ignoring
+                // us. Clearing only on ACCEPTED let a relay that timed out
+                // once and then answered every later push keep its strike,
+                // accumulate two more across passes, and get closed for writes
+                // while it was plainly replying. CLOSED is excluded because it
+                // is a verdict, not a sign of life.
+                if (verdict != PushVerdict.SILENT && verdict != PushVerdict.CLOSED) caps.succeeded(url)
+
+                when (verdict) {
                     PushVerdict.ACCEPTED -> {
-                        caps.succeeded(url)
                         accepted.incrementAndGet()
                         accepts++
                     }

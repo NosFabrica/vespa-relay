@@ -141,4 +141,33 @@ class WriteCapabilityTest {
         caps.succeeded(relay)
         assertTrue(caps.isClosed(relay), "policy is not undone by a later stray success")
     }
+
+    @Test
+    fun `an answer from a relay that never struck still records it as probed`() {
+        // The health line prints closed/probed, and counting only relays that
+        // had struck or closed meant a fan-out where everything worked read
+        // `0/0` — indistinguishable from a healer that never ran.
+        val caps = WriteCapability()
+        assertEquals(0, caps.probedCount())
+        caps.succeeded(relay)
+        assertEquals(1, caps.probedCount(), "a relay we successfully pushed to has demonstrably been probed")
+        assertEquals(0, caps.closedCount())
+    }
+
+    @Test
+    fun `a relay that answers after one silence is never closed by later silences`() {
+        // The false close this guards. A relay that timed out once and then
+        // replied to everything kept its first strike, because only ACCEPTED
+        // cleared doubt and a `duplicate`/`invalid` answer is not ACCEPTED.
+        // Two more timeouts across later passes then closed a relay that was
+        // plainly answering. The Healer now clears on ANY answer; this pins
+        // the WriteCapability half of it.
+        val caps = WriteCapability()
+        caps.strike(relay, passId = 1)
+        caps.succeeded(relay)
+        caps.strike(relay, passId = 2)
+        caps.succeeded(relay)
+        caps.strike(relay, passId = 3)
+        assertFalse(caps.isClosed(relay), "strikes separated by answers are not a pattern of silence")
+    }
 }

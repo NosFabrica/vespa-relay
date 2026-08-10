@@ -64,6 +64,15 @@ class WriteCapability(
 
     fun closedCount(): Int = relays.values.count { it.closed }
 
+    /**
+     * Relays we have actually pushed to and heard something back from.
+     *
+     * The health line prints `closedCount/probedCount`, and this used to count
+     * only relays that had struck or closed — so a fan-out where every relay
+     * accepted its repairs read `0/0`, which is what a healer that never ran
+     * also prints. [succeeded] therefore records a clean state rather than
+     * only clearing an existing one.
+     */
     fun probedCount(): Int = relays.size
 
     /** A policy refusal. One is enough: it is their configuration, not their mood. */
@@ -77,11 +86,18 @@ class WriteCapability(
         }
     }
 
-    /** The relay took it. Clears any accumulated doubt. */
+    /**
+     * The relay answered. Clears any accumulated doubt and records that we
+     * have reached it at all.
+     *
+     * One `compute` rather than a read-then-write: the old version could drop
+     * a [strike] that landed between the two, and it recorded nothing for a
+     * relay that had never struck — which is what left [probedCount] reading
+     * zero on a healthy fan-out. A closed relay stays closed; policy is not
+     * undone by a later answer.
+     */
     fun succeeded(url: NormalizedRelayUrl) {
-        relays[url]?.takeIf { !it.closed && it.strikes > 0 }?.let {
-            relays[url] = State()
-        }
+        relays.compute(url) { _, before -> if (before?.closed == true) before else State() }
     }
 
     /**

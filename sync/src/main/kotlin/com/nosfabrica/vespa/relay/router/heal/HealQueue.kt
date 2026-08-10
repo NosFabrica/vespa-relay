@@ -156,6 +156,13 @@ class HealQueue(
      *
      * The returned map is a private copy, so a concurrent offer cannot mutate
      * what the caller is iterating.
+     *
+     * The now-empty per-relay map is deliberately left in place. Removing it
+     * is what created the race above, and a conditional remove does not help:
+     * an offer that resolved its slot beforehand still lands in whatever the
+     * removal detached. The cost of keeping it is one empty map per relay ever
+     * seen — bounded by the relay universe, tens of thousands at the outside,
+     * and a few tens of bytes each.
      */
     fun drain(
         url: NormalizedRelayUrl,
