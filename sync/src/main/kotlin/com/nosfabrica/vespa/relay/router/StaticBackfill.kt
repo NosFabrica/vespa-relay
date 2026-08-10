@@ -23,8 +23,10 @@ package com.nosfabrica.vespa.relay.router
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
+import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
+import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -80,6 +82,8 @@ internal class StaticBackfill(
     private val streamGate: Semaphore,
     private val transferring: AtomicInteger,
     private val scope: CoroutineScope,
+    // Drained after each upstream's history catch-up, off the sweep's path.
+    private val healer: Healer,
 ) {
     private val progress = BackfillProgress()
 
@@ -286,7 +290,7 @@ internal class StaticBackfill(
                             // Without this, every multi-kind stream here would
                             // stop resuming.
                             SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                            ingest.submit(event, upstream.trusted)
+                            ingest.submit(event, upstream.trusted, originFor(upstream))
                         }
                         seenSoFar++
                         live.incrementAndGet()
@@ -476,7 +480,7 @@ internal class StaticBackfill(
                             seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                         }
                         SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                        ingest.submit(event, upstream.trusted)
+                        ingest.submit(event, upstream.trusted, originFor(upstream))
                     }
                 }
                 val here = downloaded
@@ -592,7 +596,7 @@ internal class StaticBackfill(
                                     seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                                 }
                                 SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                                ingest.submit(event, upstream.trusted)
+                                ingest.submit(event, upstream.trusted, originFor(upstream))
                             }
                         },
                     )
@@ -741,6 +745,9 @@ internal class StaticBackfill(
     ) {
         fun percent(): Int = if (need <= 0) 0 else ((downloaded * 100) / need).coerceIn(0, 100).toInt()
     }
+
+    /** What this upstream's stream lets the healer do about a stale copy. */
+    private fun originFor(upstream: SyncUpstream) = IngestOrigin(upstream.url, healContent = upstream.healContent, healRetractions = upstream.healRetractions)
 }
 
 /**

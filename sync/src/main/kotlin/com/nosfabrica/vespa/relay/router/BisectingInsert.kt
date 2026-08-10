@@ -40,7 +40,7 @@ import kotlinx.coroutines.CancellationException
 internal suspend fun insertBisecting(
     events: List<Event>,
     write: suspend (List<Event>) -> List<IEventStore.InsertOutcome>,
-    onOutcomes: (List<IEventStore.InsertOutcome>) -> Unit,
+    onOutcomes: (List<Event>, List<IEventStore.InsertOutcome>) -> Unit,
     onPoison: (Event, Throwable) -> Unit,
     onGaveUp: (List<Event>, Throwable) -> Unit = { _, _ -> },
 ) = bisect(events, write, onOutcomes, onPoison, onGaveUp, intArrayOf(ISOLATION_WRITE_BUDGET))
@@ -48,14 +48,17 @@ internal suspend fun insertBisecting(
 private suspend fun bisect(
     events: List<Event>,
     write: suspend (List<Event>) -> List<IEventStore.InsertOutcome>,
-    onOutcomes: (List<IEventStore.InsertOutcome>) -> Unit,
+    onOutcomes: (List<Event>, List<IEventStore.InsertOutcome>) -> Unit,
     onPoison: (Event, Throwable) -> Unit,
     onGaveUp: (List<Event>, Throwable) -> Unit,
     budget: IntArray,
 ) {
     if (events.isEmpty()) return
     try {
-        onOutcomes(write(events))
+        // Outcomes come back positionally aligned with the batch, which is what
+        // lets a caller attribute a rejection to the event that earned it —
+        // the whole basis for deciding whether an id is worth remembering.
+        onOutcomes(events, write(events))
     } catch (e: CancellationException) {
         throw e
     } catch (e: Throwable) {

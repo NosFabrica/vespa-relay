@@ -78,7 +78,7 @@ class InsertBisectingTest {
             insertBisecting(
                 events = events,
                 write = { writer.write(it) },
-                onOutcomes = { accepted += it.size },
+                onOutcomes = { _, outcomes -> accepted += outcomes.size },
                 onPoison = { e, t -> poisoned.add(e to t) },
                 onGaveUp = { batch, _ -> gaveUp.add(batch.size) },
             )
@@ -179,7 +179,7 @@ class InsertBisectingTest {
                 insertBisecting(
                     events = events,
                     write = { throw CancellationException("shutting down") },
-                    onOutcomes = { },
+                    onOutcomes = { _, _ -> },
                     onPoison = { _, _ -> error("cancellation must not be reported as poison") },
                 )
             }

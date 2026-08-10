@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
+import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.router.refused.RefusalSink
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
@@ -58,10 +60,17 @@ internal class IngestPipeline(
     // Clients first: ingest yields when their reads slow down.
     private val servingPressure: ServingPressure?,
     private val scope: CoroutineScope,
+    /**
+     * Where store refusals are reported and where suppression is asked about.
+     * Defaults to off, so every existing caller and test behaves exactly as it
+     * did before this existed.
+     */
+    private val refusals: RefusalSink = RefusalSink.None,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
         val skipVerify: Boolean,
+        val origin: IngestOrigin,
     )
 
     private val workers = config.ingestConcurrency
@@ -131,6 +140,22 @@ internal class IngestPipeline(
     private val unverified = AtomicLong()
     private val rejectReasons = ConcurrentHashMap<String, Long>()
 
+    /**
+     * Events dropped before the store because a filter says we have twice
+     * refused them already. Counted on their OWN line, never folded into
+     * accepted or rejected: a suppression is neither, and a number that hides
+     * inside either one cannot answer "is the filter doing anything" or the far
+     * more urgent "is the filter eating everything".
+     */
+    val suppressed = AtomicLong()
+
+    /**
+     * Refusals broken out by class, because the aggregate cannot answer the one
+     * question this subsystem exists for. `REPLACED` is the loop; `duplicate`
+     * is the system working.
+     */
+    val replacedRejects = AtomicLong()
+
     // Store failures already reported in full, so the raw-event dump stays
     // one per distinct defect.
     private val poisonSeen = ConcurrentHashMap.newKeySet<String>()
@@ -169,7 +194,18 @@ internal class IngestPipeline(
     suspend fun submit(
         event: Event,
         skipVerify: Boolean,
+        origin: IngestOrigin = IngestOrigin.Local,
     ) {
+        // Checked HERE rather than in the callers' `onEvent`, and the placement
+        // is deliberate: by the time an event reaches this method its caller
+        // has already run `SyncCoverage.observe` and widened the leg's seen
+        // span. Dropping any earlier would leave the leg without per-kind
+        // evidence, quartz would record no band, and the stream would re-walk
+        // that relay every cycle — costing far more than the drop saves.
+        if (refusals.isSuppressed(event)) {
+            suppressed.incrementAndGet()
+            return
+        }
         // Counted BEFORE the send, and taken back if the send fails. The
         // event is in the channel the instant `send` returns, so a worker can
         // take it and decrement before a post-send increment ever runs — which
@@ -180,7 +216,7 @@ internal class IngestPipeline(
         queued.incrementAndGet()
         var handedOff = false
         try {
-            inbound.send(Inbound(event, skipVerify))
+            inbound.send(Inbound(event, skipVerify, origin))
             handedOff = true
         } catch (_: ClosedSendChannelException) {
             // Shutdown (closeIntake) raced this event in. Not an error.
@@ -210,10 +246,17 @@ internal class IngestPipeline(
                 batch.add(next)
             }
             val valid = ArrayList<Event>(batch.size)
+            val origins = HashMap<String, IngestOrigin>(batch.size)
             var verifyRejected = 0
             for (msg in batch) {
                 if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
                     valid.add(msg.event)
+                    // A bad signature never reaches this map, and so can never
+                    // reach the refusal sink: an id is the hash of the CONTENT,
+                    // not of the signature, so the same id can arrive correctly
+                    // signed from another relay. Remembering it would make one
+                    // relay's corruption permanent.
+                    origins[msg.event.id] = msg.origin
                 } else {
                     verifyRejected++
                 }
@@ -227,7 +270,7 @@ internal class IngestPipeline(
             // parse report raised inside batchInsert cannot be attributed to
             // one event. Inspecting here keeps the audit's ThreadLocal exact.
             audit?.let { for (event in valid) it.inspect(event) }
-            insertIsolating(valid)
+            insertIsolating(valid, origins)
         }
     }
 
@@ -236,51 +279,62 @@ internal class IngestPipeline(
      * isolate the offending event so one bad event does not silently cost a
      * whole batch. See [insertBisecting].
      */
-    private suspend fun insertIsolating(events: List<Event>) =
-        insertBisecting(
-            events = events,
-            write = { store.batchInsert(it) },
-            onOutcomes = { outcomes ->
-                for (outcome in outcomes) {
-                    when (outcome) {
-                        is IEventStore.InsertOutcome.Accepted -> {
-                            accepted.incrementAndGet()
-                        }
+    private suspend fun insertIsolating(
+        events: List<Event>,
+        origins: Map<String, IngestOrigin>,
+    ) = insertBisecting(
+        events = events,
+        write = { store.batchInsert(it) },
+        onOutcomes = { written, outcomes ->
+            for ((i, outcome) in outcomes.withIndex()) {
+                when (outcome) {
+                    is IEventStore.InsertOutcome.Accepted -> {
+                        accepted.incrementAndGet()
+                    }
 
-                        is IEventStore.InsertOutcome.Rejected -> {
-                            rejected.incrementAndGet()
-                            rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
-                        }
-
-                        is IEventStore.InsertOutcome.Failed -> {
-                            // The store's fault, attributed per row: the event
-                            // was good and is lost — nothing re-offers it.
-                            // Tallied like onGaveUp's batch case, plus
-                            // lostToStore so the loss is loud on the health
-                            // line instead of blending into the duplicates.
-                            rejected.incrementAndGet()
-                            rejectReasons.merge("store failed: ${outcome.reason.take(40)}", 1L, Long::plus)
-                            lostToStore.incrementAndGet()
+                    is IEventStore.InsertOutcome.Rejected -> {
+                        rejected.incrementAndGet()
+                        rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
+                        // Attributed to the event that earned it. Only the
+                        // REJECTED branch reports: a Failed outcome is the
+                        // STORE's fault and the event is good, so recording
+                        // it would turn a transient fault into permanent
+                        // silent loss.
+                        written.getOrNull(i)?.let { event ->
+                            if (outcome.reason.startsWith("replaced:")) replacedRejects.incrementAndGet()
+                            refusals.onRefused(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
                         }
                     }
+
+                    is IEventStore.InsertOutcome.Failed -> {
+                        // The store's fault, attributed per row: the event
+                        // was good and is lost — nothing re-offers it.
+                        // Tallied like onGaveUp's batch case, plus
+                        // lostToStore so the loss is loud on the health
+                        // line instead of blending into the duplicates.
+                        rejected.incrementAndGet()
+                        rejectReasons.merge("store failed: ${outcome.reason.take(40)}", 1L, Long::plus)
+                        lostToStore.incrementAndGet()
+                    }
                 }
-            },
-            onPoison = { event, e ->
-                rejected.incrementAndGet()
-                rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L, Long::plus)
-                reportPoison(event, e)
-            },
-            onGaveUp = { batch, e ->
-                // Isolation ran out of budget: counted but unnamed, and
-                // tallied apart from the isolated ones — "we could not say
-                // which" is a different fact from "this event is bad".
-                rejected.addAndGet(batch.size.toLong())
-                rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
-                // These are LOST, not merely rejected: the events were good,
-                // the failure is the store's, and nothing re-offers them.
-                lostToStore.addAndGet(batch.size.toLong())
-            },
-        )
+            }
+        },
+        onPoison = { event, e ->
+            rejected.incrementAndGet()
+            rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L, Long::plus)
+            reportPoison(event, e)
+        },
+        onGaveUp = { batch, e ->
+            // Isolation ran out of budget: counted but unnamed, and
+            // tallied apart from the isolated ones — "we could not say
+            // which" is a different fact from "this event is bad".
+            rejected.addAndGet(batch.size.toLong())
+            rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
+            // These are LOST, not merely rejected: the events were good,
+            // the failure is the store's, and nothing re-offers them.
+            lostToStore.addAndGet(batch.size.toLong())
+        },
+    )
 
     /**
      * Log an event the store threw on, once per distinct failure, with the
@@ -304,6 +358,14 @@ internal class IngestPipeline(
                 "router: the event, verbatim: ${event.toJson().take(POISON_JSON_CHARS)}",
         )
     }
+
+    /** The two numbers Step 0 exists to produce, for the health line. */
+    fun suppressionBreakdown(): String =
+        if (suppressed.get() == 0L && replacedRejects.get() == 0L) {
+            ""
+        } else {
+            " [replaced x${replacedRejects.get()}; suppressed x${suppressed.get()}]"
+        }
 
     /**
      * What the rejections actually were, for the stats line — the bare total

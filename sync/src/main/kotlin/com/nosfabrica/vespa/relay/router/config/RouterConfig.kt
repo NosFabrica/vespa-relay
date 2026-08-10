@@ -88,7 +88,7 @@ data class RouterConfig(
     private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
             .filter { it.dir == want || it.dir == SyncDirection.BOTH }
-            .flatMap { s -> s.urls.map { SyncUpstream(s.name, it, s.filter, s.trusted, s.sync) } }
+            .flatMap { s -> s.urls.map { SyncUpstream(s.name, it, s.filter, s.trusted, s.sync, s.healContent, s.healRetractions) } }
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */
@@ -98,6 +98,8 @@ data class SyncUpstream(
     val filter: Filter,
     val trusted: Boolean,
     val sync: SyncMode = SyncMode.AUTO,
+    val healContent: Boolean = false,
+    val healRetractions: Boolean = false,
 )
 
 data class SyncStream(
@@ -112,6 +114,26 @@ data class SyncStream(
     val sync: SyncMode = SyncMode.AUTO,
     // Whether an upstream dropping a record means we drop it too.
     val deleteMissing: DeleteMissing = DeleteMissing.OFF,
+    /**
+     * Ask this stream's relays for the CURRENT version of each replaceable
+     * address (one `limit: 1` filter per author) instead of a time range. Only
+     * meaningful on a `fetch`-mode stream, where nothing can suppress a body
+     * that is already on the wire — see `LatestOnlyAsk`.
+     */
+    val latestOnly: Boolean = false,
+    /**
+     * Push our newer replaceable/addressable version at a relay that served us
+     * a stale one. Separate from [healRetractions] because the two differ in
+     * whether the author asked: this is a version update to a relay that
+     * already carries them, which is why it is still opt-in.
+     */
+    val healContent: Boolean = false,
+    /**
+     * Push the kind 5, or the `ALL_RELAYS` kind 62, at a relay still serving
+     * what our stored tombstone retracts. These are instructions the author
+     * already addressed to every relay and most relays never received.
+     */
+    val healRetractions: Boolean = false,
     /**
      * The kinds this stream's upstreams are the source of truth for — the only
      * kinds [deleteMissing] may delete on their own absence. Required whenever

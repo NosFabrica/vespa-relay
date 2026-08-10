@@ -28,8 +28,11 @@ import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
+import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
+import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -106,6 +109,11 @@ internal class DynamicSync(
     // dialable at all, and what decides whether they may be dialled today.
     private val tor: TorTransport?,
     private val scope: CoroutineScope,
+    // Repairs are queued by ingest and drained here, at the end of each
+    // relay's own sync while its socket is still open — a relaySource stream
+    // keeps no live tail, so a detached healer would have to re-dial.
+    private val healer: Healer,
+    private val refusedIds: RefusedIds,
 ) {
     /**
      * `SYNC_DIAGNOSE=<stream>` — log one line per relay for that stream: how many
@@ -115,7 +123,7 @@ internal class DynamicSync(
      */
     private val diagnose: String? = System.getenv("SYNC_DIAGNOSE")?.trim()?.takeIf { it.isNotEmpty() }
 
-    private val deleteMissingSync = DeleteMissingSync(client, store, bands, ingest, paging)
+    private val deleteMissingSync = DeleteMissingSync(client, store, bands, ingest, paging, refusedIds)
 
     /** Records dropped because an upstream retracted them — see [DeleteMissingSync]. */
     val deleted: AtomicLong get() = deleteMissingSync.deleted
@@ -563,7 +571,7 @@ internal class DynamicSync(
                     // records no band for a multi-kind filter, so a discovery
                     // stream would re-walk every relay every cycle.
                     SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted)
+                    ingest.submit(event, stream.trusted, originFor(stream, url))
                 }
             }
             // Fetch-only: the leg came off the band, so this asks only
@@ -605,8 +613,22 @@ internal class DynamicSync(
                 observedByKind = seenByKind,
             )
         }
+        // The socket is still open here and it will not be after this returns:
+        // these streams hold no live tail. Draining now keeps the connection
+        // the repairs need without the sweep ever waiting on a publish.
+        healer.drain(url)
         return downloaded
     }
+
+    /**
+     * What this stream lets the healer do about a relay serving a stale copy.
+     * Resolved here rather than in the pipeline because the switches are
+     * per-stream and the pipeline is shared.
+     */
+    private fun originFor(
+        stream: SyncStream,
+        url: NormalizedRelayUrl,
+    ) = IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions)
 
     /**
      * [window] as one ask, or as several with at most [per] authors each. A
