@@ -656,18 +656,36 @@ internal class DynamicSync(
                 if (fetched) {
                     null.also {
                         val walk = "${stream.name}|${url.url}"
-                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                        // Floored on the PAGED branch only: a walk that runs past
+                        // `created_at = 0` never returns ([flooredForPaging]), while
+                        // narrowing the negentropy branch's leg the same way would
+                        // leave the local id set wider than the remote one.
+                        val flooredLeg = leg.flooredForPaging()
+                        paging.begin(walk, flooredLeg.until ?: nowSeconds(), flooredLeg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                        // finally, because `syncRelay` catches Exception around
+                        // this: a throw between begin and finish leaves the walk
+                        // in PagingProgress with `current` still at `top`, and
+                        // `fraction` AVERAGES over every live walk, so one
+                        // orphan reads as a relay stuck at 0% and drags the
+                        // stream's percentage and ETA down. `begin` overwrites
+                        // by key, so it is one stale entry per stream|url rather
+                        // than a growing leak — but it never clears on its own,
+                        // and a relay that stops being walked keeps it forever.
+                        // `DeleteMissingSync.pageAsk` already does this.
                         val w =
-                            client.fetchAllPages(
-                                url,
-                                listOf(leg),
-                                NEG_IDLE_MS,
-                                onNewPage = { until -> paging.mark(walk, until) },
-                                onEvent = onEvent,
-                            )
+                            try {
+                                client.fetchAllPages(
+                                    url,
+                                    listOf(flooredLeg),
+                                    NEG_IDLE_MS,
+                                    onNewPage = { until -> paging.mark(walk, until) },
+                                    onEvent = onEvent,
+                                )
+                            } finally {
+                                paging.finish(walk)
+                            }
                         walked = w
                         downloaded += w.downloaded
-                        paging.finish(walk)
                     }
                 } else {
                     client

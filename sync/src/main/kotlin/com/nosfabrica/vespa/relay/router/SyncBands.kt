@@ -636,6 +636,63 @@ class SyncBands(
 }
 
 /**
+ * The leg as it goes ON THE WIRE: floored at [SyncCoverage.PLAUSIBLE_FLOOR] when it
+ * carries no `since` of its own. Apply this to every filter handed to
+ * `fetchAllPages`, and only to those — a paged walk is the one thing the floor
+ * protects, and putting it on a negentropy leg would narrow the remote set while the
+ * local id snapshot stayed wide, which on the `deleteMissing` path is a retraction.
+ *
+ * **This is not tidiness. Without it a paged walk against a real relay never ends.**
+ * `fetchAllPages` cursors newest-first by `until = oldest created_at seen`, so a
+ * single event stamped `created_at = 0` drives the cursor to zero. purplepag.es holds
+ * twelve of them — kind 10002, `created_at = 0` — and treats `until <= 0` as *no*
+ * `until`, so it answers that page with its five hundred NEWEST events. None of them
+ * matches the filter's own `until` client-side, so quartz sees a page that delivered
+ * nothing, steps strictly past the boundary to `until = -1`, and asks again. And
+ * again. Measured against the live relay: ~5.5 pages a second, 500 events fetched and
+ * discarded on each, `until` marching one second further negative every time, EOSE on
+ * every single page — for as long as the process runs. The stream never returns, so
+ * its band is never recorded and the next boot re-walks the whole relay from the top.
+ *
+ * Flooring the REQ ends it where the data ends: below the floor purplepag.es answers
+ * an empty page with an EOSE, which is a DRAIN, which closes the leg. Every paged
+ * call site already spelled this floor out for its progress line
+ * (`leg.since ?: PLAUSIBLE_FLOOR`) and [drainSettlesThePast] already accepts a leg
+ * that carries it — the walk itself was the one place the floor was assumed and never
+ * actually sent.
+ *
+ * Nothing is given up: [SyncCoverage.isPlausible] already refuses everything below
+ * this floor, so those events could never widen a band or count as coverage.
+ *
+ * **This floor is not the whole fix, and it never was — keep it anyway.** Quartz now
+ * guards its own cursor (amethyst#3889, merged as `a5507f9a`): it floors at epoch 0
+ * and calls a relay answering ABOVE the boundary `UNPAGEABLE` instead of stepping
+ * past it. That is the structural half, because a `since` does NOT bound the step
+ * path — `until = boundary - 1` ignores it, so against a cursor-ignoring relay an
+ * unguarded walk descends from the window floor to 0 whatever `since` says, ~1.5
+ * billion pages. What this floor buys is different and still worth having: the walk
+ * stops at real data rather than at a guard, so purplepag.es DRAINS at the floor and
+ * the leg closes, where quartz's guard alone would leave it UNPAGEABLE — which
+ * settles nothing, records no coverage, and re-walks 1.49M events on the next boot.
+ * We are now ON that quartz (pin `a5507f9a4d`), so this is no longer load-bearing
+ * against the loop itself. It is load-bearing for the leg CLOSING, which is the
+ * thing the `indexers` stream needed.
+ *
+ * KNOWN HOLE, and why it is left open: a filter carrying its OWN `since` is passed
+ * through untouched, so a config that writes `since = 0` — which means the same as
+ * omitting it — walks unfloored. On the pinned quartz that no longer runs past zero
+ * (the cursor floors there), but it is not harmless: the walk ends UNPAGEABLE
+ * against a relay like purplepag.es, which records no coverage, so the leg re-walks
+ * every boot. Clamping it HERE is the wrong fix — [drainSettlesThePast] compares the
+ * leg's floor against the FILTER's, and a leg clamped above the floor its filter
+ * asked for has not reached bottom and may not settle history. The right place is
+ * the config loader, normalising `since = 0` to absent before a Filter is built.
+ * Not done yet; no configuration here writes it, and a real `since` is always well
+ * above this floor, where this function is correctly a no-op.
+ */
+internal fun Filter.flooredForPaging(): Filter = if (since != null) this else copy(since = SyncCoverage.PLAUSIBLE_FLOOR)
+
+/**
  * Whether a drained leg says anything about HISTORY — the guard every paged call
  * site must put between [PagedFetchResult] and [SyncBands.record].
  *
