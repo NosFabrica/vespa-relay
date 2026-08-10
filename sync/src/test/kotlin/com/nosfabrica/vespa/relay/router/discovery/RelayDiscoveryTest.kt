@@ -77,7 +77,9 @@ class RelayDiscoveryTest {
         sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
-        exclude = RelayExcludes(exclude.map { Regex(it) }),
+        // Production compilation, so these tests exercise the same entry
+        // classification and case rules the loader produces.
+        exclude = RelayExcludes.parse(exclude.toList()),
         maxRelaysPerList = maxRelaysPerList,
     )
 

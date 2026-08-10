@@ -273,12 +273,13 @@ it again — so the fan-out widens on its own as the store fills.
 
 Nothing truncates that set: no cap on relays synced and no popularity floor.
 `concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
-way to leave a relay out. Its entries are regexes that must match the whole
-discovered url, ignoring case, with the url's trailing slash optional: a plain
-`wss://purplepag.es/` excludes exactly the relay it names, and
-`wss://filter.nostr.wine/npub.*` drops every per-user url that host mints
-(`wss://filter.nostr.wine/npub1…`) while leaving the relay itself in — a shape
-no literal list could keep up with.
+way to leave a relay out. A plain url entry excludes exactly the relay it
+names, compared by normalized form — host case, a redundant `:443`, or a
+missing trailing slash don't matter. An entry carrying a regex metacharacter (a dot
+doesn't count — urls are full of them) is instead a regex that must match the
+whole discovered url, ignoring case: `wss://filter.nostr.wine/npub.*` drops
+every per-user url that host mints (`wss://filter.nostr.wine/npub1…`) while
+leaving the relay itself in — a shape no literal list could keep up with.
 
 **No kind needs its own code.** Every relay list in the protocol is a tag with a
 url at a fixed offset, so a select is just that shape:

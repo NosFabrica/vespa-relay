@@ -254,7 +254,7 @@ class RouterConfigTest {
         val outbox = cfg.streams.first { it.name == "outbox" }.dynamic!!
         assertEquals(3600L, outbox.refreshSeconds)
         assertEquals(4, outbox.concurrency)
-        assertEquals(listOf("wss://skip.example"), outbox.exclude.patterns.map { it.pattern })
+        assertEquals(listOf("wss://skip.example/"), outbox.exclude.urls.map { it.url })
         assertEquals(2, outbox.sources.size)
 
         // One scan over three kinds, three selects sorting them out.
@@ -301,14 +301,14 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `an exclude entry is a regex that must match the whole url ignoring case`() {
+    fun `a plain exclude url matches by normalized equality and a regex entry matches the whole url`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
                 streams {
                     outbox {
                         filter  = { "kinds": [10002] }
-                        exclude = [ "WSS://purplepag.es", "wss://filter.nostr.wine/npub.*" ]
+                        exclude = [ "PURPLEPAG.ES", "wss://DIRECTORY.YABU.ME:443", "wss://filter.nostr.wine/npub.*" ]
                         relaySource = [
                             {
                                 select = [ { tag = "r" } ]
@@ -324,13 +324,20 @@ class RouterConfigTest {
                 .single()
                 .dynamic!!
                 .exclude
-        // A plain url names exactly one relay, whatever case it was typed in
-        // and with the normalizer's trailing slash optional...
+        // No regex metacharacter (a dot is not one), so the first two entries
+        // are plain urls: normalized like a `urls` entry — covering the
+        // scheme-less uppercase spelling a pre-regex config could carry, and
+        // an uppercase host with a redundant :443, which discovery also
+        // strips from every url before the exclude check — and excluding
+        // exactly one relay each...
         assertTrue(RelayUrlNormalizer.normalize("wss://purplepag.es") in exclude)
-        // ...and never a longer url it happens to sit inside.
+        assertTrue(RelayUrlNormalizer.normalize("wss://directory.yabu.me") in exclude)
+        // ...never a longer url it sits inside, nor the look-alike host its
+        // dots would reach as a regex.
         assertFalse(RelayUrlNormalizer.normalize("wss://purplepag.es.evil.example") in exclude)
-        // A wildcard is spelled out, and reaches only what it names: the
-        // per-user urls the host mints, not the relay itself.
+        assertFalse(RelayUrlNormalizer.normalize("wss://purplepagXes") in exclude)
+        // The `.*` makes the second entry a regex, and it reaches only what
+        // it names: the per-user urls the host mints, not the relay itself.
         assertTrue(RelayUrlNormalizer.normalize("wss://filter.nostr.wine/npub1xyz") in exclude)
         assertFalse(RelayUrlNormalizer.normalize("wss://filter.nostr.wine") in exclude)
         assertFalse(RelayUrlNormalizer.normalize("wss://nostr.wine") in exclude)

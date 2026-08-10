@@ -334,26 +334,25 @@ object RouterConfigLoader {
     }
 
     /**
-     * `exclude` entries compile as regexes — see [RelayExcludes] for how one
-     * matches. Compiled here, at the one place a human types them, so a broken
-     * pattern refuses the config naming the stream and the entry instead of
-     * surfacing as a stack trace mid-cycle.
+     * `exclude` entries are plain urls or regexes — see [RelayExcludes] for
+     * how they are told apart and matched. Compiled here, at the one place a
+     * human types them, so a broken pattern refuses the config naming the
+     * stream instead of surfacing as a stack trace mid-cycle, and an
+     * unusable plain url warns the way a `urls` entry does.
      */
     private fun parseExcludes(
         stream: String,
         raw: List<String>,
     ): RelayExcludes =
-        RelayExcludes(
-            raw.map { pattern ->
-                try {
-                    Regex(pattern, RegexOption.IGNORE_CASE)
-                } catch (e: PatternSyntaxException) {
-                    throw IllegalArgumentException(
-                        "router: stream '$stream' has an exclude entry '$pattern' that does not compile as a regex — ${e.message}",
-                    )
-                }
-            },
-        )
+        try {
+            RelayExcludes.parse(raw) { url ->
+                System.err.println("router: stream '$stream' skips invalid exclude url '$url'")
+            }
+        } catch (e: PatternSyntaxException) {
+            throw IllegalArgumentException(
+                "router: stream '$stream' has an exclude entry that does not compile as a regex — ${e.message}",
+            )
+        }
 
     /** One `{ select = [ ], filter = { } }` entry: what to pull out, and the scan to pull it from. */
     private fun parseRelaySource(

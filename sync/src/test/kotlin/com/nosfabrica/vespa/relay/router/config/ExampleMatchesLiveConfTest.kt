@@ -68,9 +68,7 @@ class ExampleMatchesLiveConfTest {
             s.dynamic?.authorsPerLeg,
             s.dynamic
                 ?.exclude
-                ?.patterns
-                ?.map { it.pattern }
-                ?.sorted(),
+                ?.let { ex -> ex.urls.map { it.url }.sorted() + ex.patterns.map { it.pattern }.sorted() },
             s.dynamic?.sources?.map { src -> src.filter.toJson() to src.selects },
         ).joinToString("\n")
 

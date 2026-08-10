@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.Slot
+import com.nosfabrica.vespa.relay.router.config.withoutDefaultPort
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -438,31 +439,9 @@ object RelayDiscovery {
         if (!url.url.startsWith("ws://", true) && !url.url.startsWith("wss://", true)) return null
         if (!allowOnion && RelayUrlNormalizer.isOnion(url.url)) return null
         if (RelayUrlNormalizer.isLocalHost(url.url)) return null
+        // Strip a redundant :443/:80 — shared with the exclude list's plain
+        // entries, so the two meet on one spelling. See its KDoc for the
+        // measured duplication it prevents.
         return withoutDefaultPort(url)
-    }
-
-    /**
-     * `wss://relay/` and `wss://relay:443/` are the same url written two ways,
-     * and the normalizer keeps both — so a relay list naming both costs two
-     * dials, two cursor bands and two sets of NIP-66 records for one server.
-     * Measured on this store: 861 discovered urls carried a redundant default
-     * port and 362 of them duplicated a portless url already in the set.
-     *
-     * Done here rather than left to [RelayAliases] because it needs no
-     * evidence: 443 on `wss` and 80 on `ws` are the scheme's own default, and
-     * dropping them is what every URL parser already does. The fold is for
-     * urls that only MEASUREMENT can prove equal.
-     */
-    private fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
-        val default = if (url.url.startsWith("wss://", true)) ":443" else ":80"
-        val scheme = url.url.substringBefore("://", "") + "://"
-        val rest = url.url.removePrefix(scheme)
-        val authority = rest.substringBefore('/')
-        // An IPv6 literal's colons live inside brackets; only a port sits after
-        // the closing one, so anything unbracketed is checked as written.
-        if (authority.startsWith("[") && !authority.substringAfter(']').startsWith(":")) return url
-        if (!authority.endsWith(default)) return url
-        val trimmed = scheme + authority.removeSuffix(default) + rest.substring(authority.length)
-        return RelayUrlNormalizer.normalizeOrNull(trimmed) ?: url
     }
 }
