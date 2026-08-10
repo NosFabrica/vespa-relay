@@ -21,11 +21,31 @@ pipeline verifies them, and the store rejects them again
 (`IngestPipeline.kt:250`). Next cycle, the same. Nothing anywhere carries the
 memory that the answer was already decided.
 
-The dominant case is replaceable and addressable kinds. An author with five
-years of kind-0 edits has one live version here and *n−1* superseded ones that
-every negentropy-mode upstream will offer us on every cycle, forever. The set of
-events in this state only grows, and it grows fastest on exactly the kinds
-`sync = "negentropy"` was chosen for (0, 3, 10002).
+The dominant case is replaceable and addressable kinds, and the shape of it is
+narrower than an earlier draft of this document claimed — the correction matters
+because it sizes everything downstream.
+
+**A NIP-01-compliant relay holds only the current version per (kind, pubkey, d).**
+strfry's `writeEvents` deletes the loser outright, as read in
+[Prior art](#prior-art-what-strfry-does). So a compliant upstream is not offering
+us the whole history of an author's profile; it is offering us **its** current
+version, which is stale only because we already hold a newer one from somewhere
+else. The loop is therefore **one event per (relay, address) per cycle**, not one
+per historical version — bounded by relays × addresses, not by relays ×
+addresses × edits. Deep version histories only exist at relays that archive on
+purpose.
+
+That is still enormous across a 16k-relay fan-out and millions of addresses, and
+it still never converges. And the *tombstone* set grows faster than the per-cycle
+loop does, because churn keeps minting new stale ids: relay A's v3 becomes v4
+next month, v3 is gone from A, and we have already recorded it. **Kind 3 remains
+the worst case** — a follow list is rewritten on every follow and unfollow — but
+by churn rate rather than by any relay hoarding versions.
+
+Two consequences worth carrying forward: Fix 2 is worth more than first stated,
+because pushing our winner at a compliant relay resolves that pair permanently;
+and the filter needs to hold distinct stale ids *in circulation over time*, which
+is far less than "every version ever published".
 
 **This is the same shape as the NIP-09 case** already written up in
 [router.md](../router.md#mirroring-the-deletions-themselves): *"it is the stored
@@ -43,8 +63,8 @@ And it falsifies a claim the router docs currently make:
 > — [router.md](../router.md)
 
 Cheap only if the diff converges to empty. For replaceable kinds it converges to
-"every superseded version the upstream holds", which is a floor, not a
-transient.
+"that relay's current version, wherever it differs from ours", which is a floor,
+not a transient.
 
 ## What this costs today — unknown, and that is the first thing to fix
 
@@ -132,6 +152,34 @@ has to arrive once), and it interacts with the known multi-kind band bug in
 AGENTS.md, but it removes most of the re-transfer for zero new state.
 
 **Do this first. It may be enough**, and Step 0's numbers will say.
+
+#### `latestOnly` — the same idea for `fetch` mode
+
+`since` narrows the *window*. A `fetch`-mode stream can be narrowed on the axis
+that actually matters instead, with a per-stream flag: for replaceable and
+addressable kinds, **decompose the ask into one filter per address with
+`limit: 1`**, batched many-to-a-REQ.
+
+`{"kinds":[0],"authors":["<one>"],"limit":1}` returns that author's newest and
+structurally cannot return a superseded one — on a compliant relay *or* an
+archival one, with no protocol extension and no cooperation required. It is the
+only NIP-01 construction that expresses "latest per address"; a bare `limit` on a
+multi-author filter is newest-first *globally* and gives no such guarantee.
+
+Costs, all of them real:
+
+- **Filter count scales with the author set.** NIP-11 advertises `max_filters`
+  and relays enforce it, so the batching has to respect it and fall back. The
+  fan-out already chops author sets with `authorsPerLeg`, so the shape is not new.
+- **It does not apply to regular kinds**, which have no "latest per address" to
+  ask for. The flag must be a no-op outside replaceable/addressable, not an error.
+- **It should record no sync band.** A band claims a `created_at` range was
+  walked; a `limit: 1` per-address ask claims something entirely different, and
+  writing one would tell the next cycle a range is covered when it was never
+  swept. Either skip the band or give this ask its own coverage record.
+
+Where it applies it is strictly better than a tombstone, for the same reason
+Fix 2 is: nothing is transferred and nothing has to be remembered.
 
 ### Fix 2 — heal the upstream: push the update back to the source
 
@@ -538,6 +586,74 @@ therefore blinds Fix 2's observation loop, and anything built on it — the
 write-closed strike rule, the "populate only for relays that failed to heal"
 bound — has to be settled *before* 3b lands, or it cannot be measured afterwards.
 
+#### Every sync mode, and what each one can actually save
+
+The suppression must work in `negentropy`, `fetch` and `auto`, static and
+dynamic. It does — but **what it saves is not the same in each**, and pretending
+otherwise would repeat the mistake this document already made once.
+
+| path | earliest hook | saves | does not save |
+|---|---|---|---|
+| **negentropy** (`NegentropyPager`, `StaticBackfill`, `DynamicSync`) | `needIds`, before the REQ | the event bodies — ~95% of the transfer | the bisection round trips and the 32-byte ids |
+| **fetch** (`fetchAllPages`) | `onEvent`, after the body arrives | `verify()`, the ingest queue slot, the store round trip, `ServingPressure` contention | **nothing on the wire** |
+| **deleteMissing** (`DeleteMissingSync`) | `diff.needIds`, before `fetchAll` | same as negentropy | same as negentropy |
+
+**A REQ never names an id before it sends the body**, so on `fetch` there is no
+earlier hook to move to — the bytes are spent by the time we can test anything.
+That is the one place where the "a filter saves no bandwidth" objection is
+correct, and it is why `latestOnly` above matters: on the fetch path, *not asking*
+is the only thing that saves the transfer.
+
+Two implementation notes for the fetch hook, both easy to get wrong:
+
+- **Observe the band before dropping.** `DynamicSync`'s `onEvent` runs
+  `SyncCoverage.observe(seenByKind, …)` and widens `seenMin`/`seenMax` before
+  `ingest.submit`. The suppression goes **after** that bookkeeping and replaces
+  only the `submit`. Skipping the observe would leave the leg without per-kind
+  evidence, quartz would record no band, and the stream would re-walk that relay
+  every cycle — paying far more than the filter saved.
+- **A suppressed event is not a rejection.** It never reaches `IngestPipeline`,
+  so it must be counted on its own line rather than silently vanishing from both
+  the accepted and rejected tallies.
+
+**Fix 2's trigger also differs by mode**, and both routes are needed:
+
+- **negentropy** gives `diff.haveIds` — our winner that they lack — for free, in
+  the same round trip. No download required to know a heal is warranted.
+- **fetch** gives no diff at all. There the signal is the store's
+  `Rejected(REPLACED)`, which means the stale copy has already been downloaded,
+  and which does not say *which* event won. So the fetch path needs either a
+  query per address or the store change to report the winner id — the one this
+  document earlier said the diff route lets us sidestep. It does, on one path
+  out of two.
+
+**Static versus dynamic** changes the economics, not the mechanism. The per-id
+filter is global and behaves identically in both. The per-relay write bit is one
+row per relay — 16k rows is nothing. What differs is that a dynamic stream drops
+each socket as its sync returns and we can write to almost none of those relays,
+so on the fan-out Fix 2 is mostly inert and the filter carries the load alone.
+
+#### Which means the gate needs a third path
+
+Gating a row on a *refused push* leaves a hole exactly where the problem is
+largest: the rollout ships the healer on static upstreams only, so on the dynamic
+fan-out no push is attempted, nothing is refused, and nothing would ever earn a
+row. Three ways in, then:
+
+1. **Push refused, permanent class** → row immediately.
+2. **Push accepted, id offered again next cycle** → row then. The relay archives.
+3. **No push attempted** — healing off for the stream, or the relay already
+   marked write-closed — **and the id is offered again** → row then.
+
+Path 3 is what covers the fan-out, and it costs one more structure. A filter
+answers membership, not counts, so "offered twice" needs **two filters per
+epoch**: a **candidate** filter that the first sighting inserts into, and a
+**suppress** filter that a membership hit in the candidate promotes it to. Both
+cuckoo, both per-epoch, both membership-only — no counters anywhere.
+
+The candidate filter is Step 0's repeat-detector. The plan built it to measure
+and then threw it away; now it stays, and the storage estimate roughly doubles.
+
 ## Half A — what earns a row, and what must never
 
 Two gates now, in series. The table below says which store refusals make an event
@@ -801,8 +917,10 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
 
 1. **Step 0's instrumentation alone.** One cycle, unchanged config — the
    baseline, for the reason above.
-2. **Fix 1** (`since` on the replaceable-kind streams). One more cycle. The delta
-   against step 1 is the whole of what the remaining work has to beat.
+2. **Fix 1** — `since` on the replaceable-kind streams, and `latestOnly` on the
+   `fetch`-mode ones. One more cycle. The delta against step 1 is the whole of
+   what the remaining work has to beat, and on the fetch path it is the *only*
+   thing that saves bandwidth at all.
 3. **Fix 2's healer, on the static upstreams only** — the `urls` in
    `router.conf`, where we have a relationship and plausibly write access.
    Per-stream opt-in, default off, and **two switches**: one for the retraction
@@ -811,11 +929,13 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    and the `OK` classifier in this step — they are the whole mechanism, and a
    bounded blast radius is the place to learn the real acceptance rate.
    The relay-scoped kind-62 guard ships here, with its test.
-4. **Fix 3a** — per-epoch cuckoo filters, one file per writing process, fed by
-   the classifier from step 3 rather than by every store refusal. Wire them into
-   `DeleteMissingSync`'s `needIds` first, which needs no upstream change and
-   proves the suppression on one path; then the `wantId` predicate in quartz for
-   the main sweep, closing over the window's bounds to pick the epoch. Log the
+4. **Fix 3a** — per-epoch cuckoo filters, **candidate and suppress**, one pair
+   per writing process, fed by the three-path gate rather than by every store
+   refusal. Wire them into `DeleteMissingSync`'s `needIds` first, which needs no
+   upstream change and proves the suppression on one path; then the `onEvent`
+   drop on the fetch path, which needs no upstream change either and covers the
+   dynamic fan-out; then the `wantId` predicate in quartz for the main negentropy
+   sweep, closing over the window's bounds to pick the epoch. Log the
    suppression count and each epoch's load from day one — a filter doing nothing
    and a filter eating everything look identical without it. Decide up front what
    an insert failure does: open a new generation for that epoch, or stop
