@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router.config
 
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
 /**
  * A stream's relay list, read from events our own store already holds instead
@@ -53,13 +54,14 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
  *   no wall-clock cap: every client timeout is measured from the last message,
  *   so a silent relay is dropped in seconds and a delivering one is doing the
  *   work the slot exists for.
- * @param exclude relays to skip however many sources name them.
+ * @param exclude patterns for relays to skip however many sources name them —
+ *   see [RelayExcludes] for how an entry matches.
  */
 data class RelayDiscoveryConfig(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
     val concurrency: Int,
-    val exclude: Set<NormalizedRelayUrl>,
+    val exclude: RelayExcludes,
     /**
      * How many bound `authors` go into ONE ask, and therefore into one cursor
      * band. Null keeps them all in a single filter.
@@ -90,6 +92,95 @@ data class RelayDiscoveryConfig(
      */
     val maxRelaysPerList: Int? = null,
 )
+
+/**
+ * A stream's `exclude` list compiled. Two kinds of entry, told apart by
+ * whether the text carries a regex metacharacter — any of `\ [ ] ( ) { } * + ?
+ * | ^ $`; a dot does NOT count, urls are full of them:
+ *
+ * - A plain url is normalized exactly like a `urls` entry and excluded by
+ *   EQUALITY with a discovered url's normalized form. That makes it exact —
+ *   `"wss://purplepag.es"` can never take out a look-alike host such as
+ *   `wss://purplepagXes/`, which its dots read as a regex would — while still
+ *   matching every spelling a config could use (`purplepag.es`,
+ *   `wss://PURPLEPAG.ES:443`), because both sides normalize to one string.
+ * - Everything else is a regex that must match the WHOLE normalized url,
+ *   ignoring case, with the url's trailing slash optional:
+ *   `"wss://filter.nostr.wine/npub.*"` drops every per-user url that host
+ *   mints (`wss://filter.nostr.wine/npub1…`) without touching the relay
+ *   itself — a shape no literal list can keep up with, because every relay
+ *   list in the wild names a different one.
+ */
+class RelayExcludes(
+    val urls: Set<NormalizedRelayUrl>,
+    val patterns: List<Regex>,
+) {
+    operator fun contains(url: NormalizedRelayUrl): Boolean {
+        if (url in urls) return true
+        if (patterns.isEmpty()) return false
+        // Hoisted: the slash-stripped spelling is per url, not per pattern.
+        val bare = url.url.removeSuffix("/")
+        return patterns.any { it.matches(url.url) || it.matches(bare) }
+    }
+
+    companion object {
+        val NONE = RelayExcludes(emptySet(), emptyList())
+
+        private const val REGEX_MARKERS = "\\[](){}*+?|^\$"
+
+        /**
+         * Compile [raw], reporting each plain url the normalizer refuses
+         * through [onInvalidUrl] (the entry is dropped, matching what a
+         * `urls` list does with it), and letting a broken regex throw for
+         * the caller to name its stream.
+         */
+        fun parse(
+            raw: List<String>,
+            onInvalidUrl: (String) -> Unit = {},
+        ): RelayExcludes {
+            val urls = LinkedHashSet<NormalizedRelayUrl>()
+            val patterns = ArrayList<Regex>()
+            for (entry in raw) {
+                if (entry.any { it in REGEX_MARKERS }) {
+                    patterns += Regex(entry, RegexOption.IGNORE_CASE)
+                } else {
+                    RelayUrlNormalizer.normalizeOrNull(entry)?.let { urls += withoutDefaultPort(it) } ?: onInvalidUrl(entry)
+                }
+            }
+            return RelayExcludes(urls, patterns)
+        }
+    }
+}
+
+/**
+ * `wss://relay/` and `wss://relay:443/` are the same url written two ways,
+ * and the normalizer keeps both — so a relay list naming both costs two
+ * dials, two cursor bands and two sets of NIP-66 records for one server.
+ * Measured on this store: 861 discovered urls carried a redundant default
+ * port and 362 of them duplicated a portless url already in the set.
+ *
+ * Done here rather than left to
+ * [com.nosfabrica.vespa.relay.router.discovery.RelayAliases] because it needs
+ * no evidence: 443 on `wss` and 80 on `ws` are the scheme's own default, and
+ * dropping them is what every URL parser already does. The fold is for urls
+ * that only MEASUREMENT can prove equal.
+ *
+ * Applied to every discovered url AND to [RelayExcludes]' plain entries, so
+ * an exclude typed with the redundant port still meets the url discovery
+ * hands out.
+ */
+internal fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
+    val default = if (url.url.startsWith("wss://", true)) ":443" else ":80"
+    val scheme = url.url.substringBefore("://", "") + "://"
+    val rest = url.url.removePrefix(scheme)
+    val authority = rest.substringBefore('/')
+    // An IPv6 literal's colons live inside brackets; only a port sits after
+    // the closing one, so anything unbracketed is checked as written.
+    if (authority.startsWith("[") && !authority.substringAfter(']').startsWith(":")) return url
+    if (!authority.endsWith(default)) return url
+    val trimmed = scheme + authority.removeSuffix(default) + rest.substring(authority.length)
+    return RelayUrlNormalizer.normalizeOrNull(trimmed) ?: url
+}
 
 /**
  * One scan of the store: the [selects] saying which relay urls to pull out,

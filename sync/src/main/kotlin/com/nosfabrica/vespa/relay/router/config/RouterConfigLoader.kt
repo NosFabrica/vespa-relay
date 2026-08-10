@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import java.io.File
+import java.util.regex.PatternSyntaxException
 
 /**
  * Read a SYNC_* setting, honoring its pre-rename ROUTER_* spelling. The old
@@ -326,11 +327,32 @@ object RouterConfigLoader {
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
-            exclude = if (s.hasPath("exclude")) normalizeUrls(stream, s.getStringList("exclude")).toSet() else emptySet(),
+            exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
         )
     }
+
+    /**
+     * `exclude` entries are plain urls or regexes — see [RelayExcludes] for
+     * how they are told apart and matched. Compiled here, at the one place a
+     * human types them, so a broken pattern refuses the config naming the
+     * stream instead of surfacing as a stack trace mid-cycle, and an
+     * unusable plain url warns the way a `urls` entry does.
+     */
+    private fun parseExcludes(
+        stream: String,
+        raw: List<String>,
+    ): RelayExcludes =
+        try {
+            RelayExcludes.parse(raw) { url ->
+                System.err.println("router: stream '$stream' skips invalid exclude url '$url'")
+            }
+        } catch (e: PatternSyntaxException) {
+            throw IllegalArgumentException(
+                "router: stream '$stream' has an exclude entry that does not compile as a regex — ${e.message}",
+            )
+        }
 
     /** One `{ select = [ ], filter = { } }` entry: what to pull out, and the scan to pull it from. */
     private fun parseRelaySource(

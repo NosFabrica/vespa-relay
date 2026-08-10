@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router.discovery
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.Slot
@@ -76,7 +77,9 @@ class RelayDiscoveryTest {
         sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
-        exclude = exclude.map { RelayUrlNormalizer.normalize(it) }.toSet(),
+        // Production compilation, so these tests exercise the same entry
+        // classification and case rules the loader produces.
+        exclude = RelayExcludes.parse(exclude.toList()),
         maxRelaysPerList = maxRelaysPerList,
     )
 
@@ -630,6 +633,34 @@ class RelayDiscoveryTest {
                     skip = setOf(RelayUrlNormalizer.normalize("wss://quiet.example")),
                 )
             assertEquals(listOf("wss://lonely.example/"), kept.map { it.url.url })
+        }
+
+    @Test
+    fun `one exclude pattern drops every per-user url a host mints`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // The shape filter.nostr.wine produces: a distinct url per user, so
+            // no literal exclude list could ever be complete.
+            store.insert(
+                event(
+                    10002,
+                    arrayOf("r", "wss://filter.nostr.wine/npub1aaa", "write"),
+                    arrayOf("r", "wss://filter.nostr.wine/npub1bbb", "write"),
+                    arrayOf("r", "wss://filter.nostr.wine", "write"),
+                    arrayOf("r", "wss://keep.example", "write"),
+                ),
+            )
+
+            val kept =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(
+                        source(10002, selects = listOf(select(tag = "r", where = marker("write")))),
+                        exclude = setOf("wss://filter\\.nostr\\.wine/npub.*"),
+                    ),
+                )
+            // The per-user urls fall; the relay itself and everything else stay.
+            assertEquals(listOf("wss://filter.nostr.wine/", "wss://keep.example/"), kept.map { it.url.url })
         }
 
     @Test
