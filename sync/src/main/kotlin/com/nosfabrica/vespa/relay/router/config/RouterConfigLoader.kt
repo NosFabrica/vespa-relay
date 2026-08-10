@@ -557,29 +557,30 @@ object RouterConfigLoader {
             }
 
         /**
-         * `limit` gets a STRICTER rule than the timestamps: it must be positive.
+         * `since = 0` is NOT a floor, it is the absence of one — the epoch is
+         * the bottom of an unsigned `created_at`, so it asks for exactly what
+         * omitting `since` asks for. Normalised to null here so the rest of the
+         * router sees the two spellings as one thing.
          *
-         * Zero is legal for `since`/`until` — it is the epoch, and a relay is
-         * entitled to its own reading of it. `limit = 0` has no such reading. It
-         * never reaches the wire at all: quartz drops a filter whose limit is
-         * already met before the first REQ (`matchCountPerFilter[i] < limit` is
-         * `0 < 0`), so the walk reports LIMIT_REACHED having downloaded nothing,
-         * every cycle, looking exactly like a relay holding no events. That is
-         * the same silent failure the negative-limit check above exists to
-         * prevent, reached by a value that check admits.
+         * It matters at two places that both read `since != null` as "bounded":
+         *  - [flooredForPaging] passes a filter with its OWN `since` through
+         *    untouched, so `since = 0` walks unfloored. On the pinned quartz
+         *    that cannot run past zero any more, but it ends the leg UNPAGEABLE
+         *    against a relay like purplepag.es — no coverage recorded, re-walked
+         *    every boot.
+         *  - the `narrowed` check on a relaySource counts a non-null `since` as
+         *    narrowing the scan. Zero narrows nothing, so it bought a regular
+         *    kind an unbounded scan past a guard written to stop exactly that.
+         *
+         * Normalising here rather than clamping in [flooredForPaging] is
+         * deliberate: `drainSettlesThePast` compares the leg's floor against the
+         * FILTER's, so a leg clamped above the floor its filter asked for has
+         * not reached bottom and could never settle history.
+         *
+         * `until = 0` gets no such treatment — it is a real, if near-empty,
+         * bound ("nothing after the epoch"), not the absence of one.
          */
-        fun positive(
-            key: String,
-            value: Int?,
-        ): Int? =
-            value?.also {
-                require(it > 0) {
-                    "router: filter at ${f.origin().description()} has `$key = $it` — " +
-                        "a zero limit is dropped before the request is sent, so the stream " +
-                        "reports LIMIT_REACHED having downloaded nothing, every cycle; omit " +
-                        "`limit` for no bound"
-                }
-            }
+        fun epochAsAbsent(value: Long?): Long? = value?.takeIf { it != 0L }
 
         val tags =
             f
@@ -589,17 +590,44 @@ object RouterConfigLoader {
                 .associate { it.substring(1) to f.getStringList(quote(it)) }
                 .ifEmpty { null }
 
+        val since = epochAsAbsent(nonNegative("since", if (f.hasPath("since")) f.getLong("since") else null))
+        val until = nonNegative("until", if (f.hasPath("until")) f.getLong("until") else null)
+        // An inverted window asks for events after X and before Y with X > Y,
+        // which nothing can satisfy. It is not caught anywhere downstream: the
+        // relay EOSEs an empty page, so the walk reports DRAINED, and
+        // `drainSettlesThePast` compares the leg's floor against the filter's —
+        // the same value — and returns true. The band then records a settled
+        // past from a window that could never have returned an event.
+        // `PagingProgress.begin` already refuses this shape ("an inverted window
+        // is not a walk"), so today such a leg is also invisible to the progress
+        // line while it runs.
+        require(since == null || until == null || since <= until) {
+            "router: filter at ${f.origin().description()} has `since = $since` after `until = $until` — " +
+                "an inverted window matches nothing, and a relay answers it with the empty page that " +
+                "makes this repo record the history it never walked as settled"
+        }
+
         return Filter(
             ids = strs("ids"),
             authors = strs("authors"),
             kinds = ints("kinds"),
             tags = tags,
-            since = nonNegative("since", if (f.hasPath("since")) f.getLong("since") else null),
-            until = nonNegative("until", if (f.hasPath("until")) f.getLong("until") else null),
+            since = since,
+            until = until,
             // getInt, not getLong().toInt(): HOCON range-checks an int here, and
             // going through Long would silently truncate an out-of-range limit
             // into a plausible-looking one.
-            limit = if (f.hasPath("limit")) positive("limit", f.getInt("limit")) else null,
+            //
+            // Zero stays legal and is NOT normalised away: `limit = 0` is the
+            // NIP-01 idiom for "no stored events, just the live tail", and this
+            // router honours it — `SyncEngine`'s down tail reuses this same
+            // filter, overriding `since` but not `limit`, so the live
+            // subscription still streams. On the PAGED path quartz drops it
+            // before the first REQ (`matchCountPerFilter[i] < limit` is `0 < 0`)
+            // and reports LIMIT_REACHED, which is not DRAINED — so it claims no
+            // coverage, and "downloaded 0 history" is the truth for a stream
+            // configured not to want any.
+            limit = if (f.hasPath("limit")) f.getInt("limit").also { nonNegative("limit", it.toLong()) } else null,
             search = if (f.hasPath("search")) f.getString("search") else null,
         )
     }

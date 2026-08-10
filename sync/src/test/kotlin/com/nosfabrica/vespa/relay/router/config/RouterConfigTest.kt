@@ -350,30 +350,94 @@ class RouterConfigTest {
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": -1 }"""))
         }
-        // Zero stays legal for the TIMESTAMPS — `since = 0` and `until = 0` are
-        // the epoch, and a relay is entitled to its own reading of them.
+        // Zero is not negative and stays legal, but for a DIFFERENT reason in
+        // each of the three — see the two tests below.
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": 0 }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
     }
 
     @Test
-    fun `a zero limit is refused, because it fails the same silent way a negative one does`() {
-        // This case was pinned as LEGAL by the test above until an audit walked
-        // it back to quartz: `stillNeedsMore` is `matchCountPerFilter[i] <
-        // filter.limit`, so at `limit = 0` it is `0 < 0` — false on the FIRST
-        // page. The filter is dropped before the REQ goes out, exactly as it is
-        // for a negative limit, and the stream reports LIMIT_REACHED having
-        // downloaded nothing, every cycle, looking like a relay with no events.
+    fun `a zero limit stays legal — it is the live-only idiom, not a mistake`() {
+        // Worth pinning with its reason, because the paged path makes zero look
+        // broken from one side: quartz's `stillNeedsMore` is
+        // `matchCountPerFilter[i] < filter.limit`, so `0 < 0` drops the filter
+        // before the first REQ and the walk reports LIMIT_REACHED having
+        // downloaded nothing.
         //
-        // So "zero is not negative, therefore zero is fine" was the wrong rule:
-        // it holds for the timestamps, where zero is a real point in time, and
-        // not for `limit`, where zero has no reading other than "ask for
-        // nothing". Omit `limit` for no bound.
+        // That is the correct outcome, not a bug to validate away. `limit = 0`
+        // is the NIP-01 way to say "send me no stored events, just stream the
+        // live ones", and this router honours it: `SyncEngine`'s down tail
+        // subscribes with this same filter, overriding `since` but NOT `limit`,
+        // so the live subscription still runs. LIMIT_REACHED is not DRAINED, so
+        // no band claims coverage from it either. A stream configured to want
+        // no history downloading no history is the truth.
+        val cfg = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
+        assertEquals(
+            0,
+            cfg
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .filter.limit,
+        )
+    }
+
+    @Test
+    fun `a zero since is the absence of a floor, so it is normalised to absent`() {
+        // `created_at` is unsigned: the epoch IS the bottom, so `since = 0` asks
+        // for exactly what omitting `since` asks for. Two places read
+        // `since != null` as "bounded" and were both fooled by the long
+        // spelling — `flooredForPaging` passed it through unfloored (leaving the
+        // leg to end UNPAGEABLE and re-walk every boot), and the `narrowed`
+        // check below counted it as narrowing a regular-kind scan.
+        val cfg = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
+        assertNull(
+            cfg
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .filter.since,
+        )
+        // A real floor is untouched — this normalises the epoch, nothing else.
+        val real = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 1577836800 }"""))
+        assertEquals(
+            1577836800L,
+            real
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .filter.since,
+        )
+        // And it is not a back door into the unbounded-scan guard: kind 1 is a
+        // regular kind, and `since = 0` no longer counts as narrowing it.
         assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
+            RouterConfigLoader.parse(sourced("""{ "kinds": [1], "since": 0 }"""))
         }
-        // The boundary the fix must not overshoot: 1 is a real request.
-        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 1 }"""))
+    }
+
+    @Test
+    fun `an inverted window is refused rather than recorded as settled history`() {
+        // since > until matches nothing, and nothing downstream notices: the
+        // relay EOSEs an empty page, the walk reports DRAINED, and
+        // `drainSettlesThePast` compares the leg's floor to the filter's — the
+        // same value — and says yes. The band then records a settled past for a
+        // window that could not have returned an event.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 1700000000, "until": 1600000000 }"""))
+        }
+        // Equal bounds are a real one-second window, not an inversion — a
+        // band's re-read edge leg is exactly that shape.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 1600000000, "until": 1600000000 }"""))
+        // And normalising `since = 0` must not turn a legal filter into an
+        // inverted one: null since, bounded until, still fine.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0, "until": 1600000000 }"""))
     }
 
     @Test
