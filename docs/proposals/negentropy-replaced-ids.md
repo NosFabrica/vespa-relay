@@ -271,7 +271,7 @@ history (a quarter, say), each sized for that slice:
   lowest `since` any stream uses can be dropped outright: nothing will ever
   generate a `needId` in that range, so the filter is never consulted there. This
   is the time-floor bound under
-  [Bounding it](#bounding-it--the-part-that-decides-whether-this-is-safe-to-ship),
+  [Bounding it](#bounding-it--what-applies-to-which-variant),
   applied at the granularity that makes it exact instead of heuristic. A
   timer-based rotation, by contrast, forgets true positives and re-pays them.
 - **The epoch is already known at the hook point.** `NegentropyPager.sweep` walks
@@ -379,10 +379,20 @@ either the old id stopped being offered (healed — no row needed, ever) or it
 came back (this relay will not heal — earn the row). So the table only grows for
 relays that have demonstrated they need it, which is the strongest bound
 available and strictly better than any of the heuristics under
-[Bounding it](#bounding-it--the-part-that-decides-whether-this-is-safe-to-ship).
+[Bounding it](#bounding-it--what-applies-to-which-variant).
 
 The dependency runs one way: Fix 3 is useful without Fix 2, but Fix 2 needs
 Fix 3's instrumentation to know whether it is working at all.
+
+**And here 3a and 3b differ in a way that is easy to miss.** 3a suppresses the
+*fetch*, not the *observation* — the id still appears in `needIds` before the
+predicate drops it, so "this relay offered it again" is still visible and Fix 2's
+healing check keeps working. **3b destroys that signal.** Once the id is in our
+claimed local set the reconcile reports no difference at all, so there is no
+longer any way to tell whether a relay healed or is still hoarding. Shipping 3b
+therefore blinds Fix 2's observation loop, and anything built on it — the
+write-closed strike rule, the "populate only for relays that failed to heal"
+bound — has to be settled *before* 3b lands, or it cannot be measured afterwards.
 
 ## Half A — what earns a row, and what must never
 
@@ -445,10 +455,11 @@ rows above are what collects on it. Only real ids we really refused.
 
 ## Where the tombstone lives
 
-**For 3a the answer is short**: one fixed-size mmap'd bit array on the shared
-`/var/lib/vespa-relay` mount, written by both processes without locking, for the
-reasons under 3a above. The rest of this section is about **3b**, where the
-`created_at` has to be exact and the storage question gets hard.
+**For 3a the answer is short**: fixed-size mmap'd cuckoo tables on the shared
+`/var/lib/vespa-relay` mount, partitioned by `created_at` epoch, one file per
+writing process — see 3a above for why per-writer rather than shared, and why
+per-epoch rather than one flat table. The rest of this section is about **3b**,
+where the `created_at` has to be exact and the storage question gets hard.
 
 Two constraints decide this, and both point the same way.
 
@@ -521,7 +532,7 @@ Four properties that the file cannot match:
   parallel visit over `refused` on the same range, unioned, is a close copy of
   code that is there.
 - **Pruning is declarative.** The time-floor bound under
-  [Bounding it](#bounding-it--the-part-that-decides-whether-this-is-safe-to-ship)
+  [Bounding it](#bounding-it--what-applies-to-which-variant)
   becomes a Vespa garbage-collection selection on the doc type instead of a
   hand-rolled eviction policy with its own bugs.
 
@@ -561,14 +572,34 @@ range query is two binary searches, which is exactly the shape
 pretty-printed because a human reads them; 10M hex ids pretty-printed is a
 ~700 MB file nobody will ever open.
 
-## Bounding it — the part that decides whether this is safe to ship
+## Bounding it — what applies to which variant
+
+The two variants bound themselves by different means, and the epoch partitioning
+under 3a supersedes most of what this section originally said for 3b.
+
+**Both:**
 
 - **Time floor.** A reconcile only ever asks inside a leg, and legs are bounded
-  below by the stream's `since` or `SyncCoverage.PLAUSIBLE_FLOOR`. Rows below the
-  lowest floor any configured stream uses can be dropped: nothing will ask.
-- **Only what a reconcile could re-ask.** A `fetch`-mode stream has no id set,
-  so rows born from paged ingest buy nothing. Tag the submission with its source
+  below by the stream's `since` or `SyncCoverage.PLAUSIBLE_FLOOR`. Anything below
+  the lowest floor any configured stream uses can be dropped: nothing will ask.
+  Under 3a this is not a heuristic but the retirement rule itself — a whole epoch
+  goes at once, exactly.
+- **Only what a reconcile could re-ask.** A `fetch`-mode stream has no id set, so
+  entries born from paged ingest buy nothing. Tag the submission with its source
   and record only reconcile-fed rejections.
+
+**3a only:**
+
+- **Capacity is per epoch, and insert failure is the signal.** No global ceiling
+  to tune and no eviction policy to get wrong.
+- **Nothing else is even possible, which is a simplification rather than a
+  limit.** A filter stores no keys, so per-address caps, LRU, age-weighting and
+  every other per-entry policy are structurally unavailable. There is nothing to
+  tune and therefore nothing to tune wrongly.
+
+**3b only** — an exact set has per-entry metadata, so it needs the policies a
+filter cannot have and cannot get wrong:
+
 - **Per-address version cap.** Keep the K most recent superseded versions per
   (kind, pubkey, d). Wrong in principle — an upstream may hold version 1 of 500 —
   but the distribution is heavily skewed to recent versions and the cost of being
@@ -591,8 +622,19 @@ Nothing above should be built on an estimate.
    recoverable by any of this.
 
 Two numbers — *"replaced x N, of which N′ we had already rejected in an earlier
-cycle"* — decide whether anything past step 2 is worth building, and how big to
-size the filter that step 3 ships.
+cycle"* — decide whether anything past step 3 is worth building, and how big to
+size each epoch's filter.
+
+**Measure BEFORE Fix 1, not after.** Narrowing a stream's `since` reduces the
+`REPLACED` count by reducing what is asked for, so a baseline taken afterwards
+would read as "the problem is small" when the truth is "we stopped looking".
+Take one cycle of numbers first, apply Fix 1, take another. The delta is what
+Fix 1 bought; the remainder is what Fix 3 has to justify itself against.
+
+**Partition the measurement filter by epoch from the start**, even though a flat
+one would count repeats just as well. Retrofitting partitioning changes the
+per-epoch sizing, so a flat measurement produces a number that does not transfer
+to the design it is meant to size.
 
 **The instrument and the fix are the same object.** The filter that counts
 repeats *is* 3a; the only difference is whether its answer is consulted before
@@ -607,23 +649,28 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
 
 ## Rollout
 
-1. **Fix 1** (`since` on the replaceable-kind streams) plus **Step 0**'s
-   instrumentation. One cycle of data.
-2. **Fix 2 on the static upstreams only** — the `urls` in `router.conf`, where we
+1. **Step 0's instrumentation alone.** One cycle, unchanged config — the
+   baseline, for the reason above.
+2. **Fix 1** (`since` on the replaceable-kind streams). One more cycle. The delta
+   against step 1 is the whole of what the remaining work has to beat.
+3. **Fix 2 on the static upstreams only** — the `urls` in `router.conf`, where we
    have a relationship and plausibly write access. Per-stream opt-in, default
    off, deduped per address per cycle, with a write-closed strike rule. This is
    the population where it converges, and it is a bounded blast radius to learn
    the acceptance rate in.
-3. **Fix 3a** — wire the Step 0 filter into `DeleteMissingSync`'s `needIds`
-   first, which needs no upstream change and proves the suppression on one path.
-   Then the `wantId` predicate in quartz for the main sweep. Ship it with the
-   insert counter and the fail-open ceiling from day one, and log the suppression
-   count per cycle — a filter silently doing nothing and a filter silently
-   eating everything look identical without it.
-4. Measure the **residual**: with the bodies suppressed, how much is the
+4. **Fix 3a** — per-epoch cuckoo filters, one file per writing process. Wire
+   them into `DeleteMissingSync`'s `needIds` first, which needs no upstream
+   change and proves the suppression on one path; then the `wantId` predicate in
+   quartz for the main sweep, closing over the window's bounds to pick the
+   epoch. Log the suppression count and each epoch's load from day one — a
+   filter doing nothing and a filter eating everything look identical without it.
+   Decide up front what an insert failure does: open a new generation for that
+   epoch, or stop suppressing. Silently continuing is the one unacceptable
+   answer.
+5. Measure the **residual**: with the bodies suppressed, how much is the
    un-converged reconcile still costing in round trips and id transfer? That
-   number, and nothing else, justifies step 5.
-5. If it does: **Fix 3b**, the `refused` doc type
+   number, and nothing else, justifies step 6.
+6. If it does: **Fix 3b**, the `refused` doc type
    in **vespa-eventstore**, written at each decision point, populated only for
    relays that failed to heal. Read back through an opt-in argument —
    `snapshotIdsForNegentropy(…, includeRefused = false)` — never a blanket
@@ -632,9 +679,12 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    `EXPIRED` reasoning for the serving direction. Budget a store release, a pin
    bump, and the JitPack lexicographic trap AGENTS.md warns about; the schema
    itself needs no migration step, since `SchemaDeploy` runs every boot.
-6. Chart the suppression count and the filter's fill ratio on the Sync coverage
-   card, beside the bands and sweeps.
-7. Extend Fix 2 to the dynamic fan-out only if step 2's acceptance rate is high
+   **Settle Fix 2's strike rule before this lands** — 3b removes the id from the
+   diff entirely, so after it ships there is no longer any way to observe whether
+   a relay healed.
+7. Chart the suppression count, the epoch count and each epoch's load on the
+   Sync coverage card, beside the bands and sweeps.
+8. Extend Fix 2 to the dynamic fan-out only if step 3's acceptance rate is high
    enough to be worth 16k unsolicited publishes. It probably is not.
 
 ## Open questions
