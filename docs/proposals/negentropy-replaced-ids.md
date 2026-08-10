@@ -965,6 +965,10 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    a relay healed.
 7. Chart the suppression count, the epoch count and each epoch's load on the
    Sync coverage card, beside the bands and sweeps.
+
+Every step carries its slice of the [Test plan](#test-plan), and the six
+**[SAFETY]** cases are merge blockers rather than follow-ups: each guards an
+outcome that is silent, permanent, or on somebody else's server.
 8. **Extend Fix 2 to the dynamic fan-out** — a position this document reversed.
    The write-closed strike rule makes the cost **one-time per relay**, not
    per-cycle: probe until N refusals, mark the relay, never spend another publish
@@ -976,6 +980,151 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    cost one: unsolicited writes to relays we only ever read from. That argues for
    keeping the retraction switch and the content switch separate and letting the
    content one default off, not for staying out of the fan-out.
+
+## Test plan
+
+Specifications, not code — nothing here is implemented yet. Names follow the
+house style, where the name states the property and, where one exists, the bug
+it guards. Everything lands in `:sync` unless marked. Per AGENTS.md: **assert the
+property, not the implementation** — several of these describe behaviour that
+must survive a rewrite of the mechanism underneath them.
+
+Six of these are load-bearing. They are marked **[SAFETY]**, and each one guards
+an outcome that is silent, permanent, or on someone else's server. If the budget
+runs out, these are the ones that ship.
+
+### `LatestOnlyAskTest` — Fix 1's flag
+
+- `latestOnly decomposes a replaceable ask into one limit-1 filter per address`
+- `latestOnly keys addressable filters on the d tag, so two d values are two asks`
+- `latestOnly is a no-op for regular kinds rather than an error` — a flag that
+  throws on kind 1 makes a mixed-kind stream unconfigurable.
+- `latestOnly batches within the relay's advertised max_filters and splits beyond it`
+- `latestOnly records no sync band, because limit-1 per address walked no range`
+  — a band here would tell the next cycle a range is covered that was never swept.
+
+### `HealTriggerTest` — what becomes a push candidate
+
+- `a newer replaceable version enqueues a push for its address`
+- `a newer addressable version enqueues a push keyed on kind pubkey and d`
+- `a kind 5 whose target the relay still serves enqueues the kind 5, not the target`
+- `a kind 62 tagged ALL_RELAYS enqueues a push`
+- **[SAFETY]** `a kind 62 scoped to another relay is never pushed anywhere` — the
+  sharpest edge in the design: propagating it erases an author from a relay they
+  never asked to leave. Data destruction on someone else's server, executed on
+  our inference. Assert against a `relay` tag naming a third-party url *and*
+  against a malformed tag, which must also not push.
+- `a kind 62 scoped to this relay is pushed to this relay only`
+- `with the content switch off, replaceable and addressable enqueue nothing while retractions still do`
+- `with both switches off, nothing is ever enqueued` — the
+  configured-but-inert trap AGENTS.md names; assert the queue stays empty rather
+  than that some flag was read.
+
+### `HealQueueTest` — the off-hot-path contract
+
+- `the reconcile enqueues an address and never resolves the event` — assert the
+  store sees **zero** queries during the sweep. This is the whole point of the
+  deferral and the easiest thing to regress.
+- `a popular address enqueued many times occupies one slot`
+- **[SAFETY]** `a full queue drops and logs rather than suspending the producer`
+  — deliberately the inverse of `IngestPipeline.submit`, and the test must state
+  why: a dropped event there is data lost, a dropped heal here is a retry. A
+  future reader "fixing the inconsistency" would stall the sweep behind the
+  healer.
+- `the queue drains at the end of that relay's sync, before the socket is released`
+- `a relay whose sync threw still has its queue drained or discarded, never leaked`
+- `the healer yields while ServingPressure reports backoff`
+
+### `OkClassifierTest` — the rejection taxonomy
+
+One case per row of the table under Fix 2, plus:
+
+- **[SAFETY]** `rate-limited earns no tombstone and no write-closed mark` — a
+  momentary blip would otherwise permanently blind us to a relay that was about
+  to heal. Same assertion for `error:`.
+- `auth-required, restricted and blocked each earn a tombstone and close the relay for writes`
+- `invalid and pow earn nothing, because they are our event and not their policy`
+- `duplicate earns nothing, because holding our winner is not the same as dropping the loser`
+- `an unrecognised reason prefix earns nothing` — unknown means unknown; the
+  same conservatism `Unreachability.proves()` already applies to NIP-66 claims.
+- `silence earns a strike and only closes the relay after the threshold`
+- `OK true earns no tombstone on its own`
+
+### `RefusedIdsTest` — the filter
+
+- `an inserted id is reported present`
+- **[SAFETY]** `an id that was never inserted is never reported present` — a
+  false *negative* would suppress an event we wanted, silently and permanently.
+  Structural for cuckoo, but a relocation bug breaks it, so pin it: insert a
+  large population, then assert every non-member of a disjoint population is
+  absent.
+- `the measured false-positive rate stays within the configured epsilon at design load`
+- **[SAFETY]** `a filter at capacity fails the insert rather than continuing to answer`
+  — an over-filled filter discards a fraction of everything and logs nothing.
+  Assert the failure surfaces, and that the configured response (new generation,
+  or stop suppressing) actually happens.
+- `the table round-trips through save and load unchanged`
+- `two writer files are both consulted, and an id in either is present`
+- `a lookup window spanning an epoch boundary consults both epochs` — insertion
+  keys on the event's exact `created_at`; lookup keys on the sweep window, and
+  windows do not respect quarter boundaries. Get this wrong and suppression
+  silently stops working near every boundary.
+- `retiring an epoch below the floor un-suppresses the ids it held`
+
+### `RefusedIdsGateTest` — the three paths in
+
+- `a refused push in the permanent class earns a row immediately`
+- `an accepted push whose id is offered again earns a row on the second sighting`
+- `an id offered twice with no push attempted earns a row` — the fan-out path.
+- `one sighting alone never earns a row` — candidate and suppress are distinct;
+  a single offer must not suppress.
+- **[SAFETY]** `an InsertOutcome.Failed never becomes a candidate` — the event
+  was good, the failure was the store's, and a row would convert a transient
+  fault into permanent silent loss. `lostToStore` exists to make that loud;
+  this test keeps it loud.
+- **[SAFETY]** `a bad signature never becomes a candidate` — an id is the hash of
+  the content, not the signature, so the same id can arrive correctly signed from
+  another relay. One relay's corruption must not be permanent.
+- `REPLACED, DELETED, VANISHED and EXPIRED each become candidates`
+- `a DUPLICATE never becomes a candidate, because it is already in our id set`
+- `an operator sweep and a deleteMissing retraction never become candidates` —
+  both are designed to be re-downloaded.
+
+### `SuppressionScopeTest` — where it must not reach
+
+- **[SAFETY]** `DeleteMissingSync's local set never contains a suppressed id` —
+  the one place in the router where a wrong set destroys data: phantom entries
+  feed the delete side of the diff. Assert on the set handed to
+  `negentropyReconcileIds`, not on the outcome.
+- `UpstreamPush's local set never contains a suppressed id`
+- `the relay's snapshotIdsForNegentropy is unaffected` (`:relay`) — we must not
+  advertise ids we cannot serve.
+- `a fetch-mode stream submits every event it receives` — fetch is healed, not
+  filtered; assert no suppression hook exists on that path at all.
+- `suppression removes the id from the fetch, not from the diff` — the id must
+  still be observable in `needIds` afterwards, or Fix 2's healing check goes
+  blind and the third gate path stops working.
+
+### `HealAndSuppressLoopTest` — end to end, against relay personalities
+
+One fake upstream per behaviour, two cycles each, asserting what crosses the
+wire on cycle 2 rather than what any component believed:
+
+| personality | cycle 1 | cycle 2 must |
+|---|---|---|
+| **compliant** (replaces on write, accepts) | offers stale, we push, it replaces | transfer nothing — the diff is empty and no row was created |
+| **write-closed** (`OK false auth-required`) | offers stale, push refused | not transfer the body; row created on cycle 1 |
+| **archival** (accepts, keeps both) | offers stale, push accepted | not transfer the body; row created on cycle 2, not 1 |
+| **rate-limiting** (`OK false rate-limited`) | offers stale, push refused | **retry the push** — no row, relay not closed |
+| **silent** (no `OK`) | offers stale, push unanswered | strike recorded, still under threshold, push retried |
+| **no-push stream** (healing off) | offers stale twice | row created on the second sighting |
+
+### What must keep passing
+
+`NegentropyPagerTest`'s cursor and window-ordering assertions, `SyncBandsTest`,
+`SweepStateTest` and `DeleteMissingCascadeTest` are the blast radius. The band
+and cursor files are pinned by tests for a reason; nothing here changes their
+on-disk shape, and if a diff makes one of them fail, that is the finding.
 
 ## Open questions
 
