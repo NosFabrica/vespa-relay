@@ -495,11 +495,11 @@ every paged call site already spelled the same floor out for its progress line.
 Quartz's half — a paged walk that cannot terminate against a relay ignoring
 `until` — is fixed upstream too, in amethyst#3889 (merged as `a5507f9a`): the
 cursor floors at epoch 0, and a relay answering ABOVE the boundary is
-`UNPAGEABLE` rather than something to step past. **We do not have it yet** — the
-`quartz` pin is still `875531afb0`, so until that moves, `flooredForPaging` is
-the only thing standing between this deployment and the loop.
+`UNPAGEABLE` rather than something to step past. **We are on it** — the `quartz`
+pin moved to `a5507f9a4d` alongside the store's own bump to `685b059d37`, which
+compiles against the same hash.
 
-Keep both when the pin does move; they buy different things. A `since` cannot
+Keep both. They buy different things. A `since` cannot
 bound the STEP path — `until = boundary - 1` ignores it — so quartz's guard is
 the structural one, the thing that stops a cursor-ignoring relay walking from
 any window floor down to 0. But quartz's guard alone ends the leg `UNPAGEABLE`,

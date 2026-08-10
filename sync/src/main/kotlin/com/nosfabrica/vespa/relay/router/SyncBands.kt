@@ -672,18 +672,23 @@ class SyncBands(
  * unguarded walk descends from the window floor to 0 whatever `since` says, ~1.5
  * billion pages. What this floor buys is different and still worth having: the walk
  * stops at real data rather than at a guard, so purplepag.es DRAINS at the floor and
- * the leg closes, where quartz's guard alone would leave it UNPAGEABLE and re-walked.
- * Until the `quartz` pin moves past `875531afb0` this is also the only thing standing
- * between us and the loop; after it moves, it is defence in depth.
+ * the leg closes, where quartz's guard alone would leave it UNPAGEABLE — which
+ * settles nothing, records no coverage, and re-walks 1.49M events on the next boot.
+ * We are now ON that quartz (pin `a5507f9a4d`), so this is no longer load-bearing
+ * against the loop itself. It is load-bearing for the leg CLOSING, which is the
+ * thing the `indexers` stream needed.
  *
  * KNOWN HOLE, and why it is left open: a filter carrying its OWN `since` is passed
  * through untouched, so a config that writes `since = 0` — which means the same as
- * omitting it — walks unfloored and can still run past zero. Clamping it instead
- * would trade the loop for a leg that never closes: [drainSettlesThePast] compares
- * the leg's floor against the FILTER's, and a leg clamped above the floor its filter
- * asked for has not reached bottom and may not settle history. Neither branch is
- * good, and no configuration here writes it; a real `since` is always well above
- * this floor, where this function is correctly a no-op.
+ * omitting it — walks unfloored. On the pinned quartz that no longer runs past zero
+ * (the cursor floors there), but it is not harmless: the walk ends UNPAGEABLE
+ * against a relay like purplepag.es, which records no coverage, so the leg re-walks
+ * every boot. Clamping it HERE is the wrong fix — [drainSettlesThePast] compares the
+ * leg's floor against the FILTER's, and a leg clamped above the floor its filter
+ * asked for has not reached bottom and may not settle history. The right place is
+ * the config loader, normalising `since = 0` to absent before a Filter is built.
+ * Not done yet; no configuration here writes it, and a real `since` is always well
+ * above this floor, where this function is correctly a no-op.
  */
 internal fun Filter.flooredForPaging(): Filter = if (since != null) this else copy(since = SyncCoverage.PLAUSIBLE_FLOOR)
 
