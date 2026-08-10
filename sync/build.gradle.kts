@@ -44,7 +44,27 @@ tasks.test {
     useJUnitPlatform()
     // Forwarded, not inherited: a system property on the Gradle command line
     // reaches the DAEMON, and the tests run in a forked JVM that never sees it.
-    // `RealRelayDrainProbe` is the only gate that uses this — it dials the
-    // public internet, so it stays off unless asked for by name.
-    System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
+    // Every gate here is a PROBE — it dials the public internet, drives a local
+    // relay, or builds a corpus in the hundreds of thousands — so each one stays
+    // off unless asked for by name. The heap goes up only when one is asked for:
+    // a probe's id set is millions of entries, and the default fork cannot hold it.
+    val probeGates =
+        listOf(
+            "realRelayProbe",
+            "negProbe",
+            "strfryProbe",
+            "strfryUrl",
+            "strfryDir",
+            "strfryCount",
+            "issue91Probe",
+            "issue91Relay",
+            "issue91Author",
+            "issue91Page",
+        )
+    probeGates.forEach { gate ->
+        System.getProperty(gate)?.let {
+            systemProperty(gate, it)
+            maxHeapSize = "3g"
+        }
+    }
 }
