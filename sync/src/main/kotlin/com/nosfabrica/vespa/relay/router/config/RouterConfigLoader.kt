@@ -556,6 +556,31 @@ object RouterConfigLoader {
                 }
             }
 
+        /**
+         * `limit` gets a STRICTER rule than the timestamps: it must be positive.
+         *
+         * Zero is legal for `since`/`until` — it is the epoch, and a relay is
+         * entitled to its own reading of it. `limit = 0` has no such reading. It
+         * never reaches the wire at all: quartz drops a filter whose limit is
+         * already met before the first REQ (`matchCountPerFilter[i] < limit` is
+         * `0 < 0`), so the walk reports LIMIT_REACHED having downloaded nothing,
+         * every cycle, looking exactly like a relay holding no events. That is
+         * the same silent failure the negative-limit check above exists to
+         * prevent, reached by a value that check admits.
+         */
+        fun positive(
+            key: String,
+            value: Int?,
+        ): Int? =
+            value?.also {
+                require(it > 0) {
+                    "router: filter at ${f.origin().description()} has `$key = $it` — " +
+                        "a zero limit is dropped before the request is sent, so the stream " +
+                        "reports LIMIT_REACHED having downloaded nothing, every cycle; omit " +
+                        "`limit` for no bound"
+                }
+            }
+
         val tags =
             f
                 .root()
@@ -574,7 +599,7 @@ object RouterConfigLoader {
             // getInt, not getLong().toInt(): HOCON range-checks an int here, and
             // going through Long would silently truncate an out-of-range limit
             // into a plausible-looking one.
-            limit = if (f.hasPath("limit")) f.getInt("limit").also { nonNegative("limit", it.toLong()) } else null,
+            limit = if (f.hasPath("limit")) positive("limit", f.getInt("limit")) else null,
             search = if (f.hasPath("search")) f.getString("search") else null,
         )
     }

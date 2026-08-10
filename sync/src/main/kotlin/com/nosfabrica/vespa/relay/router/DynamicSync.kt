@@ -662,17 +662,30 @@ internal class DynamicSync(
                         // leave the local id set wider than the remote one.
                         val flooredLeg = leg.flooredForPaging()
                         paging.begin(walk, flooredLeg.until ?: nowSeconds(), flooredLeg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                        // finally, because `syncRelay` catches Exception around
+                        // this: a throw between begin and finish leaves the walk
+                        // in PagingProgress with `current` still at `top`, and
+                        // `fraction` AVERAGES over every live walk, so one
+                        // orphan reads as a relay stuck at 0% and drags the
+                        // stream's percentage and ETA down. `begin` overwrites
+                        // by key, so it is one stale entry per stream|url rather
+                        // than a growing leak — but it never clears on its own,
+                        // and a relay that stops being walked keeps it forever.
+                        // `DeleteMissingSync.pageAsk` already does this.
                         val w =
-                            client.fetchAllPages(
-                                url,
-                                listOf(flooredLeg),
-                                NEG_IDLE_MS,
-                                onNewPage = { until -> paging.mark(walk, until) },
-                                onEvent = onEvent,
-                            )
+                            try {
+                                client.fetchAllPages(
+                                    url,
+                                    listOf(flooredLeg),
+                                    NEG_IDLE_MS,
+                                    onNewPage = { until -> paging.mark(walk, until) },
+                                    onEvent = onEvent,
+                                )
+                            } finally {
+                                paging.finish(walk)
+                            }
                         walked = w
                         downloaded += w.downloaded
-                        paging.finish(walk)
                     }
                 } else {
                     client

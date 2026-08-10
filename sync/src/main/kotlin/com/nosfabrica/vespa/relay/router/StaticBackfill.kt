@@ -287,35 +287,42 @@ internal class StaticBackfill(
                 // The walk's own account of why it stopped. Only `DRAINED` — the
                 // relay EOSEd an empty page, so there is nothing older — earns the
                 // band the right to close its older leg. See `drainSettlesThePast`.
+                // In a try/finally for the same reason as DynamicSync's: the
+                // caller catches Exception, and a throw between begin and
+                // finish strands this walk in PagingProgress at 0%, which
+                // `fraction` then averages into the stream's number forever.
                 val walked =
-                    client.fetchAllPages(
-                        upstream.url,
-                        listOf(window),
-                        NEG_IDLE_MS,
-                        onNewPage = { until -> paging.mark(walk, until) },
-                    ) { event ->
-                        if (upstream.filter.match(event)) {
-                            if (SyncCoverage.isPlausible(event.createdAt)) {
-                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                    try {
+                        client.fetchAllPages(
+                            upstream.url,
+                            listOf(window),
+                            NEG_IDLE_MS,
+                            onNewPage = { until -> paging.mark(walk, until) },
+                        ) { event ->
+                            if (upstream.filter.match(event)) {
+                                if (SyncCoverage.isPlausible(event.createdAt)) {
+                                    seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                    seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                }
+                                // Per KIND too: a band holding one interval for a
+                                // multi-kind filter lets a long-lived kind vouch
+                                // for a short-lived one, and quartz now declines to
+                                // record such a band at all rather than over-claim.
+                                // Without this, every multi-kind stream here would
+                                // stop resuming.
+                                SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
+                                ingest.submit(event, upstream.trusted)
                             }
-                            // Per KIND too: a band holding one interval for a
-                            // multi-kind filter lets a long-lived kind vouch
-                            // for a short-lived one, and quartz now declines to
-                            // record such a band at all rather than over-claim.
-                            // Without this, every multi-kind stream here would
-                            // stop resuming.
-                            SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                            ingest.submit(event, upstream.trusted)
+                            seenSoFar++
+                            live.incrementAndGet()
+                            progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
                         }
-                        seenSoFar++
-                        live.incrementAndGet()
-                        progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
+                    } finally {
+                        paging.finish(walk)
                     }
                 downloaded += walked.downloaded
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
-                paging.finish(walk)
                 bands.record(
                     upstream.streamName,
                     upstream.url,
@@ -539,16 +546,22 @@ internal class StaticBackfill(
                     val rest = (outcome.outstanding ?: leg).flooredForPaging()
                     val walk = "${upstream.streamName}|${upstream.url.url}"
                     paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                    // finally: see the paged site above — an orphaned walk is
+                    // averaged into `fraction` at 0% for as long as the process
+                    // lives.
                     val walked =
-                        client.fetchAllPages(
-                            upstream.url,
-                            listOf(rest),
-                            NEG_IDLE_MS,
-                            onNewPage = { until -> paging.mark(walk, until) },
-                            onEvent = onEvent,
-                        )
+                        try {
+                            client.fetchAllPages(
+                                upstream.url,
+                                listOf(rest),
+                                NEG_IDLE_MS,
+                                onNewPage = { until -> paging.mark(walk, until) },
+                                onEvent = onEvent,
+                            )
+                        } finally {
+                            paging.finish(walk)
+                        }
                     downloaded += walked.downloaded
-                    paging.finish(walk)
                     pagedWindows++
                     legsDone++
                     // Against `rest`, not `leg`: a resumed sweep leaves only the

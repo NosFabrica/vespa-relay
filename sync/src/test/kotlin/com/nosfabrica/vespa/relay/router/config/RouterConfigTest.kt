@@ -350,11 +350,30 @@ class RouterConfigTest {
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": -1 }"""))
         }
-        // Zero is not negative and stays legal — `since = 0` and `until = 0` are
+        // Zero stays legal for the TIMESTAMPS — `since = 0` and `until = 0` are
         // the epoch, and a relay is entitled to its own reading of them.
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": 0 }"""))
-        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
+    }
+
+    @Test
+    fun `a zero limit is refused, because it fails the same silent way a negative one does`() {
+        // This case was pinned as LEGAL by the test above until an audit walked
+        // it back to quartz: `stillNeedsMore` is `matchCountPerFilter[i] <
+        // filter.limit`, so at `limit = 0` it is `0 < 0` — false on the FIRST
+        // page. The filter is dropped before the REQ goes out, exactly as it is
+        // for a negative limit, and the stream reports LIMIT_REACHED having
+        // downloaded nothing, every cycle, looking like a relay with no events.
+        //
+        // So "zero is not negative, therefore zero is fine" was the wrong rule:
+        // it holds for the timestamps, where zero is a real point in time, and
+        // not for `limit`, where zero has no reading other than "ask for
+        // nothing". Omit `limit` for no bound.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
+        }
+        // The boundary the fix must not overshoot: 1 is a real request.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 1 }"""))
     }
 
     @Test
