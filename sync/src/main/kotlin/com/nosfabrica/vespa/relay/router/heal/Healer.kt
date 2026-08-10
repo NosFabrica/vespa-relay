@@ -33,6 +33,29 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.delay
 import java.util.concurrent.atomic.AtomicLong
 
+/**
+ * Which of an author's vanish requests a given relay is allowed to be handed.
+ *
+ * **SAFETY, and the reason this is its own function rather than a line inside
+ * `resolve`.** A kind 62 scoped to one relay is an instruction the author
+ * addressed to that relay alone. Handing it to a third party leaks where they
+ * are leaving and invites a lax relay to act on someone else's retraction —
+ * irreversible if it does. `shouldVanishFrom` is the exact predicate: it
+ * passes `ALL_RELAYS` and the relay's own url, and nothing else.
+ *
+ * The filter runs BEFORE the newest-wins pick, never after. Taking the newest
+ * kind 62 first and checking its scope second lets a newer relay-scoped
+ * request mask an older `ALL_RELAYS` one that this relay genuinely should
+ * receive — the push would then be skipped rather than misdirected, which is
+ * safe but wrong, and silently so.
+ */
+internal object VanishTargets {
+    fun pushableTo(
+        candidates: List<RequestToVanishEvent>,
+        url: NormalizedRelayUrl,
+    ): RequestToVanishEvent? = candidates.filter { it.shouldVanishFrom(url) }.maxByOrNull { it.createdAt }
+}
+
 /** How hard the healer is allowed to push. */
 data class HealSettings(
     val pacePerPushMs: Long = 40,
@@ -90,7 +113,13 @@ class Healer(
             queue.discard(url)
             return
         }
-        val work = queue.drain(url)
+        // Take only what this pass will attempt. Draining the whole queue and
+        // then breaking out at the cap threw the remainder away: the entries
+        // were already out of the queue, and an id whose repair was dropped
+        // that way is re-queued only if it is refused again — which stops
+        // happening as soon as it is suppressed. The relay then stayed stale
+        // forever with nothing left to say so.
+        val work = queue.drain(url, settings.maxPerPass)
         if (work.isEmpty()) return
 
         val pass = passes.incrementAndGet()
@@ -101,7 +130,9 @@ class Healer(
         var accepts = 0
 
         for ((key, stale) in work) {
-            if (attempted >= settings.maxPerPass) break
+            // No cap check here: `drain` already took at most maxPerPass, so
+            // the bound is applied where the entries are still recoverable
+            // rather than after they have left the queue.
             if (caps.isClosed(url)) break
             servingPressure?.backoffMs()?.takeIf { it > 0 }?.let { delay(it) }
 
@@ -117,7 +148,7 @@ class Healer(
                     continue
                 }
 
-                val event = resolve(key) ?: continue
+                val event = resolve(key, url) ?: continue
                 attempted++
                 val result = client.publishAndCollectResults(event, setOf(url), settings.okTimeoutSeconds)[url] ?: continue
                 pushed.incrementAndGet()
@@ -167,7 +198,10 @@ class Healer(
      * superseded again since the enqueue pushes the newest, and an event
      * retracted since the enqueue pushes the retraction instead.
      */
-    private suspend fun resolve(key: HealKey): Event? =
+    private suspend fun resolve(
+        key: HealKey,
+        url: NormalizedRelayUrl,
+    ): Event? =
         when (key.mode) {
             HealMode.CONTENT -> {
                 store
@@ -191,14 +225,13 @@ class Healer(
                     ).maxByOrNull { it.createdAt }
             }
 
-            // Only an ALL_RELAYS request may travel. A relay-scoped one is
-            // pushed nowhere but its own relay, and that relay is the one
-            // serving the events, so `shouldVanishFrom` decides it exactly.
             HealMode.VANISH -> {
-                store
-                    .query<Event>(Filter(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(key.pubkey)))
-                    .filterIsInstance<RequestToVanishEvent>()
-                    .maxByOrNull { it.createdAt }
+                VanishTargets.pushableTo(
+                    store
+                        .query<Event>(Filter(kinds = listOf(RequestToVanishEvent.KIND), authors = listOf(key.pubkey)))
+                        .filterIsInstance<RequestToVanishEvent>(),
+                    url,
+                )
             }
         }
 
