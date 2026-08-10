@@ -1170,37 +1170,71 @@ wire on cycle 2 rather than what any component believed:
 and cursor files are pinned by tests for a reason; nothing here changes their
 on-disk shape, and if a diff makes one of them fail, that is the finding.
 
-## Open questions
+## Open questions, worked through
 
-- **A replaced version can become wanted again** if the newer one is later
-  deleted (NIP-09 on the newer event, a `deleteMissing` retraction, a kind-62
-  vanish). Under a permanent row we would never re-fetch it. I think that is
-  correct Nostr semantics — a superseded version is not owed resurrection — but
-  it is a behaviour change and should be stated, not discovered. Candidate 3
-  gets the other answer for free by hanging the rows on the winner; under the
-  recommended candidate 2, releasing them means carrying the winning address on
-  each row and sweeping by address when a winner is removed. Decide which
-  behaviour is wanted *before* choosing whether to carry that field.
-- **Does the row survive a filter edit?** Sync bands are deliberately keyed by
-  the whole filter so an edit forces a re-walk. These rows are keyed by *id* and
-  would survive it. That is probably right (the store's verdict didn't change),
-  but it means "edit the filter to force a re-walk" no longer re-offers this
-  class of event. Worth a deliberate answer.
-- **Ordering.** `entriesFor` merges two sorted sequences; confirm quartz does not
-  require global sort order beyond what it already sorts internally.
-- **Does the content push need the author's consent?** Settled for the two
-  retraction kinds — a kind 5 and an `ALL_RELAYS` kind 62 are requests the author
-  addressed to every relay, so propagating them is honouring an instruction, not
-  inferring one. Still open for the two content kinds: republishing a profile to
-  a relay the author did not choose is an inference, mitigated only by the fact
-  that the relay already hosts an older version from them. Separate switch,
-  and the content one probably defaults off for longer.
-- **Does 3a want to be per-relay?** One global filter says "nobody should send us
-  this". A per-relay filter would let a relay that healed drop out of
-  suppression, and keeps one relay's junk from suppressing another's. It also
-  multiplies the storage by the fan-out, which is unaffordable at 16k relays.
-  Global is almost certainly right; worth stating rather than assuming.
-- **What does a push cost against a relay that ignores it?** An unanswered
-  `EVENT` is cheap per message, but the strike rule needs a definition of
-  "unaccepted" that works when a relay simply never sends `OK`. Reuse
-  `Unreachability`'s reasoning about what a silence may be published as.
+Each carries a resolution or a recommendation; the two marked **decide** are
+policy calls that should be confirmed before their step ships.
+
+**1. Resurrection — resolved by structure, worth stating as policy.** A replaced
+version whose winner is later deleted is *not* re-fetched: a filter cannot
+enumerate a winner's losers (not storing them is the point), so 3a decides this
+de facto, and it matches replaceable semantics — deleting v4 does not reinstate
+v3 anywhere else either, and the author can always republish. Adopting 3a *is*
+adopting no-resurrection; the escape hatches are epoch rotation and the manual
+un-suppress. Only 3b could implement the other answer (rows carrying the winning
+address, swept by address on winner removal) — if that ever matters, it is one
+more argument in 3b's step-6 case, not a change to 3a.
+
+**2. Filter edits — rows survive, with a documented escape hatch.** Bands are
+keyed by the filter because a band answers "what did this ask cover", and
+editing the ask invalidates the answer. A refusal answers "what did the store
+decide about this id", and the ask has no bearing on it. So the filters survive
+every filter edit, and the operator documentation states the real reset lever:
+delete the filter files to force a total re-offer. One file pair per epoch makes
+that a targeted or total wipe, both safe — the cost is re-downloads, never
+correctness.
+
+**3. Ordering — resolved, from quartz's own contract.** `NegentropyLocalIndex`
+(read at amethyst HEAD; the KDoc is the contract) says it outright: *"The
+`(created_at, id)` pairs inside [window]. **Order does not matter.**"* — and the
+list overloads sort internally (`of()` wraps entries in a `SortedListIndex` via
+`sortedBy { createdAt }`). So a 3b decorator may append its rows unsorted. The
+same KDoc adds two constraints the decorator must honour instead: both methods
+may be called **concurrently** (`reconcileConcurrency > 1`) and **repeatedly for
+the same window** (an overflowing window is re-asked as halves), so the merge
+must be cheap, side-effect free, and thread-safe. Verify against the pinned
+quartz commit at implementation time; the contract predates this proposal.
+
+**4. Content-push consent — decide. Recommended: outbox relays only.** The
+consent objection was that pushing an author's newer version to a relay they did
+not choose is an inference. There is a target set for which it is not an
+inference: **the relays the author's own kind 10002 names**. Those are relays
+the author explicitly publishes to, the dynamic fan-out already discovers relays
+from exactly those lists (`RelayDiscovery`), and the narrowed ask
+(`DiscoveredRelay.narrowed`) already binds authors to the relays that claim
+them. Restricting the content push to pairs where the target relay appears in
+the author's current 10002 keeps every heal inside the author's declared
+publishing surface — the consent question dissolves rather than being defaulted
+around. Relays outside the author's list stay content-unhealed (their stale ids
+take the filter path), and the retraction push is unaffected: a kind 5 and an
+`ALL_RELAYS` kind 62 are addressed to every relay by the author already.
+
+**5. Global versus per-relay — resolved: global.** The filter records one fact —
+"we will refuse this id, whoever sends it" — and that fact is not per-relay. A
+relay that heals stops offering the id, so a global row costs it nothing; a
+relay that cannot heal is exactly who the row is for. Per-relay filters would
+multiply storage by the 16k fan-out for no correctness gain, and the per-relay
+dimension that IS needed (write capability, strikes) already lives in its own
+small table.
+
+**6. Silence — resolved: a strike rule with `Unreachability`'s conservatism.**
+An unanswered `EVENT` never tombstones an id and never closes a relay on its
+own. A publish counts as *unanswered* only when it was actually written to an
+open socket and the connection then stayed open long enough for an `OK` to have
+arrived — sized by the slowest single answer, not by the queue, per the NIP-45
+trap in AGENTS.md (a 15s deadline once scored 91 "timeouts" of which zero were
+refusals). Unanswered publishes earn strikes; write-closed requires the
+threshold to accumulate across **at least two separate connections**, so one bad
+session cannot close a relay. And write-closed gates only the *push* — the
+filter still suppresses that relay's re-offers, which is why the two structures
+stay separate.
