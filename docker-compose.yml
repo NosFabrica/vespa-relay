@@ -322,6 +322,17 @@ services:
       SYNC_NEG_PAGE_TARGET: ${SYNC_NEG_PAGE_TARGET:-}
       SYNC_NEG_PAGE_SLACK_SECONDS: ${SYNC_NEG_PAGE_SLACK_SECONDS:-}
       SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
+      # The ids the store has twice refused as permanently unstorable — an older
+      # version of a replaceable event, a NIP-09 target, a vanished author's
+      # history — so a reconcile stops asking upstreams for them every cycle.
+      # UNSET IS OFF: nothing is remembered and nothing is suppressed, which is
+      # exactly how the router behaved before this existed. Point it into the
+      # volume to turn it on. Per-epoch mmap'd cuckoo filters, so this costs
+      # page cache rather than heap; capacity is per created_at quarter and an
+      # epoch that fills says so loudly rather than degrading.
+      SYNC_REFUSED_DIR: ${SYNC_REFUSED_DIR:-}
+      SYNC_REFUSED_EPOCH_SECONDS: ${SYNC_REFUSED_EPOCH_SECONDS:-}
+      SYNC_REFUSED_EPOCH_CAPACITY: ${SYNC_REFUSED_EPOCH_CAPACITY:-}
       # How many engine queries the store's bulk stages keep in flight — the
       # dedup preload on this side is an id-only lookup and far lighter than
       # the relay's summaries, so this is worth sweeping on a deployment whose

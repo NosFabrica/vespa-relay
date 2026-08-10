@@ -286,8 +286,16 @@ class RefusedIds(
         if (epochs.isEmpty()) return "refused 0 epochs"
         val worst = epochs.values.maxOf { maxOf(it.candidate.load, it.suppress.load) }
         val suppressing = epochs.values.sumOf { it.suppress.count }
+        // The candidate count is not decoration. Suppression only begins on an
+        // id's SECOND refusal, so a healthy gate spends its first cycles with
+        // nothing suppressed at all — and without this number that is
+        // indistinguishable from the whole mechanism being inert. Measured on a
+        // live three-cycle run that ended 23 candidates / 0 suppressing, where
+        // the health line alone could not tell the two apart.
+        val candidates = epochs.values.sumOf { it.candidate.count }
         val sealedCount = epochs.values.count { it.sealedOff }
-        return "refused ${epochs.size} epoch(s), ${fmtCount(suppressing)} suppressing, peak load ${(worst * 100).toInt()}%" +
+        return "refused ${epochs.size} epoch(s), ${fmtCount(candidates)} candidate(s), " +
+            "${fmtCount(suppressing)} suppressing, peak load ${(worst * 100).toInt()}%" +
             (if (sealedCount > 0) ", $sealedCount SEALED" else "")
     }
 
