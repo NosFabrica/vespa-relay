@@ -226,15 +226,37 @@ to leave. This is the sharpest edge in the whole proposal: it is data destructio
 on someone else's server, executed on our inference. Gate it on the tag, test it,
 and make the test the kind that fails loudly.
 
-**It is cheaper to build than it looks.** It does not need the ingest-rejection
-path at all — a reconcile already computes *both* halves of the diff in one
-round trip. `DeleteMissingSync.kt:115` reads `diff.haveIds` (ours they lack)
-beside `diff.needIds`; the ordinary down path simply discards that half. For
-replaceable kinds, "they lack this id of ours" and "they hold a stale version"
-are nearly the same statement, because there is one live version per address.
-Going through the diff also sidesteps a store gap: `Rejected(REPLACED)` does not
-say which event *won*, so the rejection path would need a query per address or a
-store change to report the winner.
+**The trigger is the store's refusal, not the reconcile's diff.** An earlier
+revision proposed triggering heals off `diff.haveIds` — ours that they lack — on
+the grounds that for replaceable kinds "they lack our id" and "they hold a stale
+version" are nearly the same statement. **They are not, and the gap is the whole
+amplitude question**: `haveIds` also contains every address the relay *never had
+at all*, so pushing it would seed our corpus into every peer — a full `dir = up`
+sync smuggled in through the healer, on streams that were configured read-only.
+Absence is `UpstreamPush`'s job, behind its own explicit setting; the healer's
+job is *staleness*, and the one proof of staleness is the store rejecting their
+copy as `REPLACED` after we downloaded it.
+
+That trigger turns out cheaper than the diff route anyway, in every mode at once:
+
+- **It is mode-independent.** The `REPLACED` rejection fires identically whether
+  the stale copy arrived by negentropy, fetch, or deleteMissing — one trigger,
+  three paths, nothing per-mode.
+- **The rejected event carries its own address.** `Rejected(REPLACED)` does not
+  name the winner and does not need to: the loser's (kind, pubkey, d) *is* the
+  winner's address, read straight off the rejected body. The healer resolves the
+  current winner from the store at drain time — which is also what makes it
+  correct against races: whatever is current at drain (a newer version still, or
+  a kind 5 that arrived in between) is what gets pushed. No store change needed.
+- **Churn keeps it fed under suppression.** A suppressed id is never downloaded
+  again, so it can never re-trigger — but each *new* stale version (their v4
+  when we hold v5) is downloaded once, rejected once, and triggers the heal for
+  its relay before its id ever reaches the filter. Heal-then-suppress is the
+  natural order per id, enforced by the gate below.
+
+Same shape for the retraction kinds: the store rejecting their copy as `DELETED`
+or `VANISHED` proves the relay still serves what our stored tombstone retracts,
+and the healer resolves that tombstone from the store at drain time.
 
 #### Where it stops working
 
@@ -392,23 +414,25 @@ ingest is paid for in client search latency.
 **Concrete properties that make this small:**
 
 - **No hashing.** An event id is already a 32-byte cryptographic hash, uniformly
-  distributed. Slice `k` disjoint bit-fields straight out of it — eight 32-bit
-  indices are free, addressing up to a 512 MB filter. There is no hash function
-  to choose, tune, or get wrong.
-- **A fixed-size mmap'd file.** No sort-merge, no LSM, no eviction policy, no
-  ordering invariant, no atomic-rename dance. Set bits in a bit array. A corrupt
-  file costs downloads, not correctness — checksum it and rebuild on mismatch.
-- **Concurrent writers are safe without locking, and this is the good part.**
-  Setting a bit is idempotent and monotonic. Two processes mmap'ing the same file
-  can both write with no coordination; the only race is a lost byte-level
-  read-modify-write, and a lost bit-set is a *missed suppression* — it degrades
-  to the status quo, never to a wrong answer. **That dissolves the objection that
-  killed the state file for 3b**: the relay process can record its own refusals
-  into the same file, so a client publishing a new profile no longer leaves the
-  router blind to the id it superseded.
-- **Sizing.** ~3.6 B/id at p=10⁻⁶, ~5.4 B/id at p=10⁻⁹ — call it 10× smaller
-  than 3b. Use a *blocked* layout so a lookup touches one or two cache lines
-  rather than `k` random pages in a half-gigabyte mapping.
+  distributed. The bucket index and the fingerprint are disjoint bit-fields
+  sliced straight out of it. There is no hash function to choose, tune, or get
+  wrong.
+- **A fixed-size mmap'd file per epoch.** No sort-merge, no LSM, no eviction
+  policy, no ordering invariant, no atomic-rename dance. A corrupt file costs
+  re-downloads, not correctness — checksum it and rebuild on mismatch.
+- **One writer — and under the final gate, only the sync process is one.** An
+  earlier revision had both processes writing, to catch the supersessions the
+  RELAY performs when its own clients publish (the hole that killed the `:sync`
+  state file for 3b). The gate makes that moot: a row requires refusals observed
+  on the *sync* path — a refused push, or the store rejecting an upstream's copy
+  — and when a client publishes v4 to the relay, the superseded v3 reaches the
+  router the same way everything else does: an upstream offers it, the store
+  refuses it, the gate counts it. The relay process writes nothing and reads
+  nothing, and the two-writer-files design (and its cross-process questions)
+  collapses to one writer per epoch file, with a striped lock across the ingest
+  workers inside that one process.
+- **Sizing.** ~4–5 B/id at the epsilons that matter (table below) — call it 10×
+  smaller than 3b, before doubling for the candidate filter.
 
 **The one real danger: a false positive is silent, permanent data loss.** We skip
 an event we actually wanted, nothing logs it, and the same id hits the same bits
@@ -538,19 +562,17 @@ entry mid-relocation. Two consequences:
 - **The lock-free shared file is gone** — which is what made the relay's own
   refusals recordable.
 
-**The fix keeps cuckoo viable: one file per writer, and the reader queries both.**
-Merging is not actually required — checking two tables in turn is two bucket
-pairs, still a handful of cache lines. Each process is then a single writer to
-its own file with no cross-process lock, and only the in-process ingest workers
-need a plain striped lock. The sync process reads both; the relay writes its own
-and reads nothing.
+**The fix that kept cuckoo viable was one file per writer — and the gate then
+removes the second writer entirely** (see the single-writer bullet under 3a):
+only the sync process ever inserts, so cuckoo's concurrency cost falls away with
+no cross-process coordination left to design.
 
 **Binary fuse filters** are ~6% smaller again and are the space-optimal answer,
 but they are **immutable** — built once from the complete key set, no incremental
 insert. Making that work means buffering the generation's raw ids to freeze it
 later, which is a real design and buys 6%. Not worth it.
 
-**Verdict: cuckoo, with per-writer files and per-epoch partitioning** — the
+**Verdict: cuckoo, single-writer per-epoch files** — the
 epoch design needs a signal for "this partition is full", and insert failure is
 that signal exactly. If the design stays one flat filter, take Bloom for the lock-free
 shared file and keep the counter discipline.
@@ -582,8 +604,9 @@ heuristic under
 the filter's size a function of *how much of the network refuses our writes*
 rather than of how much of the network has stale copies.
 
-The dependency runs one way: Fix 3 is useful without Fix 2, but Fix 2 needs
-Fix 3's instrumentation to know whether it is working at all.
+The dependency runs one way: Fix 3 is useful without Fix 2, and Fix 2's
+`OK false` tier stands alone — but its archival tier (accepted, not dropped) is
+observable only through Fix 3's re-offer detection.
 
 **And here 3a and 3b differ in a way that is easy to miss.** 3a suppresses the
 *fetch*, not the *observation* — the id still appears in `needIds` before the
@@ -624,22 +647,20 @@ stream re-walks the relay every cycle — costing more than the filter saved), a
 a third tally for events that are neither accepted nor rejected. **The filter is
 a negentropy-path mechanism.** Fetch is Fix 2's job.
 
-**Fix 2's trigger also differs by mode**, and both routes are needed:
-
-- **negentropy** gives `diff.haveIds` — our winner that they lack — for free, in
-  the same round trip. No download required to know a heal is warranted.
-- **fetch** gives no diff at all. There the signal is the store's
-  `Rejected(REPLACED)`, which means the stale copy has already been downloaded,
-  and which does not say *which* event won. So the fetch path needs either a
-  query per address or the store change to report the winner id — the one this
-  document earlier said the diff route lets us sidestep. It does, on one path
-  out of two.
+**Fix 2's trigger is the same in every mode** — the store's `REPLACED` /
+`DELETED` / `VANISHED` rejection after the stale copy arrives, with the address
+read off the rejected body (see the trigger section under Fix 2, including why
+`diff.haveIds` must *not* drive content pushes). The download it rides on is one
+the mirror was already paying: suppression only begins after the gate has seen
+refusals, so every (relay, address) pair gets its heal attempt before its id can
+reach the filter.
 
 **Static versus dynamic** changes the economics, not the mechanism. The per-id
 filter is global and behaves identically in both. The per-relay write bit is one
 row per relay — 16k rows is nothing. What differs is that a dynamic stream drops
 each socket as its sync returns and we can write to almost none of those relays,
-so on the fan-out Fix 2 is mostly inert and the filter carries the load alone.
+so on the fan-out Fix 2 is a one-time probe per relay with a low expected
+acceptance rate, and the filter carries the recurring load.
 
 #### Which means the gate needs a third path
 
@@ -654,10 +675,22 @@ row. Three ways in, then:
    marked write-closed — **and the id is offered again** → row then.
 
 Path 3 is what covers the fan-out, and it costs one more structure. A filter
-answers membership, not counts, so "offered twice" needs **two filters per
-epoch**: a **candidate** filter that the first sighting inserts into, and a
-**suppress** filter that a membership hit in the candidate promotes it to. Both
-cuckoo, both per-epoch, both membership-only — no counters anywhere.
+answers membership, not counts, so "twice" needs **two filters per epoch**: a
+**candidate** filter and a **suppress** filter. Both cuckoo, both per-epoch,
+both membership-only — no counters anywhere.
+
+**A "sighting" is a store refusal, never a `needIds` appearance.** An id can
+reappear in `needIds` for innocent reasons — the fetch died mid-download, the
+relay dropped the socket — and inserting on mere appearance would let two
+transient failures suppress a wanted event forever. So: the FIRST refusal
+(`REPLACED`/`DELETED`/`VANISHED`/`EXPIRED`, after a completed download) inserts
+into the candidate filter; on a later cycle an id that hits the candidate filter
+is **downloaded once more anyway**, and only a SECOND refusal inserts it into
+the suppress filter. That one extra download per id buys the property that makes
+the epsilon arithmetic safe: a candidate-filter false positive costs one wasted
+download, never a suppression — only the suppress filter's own epsilon can lose
+data, and every id in it is backed by two independent refusals. It also settles
+`EXPIRED`, which no push can fix: two refusals, row, done.
 
 The candidate filter is Step 0's repeat-detector. The plan built it to measure
 and then threw it away; now it stays, and the storage estimate roughly doubles.
@@ -729,9 +762,9 @@ rows above are what collects on it. Only real ids we really refused.
 ## Where the tombstone lives
 
 **For 3a the answer is short**: fixed-size mmap'd cuckoo tables on the shared
-`/var/lib/vespa-relay` mount, partitioned by `created_at` epoch, one file per
-writing process — see 3a above for why per-writer rather than shared, and why
-per-epoch rather than one flat table. The rest of this section is about **3b**,
+`/var/lib/vespa-relay` mount, partitioned by `created_at` epoch, written by the
+sync process alone — see 3a above for why the gate leaves it the only writer,
+and why per-epoch rather than one flat table. The rest of this section is about **3b**,
 where the `created_at` has to be exact and the storage question gets hard.
 
 Two constraints decide this, and both point the same way.
@@ -938,7 +971,7 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    bounded blast radius is the place to learn the real acceptance rate.
    The relay-scoped kind-62 guard ships here, with its test.
 4. **Fix 3a**, on the negentropy paths only — per-epoch cuckoo filters,
-   **candidate and suppress**, one pair per writing process, fed by the
+   **candidate and suppress**, written by the sync process alone, fed by the
    three-path gate rather than by every store refusal. Wire them into
    `DeleteMissingSync`'s `diff.needIds` first, which needs no upstream change and
    proves the suppression on one path; then the `wantId` predicate in quartz for
@@ -966,20 +999,21 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
 7. Chart the suppression count, the epoch count and each epoch's load on the
    Sync coverage card, beside the bands and sweeps.
 
-Every step carries its slice of the [Test plan](#test-plan), and the six
-**[SAFETY]** cases are merge blockers rather than follow-ups: each guards an
-outcome that is silent, permanent, or on somebody else's server.
 8. **Extend Fix 2 to the dynamic fan-out** — a position this document reversed.
    The write-closed strike rule makes the cost **one-time per relay**, not
    per-cycle: probe until N refusals, mark the relay, never spend another publish
    on it. Sixteen thousand relays at three probes each is ~48k publishes *ever*,
    spread across cycles and paced, and every relay that does accept is healed
-   permanently — including for every other mirror. The identification is already
-   free on this path, since a negentropy reconcile hands back `haveIds` in the
-   same round trip. What remains against it is the **policy** objection, not the
+   permanently — including for every other mirror. Identification costs nothing
+   extra here either: the trigger is the same `REPLACED` rejection the mirror was
+   already producing. What remains against it is the **policy** objection, not the
    cost one: unsolicited writes to relays we only ever read from. That argues for
    keeping the retraction switch and the content switch separate and letting the
    content one default off, not for staying out of the fan-out.
+
+Every step carries its slice of the [Test plan](#test-plan), and the **[SAFETY]**
+cases are merge blockers rather than follow-ups: each guards an outcome that is
+silent, permanent, or on somebody else's server.
 
 ## Test plan
 
@@ -989,9 +1023,9 @@ it guards. Everything lands in `:sync` unless marked. Per AGENTS.md: **assert th
 property, not the implementation** — several of these describe behaviour that
 must survive a rewrite of the mechanism underneath them.
 
-Six of these are load-bearing. They are marked **[SAFETY]**, and each one guards
-an outcome that is silent, permanent, or on someone else's server. If the budget
-runs out, these are the ones that ship.
+Ten of these are load-bearing. They are marked **[SAFETY]**, and each one
+guards an outcome that is silent, permanent, or on someone else's server. If the
+budget runs out, these are the ones that ship.
 
 ### `LatestOnlyAskTest` — Fix 1's flag
 
@@ -1005,8 +1039,12 @@ runs out, these are the ones that ship.
 
 ### `HealTriggerTest` — what becomes a push candidate
 
-- `a newer replaceable version enqueues a push for its address`
-- `a newer addressable version enqueues a push keyed on kind pubkey and d`
+- `a REPLACED rejection enqueues a push for the rejected event's address`
+- `an addressable rejection enqueues on kind pubkey and d`
+- **[SAFETY]** `an address the relay never offered is never pushed` — the healer
+  repairs staleness; seeding absence is dir = up's job, behind its own setting.
+  Feed the healer a haveIds-shaped diff and assert nothing is enqueued from it:
+  this pins the trigger to the store's rejection, not the reconcile's diff.
 - `a kind 5 whose target the relay still serves enqueues the kind 5, not the target`
 - `a kind 62 tagged ALL_RELAYS enqueues a push`
 - **[SAFETY]** `a kind 62 scoped to another relay is never pushed anywhere` — the
@@ -1034,6 +1072,7 @@ runs out, these are the ones that ship.
 - `the queue drains at the end of that relay's sync, before the socket is released`
 - `a relay whose sync threw still has its queue drained or discarded, never leaked`
 - `the healer yields while ServingPressure reports backoff`
+- `the winner is resolved at drain time, so a version superseded after enqueue pushes the newest, and a target deleted after enqueue pushes the kind 5`
 
 ### `OkClassifierTest` — the rejection taxonomy
 
@@ -1075,9 +1114,14 @@ One case per row of the table under Fix 2, plus:
 
 - `a refused push in the permanent class earns a row immediately`
 - `an accepted push whose id is offered again earns a row on the second sighting`
-- `an id offered twice with no push attempted earns a row` — the fan-out path.
-- `one sighting alone never earns a row` — candidate and suppress are distinct;
-  a single offer must not suppress.
+- `an id refused twice with no push attempted earns a row` — the fan-out path.
+- `one refusal alone never earns a row` — candidate and suppress are distinct.
+- **[SAFETY]** `a needIds appearance without a completed download is never a sighting`
+  — a fetch that died mid-transfer must count for nothing, or two transient
+  failures suppress a wanted event forever.
+- `a candidate hit is re-downloaded, and only a second refusal promotes it` —
+  the property that keeps a candidate-filter false positive at the cost of one
+  download instead of a permanent suppression.
 - **[SAFETY]** `an InsertOutcome.Failed never becomes a candidate` — the event
   was good, the failure was the store's, and a row would convert a transient
   fault into permanent silent loss. `lostToStore` exists to make that loud;
@@ -1117,7 +1161,7 @@ wire on cycle 2 rather than what any component believed:
 | **archival** (accepts, keeps both) | offers stale, push accepted | not transfer the body; row created on cycle 2, not 1 |
 | **rate-limiting** (`OK false rate-limited`) | offers stale, push refused | **retry the push** — no row, relay not closed |
 | **silent** (no `OK`) | offers stale, push unanswered | strike recorded, still under threshold, push retried |
-| **no-push stream** (healing off) | offers stale twice | row created on the second sighting |
+| **no-push stream** (healing off) | offers stale twice, both downloaded and refused | row created on the second refusal |
 
 ### What must keep passing
 
