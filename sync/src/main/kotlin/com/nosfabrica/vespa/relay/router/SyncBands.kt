@@ -662,9 +662,19 @@ class SyncBands(
  * actually sent.
  *
  * Nothing is given up: [SyncCoverage.isPlausible] already refuses everything below
- * this floor, so those events could never widen a band or count as coverage. Quartz's
- * side of this — a paged walk that cannot terminate when a relay ignores `until` —
- * is upstream's to fix; this makes it unreachable from here.
+ * this floor, so those events could never widen a band or count as coverage.
+ *
+ * **This floor is not the whole fix, and it never was — keep it anyway.** Quartz now
+ * guards its own cursor (amethyst#3889, merged as `a5507f9a`): it floors at epoch 0
+ * and calls a relay answering ABOVE the boundary `UNPAGEABLE` instead of stepping
+ * past it. That is the structural half, because a `since` does NOT bound the step
+ * path — `until = boundary - 1` ignores it, so against a cursor-ignoring relay an
+ * unguarded walk descends from the window floor to 0 whatever `since` says, ~1.5
+ * billion pages. What this floor buys is different and still worth having: the walk
+ * stops at real data rather than at a guard, so purplepag.es DRAINS at the floor and
+ * the leg closes, where quartz's guard alone would leave it UNPAGEABLE and re-walked.
+ * Until the `quartz` pin moves past `875531afb0` this is also the only thing standing
+ * between us and the loop; after it moves, it is defence in depth.
  *
  * KNOWN HOLE, and why it is left open: a filter carrying its OWN `since` is passed
  * through untouched, so a config that writes `since = 0` — which means the same as

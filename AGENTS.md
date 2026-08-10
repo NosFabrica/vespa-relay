@@ -493,7 +493,18 @@ reach zero and the page below the floor is an EOSE'd empty page, i.e. a DRAIN.
 Nothing is lost: `isPlausible` already refuses everything under that floor, and
 every paged call site already spelled the same floor out for its progress line.
 Quartz's half — a paged walk that cannot terminate against a relay ignoring
-`until` — is upstream's, and is unreachable from here now.
+`until` — is fixed upstream too, in amethyst#3889 (merged as `a5507f9a`): the
+cursor floors at epoch 0, and a relay answering ABOVE the boundary is
+`UNPAGEABLE` rather than something to step past. **We do not have it yet** — the
+`quartz` pin is still `875531afb0`, so until that moves, `flooredForPaging` is
+the only thing standing between this deployment and the loop.
+
+Keep both when the pin does move; they buy different things. A `since` cannot
+bound the STEP path — `until = boundary - 1` ignores it — so quartz's guard is
+the structural one, the thing that stops a cursor-ignoring relay walking from
+any window floor down to 0. But quartz's guard alone ends the leg `UNPAGEABLE`,
+which settles nothing and re-walks next boot; the floor is what makes the same
+walk end at real data, DRAINED, with the leg closed.
 
 Do not "simplify" this by flooring inside `SyncBands.legs`. The legs feed the
 negentropy branches too, and narrowing the remote filter while the local id
