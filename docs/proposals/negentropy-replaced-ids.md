@@ -192,6 +192,15 @@ the symptom. strfry honours replacement on write
 ([Prior art](#prior-art-what-strfry-does)), so this converges against a large
 slice of the network.
 
+**And it is the only fix that survives our own state loss.** A tombstone is
+private memory, and it is exactly as durable as one disk: rotate an epoch, retire
+a generation, wipe `/var/lib/vespa-relay`, redeploy onto a fresh volume, or
+invalidate a band and re-walk from scratch, and every id it was suppressing comes
+straight back. A healed source stays healed through all of that — the stale event
+no longer exists to be offered. It also fixes the pair for every other mirror on
+the network, which no amount of local memory can do. **Fix 3 is a cache; Fix 2 is
+a repair.**
+
 **Four triggers, and they are not equally sensitive:**
 
 | we hold | we push | author asked for this? |
@@ -586,35 +595,34 @@ therefore blinds Fix 2's observation loop, and anything built on it — the
 write-closed strike rule, the "populate only for relays that failed to heal"
 bound — has to be settled *before* 3b lands, or it cannot be measured afterwards.
 
-#### Every sync mode, and what each one can actually save
+#### Every sync mode, and which mechanism covers it
 
-The suppression must work in `negentropy`, `fetch` and `auto`, static and
-dynamic. It does — but **what it saves is not the same in each**, and pretending
-otherwise would repeat the mistake this document already made once.
+The *fix* must work in `negentropy`, `fetch` and `auto`, static and dynamic. It
+does — but **not by the same mechanism in each**, and the honest split is that
+Fix 2 covers every mode while the filter only earns its place where there is a
+hook before the body arrives.
 
-| path | earliest hook | saves | does not save |
-|---|---|---|---|
-| **negentropy** (`NegentropyPager`, `StaticBackfill`, `DynamicSync`) | `needIds`, before the REQ | the event bodies — ~95% of the transfer | the bisection round trips and the 32-byte ids |
-| **fetch** (`fetchAllPages`) | `onEvent`, after the body arrives | `verify()`, the ingest queue slot, the store round trip, `ServingPressure` contention | **nothing on the wire** |
-| **deleteMissing** (`DeleteMissingSync`) | `diff.needIds`, before `fetchAll` | same as negentropy | same as negentropy |
+| path | mechanism | why |
+|---|---|---|
+| **negentropy** (`NegentropyPager`, `StaticBackfill`, `DynamicSync`) | Fix 2, **plus** the filter on `needIds` before the REQ | there is a hook before the body, and it is worth ~95% of the transfer |
+| **deleteMissing** (`DeleteMissingSync`) | same — the filter on `diff.needIds` before `fetchAll` | same hook, same saving |
+| **fetch** (`fetchAllPages`) | **Fix 2 and `latestOnly` only. No filter.** | a REQ never names an id before it sends the body, so there is no hook that saves anything worth the complexity |
 
-**A REQ never names an id before it sends the body**, so on `fetch` there is no
-earlier hook to move to — the bytes are spent by the time we can test anything.
-That is the one place where the "a filter saves no bandwidth" objection is
-correct, and it is why `latestOnly` above matters: on the fetch path, *not asking*
-is the only thing that saves the transfer.
+**The fetch path does not get a suppression hook, and does not need one.** The
+bytes are already spent by the time an `onEvent` predicate could fire, so all a
+filter could save there is `verify()` and a store round trip. The way to fix
+`fetch` is to **heal the source**: once the upstream holds our version instead of
+its stale one, the next fetch — including a from-scratch one after a band is
+invalidated — brings back the current event, which the store rejects as an
+ordinary `DUPLICATE`. That is the baseline cost of running a fetch-mode mirror at
+all, and router.md is right to call it the system working.
 
-Two implementation notes for the fetch hook, both easy to get wrong:
-
-- **Observe the band before dropping.** `DynamicSync`'s `onEvent` runs
-  `SyncCoverage.observe(seenByKind, …)` and widens `seenMin`/`seenMax` before
-  `ingest.submit`. The suppression goes **after** that bookkeeping and replaces
-  only the `submit`. Skipping the observe would leave the leg without per-kind
-  evidence, quartz would record no band, and the stream would re-walk that relay
-  every cycle — paying far more than the filter saved.
-- **A suppressed event is not a rejection.** It never reaches `IngestPipeline`,
-  so it must be counted on its own line rather than silently vanishing from both
-  the accepted and rejected tallies.
+Dropping that hook takes three things off the table with it: the `onEvent`
+predicate, the trap of having to run `SyncCoverage.observe` before the drop (skip
+it and the leg loses its per-kind evidence, quartz records no band, and the
+stream re-walks the relay every cycle — costing more than the filter saved), and
+a third tally for events that are neither accepted nor rejected. **The filter is
+a negentropy-path mechanism.** Fetch is Fix 2's job.
 
 **Fix 2's trigger also differs by mode**, and both routes are needed:
 
@@ -929,13 +937,13 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    and the `OK` classifier in this step — they are the whole mechanism, and a
    bounded blast radius is the place to learn the real acceptance rate.
    The relay-scoped kind-62 guard ships here, with its test.
-4. **Fix 3a** — per-epoch cuckoo filters, **candidate and suppress**, one pair
-   per writing process, fed by the three-path gate rather than by every store
-   refusal. Wire them into `DeleteMissingSync`'s `needIds` first, which needs no
-   upstream change and proves the suppression on one path; then the `onEvent`
-   drop on the fetch path, which needs no upstream change either and covers the
-   dynamic fan-out; then the `wantId` predicate in quartz for the main negentropy
-   sweep, closing over the window's bounds to pick the epoch. Log the
+4. **Fix 3a**, on the negentropy paths only — per-epoch cuckoo filters,
+   **candidate and suppress**, one pair per writing process, fed by the
+   three-path gate rather than by every store refusal. Wire them into
+   `DeleteMissingSync`'s `diff.needIds` first, which needs no upstream change and
+   proves the suppression on one path; then the `wantId` predicate in quartz for
+   the main sweep, closing over the window's bounds to pick the epoch. **Nothing
+   on the fetch path** — see the mode table; fetch is healed, not filtered. Log the
    suppression count and each epoch's load from day one — a filter doing nothing
    and a filter eating everything look identical without it. Decide up front what
    an insert failure does: open a new generation for that epoch, or stop
@@ -957,8 +965,17 @@ before the fetch, is what turns it from a CPU saving into the main fix.)
    a relay healed.
 7. Chart the suppression count, the epoch count and each epoch's load on the
    Sync coverage card, beside the bands and sweeps.
-8. Extend Fix 2 to the dynamic fan-out only if step 3's acceptance rate is high
-   enough to be worth 16k unsolicited publishes. It probably is not.
+8. **Extend Fix 2 to the dynamic fan-out** — a position this document reversed.
+   The write-closed strike rule makes the cost **one-time per relay**, not
+   per-cycle: probe until N refusals, mark the relay, never spend another publish
+   on it. Sixteen thousand relays at three probes each is ~48k publishes *ever*,
+   spread across cycles and paced, and every relay that does accept is healed
+   permanently — including for every other mirror. The identification is already
+   free on this path, since a negentropy reconcile hands back `haveIds` in the
+   same round trip. What remains against it is the **policy** objection, not the
+   cost one: unsolicited writes to relays we only ever read from. That argues for
+   keeping the retraction switch and the content switch separate and letting the
+   content one default off, not for staying out of the fan-out.
 
 ## Open questions
 
