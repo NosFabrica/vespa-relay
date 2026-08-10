@@ -29,6 +29,7 @@ import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import java.time.Instant
+import java.time.YearMonth
 import java.time.ZoneOffset
 
 /**
@@ -238,6 +239,43 @@ internal object StatsYql {
         if (year < 1970 || year > 9999) return null
         return "%04d-%02d".format(year, month)
     }
+
+    /**
+     * Every label [isoMonth] would produce from [start] through the month
+     * [nowSeconds] falls in, inclusive — the full axis of a monthly series,
+     * whether or not the corpus has an event in each of them.
+     *
+     * Here rather than in the rollup because it is the same format contract as
+     * [isoMonth] read from the other end: one of these enumerates the buckets a
+     * chart must show and the other names the buckets the engine returned, and
+     * a chart is only gapless while the two spell a month identically.
+     *
+     * Empty when [start] is in the future rather than counting backwards. The
+     * rollup's clock is injected, so a clock behind the anchor is a state a test
+     * can reach, and this is what keeps the sequence finite.
+     */
+    fun isoMonthsFrom(
+        start: YearMonth,
+        nowSeconds: Long,
+    ): List<String> {
+        val current = YearMonth.from(Instant.ofEpochSecond(nowSeconds).atOffset(ZoneOffset.UTC))
+        if (current < start) return emptyList()
+        return generateSequence(start) { it.plusMonths(1) }
+            .takeWhile { it <= current }
+            .map { it.toString() }
+            .toList()
+    }
+
+    /**
+     * The first instant of [month] in UTC — a monthly window's lower bound.
+     *
+     * An exact calendar boundary, and it has to be: [MONTH] buckets on
+     * `time.monthofyear`, so a window that opens partway through a month still
+     * returns that whole month's bucket carrying only the part of it that fell
+     * inside — a leading bar that is short for a reason nothing on the page can
+     * state. UTC for the same reason [DAY] is.
+     */
+    fun startOfMonth(month: YearMonth): Long = month.atDay(1).atStartOfDay(ZoneOffset.UTC).toEpochSecond()
 
     /**
      * The derived `<letter>:<value>` tag pairs — the only tag shape a filter or

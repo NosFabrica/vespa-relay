@@ -23,7 +23,9 @@ package com.nosfabrica.vespa.relay.maintenance
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.jsonObject
 import java.time.DayOfWeek
+import java.time.Instant
 import java.time.LocalDate
+import java.time.YearMonth
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertNotNull
@@ -259,6 +261,47 @@ class StatsYqlTest {
         assertEquals(run.sorted(), run)
         for (bad in listOf("", "0", "-5", "x", "1")) assertNull(StatsYql.isoMonth(bad), "must refuse $bad")
     }
+
+    /**
+     * The monthly axis is enumerated from a fixed anchor, and every label it
+     * produces has to be one [StatsYql.isoMonth] would produce for the same
+     * month — that agreement is the only thing making the series gapless, since
+     * the rollup fills by matching these strings against the engine's decoded
+     * buckets. A month spelled two ways would not error; it would draw the same
+     * month twice, once at its real height and once at zero.
+     */
+    @Test
+    fun `the month axis runs from the anchor to now, in the format the buckets decode to`() {
+        val jan2023 = YearMonth.of(2023, 1)
+        val labels = StatsYql.isoMonthsFrom(jan2023, at("2023-04-17T05:00:00Z"))
+        assertEquals(listOf("2023-01", "2023-02", "2023-03", "2023-04"), labels, "the current month is included, whole")
+        // Both ends of the axis, spelled by the decoder the engine's buckets go
+        // through: same string or the fill draws a duplicate bar.
+        assertEquals(StatsYql.isoMonth((2023 * 12 + 1).toString()), labels.first())
+        assertEquals(StatsYql.isoMonth((2023 * 12 + 4).toString()), labels.last())
+        assertEquals(labels.sorted(), labels, "the page sorts on these")
+
+        // Anchored, so the span GROWS rather than sliding: the first label is
+        // the anchor at any `now`, which is the whole point of the change from a
+        // rolling 24-month window.
+        val later = StatsYql.isoMonthsFrom(jan2023, at("2026-08-10T00:00:00Z"))
+        assertEquals("2023-01", later.first())
+        assertEquals("2026-08", later.last())
+        assertEquals(44, later.size, "Jan 2023 through Aug 2026 inclusive")
+
+        // The first instant of the anchor month, UTC — one second earlier is
+        // December, and a window opening there returns a bucket for it.
+        val start = StatsYql.startOfMonth(jan2023)
+        assertEquals(at("2023-01-01T00:00:00Z"), start)
+        assertEquals("2022-12", StatsYql.isoMonthsFrom(YearMonth.of(2022, 12), start - 1).last())
+
+        // A clock behind the anchor yields no axis rather than counting
+        // backwards — or generating months until the heap goes.
+        assertEquals(emptyList(), StatsYql.isoMonthsFrom(jan2023, at("2022-12-31T23:59:59Z")))
+        assertEquals(listOf("2023-01"), StatsYql.isoMonthsFrom(jan2023, start))
+    }
+
+    private fun at(iso: String): Long = Instant.parse(iso).epochSecond
 
     /**
      * `tag_index` pairs are `<letter>:<value>`, CASED — so NIP-57's `P` (sender)

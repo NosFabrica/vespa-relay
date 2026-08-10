@@ -39,6 +39,7 @@ import kotlinx.serialization.json.putJsonArray
 import kotlinx.serialization.json.putJsonObject
 import java.io.File
 import java.time.Instant
+import java.time.YearMonth
 
 /**
  * The corpus statistics document this relay publishes at `GET /stats.json`,
@@ -80,11 +81,15 @@ internal class StatsRollup(
     /** Wall clock in epoch seconds; injected so the window bounds are assertable. */
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
     private val windowDays: Int = DEFAULT_WINDOW_DAYS,
-    // In weeks and months, not days: these are what the page prints, and a
-    // window stated as "the last 744 days" on a monthly chart is a number no
-    // reader converts. The seconds are derived where the query is built.
+    // In weeks, not days: this is what the page prints, and a window stated as
+    // "the last 182 days" on a weekly chart is a number no reader converts. The
+    // seconds are derived where the query is built.
     private val weekWindowWeeks: Int = DEFAULT_WEEK_WINDOW_WEEKS,
-    private val monthWindowMonths: Int = DEFAULT_MONTH_WINDOW_MONTHS,
+    /**
+     * The first month the monthly series covers — an ANCHOR, not a length. See
+     * [DEFAULT_MONTH_SERIES_START].
+     */
+    private val monthSeriesStart: YearMonth = DEFAULT_MONTH_SERIES_START,
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
@@ -386,22 +391,39 @@ internal class StatsRollup(
      * days. So a weekly "publishing pubkeys" has to be asked of the engine at
      * weekly granularity, and the page's Daily/Weekly/Monthly toggle switches
      * between three answers rather than re-aggregating one.
+     *
+     * The monthly series is the one anchored to a DATE rather than to a length —
+     * see [DEFAULT_MONTH_SERIES_START] — and it is also the only one filled to
+     * its whole span, because it is the only one that deliberately reaches back
+     * past the day this mirror started holding anything.
      */
     private suspend fun activitySection(): JsonObject =
         section { attempts ->
             val now = nowSeconds()
             val hourWindow = StatsYql.window(now - hourWindowDays * DAY_SECONDS, now)
-            val days = series(attempts, "days", StatsYql.DAY, StatsYql::isoDay, now, windowDays)
-            val weeks = series(attempts, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, now, weekWindowWeeks * 7)
-            // 31 days a month, so the window reaches at least this many whole
-            // calendar months back. Over-reaching costs a leading partial
-            // month; under-reaching would silently drop one.
-            val months = series(attempts, "months", StatsYql.MONTH, StatsYql::isoMonth, now, monthWindowMonths * 31)
+            val monthLabels = StatsYql.isoMonthsFrom(monthSeriesStart, now)
+            val days = series(attempts, "days", StatsYql.DAY, StatsYql::isoDay, now - windowDays * DAY_SECONDS, now)
+            val weeks = series(attempts, "weeks", StatsYql.WEEK, StatsYql::isoWeekStart, now - weekWindowWeeks * 7 * DAY_SECONDS, now)
+            // An exact calendar boundary rather than a count of days back from
+            // now — see StatsYql.startOfMonth. The old window was
+            // `monthWindowMonths * 31` days precisely because it could not land
+            // on one, and paid a partial leading month for it.
+            val months =
+                series(attempts, "months", StatsYql.MONTH, StatsYql::isoMonth, StatsYql.startOfMonth(monthSeriesStart), now, fill = monthLabels)
             val hours = attempt(attempts, "hours") { longsByGroup(StatsYql.countsBy(StatsYql.HOUR), hourWindow) }
             buildJsonObject {
                 put("windowDays", windowDays)
                 put("windowWeeks", weekWindowWeeks)
-                put("windowMonths", monthWindowMonths)
+                // Derived from the labels the series is filled to rather than
+                // stated beside them: this number IS how many buckets the
+                // monthly chart draws, and two spellings of it would drift apart
+                // the first month the anchor is moved.
+                put("windowMonths", monthLabels.size)
+                // The anchor itself, because "44 months" is not what this window
+                // means and a reader charting /stats.json elsewhere would have
+                // to count backwards from `generatedAt` to recover the date the
+                // series actually starts on.
+                put("monthsSince", monthSeriesStart.toString())
                 put("hourWindowDays", hourWindowDays)
                 days?.let { put("days", it) }
                 weeks?.let { put("weeks", it) }
@@ -599,25 +621,43 @@ internal class StatsRollup(
      * arrives unpadded, a week as an epoch-relative integer, a month as
      * `year * 12 + month`. Routing all three through this parameter is what
      * keeps [StatsYql.isoDay]'s trap from having to be re-remembered per series.
+     *
+     * [fill] is the set of labels that must appear WHETHER OR NOT the engine
+     * returned a bucket for them, emitted at zero. A grouping only returns
+     * buckets that matched something, so an empty month is not a zero-height bar
+     * — it is one fewer bar, and a chart asked for 44 months silently redraws as
+     * however many of them had events, starting wherever the corpus happens to
+     * begin rather than where the window does. Same argument the hour-of-day
+     * series already makes for its 24 slots, and it weighs more here: the
+     * monthly window deliberately reaches back past the day this mirror started
+     * holding anything, so the empty buckets are part of the answer.
      */
     private suspend fun series(
         attempts: Attempts,
         name: String,
         bucket: String,
         decode: (String) -> String?,
+        since: Long,
         now: Long,
-        spanDays: Int,
+        fill: List<String> = emptyList(),
     ): JsonArray? {
-        val where = StatsYql.window(now - spanDays * DAY_SECONDS, now)
+        val where = StatsYql.window(since, now)
         val events = attempt(attempts, "$name.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) } ?: return null
         val authors = attempt(attempts, "$name.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
+        // The UNION, not [fill] alone: a bucket the engine returned from outside
+        // the filled span is a disagreement between the window and the labels,
+        // and dropping it here would hide it.
         return buildJsonArray {
-            events.entries.sortedBy { it.key }.forEach { (label, count) ->
+            (events.keys + fill).sorted().forEach { label ->
                 add(
                     buildJsonObject {
                         put("period", label)
-                        put("events", count)
-                        authors?.get(label)?.let { put("pubkeys", it) }
+                        put("events", events[label] ?: 0L)
+                        // Zero rather than absent once the authors query has
+                        // answered at all: a bucket holding no documents has no
+                        // distinct authors either, and a hole in this column
+                        // reads as "not measured" instead of "nobody posted".
+                        authors?.let { put("pubkeys", it[label] ?: 0L) }
                     },
                 )
             }
@@ -817,9 +857,30 @@ internal class StatsRollup(
 
         const val DEFAULT_WINDOW_DAYS = 30
 
-        /** The spans the reference dashboard's own Weekly/Monthly toggle covers. */
+        /** The span the reference dashboard's own Weekly toggle covers. */
         const val DEFAULT_WEEK_WINDOW_WEEKS = 26
-        const val DEFAULT_MONTH_WINDOW_MONTHS = 24
+
+        /**
+         * The monthly chart's first bucket — a DATE, and deliberately not a
+         * rolling count of months.
+         *
+         * The monthly view is the only one asked "how has this relay grown",
+         * and a 24-month window answered a different question: it slid forward
+         * every month, so the corpus's early years walked off the left edge and
+         * the chart's leftmost bar was always ~two years ago rather than the
+         * beginning of anything. January 2023 is where Nostr's own volume
+         * begins — before it the buckets are noise a log scale would be needed
+         * to see, and this page's charts are linear on purpose.
+         *
+         * Anchored, this window GROWS: a month is added each month and none
+         * ever leaves, so the series length is a number the document states
+         * (`windowMonths`) rather than a constant a reader can assume. The cost
+         * grows with it — the grouping's match set is now every event since the
+         * anchor rather than the last 744 days — which is affordable because
+         * the response is one small object per month either way and it is the
+         * match, not the group set, that got bigger.
+         */
+        val DEFAULT_MONTH_SERIES_START: YearMonth = YearMonth.of(2023, 1)
 
         const val DEFAULT_HOUR_WINDOW_DAYS = 7
         const val DEFAULT_TOP_RELAYS = 50
