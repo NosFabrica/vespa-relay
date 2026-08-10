@@ -326,7 +326,10 @@ internal class StatsRollup(
      * what OOMKilled the engine at a 46Gi limit, and then again at 64Gi.
      *
      * The time-bucketed authors in [series] stay: they look identical but are
-     * windowed to the last 30 days, so they group a slice rather than the store.
+     * WINDOWED, so they group a slice rather than the store. The monthly one is
+     * the slice worth watching — [DEFAULT_MONTH_SERIES_START] anchors it to a
+     * date, so it widens by a month every month, and it is this same
+     * pubkey-set-per-group shape.
      *
      * There is no cheaper way to ask this question of the engine — a distinct
      * count over a high-cardinality field IS the group set. If the column comes
@@ -644,6 +647,17 @@ internal class StatsRollup(
         val where = StatsYql.window(since, now)
         val events = attempt(attempts, "$name.events") { bucketed(StatsYql.countsBy(bucket), where, decode, distinct = false) } ?: return null
         val authors = attempt(attempts, "$name.pubkeys") { bucketed(StatsYql.distinctAuthorsBy(bucket), where, decode, distinct = true) }
+        // EMPTY is not zero, and the difference is a sentence this page prints.
+        // [bucketed] drops a group it cannot read rather than throwing — which is
+        // deliberate, and means an authors response whose shape we stop
+        // understanding (StatsYql.distinctCountOf's fallback is there for exactly
+        // that engine change) arrives as an empty map, not as a failed attempt.
+        // Zero-filling THAT writes `"pubkeys": 0` onto every bucket, and
+        // stats.html's all-zero branch states it: "No publishing pubkeys in this
+        // window.", in the error colour, beside an events chart full of bars. An
+        // absent column omits the card instead, which is what a column we could
+        // not read deserves.
+        val authorsByLabel = authors?.takeIf { it.isNotEmpty() }
         // The UNION, not [fill] alone: a bucket the engine returned from outside
         // the filled span is a disagreement between the window and the labels,
         // and dropping it here would hide it.
@@ -653,11 +667,10 @@ internal class StatsRollup(
                     buildJsonObject {
                         put("period", label)
                         put("events", events[label] ?: 0L)
-                        // Zero rather than absent once the authors query has
-                        // answered at all: a bucket holding no documents has no
-                        // distinct authors either, and a hole in this column
-                        // reads as "not measured" instead of "nobody posted".
-                        authors?.let { put("pubkeys", it[label] ?: 0L) }
+                        // Zero rather than absent once that column is readable at
+                        // all: a bucket holding no documents has no distinct
+                        // authors either, and a hole reads as "not measured".
+                        authorsByLabel?.let { put("pubkeys", it[label] ?: 0L) }
                     },
                 )
             }
@@ -874,11 +887,21 @@ internal class StatsRollup(
          *
          * Anchored, this window GROWS: a month is added each month and none
          * ever leaves, so the series length is a number the document states
-         * (`windowMonths`) rather than a constant a reader can assume. The cost
-         * grows with it — the grouping's match set is now every event since the
-         * anchor rather than the last 744 days — which is affordable because
-         * the response is one small object per month either way and it is the
-         * match, not the group set, that got bigger.
+         * (`windowMonths`) rather than a constant a reader can assume.
+         *
+         * THE COST GROWS WITH IT, and one of the two monthly pipelines grows in
+         * the direction this file has already been burned by. `countsBy(MONTH)`
+         * is cheap at any width — one leaf group per month, whatever the match
+         * set. `distinctAuthorsBy(MONTH)` is not: it materialises a PUBKEY SET
+         * PER MONTH, which is the same shape that, partitioning the whole corpus
+         * by kind, drove 2 GiB `PartialResult` buffers per match thread and
+         * OOMKilled the engine at a 64Gi limit — see [kindsSection], where the
+         * measurement is. It is bounded here by the window rather than by the
+         * store, so at 44 months it is a fraction of that; but the bound moves
+         * one month further out every month and nothing in the request path caps
+         * it ([StatsVespa] sets no read timeout, on purpose). This is the number
+         * to watch when the rollup's `tookMs` climbs, and moving the anchor
+         * FORWARD is the lever — it costs the oldest bars and nothing else.
          */
         val DEFAULT_MONTH_SERIES_START: YearMonth = YearMonth.of(2023, 1)
 
