@@ -248,6 +248,14 @@ assert.strictEqual(tokenize(`doi:${SICI}`)[0].value, SICI, "brackets and mid-val
 
 assert.deepStrictEqual(tokenize("site:").map((s) => s.type), ["text"], "a bare prefix is not a token — there is nothing to ask for");
 assert.deepStrictEqual(tokenize("site:.").map((s) => s.type), ["text"], "…and neither is a value that is all punctuation");
+
+// A value with no askable id must not become a token: the pill would claim a
+// filter while buildFilters sent NONE, and the leftover base filter would
+// answer as a match-all wearing a scope's face.
+assert.deepStrictEqual(parseQuery("site:#top").scopes, [], "a site: value that strips to nothing asks nothing, so it is not a token");
+assert.deepStrictEqual(tokenize("site:#top").map((s) => s.type), ["text", "tag"], "…no pill forms, and the # reads as the hashtag it is");
+const fragOnly = buildFilters("site:#top", { limit: 40, searchString: (t) => t });
+assert(fragOnly.every((x) => "#t" in x || "#l" in x || "#I" in x || "#i" in x), "…so nothing degrades to an unscoped match-all");
 assert.deepStrictEqual(tokenize("xsite:example.com").map((s) => s.type), ["text"], "a scope glued to a word is not a token");
 assert.strictEqual(mentionAt("site:ex", 7), null, "a scope opens no people picker");
 assert.strictEqual(dateAt("site:ex", 7), null, "…and no calendar — a url is pasted, not picked");
@@ -297,6 +305,16 @@ assert.deepStrictEqual(
   "a guid is asked as typed and lowercased — namespace guids are lowercase uuids, pasted ones often are not",
 );
 assert.deepStrictEqual(
+  scopeIds("podcast:publisher", "920666"),
+  ["podcast:publisher:guid:920666", "podcast:publisher:920666"],
+  "a publisher id typed without guid: is asked WITH it, first — NIP-73's canonical form carries the segment",
+);
+assert.deepStrictEqual(
+  scopeIds("podcast:publisher", "guid:920666"),
+  ["podcast:publisher:guid:920666"],
+  "…and one typed with it is already canonical",
+);
+assert.deepStrictEqual(
   scopeIds("isan", "0000-0000-401a-0000-7"),
   ["isan:0000-0000-401A-0000-7", "isan:0000-0000-401a-0000-7"],
   "isan: is uppercase hex in every NIP-73 example",
@@ -323,6 +341,11 @@ assert.deepStrictEqual(
   scopeIds("site", "https://example.com/a#frag"),
   ["https://example.com/a", "https://example.com/a/"],
   "the fragment is not part of the id",
+);
+assert.deepStrictEqual(
+  scopeIds("site", "HTTPS://Example.COM/Page"),
+  ["https://example.com/Page", "https://example.com/Page/", "HTTPS://Example.COM/Page", "HTTPS://Example.COM/Page/"],
+  "scheme and host are lowercased like NIP-73's normalized url — the PATH keeps its case",
 );
 
 // ---- drawable: which tokens the FIELD may pill ----------------------------

@@ -271,7 +271,14 @@ export function tokenize(text) {
       if (!pubkey) continue;
       seg = { type: "key", raw, field: g.who ? g.who.slice(0, -1).toLowerCase() : null, pubkey };
     } else if (g.ext) {
-      seg = { type: "scope", raw, field: g.ext.slice(0, -1).toLowerCase(), value: g.sid };
+      const field = g.ext.slice(0, -1).toLowerCase();
+      // A scope with no askable id — `site:#top`, whose value strips to
+      // nothing — is not a token: the pill would claim a filter while
+      // buildFilters sent NONE, leaving the leftover base filter to answer as
+      // a match-all. The same rule as a failed checksum, asked of the one
+      // function that knows what each family can ask for.
+      if (!scopeIds(field, g.sid).length) continue;
+      seg = { type: "scope", raw, field, value: g.sid };
     } else {
       const field = g.when.slice(0, -1).toLowerCase();
       const bound = dayBound(g.day, field);
@@ -426,8 +433,17 @@ const tagAsks = (tags) => [...new Set(tags.flatMap(tagValues))];
 function siteIds(value) {
   const bare = value.replace(/#.*$/, "");
   if (!bare) return [];
-  const urls = /^[a-z][a-z0-9+.-]*:\/\//i.test(bare) ? [bare] : [`https://${bare}`, `http://${bare}`];
-  return [...new Set(urls.flatMap((u) => [u, u.endsWith("/") ? u.slice(0, -1) : `${u}/`]))];
+  const typed = /^[a-z][a-z0-9+.-]*:\/\//i.test(bare) ? [bare] : [`https://${bare}`, `http://${bare}`];
+  // Scheme and host lowercased, canonical first — the case half of NIP-73's
+  // "normalized": a url pasted off a title-cased source misses every comment
+  // written under the normalized spelling otherwise, the exact gap the other
+  // families' case variants close. The PATH keeps its case; unlike the host it
+  // is case-sensitive, and lowercasing it would trade a miss for a lie.
+  const cased = typed.flatMap((u) => {
+    const m = /^([a-z][a-z0-9+.-]*:\/\/)([^/]*)(.*)$/i.exec(u);
+    return m ? [m[1].toLowerCase() + m[2].toLowerCase() + m[3], u] : [u];
+  });
+  return [...new Set(cased.flatMap((u) => [u, u.endsWith("/") ? u.slice(0, -1) : `${u}/`]))];
 }
 
 /**
@@ -447,6 +463,13 @@ function siteIds(value) {
  *   - the `podcast:*` guids are asked as typed plus lowercased — RSS
  *     namespace guids are canonically lowercase UUIDs, and pasted ones often
  *     are not.
+ *   - `podcast:publisher:` is the one family whose canonical id carries MORE
+ *     than prefix-plus-value: NIP-73 spells it `podcast:publisher:guid:<guid>`
+ *     — the `guid:` segment included, unlike the feed's `podcast:guid:<guid>`
+ *     where it is the prefix's own tail. A value typed without it (the exact
+ *     parallel of how the other two families are typed) is asked with it
+ *     inserted, first, or the natural spelling of the token could never match
+ *     a conforming comment.
  *
  * The value goes in VERBATIM too (deduped) for the reason hashtagIds keeps the
  * unprefixed form: one extra string is cheaper than missing every comment
@@ -463,6 +486,9 @@ export function scopeIds(field, value) {
     const parts = v.split("-");
     const root = parts.length === 8 ? parts.slice(0, 5).join("-") : v;
     return [...new Set([`isan:${root.toUpperCase()}`, `isan:${root}`, `isan:${v.toUpperCase()}`, `isan:${v}`])];
+  }
+  if (field === "podcast:publisher" && !/^guid:/i.test(v)) {
+    return [...new Set([`podcast:publisher:guid:${v}`, `podcast:publisher:guid:${v.toLowerCase()}`, `podcast:publisher:${v}`, `podcast:publisher:${v.toLowerCase()}`])];
   }
   return [...new Set([`${field}:${v}`, `${field}:${v.toLowerCase()}`])];
 }
