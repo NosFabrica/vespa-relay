@@ -98,16 +98,28 @@ class StreamPhases {
              */
             val reachedSeconds: Long? = null,
             /**
-             * Relays this stream is syncing right now, across every pass.
+             * Relays with a WORKER on them right now, across every pass —
+             * probing, queued for a transfer slot, or transferring.
              *
              * Beside [done], never instead of it, because the two stopped
              * agreeing when the fan-out became a rotation: [done] is how far
              * the current WALK got over its list, and this is how much of the
-             * worker pool is committed — including legs handed out by passes
+             * admission gate is committed — including legs handed out by passes
              * that ended long ago. A walk that has finished handing out while
              * ten relays are still transferring is neither "done" nor "idle".
              */
             val running: Int = 0,
+            /**
+             * …and of those, how many are actually on a socket.
+             *
+             * Published separately because the gap is large and reporting the
+             * wider number alone overstated the work: a stream with 8 transfer
+             * slots routinely shows 128 workers, of which 120 are waiting on a
+             * connect to a host that will never answer. One number for both
+             * read as "128 relays syncing" on a stream that cannot sync more
+             * than 8.
+             */
+            val transferring: Int = 0,
         ) : Phase
 
         /** Fanning out. */
@@ -117,8 +129,10 @@ class StreamPhases {
             val events: Long,
             val skipped: Long,
             val unreachable: Long,
-            /** Relays syncing right now, across every pass — see [Fetching.running]. */
+            /** Relays with a worker right now, across every pass — see [Fetching.running]. */
             val running: Int = 0,
+            /** …and of those, how many are on a socket — see [Fetching.transferring]. */
+            val transferring: Int = 0,
         ) : Phase
 
         /** Cycle finished; nothing more until the next refresh. */
@@ -135,7 +149,7 @@ class StreamPhases {
              */
             val nextInSec: Long?,
             /**
-             * Relays STILL SYNCING from the pass that just ended.
+             * Relays with a worker STILL RUNNING from the pass that just ended.
              *
              * The gap between passes is not quiet on a rotation: the walk ends
              * when the last url is handed out, and the slowest legs run on
@@ -144,6 +158,8 @@ class StreamPhases {
              * invisible for exactly as long as it lasted.
              */
             val running: Int = 0,
+            /** …and of those, how many are on a socket — see [Fetching.transferring]. */
+            val transferring: Int = 0,
         ) : Phase
 
         /** The last attempt threw. */
@@ -376,7 +392,7 @@ class StreamPhases {
                 // cheap enough to tick every second.
                 "fetching ${phase.done}/${phase.total} relay(s) returned, ${phase.events} event(s) received" +
                     rate(phase.events, elapsedMs) +
-                    (if (phase.running > 0) ", ${phase.running} syncing now" else "") +
+                    (if (phase.running > 0) ", ${phase.running} in flight (${phase.transferring} transferring)" else "") +
                     (phase.reachedSeconds?.let { " — back to ${fmtDay(it)}" } ?: "") +
                     (phase.fraction?.let { ", %.1f%% of the window walked".format(it * 100) } ?: "") +
                     (phase.etaMs?.let { ", ETA ~${fmtDuration(it)}" } ?: "") +
@@ -386,7 +402,7 @@ class StreamPhases {
             is Phase.Syncing -> {
                 "syncing ${phase.done}/${phase.total} relay(s) returned, ${phase.events} event(s) received" +
                     rate(phase.events, elapsedMs) +
-                    (if (phase.running > 0) ", ${phase.running} syncing now" else "") +
+                    (if (phase.running > 0) ", ${phase.running} in flight (${phase.transferring} transferring)" else "") +
                     // "skipped as dead" said nothing about what dead MEANT or
                     // when it is retried. It is a NIP-66 record this router (or
                     // another signing with the same key) wrote earlier saying a
@@ -402,7 +418,7 @@ class StreamPhases {
                 // that went idle forty-five minutes ago and one that finished a
                 // second ago printed the same line, and an ingest queue draining
                 // behind a finished cycle looked exactly like a stalled router.
-                val tail = if (phase.running > 0) ", ${phase.running} relay(s) still syncing" else ""
+                val tail = if (phase.running > 0) ", ${phase.running} relay(s) still running (${phase.transferring} transferring)" else ""
                 phase.nextInSec?.let { "idle — ${phase.events} event(s) received last pass$tail, next in ${it}s ($elapsed ago)" }
                     ?: "backfilled ${phase.events} event(s); live tail only — no further cycles ($elapsed ago)"
             }

@@ -194,6 +194,11 @@ internal class DynamicSync(
         // Rebuilt per pass it would be a fresh set of permits with the old ones
         // still occupied, i.e. a concurrency limit that means nothing.
         val pool = Semaphore(dynamic.concurrency)
+        // …and a wider gate in front of it, for the guards. See the walk in
+        // [runPass]: a relay list is mostly dead hosts, deciding that costs a
+        // connect timeout, and charging it to a sync slot made a pass track the
+        // pool size rather than the network (measured, 20x on this fan-out).
+        val admission = Semaphore(admissionWidth(dynamic.concurrency))
         val rotation = RelayRotation()
         val idSet = SharedIdSet()
         // What the ticker reports. The ticker belongs to the stream too: between
@@ -246,7 +251,7 @@ internal class DynamicSync(
                         live.set(null)
                         phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                     } else {
-                        runPass(stream, dynamic, sourceNames, list, rotation, pool, idSet, live)
+                        runPass(stream, dynamic, sourceNames, list, rotation, pool, admission, idSet, live)
                         ran = true
                     }
                 } catch (e: CancellationException) {
@@ -335,6 +340,7 @@ internal class DynamicSync(
             delay(PROGRESS_INTERVAL_MS)
             val p = live.get() ?: continue
             val running = rotation.busyCount()
+            val transferring = rotation.transferringCount()
             val ended = p.walkEndedMs
             if (ended != null) {
                 // The walk is done; what is left is the tail plus the gap. The
@@ -347,6 +353,7 @@ internal class DynamicSync(
                         events = p.downloaded.get(),
                         nextInSec = (dynamic.nextCycleSeconds - waitedSec).coerceAtLeast(0),
                         running = running,
+                        transferring = transferring,
                     ),
                 )
                 continue
@@ -364,6 +371,7 @@ internal class DynamicSync(
                         etaMs = paging.etaMs(stream.name),
                         reachedSeconds = paging.reached(stream.name),
                         running = running,
+                        transferring = transferring,
                     ),
                 )
                 continue
@@ -377,6 +385,7 @@ internal class DynamicSync(
                     skipped = p.skipped.get(),
                     unreachable = p.failed.get(),
                     running = running,
+                    transferring = transferring,
                 ),
             )
         }
@@ -558,6 +567,7 @@ internal class DynamicSync(
         list: CachedRelayList,
         rotation: RelayRotation,
         pool: Semaphore,
+        admission: Semaphore,
         idSet: SharedIdSet,
         live: AtomicReference<PassProgress?>,
     ) {
@@ -610,24 +620,36 @@ internal class DynamicSync(
 
         for (relay in work.relays) {
             if (!scope.isActive) break
-            // ACQUIRED BY THE WALK, not inside the worker. That is what makes
-            // this a pool of [RelayDiscoveryConfig.concurrency] workers pulling
-            // from a queue rather than 16,752 coroutines contending for a
-            // permit: the walk suspends here until a slot frees, so the number
-            // of live workers is the pool size and the queue is the rest of the
-            // list, where it costs nothing.
-            pool.acquire()
-            // The claim comes AFTER the slot, so the busy set is relays being
-            // synced rather than relays plus whichever one is queued behind a
-            // full pool — that set is published as `running`, and a number that
-            // counts something not on a socket is the kind of small lie this
+            // ADMISSION, acquired by the walk, and NOT the sync pool. The
+            // distinction cost a measured 20x and is the whole reason the
+            // guards are not behind `pool`.
+            //
+            // A discovered relay list is mostly corpses — 2,692 urls off live
+            // NIP-65 lists, and the great majority answer no TCP connect at
+            // all. Deciding that costs a connect timeout, and a dead host that
+            // spends a SYNC slot to be declared dead is a slot no living relay
+            // can use. Measured on this fan-out at `concurrency = 8`: 109 urls
+            // returned in five minutes, i.e. a two-hour pass, essentially all
+            // of it slots held by hosts that were never going to answer. The
+            // same list at `concurrency = 30` reached 2,349 in the same five
+            // minutes — the pass was tracking the pool size and nothing else.
+            //
+            // So this gate is wide: it bounds live workers and therefore
+            // concurrent connects (the previous shape probed all 2,692 at once,
+            // which is a file-descriptor problem waiting to happen), while
+            // [pool] keeps its meaning — relays actually TRANSFERRING.
+            admission.acquire()
+            // The claim comes AFTER the slot, so the busy set is relays with a
+            // worker on them rather than relays plus whichever one is queued —
+            // that set is published as `running`, and a number that counts
+            // something not being worked on is the kind of small lie this
             // report exists to stop telling.
             //
             // [beginPass] read the same set at the top of the walk, so this
             // cannot lose a race within a pass: each url appears once. It is
             // the authoritative claim all the same.
             if (!rotation.take(relay.url)) {
-                pool.release()
+                admission.release()
                 progress.tally.busy.incrementAndGet()
                 progress.skipped.incrementAndGet()
                 progress.done.incrementAndGet()
@@ -635,7 +657,7 @@ internal class DynamicSync(
             }
             scope.launch {
                 try {
-                    syncOne(stream, relay, window, idSet, sharedAuthors, progress)
+                    syncOne(stream, relay, window, idSet, sharedAuthors, pool, rotation, progress)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
@@ -655,7 +677,7 @@ internal class DynamicSync(
                     // what keeps `done` a count of urls rather than of outcomes.
                     progress.done.incrementAndGet()
                     rotation.release(relay.url)
-                    pool.release()
+                    admission.release()
                 }
             }
         }
@@ -678,7 +700,7 @@ internal class DynamicSync(
                 // every straggler is still adding to this number.
                 "; ${progress.downloaded.get()} event(s) so far" +
                 (if (elapsedMs >= 1_000 && progress.downloaded.get() > 0) " (${progress.downloaded.get() * 1000 / elapsedMs}/s)" else "") +
-                (if (running > 0) "; $running still syncing" else "") +
+                (if (running > 0) "; $running still running (${rotation.transferringCount()} transferring)" else "") +
                 "; ${progress.strikes.summary(relays.size)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
                 (
@@ -714,6 +736,8 @@ internal class DynamicSync(
         window: Filter,
         idSet: SharedIdSet,
         sharedAuthors: Set<String>,
+        pool: Semaphore,
+        rotation: RelayRotation,
         p: PassProgress,
     ) {
         // WHY it is being skipped, not just that it is. The two reasons carry
@@ -761,21 +785,29 @@ internal class DynamicSync(
             publishStrike(p.strikes, relay.url)
             return
         }
-        // Leased, not passed: the set this ask reconciles against must stay
-        // alive for as long as the ask does, and a pass that ends while this
-        // one runs may install a newer one. Released in the `finally` — a lease
-        // left open pins its generation and stops every future rebuild.
-        val lease = idSet.lease()
+        // ONLY NOW is a sync slot taken. Everything above declines the relay
+        // without opening a websocket, and a url declined here must not have
+        // cost a slot to decline — see the admission gate in [runPass].
         val got =
-            try {
-                // The relay's own filter, narrowed by what the tags that named
-                // it paired it with; identical to `window` for a select that
-                // binds only the url.
-                syncRelay(stream, relay.url, relay.narrowed(window), lease.ids, sharedAuthors) { reason ->
-                    p.reasons.merge(reason, 1L, Long::plus)
+            pool.withPermit {
+                rotation.transferring {
+                    // Leased, not passed: the set this ask reconciles against
+                    // must stay alive for as long as the ask does, and a pass
+                    // that ends while this one runs may install a newer one.
+                    // Released in the `finally` — a lease left open pins its
+                    // generation and stops every future rebuild.
+                    val lease = idSet.lease()
+                    try {
+                        // The relay's own filter, narrowed by what the tags
+                        // that named it paired it with; identical to `window`
+                        // for a select that binds only the url.
+                        syncRelay(stream, relay.url, relay.narrowed(window), lease.ids, sharedAuthors) { reason ->
+                            p.reasons.merge(reason, 1L, Long::plus)
+                        }
+                    } finally {
+                        lease.release()
+                    }
                 }
-            } finally {
-                lease.release()
             }
         when {
             // Could not reach it: strike and publish, the finding NIP-66 exists
@@ -1278,5 +1310,26 @@ internal class DynamicSync(
 
         private const val UNREACHABLE = -1
         private const val TRANSFER_FAILED = -2
+
+        /**
+         * How many relays may be in a worker at once, against
+         * [RelayDiscoveryConfig.concurrency] actually transferring.
+         *
+         * The gap between the two is the dead hosts. A discovered relay list is
+         * mostly urls that answer no connect at all, deciding that costs a
+         * connect timeout, and a slot spent proving a corpse is a slot a living
+         * relay cannot have. Measured on 2,692 urls from live NIP-65 lists: at
+         * `concurrency = 8` a pass returned 109 relays in five minutes — a
+         * two-hour pass — while the same list at 30 reached 2,349. The pass was
+         * tracking the pool size, not the network.
+         *
+         * 16x, because the guards are a connect and the sync is a transfer and
+         * they are that far apart in cost. The floor keeps a small stream from
+         * inheriting the problem this exists to fix; the ceiling is the reason
+         * this is a gate at all rather than no gate, which is what the fan-out
+         * did before — every url in the list probed at once is a
+         * file-descriptor limit waiting to be found in production.
+         */
+        internal fun admissionWidth(concurrency: Int): Int = (concurrency * 16).coerceIn(128, 512)
     }
 }

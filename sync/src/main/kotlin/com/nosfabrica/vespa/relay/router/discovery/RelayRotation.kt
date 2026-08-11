@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -66,6 +67,8 @@ internal class RelayRotation {
 
     private val passes = AtomicLong()
 
+    private val transferring = AtomicInteger()
+
     /**
      * Claim this relay for the caller, or refuse because a worker still has it.
      *
@@ -80,16 +83,41 @@ internal class RelayRotation {
     }
 
     /**
-     * How many relays this stream is syncing right now.
+     * How many relays this stream has a worker on right now — probing, queued
+     * for a transfer slot, or transferring. See [transferringCount] for the
+     * narrower number.
      *
-     * The number that tells a rotation still working from one that has stopped:
+     * This is what tells a rotation still working from one that has stopped:
      * between two passes it is what remains of the previous one, and while a
-     * pass is walking it is how much of the pool is committed.
+     * pass is walking it is how much of the admission gate is committed.
      */
     fun busyCount(): Int = busy.size
 
-    /** Urls being synced right now, for a log line that has to name them. */
+    /** Urls with a worker right now, for a log line that has to name them. */
     fun busyUrls(): List<NormalizedRelayUrl> = busy.toList()
+
+    /**
+     * Relays on a socket right now, which is NOT [busyCount].
+     *
+     * The two are far apart by design and reporting one as the other was a
+     * small lie this codebase does not get to tell. A worker spends most of its
+     * life deciding whether the relay is worth dialling at all — a discovered
+     * list is mostly dead hosts and a connect timeout is the answer — so a
+     * stream with 8 transfer slots routinely has 128 workers, of which 120 are
+     * probing or queued. `busyCount` is how much of the ADMISSION gate is
+     * committed; this is how much of the transfer pool is.
+     */
+    fun transferringCount(): Int = transferring.get()
+
+    /** Run [block] counted as an open transfer. */
+    suspend fun <T> transferring(block: suspend () -> T): T {
+        transferring.incrementAndGet()
+        try {
+            return block()
+        } finally {
+            transferring.decrementAndGet()
+        }
+    }
 
     /** Passes begun over the relay list. Starts at 1 for the first one. */
     fun pass(): Long = passes.get()

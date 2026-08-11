@@ -965,6 +965,23 @@ coroutines contending for a permit — and a **pass ends when the last url has
 been handed out, not when the last worker returns**. A slow relay costs one slot
 and nothing else. Four consequences, each with its own home:
 
+- **TWO GATES, and the wide one is not decorative.** `admission`
+  (`concurrency * 16`, clamped to 128–512) bounds workers; `pool`
+  (`concurrency`) bounds relays actually TRANSFERRING. The guards — strikes,
+  the Tor check, the TCP pre-probe — run under the first and never the second,
+  because a discovered relay list is mostly corpses and a slot spent proving one
+  is dead is a slot no living relay can use. Measured live, with one gate doing
+  both jobs: 2,692 urls off real NIP-65 lists, `concurrency = 8` returned **109
+  relays in five minutes** — a two-hour pass — while the same list at
+  `concurrency = 30` reached **2,349**. The pass was tracking the pool size, not
+  the network. Split, the same stream ran ~9x faster and the pool filled with
+  transfers instead of connect timeouts. The old code got this right by accident
+  (the probe sat outside `gate.withPermit`); it also probed all 2,692 at once,
+  which is an ulimit waiting to be found, hence the ceiling.
+- **`in flight` and `transferring` are two numbers.** `RelayRotation.busyCount`
+  is workers, `transferringCount` is sockets, and on a live fan-out they read
+  128 and 8. Publishing the first as "syncing now" claimed a stream was syncing
+  128 relays when it cannot sync more than 8.
 - **Passes overlap, so a url must not be handed out twice.** `RelayRotation` is
   the busy set: `take` is the claim, `release` goes in a `finally`, and a url a
   worker still holds is passed over and counted as `busy` — a tally outcome of
@@ -999,6 +1016,25 @@ Workers are launched into the ENGINE's scope, not a per-pass `coroutineScope`,
 so every worker body is wrapped: an escaping exception would cancel the scope and
 take every stream, the ingest pipeline and the live tails with it. It used to be
 caught one level up and lose only the cycle.
+
+**Measured end to end against live relays**, one seed stream on three real
+upstreams filling the store and two dynamic streams fanning out over what it
+discovered — 18,687 urls on 2,494 hosts:
+
+```
+avatars pass 1 handed out 2692 relay(s) in 5:26; 2050977 event(s) so far
+        (6276/s); 30 still running; …; next pass in 5s
+avatars reusing the relay list from 5:42 ago — 2692 relay(s), rediscovering after 900s
+avatars pass 2 — 2688 relay(s) to hand out, 4 still syncing from an earlier pass
+```
+
+Three claims in three lines: the pass ended with thirty relays still on sockets
+and did not wait for them; the next one began five seconds later on the cached
+list, paying no discovery and no fold; and it handed out 2,688 rather than 2,692
+because four legs from pass 1 were still running, which is `busy`. At 18,687
+urls the published partition closed exactly on all three streams —
+`sum(outcomes) == urls.taken == 18687`, `accountedFor: true` — with `pending` at
+12,748 mid-pass, which is what `pending` is for.
 
 **One knob paced two different things, so a 6h refresh also meant 6h of
 idling.** Everything between a dynamic stream waking up and its first downloaded
