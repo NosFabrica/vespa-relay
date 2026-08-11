@@ -26,7 +26,9 @@ import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
+import com.vitorpamplona.quartz.utils.Hex
 import java.nio.file.Files
+import java.security.MessageDigest
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -42,12 +44,25 @@ import kotlin.test.assertTrue
 class RouterRefusalSinkTest {
     private val relay = RelayUrlNormalizer.normalize("wss://relay.example")
 
+    /**
+     * A realistic event id, not `"%064x".format(n)`.
+     *
+     * These ids reach the cuckoo filter through the sink, and the filter takes
+     * its bucket from the first 16 hex characters and its fingerprint from the
+     * next 8 — both all zeros for any small counter, so every such id is a hit
+     * on every other. The assertions below happened to survive that because
+     * each test builds its own filter and most key on the heal queue rather
+     * than on suppression, but "passes because nothing distinguishes the ids"
+     * is not a property to leave in place.
+     */
+    private fun idOf(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("sink-$n".toByteArray()))
+
     private fun event(
         n: Int,
         kind: Int = 0,
         tags: Array<Array<String>> = emptyArray(),
     ) = Event(
-        id = "%064x".format(n),
+        id = idOf(n),
         pubKey = "a1".repeat(32),
         createdAt = 1_700_000_000L + n,
         kind = kind,

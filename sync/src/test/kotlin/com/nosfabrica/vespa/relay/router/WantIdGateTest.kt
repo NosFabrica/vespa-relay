@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.utils.Hex
 import java.nio.file.Files
 import java.security.MessageDigest
 import kotlin.test.Test
@@ -55,11 +56,7 @@ class WantIdGateTest {
      * test data, not of the filter, and it is why `CuckooFilterTest` feeds it
      * real digests too.
      */
-    private fun id(n: Int): String =
-        MessageDigest
-            .getInstance("SHA-256")
-            .digest("want-$n".toByteArray())
-            .joinToString("") { "%02x".format(it) }
+    private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("want-$n".toByteArray()))
 
     private val window = Filter(kinds = listOf(1), since = 1_779_000_000L, until = 1_781_000_000L)
 

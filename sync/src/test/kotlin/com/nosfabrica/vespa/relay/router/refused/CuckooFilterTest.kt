@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router.refused
 
+import com.vitorpamplona.quartz.utils.Hex
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -43,11 +44,7 @@ import kotlin.test.assertTrue
  * distribution the router never sees.
  */
 class CuckooFilterTest {
-    private fun id(n: Int): String =
-        MessageDigest
-            .getInstance("SHA-256")
-            .digest("event-$n".toByteArray())
-            .joinToString("") { "%02x".format(it) }
+    private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("event-$n".toByteArray()))
 
     private fun tmpDir(): File = Files.createTempDirectory("cuckoo").toFile().also { it.deleteOnExit() }
 

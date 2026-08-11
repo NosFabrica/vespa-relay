@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router.refused
 
+import com.vitorpamplona.quartz.utils.Hex
 import java.io.File
 import java.nio.file.Files
 import java.security.MessageDigest
@@ -37,11 +38,7 @@ import kotlin.test.assertTrue
 class RefusedIdsTest {
     private val epoch = 1_000L
 
-    private fun id(n: Int): String =
-        MessageDigest
-            .getInstance("SHA-256")
-            .digest("refused-$n".toByteArray())
-            .joinToString("") { "%02x".format(it) }
+    private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("refused-$n".toByteArray()))
 
     private fun dir(): File = Files.createTempDirectory("refused").toFile().also { it.deleteOnExit() }
 
@@ -189,7 +186,15 @@ class RefusedIdsTest {
 class RefusedIdsWindowTest {
     private fun dir() = Files.createTempDirectory("window").toFile().also { it.deleteOnExit() }
 
-    private fun id(n: Int) = "%064x".format(n)
+    /**
+     * Real SHA-256 hex, because the filter slices its bucket out of the id's
+     * first 16 hex characters and its fingerprint out of the next 8, with no
+     * hashing of its own — an event id is already a uniform hash. A counter
+     * formatted as `"%064x"` is all zeros across both of those slices, so every
+     * such id lands in one bucket with one fingerprint and they are all hits on
+     * each other. That is a property of the test data, not of the filter.
+     */
+    private fun id(n: Int): String = Hex.encode(MessageDigest.getInstance("SHA-256").digest("window-$n".toByteArray()))
 
     private fun twiceRefuse(
         r: RefusedIds,
