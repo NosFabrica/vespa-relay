@@ -109,13 +109,21 @@ import kotlinx.serialization.json.putJsonArray
  * ## MIGRATION SHIM
  *
  * A file written before the format nested carries flat keys — `"<relay> <filter>"`
- * for a band, `"<relay>|<filter>"` for a sweep — which name no stream. The
- * router claims those into a stream the first time it asks for that pair, so
- * what is left in the file are pairs nothing has asked about yet, and dropping
- * them would chart a relay as un-walked while the band saying otherwise sits
- * right there. They are charted as UNNAMED groups, keyed by the filter's shape
- * the way every group used to be — see [shapeOf] and [varies]. That block, and
- * the router's own shim, go away together.
+ * for a band, `"<relay>|<filter>"` for a sweep — which name no stream. They are
+ * charted as UNNAMED groups, keyed by the filter's shape the way every group
+ * used to be — see [shapeOf] and [varies].
+ *
+ * Only the SWEEP half is still live on the router. `SweepState` claims a flat
+ * cursor into a stream the first time it asks about that pair, so what is left
+ * in the file are pairs nothing has asked about yet, and dropping them would
+ * chart a relay as un-walked while the cursor saying otherwise sits right
+ * there. `SyncBands` no longer holds its flat keys at all — it PRUNES them on
+ * load, because a band claim needs a live stream to dial the url and the ones
+ * still in the file were folded aliases nothing dials, so they never drained
+ * and this report charted 2,623 of them as three unnamed groups frozen at
+ * `reconciled=0`. The band branch below stays for the window where the relay
+ * reads a file a router still running the older build wrote; it goes when the
+ * sweep half does.
  */
 internal object SyncCoverageReport {
     private val lenient =

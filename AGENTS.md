@@ -511,13 +511,21 @@ publishes the members every leg *agrees on* (never `authors`/`ids`/tag values �
 they are named in `narrowedBy` instead), and merges the legs that land on one
 relay (edges union, `complete` ANDs).
 
-**A file written before the format nested still loads.** Its flat keys name no
-stream, so both writers hold them aside and hand each to the first stream that
-asks for that (relay, filter) — the stream that wrote it — and write back
-whatever is still unclaimed, flat, so a restart does not lose it. Grep
-`MIGRATION SHIM`: three blocks in `SyncBands`, three in `SweepState`, two in
-`SyncCoverageReport`, all deletable together once every deployment has booted
-once on a build that writes the nested shape.
+**A file written before the format nested carries flat keys that name no
+stream, and the two writers now treat them differently.** `SweepState` holds
+them aside and hands each to the first stream that asks for that (relay,
+filter) — the stream that wrote it — writing back whatever is still unclaimed,
+flat, so a restart does not lose it. `SyncBands` **prunes them on load**: that
+claim needs a live stream to dial the url, and the keys still in the file were
+the ones no stream ever asks about — 2,624 of 2,628 top-level keys on staging,
+2.5MB of a 13.8MB file, every one a subpath alias the fold had taken out of the
+fan-out, none written to since the day the format nested. They could not drain,
+so they sat there being charted as three unnamed groups with `reconciled=0` and
+a frozen `max`, which reads as streams failing to reconcile. Pruning costs one
+re-walk per key a stream would still have claimed. Grep `MIGRATION SHIM`: three
+blocks in `SweepState` and two in `SyncCoverageReport` (whose band branch is
+only for a file an older router still holds), deletable together once every
+deployment has booted once on a build that writes the nested shape.
 
 **Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
 reconcile call, and the division of labour with quartz is the thing to
