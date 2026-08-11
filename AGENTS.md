@@ -522,9 +522,10 @@ the ones no stream ever asks about — 2,624 of 2,628 top-level keys on staging,
 fan-out, none written to since the day the format nested. They could not drain,
 so they sat there being charted as three unnamed groups with `reconciled=0` and
 a frozen `max`, which reads as streams failing to reconcile. Pruning costs one
-re-walk per key a stream would still have claimed. Grep `MIGRATION SHIM`: three
-blocks in `SweepState` and two in `SyncCoverageReport` (whose band branch is
-only for a file an older router still holds), deletable together once every
+re-walk per key a stream would still have claimed. What is left to delete is
+`SweepState`'s shim and `SyncCoverageReport`'s — grep `MIGRATION SHIM`, and
+note the report's BAND branch is now only for the window where the relay reads
+a file a router still on the older build wrote. They go together once every
 deployment has booted once on a build that writes the nested shape.
 
 **Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single

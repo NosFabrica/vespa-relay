@@ -394,8 +394,13 @@ class SyncBands(
         }.onFailure {
             // A corrupt cursor file costs one re-sync; exiting costs the mirror.
             System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
-            // Whatever it counted describes a parse that did not finish, and
-            // acting on it would rewrite the damaged file from a partial read.
+            // The count describes a parse that stopped somewhere, so it is not
+            // a fact about the file and must not be reported as one. This does
+            // NOT save the damaged file: the first band recorded marks the map
+            // dirty and [save] rewrites it from the partial read anyway, flat
+            // keys and all. What it buys is that the BOOT is not the thing that
+            // does it, so a router that reads a damaged file and then records
+            // nothing leaves it there to be looked at.
             pruned = 0
         }
         // Said once, at the boot that does it, because it is a deletion: the
