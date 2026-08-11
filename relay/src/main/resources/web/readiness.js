@@ -21,11 +21,15 @@
 //     expires by itself. A complete chain has nothing left to learn — every
 //     link is an event already here — so a returning reader pays nothing at all
 //     until the next one. A verdict short of ready is never remembered: that is
-//     the one that changes, on the router's six-hour pass.
+//     the one that changes, on the router's six-hour pass;
+//   * the posts count is not sent AT ALL unless this relay says which kinds it
+//     mirrors. Four asks, two of them to somebody else's relay, are skipped
+//     rather than spent on a number nobody could read — see shared/mirrors.js.
 
 import { relay, refConn, RELAY_URL } from "./shared/conn.js";
 import { Relay } from "./shared/relay.js";
 import { esc } from "./shared/format.js";
+import { readMirrorScope, scopedTo } from "./shared/mirrors.js";
 import { assess, counted, worthShowing, TIMED_OUT } from "./shared/readiness.js";
 import { normalizeRelay, whyNotDialable } from "./shared/relayurl.js";
 
@@ -148,7 +152,23 @@ async function run(me, gen) {
   // Only once ranking is complete: a reader still importing scores does not
   // need a second, quieter number about a different thing.
   if (assess(facts).state !== "ready") return;
-  facts.posts = await postCounts(anon, me, facts.relayList.writeRelays);
+  // What this relay is even ASKING for decides whether the posts question can
+  // be put at all. Without the mirror's kind list our count is narrowed by the
+  // router and theirs is not, and the panel drew that as "35% mirroring" on a
+  // mirror missing nothing (shared/mirrors.js has the measurement). No scope,
+  // no facts, no panel — which is also four asks not sent. Serial rather than
+  // alongside the stage above, because it is only owed on the path that
+  // reaches here, and this is the one state where the panel usually says
+  // nothing at all.
+  const scope = await readMirrorScope();
+  // Checked HERE and not only below, because this ask opened a window that did
+  // not exist before it: the posts stage used to follow the verdict with
+  // nothing awaited in between. Sign out across this fetch and the four asks
+  // still went out — two of them to somebody else's relay — on behalf of an
+  // account that had left. The paint was already guarded; the ASKS were not,
+  // which is the same hole the start delay's guard was written for.
+  if (gen !== generation) return;
+  if (scope) facts.posts = await postCounts(anon, me, facts.relayList.writeRelays, scope);
   if (gen !== generation) return;
   const after = assess(facts);
   render(after, me);
@@ -248,13 +268,32 @@ async function probe(anon) {
 /**
  * Your own events here, against the write relay that holds most of them.
  *
- * Falls back to the newest `created_at` on each side, because a relay that
- * does not serve NIP-45 can still answer "what is the latest thing they
- * wrote" — and "we have your posts up to 2 July" is a real answer where a
- * missing bar is not.
+ * ONE filter, built once and sent to both sides — that is the whole shape of
+ * this function, and the reason it takes a [scope]. Asked bare, the two counts
+ * are not the same question: ours is narrowed to what the router pulls down and
+ * theirs is not, so a mirror holding everything it was ever asked for reads as
+ * a third of the way there and can never reach 100%. The kinds come off
+ * `/stats.json` (shared/mirrors.js); `scopedTo` refuses to build a filter
+ * without them rather than quietly building the wrong one.
+ *
+ * The dates carry the same bound for the same reason. A reaction or a DM newer
+ * than anything we mirror is not this relay being behind — it is a kind no
+ * stream asks for — and unscoped it would say "still arriving" forever.
+ *
+ * Falls back to those dates because a relay that does not serve NIP-45 can
+ * still answer "what is the latest thing they wrote", and "we have your posts
+ * up to 2 July" is a real answer where a missing bar is not.
+ *
+ * The bound is over a hundred kinds wide on this deployment, and a relay that
+ * refuses a filter that size answers the same way it answers a COUNT it does
+ * not implement — REFUSED, or nothing. That lands on the date fallback, and if
+ * it takes the dates too the panel says nothing at all. Both are the safe
+ * direction: what a narrower ask would buy back is precisely the number that
+ * has to be wrong.
  */
-async function postCounts(anon, me, writeRelays) {
-  const filter = { authors: [me] };
+async function postCounts(anon, me, writeRelays, scope) {
+  const filter = scopedTo({ authors: [me] }, scope);
+  const newest = { ...filter, limit: 1 };
   const url = writeRelays[0];
   // All three at once. Our count, our newest and the whole remote exchange are
   // three answers to one question, and none of them reads the others — run in
@@ -262,11 +301,11 @@ async function postCounts(anon, me, writeRelays) {
   // server.
   const [here, newestHere, answer] = await Promise.all([
     anon.count(filter).catch(() => TIMED_OUT),
-    anon.req({ authors: [me], limit: 1 }).catch(() => []),
+    anon.req(newest).catch(() => []),
     url
       ? askRemote(url, async (c) => {
-          const [there, newest] = await Promise.all([c.count(filter), c.req({ authors: [me], limit: 1 })]);
-          return { there, newest: newest[0]?.created_at ?? null };
+          const [there, latest] = await Promise.all([c.count(filter), c.req(newest)]);
+          return { there, newest: latest[0]?.created_at ?? null };
         })
       : Promise.resolve(null),
   ]);
@@ -274,6 +313,9 @@ async function postCounts(anon, me, writeRelays) {
     here,
     there: answer?.there ?? null,
     relay: url || null,
+    // What both sides were asked for, so the words can say so — null where the
+    // mirror asks for everything and there was no bound to apply.
+    kinds: filter.kinds || null,
     newestHere: newestHere[0]?.created_at ?? null,
     newestThere: answer?.newest ?? null,
   };
@@ -458,7 +500,13 @@ function words(v) {
       if (pct != null) {
         return {
           state: "mirroring",
-          headline: `Ranking is ready. Your own posts are still arriving — ${pct}%`,
+          // "About", and it is not modesty. Both sides now carry the same kinds
+          // — that part is exact — but the denominator is the other relay's own
+          // NIP-45 COUNT, and those do not always agree with themselves:
+          // measured on one author, kind 1 alone came back as 126,426 against
+          // 89,485 for every kind at once. A number resting on that is a
+          // reading, not a total.
+          headline: `Ranking is ready. Your own posts are still arriving — about ${pct}%`,
           meter:
             `<div class="rdy-meter"><div class="rdy-track"><div class="rdy-fill" style="width:${pct}%"></div></div>` +
             `<p class="rdy-figures"><span><b>${fmt(p.here)}</b> here</span>` +
@@ -466,6 +514,7 @@ function words(v) {
           body:
             "This doesn’t change how results are ranked — it only means searching for something you " +
             "wrote may not find it yet.",
+          hint: scopeNote(p),
         };
       }
       return {
@@ -474,6 +523,7 @@ function words(v) {
         body:
           `${esc(host(p.relay))} doesn’t answer counts, so there’s no percentage to show — but it holds ` +
           `posts of yours newer than anything here, the most recent from <b>${day(p.newestThere)}</b>.`,
+        hint: scopeNote(p),
       };
     }
 
@@ -483,6 +533,29 @@ function words(v) {
 }
 
 const scoreRelay = (v) => v.chain.find((l) => l.key === "scoreList")?.detail?.relay || null;
+
+/**
+ * What both sides of the posts figure were asked for.
+ *
+ * Said out loud because the number is smaller than the one a reader can check
+ * for themselves: their own client shows every event they have ever signed,
+ * and this compares the subset this relay mirrors. Without the sentence, a
+ * reader who posts mostly reactions sees a total they cannot reconcile with
+ * anything and has no way to learn why.
+ *
+ * "Comparison", not "count", because it is printed under both branches and one
+ * of them has no count in it — the bound is on the newest-event reads too, and
+ * it is doing the same work there.
+ *
+ * Empty where the mirror asks for every kind its upstreams serve — there is no
+ * narrowing to explain, and a sentence about one would be a claim we did not
+ * make.
+ */
+const scopeNote = (p) =>
+  p.kinds
+    ? `Both sides of that comparison cover the ${fmt(p.kinds.length)} kinds this relay mirrors, so it weighs ` +
+      `like against like — anything you post outside them is on neither side of it.`
+    : "";
 
 const day = (secs) =>
   Number.isFinite(secs)
