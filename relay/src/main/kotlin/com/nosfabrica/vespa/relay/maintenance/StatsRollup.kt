@@ -94,12 +94,17 @@ internal class StatsRollup(
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
     /**
-     * The router's two state files, read off the volume both containers mount.
-     * Null in a serve-only deployment, and null is the normal case rather than
-     * an error — see [SyncCoverageReport].
+     * The router's three files, read off the volume both containers mount. Null
+     * in a serve-only deployment, and null is the normal case rather than an
+     * error — see [SyncCoverageReport].
+     *
+     * Two are state (what the mirror has walked); the manifest is CONFIG (what
+     * it is configured to mirror at all), which is why it is written once at the
+     * router's boot rather than flushed — see [MirrorReport] and `SyncManifest`.
      */
     private val syncBandsFile: File? = null,
     private val syncSweepsFile: File? = null,
+    private val syncManifestFile: File? = null,
 ) {
     /** Compute the whole document. Never throws: a section that fails says so in the document. */
     suspend fun compute(): JsonObject {
@@ -144,13 +149,20 @@ internal class StatsRollup(
     }
 
     /**
-     * The router's coverage, read off the shared volume.
+     * The router's coverage and the kind set it mirrors, read off the shared
+     * volume.
      *
-     * The one section that queries NOTHING — it is two file reads and a fold,
+     * The one section that queries NOTHING — it is three file reads and a fold,
      * and it is here rather than in its own endpoint because `/stats.json` is
      * where a reader already looks and because the rollup already has a timer,
      * a snapshot, and an ETag. [SyncCoverageReport] carries the argument for
      * reading the router's files at all.
+     *
+     * `mirrors` sits beside the coverage rather than in a section of its own
+     * because the two are read as one thing: how far the mirror has walked, and
+     * what it was ever going to hold. Either half can be absent — a router that
+     * has walked nothing still knows its own filters, and a manifest is missing
+     * entirely until the router is restarted on a build that writes one.
      *
      * Wrapped so that no failure here can cost the document: an unreadable file
      * (wrong permissions, a volume that is not mounted, a half-written temp) is
@@ -158,14 +170,28 @@ internal class StatsRollup(
      * contract every queried section has.
      */
     private suspend fun syncSection(): JsonObject? {
-        if (syncBandsFile == null && syncSweepsFile == null) return null
+        if (syncBandsFile == null && syncSweepsFile == null && syncManifestFile == null) return null
         var data: JsonObject? = null
         val section =
             section { attempts ->
-                attempt(attempts, "sync") {
-                    data = SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds())
-                    data
-                }
+                // TWO attempts, not one, and that is the whole reason this reads
+                // the way it does: the coverage is minutes of the router's work
+                // and the manifest is a few hundred bytes of config, so an
+                // unreadable manifest must not be able to take the card with it.
+                // Under one key it could — a throw anywhere in the lambda leaves
+                // `data` unassigned, and the section reports `failed` with the
+                // coverage it had already computed thrown away.
+                val coverage = attempt(attempts, "sync") { SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds()) }
+                val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
+                data =
+                    if (coverage == null && mirrors == null) {
+                        null
+                    } else {
+                        buildJsonObject {
+                            coverage?.forEach { (member, value) -> put(member, value) }
+                            mirrors?.let { put("mirrors", it) }
+                        }
+                    }
                 data ?: buildJsonObject { }
             }
         // Nothing read AND nothing failed means no router has ever written here.

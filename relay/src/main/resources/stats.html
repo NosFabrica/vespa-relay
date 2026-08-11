@@ -1123,6 +1123,47 @@ function trustCard(section) {
 }
 
 /**
+ * The one line on this page about what the mirror is FOR, rather than how far
+ * it has got: the kinds the router asks for, from its manifest.
+ *
+ * It is here because the number it corrects is one every reader of this relay
+ * eventually computes. "Events we hold for an author" over "events their own
+ * relay holds for them" is a filtered mirror over an unfiltered total, and it
+ * cannot reach 100%: measured at 31,118 of 89,485 — *35%* — on a mirror that was
+ * missing nothing, the whole gap being kinds nobody here ever asks for. The set
+ * is what makes that comparison mean something, and `router.conf` is the only
+ * place it exists.
+ *
+ * The kinds are NOT listed. There are ~130 of them, they are a machine's input
+ * rather than a reader's, and `sync.mirrors.kinds` in the document carries them
+ * for anything that actually needs the list. The count and the age are what a
+ * person reads: a manifest is written once at the router's boot, so it outlives
+ * the process that wrote it and a stale one still parses.
+ */
+function mirrorLine(mirrors) {
+  if (!mirrors) return null;
+  // Absent `dir` reads as down, the same way MirrorReport reads it.
+  const down = (mirrors.streams || []).filter((s) => s.dir !== "up");
+  const p = el("p", "card-sub");
+  p.append(
+    mirrors.allKinds
+      ? `Mirrors every kind, across ${fmt(down.length)} stream(s) — at least one asks with no kind filter. `
+      : `Mirrors ${fmt((mirrors.kinds || []).length)} kind(s), across ${fmt(down.length)} stream(s). `,
+  );
+  p.append("A count against this relay is comparable only when it carries the same kinds — they are in this document, under sync.mirrors. ");
+  if (mirrors.writtenAt != null) {
+    const when = el("span", null, `Declared ${ago(mirrors.writtenAt)}`);
+    when.title = new Date(mirrors.writtenAt * 1000).toISOString();
+    p.appendChild(when);
+    // The router writes this once, at boot. So the age is the age of the
+    // ROUTER, and an old one means the config on disk may have moved on
+    // without it — not that the mirror has stalled.
+    p.append(", when the router last started.");
+  }
+  return p;
+}
+
+/**
  * How much of each stream's relay list is in sync, and how far the current
  * sweeps have got.
  *
@@ -1142,9 +1183,11 @@ function trustCard(section) {
  * line under the title is not.
  *
  * `relays` counts the relays a stream has TOUCHED, never the relays it was
- * configured with — that list is in `router.conf`, which this relay does not
- * read. A "never asked" count would be the honest headline and it is not
- * available here; see SyncCoverageReport.
+ * configured with. The router's manifest says which streams exist and what
+ * kinds they ask for (see [mirrorLine]) but names no urls — a dynamic stream's
+ * relay list is discovered, so there is no configured list to publish. A "never
+ * asked" count would be the honest headline and it is still not available here;
+ * see SyncCoverageReport.
  *
  * The URL FILTER is the same bargain as the Kinds one: a fan-out puts thousands
  * of rows in this card and "how far back is nos.lol" should not be a scroll.
@@ -1158,6 +1201,12 @@ function syncCard(section) {
   const streams = d.streams || [];
   const card = el("div", "card");
   cardHead(card, "Sync coverage", streams.length ? null : "No sync state in this document.", section);
+  // WHAT the mirror holds, above how far it has got. Placed before the early
+  // return on purpose: a router that has walked nothing still knows its own
+  // filters, and that state — configured, not yet started — is one this card
+  // could otherwise only describe as emptiness.
+  const mirrors = mirrorLine(d.mirrors);
+  if (mirrors) card.appendChild(mirrors);
   if (!streams.length) return card;
 
   const from = d.from, to = d.to;

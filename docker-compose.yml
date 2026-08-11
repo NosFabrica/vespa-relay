@@ -180,6 +180,21 @@ services:
       # reason as the cursor above: a deploy would otherwise blank the page for
       # as long as the first rollup takes, and the file is readable on the host.
       STATS_FILE: ${STATS_FILE:-/var/lib/vespa-relay/stats.json}
+      # The router's three files, which the stats rollup READS off the shared
+      # volume — the two state files draw the Sync coverage card, the manifest
+      # is what /stats.json publishes as `sync.mirrors`. The router stays the
+      # only writer.
+      #
+      # Passed through with the SAME expressions the sync service uses, and that
+      # is the point: the relay compiles in these exact paths as its defaults,
+      # so a .env that moves one used to move the WRITER only — the relay went
+      # on reading where the router no longer wrote, and the card and the kind
+      # set silently emptied. Same failure the ban-list pass-throughs above were
+      # added for, and .env.example ships live values for all three — so it was
+      # one uncommented edit away in the shipped configuration.
+      SYNC_STATE_FILE: ${SYNC_STATE_FILE:-${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}}
+      SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
+      SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
       # How many engine queries the store's bulk stages keep in flight. The
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").
@@ -322,6 +337,13 @@ services:
       SYNC_NEG_PAGE_TARGET: ${SYNC_NEG_PAGE_TARGET:-}
       SYNC_NEG_PAGE_SLACK_SECONDS: ${SYNC_NEG_PAGE_SLACK_SECONDS:-}
       SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
+      # WHAT this router mirrors — the streams it is running and their kinds —
+      # written once at boot for the relay to serve on /stats.json. The kind
+      # list only exists in router.conf, which no other process reads, so
+      # without this a client comparing our count for an author against their
+      # own relay's total is comparing a filtered mirror to an unfiltered one
+      # and reads a complete mirror as 35% done. Same path on both services.
+      SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.

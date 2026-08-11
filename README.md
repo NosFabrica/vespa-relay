@@ -194,6 +194,13 @@ Served on the relay's own port, next to the search UI:
   it: every number describes **this relay's store**, not the Nostr network, so a
   total below a network-wide one is a mirror's coverage rather than a fault.
 
+  And a mirror is a **filtered** subset, which is why the document also carries
+  `sync.mirrors.kinds` — the kinds the router asks for. Any count taken against
+  this relay has to carry them: comparing our events for an author against that
+  author's own relay's unfiltered total measured 31,118 of 89,485 and read as
+  *35% mirrored* on a mirror that was missing nothing, the entire gap being
+  kinds — reactions, DMs, gift wraps — that no stream here ever asks for.
+
 ## Supported NIPs
 
 | NIP | | In this relay |

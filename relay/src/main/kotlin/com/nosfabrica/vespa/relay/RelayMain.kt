@@ -103,9 +103,9 @@ fun main() {
                 key.startsWith("SYNC_") || key.startsWith("ROUTER_") ||
                     key.startsWith("PARSE_AUDIT_") || key == "SERVING_PRESSURE_THRESHOLD_MS"
             ) &&
-                // ...except the two the relay now READS. They are still the
+                // ...except the ones the relay now READS. They are still the
                 // router's files and it is still the only writer, but the stats
-                // rollup charts them off the shared volume, so the warning's
+                // rollup reads them off the shared volume, so the warning's
                 // premise — "read by nobody here" — is false for exactly these.
                 // Named identically on both services on purpose: one setting
                 // per file, so moving the path cannot leave the card pointed at
@@ -215,6 +215,7 @@ fun main() {
                     // router — and the section is then simply not in the document.
                     syncBandsFile = syncFile(env, "SYNC_STATE_FILE", "/var/lib/vespa-relay/sync-cursors.json"),
                     syncSweepsFile = syncFile(env, "SYNC_SWEEP_STATE_FILE", "/var/lib/vespa-relay/sync-sweeps.json"),
+                    syncManifestFile = syncFile(env, "SYNC_MANIFEST_FILE", "/var/lib/vespa-relay/sync-manifest.json"),
                 ),
             snapshot = statsSnapshot,
             everySeconds = statsIntervalSeconds,
@@ -339,13 +340,13 @@ private fun String.httpFromWs(): String =
 private fun resourceText(path: String): String? = object {}.javaClass.getResource(path)?.readText()
 
 /**
- * The two router files the stats rollup charts. Shared names, not relay-side
- * copies — see the exemption in the unused-settings warning above.
+ * The router files the stats rollup reads. Shared names, not relay-side copies —
+ * see the exemption in the unused-settings warning above.
  */
-private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_STATE_FILE", "SYNC_SWEEP_STATE_FILE")
+private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_STATE_FILE", "SYNC_SWEEP_STATE_FILE", "SYNC_MANIFEST_FILE")
 
 /**
- * Where one of the router's state files lives, from the env or the path
+ * Where one of the router's files lives, from the env or the path
  * `docker-compose.yml` mounts it at.
  *
  * The default is not a guess: it is the same literal the compose file gives

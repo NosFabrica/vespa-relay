@@ -139,6 +139,11 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
     DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
     UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
     SyncBands.kt          covered created_at bands per (relay, filter)
+    SyncManifest.kt       what this router is CONFIGURED to mirror — the running
+                          streams and their kinds — written once at boot so the
+                          relay can publish it. The kind list exists in
+                          router.conf and nowhere else, and a count taken
+                          against this relay is wrong without it
     TorTransport.kt       SYNC_TOR_SOCKS: the second OkHttp client, chosen per
                           url, whose .onion names resolve INSIDE the proxy
     config/               the declarative side
@@ -377,6 +382,16 @@ stream name.
 **Both state files are now READ by the relay**, off the `/var/lib/vespa-relay`
 mount both containers share, and charted as the *Sync coverage* card on
 `/stats.html` — see `SyncCoverageReport`. The router is still the only writer.
+A third file rides the same mount for a different job: `SYNC_MANIFEST_FILE` is
+CONFIG, not state — the streams this router runs and the kinds they ask for,
+written once at boot (`SyncManifest`) and published as `sync.mirrors` by
+`MirrorReport`. It exists because the mirror is a *filtered* subset and nothing
+outside this process can know which kinds: a client counting our events for an
+author against that author's own relay's total measured 31,118 of 89,485 and
+drew *35% mirroring* on a mirror missing nothing, the whole gap being kinds
+3/4/5/6/7/1059 that no stream asks for. Scope both sides to `mirrors.kinds` and
+the number means something. Do not fold it into the band file: bands are
+rewritten every 30 seconds and this changes only on a restart.
 Three traps if you touch either format: both files nest **stream → filter →
 relay**, and the sweep file's filter also strips `since`/`until`/`limit` (time is
 what a sweep varies) while the band file's keeps them, so joining the two still
