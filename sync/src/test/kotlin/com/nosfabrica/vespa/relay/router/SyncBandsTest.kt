@@ -544,24 +544,6 @@ class SyncBandsTest {
         f.delete()
     }
 
-    @Test
-    fun `a folded url's unclaimed pre-stream band goes too`() {
-        // The one place an unclaimed pre-stream band is dropped rather than
-        // written back. The rule it bends exists because the stream that wrote
-        // one may not have reached that relay yet; a folded url is the case
-        // where no such stream can be coming, since nothing dials it.
-        val f = tempFile()
-        val key = "${other.url} ${profiles.toJson()}"
-        writeFlat(f, key, 1_700_001_000L, 1_700_002_000L)
-
-        val c = SyncBands(f)
-        c.dropFolded(mirror, listOf(other))
-        c.flush()
-
-        assertNull(Json.parseToJsonElement(f.readText()).jsonObject[key], "the flat entry is gone as well")
-        f.delete()
-    }
-
     /** One relay's band as the file holds it, or null when the file names neither. */
     private fun bandIn(
         f: File,
@@ -577,60 +559,102 @@ class SyncBandsTest {
             ?.get(url.url)
             ?.jsonObject
 
-    // ---- MIGRATION SHIM: a file written before the format nested ------------
+    // ---- the flat keys a file written before the format nested carries -------
 
     /**
-     * One band under the flat key the previous version wrote. Through the json
-     * builder, not string interpolation: the key CONTAINS json, and a fixture
-     * that forgets to escape it tests the corrupt-file path by accident.
+     * One band under the flat key the pre-stream version wrote. Through the
+     * json builder, not string interpolation: the key CONTAINS json, and a
+     * fixture that forgets to escape it tests the corrupt-file path by
+     * accident. Every entry is written by hand rather than by the code under
+     * test, because a round trip through one implementation proves only that it
+     * agrees with itself — this is the shape the previous version wrote.
      */
     private fun writeFlat(
         f: File,
-        key: String,
-        min: Long,
-        max: Long,
+        vararg keys: String,
     ) = f.writeText(
         Json.encodeToString(
             JsonObject.serializer(),
             buildJsonObject {
-                put(
-                    key,
-                    buildJsonObject {
-                        put("min", min)
-                        put("max", max)
-                        put("complete", false)
-                        put("fullAt", 0L)
-                    },
-                )
-            },
-        ),
-    )
-
-    @Test
-    fun `a pre-stream state file still loads, and is claimed by the stream that asks`() {
-        // The band arithmetic moved out to quartz's SyncCoverage; the FILE did
-        // not move with it, and a running deployment's SYNC_STATE_FILE has to
-        // survive that. Written out by hand rather than by this code, because a
-        // round trip through one implementation proves only that it agrees with
-        // itself — this is the shape the previous version actually wrote.
-        val f = tempFile()
-        // The key the previous version built: the relay url, a space, and the
-        // filter's canonical json. Assembled here rather than read back from
-        // the code under test, so a change to either half fails this. Encoded
-        // through the json builder only because the filter half contains quotes
-        // — the SHAPE is the hand-written part.
-        val key = "${relay.url} ${profiles.toJson()}"
-        f.writeText(
-            Json.encodeToString(
-                JsonObject.serializer(),
-                buildJsonObject {
+                keys.forEach { key ->
                     put(
                         key,
                         buildJsonObject {
                             put("min", 1_700_001_000L)
                             put("max", 1_700_002_000L)
                             put("complete", false)
-                            put("fullAt", now())
+                            put("fullAt", 0L)
+                        },
+                    )
+                }
+            },
+        ),
+    )
+
+    /** The key the pre-stream version built: the relay url, a space, the filter's json. */
+    private fun flatKey(url: NormalizedRelayUrl) = "${url.url} ${profiles.toJson()}"
+
+    @Test
+    fun `a flat key is pruned on load, not held for a claim that cannot come`() {
+        // These were held aside for the first stream to ask about that pair.
+        // The ones still in the file are the ones nothing asks about: measured
+        // on staging, 2,624 of 2,628 top-level keys, every one a subpath alias
+        // the fold had taken out of the fan-out, none written to since the
+        // format nested four days earlier. A claim needs a live stream to
+        // dial the url, so they could not drain — they just sat there, 2.5MB
+        // of a 13.8MB file, charted as unnamed frozen groups on the card.
+        val f = tempFile()
+        writeFlat(f, flatKey(relay))
+
+        val reopened = SyncBands(f)
+        assertNull(reopened.band(mirror, relay, profiles), "the flat band is not adopted by the stream that asks")
+        assertEquals(listOf(profiles), reopened.legs(mirror, relay, profiles), "so the pair owes its whole filter again")
+        assertEquals(0, reopened.size(), "and it is not being held anywhere out of sight")
+        f.delete()
+    }
+
+    @Test
+    fun `the prune reaches the file on its own, with nothing else to make it dirty`() {
+        // The point of pruning on LOAD is that the file heals itself. A router
+        // whose streams record nothing for a while — or one pointed at a file
+        // of nothing but flat keys — must still write them out of it, or the
+        // 2.5MB and the unnamed groups outlive every restart exactly as they
+        // did before.
+        val f = tempFile()
+        writeFlat(f, flatKey(relay), flatKey(other))
+
+        SyncBands(f).flush()
+
+        assertEquals(JsonObject(emptyMap()), Json.parseToJsonElement(f.readText()).jsonObject, "both keys gone, nothing invented in their place")
+        f.delete()
+    }
+
+    @Test
+    fun `pruning takes the flat keys and leaves the nested ones`() {
+        // The two shapes share a file for as long as one flat key survives, and
+        // a prune that took a stream with it would cost the corpus every band
+        // in that stream stands for.
+        val f = tempFile()
+        SyncBands(f).apply {
+            record(mirror, relay, profiles, 1_700_003_000L, 1_700_004_000L, paged = true)
+            flush()
+        }
+        // The flat key appended to the file the router just wrote, which is the
+        // state a deployment that upgraded mid-flight actually had.
+        val key = flatKey(other)
+        val nested = Json.parseToJsonElement(f.readText()).jsonObject
+        f.writeText(
+            Json.encodeToString(
+                JsonObject.serializer(),
+                buildJsonObject {
+                    nested.forEach { (k, v) -> put(k, v) }
+                    put(
+                        key,
+                        buildJsonObject {
+                            put("min", 1_700_001_000L)
+                            put("max", 1_700_002_000L)
+                            put("complete", false)
+                            put("fullAt", 0L)
                         },
                     )
                 },
@@ -638,62 +662,30 @@ class SyncBandsTest {
         )
 
         val reopened = SyncBands(f)
-        val band = reopened.band(mirror, relay, profiles)
-        assertTrue(band != null, "the key the old code wrote must still resolve")
-        assertEquals(1_700_001_000L, band!!.minCreatedAt)
-        assertEquals(1_700_002_000L, band.maxCreatedAt)
-        // …and it must still NARROW, not merely parse: a band that loads but
-        // does not key correctly is a full re-walk nobody notices.
-        assertEquals(2, reopened.legs(mirror, relay, profiles).size)
-        assertEquals(1_700_001_000L, reopened.legs(mirror, relay, profiles)[0].until)
-
-        // Asking is what claims it: the stream that asks is the stream that
-        // wrote it, and from here on it is written under that name.
+        assertEquals(1_700_003_000L, reopened.band(mirror, relay, profiles)?.minCreatedAt, "the nested band resumes")
         reopened.flush()
+
         val written = Json.parseToJsonElement(f.readText()).jsonObject
-        assertNull(written[key], "the flat key must not survive the claim")
-        assertEquals(
-            1_700_001_000L,
-            written[mirror]!!
-                .jsonObject[profiles.toJson()]!!
-                .jsonObject[relay.url]!!
-                .jsonObject["min"]!!
-                .jsonPrimitive.long,
-        )
+        assertNull(written[key], "the flat key is gone")
+        assertNotNull(written[mirror], "the stream it sat beside is not")
         f.delete()
     }
 
     @Test
-    fun `an unclaimed pre-stream band is written back, not dropped`() {
-        // The flusher runs 30 seconds after boot and a slow stream has not
-        // reached its first relay by then. Dropping what nobody has asked for
-        // yet would cost that relay's whole corpus on the next restart.
+    fun `a file with no flat keys is not rewritten at boot`() {
+        // The prune is the ONLY thing a load may mark dirty. Reopening is
+        // otherwise not a change, and a boot that rewrote a multi-megabyte file
+        // to produce the bytes it already had would do it on every restart,
+        // forever.
         val f = tempFile()
-        val key = "${other.url} ${profiles.toJson()}"
-        writeFlat(f, key, 1_700_001_000L, 1_700_002_000L)
+        SyncBands(f).apply {
+            record(mirror, relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+            flush()
+        }
 
-        val reopened = SyncBands(f)
-        // A different pair entirely, so nothing claims the one on disk.
-        reopened.record(mirror, relay, profiles, 1_700_003_000L, 1_700_004_000L, paged = true)
-        reopened.flush()
-
-        val written = Json.parseToJsonElement(f.readText()).jsonObject
-        assertEquals(1_700_001_000L, written[key]!!.jsonObject["min"]!!.jsonPrimitive.long, "still there, still flat")
-        assertNotNull(written[mirror], "beside the stream that has claimed its own")
-        // And it is still claimable after that round trip.
-        assertEquals(1_700_001_000L, SyncBands(f).band("archive", other, profiles)?.minCreatedAt)
-        f.delete()
-    }
-
-    @Test
-    fun `a pre-stream band goes to the first stream to ask, and only that one`() {
-        val f = tempFile()
-        val key = "${relay.url} ${profiles.toJson()}"
-        writeFlat(f, key, 1_700_001_000L, 1_700_002_000L)
-
-        val reopened = SyncBands(f)
-        assertEquals(1_700_001_000L, reopened.band(mirror, relay, profiles)?.minCreatedAt)
-        assertNull(reopened.band("archive", relay, profiles), "a second stream must not inherit the same claim")
+        val stamp = f.lastModified()
+        SyncBands(f).flush()
+        assertEquals(stamp, f.lastModified(), "the boot writes nothing")
         f.delete()
     }
 

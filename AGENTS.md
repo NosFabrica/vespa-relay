@@ -31,6 +31,15 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # `--rerun` is load-bearing: the task is up-to-date-checked, so a second
 # identical run is SKIPPED and prints nothing, which reads as a silent pass.
 ./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i
+
+# The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
+# 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
+# and after.json in $D; the :relay half charts both through SyncCoverageReport,
+# so the coverage card can be read before and after. Same `--rerun` rule.
+D=$(mktemp -d)
+./gradlew :sync:test  --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+./gradlew :relay:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)
@@ -511,13 +520,22 @@ publishes the members every leg *agrees on* (never `authors`/`ids`/tag values �
 they are named in `narrowedBy` instead), and merges the legs that land on one
 relay (edges union, `complete` ANDs).
 
-**A file written before the format nested still loads.** Its flat keys name no
-stream, so both writers hold them aside and hand each to the first stream that
-asks for that (relay, filter) — the stream that wrote it — and write back
-whatever is still unclaimed, flat, so a restart does not lose it. Grep
-`MIGRATION SHIM`: three blocks in `SyncBands`, three in `SweepState`, two in
-`SyncCoverageReport`, all deletable together once every deployment has booted
-once on a build that writes the nested shape.
+**A file written before the format nested carries flat keys that name no
+stream, and the two writers now treat them differently.** `SweepState` holds
+them aside and hands each to the first stream that asks for that (relay,
+filter) — the stream that wrote it — writing back whatever is still unclaimed,
+flat, so a restart does not lose it. `SyncBands` **prunes them on load**: that
+claim needs a live stream to dial the url, and the keys still in the file were
+the ones no stream ever asks about — 2,624 of 2,628 top-level keys on staging,
+2.5MB of a 13.8MB file, every one a subpath alias the fold had taken out of the
+fan-out, none written to since the day the format nested. They could not drain,
+so they sat there being charted as three unnamed groups with `reconciled=0` and
+a frozen `max`, which reads as streams failing to reconcile. Pruning costs one
+re-walk per key a stream would still have claimed. What is left to delete is
+`SweepState`'s shim and `SyncCoverageReport`'s — grep `MIGRATION SHIM`, and
+note the report's BAND branch is now only for the window where the relay reads
+a file a router still on the older build wrote. They go together once every
+deployment has booted once on a build that writes the nested shape.
 
 **Windowed reconciliation** (`NegentropyPager`) is the layer *above* a single
 reconcile call, and the division of labour with quartz is the thing to

@@ -56,8 +56,8 @@ import java.util.concurrent.ConcurrentHashMap
  * the caller's floor now reaches below it — and both bugs sat here, in a file
  * whose comments still described them as solved. What a band CONTAINS
  * (`{min, max, complete, fullAt, spans}`) is identical either way; only how
- * `SYNC_STATE_FILE` keys them has changed since, and a file written before that
- * still loads (see the shim below).
+ * `SYNC_STATE_FILE` keys them has changed since, and the flat keys a file
+ * written before that carries are PRUNED on load (see [load]).
  *
  * `complete` is written at BOTH levels and read from the inner one. It belongs
  * per kind — a paged leg that drained `kinds: [10002]` says nothing about kind 0
@@ -107,33 +107,6 @@ class SyncBands(
     private val streams = ConcurrentHashMap<String, SyncCoverage>()
 
     /**
-     * MIGRATION SHIM — bands read from a file written before the format nested,
-     * held by quartz's flat key because it never said which stream wrote them.
-     *
-     * Kept as the raw JSON rather than parsed: an unclaimed band is re-written
-     * verbatim, which is also how a member this build does not know about
-     * survives the round trip. They are claimed by the first stream to ask
-     * about that (relay, filter) — which is the stream that wrote them, bar two
-     * streams sharing a filter, where first-ask-wins is what the flat file did
-     * anyway. Delete this map, [claim], the flat branch in [load] and the flat
-     * branch in [save] together once every deployment has started once on a
-     * build that writes the nested shape.
-     */
-    private val preStream = ConcurrentHashMap<String, JsonObject>()
-
-    /**
-     * MIGRATION SHIM — the relays [preStream] holds anything for, so an ask
-     * about any other relay never renders its filter.
-     *
-     * Without it, every `legs()` in a cycle serialises a discovery filter's
-     * thousands of authors just to look for a leftover that is not there —
-     * thousands of times per cycle, and forever, because an entry no live
-     * stream ever asks about never drains. Membership is set once at load and
-     * not pruned: a stale hit costs one key that misses, never a wrong answer.
-     */
-    private val preStreamRelays = HashSet<String>()
-
-    /**
      * stream -> the relays it currently folds away, whose bands are left out of
      * the file. See [dropFolded] for why they go, why they are not merged onto
      * the url that stands in for them, and why each pass REPLACES this rather
@@ -156,10 +129,13 @@ class SyncBands(
     private val folded = ConcurrentHashMap<String, Set<String>>()
 
     init {
-        load()
+        val pruned = load()
         // restore() does not fire onChange, but stay defensive: reopening a
-        // file must never count as a change, or every boot rewrites it.
-        dirty = false
+        // file must never count as a change, or every boot rewrites it. A
+        // PRUNE is the one thing a load can change: the file on disk still
+        // carries keys this build refuses to hold, and only a write takes them
+        // out of it.
+        dirty = pruned > 0
     }
 
     /**
@@ -176,10 +152,7 @@ class SyncBands(
         stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): List<Filter> {
-        claim(stream, url, filter)
-        return coverage(stream).legs(url, filter)
-    }
+    ): List<Filter> = coverage(stream).legs(url, filter)
 
     fun record(
         stream: String,
@@ -200,10 +173,6 @@ class SyncBands(
         // about history.
         drained: Boolean = false,
     ) {
-        // Before the record, so what this walk observed WIDENS the pre-stream
-        // band instead of replacing it — quartz widens, and a claim that landed
-        // after would be the older, wider claim overwriting the newer one.
-        claim(stream, url, filter)
         coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
     }
 
@@ -211,10 +180,7 @@ class SyncBands(
         stream: String,
         urls: List<NormalizedRelayUrl>,
         filter: Filter,
-    ): Filter {
-        urls.forEach { claim(stream, it, filter) }
-        return coverage(stream).coveringWindow(urls, filter)
-    }
+    ): Filter = coverage(stream).coveringWindow(urls, filter)
 
     /** Whether ANY of [urls] still has work outside its band. */
     fun anyOutstanding(
@@ -227,19 +193,15 @@ class SyncBands(
         stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-    ): SyncCoverage.Band? {
-        claim(stream, url, filter)
-        return coverage(stream).band(url, filter)
-    }
+    ): SyncCoverage.Band? = coverage(stream).band(url, filter)
 
-    fun size(): Int = streams.values.sumOf { it.size() } + preStream.size
+    fun size(): Int = streams.values.sumOf { it.size() }
 
     /**
      * Stop keeping band state for urls the alias fold proved are another url's
      * relay. Returns how many of them this call actually took out of the file —
-     * the urls this stream was holding a band for, nested or flat — so a caller
-     * can log the pass that changed something and stay quiet on the thousands
-     * that did not.
+     * the urls this stream was holding a band for — so a caller can log the
+     * pass that changed something and stay quiet on the thousands that did not.
      *
      * **What it returns is not "how many are folded", and the difference is the
      * whole of every restart.** The fold is re-applied from the store on the
@@ -320,72 +282,12 @@ class SyncBands(
                 ?.keys
                 ?.mapTo(HashSet()) { it.relay }
                 .orEmpty()
-        val flat = dropPreStream(hidden)
-        val gone = hidden.count { it in held || it in flat }
+        val gone = hidden.count { it in held }
         // A url whose verdict expired is the mirror image: its band is in
         // memory, suppressed until now, and belongs back in the file.
         val back = shown.count { it in held }
         if (gone > 0 || back > 0) dirty = true
         return gone
-    }
-
-    /**
-     * MIGRATION SHIM — drop the unclaimed flat entries of urls that have just
-     * been folded away, and say whose went.
-     *
-     * This is the one place an unclaimed pre-stream band is deleted rather than
-     * written back, against the rule the rest of the shim keeps: an unclaimed
-     * entry is normally re-written verbatim, because the stream that wrote it
-     * may not have reached that relay yet and losing it costs a corpus. A
-     * FOLDED url is the case where no such stream can be coming — nothing dials
-     * it, so nothing will ever claim it. The exposure is a static upstream
-     * naming a url some dynamic stream folded, which loses at most one
-     * unclaimed band and re-walks it. Unlike the filter [dropFolded] applies,
-     * this cannot be undone by a verdict expiring; an unclaimed pre-stream band
-     * is worth exactly that one re-walk.
-     *
-     * Guarded by [preStreamRelays] the way [claim] is, and reached only for
-     * urls folded on THIS pass: entries are only ever removed here, so a url
-     * whose flat bands went last cycle has nothing left to find, and without
-     * both guards a migrated deployment would decode every leftover key on
-     * every cycle forever.
-     */
-    private fun dropPreStream(relays: Set<String>): Set<String> {
-        if (preStream.isEmpty() || relays.none { it in preStreamRelays }) return emptySet()
-        val gone = HashSet<String>()
-        // Iterated live: the map is a ConcurrentHashMap, whose iterator
-        // tolerates the removals below and [claim] running beside them.
-        for (key in preStream.keys) {
-            val relay = SyncCoverage.BandKey.decode(key)?.relay ?: continue
-            if (relay in relays && preStream.remove(key) != null) gone += relay
-        }
-        return gone
-    }
-
-    /**
-     * MIGRATION SHIM — adopt a pre-stream band for this pair, once, into the
-     * stream that asked for it.
-     *
-     * [SyncCoverage.restore] sets one key at a time rather than replacing the
-     * map, so a single-entry restore is what an insert would be if quartz had
-     * one — which is why claiming is affordable per ask rather than needing the
-     * stream list up front.
-     */
-    private fun claim(
-        stream: String,
-        url: NormalizedRelayUrl,
-        filter: Filter,
-    ) {
-        // The overwhelming case, once a deployment has migrated: no file to
-        // read, or one already drained. Both checks come before the key is
-        // built, because building it renders the filter.
-        if (preStream.isEmpty() || url.url !in preStreamRelays) return
-        val key = SyncCoverage.BandKey(url.url, filter.toJson())
-        val raw = preStream.remove(key.encode()) ?: return
-        bandOf(raw)?.let {
-            coverage(stream).restore(mapOf(key to it))
-            dirty = true
-        }
     }
 
     // ---- the file ------------------------------------------------------------
@@ -432,25 +334,51 @@ class SyncBands(
         if (!save()) dirty = true
     }
 
-    private fun load() {
-        val f = file ?: return
-        if (!f.isFile) return
+    /**
+     * Read the file, and PRUNE the flat keys left by a build that wrote bands
+     * before the format nested. Returns how many were dropped, so the first
+     * flush is what finally takes them off disk.
+     *
+     * They used to be held aside and handed to the first stream that asked
+     * about that (relay, filter) — the stream that wrote them. That shim could
+     * never finish draining, because a claim needs a live stream to ask and the
+     * keys still there are precisely the ones no stream asks about. Measured on
+     * staging four days after the format nested: 2,624 of 2,628 top-level keys
+     * were flat — 2.5MB of a 13.8MB file — and the newest `max` across all of
+     * them was 90 minutes after that build landed, so not one had been written
+     * to since. Every one was a subpath alias `RelayAliases` had folded out of the
+     * fan-out (`wss://espelho.girino.org/dynamo-yankee`), so nothing dialled it
+     * and nothing could claim it: of the 1,578 flat urls under one filter, ZERO
+     * appeared among the 6,578 relays that stream walked in the cycle running
+     * at the time, against a control of 2,858 nested urls from the same file
+     * that all did. Meanwhile `SyncCoverageReport` charted them as three
+     * unnamed groups, `reconciled=0` and frozen, which a reader cannot tell
+     * apart from streams failing to reconcile.
+     *
+     * The prune costs one band for any flat key a stream WOULD still have
+     * claimed, which is one re-walk of that pair — bounded, one-time, and on
+     * staging zero, since every one of them is a folded alias of a host that is
+     * walked anyway and returns byte-identical data. This is the deletion the
+     * shim's own exit condition sanctioned: every deployment has long since
+     * booted on a build that writes the nested shape.
+     *
+     * [dropFolded] keeps folded bands out of the file, so nothing writes a flat
+     * key again once these are gone.
+     */
+    private fun load(): Int {
+        val f = file ?: return 0
+        if (!f.isFile) return 0
+        var pruned = 0
         runCatching {
             val root = Json.parseToJsonElement(f.readText()).jsonObject
             root.forEach { (streamOrFlatKey, v) ->
                 val o = v.jsonObject
-                // MIGRATION SHIM. Told apart by SHAPE, not by the key: a
-                // pre-stream entry is the band itself, a stream is filters all
-                // the way down. A filter can never be named `min` — it is
-                // serialised JSON and starts with `{`.
+                // Told apart by SHAPE, not by the key: a pre-stream entry is
+                // the band itself, a stream is filters all the way down. A
+                // filter can never be named `min` — it is serialised JSON and
+                // starts with `{`.
                 if (o["min"] != null) {
-                    // Decoded by the class that mints the key, so even the shim
-                    // no longer spells the separator out. A key that names no
-                    // pair is not one any ask can ever claim, so it is dropped
-                    // rather than held for a relay nothing can look up.
-                    val key = SyncCoverage.BandKey.decode(streamOrFlatKey) ?: return@forEach
-                    preStream[streamOrFlatKey] = o
-                    preStreamRelays += key.relay
+                    pruned++
                     return@forEach
                 }
                 val restored = LinkedHashMap<SyncCoverage.BandKey, SyncCoverage.Band>()
@@ -466,7 +394,22 @@ class SyncBands(
         }.onFailure {
             // A corrupt cursor file costs one re-sync; exiting costs the mirror.
             System.err.println("router: could not read sync bands from ${f.path} (${it.message}); starting fresh")
+            // The count describes a parse that stopped somewhere, so it is not
+            // a fact about the file and must not be reported as one. This does
+            // NOT save the damaged file: the first band recorded marks the map
+            // dirty and [save] rewrites it from the partial read anyway, flat
+            // keys and all. What it buys is that the BOOT is not the thing that
+            // does it, so a router that reads a damaged file and then records
+            // nothing leaves it there to be looked at.
+            pruned = 0
         }
+        // Said once, at the boot that does it, because it is a deletion: the
+        // next flush is where these stop existing, and a silent one is a
+        // coverage card that loses thousands of rows with nothing to point at.
+        if (pruned > 0) {
+            System.err.println("router: dropped $pruned pre-stream band(s) from ${f.path} — flat keys name no stream, so nothing can ever claim them")
+        }
+        return pruned
     }
 
     /** One band, as it is written. */
@@ -585,12 +528,6 @@ class SyncBands(
                             },
                         )
                     }
-                    // MIGRATION SHIM: unclaimed pre-stream bands go back out
-                    // flat and verbatim, because there is still no stream to
-                    // file them under and losing one costs a re-walked corpus.
-                    // They drain as their streams reach them; goes when the
-                    // reader above does.
-                    preStream.forEach { (k, raw) -> put(k, raw) }
                 }
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
