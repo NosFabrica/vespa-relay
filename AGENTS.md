@@ -253,6 +253,22 @@ relay/src/main/resources/
                         find. Signing in enrols you in nothing — the server's
                         `onObserver` hook is wired to nothing, whatever older
                         comments claimed.
+                        Its quietest number is the one that needed a whole
+                        mechanism: "your own posts, N% mirrored" compares OUR
+                        count for you against your write relay's, and ours is
+                        narrowed by router.conf while theirs is not — 35% on a
+                        mirror missing nothing. shared/mirrors.js reads the
+                        kinds this relay actually asks for off `sync.mirrors` on
+                        GET /stats.json and puts them on BOTH counts (and both
+                        newest-event reads: a reaction we never mirror is not
+                        this relay being behind). Where that document does not
+                        say — no rollup yet, no mirror, unreadable — `scopedTo`
+                        THROWS rather than passing an unscoped filter through,
+                        and the panel asks neither side and says nothing about
+                        posts. The percentage says "about": both sides carry the
+                        same kinds, but the denominator is a stranger's NIP-45
+                        COUNT, and on one author kind 1 alone came back as
+                        126,426 against 89,485 for every kind at once.
   observer_stats.html   an operator diagnostic carrying its own tiny relay
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
@@ -390,8 +406,10 @@ outside this process can know which kinds: a client counting our events for an
 author against that author's own relay's total measured 31,118 of 89,485 and
 drew *35% mirroring* on a mirror missing nothing, the whole gap being kinds
 3/4/5/6/7/1059 that no stream asks for. Scope both sides to `mirrors.kinds` and
-the number means something. Do not fold it into the band file: bands are
-rewritten every 30 seconds and this changes only on a restart.
+the number means something — `web/shared/mirrors.js` is the one consumer, and
+the rule it holds is that an unreadable manifest suppresses the question rather
+than falling back to the unscoped count. Do not fold it into the band file:
+bands are rewritten every 30 seconds and this changes only on a restart.
 Three traps if you touch either format: both files nest **stream → filter →
 relay**, and the sweep file's filter also strips `since`/`until`/`limit` (time is
 what a sweep varies) while the band file's keeps them, so joining the two still

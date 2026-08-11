@@ -84,7 +84,7 @@ const shortOfEnough = (pct) => pct != null && Math.round(pct * 100) < SCORES_ENO
  *   rankService   {service, relay} | null           its `30382:rank` tag
  *   scores        {here, there}                     counts, or a sentinel each
  *   probe         {authed, anon} | null             rows each socket returned
- *   posts         {here, there, relay, newestHere, newestThere} | null
+ *   posts         {here, there, relay, kinds, newestHere, newestThere} | null
  *
  * Anything not yet asked is null, which is why `checking` is a state rather
  * than a blank.
@@ -176,6 +176,11 @@ export function assess(facts) {
   // like everything else, but nothing above depends on it: ranking is complete
   // without it, and folding it in would tell a reader whose lens is perfectly
   // healthy that their search is broken. The fix for it is nothing at all.
+  //
+  // Absent is a supported answer, and one of the ways it happens is deliberate:
+  // this relay's mirrored kinds are what make our count and the write relay's
+  // comparable, and where they cannot be read the caller asks neither side
+  // rather than handing this function two numbers about different things.
   const posts = f.posts;
   if (posts == null) return { state: "ready", tone: "ok", percent: null, chain };
   const postPct = fraction(posts.here, posts.there);
