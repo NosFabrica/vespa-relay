@@ -31,6 +31,15 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # `--rerun` is load-bearing: the task is up-to-date-checked, so a second
 # identical run is SKIPPED and prints nothing, which reads as a silent pass.
 ./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i
+
+# The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
+# 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
+# and after.json in $D; the :relay half charts both through SyncCoverageReport,
+# so the coverage card can be read before and after. Same `--rerun` rule.
+D=$(mktemp -d)
+./gradlew :sync:test  --tests '*SyncBandsProdScaleProbe*'          -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+./gradlew :relay:test --tests '*SyncCoverageReportProdScaleProbe*' -DprodScaleProbe=true -DprodScaleDir=$D --rerun -i
+
 ./gradlew spotlessApply            # fix formatting — do this before committing
 ./gradlew :relay:run               # the relay, locally (needs a Vespa at VESPA_URL)
 ./gradlew :sync:run                # the router, locally (adds SYNC_CONFIG_FILE)

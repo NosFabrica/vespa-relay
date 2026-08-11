@@ -47,4 +47,9 @@ tasks.test {
     // `RealRelayDrainProbe` is the only gate that uses this — it dials the
     // public internet, so it stays off unless asked for by name.
     System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
+    // Same forwarding, same reason. `SyncBandsProdScaleProbe` builds a ~14MB
+    // corpus and hands the two files to the relay-side probe through
+    // `prodScaleDir`, so both properties have to cross into the fork.
+    System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
+    System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
 }

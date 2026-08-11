@@ -83,4 +83,10 @@ tasks.named("processResources") {
 
 tasks.test {
     useJUnitPlatform()
+    // Forwarded, not inherited: a system property on the Gradle command line
+    // reaches the DAEMON, and the tests run in a forked JVM that never sees it.
+    // `SyncCoverageReportProdScaleProbe` charts the two files the router-side
+    // probe left in `prodScaleDir`, and stays off unless asked for by name.
+    System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
+    System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
 }
