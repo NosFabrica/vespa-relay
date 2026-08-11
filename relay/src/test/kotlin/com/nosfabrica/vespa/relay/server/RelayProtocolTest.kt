@@ -63,7 +63,11 @@ class RelayProtocolTest {
         override suspend fun remove(id: String) = inner.remove(id)
 
         override suspend fun search(query: EventQuery): List<EventDoc> {
-            if (query.search != null || query.ranking != null) {
+            // A phrase-only query — `"…"` with no loose words — is a search too,
+            // and carries the trust floor and the observer like any other. Left
+            // out of this condition it was invisible here, which is exactly the
+            // shape a dash-decorated literal arrives in.
+            if (query.search != null || query.phrases.isNotEmpty() || query.ranking != null) {
                 searchObservers += query.observer
                 searchQueries += query
             }
@@ -225,6 +229,50 @@ class RelayProtocolTest {
                 awaitMessage(out) { it.startsWith("""["EOSE","x3"]""") }
                 assertEquals(EventYql.RANK_DESC, index.searchQueries.last().ranking, "sort:rank picks the profile")
                 assertEquals(7.0, index.searchQueries.last().minRank, "filter:rank:gte sets the floor")
+            } finally {
+                session.close()
+            }
+        }
+
+    /**
+     * A search for a string somebody DECORATED with dashes must be answered
+     * with that string, not with a feed.
+     *
+     * `--------------06:30--------------` is the format an hourly bot posts in,
+     * and on staging it came back as the newest 40 events in the store, none of
+     * them containing anything like it: quartz's parser read the leading dash
+     * run as NIP-50's exclusion operator, the query was left with no positive
+     * term, and the store served plain recall. The property that has to hold is
+     * the one the reader can see — the unrelated note must NOT come back — and
+     * under it, that the engine was asked for the text rather than told to
+     * exclude it.
+     */
+    @Test
+    fun `a dash-decorated literal is searched for, not excluded`() =
+        runBlocking {
+            val typed = "--------------06:30--------------"
+            val out = Collections.synchronizedList(mutableListOf<String>())
+            val session = server.connect { out.add(it) }
+            try {
+                val marker = signer.sign<Event>(1_700_000_000L, 1, emptyArray(), " $typed")
+                val chatter = signer.sign<Event>(1_700_000_001L, 1, emptyArray(), "nothing whatsoever to do with it")
+                for (event in listOf(marker, chatter)) {
+                    session.receive("""["EVENT",${event.toJson()}]""")
+                    awaitMessage(out) { it.startsWith("""["OK","${event.id}",true""") }
+                }
+
+                session.receive("""["REQ","d1",{"search":"$typed","limit":10}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","d1"]""") }
+                val answered = out.filter { it.startsWith("""["EVENT","d1",""") }
+                assertTrue(answered.any { marker.id in it }, "the note holding the string must be the answer: $answered")
+                assertTrue(
+                    answered.none { chatter.id in it },
+                    "a note with nothing to do with the query must not be in it — that is the whole bug: $answered",
+                )
+
+                val asked = index.searchQueries.last()
+                assertEquals(listOf(typed), asked.phrases, "the engine was asked for the text, verbatim")
+                assertEquals(emptyList(), asked.notSearch, "and was NOT told to exclude it")
             } finally {
                 session.close()
             }

@@ -101,6 +101,17 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         demand because the address is minted after we boot
   server/               the serving side
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
+    SearchLiterals.kt   NIP-50's minus is ONE minus. A search token opening with
+                        a RUN of dashes is text somebody typed, and this quotes
+                        it before quartz's parser can file it under notTerms —
+                        which is what answered a search for
+                        `--------------06:30--------------` with the newest 40
+                        events in the store. Every read path in ObserverBackend,
+                        negentropy included: the store honours `search` in
+                        snapshotIdsForNegentropy, so a NEG session and a REQ
+                        must not disagree about one filter. It does NOT rank a
+                        punctuation literal — the index holds no punctuation, so
+                        `06 30` is also how `2026-06-30` tokenizes
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
                         client signs the .onion it dialled, and quartz's
                         OptionalAuthPolicy binds exactly one url

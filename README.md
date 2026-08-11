@@ -107,6 +107,12 @@ from the query before matching, so they never become search terms:
 | `include:spam` | lift the default trust floor and include everything |
 | `-word` / `"exact phrase"` | Google-style exclusions and phrase matching |
 
+A **single** leading `-` is the exclusion operator, and only a single one: a token
+that opens with a run of them — `--------------06:30--------------` — is text
+somebody typed, and is searched for as the phrase it is rather than excluded.
+Punctuation is not in the index either way, so what such a query can ask for is
+the words between the dashes, adjacent and in order.
+
 A NIP-42 login is an implicit `observer:` on every query: searches rank through
 your web of trust, and even plain NIP-01 filters become trusted-only feeds
 (newest first, below-floor authors dropped — `include:spam` opts a query out).

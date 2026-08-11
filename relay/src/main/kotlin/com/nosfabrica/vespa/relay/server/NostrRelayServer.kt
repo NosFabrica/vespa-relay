@@ -138,6 +138,13 @@ class NostrRelayServer(
  * snapshot cache); falling back to the interface defaults on either would
  * silently rebuild events and snapshots the engine already optimized away.
  *
+ * Every filter that reaches the store passes through [quotingDashedLiterals]
+ * first, so a search token the reader decorated with dashes is read as the text
+ * it is instead of as NIP-50's exclusion operator. That rewrite is here rather
+ * than in the web UI's query builder because the misreading belongs to the
+ * relay's answer, not to one client's search box: it made THIS relay reply to a
+ * text search with an unrelated recency feed, whoever asked.
+ *
  * Reads from an authenticated connection run in a [StoreQueryContext]
  * carrying that caller's pubkey, which the store turns into the caller's
  * web-of-trust ranking lens. An anonymous caller gets NO observer,
@@ -166,7 +173,7 @@ internal class ObserverBackend(
         filters: List<Filter>,
         onEach: (Event) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.query(ctx, filters, onEach, timedEose(onEose)) }
+    ) = ranked(ctx) { inner.query(ctx, filters.quotingDashedLiterals(), onEach, timedEose(onEose)) }
 
     override suspend fun queryRaw(
         ctx: RequestContext,
@@ -174,17 +181,17 @@ internal class ObserverBackend(
         onEachStored: (RawEvent) -> Unit,
         onEachLive: (Event, String) -> Unit,
         onEose: () -> Unit,
-    ) = ranked(ctx) { inner.queryRaw(ctx, filters, onEachStored, onEachLive, timedEose(onEose)) }
+    ) = ranked(ctx) { inner.queryRaw(ctx, filters.quotingDashedLiterals(), onEachStored, onEachLive, timedEose(onEose)) }
 
     override suspend fun count(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): Int = ranked(ctx) { timed { inner.count(ctx, filters) } }
+    ): Int = ranked(ctx) { timed { inner.count(ctx, filters.quotingDashedLiterals()) } }
 
     override suspend fun countResult(
         ctx: RequestContext,
         filters: List<Filter>,
-    ): CountResult = ranked(ctx) { timed { inner.countResult(ctx, filters) } }
+    ): CountResult = ranked(ctx) { timed { inner.countResult(ctx, filters.quotingDashedLiterals()) } }
 
     override suspend fun submit(
         event: Event,
@@ -194,12 +201,12 @@ internal class ObserverBackend(
     override suspend fun snapshotIdsForNegentropy(
         filters: List<Filter>,
         maxEntries: Int?,
-    ): List<IdAndTime> = inner.snapshotIdsForNegentropy(filters, maxEntries)
+    ): List<IdAndTime> = inner.snapshotIdsForNegentropy(filters.quotingDashedLiterals(), maxEntries)
 
     override suspend fun sealedNegentropyStorage(
         filters: List<Filter>,
         maxEntries: Int,
-    ): IStorage? = inner.sealedNegentropyStorage(filters, maxEntries)
+    ): IStorage? = inner.sealedNegentropyStorage(filters.quotingDashedLiterals(), maxEntries)
 
     private suspend fun <T> ranked(
         ctx: RequestContext,
