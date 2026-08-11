@@ -25,12 +25,15 @@ import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
 import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
+import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.router.refused.RefusalSink
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.isAddressable
 import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
 import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
+import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
@@ -45,6 +48,7 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.Executors
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 
@@ -83,10 +87,17 @@ internal class IngestPipeline(
      * as it always did. See [dropSuperseded].
      */
     private val newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
+    /**
+     * Where store refusals are reported and where suppression is asked about.
+     * Defaults to off, so every existing caller and test behaves exactly as it
+     * did before this existed.
+     */
+    private val refusals: RefusalSink = RefusalSink.None,
 ) : AutoCloseable {
     private data class Inbound(
         val event: Event,
         val skipVerify: Boolean,
+        val origin: IngestOrigin,
     )
 
     private val workers = config.ingestConcurrency
@@ -158,6 +169,22 @@ internal class IngestPipeline(
     /** Rejections by reason. Only ever written through [noteRejection] — see there for why the ceiling matters. */
     private val rejectReasons = ConcurrentHashMap<String, Long>()
 
+    /**
+     * Events dropped before the store because a filter says we have twice
+     * refused them already. Counted on their OWN line, never folded into
+     * accepted or rejected: a suppression is neither, and a number that hides
+     * inside either one cannot answer "is the filter doing anything" or the far
+     * more urgent "is the filter eating everything".
+     */
+    val suppressed = AtomicLong()
+
+    /**
+     * Refusals broken out by class, because the aggregate cannot answer the one
+     * question this subsystem exists for. `REPLACED` is the loop; `duplicate`
+     * is the system working.
+     */
+    val replacedRejects = AtomicLong()
+
     // Store failures already reported in full, so the raw-event dump stays
     // one per distinct defect.
     private val poisonSeen = ConcurrentHashMap.newKeySet<String>()
@@ -220,7 +247,18 @@ internal class IngestPipeline(
     suspend fun submit(
         event: Event,
         skipVerify: Boolean,
+        origin: IngestOrigin = IngestOrigin.Local,
     ) {
+        // Checked HERE rather than in the callers' `onEvent`, and the placement
+        // is deliberate: by the time an event reaches this method its caller
+        // has already run `SyncCoverage.observe` and widened the leg's seen
+        // span. Dropping any earlier would leave the leg without per-kind
+        // evidence, quartz would record no band, and the stream would re-walk
+        // that relay every cycle — costing far more than the drop saves.
+        if (refusals.isSuppressed(event)) {
+            suppressed.incrementAndGet()
+            return
+        }
         // Counted BEFORE the send, and taken back if the send fails. The
         // event is in the channel the instant `send` returns, so a worker can
         // take it and decrement before a post-send increment ever runs — which
@@ -231,7 +269,7 @@ internal class IngestPipeline(
         queued.incrementAndGet()
         var handedOff = false
         try {
-            inbound.send(Inbound(event, skipVerify))
+            inbound.send(Inbound(event, skipVerify, origin))
             handedOff = true
         } catch (_: ClosedSendChannelException) {
             // Shutdown (closeIntake) raced this event in. Not an error.
@@ -265,6 +303,12 @@ internal class IngestPipeline(
             val fresh = dropSuperseded(dropDuplicates(batch))
             if (fresh.isEmpty()) continue
             val valid = ArrayList<Event>(fresh.size)
+            // Only built when something will read it. The sink is inert unless
+            // SYNC_REFUSED_DIR is set, and the pipeline is shared by every
+            // stream, so an unconditional map made every existing deployment
+            // allocate and hash one entry per event for a lookup that never
+            // happens.
+            val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(fresh.size) else null
             var verifyRejected = 0
             // Booked as a stage so it lands on the same `router: ingest stages`
             // line as the store's own dedup/guards/write. It was invisible
@@ -274,6 +318,13 @@ internal class IngestPipeline(
                 for (msg in fresh) {
                     if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
                         valid.add(msg.event)
+                        // A bad signature never reaches this map, and so can
+                        // never reach the refusal sink: an id is the hash of
+                        // the CONTENT, not of the signature, so the same id can
+                        // arrive correctly signed from another relay.
+                        // Remembering it would make one relay's corruption
+                        // permanent.
+                        origins?.put(msg.event.id, msg.origin)
                     } else {
                         verifyRejected++
                     }
@@ -288,7 +339,7 @@ internal class IngestPipeline(
             // parse report raised inside batchInsert cannot be attributed to
             // one event. Inspecting here keeps the audit's ThreadLocal exact.
             audit?.let { for (event in valid) it.inspect(event) }
-            insertIsolating(valid)
+            insertIsolating(valid, origins ?: emptyMap())
         }
     }
 
@@ -402,51 +453,92 @@ internal class IngestPipeline(
      * isolate the offending event so one bad event does not silently cost a
      * whole batch. See [insertBisecting].
      */
-    private suspend fun insertIsolating(events: List<Event>) =
-        insertBisecting(
-            events = events,
-            write = { store.batchInsert(it) },
-            onOutcomes = { outcomes ->
-                for (outcome in outcomes) {
-                    when (outcome) {
-                        is IEventStore.InsertOutcome.Accepted -> {
-                            accepted.incrementAndGet()
-                        }
+    private suspend fun insertIsolating(
+        events: List<Event>,
+        origins: Map<String, IngestOrigin>,
+    ) = insertBisecting(
+        events = events,
+        write = { store.batchInsert(it) },
+        onOutcomes = { written, outcomes ->
+            // Positional alignment between the batch and its outcomes is the
+            // store's contract, and this is the one place where being wrong
+            // about it is unrecoverable: a rejection attributed to the wrong
+            // row suppresses an id we wanted, silently and permanently. The
+            // counters below would survive a mismatch; the refusal sink would
+            // not. So it is checked rather than trusted, and attribution — and
+            // only attribution — is withheld when it fails.
+            val aligned = outcomes.size == written.size
+            if (!aligned) reportMisalignment(written.size, outcomes.size)
+            for ((i, outcome) in outcomes.withIndex()) {
+                when (outcome) {
+                    is IEventStore.InsertOutcome.Accepted -> {
+                        accepted.incrementAndGet()
+                    }
 
-                        is IEventStore.InsertOutcome.Rejected -> {
-                            rejected.incrementAndGet()
-                            noteRejection(outcome.reason.take(48), 1L)
-                        }
-
-                        is IEventStore.InsertOutcome.Failed -> {
-                            // The store's fault, attributed per row: the event
-                            // was good and is lost — nothing re-offers it.
-                            // Tallied like onGaveUp's batch case, plus
-                            // lostToStore so the loss is loud on the health
-                            // line instead of blending into the duplicates.
-                            rejected.incrementAndGet()
-                            noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
-                            lostToStore.incrementAndGet()
+                    is IEventStore.InsertOutcome.Rejected -> {
+                        rejected.incrementAndGet()
+                        noteRejection(outcome.reason.take(48), 1L)
+                        // Attributed to the event that earned it. Only the
+                        // REJECTED branch reports: a Failed outcome is the
+                        // STORE's fault and the event is good, so recording
+                        // it would turn a transient fault into permanent
+                        // silent loss.
+                        if (aligned) {
+                            written.getOrNull(i)?.let { event ->
+                                reportRefusal(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
+                            }
                         }
                     }
+
+                    is IEventStore.InsertOutcome.Failed -> {
+                        // The store's fault, attributed per row: the event
+                        // was good and is lost — nothing re-offers it.
+                        // Tallied like onGaveUp's batch case, plus
+                        // lostToStore so the loss is loud on the health
+                        // line instead of blending into the duplicates.
+                        rejected.incrementAndGet()
+                        noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
+                        lostToStore.incrementAndGet()
+                    }
                 }
-            },
-            onPoison = { event, e ->
-                rejected.incrementAndGet()
-                noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
-                reportPoison(event, e)
-            },
-            onGaveUp = { batch, e ->
-                // Isolation ran out of budget: counted but unnamed, and
-                // tallied apart from the isolated ones — "we could not say
-                // which" is a different fact from "this event is bad".
-                rejected.addAndGet(batch.size.toLong())
-                noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
-                // These are LOST, not merely rejected: the events were good,
-                // the failure is the store's, and nothing re-offers them.
-                lostToStore.addAndGet(batch.size.toLong())
-            },
-        )
+            }
+        },
+        onPoison = { event, e ->
+            rejected.incrementAndGet()
+            noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
+            reportPoison(event, e)
+        },
+        onGaveUp = { batch, e ->
+            // Isolation ran out of budget: counted but unnamed, and
+            // tallied apart from the isolated ones — "we could not say
+            // which" is a different fact from "this event is bad".
+            rejected.addAndGet(batch.size.toLong())
+            noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
+            // These are LOST, not merely rejected: the events were good,
+            // the failure is the store's, and nothing re-offers them.
+            lostToStore.addAndGet(batch.size.toLong())
+        },
+    )
+
+    /**
+     * One permanent refusal, reported to the filter and the healer.
+     *
+     * Shared by the store's own verdict above and by [dropSuperseded], which
+     * is the part that matters: the fast path drops a superseded replaceable
+     * BEFORE the store ever sees it, so the `replaced:` rejection this
+     * subsystem is built on stops being produced there. Without this call at
+     * both sites the suppression filter learns nothing and the healer never
+     * discovers a stale relay — the feature would still be configured, still
+     * report zero, and still be doing nothing.
+     */
+    private fun reportRefusal(
+        event: Event,
+        origin: IngestOrigin,
+        reason: String,
+    ) {
+        if (reason.startsWith(RejectionReason.PREFIX_REPLACED)) replacedRejects.incrementAndGet()
+        refusals.onRefused(event, origin, reason)
+    }
 
     /**
      * The batch minus every replaceable event a NEWER version already beats —
@@ -552,6 +644,44 @@ internal class IngestPipeline(
         if (dropped == 0) return batch
         noteRejection(RejectionReason.REPLACED.take(48), dropped.toLong())
         rejected.addAndGet(dropped.toLong())
+        // The store never sees these, so the `replaced:` verdict it would have
+        // returned has to be reported from here instead.
+        //
+        // This is load-bearing rather than tidy. The refused-id filter and the
+        // healer are both fed by exactly one signal — a store refusal — and
+        // this fast path exists precisely to stop the store producing it for
+        // the commonest case. Report only at `insertIsolating` and the two
+        // structures go quiet in proportion to how well this optimisation
+        // works: at the 94%-replaced backfill quoted above, almost nothing
+        // would ever reach the gate. Configured, reporting zero, doing
+        // nothing.
+        //
+        // Both drop classes belong here. An in-batch loser is not necessarily
+        // this relay's fault — a batch is shared by every stream, so the
+        // winner may have come from a different relay entirely — and a
+        // store-beaten arrival is the loop itself.
+        //
+        // SAFETY: the id is checked, the signature is not, and the asymmetry
+        // is the point. Nothing here has been verified yet, so an unchecked id
+        // is ATTACKER-CHOSEN: forge a kind 0 for any pubkey with an old
+        // `created_at`, stamp it with the id of an event you want this relay
+        // never to fetch, and two of those suppress that id permanently.
+        // `verifyId` closes it for ~1.5us against the ~48-95us a signature
+        // costs, because it binds the id to the content that earned the
+        // verdict; naming someone else's id would take a preimage.
+        //
+        // The signature genuinely is not needed for THIS class. Supersession
+        // is decided by (kind, pubkey, created_at), all of them inside the
+        // hashed content, so a correctly-signed twin carrying the same id is
+        // superseded identically and suppressing it costs nothing. That is
+        // what makes this narrower check sufficient here and nowhere else —
+        // see `PermanentRefusals`, where "a bad signature must never become
+        // permanent" is about ids whose storability differs between copies.
+        for (i in batch.indices) {
+            if (!drop[i]) continue
+            val msg = batch[i]
+            if (msg.event.verifyId()) reportRefusal(msg.event, msg.origin, RejectionReason.REPLACED)
+        }
         return batch.filterIndexed { i, _ -> !drop[i] }
     }
 
@@ -635,6 +765,37 @@ internal class IngestPipeline(
                 "router: the event, verbatim: ${event.toJson().take(POISON_JSON_CHARS)}",
         )
     }
+
+    /**
+     * The store returned a different number of outcomes than it was handed.
+     *
+     * Reported once and loudly: it means the assumption every per-event
+     * attribution rests on has broken, so refusals stop being recorded until
+     * it is fixed. Better a filter that learns nothing than one that learns
+     * the wrong ids.
+     */
+    private fun reportMisalignment(
+        sent: Int,
+        got: Int,
+    ) {
+        if (misalignmentReported.compareAndSet(false, true)) {
+            System.err.println(
+                "router: BUG — batchInsert returned $got outcome(s) for $sent event(s). Rejections cannot be " +
+                    "attributed to the events that earned them, so refused-id recording is suppressed for " +
+                    "these batches. Counters remain correct.",
+            )
+        }
+    }
+
+    private val misalignmentReported = AtomicBoolean(false)
+
+    /** The two numbers Step 0 exists to produce, for the health line. */
+    fun suppressionBreakdown(): String =
+        if (suppressed.get() == 0L && replacedRejects.get() == 0L) {
+            ""
+        } else {
+            " [replaced x${replacedRejects.get()}; suppressed x${suppressed.get()}]"
+        }
 
     /**
      * What each drop-probe is currently doing, for the stats line. Without it

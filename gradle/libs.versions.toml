@@ -1,124 +1,105 @@
 [versions]
+#
+# A NOTE ON THE TWO JITPACK PINS BELOW, because every comment on them mentions
+# how the hash sorts and that is easy to read as more than it is.
+#
+# A JitPack version is a git commit hash. Hashes carry NO order. `c43339e92b`
+# is not newer than `a5507f9a4d`, not ahead of it, not a superset of it — the
+# two strings simply sort a particular way, decided by the first hex digit,
+# which is uniformly random. A commit from last year sorts above one from today
+# roughly half the time.
+#
+# Gradle does not know that. It sees version STRINGS, and when two parts of the
+# graph ask for different ones it keeps the lexicographically higher — so for
+# hashes it keeps an arbitrary one, and says nothing. That is the whole reason
+# for `resolutionStrategy { force(libs.quartz) }` in every module.
+#
+# So when a comment below says a bump "sorts the safe way", read it as: THIS
+# bump would survive a conflict if one arose. It is not a property of the pin
+# and it will not hold for the next bump of the same dependency. And it is not
+# evidence the pin took effect — ordering only decides who wins a conflict, not
+# whether one happened. The proof of that is always the resolved graph:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath
+# with no `->` on the line, checked per module.
+#
+# The relation that does mean something between two hashes is ancestry, and git
+# is the only thing that can answer it: `git merge-base --is-ancestor A B`.
+# Dates cannot — a commit authored earlier can land on main later.
+#
 kotlin = "2.4.0"
 # The relay application's version (image tag / --version display).
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# IDENTICAL to the quartz the store pin below compiles against, which is the
-# state to hold: one quartz on the classpath, and `force` restating the
-# resolution rather than overriding it. Equality is the easy case, not the
-# required one — the invariant is at or AHEAD, because a store running on a
-# quartz OLDER than it compiled to fails at the call site in production and at
-# no point during assembly. It was behind for exactly one commit here and
-# nothing in either build noticed.
+# c43339e92b = amethyst main through #3891. What this repo actually wanted out
+# of the range is #3892, which added the `wantId` predicate to negentropySync /
+# negentropySyncOrFetch / negentropySyncFanOut — the hook that lets the router
+# decline an id BEFORE the download REQ rather than after the body is on the
+# wire. Confirmed present in the ARTIFACT rather than inferred from the commit
+# graph, because the graph is not what ends up on the classpath:
+#   unzip -l quartz-jvm-c43339e92b.jar | grep NeedGate      → present
+#   javap ... NostrClientNegentropySyncExtKt | grep negentropySync
+#     → carries `Function1<? super String, Boolean>` between onUnreconcilableWindow
+#       and onProgress, which is the predicate.
+# Default null, so every call site that does not pass one is byte-identical.
 #
-# So on any bump of EITHER pin, check the direction. The forces stay regardless:
-# they are per-module (:common, :relay, :sync), a new module needs its own, and
-# they are what stops a store bump from silently dragging its own quartz in.
+# Nothing else in the range reaches us. It is 30 commits and 15 files under
+# `quartz/`, and they divide cleanly:
+#   - 6 are concord/cord05Invites. This repo does not compile against concord at
+#     all (`grep -r quartz.concord` over every .kt here returns 0).
+#   - 4 are the negentropy accessories above, plus their 3 tests.
+#   - EventFactory.kt gains ONE line, a kind mapping for ConcordInviteListEvent;
+#     NostrClientFetchAllWithHooksExt.kt gains 21, all additive. Neither is
+#     referenced anywhere in this repo.
+# Outside `quartz/`: 34 files in commons/, 31 in amethyst/, 12 in desktopApp/,
+# 7 in cli/. We consume the `quartz` artifact alone, so none of that is on this
+# classpath.
 #
-# a5507f9a4d = amethyst main through PR #3889, 24 commits. It is taken FOR that
-# PR: the upstream half of this repo's own paged-walk fix. `fetchAllPages` now
-# floors its cursor at epoch 0 and ends a walk `UNPAGEABLE` when a relay answers
-# entirely ABOVE the `until` it asked for, instead of stepping one second lower
-# and asking the same unanswerable question forever. purplepag.es is what found
-# it — twelve kind-10002 events at `created_at = 0` and a relay that reads
-# `until <= 0` as no bound at all.
-#
-# Do NOT let that read as "the workaround can go". `flooredForPaging` in :sync
-# stays, and the KDoc there says why at length: quartz's guard is the structural
-# one (a `since` cannot bound the step path, so an unguarded walk descends from
-# any window floor to 0 regardless), but quartz's guard ALONE ends purplepag.es'
-# leg UNPAGEABLE — which settles nothing and re-walks 1.49M events next boot.
-# The floor is what makes the same walk end DRAINED with the leg closed.
-#
-# ADDITIVE at every signature we call: the diff to
-# `nip01Core/relay/client/accessories/NostrClientFetchAllPagesExt.kt` across
-# 875531afb0..a5507f9a4d is 73 insertions and ZERO deletions, and `UNPAGEABLE`
-# was already in `PagedFetchEnd` (the search-filter case), so nothing this
-# repo's seven `fetchAllPages` call sites compile against moved. Unlike the
-# #3884 bump before it, this one is not source-breaking.
-#
-# Nothing else in the range reaches us, by two separate arguments — the range is
-# 24 commits, not just the 12 that touch `quartz/`:
-#   - OUTSIDE quartz/: ~51 files under amethyst/, commons/, nappletHost/, docs/
-#     and geode/ (#3886 notification grouping, #3858 NIP-5D). We consume the
-#     `quartz` artifact alone, so none of it is on this classpath.
-#   - INSIDE quartz/: the remainder is concord — the Control Plane soft-ban
-#     audit (#3885) plus AuthorityResolver, EditionFold, ConcordStrandedRecovery,
-#     ConcordRefounding. This repo does not compile against concord at all
-#     (`grep -r quartz.concord` over every .kt here returns 0).
-#
-# DIRECTION: 875531afb0 is a strict ancestor of this (`git merge-base
+# DIRECTION: a5507f9a4d is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates), and the store pin below compiles against
-# EXACTLY a5507f9a4d — so this is the equality case, not merely at-or-ahead.
+# EXACTLY c43339e92b — the equality case again, not merely at-or-ahead. The two
+# pins move together in this bump, which is the state to hold.
 #
-# LEXICOGRAPHIC: 'a550…' > '8755…', so unlike the pin it replaces this one sorts
-# the SAFE way and would win a conflict on version order alone. It has none to
-# win: the store requests the same hash, so resolution is equality on both
-# counts. Verified rather than assumed — the absence of the arrow is the proof:
-#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep quartz
-# → `com.github.vitorpamplona.amethyst:quartz:a5507f9a4d` with no `->` anywhere.
+# LEXICOGRAPHIC: 'c433…' > 'a550…', so THIS bump would win a conflict on
+# version order alone. Luck, not a property of the pin — see the note at the
+# top of this file. It has no conflict to win anyway, since the store requests
+# the same hash, and the ordering settles nothing about whether the pin took;
+# only the resolved graph does.
 #
-# Do not read that as the forces being unnecessary. They are what holds this the
-# next time the two pins drift, which is every time one moves without the other,
-# and a bump in the other direction fails SILENTLY without them.
-quartz = "a5507f9a4d"
+# Do not read the equality as the forces being unnecessary. They are what holds
+# this the next time the two pins drift, which is every time one moves without
+# the other.
+quartz = "c43339e92b"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 685b059d37 = store main through PR #67, whose own range is its quartz bump to
-# a5507f9a4d — the same hash pinned above. The two move TOGETHER this time, so
-# equality is held across the bump rather than restored a few commits later.
+# 348e408ebd = store main through PR #68, and that PR is the WHOLE range: one
+# commit, `Move Quartz to c43339e92b`, touching one file — its own
+# gradle/libs.versions.toml. Verified with `git log --oneline 685b059d37..` and
+# `git show --stat`, not assumed from the title.
 #
-# Measured from the e129c094a6 this branch started at, the range is three PRs
-# and four files, none of them the contract:
-#   #65  writer-lock attribution — `IngestStats.timed("remove")` wrapped around
-#        `TrustProjection.removeDocs`, and the same in `BulkRecordInsert`. Pure
-#        instrumentation; the guarded body is unchanged. (main pinned exactly
-#        this, at 8587db434d, while this branch was in flight — see below.)
-#   #66  a CI fix in `AccessLogIT` — retry traffic dropped by reconfiguration
-#        rather than failing on it. benchmark/src/test only, not shipped.
-#   #67  the quartz bump.
-# So relative to what main carries today, this adds #66 and #67 alone.
-# `IEventStore`, `SQLiteEventStore`, `IndexableFields` and `SearchFieldExtractor`
-# are untouched across e129c094a6..685b059d37 (checked by name against
-# `git diff --name-only`), so the store contract, filter semantics and
-# searchable-kind table carry through as they have since a308d6723f.
+# So there is nothing to say about the store contract this time, because nothing
+# in it moved: `IEventStore`, `SQLiteEventStore`, `IndexableFields` and
+# `SearchFieldExtractor` are untouched by construction when the diff is a single
+# version catalog. The writer-lock instrumentation from #63/#65 and the
+# AccessLogIT retry from #66 are all CARRIED — they are ancestors of this hash,
+# not things this bump gives up.
 #
-# DIRECTION: e129c094a6 is a strict ancestor of this, and its quartz is the hash
-# pinned above — equality, the state the top comment calls the one to hold.
+# DIRECTION: 685b059d37 is a strict ancestor of this, and its quartz IS the hash
+# pinned above. Equality on both counts.
 #
-# LEXICOGRAPHIC: '685b…' < 'e129…', so this pin now sorts BELOW the one it
-# replaces — the REVERSE of what the previous comment here recorded, and the
-# same trap the quartz pin fell into at 875531afb0. It costs nothing only
-# because nothing else on the graph brings the store in, so there is no
-# conflict to lose. Do not carry "this one sorts the safe way" forward as a
-# property of the store pin; it was a property of that hash.
-# `./gradlew :relay:dependencies --configuration runtimeClasspath`
+# LEXICOGRAPHIC: '348e…' < '685b…', so this pin sorts BELOW the one it replaces
+# — the dangerous direction, and the second bump running that this pin has done
+# so. It costs nothing only because nothing else on the dependency graph brings
+# the store in, so there is no conflict for a higher-sorting hash to win. That
+# is a fact about the graph, not about the pin, and it is why the resolution is
+# checked rather than trusted:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
+# → both at the pinned hashes with no `->` anywhere.
 #
 # Bumping this pin is NOT done until the store's own integration gate has run
 # against the commit — see AGENTS.md. `InMemoryEventIndex` cannot see a
 # Vespa-only regression.
-#
-# Previously a308d6723f = store main through PR #62. Its `IEventStore`,
-# `SQLiteEventStore`, `IndexableFields` and `SearchFieldExtractor` were
-# byte-identical to 98972c31c2 before it, so the store contract, filter
-# semantics and searchable-kind table have carried through untouched across all
-# three. #59's container access log is a deployment choice, defaulted off, and
-# this relay passes nothing — so it keeps the behaviour it had. #62 also DROPPED
-# engine/app/validation-overrides.xml, the stemming override; ours redeploys the
-# bundled package on boot, so a Vespa old enough to want it would fail the
-# deploy rather than warn.
-# The writer-lock instrumentation main pinned at 8587db434d is CARRIED, not
-# replaced — that hash is an ancestor of this one, so #63 and #65 are both in
-# here. Kept because the reason it was taken still applies: on staging the lock
-# reads 60.0s held per 60s window with 400-550s of wait across eight ingest
-# workers, and the stages that existed accounted for only ~9-13s of it. #63
-# added lock.ingest.wait / .hold and lock.gate.wait / .hold around the single
-# writer mutex, booked after release so the timer cannot lengthen the section it
-# measures; #65 added guards.apply, supersede and remove, the spans inside that
-# mutex that were still untimed. The router can attribute that gap rather than
-# guess at it, and this bump does not give any of it up.
-vespaEventStore = "685b059d37"
+vespaEventStore = "348e408ebd"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

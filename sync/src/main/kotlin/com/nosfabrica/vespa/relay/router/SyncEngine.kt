@@ -29,8 +29,14 @@ import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
+import com.nosfabrica.vespa.relay.router.heal.HealQueue
+import com.nosfabrica.vespa.relay.router.heal.Healer
+import com.nosfabrica.vespa.relay.router.heal.WriteCapability
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
+import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.router.refused.RefusedIds
+import com.nosfabrica.vespa.relay.router.refused.RouterRefusalSink
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -91,6 +97,11 @@ class SyncEngine(
     // Per-peer negentropy window sizes and the in-progress sweep cursor. In
     // memory by default: correct, but a restart re-learns both.
     private val sweepState: SweepState = SweepState(null),
+    // The ids twice refused by the store, so a reconcile stops asking for
+    // them, and the queue of repairs to hand back to the relays serving them.
+    // Disabled by default: the filter answers no to everything and records
+    // nothing until SYNC_REFUSED_DIR is set.
+    private val refusedIds: RefusedIds = RefusedIds.disabled(),
     // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
     signer: NostrSigner? = null,
     // SYNC_WIRE_LOG: "" (errors only) / "sent" / "full".
@@ -216,7 +227,20 @@ class SyncEngine(
 
     private val phases = StreamPhases()
     private val paging = PagingProgress()
-    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, knownIds, newestVersions)
+
+    // Repairs discovered by ingest, drained per relay at the end of its own
+    // sync. Bounded and coalescing: it drops rather than backpressure the
+    // sweep, because a dropped heal is a retry and a stalled sweep is not.
+    private val healQueue = HealQueue()
+    private val writeCaps = WriteCapability()
+
+    // Whether any stream can heal at all decides whether ingest has to carry
+    // per-event origins; see RefusalSink.tracksOrigins. Both switches default
+    // off, so a deployment that has not opted in pays nothing.
+    private val healingPossible = config.streams.any { it.healContent || it.healRetractions }
+    private val refusals = RouterRefusalSink(refusedIds, healQueue, refusedIds.enabled, healingPossible)
+    private val ingest = IngestPipeline(store, config, audit, servingPressure, scope, knownIds, newestVersions, refusals)
+    private val healer = Healer(client, store, healQueue, writeCaps, refusedIds, servingPressure)
 
     /**
      * The automatic window chunker. A peer's cap arrives through quartz —
@@ -226,7 +250,7 @@ class SyncEngine(
     private val pager =
         NegentropyPager(
             StoreWindowIndex(store),
-            ClientWindowSync(client),
+            ClientWindowSync(client, refused = refusedIds),
             sweepState,
             NegPageTuning(
                 target = config.negPageTarget,
@@ -235,7 +259,7 @@ class SyncEngine(
                 slackSeconds = config.negPageSlackSec,
             ),
         )
-    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope)
+    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope, healer, refusedIds)
 
     /**
      * The duplicate-url fold, built only when there is a signer — the verdict
@@ -278,6 +302,8 @@ class SyncEngine(
             aliasMonitor,
             tor,
             scope,
+            healer,
+            refusedIds,
         )
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
@@ -391,7 +417,7 @@ class SyncEngine(
                 // broken upstream can't widen what we ingest.
                 if (relay != up.url) return
                 if (!up.filter.match(event)) return
-                ingest.submit(event, up.trusted)
+                ingest.submit(event, up.trusted, IngestOrigin(up.url, up.healContent, up.healRetractions))
             }
 
             override fun onCannotConnect(
@@ -474,13 +500,16 @@ class SyncEngine(
         while (scope.isActive) {
             delay(60_000)
             System.err.println(
-                "router: ingested ${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected${ingest.rejectionBreakdown()}" +
+                "router: ingested ${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
+                    ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
                     (if (upUpstreams.isNotEmpty()) ", pushed ${upPush.pushed.get()} up" else "") +
                     // A dynamic cycle connects relays that are in no upstream
                     // list, so the connected count is reported against the
                     // pinned ones rather than as a fraction of them.
                     "; ${client.connectedRelaysFlow().value.size} relay(s) connected, ${pinnedUrls.size} pinned" +
-                    (if (dynamicStreams.isNotEmpty()) " + dynamic" else ""),
+                    (if (dynamicStreams.isNotEmpty()) " + dynamic" else "") +
+                    (if (refusedIds.enabled) "; ${refusedIds.summary()}" else "") +
+                    (if (healQueue.enqueued.get() > 0 || healer.pushed.get() > 0) "; ${healer.summary()}" else ""),
             )
             // Where the minute actually went, per ingest stage — this is what
             // identified a projection read-back as 90% of ingest.
@@ -529,7 +558,9 @@ class SyncEngine(
             okhttp.connectionPool.evictAll()
         }
         System.err.println(
-            "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected${ingest.rejectionBreakdown()}, ${upPush.pushed.get()} pushed)",
+            "router: stopped (${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
+                ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
+                ", ${upPush.pushed.get()} pushed)",
         )
     }
 

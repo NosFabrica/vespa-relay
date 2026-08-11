@@ -961,13 +961,44 @@ statement about someone else's server.
 
 ## Traps that have cost real time
 
-- **JitPack pins are commit hashes, and Gradle resolves conflicts
-  lexicographically.** Pinning quartz to `6d518adddb` while the store carried
-  `79f198c729` silently resolved to the latter — `'7' > '6'`. Hence
+- **A JitPack version is a commit hash. Hashes have no order.** This is the
+  root of the trap below, and it is worth stating on its own because the
+  arithmetic keeps tempting people into a mental model that does not exist.
+  `c43339e92b` is not "greater than" `a5507f9a4d` in any sense that means
+  anything: it is not newer, not further along the branch, not a superset. The
+  two strings sort a particular way and that is all. A commit from last year
+  can sort above one from today, and half the time it does — the first hex
+  digit decides, and it is uniformly random.
+
+  Gradle does not know that. To it these are version STRINGS, and when two
+  parts of the graph ask for different ones it breaks the tie by picking the
+  "higher" — which for hashes means it picks an arbitrary one.
+
+- **Gradle resolves those hash conflicts lexicographically, and silently.**
+  Pinning quartz to `6d518adddb` while the store carried `79f198c729` resolved
+  to the latter — `'7' > '6'` — and nothing said so. Hence
   `resolutionStrategy { force(libs.quartz) }` in EVERY module's build file —
   each of `:common`, `:relay` and `:sync` resolves quartz independently, and a
   new module must add its own force. Never remove one, and check that a pin
   actually took effect.
+
+  Two habits follow from "hashes have no order", and the second is the one that
+  gets skipped:
+
+  - When you note which way a bump sorts, you are recording *whether this
+    particular bump would survive a conflict*, not a property of the pin and
+    not a direction it will keep. The next bump of the same dependency
+    re-rolls the dice. Do not carry "this one sorts the safe way" forward.
+  - Sorting the safe way is not evidence the pin took. Ordering only decides
+    who wins a conflict; it says nothing about whether one occurred. The proof
+    is the absence of an arrow in the resolved graph:
+    `./gradlew :relay:dependencies --configuration runtimeClasspath` and check
+    for `->` on the line, for every module, on every bump.
+
+  What DOES carry real meaning between two hashes is ancestry, and it has to be
+  asked of git rather than of the strings: `git merge-base --is-ancestor A B`.
+  Dates are nearly as bad as sorting — a commit authored earlier can land on
+  main later.
 - **JitPack's build-status API lies.** It reported a build `ok` whose log ended
   in `exit code 1`. Only the presence of the artifact file proves anything.
 - **An integration run that skips still prints `BUILD SUCCESSFUL`.** Three

@@ -23,6 +23,8 @@ package com.nosfabrica.vespa.relay.router
 import com.nosfabrica.vespa.relay.router.config.DeleteMissing
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
+import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
@@ -48,6 +50,7 @@ internal class DeleteMissingSync(
     private val bands: SyncBands,
     private val ingest: IngestPipeline,
     private val paging: PagingProgress,
+    private val refusedIds: RefusedIds,
 ) {
     /**
      * Records dropped because the upstream that owns them stopped serving
@@ -125,10 +128,23 @@ internal class DeleteMissingSync(
         // fetchAll, not fetchAllPages: an id set is not a time range, and
         // paging it by `until` re-asks for events it just received.
         var downloaded = attachedDownloaded
-        for (chunk in diff.needIds.chunked(ID_FETCH_CHUNK)) {
+        // Invariant for this (stream, relay): hoisted out of the fetch loop
+        // below rather than rebuilt per event.
+        val origin = IngestOrigin(url, stream.healContent, stream.healRetractions)
+        // The one place suppression saves BANDWIDTH rather than CPU: the diff
+        // names the ids before anything is fetched, so an id we have twice
+        // refused never becomes a REQ at all. Everywhere else on the down path
+        // a REQ streams bodies without naming them first, and the earliest
+        // possible hook is already past the wire.
+        val wanted = diff.needIds.filterNot { refusedIds.suppressedInWindow(it, ownedAsk.since, ownedAsk.until) }
+        val skipped = diff.needIds.size - wanted.size
+        if (skipped > 0) {
+            System.err.println("router: ${stream.name} ${url.url} skipped $skipped id(s) already twice refused")
+        }
+        for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
                 if (stream.filter.match(event)) {
-                    ingest.submit(event, stream.trusted)
+                    ingest.submit(event, stream.trusted, origin)
                     downloaded++
                 }
             }
@@ -221,6 +237,8 @@ internal class DeleteMissingSync(
         ask: Filter,
     ): Int {
         var downloaded = 0
+        // Invariant for this (stream, relay), as in the reconcile path above.
+        val origin = IngestOrigin(url, stream.healContent, stream.healRetractions)
         for (unfloored in bands.legs(stream.name, url, ask)) {
             // Every walk below this one is paged, so the floor goes on here —
             // without it an upstream holding a `created_at = 0` event walks past
@@ -250,7 +268,7 @@ internal class DeleteMissingSync(
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
                             }
                             SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                            ingest.submit(event, stream.trusted)
+                            ingest.submit(event, stream.trusted, origin)
                         }
                     }
                 walked = w

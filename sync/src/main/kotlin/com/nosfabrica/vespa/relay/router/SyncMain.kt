@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.config.syncEnv
+import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 
@@ -146,6 +147,7 @@ fun main() {
     // One level finer than the bands: what each peer will reconcile in one
     // window, and how far down the timeline the running sweep already got.
     val sweepState = SweepState.fromEnv(env)
+    val refusedIds = RefusedIds.fromEnv(env)
 
     // Clients first, across the process boundary: the relay serves its mean
     // read latency and ingest yields to it. Explicitly opt-in — a sync
@@ -172,6 +174,7 @@ fun main() {
             audit = parseAudit,
             bands = bands,
             sweepState = sweepState,
+            refusedIds = refusedIds,
             signer = identity,
             wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
@@ -204,6 +207,7 @@ fun main() {
             engine.close()
             // After the engine, so the final report includes the last batch.
             parseAudit?.close()
+            refusedIds.close()
             poller?.close()
             bands.close()
             sweepState.close()

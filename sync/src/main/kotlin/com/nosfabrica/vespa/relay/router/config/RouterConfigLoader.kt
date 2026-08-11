@@ -209,6 +209,8 @@ object RouterConfigLoader {
                     sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
+                    healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
+                    healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                 )
             }
         return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents)
