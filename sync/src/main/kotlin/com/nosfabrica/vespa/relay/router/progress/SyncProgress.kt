@@ -69,11 +69,14 @@ import java.nio.file.StandardCopyOption
  *       "phaseForSec": 412,
  *       "cycle": {
  *         "startedAt": 1769999000, "outcome": "running",
- *         "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "taken": 5323},
+ *         "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "excluded": 0, "taken": 5323},
  *         "hosts": 850,
  *         "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
  *                   "transferFailed": 100, "noRoute": 1100, "hostStruckOut": 200,
- *                   "torUnavailable": 0, "pending": 23},
+ *                   "knownDead": 100, "torUnavailable": 0, "pending": 23},
+ *         "foldedOnto": {"relays": [{"relay": "wss://nostr.oxtr.dev/", "urls": 55,
+ *                                    "examples": ["wss://nostr.oxtr.dev/alpha"]}],
+ *                        "omitted": 480},
  *         "balanced": true,
  *         "received": 481203
  *       }
@@ -162,6 +165,7 @@ class SyncProgress(
                                                 buildJsonObject {
                                                     put("discovered", t.discovered)
                                                     put("foldedOntoAnother", t.foldedOntoAnother)
+                                                    put("excluded", t.excluded)
                                                     put("taken", t.taken)
                                                 },
                                             )
@@ -180,6 +184,7 @@ class SyncProgress(
                                                     put("transferFailed", t.transferFailed.get())
                                                     put("noRoute", t.noRoute.get())
                                                     put("hostStruckOut", t.hostStruckOut.get())
+                                                    put("knownDead", t.knownDead.get())
                                                     put("torUnavailable", t.torUnavailable.get())
                                                     // Derived, and it is what
                                                     // makes the eight members
@@ -190,6 +195,38 @@ class SyncProgress(
                                             )
                                             put("balanced", t.balanced())
                                             put("received", t.received.get())
+                                            // WHICH urls were folded, not only
+                                            // how many. The count answers
+                                            // "how much of the fan-out was
+                                            // duplication"; this answers "which
+                                            // server is wearing forty urls",
+                                            // which is the one an operator can
+                                            // act on. Bounded, and it says what
+                                            // it left out — see
+                                            // [CycleTally.foldedOnto].
+                                            t.foldedOnto().takeIf { it.onto.isNotEmpty() }?.let { fold ->
+                                                put(
+                                                    "foldedOnto",
+                                                    buildJsonObject {
+                                                        putJsonArray("relays") {
+                                                            for (row in fold.onto) {
+                                                                add(
+                                                                    buildJsonObject {
+                                                                        put("relay", row.relay)
+                                                                        put("urls", row.urls)
+                                                                        putJsonArray("examples") { for (u in row.examples) add(u) }
+                                                                    },
+                                                                )
+                                                            }
+                                                        }
+                                                        // Never silent: a
+                                                        // truncated list that
+                                                        // does not say so reads
+                                                        // as the whole answer.
+                                                        put("omitted", fold.omitted)
+                                                    },
+                                                )
+                                            }
                                         },
                                     )
                                 }

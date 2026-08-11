@@ -53,11 +53,14 @@ class SyncProgressReportTest {
               "cycle": {
                 "startedAt": 1769999000,
                 "outcome": "running",
-                "urls": {"discovered": 16752, "foldedOntoAnother": 11429, "taken": 5323},
+                "urls": {"discovered": 16752, "foldedOntoAnother": 11429, "excluded": 0, "taken": 5323},
                 "hosts": 850,
                 "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
-                          "transferFailed": 100, "noRoute": 1100, "hostStruckOut": 200,
-                          "torUnavailable": 0, "pending": 23},
+                          "transferFailed": 100, "noRoute": 1000, "hostStruckOut": 200,
+                          "knownDead": 100, "torUnavailable": 0, "pending": 23},
+                "foldedOnto": {"relays": [{"relay": "wss://nostr.oxtr.dev/", "urls": 55,
+                                           "examples": ["wss://nostr.oxtr.dev/alpha", "wss://nostr.oxtr.dev/beta", "wss://nostr.oxtr.dev/x"]}],
+                               "omitted": 480},
                 "balanced": true,
                 "received": 481203
               }
@@ -81,7 +84,7 @@ class SyncProgressReportTest {
         assertEquals(16_752L, urls["discovered"]!!.jsonPrimitive.long)
         assertEquals(
             urls["discovered"]!!.jsonPrimitive.long,
-            urls["foldedOntoAnother"]!!.jsonPrimitive.long + urls["taken"]!!.jsonPrimitive.long,
+            urls["foldedOntoAnother"]!!.jsonPrimitive.long + urls["excluded"]!!.jsonPrimitive.long + urls["taken"]!!.jsonPrimitive.long,
         )
         assertEquals(5_323L, taken.values.sumOf { it.jsonPrimitive.long })
         assertTrue(cycle["accountedFor"]!!.jsonPrimitive.booleanOrNull!!)
@@ -126,9 +129,35 @@ class SyncProgressReportTest {
             """.trimIndent()
         val taken = firstCycle(SyncProgressReport.build(thin, nowSeconds = 1)!!)["taken"]!!.jsonObject
 
-        assertEquals(8, taken.size, "every outcome is named, present in the file or not")
+        assertEquals(9, taken.size, "every outcome is named, present in the file or not")
         assertEquals(0L, taken["noRoute"]!!.jsonPrimitive.long)
         assertEquals(4L, taken.values.sumOf { it.jsonPrimitive.long })
+    }
+
+    @Test
+    fun `the fold summary names survivors, capped again on this side, truncation disclosed`() {
+        // The router already bounds its list; this bounds it a second time
+        // rather than trusting that it did, because the cap is the only thing
+        // between a hand-edited file and an unbounded array in a served
+        // document.
+        val fold = firstCycle(SyncProgressReport.build(live, nowSeconds = 1_770_000_000)!!)["foldedOnto"]!!.jsonObject
+        val row = (fold["relays"] as JsonArray)[0].jsonObject
+
+        assertEquals("wss://nostr.oxtr.dev/", row["relay"]!!.jsonPrimitive.content)
+        assertEquals(55L, row["urls"]!!.jsonPrimitive.long)
+        assertEquals(2, (row["examples"] as JsonArray).size, "examples are capped on this side too")
+        assertEquals(480L, fold["omitted"]!!.jsonPrimitive.long, "and what was left out is carried through")
+    }
+
+    @Test
+    fun `the two not-dialled-for-being-dead states are counted apart`() {
+        // One is out until a signed record ages past its TTL; the other is back
+        // on the next cycle. As one number they answered "will it try again"
+        // both ways at once.
+        val taken = firstCycle(SyncProgressReport.build(live, nowSeconds = 1_770_000_000)!!)["taken"]!!.jsonObject
+
+        assertEquals(200L, taken["hostStruckOut"]!!.jsonPrimitive.long)
+        assertEquals(100L, taken["knownDead"]!!.jsonPrimitive.long)
     }
 
     @Test

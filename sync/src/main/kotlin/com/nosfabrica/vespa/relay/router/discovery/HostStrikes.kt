@@ -56,10 +56,39 @@ class HostStrikes(
      * Skip this relay? True when a previous run proved it dead (and no
      * [produced] since), or when its whole authority has been struck out here.
      */
-    fun isDead(url: NormalizedRelayUrl): Boolean {
+    fun isDead(url: NormalizedRelayUrl): Boolean = whyDead(url) != null
+
+    /**
+     * WHY this relay is being skipped, or null when it is not.
+     *
+     * The two reasons carry different retry policies and were reported as one
+     * number, which is unreadable in exactly the way "skipped as dead" was: a
+     * [Skip.KNOWN_DEAD] url is out until a signed unreachability record ages
+     * past its TTL (quartz's `RelayReachabilityStore.DEFAULT_TTL_SECONDS`, 24h)
+     * or its host delivers something, while a [Skip.STRUCK_OUT] one is out only
+     * for the rest of THIS cycle — nothing about a strike persists. An operator
+     * asking "will it try again, and when" gets opposite answers.
+     */
+    fun whyDead(url: NormalizedRelayUrl): Skip? {
         val authority = authorityOf(url.url)
-        if (authority in producedHosts) return false
-        return url in knownDead || authority in deadHosts
+        // A delivery this cycle outranks both verdicts.
+        if (authority in producedHosts) return null
+        // Checked FIRST because it is the durable one: a url that is both
+        // known-dead and struck out this cycle is not coming back this cycle
+        // either way, and the honest thing to report is the reason with the
+        // longer reach.
+        if (url in knownDead) return Skip.KNOWN_DEAD
+        if (authority in deadHosts) return Skip.STRUCK_OUT
+        return null
+    }
+
+    /** Why a url was not dialled — see [whyDead]. */
+    enum class Skip {
+        /** An earlier run's signed NIP-66 record says unreachable, and it is still within its TTL. */
+        KNOWN_DEAD,
+
+        /** [strikeLimit] sibling urls on this authority went silent during this cycle. */
+        STRUCK_OUT,
     }
 
     /**

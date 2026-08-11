@@ -247,10 +247,28 @@ internal class DynamicSync(
                 // both of which are decided above and neither of which [cycle]
                 // can see. Without this the ~11,400 urls between "discovered"
                 // and "has a band" had no published account at all.
+                // MEASURED from the verdict map, not inferred from
+                // `candidates.size - relays.size`. That subtraction also
+                // absorbed everything `exclude` and the self-url filter removed,
+                // so an operator's own exclusion list was reported as duplicate
+                // urls the router had folded — two different facts, with two
+                // different fixes, under one label.
+                val foldedPairs =
+                    cleaned
+                        ?.aliases
+                        ?.let { verdicts -> candidates.mapNotNull { url -> verdicts[url]?.let { url.url to it.url } }.toMap() }
+                        .orEmpty()
                 val tally =
                     CycleTally(
                         discovered = candidates.size,
-                        foldedOntoAnother = (candidates.size - relays.size).coerceAtLeast(0),
+                        foldedOntoAnother = foldedPairs.size,
+                        // The remainder, so the identity closes whatever the
+                        // fold did: a survivor discovery did not itself hand
+                        // over still becomes a member of `relays`, which makes
+                        // this off by one per such group in the direction of
+                        // under-counting exclusions. `balanced` is what catches
+                        // it if the remainder ever goes negative.
+                        excluded = (candidates.size - foldedPairs.size - relays.size).coerceAtLeast(0),
                         // By AUTHORITY, so the count says how many servers this
                         // is, not how many strings. Arithmetic over urls, not
                         // the fold's verdict — see [CycleTally].
@@ -263,6 +281,7 @@ internal class DynamicSync(
                                         .ifEmpty { null }
                                 }.distinct()
                                 .size,
+                        folded = foldedPairs,
                     )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
@@ -521,9 +540,26 @@ internal class DynamicSync(
                                 // a slot is exactly when sibling urls strike
                                 // an authority out — checked before the wait,
                                 // a dead host's urls would still be dialled.
-                                if (strikes.isDead(relay.url)) {
-                                    reasons.merge("skipped: authority already struck out", 1L, Long::plus)
-                                    tally.hostStruckOut.incrementAndGet()
+                                // WHY it is being skipped, not just that it is.
+                                // The two reasons carry opposite retry policies
+                                // — a struck-out authority is dialled again next
+                                // cycle, a known-dead url waits out a signed
+                                // record's TTL — and one counter for both is
+                                // unreadable in exactly the way "skipped as
+                                // dead" was.
+                                val skip = strikes.whyDead(relay.url)
+                                if (skip != null) {
+                                    when (skip) {
+                                        HostStrikes.Skip.KNOWN_DEAD -> {
+                                            reasons.merge("skipped: unreachable in an earlier run, record still current", 1L, Long::plus)
+                                            tally.knownDead.incrementAndGet()
+                                        }
+
+                                        HostStrikes.Skip.STRUCK_OUT -> {
+                                            reasons.merge("skipped: authority already struck out this cycle", 1L, Long::plus)
+                                            tally.hostStruckOut.incrementAndGet()
+                                        }
+                                    }
                                     skipped.incrementAndGet()
                                     done.incrementAndGet()
                                     return@launch

@@ -590,11 +590,14 @@ Set `SYNC_PROGRESS_FILE` and the router rewrites it on every progress tick:
       "phaseForSec": 412,
       "cycle": {
         "startedAt": 1769999000, "outcome": "running",
-        "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "taken": 5323},
+        "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "excluded": 0, "taken": 5323},
         "hosts": 850,
         "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
-                  "transferFailed": 100, "noRoute": 1100, "hostStruckOut": 200,
-                  "torUnavailable": 0, "pending": 23},
+                  "transferFailed": 100, "noRoute": 1000, "hostStruckOut": 200,
+                  "knownDead": 100, "torUnavailable": 0, "pending": 23},
+        "foldedOnto": {"relays": [{"relay": "wss://nostr.oxtr.dev/", "urls": 55,
+                                   "examples": ["wss://nostr.oxtr.dev/alpha"]}],
+                       "omitted": 480},
         "balanced": true,
         "received": 481203
       }
@@ -611,12 +614,37 @@ long the router has gone without saying anything — and a mirror that stopped a
 hour ago stops looking like one that is simply between cycles.
 
 **`urls` and `taken` are a partition, not a tally.** `discovered =
-foldedOntoAnother + taken`, and the eight outcomes under `taken` sum to it
-exactly. `pending` is what closes the second identity *while the cycle runs*: it
-is derived from the other seven rather than counted, so the numbers add up
+foldedOntoAnother + excluded + taken`, and the nine outcomes under `taken` sum to
+it exactly. `pending` is what closes the second identity *while the cycle runs*:
+it is derived from the other eight rather than counted, so the numbers add up
 mid-fan-out instead of only at the end. `balanced` is the router's own check on
 them, published rather than asserted, and the relay recomputes it as
 `accountedFor` on the other side — the two disagreeing localises the fault.
+
+Two pairs in there are deliberately not one number, because each pair answers
+"will it try again, and when" in opposite ways:
+
+| outcome | dialled? | retried |
+|---|---|---|
+| `hostStruckOut` | no | **next cycle** — a strike is cycle-local and nothing about it persists |
+| `knownDead` | no | when a signed NIP-66 unreachability record ages past its TTL (24h by quartz's default), or immediately if anything on its host delivers |
+| `noRoute` | no — the TCP pre-probe was refused | next cycle |
+| `torUnavailable` | no — *our* proxy was down | as soon as the SOCKS port answers, within the running cycle |
+| `unreachable` | yes, and it never answered | next cycle; this is the only one published about |
+| `transferFailed` | yes, then the transfer broke | next cycle; **never** published — the server was there |
+
+They were one number called "skipped as dead", which is exactly as readable as
+it sounds.
+
+**`foldedOnto` names which urls folded, not only how many**, grouped by the
+survivor that absorbed them — "which server is wearing forty urls" is the
+question an operator can act on. Bounded to the biggest few with `omitted`
+naming what was left out, because the full list runs to thousands of urls and
+this document is fetched on every poll. The complete per-url verdict lives where
+it was earned: a signed NIP-66 kind 30166 `same-as` record in this relay's own
+store, queryable over the protocol. `excluded` is its own member beside it —
+an operator's `exclude` list being obeyed and a duplicate the router worked out
+for itself are different facts with different fixes.
 
 **`hosts` sits beside the url counts, never instead of them.** Most relay
 software answers on every path, so one server wears many urls and every url-keyed

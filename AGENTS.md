@@ -417,8 +417,8 @@ unanswerable from the serving side:
   tick whatever the streams are doing, so the relay can publish `staleForSec`,
   and a mirror that stopped an hour ago stops looking like one between cycles.
 - **`urls` and `taken` are a PARTITION.** `discovered = foldedOntoAnother +
-  taken`, and the eight outcomes under `taken` sum to it exactly, with `pending`
-  DERIVED from the other seven so the identity closes mid-fan-out. A production
+  excluded + taken`, and the nine outcomes under `taken` sum to it exactly, with
+  `pending` DERIVED from the other eight so the identity closes mid-fan-out. A production
   document reported 16,752 discovered against 5,323 band-bearing and published
   no account whatever of the ~11,400 in between; every one of them had a
   disposition the router knew at the time. `balanced` is the router's own check;
@@ -436,6 +436,23 @@ least meaningful of them was the one being read as progress:
 | **returned** | a fan-out leg started and CAME BACK — including unreachable, capped, out of budget | `fetching 16747/16752 relay(s) returned` |
 | **settled** | nothing outstanding below the span this stream walked here | `complete` on a band, `reconciled` on a group |
 | **evidence** | the span in which EVERY kind in the filter has produced an event | `everyKindMin`/`everyKindMax` |
+
+**Two not-dialled states are not one state.** `HostStrikes.isDead` was true for
+two reasons with OPPOSITE retry policies, reported as one number: a
+`hostStruckOut` url is dialled again on the very next cycle (a strike is
+cycle-local, nothing persists), while a `knownDead` one waits out a signed NIP-66
+unreachability record's TTL — 24h, `RelayReachabilityStore.DEFAULT_TTL_SECONDS`
+— or its host delivering something. `whyDead` returns which; do not collapse
+them again.
+
+**The fold publishes WHICH urls, not only how many.** `foldedOnto` groups them by
+the survivor that absorbed them, bounded to the biggest few with `omitted` naming
+what was left out — the full list is thousands of urls on a document fetched
+every poll, the same reason a discovery filter's `authors` never reaches
+`/stats.json`. The complete per-url verdict stays where it was earned: a signed
+30166 `same-as` record in this store. Note that a folded url has no row in the
+coverage section at all — `SyncBands.dropFolded` removes it — so the count and
+`foldedOnto` are the only places it appears.
 
 And a fourth thing none of them is: **holdings**. A band is walk state — where a
 stream has asked — not what the store contains. A band floor newer than the

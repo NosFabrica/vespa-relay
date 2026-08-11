@@ -165,7 +165,10 @@ class SyncVocabularyTest {
                     "transferFailed",
                     "noRoute",
                     "hostStruckOut",
+                    "knownDead",
                     "torUnavailable",
+                    "excluded",
+                    "foldedOnto",
                     "pending",
                     "received",
                 )
@@ -199,6 +202,29 @@ class SyncVocabularyTest {
                 .jsonPrimitive.content
                 .startsWith("APPROACH ONLY"),
         )
+    }
+
+    @Test
+    fun `the two not-dialled-for-being-dead states state opposite retry policies`() {
+        // They were one number called "skipped as dead", which answered "will it
+        // try again, and when" in two opposite ways under one label.
+        val struck = SyncVocabulary.TERMS["hostStruckOut"]!!.jsonPrimitive.content
+        val dead = SyncVocabulary.TERMS["knownDead"]!!.jsonPrimitive.content
+
+        assertTrue(struck.contains("next cycle"), "the cycle-local one says so: $struck")
+        assertTrue(dead.contains("TTL"), "the durable one says how long: $dead")
+        assertTrue(dead.contains("hostStruckOut"), "and points at the one it is not")
+    }
+
+    @Test
+    fun `the fold says where the per-url answer actually lives`() {
+        // `/stats.json` publishes a bounded summary; the full per-url verdict is
+        // a signed record in the store, and a reader has to be told that rather
+        // than concluding the information does not exist.
+        val fold = SyncVocabulary.TERMS["foldedOnto"]!!.jsonPrimitive.content
+
+        assertTrue(fold.contains("30166"), "got: $fold")
+        assertTrue(fold.contains("omitted"), "a truncated list has to disclose the truncation: $fold")
     }
 
     @Test

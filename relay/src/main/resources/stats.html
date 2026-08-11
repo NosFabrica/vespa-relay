@@ -290,6 +290,10 @@
   /* Not reached. Warm, not red: a dead url in an old relay list is the ordinary
      case on a fan-out this wide, not an incident. */
   .disp > i.unreachable, .disp > i.noRoute, .disp > i.hostStruckOut { background: var(--warn); opacity: .6; }
+  /* Skipped on a DURABLE verdict rather than on anything measured this cycle —
+     the one segment whose relays were never dialled at all, and the one whose
+     retry is a TTL rather than the next cycle. */
+  .disp > i.knownDead { background: var(--warn); opacity: .35; }
   /* Our own fault, or at least our own side: the transfer broke after a
      handshake, or our proxy was down. */
   .disp > i.transferFailed, .disp > i.torUnavailable { background: var(--warn); }
@@ -1222,7 +1226,8 @@ const DISPOSITION = [
   ["pending", "still in flight"],
   ["noRoute", "no route — TCP refused or the name does not resolve"],
   ["unreachable", "unreachable — never answered"],
-  ["hostStruckOut", "host struck out this cycle by a sibling url; retried next cycle"],
+  ["hostStruckOut", "host struck out by a sibling url this cycle — dialled again next cycle"],
+  ["knownDead", "known dead — an earlier run's unreachability record is still current; retried when it ages out"],
   ["transferFailed", "answered, then the transfer broke"],
   ["torUnavailable", "our Tor proxy was down — nothing is claimed about these"],
 ];
@@ -1317,10 +1322,32 @@ function progressPanel(progress) {
     acct.append(
       `${fmt(u.discovered || 0)} url(s) discovered · ` +
       `${fmt(u.foldedOntoAnother || 0)} folded onto another url · ` +
+      (u.excluded ? `${fmt(u.excluded)} excluded by config · ` : "") +
       `${fmt(total)} taken on` +
       (c.hosts != null ? ` across ${fmt(c.hosts)} host(s)` : "") +
       `. ${fmt(c.received || 0)} event(s) received at the socket` +
       ` (ingest drops the copies other relays already sent, so the store gains fewer).`);
+    // WHICH urls folded, not only how many — "which server is wearing forty
+    // urls" is the question an operator can act on, and the count alone answers
+    // a different one. Bounded, and it says what it left out.
+    const fold = c.foldedOnto;
+    if (fold && (fold.relays || []).length) {
+      const list = el("p", "why");
+      list.append("Folded onto: ");
+      fold.relays.forEach((r, i) => {
+        const one = el("span", null, `${String(r.relay).replace(/^wss:\/\//, "")} ×${fmt(r.urls)}`);
+        one.title =
+          `${fmt(r.urls)} url(s) fold onto ${r.relay}` +
+          ((r.examples || []).length ? `\ne.g. ${r.examples.join("\n    ")}` : "") +
+          `\nthe per-url verdict is a signed NIP-66 30166 same-as record in this relay's own store`;
+        list.appendChild(one);
+        if (i < fold.relays.length - 1) list.append(" · ");
+      });
+      // Never silent: a truncated list that does not say it is truncated reads
+      // as the whole answer, and the whole answer is thousands of urls long.
+      if (fold.omitted) list.append(` · and ${fmt(fold.omitted)} more relay(s) not listed`);
+      box.appendChild(list);
+    }
     if (c.accountedFor === false) {
       // Published rather than hidden: the counts are still worth having, and
       // this is what stops a reader treating a broken partition as a whole one.

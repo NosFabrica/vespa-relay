@@ -158,18 +158,34 @@ internal object SyncVocabulary {
             put(
                 "discovered",
                 "Urls a cycle was handed by discovery, before anything was dropped. The whole of `urls`, and " +
-                    "`discovered = foldedOntoAnother + taken` exactly.",
+                    "`discovered = foldedOntoAnother + excluded + taken` exactly.",
             )
             put(
                 "foldedOntoAnother",
                 "Urls an alias verdict proved are the same server as another url in the same list, so they were never " +
                     "dialled. Their earlier band state is dropped rather than merged: a containment measurement is enough " +
-                    "to stop dialling a duplicate and not enough to close the survivor's legs.",
+                    "to stop dialling a duplicate and not enough to close the survivor's legs — which is also why a folded " +
+                    "url has no row in the coverage section. Measured from the verdict map, not inferred from a subtraction.",
+            )
+            put(
+                "foldedOnto",
+                "WHICH urls folded, grouped by the survivor that absorbed them, with a couple of examples each. The " +
+                    "biggest few only — the full list runs to thousands of urls, which is not publishable on a document " +
+                    "fetched every poll — and `omitted` names how many survivors were left out, because a truncated list " +
+                    "that does not say so reads as the whole answer. The full, per-url verdict is a signed NIP-66 kind " +
+                    "30166 `same-as` record in this relay's own store, queryable over the protocol.",
+            )
+            put(
+                "excluded",
+                "Urls dropped by CONFIG after the fold — a stream's `exclude` list, or this relay's own url, which is in " +
+                    "plenty of other people's relay lists. Its own member because an operator's instruction being obeyed " +
+                    "and a duplicate the router worked out for itself are different facts with different fixes; they were " +
+                    "one number while the fold count was inferred from a subtraction.",
             )
             put(
                 "taken",
-                "Urls the cycle is responsible for, and the total the eight outcomes under it sum to. `pending` is derived " +
-                    "from the other seven, which is what keeps the partition closed while the cycle is still running.",
+                "Urls the cycle is responsible for, and the total the nine outcomes under it sum to. `pending` is derived " +
+                    "from the other eight, which is what keeps the partition closed while the cycle is still running.",
             )
             put(
                 "delivered",
@@ -197,9 +213,17 @@ internal object SyncVocabulary {
             )
             put(
                 "hostStruckOut",
-                "Not dialled because a sibling url on the same authority had already failed enough times this cycle to " +
-                    "strike the host out. Struck hosts are reconsidered on the next cycle — the retry interval IS the " +
-                    "stream's refresh interval.",
+                "Not dialled because a sibling url on the same authority failed enough times DURING THIS CYCLE to strike " +
+                    "the host out. Nothing about a strike persists: the url is dialled again on the very next cycle, so " +
+                    "the retry interval is the stream's refresh interval. Distinct from knownDead, which is the durable one.",
+            )
+            put(
+                "knownDead",
+                "Not dialled because an EARLIER run published a signed NIP-66 unreachability record for it that is still " +
+                    "within its TTL (24h by quartz's default), so this cycle skipped it without asking. It comes back when " +
+                    "the record ages out — or immediately, if anything else on its host delivers. These two — knownDead and " +
+                    "hostStruckOut — were one number called \"skipped as dead\", which answered \"will it try again, and " +
+                    "when\" in two opposite ways under one label.",
             )
             put(
                 "torUnavailable",
@@ -208,7 +232,7 @@ internal object SyncVocabulary {
             )
             put(
                 "pending",
-                "Still in flight. Derived, never counted: it is `taken` minus the seven terminal outcomes, which is what " +
+                "Still in flight. Derived, never counted: it is `taken` minus the eight terminal outcomes, which is what " +
                     "makes the partition add up mid-cycle.",
             )
             put(
@@ -224,8 +248,8 @@ internal object SyncVocabulary {
             )
             put(
                 "accountedFor",
-                "Whether the partition actually holds in THIS document — `discovered = foldedOntoAnother + taken`, and the " +
-                    "eight outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
+                "Whether the partition actually holds in THIS document — `discovered = foldedOntoAnother + excluded + " +
+                    "taken`, and the nine outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
                     "having, and this is what stops a reader treating a broken partition as a whole one. `balanced` beside " +
                     "it is the router's own check, kept separate so a disagreement localises the fault.",
             )

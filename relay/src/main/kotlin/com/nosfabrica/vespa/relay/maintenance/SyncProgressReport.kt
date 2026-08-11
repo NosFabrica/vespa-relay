@@ -74,7 +74,7 @@ internal object SyncProgressReport {
         }
 
     /**
-     * The eight terminal outcomes of a url the cycle took on, in the order the
+     * The nine terminal outcomes of a url the cycle took on, in the order the
      * card reads them: what worked, then what did not, then what is still going.
      *
      * A fixed list, spelled here rather than taken from the file's key order.
@@ -91,6 +91,7 @@ internal object SyncProgressReport {
             "transferFailed",
             "noRoute",
             "hostStruckOut",
+            "knownDead",
             "torUnavailable",
             "pending",
         )
@@ -157,7 +158,8 @@ internal object SyncProgressReport {
         val urls = o["urls"] as? JsonObject ?: return null
         val discovered = num(urls["discovered"]) ?: return null
         val folded = num(urls["foldedOntoAnother"]) ?: 0
-        val taken = num(urls["taken"]) ?: (discovered - folded)
+        val excluded = num(urls["excluded"]) ?: 0
+        val taken = num(urls["taken"]) ?: (discovered - folded - excluded)
         val outcomes = o["taken"] as? JsonObject ?: JsonObject(emptyMap())
         val byOutcome = OUTCOMES.associateWith { num(outcomes[it]) ?: 0L }
         val settled = byOutcome.values.sum()
@@ -170,6 +172,7 @@ internal object SyncProgressReport {
                 buildJsonObject {
                     put("discovered", discovered)
                     put("foldedOntoAnother", folded)
+                    put("excluded", excluded)
                     put("taken", taken)
                 },
             )
@@ -181,13 +184,58 @@ internal object SyncProgressReport {
             put("taken", buildJsonObject { for ((k, v) in byOutcome) put(k, v) })
             put("received", num(o["received"]) ?: 0L)
             // Both halves of the partition, checked on this side.
-            put("accountedFor", folded + taken == discovered && settled == taken)
+            // WHICH urls folded onto which survivor. Rebuilt row by row like
+            // everything else here — a file this process did not write must not
+            // be able to put arbitrary JSON, or an unbounded array, into a
+            // document served under this relay's name.
+            foldedOnto(o["foldedOnto"] as? JsonObject)?.let { put("foldedOnto", it) }
+            put("accountedFor", folded + excluded + taken == discovered && settled == taken)
             // What the WRITER thought, kept separately. The two disagreeing
             // localises the fault to the read or to the router, which one
             // merged flag could never do.
             (o["balanced"] as? JsonPrimitive)?.booleanOrNull?.let { put("balanced", it) }
         }
     }
+
+    /**
+     * The fold's biggest survivors, capped again on this side.
+     *
+     * The router already bounds its list, and this bounds it a second time
+     * rather than trusting that it did: the cap is the only thing standing
+     * between a hand-edited file and an unbounded array in a document served on
+     * every poll. `omitted` is carried through whatever happens, because a
+     * truncated list that does not say it is truncated reads as the whole
+     * answer.
+     */
+    private fun foldedOnto(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        val kept = rows.take(MAX_FOLD_ROWS)
+        return buildJsonObject {
+            putJsonArray("relays") {
+                for (row in kept) {
+                    val relay = text(row["relay"]) ?: continue
+                    add(
+                        buildJsonObject {
+                            put("relay", relay)
+                            put("urls", num(row["urls"]) ?: 0)
+                            putJsonArray("examples") {
+                                for (u in (row["examples"] as? JsonArray).orEmpty().take(MAX_FOLD_EXAMPLES)) {
+                                    text(u)?.let { add(it) }
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size))
+        }
+    }
+
+    /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
+    private const val MAX_FOLD_ROWS = 20
+    private const val MAX_FOLD_EXAMPLES = 2
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 
