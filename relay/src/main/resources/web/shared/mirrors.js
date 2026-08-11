@@ -56,9 +56,21 @@ const STATS_URL = "/stats.json";
  * month-old timestamp and a mirror switched off an hour ago carries whatever it
  * last booted with — the two are indistinguishable, and treating age as staleness
  * would suppress the honest number on exactly the relays that earned it.
+ *
+ * THE MEMBER IS UNDER `sync.data`, not under `sync`. Every section of the
+ * document is wrapped in the same status envelope by `StatsRollup.section` —
+ * `{status, generatedAt, tookMs, data, errors?}` — and the payload is `data`;
+ * `stats.html` unwraps it at each of its four cards. Read one level too high
+ * this returns undefined against every real document, `mirrorScope` answers
+ * null, and the panel silently stops asking the question it was written to ask.
+ * It fails CLOSED, which is why nothing looked broken: no wrong number is
+ * published, the right one simply never is. The unwrapped shape is accepted too,
+ * because the fixtures and any hand-built document use it and refusing them
+ * would trade one silent null for another.
  */
 export function mirrorScope(stats) {
-  const mirrors = stats && stats.sync && stats.sync.mirrors;
+  const section = stats && stats.sync;
+  const mirrors = section && ((section.data && section.data.mirrors) || section.mirrors);
   if (!mirrors || typeof mirrors !== "object") return null;
   if (mirrors.allKinds === true) return { kinds: null };
   const kinds = Array.isArray(mirrors.kinds)

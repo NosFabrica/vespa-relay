@@ -422,7 +422,14 @@ drew *35% mirroring* on a mirror missing nothing, the whole gap being kinds
 3/4/5/6/7/1059 that no stream asks for. Scope both sides to `mirrors.kinds` and
 the number means something — `web/shared/mirrors.js` is the one consumer, and
 the rule it holds is that an unreadable manifest suppresses the question rather
-than falling back to the unscoped count. Do not fold it into the band file:
+than falling back to the unscoped count. **It reads `sync.data.mirrors`**: every
+section of `/stats.json` is wrapped in `StatsRollup.section`'s status envelope
+and the payload is `data`. Read one level too high — which it was, on ship — the
+member is undefined against every real document, the scope answers null, and the
+panel silently stops asking. That failure is CLOSED, which is why nothing looked
+wrong: no bad number is published, the right one simply never is. Its fixture had
+the same wrong shape, so the tests agreed with it; a fixture that is not the
+shape of the thing it stands in for tests the fixture. Do not fold it into the band file:
 bands are rewritten every 30 seconds and this changes only on a restart.
 
 **A FOURTH file says what the router is DOING.** `SYNC_PROGRESS_FILE`
