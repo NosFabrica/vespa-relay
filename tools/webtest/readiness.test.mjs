@@ -215,6 +215,54 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   ok("posts behind is a working state, reported beside the chain");
 }
 
+// ---- and both sides of that count ask the same question -------------------
+//
+// The verdict above cannot see this one: `assess` is handed two numbers and
+// has no way to know they were taken over different kinds. They were, for
+// months. `postCounts` sent `{authors: [me]}` to both sides with no kind bound
+// on either, and OUR side is narrowed by the router anyway — the mirror holds
+// what router.conf pulls down — so a mirror missing nothing it had ever been
+// asked for measured 31,118 here of 89,485 on the author's own relay and drew
+// "35% mirroring", a percentage that could never reach 100. Asserted against
+// the SOURCE, the way chainHtml is above: readiness.js reads the document at
+// import and cannot be loaded here.
+{
+  const src = readFileSync(
+    new URL("../../relay/src/main/resources/web/readiness.js", import.meta.url), "utf8"
+  );
+  const fn = src.slice(src.indexOf("async function postCounts"), src.indexOf("async function askRemote"));
+  assert.ok(fn.includes("scopedTo"), "postCounts has moved — this assertion no longer reads it");
+
+  // One filter, built once, from the scope. Two filters that merely look alike
+  // is exactly what this was.
+  assert.match(fn, /const filter = scopedTo\(\{ authors: \[me\] \}, scope\)/);
+  assert.equal((fn.match(/count\(filter\)/g) || []).length, 2, "both counts must be the one filter");
+  assert.equal((fn.match(/req\(newest\)/g) || []).length, 2, "…and both newest reads too");
+  assert.equal(
+    (fn.match(/authors: \[me\]/g) || []).length, 1,
+    "a second author filter spelled out by hand is a second question",
+  );
+
+  // And the caller never asks at all without a scope — `scopedTo` throws on
+  // one, so a missing guard here is a pass that ends in an unhandled reject
+  // rather than in the old number, but the panel would go quiet either way.
+  const run = src.slice(src.indexOf("async function run("), src.indexOf("// ---- the asks"));
+  assert.match(run, /const scope = await readMirrorScope\(\);/);
+  assert.match(run, /if \(scope\) facts\.posts = await postCounts\(/);
+
+  // Every await in a pass is a window somebody can sign out across, and the
+  // guard belongs after each one — not only before the paint. Reading the
+  // scope added a window where four asks, two to a stranger's relay, went out
+  // for an account that had already left.
+  const afterScope = run.slice(run.indexOf("const scope = await readMirrorScope();"));
+  assert.match(
+    afterScope.slice(0, afterScope.indexOf("postCounts(")),
+    /if \(gen !== generation\) return;/,
+    "the scope fetch is a window with no generation guard behind it",
+  );
+  ok("the posts count is scoped to the mirrored kinds on both sides, or not taken");
+}
+
 {
   // The fallback for a relay that will not count: whose newest event is newer.
   // "We have your posts up to 2 July" is an answer where a missing bar is not.
