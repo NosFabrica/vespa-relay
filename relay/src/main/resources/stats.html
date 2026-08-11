@@ -332,7 +332,7 @@
      wrapped rows read as separate paragraphs rather than as more of the key. */
   .disp-key { display: flex; gap: .35rem .8rem; flex-wrap: wrap; font-size: .72rem; color: var(--muted); }
   .disp-key b { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px; vertical-align: -.02em; margin-right: .25rem; }
-  /* The prose under a cycle's bar — the fold summary, then the accounting line.
+  /* The prose under a cycle's bar — the accounting line.
      NOT `.why`, which is deliberately margin-free because it ENDS a card; used
      three times mid-block it collapsed a legend, a list and a sentence into one
      undifferentiated slab with 0px between them. Same muted register, its own
@@ -1397,27 +1397,11 @@ function progressPanel(progress) {
       (c.hosts != null ? ` across ${fmt(c.hosts)} host(s)` : "") +
       `. ${fmt(c.received || 0)} event(s) received at the socket` +
       ` (ingest drops the copies other relays already sent, so the store gains fewer).`);
-    // WHICH urls folded, not only how many — "which server is wearing forty
-    // urls" is the question an operator can act on, and the count alone answers
-    // a different one. Bounded, and it says what it left out.
-    const fold = c.foldedOnto;
-    if (fold && (fold.relays || []).length) {
-      const list = el("p", "cyc-line");
-      list.append("Folded onto: ");
-      fold.relays.forEach((r, i) => {
-        const one = el("span", null, `${String(r.relay).replace(/^wss:\/\//, "")} ×${fmt(r.urls)}`);
-        one.title =
-          `${fmt(r.urls)} url(s) fold onto ${r.relay}` +
-          ((r.examples || []).length ? `\ne.g. ${r.examples.join("\n    ")}` : "") +
-          `\nthe per-url verdict is a signed NIP-66 30166 same-as record in this relay's own store`;
-        list.appendChild(one);
-        if (i < fold.relays.length - 1) list.append(" · ");
-      });
-      // Never silent: a truncated list that does not say it is truncated reads
-      // as the whole answer, and the whole answer is thousands of urls long.
-      if (fold.omitted) list.append(` · and ${fmt(fold.omitted)} more relay(s) not listed`);
-      box.appendChild(list);
-    }
+    // The per-relay breakdown of WHICH urls folded is deliberately not drawn:
+    // the count on the accounting line is what a reader acts on, and the list
+    // ran thousands of urls long for a question nobody was asking. The
+    // `foldedOnto` summary is still published in the JSON for anyone who wants
+    // it — see CycleTally.foldedOnto.
     if (c.accountedFor === false) {
       // Published rather than hidden: the counts are still worth having, and
       // this is what stops a reader treating a broken partition as a whole one.
