@@ -706,6 +706,9 @@ internal class DynamicSync(
                             filter = leg,
                             idleTimeoutMs = NEG_IDLE_MS,
                             localEntries = local,
+                            // Declined before the REQ; null when suppression is
+                            // off, so quartz keeps its uncopied fast path.
+                            wantId = wantIdFor(leg),
                             onEvent = onEvent,
                         ).also { downloaded += it.downloaded }
                 }
@@ -729,6 +732,20 @@ internal class DynamicSync(
         healer.drain(url)
         return downloaded
     }
+
+    /**
+     * The suppression predicate for one window, or null when it is off.
+     *
+     * Same limit quartz documents: it does NOT cover a window that falls back
+     * to paging, because a REQ names no ids before it streams bodies. Those
+     * arrive and are dropped on the ingest side instead.
+     */
+    private fun wantIdFor(window: Filter): ((String) -> Boolean)? =
+        if (!refusedIds.enabled) {
+            null
+        } else {
+            { id -> !refusedIds.suppressedInWindow(id, window.since, window.until) }
+        }
 
     /**
      * What this stream lets the healer do about a relay serving a stale copy.

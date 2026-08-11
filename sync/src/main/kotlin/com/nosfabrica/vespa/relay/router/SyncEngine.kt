@@ -250,7 +250,7 @@ class SyncEngine(
     private val pager =
         NegentropyPager(
             StoreWindowIndex(store),
-            ClientWindowSync(client),
+            ClientWindowSync(client, refused = refusedIds),
             sweepState,
             NegPageTuning(
                 target = config.negPageTarget,
@@ -259,7 +259,7 @@ class SyncEngine(
                 slackSeconds = config.negPageSlackSec,
             ),
         )
-    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope, healer)
+    private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope, healer, refusedIds)
 
     /**
      * The duplicate-url fold, built only when there is a signer — the verdict

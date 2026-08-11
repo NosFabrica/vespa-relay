@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -121,7 +122,37 @@ internal class PrimedIndex(
 internal class ClientWindowSync(
     private val client: NostrClient,
     private val idleTimeoutMs: Long = NEG_IDLE_MS,
+    /**
+     * The twice-refused ids, so the reconcile can decline them before the REQ
+     * that would fetch them. Disabled by default, which passes quartz a null
+     * predicate rather than one that always says yes — see [wantIdFor].
+     */
+    private val refused: RefusedIds = RefusedIds.disabled(),
 ) : WindowSync {
+    /**
+     * The predicate quartz consults for every id the reconcile names, or null.
+     *
+     * **Null when suppression is off, never a lambda returning true.** quartz's
+     * `NeedGate` hands the batch straight back when the predicate is absent —
+     * same list instance, no copy per batch — and a trivially-true lambda would
+     * forfeit that on every sync for nothing.
+     *
+     * Keyed on the WINDOW rather than the event's own `created_at`, because at
+     * this point an id is all we have: the reconcile names ids and the bodies
+     * have not arrived. [RefusedIds.suppressedInWindow] therefore consults
+     * every epoch the window overlaps.
+     *
+     * Called from the reconciler coroutines, possibly several at once, so it
+     * has to be cheap and thread-safe: it is a lock-free cuckoo probe over the
+     * handful of epochs the window touches.
+     */
+    private fun wantIdFor(window: Filter): ((String) -> Boolean)? =
+        if (!refused.enabled) {
+            null
+        } else {
+            { id -> !refused.suppressedInWindow(id, window.since, window.until) }
+        }
+
     override suspend fun reconcile(
         url: NormalizedRelayUrl,
         window: Filter,
@@ -138,6 +169,7 @@ internal class ClientWindowSync(
             localIndex = local,
             targetWindow = targetWindow,
             onUnreconcilableWindow = onUnreconcilable,
+            wantId = wantIdFor(window),
             onProgress = onProgress,
             onEvent = onEvent,
         )

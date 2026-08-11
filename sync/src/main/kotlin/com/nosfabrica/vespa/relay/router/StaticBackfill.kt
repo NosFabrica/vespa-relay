@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
+import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.util.fmtCount
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
@@ -84,6 +85,8 @@ internal class StaticBackfill(
     private val scope: CoroutineScope,
     // Drained after each upstream's history catch-up, off the sweep's path.
     private val healer: Healer,
+    // Declines twice-refused ids before the download REQ — see [wantIdFor].
+    private val refusedIds: RefusedIds,
 ) {
     private val progress = BackfillProgress()
 
@@ -659,6 +662,11 @@ internal class StaticBackfill(
                         filter = window,
                         idleTimeoutMs = NEG_IDLE_MS,
                         localEntries = snapshot.ids,
+                        // Declined before the REQ, so a twice-refused id never
+                        // crosses the wire. Null when suppression is off, which
+                        // is what keeps quartz's no-predicate path (batch handed
+                        // back uncopied) for everyone who has not opted in.
+                        wantId = wantIdFor(window),
                         onProgress = { needSoFar, done -> progress.update(idx, needSoFar, downloaded + done) },
                         onEvent = { event ->
                             if (upstream.filter.match(event)) {
@@ -827,6 +835,21 @@ internal class StaticBackfill(
     ) {
         fun percent(): Int = if (need <= 0) 0 else ((downloaded * 100) / need).coerceIn(0, 100).toInt()
     }
+
+    /**
+     * The suppression predicate for one window, or null when it is off.
+     *
+     * Note the limit quartz documents and this inherits: it does NOT cover a
+     * window handed to the paged fallback. A REQ names no ids before it streams
+     * bodies, so a declined event inside a paged window arrives anyway. Rare,
+     * and the ingest-side check still drops it before the store.
+     */
+    private fun wantIdFor(window: Filter): ((String) -> Boolean)? =
+        if (!refusedIds.enabled) {
+            null
+        } else {
+            { id -> !refusedIds.suppressedInWindow(id, window.since, window.until) }
+        }
 
     /** What this upstream's stream lets the healer do about a stale copy. */
     private fun originFor(upstream: SyncUpstream) = IngestOrigin(upstream.url, healContent = upstream.healContent, healRetractions = upstream.healRetractions)
