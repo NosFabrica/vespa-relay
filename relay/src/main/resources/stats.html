@@ -305,19 +305,28 @@
   /* Reached and gave us something / reached and had nothing to give. Both are
      the relay working, which is why they share the accent and differ in weight
      rather than in hue. */
-  .disp > i.delivered { background: var(--accent); }
-  .disp > i.nothingNew { background: var(--accent); opacity: .45; }
+  /* One rule per outcome, covering BOTH the bar segment and the key's swatch,
+     so the key cannot drift from the thing it is a key to. That was the point of
+     the `getComputedStyle` probe this replaces — which read a card still
+     DETACHED from the document, so no rule and no `var()` resolved and every
+     swatch rendered fully transparent (measured: `rgba(0, 0, 0, 0)`). It also
+     forced a style recalc per bucket per render, on a page that re-renders every
+     poll. */
+  .disp > i.delivered, .disp-key b.delivered { background: var(--accent); }
+  .disp > i.nothingNew, .disp-key b.nothingNew { background: var(--accent); opacity: .45; }
   /* Not reached. Warm, not red: a dead url in an old relay list is the ordinary
      case on a fan-out this wide, not an incident. */
-  .disp > i.unreachable, .disp > i.noRoute, .disp > i.hostStruckOut { background: var(--warn); opacity: .6; }
+  .disp > i.unreachable, .disp > i.noRoute, .disp > i.hostStruckOut,
+  .disp-key b.unreachable, .disp-key b.noRoute, .disp-key b.hostStruckOut { background: var(--warn); opacity: .6; }
   /* Skipped on a DURABLE verdict rather than on anything measured this cycle —
      the one segment whose relays were never dialled at all, and the one whose
      retry is a TTL rather than the next cycle. */
-  .disp > i.knownDead { background: var(--warn); opacity: .35; }
+  .disp > i.knownDead, .disp-key b.knownDead { background: var(--warn); opacity: .35; }
   /* Our own fault, or at least our own side: the transfer broke after a
      handshake, or our proxy was down. */
-  .disp > i.transferFailed, .disp > i.torUnavailable { background: var(--warn); }
-  .disp > i.pending { background: var(--bar); }
+  .disp > i.transferFailed, .disp > i.torUnavailable,
+  .disp-key b.transferFailed, .disp-key b.torUnavailable { background: var(--warn); }
+  .disp > i.pending, .disp-key b.pending { background: var(--bar); }
   /* `row-gap` under `column-gap`: the key runs to nine buckets and wraps to two
      or three rows at any real width, and an equal gap on both axes made the
      wrapped rows read as separate paragraphs rather than as more of the key. */
@@ -1362,15 +1371,11 @@ function progressPanel(progress) {
         const n = taken[k] || 0;
         if (!n) continue;
         const item = el("span");
-        const b = el("b");
-        // The bar's own tone, taken from the same class name, so the key can
-        // never drift from the thing it is a key to.
-        const probe = el("i", k);
-        probe.style.display = "none";
-        bar.appendChild(probe);
-        b.style.background = getComputedStyle(probe).backgroundColor;
-        b.style.opacity = getComputedStyle(probe).opacity;
-        probe.remove();
+        // The SAME class the bar segment carries, so one CSS rule paints both
+        // and the key cannot drift from the bar. Never read back a computed
+        // style here: this card is still detached from the document, so
+        // `getComputedStyle` resolves nothing.
+        const b = el("b", k);
         const meaning = k === "pending" ? pendingLabel(outcome) : label;
         item.appendChild(b);
         item.append(`${fmt(n)} ${meaning.split(" — ")[0]}`);

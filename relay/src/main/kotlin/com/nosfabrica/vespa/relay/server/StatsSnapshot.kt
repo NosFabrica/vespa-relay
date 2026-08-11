@@ -116,6 +116,17 @@ class StatsSnapshot(
     fun markStale(
         reason: String,
         atSeconds: Long = System.currentTimeMillis() / 1000,
+        /**
+         * Whether the marked document is written back to [path].
+         *
+         * False on the SEED path. `loadFromFile` marks what it just read, and
+         * with a plain `publish` that turned a documented read into a boot-time
+         * rewrite of the same bytes — noisy on a read-only or full volume, for a
+         * notice the next successful rollup clears anyway. A rollup FAILURE does
+         * persist: that document is what the next restart will seed from, and it
+         * should carry the reason with it.
+         */
+        persist: Boolean = true,
     ) {
         val existing = current.get() ?: return
         runCatching {
@@ -140,7 +151,9 @@ class StatsSnapshot(
                         },
                     )
                 }
-            publish(marked)
+            val bytes = JSON.encodeToString(JsonObject.serializer(), marked).toByteArray(Charsets.UTF_8)
+            current.set(Served(bytes, etagOf(bytes)))
+            if (persist) save(bytes)
         }.onFailure {
             // The served document stays exactly as it was. Losing the staleness
             // notice is a small harm; losing the statistics because the notice
@@ -171,7 +184,11 @@ class StatsSnapshot(
             // old; a deploy that ships a broken rollup would otherwise serve
             // last week's numbers under this relay's name with nothing saying so.
             // Cleared by the first successful rollup, which publishes without it.
-            markStale("served from $path after a restart; no rollup has completed in this process yet")
+            markStale(
+                "served from $path after a restart; no rollup has completed in this process yet",
+                // Seeding must not write. See [markStale]'s `persist`.
+                persist = false,
+            )
         }.onFailure { e ->
             System.err.println("stats: could not read $path (${e.message}) — serving nothing until the first rollup")
         }

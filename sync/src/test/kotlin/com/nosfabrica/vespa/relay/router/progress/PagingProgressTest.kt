@@ -154,6 +154,25 @@ class PagingProgressTest {
     }
 
     @Test
+    fun `a leg whose window is inverted cannot inherit the previous leg's result`() {
+        // The key is `stream|url` and one relay is walked leg after leg. While
+        // `finish` DELETED the entry a skipped `begin` was harmless — the later
+        // mark/finish found nothing. With the walk retained, leaving the old one
+        // in place let the skipped leg's `finish` land on the finished one.
+        val p = PagingProgress()
+        p.begin("s|a", top = 1_000L, bottom = 0L)
+        p.finish("s|a", covered = true)
+        assertEquals(1.0, p.fraction("s")!!, 0.001)
+
+        // The next leg is inverted, so nothing is walked for it at all.
+        p.begin("s|a", top = 100L, bottom = 900L)
+        p.mark("s|a", 950L)
+        p.finish("s|a", covered = false)
+
+        assertNull(p.fraction("s"), "the drained walk is gone, and the inverted leg never became one")
+    }
+
+    @Test
     fun `an inverted window is not a walk`() {
         // A leg whose since is above its until asks for a range nothing can be
         // in. Dividing by that span would produce infinities on the status line.

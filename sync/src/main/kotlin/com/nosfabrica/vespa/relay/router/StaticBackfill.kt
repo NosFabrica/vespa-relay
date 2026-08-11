@@ -189,7 +189,7 @@ internal class StaticBackfill(
                         .size,
             ).also {
                 tallies[name] = it
-                phases.beginCycle(name, it)
+                phases.beginCycle(name, StreamPhases.STATIC, it)
             }
         // Our own count, taken once for the stream — the cheap half of the
         // reconcile-or-page decision.
@@ -216,7 +216,7 @@ internal class StaticBackfill(
             }
         if (reconcilers.isEmpty()) {
             early?.join()
-            phases.endCycle(name, "completed")
+            phases.endCycle(name, StreamPhases.STATIC, "completed")
             phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), null))
             return
         }
@@ -260,7 +260,7 @@ internal class StaticBackfill(
                     }
                 }
                 early?.join()
-                phases.endCycle(name, "completed")
+                phases.endCycle(name, StreamPhases.STATIC, "completed")
                 phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), null))
             }
         } catch (e: CancellationException) {
@@ -281,7 +281,7 @@ internal class StaticBackfill(
             // outcome: this stream stopped before it reconciled anything, and
             // the Idle line below it is byte-identical to the one a stream that
             // finished cleanly leaves.
-            phases.endCycle(name, "failed")
+            phases.endCycle(name, StreamPhases.STATIC, "failed")
             phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), null))
         }
     }
@@ -566,7 +566,7 @@ internal class StaticBackfill(
             }
         }
         early?.join()
-        phases.endCycle(name, "completed")
+        phases.endCycle(name, StreamPhases.STATIC, "completed")
         phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), null))
     }
 

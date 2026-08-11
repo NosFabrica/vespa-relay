@@ -141,6 +141,17 @@ class StreamPhases {
         @Volatile var cycleEndedSec: Long? = null,
         /** `running` / `completed` / `failed` — see [Stream.outcome]. */
         @Volatile var outcome: String? = null,
+        /**
+         * Which half of the router owns the cycle in this slot.
+         *
+         * ONE stream name can carry both `urls` and `relaySource`, so
+         * `StaticBackfill` and `DynamicSync` both open a cycle under it, at boot,
+         * at the same time. Without an owner the second `beginCycle` overwrote
+         * the first's tally and the first `endCycle` stamped `completed` on the
+         * other's still-running fan-out. Publishing one of the two is
+         * incomplete; publishing a blend of them is wrong.
+         */
+        @Volatile var owner: String? = null,
     )
 
     /**
@@ -188,13 +199,21 @@ class StreamPhases {
      * its durable state to two files; the last cycle plus the one running is
      * what an operator asks about.
      */
+    @Synchronized
     fun beginCycle(
         name: String,
+        owner: String,
         tally: CycleTally,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
         register(name)
         phases[name]?.let {
+            // First writer wins while a cycle is live. The loser keeps counting
+            // into its own tally and simply does not publish this round — which
+            // is the honest outcome for a stream whose work has two sources and
+            // one slot to describe it in.
+            if (it.outcome == "running" && it.owner != null && it.owner != owner) return
+            it.owner = owner
             it.tally = tally
             it.cycleStartedSec = nowSeconds
             it.cycleEndedSec = null
@@ -207,20 +226,31 @@ class StreamPhases {
      * which, and guessing from the counters would report a cycle that legitimately
      * reached nothing as a failure.
      */
+    @Synchronized
     fun endCycle(
         name: String,
+        owner: String,
         outcome: String,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
         phases[name]?.let {
-            // Only for a cycle that actually started. A stream that fails during
-            // DISCOVERY has no tally, and stamping an end on the previous
-            // cycle's would age a finished run every time the next one threw.
-            if (it.outcome == "running") {
+            // Only for a cycle that actually started, and only by whoever
+            // started it. A stream that fails during DISCOVERY has no tally, and
+            // stamping an end on the previous cycle's would age a finished run
+            // every time the next one threw; a static backfill finishing must
+            // not stamp `completed` on a dynamic fan-out still running under the
+            // same name.
+            if (it.outcome == "running" && it.owner == owner) {
                 it.cycleEndedSec = nowSeconds
                 it.outcome = outcome
             }
         }
+    }
+
+    /** The two halves of the router that can own a stream's cycle slot. */
+    companion object {
+        const val STATIC = "static"
+        const val DYNAMIC = "dynamic"
     }
 
     /** Every registered stream, in registration order, as of now. */

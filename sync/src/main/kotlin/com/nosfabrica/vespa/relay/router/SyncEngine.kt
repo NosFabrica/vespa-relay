@@ -383,20 +383,24 @@ class SyncEngine(
         // static backfill's progress loop: a dynamic-only config has no
         // backfill loop at all, and everyone else's dynamic streams — the
         // larger half of the fill — outlive it.
+        // The heartbeat is its own loop, NOT a passenger on the phase report.
+        // That report is skipped when a config has neither a down upstream nor a
+        // dynamic stream — a push-only router — and with the write inside it
+        // `writtenAt` never advanced, so the relay reported a perfectly healthy
+        // mirror as "probably not running". The whole point of this file is that
+        // it ticks whatever the streams are doing, and "there are no streams to
+        // report" is exactly that case.
+        scope.launch {
+            while (scope.isActive) {
+                delay(PROGRESS_INTERVAL_MS)
+                progressFile.write(phases.snapshot())
+            }
+        }
         if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
             scope.launch {
                 while (scope.isActive) {
                     delay(PROGRESS_INTERVAL_MS)
-                    val streams = phases.snapshot()
                     phases.report().forEach { System.err.println(it) }
-                    // On the same tick as the log lines, and unconditionally.
-                    // `writtenAt` is a HEARTBEAT: a router that is merely quiet
-                    // and one that has stopped are the same document on the
-                    // other side unless this advances whatever the streams are
-                    // doing. It is also why this is not inside the loop's
-                    // per-stream body — a config with no stream to report would
-                    // publish nothing and read as a dead router.
-                    progressFile.write(streams)
                 }
             }
         }

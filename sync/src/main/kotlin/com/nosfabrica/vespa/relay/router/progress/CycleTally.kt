@@ -48,9 +48,11 @@ import java.util.concurrent.atomic.AtomicLong
  * derived, never incremented: whatever has not yet landed in one of the eight
  * terminal outcomes is still in flight, and publishing it as its own member is
  * the difference between a partition a reader can check and a bag of numbers
- * that happens not to sum today. When the cycle ends, `pending` is 0 — and if
- * it is not, [balanced] is false and the document says so rather than letting a
- * miscount pass as a disposition.
+ * that happens not to sum today. On a cycle that reaches its end `pending` is 0;
+ * on one that was killed or threw it is whatever never got a verdict, which is
+ * why the reader is told to interpret it against `outcome` rather than on its
+ * own. [balanced] does NOT cover that case — it cannot see the cycle end, and it
+ * only ever asserts that the members still add up.
  *
  * ## One outcome per url, at most once
  *
@@ -157,6 +159,11 @@ class CycleTally(
      * negative, and this is then the only thing that says the numbers are
      * wrong — which is a far better failure than three panels quietly
      * disagreeing.
+     *
+     * It says nothing about whether the cycle FINISHED. A run that died with
+     * thousands unsettled is still balanced — the members do add up, `pending`
+     * simply holds the ones that never got a verdict. `outcome` is what
+     * separates those two, and it is what the page reads `pending` against.
      */
     fun balanced(): Boolean = settled() <= taken && foldedOntoAnother + excluded <= discovered
 

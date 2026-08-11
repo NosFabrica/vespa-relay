@@ -219,9 +219,17 @@ internal class DynamicSync(
                         System.err.println("router: ${stream.name} dropped the band state of $dropped folded url(s)")
                     }
                 }
+                // The fold's OWN output, held before the exclude filter runs.
+                // Both counts below are then differences between two lists this
+                // code actually has, rather than inferences from a subtraction —
+                // which is what made them wrong: `foldOnto` MERGES onto a
+                // survivor, and a survivor discovery did not itself hand over is
+                // synthesised into the result, so `candidates.size - relays.size`
+                // is not the number of urls the fold removed and the identity
+                // `discovered = folded + excluded + taken` did not hold.
+                val foldedList = cleaned?.let { RelayAliases.foldOnto(discovered, it.aliases) } ?: discovered
                 val relays =
-                    cleaned
-                        ?.let { RelayAliases.foldOnto(discovered, it.aliases) }
+                    foldedList
                         // A verdict's canonical is whatever the probe measured,
                         // which is NOT necessarily a url discovery would hand
                         // out today: `exclude` and our own url are applied when
@@ -230,8 +238,7 @@ internal class DynamicSync(
                         // what stops a stored verdict putting an excluded relay
                         // — or this relay, syncing itself — back into the
                         // fan-out through the side door.
-                        ?.filter { it.url !in dynamic.exclude && it.url != store.relay }
-                        ?: discovered
+                        .filter { it.url !in dynamic.exclude && it.url != store.relay }
                 // What this stream would like measured before the next cycle.
                 // Non-blocking; the callbacks are this stream's own transport
                 // guard and ingest, since the monitor has neither.
@@ -247,28 +254,24 @@ internal class DynamicSync(
                 // both of which are decided above and neither of which [cycle]
                 // can see. Without this the ~11,400 urls between "discovered"
                 // and "has a band" had no published account at all.
-                // MEASURED from the verdict map, not inferred from
-                // `candidates.size - relays.size`. That subtraction also
-                // absorbed everything `exclude` and the self-url filter removed,
-                // so an operator's own exclusion list was reported as duplicate
-                // urls the router had folded — two different facts, with two
-                // different fixes, under one label.
-                val foldedPairs =
-                    cleaned
-                        ?.aliases
-                        ?.let { verdicts -> candidates.mapNotNull { url -> verdicts[url]?.let { url.url to it.url } }.toMap() }
-                        .orEmpty()
+                // Each member is a difference between two lists this code
+                // holds, so the identity closes for every case including a
+                // synthesised survivor:
+                //   discovered      = candidates
+                //   foldedOntoAnother = candidates - foldedList
+                //   excluded        = foldedList - relays   (the `exclude` list
+                //                     and our own url being obeyed)
+                //   taken           = relays                (what is dialled)
+                // It was `candidates.size - relays.size` for the fold and a
+                // remainder for the rest, which folded an operator's exclusion
+                // list into the duplicate-url count and could leave `taken`
+                // over-counted — so a healthy cycle ended with `pending` stuck
+                // above zero and the page printed "these counts do not add up".
                 val tally =
                     CycleTally(
                         discovered = candidates.size,
-                        foldedOntoAnother = foldedPairs.size,
-                        // The remainder, so the identity closes whatever the
-                        // fold did: a survivor discovery did not itself hand
-                        // over still becomes a member of `relays`, which makes
-                        // this off by one per such group in the direction of
-                        // under-counting exclusions. `balanced` is what catches
-                        // it if the remainder ever goes negative.
-                        excluded = (candidates.size - foldedPairs.size - relays.size).coerceAtLeast(0),
+                        foldedOntoAnother = (candidates.size - foldedList.size).coerceAtLeast(0),
+                        excluded = (foldedList.size - relays.size).coerceAtLeast(0),
                         // By AUTHORITY, so the count says how many servers this
                         // is, not how many strings. Arithmetic over urls, not
                         // the fold's verdict — see [CycleTally].
@@ -281,7 +284,11 @@ internal class DynamicSync(
                                         .ifEmpty { null }
                                 }.distinct()
                                 .size,
-                        folded = foldedPairs,
+                        folded =
+                            cleaned
+                                ?.aliases
+                                ?.let { verdicts -> candidates.mapNotNull { url -> verdicts[url]?.let { url.url to it.url } }.toMap() }
+                                .orEmpty(),
                     )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
@@ -314,7 +321,7 @@ internal class DynamicSync(
                 // the two stop reading the same, and `endCycle` ignores the call
                 // when no cycle was running — a stream that failed during
                 // DISCOVERY must not re-date the last one that did.
-                phases.endCycle(stream.name, "failed")
+                phases.endCycle(stream.name, StreamPhases.DYNAMIC, "failed")
             }
 
             if (ran) {
@@ -346,7 +353,7 @@ internal class DynamicSync(
         tally: CycleTally,
     ) {
         val startedMs = System.currentTimeMillis()
-        phases.beginCycle(stream.name, tally)
+        phases.beginCycle(stream.name, StreamPhases.DYNAMIC, tally)
         // The walks of the PREVIOUS cycle, which are this cycle's noise. They
         // are retained past their own end on purpose — that is what stops the
         // percentage running backwards as relays finish — so the cycle boundary
@@ -637,7 +644,7 @@ internal class DynamicSync(
                 ) +
                 "; next in ${dynamic.refreshSeconds}s",
         )
-        phases.endCycle(stream.name, "completed")
+        phases.endCycle(stream.name, StreamPhases.DYNAMIC, "completed")
         phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.refreshSeconds))
     }
 

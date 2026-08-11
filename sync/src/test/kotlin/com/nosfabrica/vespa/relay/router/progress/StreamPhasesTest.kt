@@ -173,20 +173,62 @@ class StreamPhasesTest {
     fun `a cycle's outcome survives its phase, so failed and finished stop reading alike`() {
         val p = StreamPhases()
         val tally = CycleTally(discovered = 10, foldedOntoAnother = 2, hosts = 5)
-        p.beginCycle("s", tally, nowSeconds = 1_000)
+        p.beginCycle("s", StreamPhases.DYNAMIC, tally, nowSeconds = 1_000)
 
         assertEquals("running", p.snapshot().single().outcome)
         assertNull(p.snapshot().single().cycleEndedSec, "a running cycle has not ended")
 
-        p.endCycle("s", "failed", nowSeconds = 1_100)
+        p.endCycle("s", StreamPhases.DYNAMIC, "failed", nowSeconds = 1_100)
         assertEquals("failed", p.snapshot().single().outcome)
         assertEquals(1_100L, p.snapshot().single().cycleEndedSec)
 
         // A stream that fails during DISCOVERY has no cycle running, and
         // stamping an end on the finished one would re-date it every retry.
-        p.endCycle("s", "completed", nowSeconds = 1_200)
+        p.endCycle("s", StreamPhases.DYNAMIC, "completed", nowSeconds = 1_200)
         assertEquals("failed", p.snapshot().single().outcome)
         assertEquals(1_100L, p.snapshot().single().cycleEndedSec)
+    }
+
+    @Test
+    fun `one stream name, two owners — the slot is never a blend of both`() {
+        // A stream can carry BOTH `urls` and `relaySource`, so StaticBackfill and
+        // DynamicSync open a cycle under the same name, at boot, at once. The
+        // second begin used to overwrite the first's tally and the first end used
+        // to stamp `completed` on the other's still-running fan-out.
+        val p = StreamPhases()
+        val dynamic = CycleTally(discovered = 300, foldedOntoAnother = 0, hosts = 300)
+        val static = CycleTally(discovered = 2, foldedOntoAnother = 0, hosts = 2)
+
+        p.beginCycle("both", StreamPhases.DYNAMIC, dynamic, nowSeconds = 1_000)
+        p.beginCycle("both", StreamPhases.STATIC, static, nowSeconds = 1_010)
+        assertEquals(
+            300,
+            p
+                .snapshot()
+                .single()
+                .tally
+                ?.discovered,
+            "the live cycle is not replaced by the other half's",
+        )
+
+        // …and the other half finishing does not close it.
+        p.endCycle("both", StreamPhases.STATIC, "completed", nowSeconds = 1_020)
+        assertEquals("running", p.snapshot().single().outcome)
+        assertNull(p.snapshot().single().cycleEndedSec)
+
+        // The owner closes its own, and the slot is then free for either.
+        p.endCycle("both", StreamPhases.DYNAMIC, "completed", nowSeconds = 1_030)
+        assertEquals("completed", p.snapshot().single().outcome)
+        p.beginCycle("both", StreamPhases.STATIC, static, nowSeconds = 1_040)
+        assertEquals(
+            2,
+            p
+                .snapshot()
+                .single()
+                .tally
+                ?.discovered,
+            "a finished slot takes whoever asks next",
+        )
     }
 
     @Test

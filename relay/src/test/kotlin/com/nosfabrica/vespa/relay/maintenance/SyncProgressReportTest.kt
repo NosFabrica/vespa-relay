@@ -178,6 +178,24 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `the url partition holds when the fold synthesised a survivor`() {
+        // `foldOnto` MERGES onto a canonical, and a canonical discovery did not
+        // itself hand over is added to the result — so the counts were once
+        // inferred from `candidates - relays`, which made `taken` over-count and
+        // left a healthy finished cycle with `pending` stuck above zero.
+        val synthesised =
+            """
+            {"writtenAt": 1, "streams": [{"name": "s", "cycle": {"outcome": "completed",
+              "urls": {"discovered": 10, "foldedOntoAnother": 4, "excluded": 1, "taken": 5},
+              "taken": {"delivered": 5}}}]}
+            """.trimIndent()
+        val cycle = firstCycle(SyncProgressReport.build(synthesised, nowSeconds = 1)!!)
+
+        assertEquals(0L, cycle["taken"]!!.jsonObject["pending"]!!.jsonPrimitive.long, "a finished cycle has nothing outstanding")
+        assertTrue(cycle["accountedFor"]!!.jsonPrimitive.booleanOrNull!!)
+    }
+
+    @Test
     fun `a corrupt or absent file is absent, never an exception`() {
         assertNull(SyncProgressReport.build(null, nowSeconds = 1))
         assertNull(SyncProgressReport.build("", nowSeconds = 1))

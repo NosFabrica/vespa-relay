@@ -93,7 +93,19 @@ class PagingProgress {
         top: Long,
         bottom: Long,
     ) {
-        if (top >= bottom) walks[key] = Walk(top, bottom, System.currentTimeMillis(), top)
+        // An inverted window REMOVES whatever the key held; it does not simply
+        // decline to add. The key is `stream|url` and one relay is walked leg
+        // after leg, so while `finish` deleted the entry a skipped `begin` was
+        // harmless — the later `mark`/`finish` found nothing. Now that a
+        // finished walk is RETAINED, leaving the old one in place lets the
+        // skipped leg's `finish(covered = …)` land on the PREVIOUS leg, flipping
+        // a drained walk to partial and dragging the stream's fraction and ETA
+        // down with it.
+        if (top >= bottom) {
+            walks[key] = Walk(top, bottom, System.currentTimeMillis(), top)
+        } else {
+            walks.remove(key)
+        }
     }
 
     /** The walk reached [until]; monotonic, so a page that jumps back cannot un-advance it. */
