@@ -161,6 +161,13 @@ async function run(me, gen) {
   // reaches here, and this is the one state where the panel usually says
   // nothing at all.
   const scope = await readMirrorScope();
+  // Checked HERE and not only below, because this ask opened a window that did
+  // not exist before it: the posts stage used to follow the verdict with
+  // nothing awaited in between. Sign out across this fetch and the four asks
+  // still went out — two of them to somebody else's relay — on behalf of an
+  // account that had left. The paint was already guarded; the ASKS were not,
+  // which is the same hole the start delay's guard was written for.
+  if (gen !== generation) return;
   if (scope) facts.posts = await postCounts(anon, me, facts.relayList.writeRelays, scope);
   if (gen !== generation) return;
   const after = assess(facts);
@@ -528,7 +535,7 @@ function words(v) {
 const scoreRelay = (v) => v.chain.find((l) => l.key === "scoreList")?.detail?.relay || null;
 
 /**
- * What the two sides of the posts figure were both asked for.
+ * What both sides of the posts figure were asked for.
  *
  * Said out loud because the number is smaller than the one a reader can check
  * for themselves: their own client shows every event they have ever signed,
@@ -536,14 +543,18 @@ const scoreRelay = (v) => v.chain.find((l) => l.key === "scoreList")?.detail?.re
  * reader who posts mostly reactions sees a total they cannot reconcile with
  * anything and has no way to learn why.
  *
+ * "Comparison", not "count", because it is printed under both branches and one
+ * of them has no count in it — the bound is on the newest-event reads too, and
+ * it is doing the same work there.
+ *
  * Empty where the mirror asks for every kind its upstreams serve — there is no
  * narrowing to explain, and a sentence about one would be a claim we did not
  * make.
  */
 const scopeNote = (p) =>
   p.kinds
-    ? `Both sides of that count cover the ${fmt(p.kinds.length)} kinds this relay mirrors, so it compares ` +
-      `like with like — anything you post outside them is on neither side of it.`
+    ? `Both sides of that comparison cover the ${fmt(p.kinds.length)} kinds this relay mirrors, so it weighs ` +
+      `like against like — anything you post outside them is on neither side of it.`
     : "";
 
 const day = (secs) =>

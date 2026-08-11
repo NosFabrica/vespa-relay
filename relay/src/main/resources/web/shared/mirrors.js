@@ -95,9 +95,16 @@ export function scopedTo(filter, scope) {
  * for what the caller owes it.
  *
  * [fetcher] is injectable so the failure paths are testable without a network:
- * they are the paths that decide whether a number appears at all.
+ * they are the paths that decide whether a number appears at all. It defaults
+ * to a WRAPPER rather than to `globalThis.fetch` itself, so the call keeps the
+ * global as its receiver. A bare reference is very probably fine — WebIDL
+ * substitutes the global for an undefined `this` on operations of the global
+ * interface — but "probably" is doing real work in that sentence across four
+ * engines, and the failure mode is the worst shape available here: the
+ * TypeError lands in the catch below, the scope reads as unknown, and the panel
+ * simply stops mentioning posts with nothing logged anywhere.
  */
-export async function readMirrorScope(fetcher = globalThis.fetch) {
+export async function readMirrorScope(fetcher = (url, init) => globalThis.fetch(url, init)) {
   try {
     const res = await fetcher(STATS_URL, { headers: { accept: "application/json" } });
     if (!res || !res.ok) return null;

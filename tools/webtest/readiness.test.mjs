@@ -249,6 +249,17 @@ const statusOf = (v, key) => v.chain.find((l) => l.key === key)?.status;
   const run = src.slice(src.indexOf("async function run("), src.indexOf("// ---- the asks"));
   assert.match(run, /const scope = await readMirrorScope\(\);/);
   assert.match(run, /if \(scope\) facts\.posts = await postCounts\(/);
+
+  // Every await in a pass is a window somebody can sign out across, and the
+  // guard belongs after each one — not only before the paint. Reading the
+  // scope added a window where four asks, two to a stranger's relay, went out
+  // for an account that had already left.
+  const afterScope = run.slice(run.indexOf("const scope = await readMirrorScope();"));
+  assert.match(
+    afterScope.slice(0, afterScope.indexOf("postCounts(")),
+    /if \(gen !== generation\) return;/,
+    "the scope fetch is a window with no generation guard behind it",
+  );
   ok("the posts count is scoped to the mirrored kinds on both sides, or not taken");
 }
 
