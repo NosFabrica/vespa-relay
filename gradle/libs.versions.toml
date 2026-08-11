@@ -1,4 +1,31 @@
 [versions]
+#
+# A NOTE ON THE TWO JITPACK PINS BELOW, because every comment on them mentions
+# how the hash sorts and that is easy to read as more than it is.
+#
+# A JitPack version is a git commit hash. Hashes carry NO order. `c43339e92b`
+# is not newer than `a5507f9a4d`, not ahead of it, not a superset of it — the
+# two strings simply sort a particular way, decided by the first hex digit,
+# which is uniformly random. A commit from last year sorts above one from today
+# roughly half the time.
+#
+# Gradle does not know that. It sees version STRINGS, and when two parts of the
+# graph ask for different ones it keeps the lexicographically higher — so for
+# hashes it keeps an arbitrary one, and says nothing. That is the whole reason
+# for `resolutionStrategy { force(libs.quartz) }` in every module.
+#
+# So when a comment below says a bump "sorts the safe way", read it as: THIS
+# bump would survive a conflict if one arose. It is not a property of the pin
+# and it will not hold for the next bump of the same dependency. And it is not
+# evidence the pin took effect — ordering only decides who wins a conflict, not
+# whether one happened. The proof of that is always the resolved graph:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath
+# with no `->` on the line, checked per module.
+#
+# The relation that does mean something between two hashes is ancestry, and git
+# is the only thing that can answer it: `git merge-base --is-ancestor A B`.
+# Dates cannot — a commit authored earlier can land on main later.
+#
 kotlin = "2.4.0"
 # The relay application's version (image tag / --version display).
 app = "0.1.0"
@@ -33,10 +60,11 @@ app = "0.1.0"
 # EXACTLY c43339e92b — the equality case again, not merely at-or-ahead. The two
 # pins move together in this bump, which is the state to hold.
 #
-# LEXICOGRAPHIC: 'c433…' > 'a550…', so this sorts the SAFE way and would win a
-# conflict on version order alone. It has none to win — the store requests the
-# same hash — but the ordering is checked every time regardless, because the
-# failure when it is wrong is silent.
+# LEXICOGRAPHIC: 'c433…' > 'a550…', so THIS bump would win a conflict on
+# version order alone. Luck, not a property of the pin — see the note at the
+# top of this file. It has no conflict to win anyway, since the store requests
+# the same hash, and the ordering settles nothing about whether the pin took;
+# only the resolved graph does.
 #
 # Do not read the equality as the forces being unnecessary. They are what holds
 # this the next time the two pins drift, which is every time one moves without
