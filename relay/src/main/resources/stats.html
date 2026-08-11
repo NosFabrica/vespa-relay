@@ -1223,6 +1223,7 @@ function mirrorLine(mirrors) {
 const DISPOSITION = [
   ["delivered", "delivered — reached, and it had events we did not"],
   ["nothingNew", "in sync — reached, nothing new to give"],
+  // The one label that depends on the cycle's outcome — see `pendingLabel`.
   ["pending", "still in flight"],
   ["noRoute", "no route — TCP refused or the name does not resolve"],
   ["unreachable", "unreachable — never answered"],
@@ -1234,6 +1235,22 @@ const DISPOSITION = [
 
 /** Past this, a router that has not written its heartbeat is not running. */
 const HEARTBEAT_STALE_SEC = 150;
+
+/**
+ * What `pending` means for THIS cycle.
+ *
+ * It is `taken` minus the eight terminal outcomes, so it always closes the
+ * partition — but the same number means opposite things on either side of the
+ * cycle's end. Running, these urls are in flight. Finished or failed, nothing is
+ * in flight: they never reached a verdict because the cycle stopped first, which
+ * on a `failed` cycle is most of what the reader wants to know. One label for
+ * both would be wrong exactly half the time.
+ */
+function pendingLabel(outcome) {
+  return outcome === "running" || outcome == null
+    ? "still in flight"
+    : "never got a verdict — the cycle ended first; dialled again next cycle";
+}
 
 function progressPanel(progress) {
   if (!progress) return null;
@@ -1289,7 +1306,8 @@ function progressPanel(progress) {
         if (!n) continue;
         const seg = el("i", key);
         seg.style.width = (n / total) * 100 + "%";
-        seg.title = `${fmt(n)} of ${fmt(total)} — ${DISPOSITION.find((d) => d[0] === key)[1]}`;
+        const meaning = key === "pending" ? pendingLabel(outcome) : DISPOSITION.find((d) => d[0] === key)[1];
+        seg.title = `${fmt(n)} of ${fmt(total)} — ${meaning}`;
         bar.appendChild(seg);
       }
       box.appendChild(bar);
@@ -1307,9 +1325,10 @@ function progressPanel(progress) {
         b.style.background = getComputedStyle(probe).backgroundColor;
         b.style.opacity = getComputedStyle(probe).opacity;
         probe.remove();
+        const meaning = k === "pending" ? pendingLabel(outcome) : label;
         item.appendChild(b);
-        item.append(`${fmt(n)} ${label.split(" — ")[0]}`);
-        item.title = label;
+        item.append(`${fmt(n)} ${meaning.split(" — ")[0]}`);
+        item.title = meaning;
         key.appendChild(item);
       }
       box.appendChild(key);
