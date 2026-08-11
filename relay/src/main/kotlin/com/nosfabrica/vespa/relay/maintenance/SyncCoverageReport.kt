@@ -417,14 +417,22 @@ internal object SyncCoverageReport {
         // Widening the frame is the honest repair: it still contains the data.
         if (from > nowSeconds) from = nowSeconds
 
+        val published = groups.values.filter { it.rows.isNotEmpty() || it.marks.isNotEmpty() }
         return buildJsonObject {
             put("from", from)
             put("to", nowSeconds)
+            // Across every stream, so the two ways of counting cannot be
+            // confused. Summing the streams' own `relays` counts one relay once
+            // per stream that walked it, which is right for a stream's row and
+            // wrong for "how much of the network is this" — and it is also why
+            // one relay can read as settled under one stream and open under
+            // another with neither being wrong. See the `scope` term.
+            val everyRelay = published.flatMap { it.rows.keys + it.marks.keys }.distinct()
+            put("relays", everyRelay.size)
+            put("hosts", everyRelay.mapNotNull { it.substringAfter("://").substringBefore("/").ifEmpty { null } }.distinct().size)
+            put("rows", published.sumOf { (it.rows.keys + it.marks.keys).size })
             putJsonArray("streams") {
-                for (group in groups.values) {
-                    if (group.rows.isEmpty() && group.marks.isEmpty()) continue
-                    add(stream(group, peers))
-                }
+                for (group in published) add(stream(group, peers))
             }
         }
     }
@@ -488,12 +496,26 @@ internal object SyncCoverageReport {
                 .map { it to (rows[it]?.min ?: Long.MAX_VALUE) }
                 .sortedBy { it.second }
                 .map { it.first }
+        // Distinct authorities, not urls. One server answers on every path, so
+        // a relay list can mint `wss://nos.lol/x` without limit and every
+        // url-keyed count here is inflated until the alias fold decides them —
+        // measured, 3,272 urls on 850 hosts. Published beside `relays` rather
+        // than instead of it: the GAP is the disclosure, and a card showing only
+        // the folded number would hide the very inflation this discloses.
+        val hosts = relays.mapNotNull { it.substringAfter("://").substringBefore("/").ifEmpty { null } }.distinct().size
         return buildJsonObject {
             // The router's own name for this group. Absent only for a
             // pre-stream group, whose flat keys never said one — the page falls
             // back to labelling those by their filter, as it did for every
             // group before the format nested.
             group.name?.let { put("name", it) }
+            // …and when it is absent, SAY SO rather than leaving the reader to
+            // infer it from a missing member. Two of these appeared on a
+            // production card carrying 2,600 relays between them and no
+            // identity at all, which reads as two undocumented mirrors rather
+            // than as one migration shim. See the MIGRATION SHIM block in the
+            // class header for what makes them go away.
+            if (group.name == null) put("unnamed", true)
             // What the legs agree on, MINUS the members a narrow varies. Those
             // are dropped even when every leg agrees on them: a discovery
             // filter's `authors` runs to thousands of hex keys, and this
@@ -514,6 +536,7 @@ internal object SyncCoverageReport {
                 if (group.legs > rows.size) put("legs", group.legs)
             }
             put("relays", relays.size)
+            put("hosts", hosts)
             // `complete` is "nothing outstanding below this span", which a
             // drained paged walk now earns as well as a finished reconcile —
             // so these count SETTLED vs still-open, not negentropy vs REQ. The

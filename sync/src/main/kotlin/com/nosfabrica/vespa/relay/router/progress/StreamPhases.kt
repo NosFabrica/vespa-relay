@@ -36,6 +36,20 @@ import java.util.concurrent.ConcurrentHashMap
  *    minutes and used to print nothing at all.
  *  - **A configured stream is never absent.** It appears on every tick even
  *    when idle, so silence can never be read as "not configured".
+ *
+ * A third rule arrived later, from a 45-minute ingest drain that produced no
+ * output at all:
+ *
+ *  - **Every phase reports elapsed time, including the ones that are not
+ *    "progress".** `Idle` and `Failed` used not to, so a stream that went idle
+ *    forty-five minutes ago and one that finished a second ago printed the
+ *    identical line. Silence and stillness are different states and only the
+ *    clock tells them apart.
+ *
+ * It also holds each stream's [CycleTally], because the phase and the
+ * disposition are two halves of one answer — what a stream is doing, and what
+ * became of everything it took on. [snapshot] hands both to [SyncProgress],
+ * which is what publishes them off this process.
  */
 class StreamPhases {
     sealed interface Phase {
@@ -119,6 +133,39 @@ class StreamPhases {
     private class Entry(
         @Volatile var phase: Phase,
         @Volatile var sinceMs: Long,
+        /** The cycle in progress, or the last one that ran. Null before the first. */
+        @Volatile var tally: CycleTally? = null,
+        /** When that cycle started, in epoch seconds. */
+        @Volatile var cycleStartedSec: Long? = null,
+        /** When it ended; null while it is running. */
+        @Volatile var cycleEndedSec: Long? = null,
+        /** `running` / `completed` / `failed` — see [Stream.outcome]. */
+        @Volatile var outcome: String? = null,
+    )
+
+    /**
+     * One stream's state, flattened for a reader outside this process.
+     *
+     * A snapshot, not a view: [SyncProgress] serialises it on a timer while the
+     * fan-out keeps moving, and handing out the live [Entry] would publish a
+     * document whose members were read at different instants.
+     */
+    class Stream(
+        val name: String,
+        /** The phase's own word — `fetching`, `syncing`, `idle`, … — never the rendered line. */
+        val phase: String,
+        /** How long it has been in that phase, in seconds. */
+        val phaseForSec: Long,
+        val tally: CycleTally?,
+        val cycleStartedSec: Long?,
+        val cycleEndedSec: Long?,
+        /**
+         * What became of the cycle: `running` while it is, `completed` when it
+         * reached its end, `failed` when it threw. Published because a static
+         * backfill that finished and a stream whose cycle aborted at 80% left
+         * the identical trace — both simply stopped saying anything.
+         */
+        val outcome: String?,
     )
 
     private val phases = ConcurrentHashMap<String, Entry>()
@@ -132,6 +179,85 @@ class StreamPhases {
             order += name
         }
     }
+
+    /**
+     * A cycle has started; [tally] is what it will fill in as urls settle.
+     *
+     * Replaces the previous cycle's outright. Keeping a history here would be a
+     * second, unbounded thing to reason about on a router that already writes
+     * its durable state to two files; the last cycle plus the one running is
+     * what an operator asks about.
+     */
+    fun beginCycle(
+        name: String,
+        tally: CycleTally,
+        nowSeconds: Long = System.currentTimeMillis() / 1000,
+    ) {
+        register(name)
+        phases[name]?.let {
+            it.tally = tally
+            it.cycleStartedSec = nowSeconds
+            it.cycleEndedSec = null
+            it.outcome = "running"
+        }
+    }
+
+    /**
+     * The cycle ended. [outcome] is `completed` or `failed` — the caller knows
+     * which, and guessing from the counters would report a cycle that legitimately
+     * reached nothing as a failure.
+     */
+    fun endCycle(
+        name: String,
+        outcome: String,
+        nowSeconds: Long = System.currentTimeMillis() / 1000,
+    ) {
+        phases[name]?.let {
+            // Only for a cycle that actually started. A stream that fails during
+            // DISCOVERY has no tally, and stamping an end on the previous
+            // cycle's would age a finished run every time the next one threw.
+            if (it.outcome == "running") {
+                it.cycleEndedSec = nowSeconds
+                it.outcome = outcome
+            }
+        }
+    }
+
+    /** Every registered stream, in registration order, as of now. */
+    @Synchronized
+    fun snapshot(): List<Stream> =
+        order.mapNotNull { name ->
+            val e = phases[name] ?: return@mapNotNull null
+            Stream(
+                name = name,
+                phase = word(e.phase),
+                phaseForSec = (System.currentTimeMillis() - e.sinceMs) / 1000,
+                tally = e.tally,
+                cycleStartedSec = e.cycleStartedSec,
+                cycleEndedSec = e.cycleEndedSec,
+                outcome = e.outcome,
+            )
+        }
+
+    /**
+     * The phase's machine-readable name.
+     *
+     * Spelled out rather than derived from the class name: these strings are
+     * published, and a reader charting them must not have a series renamed by a
+     * Kotlin refactor.
+     */
+    private fun word(phase: Phase): String =
+        when (phase) {
+            is Phase.Starting -> "starting"
+            is Phase.Waiting -> "waiting"
+            is Phase.Queued -> "queued"
+            is Phase.Discovering -> "discovering"
+            is Phase.Snapshotting -> "snapshotting"
+            is Phase.Fetching -> "fetching"
+            is Phase.Syncing -> "syncing"
+            is Phase.Idle -> "idle"
+            is Phase.Failed -> "failed"
+        }
 
     fun set(
         name: String,
@@ -188,35 +314,60 @@ class StreamPhases {
             }
 
             is Phase.Fetching -> {
-                "fetching ${phase.done}/${phase.total} relay(s), ${phase.events} event(s)${rate(phase.events, elapsedMs)}" +
+                // `returned`, not `done`. This counts fan-out legs that came
+                // BACK — including the ones that came back unreachable, capped
+                // or out of budget — and reading it as progress is the single
+                // most misread number this router publishes. What settled is in
+                // the cycle's disposition ([CycleTally]); what is COVERED is in
+                // the bands. Three different questions, and only this one is
+                // cheap enough to tick every second.
+                "fetching ${phase.done}/${phase.total} relay(s) returned, ${phase.events} event(s) received" +
+                    rate(phase.events, elapsedMs) +
                     (phase.reachedSeconds?.let { " — back to ${fmtDay(it)}" } ?: "") +
-                    (phase.fraction?.let { ", %.1f%% through the window".format(it * 100) } ?: "") +
+                    (phase.fraction?.let { ", %.1f%% of the window walked".format(it * 100) } ?: "") +
                     (phase.etaMs?.let { ", ETA ~${fmtDuration(it)}" } ?: "") +
                     " ($elapsed elapsed)"
             }
 
             is Phase.Syncing -> {
-                "syncing ${phase.done}/${phase.total} relay(s), ${phase.events} event(s)${rate(phase.events, elapsedMs)}" +
-                    (if (phase.skipped > 0) ", ${phase.skipped} skipped as dead" else "") +
-                    (if (phase.unreachable > 0) ", ${phase.unreachable} unreachable" else "") +
+                "syncing ${phase.done}/${phase.total} relay(s) returned, ${phase.events} event(s) received" +
+                    rate(phase.events, elapsedMs) +
+                    // "skipped as dead" said nothing about what dead MEANT or
+                    // when it is retried. It is a NIP-66 record this router (or
+                    // another signing with the same key) wrote earlier saying a
+                    // relay could not be reached; the set is re-read at the top
+                    // of every cycle, so the retry is the refresh interval.
+                    (if (phase.skipped > 0) ", ${phase.skipped} not dialled (struck out, no route, or no transport)" else "") +
+                    (if (phase.unreachable > 0) ", ${phase.unreachable} dialled and failed" else "") +
                     " ($elapsed elapsed)"
             }
 
             is Phase.Idle -> {
-                phase.nextInSec?.let { "idle — ${phase.events} event(s) last cycle, next in ${it}s" }
-                    ?: "backfilled ${phase.events} event(s); live tail only — no further cycles"
+                // The elapsed clock is the point here, not decoration: a stream
+                // that went idle forty-five minutes ago and one that finished a
+                // second ago printed the same line, and an ingest queue draining
+                // behind a finished cycle looked exactly like a stalled router.
+                phase.nextInSec?.let { "idle — ${phase.events} event(s) received last cycle, next in ${it}s ($elapsed ago)" }
+                    ?: "backfilled ${phase.events} event(s); live tail only — no further cycles ($elapsed ago)"
             }
 
             is Phase.Failed -> {
-                "failed: ${phase.reason} — retry in ${phase.retrySec}s"
+                "failed: ${phase.reason} — retry in ${phase.retrySec}s ($elapsed ago)"
             }
         }
     }
 
     /**
-     * `, 2350/s` — throughput for the phase, or nothing when it is too early
-     * to mean anything. The clock is the PHASE's, so this is the rate of the
-     * work being described rather than a lifetime average.
+     * `, 2350/s received` — throughput for the phase, or nothing when it is too
+     * early to mean anything.
+     *
+     * Two things this is NOT, both of which it has been read as. The clock is
+     * the PHASE's, so it is the rate of the work being described rather than a
+     * lifetime average. And the numerator is events RECEIVED FROM UPSTREAMS by
+     * this one stream — the health line's `ev/s` is events reaching ingest
+     * across every stream, after dedup drops the copies the other relays already
+     * delivered, so the two are counted differently on purpose and disagreeing
+     * is not a fault in either.
      */
     private fun rate(
         events: Long,
@@ -224,6 +375,6 @@ class StreamPhases {
     ): String {
         // Under a second the divisor is noise and the answer is a wild number.
         if (elapsedMs < 1_000 || events <= 0) return ""
-        return ", ${events * 1000 / elapsedMs}/s"
+        return ", ${events * 1000 / elapsedMs}/s received"
     }
 }

@@ -22,7 +22,11 @@ package com.nosfabrica.vespa.relay.server
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
+import kotlinx.serialization.json.buildJsonObject
+import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.jsonObject
+import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.Files
 import java.nio.file.StandardCopyOption
@@ -81,6 +85,71 @@ class StatsSnapshot(
     }
 
     /**
+     * Say, in the served document, that it is no longer current — and why.
+     *
+     * ## The failure this ends
+     *
+     * A rollup that throws keeps the previous document serving, which is right:
+     * blanking a page because one refresh failed is worse than showing a slightly
+     * old one. But the page then had NO WAY to tell the two apart. A document
+     * from four hours ago and one from four minutes ago carried the same
+     * `generatedAt` semantics, the same everything — so a stats service that had
+     * been failing all night looked exactly like a healthy one, and the operator
+     * only ever found out by noticing a number that had not moved. "Stale" and
+     * "crashed" were the same picture.
+     *
+     * So the previous document is re-published with a `stale` member naming the
+     * reason and the moment the attempt was made. It costs one parse-and-encode
+     * per FAILURE, which is a cost paid only when something is already wrong.
+     *
+     * ## Why it re-publishes instead of a side channel
+     *
+     * The document is the artifact. A header, or a second endpoint, would be a
+     * fact about the response rather than about the data, and every reader that
+     * caches or forwards `/stats.json` — which is the point of the ETag — would
+     * drop it. Anything that reads the document reads this with it.
+     *
+     * Silent no-op before the first rollup: there is nothing to mark, and
+     * minting a document whose only member is `stale` would serve a shape the
+     * page has to special-case for a state it already draws ("not computed yet").
+     */
+    fun markStale(
+        reason: String,
+        atSeconds: Long = System.currentTimeMillis() / 1000,
+    ) {
+        val existing = current.get() ?: return
+        runCatching {
+            val doc = Json.parseToJsonElement(existing.bytes.decodeToString()).jsonObject
+            // Rebuilt rather than mutated in place: `stale` must go on the
+            // OUTSIDE of whatever the rollup produced, and a document that
+            // already carries one from a previous failure gets the newer reason
+            // rather than two.
+            val marked =
+                buildJsonObject {
+                    for ((member, value) in doc) if (member != "stale") put(member, value)
+                    put(
+                        "stale",
+                        buildJsonObject {
+                            put("reason", reason)
+                            put("since", atSeconds)
+                            // The reader's arithmetic, done here, because the
+                            // interesting quantity is the AGE and the page would
+                            // otherwise have to know the rollup's interval to
+                            // decide whether one skipped refresh is a problem.
+                            (doc["generatedAt"] as? JsonPrimitive)?.contentOrNull?.let { put("generatedAt", it) }
+                        },
+                    )
+                }
+            publish(marked)
+        }.onFailure {
+            // The served document stays exactly as it was. Losing the staleness
+            // notice is a small harm; losing the statistics because the notice
+            // could not be attached is not one worth risking.
+            System.err.println("stats: could not mark the served document stale (${it.message})")
+        }
+    }
+
+    /**
      * Seed from [path] if it holds a parseable document. A missing or corrupt
      * file is not an error: the next rollup overwrites it, and the page's own
      * "not computed yet" state is the correct thing to show meanwhile. Corrupt
@@ -97,6 +166,12 @@ class StatsSnapshot(
             // name, and the parse is the only check available.
             Json.parseToJsonElement(bytes.decodeToString()).jsonObject
             current.set(Served(bytes, etagOf(bytes)))
+            // Seeded, not computed — and the page must be able to tell. This
+            // document was written by a previous process and can be arbitrarily
+            // old; a deploy that ships a broken rollup would otherwise serve
+            // last week's numbers under this relay's name with nothing saying so.
+            // Cleared by the first successful rollup, which publishes without it.
+            markStale("served from $path after a restart; no rollup has completed in this process yet")
         }.onFailure { e ->
             System.err.println("stats: could not read $path (${e.message}) — serving nothing until the first rollup")
         }

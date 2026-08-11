@@ -32,6 +32,7 @@ import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
 import com.nosfabrica.vespa.relay.router.heal.Healer
+import com.nosfabrica.vespa.relay.router.progress.CycleTally
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
@@ -240,6 +241,29 @@ internal class DynamicSync(
                     canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
                     onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
                 )
+                // The disposition of this cycle's urls, opened here rather than
+                // in [cycle] so that `discovered` counts what discovery handed
+                // over and `foldedOntoAnother` the difference the fold made —
+                // both of which are decided above and neither of which [cycle]
+                // can see. Without this the ~11,400 urls between "discovered"
+                // and "has a band" had no published account at all.
+                val tally =
+                    CycleTally(
+                        discovered = candidates.size,
+                        foldedOntoAnother = (candidates.size - relays.size).coerceAtLeast(0),
+                        // By AUTHORITY, so the count says how many servers this
+                        // is, not how many strings. Arithmetic over urls, not
+                        // the fold's verdict — see [CycleTally].
+                        hosts =
+                            relays
+                                .mapNotNull {
+                                    it.url.url
+                                        .substringAfter("://")
+                                        .substringBefore("/")
+                                        .ifEmpty { null }
+                                }.distinct()
+                                .size,
+                    )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {
@@ -247,7 +271,7 @@ internal class DynamicSync(
                     // set for the whole fan-out, and two large sets resident
                     // at once is what pushed the heap to its ceiling.
                     phases.set(stream.name, StreamPhases.Phase.Queued(relays.size))
-                    streamGate.withPermit { cycle(stream, dynamic, sourceNames, relays) }
+                    streamGate.withPermit { cycle(stream, dynamic, sourceNames, relays, tally) }
                     ran = true
                 } else {
                     // No id set, so nothing to serialise for. Taking the permit
@@ -257,7 +281,7 @@ internal class DynamicSync(
                     // relays each, for a heap cost neither of them can incur.
                     // StaticBackfill has always gated this way — it takes the
                     // permit only when it has reconcilers to snapshot for.
-                    cycle(stream, dynamic, sourceNames, relays)
+                    cycle(stream, dynamic, sourceNames, relays, tally)
                     ran = true
                 }
             } catch (e: CancellationException) {
@@ -266,6 +290,12 @@ internal class DynamicSync(
                 throw e
             } catch (e: Exception) {
                 phases.set(stream.name, StreamPhases.Phase.Failed(e.message?.take(80) ?: e.javaClass.simpleName, retrySec))
+                // A cycle that threw at 80% used to leave exactly what a cycle
+                // that finished leaves: nothing. The outcome is stamped here so
+                // the two stop reading the same, and `endCycle` ignores the call
+                // when no cycle was running — a stream that failed during
+                // DISCOVERY must not re-date the last one that did.
+                phases.endCycle(stream.name, "failed")
             }
 
             if (ran) {
@@ -294,8 +324,15 @@ internal class DynamicSync(
         dynamic: RelayDiscoveryConfig,
         sourceNames: String,
         relays: List<DiscoveredRelay>,
+        tally: CycleTally,
     ) {
         val startedMs = System.currentTimeMillis()
+        phases.beginCycle(stream.name, tally)
+        // The walks of the PREVIOUS cycle, which are this cycle's noise. They
+        // are retained past their own end on purpose — that is what stops the
+        // percentage running backwards as relays finish — so the cycle boundary
+        // is the one place they can be cleared. See [PagingProgress.reset].
+        paging.reset(stream.name)
         val gate = Semaphore(dynamic.concurrency)
         val downloaded = AtomicLong()
         val failed = AtomicLong()
@@ -461,6 +498,7 @@ internal class DynamicSync(
                             // notice a container that restarted in seconds.
                             if (tor?.routes(relay.url) == true && !tor.socksAnswers()) {
                                 torless.incrementAndGet()
+                                tally.torUnavailable.incrementAndGet()
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
                                 return@launch
@@ -471,6 +509,7 @@ internal class DynamicSync(
                             // would otherwise cost a full connect timeout.
                             if (!tcpReachable(relay.url)) {
                                 reasons.merge("tcp: no route or refused", 1L, Long::plus)
+                                tally.noRoute.incrementAndGet()
                                 skipped.incrementAndGet()
                                 done.incrementAndGet()
                                 publishStrike(strikes, relay.url)
@@ -484,6 +523,7 @@ internal class DynamicSync(
                                 // a dead host's urls would still be dialled.
                                 if (strikes.isDead(relay.url)) {
                                     reasons.merge("skipped: authority already struck out", 1L, Long::plus)
+                                    tally.hostStruckOut.incrementAndGet()
                                     skipped.incrementAndGet()
                                     done.incrementAndGet()
                                     return@launch
@@ -501,6 +541,7 @@ internal class DynamicSync(
                                     // the finding NIP-66 exists for.
                                     got == UNREACHABLE -> {
                                         failed.incrementAndGet()
+                                        tally.unreachable.incrementAndGet()
                                         publishStrike(strikes, relay.url)
                                     }
 
@@ -511,16 +552,20 @@ internal class DynamicSync(
                                     // about someone else's server.
                                     got == TRANSFER_FAILED -> {
                                         failed.incrementAndGet()
+                                        tally.transferFailed.incrementAndGet()
                                     }
 
                                     got > 0 -> {
                                         downloaded.addAndGet(got.toLong())
+                                        tally.received.addAndGet(got.toLong())
+                                        tally.delivered.incrementAndGet()
                                         strikes.produced(relay.url)
                                     }
 
                                     // Answered cleanly with nothing new — a
                                     // working relay we are in sync with.
                                     else -> {
+                                        tally.nothingNew.incrementAndGet()
                                         strikes.produced(relay.url)
                                     }
                                 }
@@ -556,6 +601,7 @@ internal class DynamicSync(
                 ) +
                 "; next in ${dynamic.refreshSeconds}s",
         )
+        phases.endCycle(stream.name, "completed")
         phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.refreshSeconds))
     }
 
@@ -684,8 +730,14 @@ internal class DynamicSync(
                         // than a growing leak — but it never clears on its own,
                         // and a relay that stops being walked keeps it forever.
                         // `DeleteMissingSync.pageAsk` already does this.
-                        val w =
-                            try {
+                        //
+                        // `walked` is assigned INSIDE the try, not from the
+                        // expression's value: `finally` runs before that
+                        // assignment would, so reading the result out here is
+                        // the difference between telling PagingProgress the walk
+                        // drained and telling it nothing ever does.
+                        try {
+                            walked =
                                 client.fetchAllPages(
                                     url,
                                     listOf(flooredLeg),
@@ -693,11 +745,12 @@ internal class DynamicSync(
                                     onNewPage = { until -> paging.mark(walk, until) },
                                     onEvent = onEvent,
                                 )
-                            } finally {
-                                paging.finish(walk)
-                            }
-                        walked = w
-                        downloaded += w.downloaded
+                        } finally {
+                            // Still null on the throw path, which is exactly the
+                            // case that must not claim cover.
+                            paging.finish(walk, covered = walked?.drained == true)
+                        }
+                        downloaded += walked?.downloaded ?: 0
                     }
                 } else {
                     client

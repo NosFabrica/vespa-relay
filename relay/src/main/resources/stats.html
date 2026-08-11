@@ -275,6 +275,36 @@
      per-kind spans disagree, which is the band bug made visible. */
   .cov-seg.every { top: 4px; bottom: 4px; background: var(--text); opacity: .35; border-radius: 1px; }
 
+  /* ---- the cycle's disposition -------------------------------------------
+     One stacked bar per stream, over the urls it took on. A bar rather than a
+     table because the reader's question is proportional — "what became of the
+     fan-out" — and because a stack CANNOT be drawn unless the parts sum to the
+     whole, which is exactly the property the numbers behind it now have. */
+  .disp { display: flex; height: 10px; border-radius: 2px; overflow: hidden; background: var(--grid); margin: .35rem 0 .3rem; }
+  .disp > i { display: block; height: 100%; }
+  /* Reached and gave us something / reached and had nothing to give. Both are
+     the relay working, which is why they share the accent and differ in weight
+     rather than in hue. */
+  .disp > i.delivered { background: var(--accent); }
+  .disp > i.nothingNew { background: var(--accent); opacity: .45; }
+  /* Not reached. Warm, not red: a dead url in an old relay list is the ordinary
+     case on a fan-out this wide, not an incident. */
+  .disp > i.unreachable, .disp > i.noRoute, .disp > i.hostStruckOut { background: var(--warn); opacity: .6; }
+  /* Our own fault, or at least our own side: the transfer broke after a
+     handshake, or our proxy was down. */
+  .disp > i.transferFailed, .disp > i.torUnavailable { background: var(--warn); }
+  .disp > i.pending { background: var(--bar); }
+  .disp-key { display: flex; gap: .8rem; flex-wrap: wrap; font-size: .72rem; color: var(--muted); }
+  .disp-key b { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px; vertical-align: -.02em; margin-right: .25rem; }
+  .cyc { margin: 0 0 .9rem; }
+  .cyc-head { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
+  .cyc-head .nm { font-weight: 600; }
+  .cyc-head .ph { color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* A failed cycle is the one thing on this line worth looking at, and `.err`
+     alone loses to `.cyc-head .ph` on specificity — which drew it in the same
+     muted grey as a stream that finished cleanly. */
+  .cyc-head .ph.err { color: var(--warn); margin: 0; font-size: inherit; }
+
   .axis-track { position: relative; height: 1.15rem; margin-left: calc(var(--lab) + .6rem); }
   .axis-track span {
     position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted);
@@ -1164,6 +1194,153 @@ function mirrorLine(mirrors) {
 }
 
 /**
+ * WHAT THE ROUTER IS DOING, and what became of everything the current cycle
+ * took on.
+ *
+ * This sits above the coverage bars because it answers the questions asked
+ * first and because the coverage card cannot answer any of them. Coverage is
+ * accumulated across every run this router has ever made; this is one cycle,
+ * live, with an outcome.
+ *
+ * Three readings the card is arranged to make impossible:
+ *
+ *  - **"16,747/16,752" as progress.** That number is legs that RETURNED, and it
+ *    counts every leg that came back unreachable or capped. The stacked bar is
+ *    what actually became of them, and it is drawn from members that sum to the
+ *    total by construction — a stack cannot be drawn from counts that do not.
+ *  - **"discovered" as "dialled".** `foldedOntoAnother` is stated on its own
+ *    line, beside the host count, because most of the gap between a fan-out's
+ *    two big numbers is duplicate urls rather than lost relays.
+ *  - **A stopped router as a quiet one.** `staleForSec` is a heartbeat and is
+ *    rendered loudly past a couple of minutes, whatever the streams claim to be
+ *    doing — a phase line frozen mid-`fetching` is exactly what a dead process
+ *    leaves behind.
+ */
+const DISPOSITION = [
+  ["delivered", "delivered — reached, and it had events we did not"],
+  ["nothingNew", "in sync — reached, nothing new to give"],
+  ["pending", "still in flight"],
+  ["noRoute", "no route — TCP refused or the name does not resolve"],
+  ["unreachable", "unreachable — never answered"],
+  ["hostStruckOut", "host struck out this cycle by a sibling url; retried next cycle"],
+  ["transferFailed", "answered, then the transfer broke"],
+  ["torUnavailable", "our Tor proxy was down — nothing is claimed about these"],
+];
+
+/** Past this, a router that has not written its heartbeat is not running. */
+const HEARTBEAT_STALE_SEC = 150;
+
+function progressPanel(progress) {
+  if (!progress) return null;
+  const wrap = el("div");
+  const beat = el("p", "card-sub");
+  // Phrased against the ROLLUP's clock, not the reader's, because that is the
+  // only clock that saw the file. `ago(writtenAt)` would fold in however long
+  // this document has been cached and report a working router as dead every
+  // time a rollup ran late — and the footer already says how old the document
+  // is, which is the reader-side half of the same question.
+  if (progress.staleForSec == null) {
+    beat.append("The router published no heartbeat, so nothing here can be dated.");
+  } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
+    // The loud case, and deliberately louder than the phase lines under it: a
+    // stream frozen mid-`fetching` looks busy, and looks exactly the same
+    // whether the process is working or gone.
+    beat.appendChild(el("span", "err",
+      `The router had said nothing for ${fmtDur(progress.staleForSec)} when this was computed — ` +
+      `the sync process is probably not running. Everything below is what it was doing then.`));
+  } else {
+    beat.append(`Router heartbeat ${fmtDur(progress.staleForSec)} before this rollup.`);
+  }
+  beat.title = `router last wrote at ${isoOf(progress.writtenAt)}`;
+  wrap.appendChild(beat);
+
+  for (const s of progress.streams || []) {
+    const box = el("div", "cyc");
+    const head = el("div", "cyc-head");
+    head.appendChild(el("span", "nm", s.name));
+    const c = s.cycle;
+    // The phase, its age, and the cycle's verdict — the three together are what
+    // separate "working", "finished" and "died here".
+    const outcome = c && c.outcome;
+    const phase = el("span", "ph",
+      `${s.phase || "unknown"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}` +
+      (outcome && outcome !== "running" ? ` · last cycle ${outcome}` : ""));
+    if (outcome === "failed") phase.className = "ph err";
+    head.appendChild(phase);
+    box.appendChild(head);
+    if (!c) {
+      box.appendChild(el("p", "why", "No cycle has run yet on this stream."));
+      wrap.appendChild(box);
+      continue;
+    }
+
+    const u = c.urls || {};
+    const taken = c.taken || {};
+    const total = u.taken || 0;
+    if (total > 0) {
+      const bar = el("div", "disp");
+      for (const [key] of DISPOSITION) {
+        const n = taken[key] || 0;
+        if (!n) continue;
+        const seg = el("i", key);
+        seg.style.width = (n / total) * 100 + "%";
+        seg.title = `${fmt(n)} of ${fmt(total)} — ${DISPOSITION.find((d) => d[0] === key)[1]}`;
+        bar.appendChild(seg);
+      }
+      box.appendChild(bar);
+      const key = el("div", "disp-key");
+      for (const [k, label] of DISPOSITION) {
+        const n = taken[k] || 0;
+        if (!n) continue;
+        const item = el("span");
+        const b = el("b");
+        // The bar's own tone, taken from the same class name, so the key can
+        // never drift from the thing it is a key to.
+        const probe = el("i", k);
+        probe.style.display = "none";
+        bar.appendChild(probe);
+        b.style.background = getComputedStyle(probe).backgroundColor;
+        b.style.opacity = getComputedStyle(probe).opacity;
+        probe.remove();
+        item.appendChild(b);
+        item.append(`${fmt(n)} ${label.split(" — ")[0]}`);
+        item.title = label;
+        key.appendChild(item);
+      }
+      box.appendChild(key);
+    }
+
+    // The line that accounts for the OTHER gap — the one between what discovery
+    // found and what was dialled. On a real fan-out this is most of it, and it
+    // is duplicate urls rather than relays that went missing.
+    const acct = el("p", "why");
+    acct.append(
+      `${fmt(u.discovered || 0)} url(s) discovered · ` +
+      `${fmt(u.foldedOntoAnother || 0)} folded onto another url · ` +
+      `${fmt(total)} taken on` +
+      (c.hosts != null ? ` across ${fmt(c.hosts)} host(s)` : "") +
+      `. ${fmt(c.received || 0)} event(s) received at the socket` +
+      ` (ingest drops the copies other relays already sent, so the store gains fewer).`);
+    if (c.accountedFor === false) {
+      // Published rather than hidden: the counts are still worth having, and
+      // this is what stops a reader treating a broken partition as a whole one.
+      acct.appendChild(el("span", "err", " These counts do not add up to their own total — read them as approximate."));
+    }
+    box.appendChild(acct);
+    wrap.appendChild(box);
+  }
+  return wrap;
+}
+
+/** `4m` / `2h 10m` — a duration in seconds, for the phase clock. */
+function fmtDur(sec) {
+  if (sec < 90) return `${sec}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)}m`;
+  const h = Math.floor(sec / 3600);
+  return `${h}h ${Math.round((sec - h * 3600) / 60)}m`;
+}
+
+/**
  * How much of each stream's relay list is in sync, and how far the current
  * sweeps have got.
  *
@@ -1207,6 +1384,12 @@ function syncCard(section) {
   // could otherwise only describe as emptiness.
   const mirrors = mirrorLine(d.mirrors);
   if (mirrors) card.appendChild(mirrors);
+  // ABOVE the bars, and before the early return: what the router is doing right
+  // now is the question asked first, and it is the one thing on this card that
+  // still has an answer when the mirror has walked nothing at all. A router
+  // three minutes into its first cycle used to render as an empty card.
+  const progress = progressPanel(d.progress);
+  if (progress) card.appendChild(progress);
   if (!streams.length) return card;
 
   const from = d.from, to = d.to;
@@ -1222,8 +1405,11 @@ function syncCard(section) {
 
   const legend = el("div", "legend");
   for (const [tone, text] of [
-    ["done", "reconciled — negentropy finished"],
-    ["paged", "paged — walked, not proven exhaustive"],
+    // The words are the document's, not this page's — see `sync.terms`. "done"
+    // used to cover three different states here and elsewhere; these are the
+    // two the bar can actually distinguish.
+    ["done", "settled — nothing outstanding below this span"],
+    ["paged", "open — walked, not proven exhaustive"],
     ["live", "sweeping now"],
   ]) {
     const s = el("span");
@@ -1291,7 +1477,11 @@ function syncCard(section) {
       const seg = el("i", `cov-seg ${r.complete ? "done" : "paged"}`);
       place(seg, r.min, r.max);
       seg.title =
-        `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
+        `${r.relay}\n${day(r.min)} → ${day(r.max)} — the span this stream WALKED here\n` +
+        // A band is walk state, not holdings, and the two were read as one. A
+        // floor newer than the oldest stored event of that kind is ordinary:
+        // another stream, or an earlier config, put those events in the store.
+        `(walk state for this stream, not what the store holds)\n` +
         // `complete` stopped meaning "negentropy" when a drained paged walk
         // started earning it too — an EOSE on an empty page proves the same
         // thing a finished reconcile does, that there is nothing left below.
@@ -1366,7 +1556,7 @@ function syncCard(section) {
       // normalise it away; it is the closest this page gets to the "never asked"
       // count SyncCoverageReport says it cannot give.
       i.style.height = Math.max(1, (n[b] / Math.max(1, rows.length)) * 24) + "px";
-      i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays (${fmt(done[b])} reconciled)`;
+      i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays walked here (${fmt(done[b])} settled)`;
       strip.appendChild(i);
     }
     return strip;
@@ -1397,7 +1587,7 @@ function syncCard(section) {
       if (r.sweep) sweeping++;
     }
     return (
-      `${fmt(reconciled)} reconciled · ${fmt(paged)} paged` +
+      `${fmt(reconciled)} settled · ${fmt(paged)} open` +
       (sweeping ? ` · ${fmt(sweeping)} sweeping` : "") +
       // The denominator stays visible, same rule as the Kinds table: a head
       // reading "3 relays walked" describes a stream that walked thousands.
@@ -1445,6 +1635,16 @@ function syncCard(section) {
       const who = el("span", "grp-stream", s.name);
       who.title = `router stream "${s.name}"`;
       name.appendChild(who);
+    } else if (s.unnamed) {
+      // SAID, not left to be inferred from a missing label. Two of these turned
+      // up on a production card carrying 2,600 relays between them and no
+      // identity at all, which reads as two undocumented mirrors rather than as
+      // one migration shim.
+      const who = el("span", "grp-stream", "unnamed");
+      who.title =
+        "state written before the router's files nested by stream, so these keys name no stream. " +
+        "Not a second mirror — it disappears once every deployment has booted on a build that writes the nested shape.";
+      name.appendChild(who);
     }
     const kinds = (s.filter && s.filter.kinds) || [];
     // What the group's legs were split BY, spelled out. A `relaySource` that
@@ -1467,9 +1667,14 @@ function syncCard(section) {
     name.appendChild(chip);
     head.appendChild(name);
     const stat = el("div", "grp-stat",
-      `${fmt(s.reconciled || 0)} reconciled · ${fmt(s.paged || 0)} paged` +
+      `${fmt(s.reconciled || 0)} settled · ${fmt(s.paged || 0)} open` +
       (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
       ` · ${fmt(s.relays || 0)} relays walked` +
+      // Beside the url count, never instead of it. One server answers on every
+      // path, so a relay list mints urls without limit and every url-keyed
+      // number here is inflated until the alias fold decides them — measured,
+      // 3,272 urls on 850 hosts. The GAP is the disclosure.
+      (s.hosts != null && s.hosts !== s.relays ? ` on ${fmt(s.hosts)} host(s)` : "") +
       // Present only when a narrow asked one relay more than once, and then it
       // is the number that explains the other three: these counts are per
       // RELAY, and a relay counts as reconciled only when every leg of it did.
@@ -1806,6 +2011,14 @@ function render(doc) {
   }
 
   bodyEl.replaceChildren();
+  // FIRST, above the hero numbers, because everything under it is being served
+  // from a document the relay has already declared out of date. A rollup that
+  // has been failing all night otherwise draws a page indistinguishable from a
+  // healthy one — the numbers simply stop moving, which is how a stale cache
+  // comes to look like a crash. The footer's age line is a heuristic on the
+  // reader's side; this is the relay saying it, with a reason.
+  const stale = staleBanner(doc.stale);
+  if (stale) bodyEl.appendChild(stale);
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
 
   // Trust sits SECOND, right under the corpus totals, because it is the only
@@ -1852,6 +2065,29 @@ function render(doc) {
   }
 
   renderFoot(doc);
+}
+
+/**
+ * The relay's own statement that this document is no longer current.
+ *
+ * Distinct from the footer's age line, and both are wanted. The footer measures
+ * `generatedAt` against the reader's clock and INFERS that something may have
+ * stopped; this is the relay reporting that its last rollup failed, or that it
+ * is serving a file written by a previous process, and saying WHY. An operator
+ * seeing the second one does not have to work out whether fifteen minutes is
+ * long enough to worry about.
+ */
+function staleBanner(stale) {
+  if (!stale || !stale.reason) return null;
+  const p = el("p", "err");
+  p.append(`These numbers are not current: ${stale.reason}.`);
+  if (stale.since != null) {
+    const when = el("span", null, ` Noticed ${ago(stale.since)}`);
+    when.title = isoOf(stale.since);
+    p.appendChild(when);
+    p.append(stale.generatedAt ? `; they were computed at ${stale.generatedAt}.` : ".");
+  }
+  return p;
 }
 
 function renderFoot(doc) {

@@ -255,7 +255,9 @@ internal class DeleteMissingSync(
             var walked: PagedFetchResult? = null
             paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
             try {
-                val w =
+                // Assigned inside the try, so `finally` can tell PagingProgress
+                // whether the walk drained — see [PagingProgress.finish].
+                walked =
                     client.fetchAllPages(
                         url,
                         listOf(leg),
@@ -271,10 +273,9 @@ internal class DeleteMissingSync(
                             ingest.submit(event, stream.trusted, origin)
                         }
                     }
-                walked = w
-                downloaded += w.downloaded
+                downloaded += walked?.downloaded ?: 0
             } finally {
-                paging.finish(walk)
+                paging.finish(walk, covered = walked?.drained == true)
             }
             bands.record(
                 stream.name,

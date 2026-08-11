@@ -568,6 +568,66 @@ live declaration from one left behind by a router that was switched off. What is
 written is what is **running** — `SYNC_STREAMS` narrows the file too, because a
 stream that is not running mirrors nothing.
 
+## Publishing what this router is doing
+
+The manifest says what the mirror *would* hold. Nothing said whether it was
+working — that lived only in the log lines `StreamPhases` prints, i.e. in
+whatever a container's stderr had not yet rotated away. Three questions had no
+answer on the serving side at all: is the router alive, did the last cycle
+finish or abort, and what became of the urls it took on. A production fan-out
+reported **16,752 relays discovered** against **5,323 carrying a band**, with no
+published account of the other ~11,400.
+
+Set `SYNC_PROGRESS_FILE` and the router rewrites it on every progress tick:
+
+```json
+{
+  "writtenAt": 1770000000,
+  "streams": [
+    {
+      "name": "content",
+      "phase": "fetching",
+      "phaseForSec": 412,
+      "cycle": {
+        "startedAt": 1769999000, "outcome": "running",
+        "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "taken": 5323},
+        "hosts": 850,
+        "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
+                  "transferFailed": 100, "noRoute": 1100, "hostStruckOut": 200,
+                  "torUnavailable": 0, "pending": 23},
+        "balanced": true,
+        "received": 481203
+      }
+    }
+  ]
+}
+```
+
+Three things are load-bearing here.
+
+**`writtenAt` is a heartbeat**, not a modification time. It advances on every
+tick whatever the streams are doing, so the relay can publish `staleForSec` — how
+long the router has gone without saying anything — and a mirror that stopped an
+hour ago stops looking like one that is simply between cycles.
+
+**`urls` and `taken` are a partition, not a tally.** `discovered =
+foldedOntoAnother + taken`, and the eight outcomes under `taken` sum to it
+exactly. `pending` is what closes the second identity *while the cycle runs*: it
+is derived from the other seven rather than counted, so the numbers add up
+mid-fan-out instead of only at the end. `balanced` is the router's own check on
+them, published rather than asserted, and the relay recomputes it as
+`accountedFor` on the other side — the two disagreeing localises the fault.
+
+**`hosts` sits beside the url counts, never instead of them.** Most relay
+software answers on every path, so one server wears many urls and every url-keyed
+number is inflated until the alias fold decides them (measured: 3,272 urls on 850
+hosts). The gap between the two *is* the disclosure.
+
+The relay publishes all of it as `sync.progress` on `/stats.json`, beside a
+`sync.terms` glossary defining every number in the section — including the three
+different things the word "done" used to cover: a fan-out leg that *returned*, a
+walk that *settled*, and the span every kind has produced *evidence* for.
+
 ## Enabling it under docker compose
 
 The router is the `sync` service, behind the `sync` profile — the profile is

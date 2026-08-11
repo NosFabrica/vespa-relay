@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
+import com.nosfabrica.vespa.relay.router.progress.SyncProgress
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.router.refused.RouterRefusalSink
@@ -123,6 +124,10 @@ class SyncEngine(
     // replaceable is dropped before it is verified. Same reason as knownIds:
     // the query is the store's, the pipeline takes a function.
     newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
+    // SYNC_PROGRESS_FILE: what each stream is doing, and the disposition of
+    // every url its current cycle took on, written where the relay can publish
+    // it. Unset writes nothing — see [SyncProgress].
+    private val progressFile: SyncProgress = SyncProgress(null),
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -382,7 +387,16 @@ class SyncEngine(
             scope.launch {
                 while (scope.isActive) {
                     delay(PROGRESS_INTERVAL_MS)
+                    val streams = phases.snapshot()
                     phases.report().forEach { System.err.println(it) }
+                    // On the same tick as the log lines, and unconditionally.
+                    // `writtenAt` is a HEARTBEAT: a router that is merely quiet
+                    // and one that has stopped are the same document on the
+                    // other side unless this advances whatever the streams are
+                    // doing. It is also why this is not inside the loop's
+                    // per-stream body — a config with no stream to report would
+                    // publish nothing and read as a dead router.
+                    progressFile.write(streams)
                 }
             }
         }

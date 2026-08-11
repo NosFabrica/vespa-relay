@@ -105,6 +105,13 @@ internal class StatsRollup(
     private val syncBandsFile: File? = null,
     private val syncSweepsFile: File? = null,
     private val syncManifestFile: File? = null,
+    /**
+     * The router's heartbeat and per-cycle disposition. A fourth file for the
+     * same reason there is a third: it is neither state the router accumulates
+     * nor config it declares, but what it is doing right now — and it is the
+     * only one whose ABSENCE from an advancing clock is itself the finding.
+     */
+    private val syncProgressFile: File? = null,
 ) {
     /** Compute the whole document. Never throws: a section that fails says so in the document. */
     suspend fun compute(): JsonObject {
@@ -170,11 +177,11 @@ internal class StatsRollup(
      * contract every queried section has.
      */
     private suspend fun syncSection(): JsonObject? {
-        if (syncBandsFile == null && syncSweepsFile == null && syncManifestFile == null) return null
+        if (syncBandsFile == null && syncSweepsFile == null && syncManifestFile == null && syncProgressFile == null) return null
         var data: JsonObject? = null
         val section =
             section { attempts ->
-                // TWO attempts, not one, and that is the whole reason this reads
+                // ONE ATTEMPT PER FILE, and that is the whole reason this reads
                 // the way it does: the coverage is minutes of the router's work
                 // and the manifest is a few hundred bytes of config, so an
                 // unreadable manifest must not be able to take the card with it.
@@ -183,13 +190,23 @@ internal class StatsRollup(
                 // coverage it had already computed thrown away.
                 val coverage = attempt(attempts, "sync") { SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds()) }
                 val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
+                val progress = attempt(attempts, "progress") { SyncProgressReport.build(readOrNull(syncProgressFile), nowSeconds()) }
                 data =
-                    if (coverage == null && mirrors == null) {
+                    if (coverage == null && mirrors == null && progress == null) {
                         null
                     } else {
                         buildJsonObject {
                             coverage?.forEach { (member, value) -> put(member, value) }
                             mirrors?.let { put("mirrors", it) }
+                            progress?.let { put("progress", it) }
+                            // What every number above MEANS, in the document
+                            // that carries them. Emitted only when there is
+                            // something to explain — a glossary over an absent
+                            // section is 2KB of definitions for nothing — and
+                            // last, because it is the largest member here and
+                            // the least likely to be read first. See
+                            // [SyncVocabulary] for why it ships at all.
+                            put("terms", SyncVocabulary.TERMS)
                         }
                     }
                 data ?: buildJsonObject { }
@@ -1063,6 +1080,12 @@ internal fun launchStatsRollup(
                     // assembly itself broke — worth a loud line, and worth
                     // keeping the previous document rather than blanking it.
                     System.err.println("stats: rollup failed (${e.message}) — serving the previous document")
+                    // …and saying so IN the document. A stats service that has
+                    // been failing all night otherwise serves a page
+                    // indistinguishable from a healthy one, which is how a
+                    // stale cache comes to look like a crash: the numbers stop
+                    // moving and nothing anywhere says why.
+                    snapshot.markStale("the last rollup failed: ${e.message ?: e.javaClass.simpleName}")
                 }
             delay(everySeconds * 1000)
         }
