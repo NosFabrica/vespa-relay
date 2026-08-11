@@ -1,0 +1,241 @@
+/*
+ * Copyright (c) 2026 NosFabrica
+ *
+ * Permission is hereby granted, free of charge, to any person obtaining a copy of
+ * this software and associated documentation files (the "Software"), to deal in
+ * the Software without restriction, including without limitation the rights to use,
+ * copy, modify, merge, publish, distribute, sublicense, and/or sell copies of the
+ * Software, and to permit persons to whom the Software is furnished to do so,
+ * subject to the following conditions:
+ *
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+ *
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+ * FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR
+ * COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN
+ * AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+ * WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+ */
+package com.nosfabrica.vespa.relay.maintenance
+
+import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.jsonPrimitive
+import kotlin.test.Test
+import kotlin.test.assertEquals
+import kotlin.test.assertTrue
+
+/**
+ * The glossary against the numbers it is a glossary FOR.
+ *
+ * The failure this pins is silent and inevitable otherwise: a new count is
+ * published, nobody adds a term, and the section is back to numbers that cannot
+ * be read without this repository open beside them — which is the whole
+ * complaint. So the terms are checked against the members the other two reports
+ * actually emit, in both directions.
+ */
+class SyncVocabularyTest {
+    /**
+     * Members that carry no NUMBER and need no entry: identifiers, timestamps,
+     * and structures whose own children are what a reader looks up.
+     *
+     * Deliberately short and deliberately explicit. Every addition to it is a
+     * decision that something is self-describing, which is exactly the judgement
+     * that produced the unreadable section in the first place — so it should be
+     * uncomfortable to extend.
+     */
+    private val selfDescribing =
+        setOf(
+            // `kinds` is the FILTER's own member, echoed back verbatim — a
+            // Nostr kind list needs no gloss from this relay.
+            "name",
+            "phase",
+            "phaseForSec",
+            "filter",
+            "kinds",
+            "narrowedBy",
+            "cycle",
+            "streams",
+            "rows",
+            "from",
+            "to",
+            "startedAt",
+            "endedAt",
+            "writtenAt",
+            "relay",
+            "min",
+            "max",
+            "complete",
+            "fullAt",
+            "everyKindMin",
+            "everyKindMax",
+            "sweep",
+            "target",
+            "cap",
+            "mirrors",
+            "terms",
+            "reconciled",
+            "paged",
+            "balanced",
+            "urls",
+            "taken",
+        )
+
+    @Test
+    fun `every number the sync section publishes has a term`() {
+        val coverage =
+            SyncCoverageReport.build(
+                bandsJson =
+                    """
+                    {"content": {"{\"kinds\":[1]}": {"wss://a.example/": {"min": 100, "max": 200, "complete": true}}}}
+                    """.trimIndent(),
+                sweepsJson = null,
+                nowSeconds = 1_000,
+            )!!
+        val progress =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [{"name": "content", "phase": "idle", "phaseForSec": 5,
+                 "cycle": {"startedAt": 800, "outcome": "completed",
+                   "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3},
+                   "hosts": 2, "taken": {"delivered": 3}, "balanced": true, "received": 9}}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+
+        val published = mutableSetOf<String>()
+
+        fun walk(o: JsonObject) {
+            for ((member, value) in o) {
+                published += member
+                when (value) {
+                    is JsonObject -> walk(value)
+                    is JsonArray -> value.filterIsInstance<JsonObject>().forEach(::walk)
+                    else -> Unit
+                }
+            }
+        }
+        walk(coverage)
+        walk(progress)
+
+        val undefined = published - selfDescribing - SyncVocabulary.TERMS.keys
+        assertTrue(
+            undefined.isEmpty(),
+            "published with no term, so a reader needs the source to read them: $undefined",
+        )
+    }
+
+    @Test
+    fun `no term describes something the document never publishes`() {
+        // A definition for an absent member is a promise the document does not
+        // keep, and it is how a glossary rots into fiction.
+        val known =
+            selfDescribing +
+                setOf(
+                    // Names for CONCEPTS rather than for members — the three
+                    // meanings of "done" that had to be told apart, plus the
+                    // one deliberately NOT published here.
+                    "scope",
+                    "returned",
+                    "settled",
+                    "open",
+                    "walkEnvelope",
+                    "evidence",
+                    "holdings",
+                    "frame",
+                    "unnamed",
+                    "outcome",
+                    "accountedFor",
+                    "staleForSec",
+                ) +
+                setOf(
+                    "relays",
+                    "hosts",
+                    "legs",
+                    "sweeping",
+                    "rows",
+                    "discovered",
+                    "foldedOntoAnother",
+                    "taken",
+                    "delivered",
+                    "nothingNew",
+                    "unreachable",
+                    "transferFailed",
+                    "noRoute",
+                    "hostStruckOut",
+                    "knownDead",
+                    "torUnavailable",
+                    "excluded",
+                    "foldedOnto",
+                    "pending",
+                    "received",
+                )
+
+        assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")
+    }
+
+    @Test
+    fun `the three meanings of done are named apart`() {
+        // The core of the complaint: one word covered a leg that RETURNED, a
+        // walk that SETTLED, and the span every kind has EVIDENCE for — and the
+        // first, which is the least meaningful, was being read as progress.
+        val terms = SyncVocabulary.TERMS
+
+        assertTrue(terms["returned"]!!.jsonPrimitive.content.contains("not progress"))
+        assertTrue(terms["settled"]!!.jsonPrimitive.content.contains("Nothing outstanding"))
+        assertTrue(terms["evidence"]!!.jsonPrimitive.content.contains("not a coverage claim"))
+        // And the fourth thing none of them is.
+        assertTrue(terms["holdings"]!!.jsonPrimitive.content.contains("NOT PUBLISHED HERE"))
+    }
+
+    @Test
+    fun `approximations say they are approximations`() {
+        assertTrue(
+            SyncVocabulary.TERMS["frame"]!!
+                .jsonPrimitive.content
+                .startsWith("APPROXIMATE"),
+        )
+        assertTrue(
+            SyncVocabulary.TERMS["returned"]!!
+                .jsonPrimitive.content
+                .startsWith("APPROACH ONLY"),
+        )
+    }
+
+    @Test
+    fun `the two not-dialled-for-being-dead states state opposite retry policies`() {
+        // They were one number called "skipped as dead", which answered "will it
+        // try again, and when" in two opposite ways under one label.
+        val struck = SyncVocabulary.TERMS["hostStruckOut"]!!.jsonPrimitive.content
+        val dead = SyncVocabulary.TERMS["knownDead"]!!.jsonPrimitive.content
+
+        assertTrue(struck.contains("next cycle"), "the cycle-local one says so: $struck")
+        assertTrue(dead.contains("TTL"), "the durable one says how long: $dead")
+        assertTrue(dead.contains("hostStruckOut"), "and points at the one it is not")
+    }
+
+    @Test
+    fun `the fold says where the per-url answer actually lives`() {
+        // `/stats.json` publishes a bounded summary; the full per-url verdict is
+        // a signed record in the store, and a reader has to be told that rather
+        // than concluding the information does not exist.
+        val fold = SyncVocabulary.TERMS["foldedOnto"]!!.jsonPrimitive.content
+
+        assertTrue(fold.contains("30166"), "got: $fold")
+        assertTrue(fold.contains("omitted"), "a truncated list has to disclose the truncation: $fold")
+    }
+
+    @Test
+    fun `a stream-scoped count says it is stream-scoped`() {
+        // One relay settled under one stream and open under another is not a
+        // contradiction, and the document has to say why before a reader files
+        // it as one.
+        assertTrue(
+            SyncVocabulary.TERMS["scope"]!!
+                .jsonPrimitive.content
+                .contains("per STREAM"),
+        )
+    }
+}

@@ -30,6 +30,7 @@ import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.config.syncEnv
+import com.nosfabrica.vespa.relay.router.progress.SyncProgress
 import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -161,6 +162,18 @@ fun main() {
         )
     }
 
+    // What each stream is DOING, rewritten on the progress tick. Unlike the
+    // manifest this is state, and unlike the bands it is a heartbeat: the file's
+    // `writtenAt` is the only thing on the relay's side of the volume that can
+    // tell a quiet router from a stopped one.
+    val progressFile = SyncProgress.fromEnv(env)
+    if (!progressFile.publishes) {
+        System.err.println(
+            "router: SYNC_PROGRESS_FILE unset — the relay cannot say what this router is doing, " +
+                "so a cycle that failed and one that finished will read the same on /stats.html",
+        )
+    }
+
     // One level finer than the bands: what each peer will reconcile in one
     // window, and how far down the timeline the running sweep already got.
     val sweepState = SweepState.fromEnv(env)
@@ -196,6 +209,7 @@ fun main() {
             wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
             torSettings = torSettings,
+            progressFile = progressFile,
             // The raw engine index, not the trust-projected store: the
             // projection's existingIds delegates straight through, and this is
             // a pure read that counts and never mutates — the use its own

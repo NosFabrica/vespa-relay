@@ -68,17 +68,108 @@ class PagingProgressTest {
     }
 
     @Test
-    fun `a finished walk leaves the average`() {
+    fun `a finished walk stays in the average, so the fraction cannot go backwards`() {
+        // The bug this replaces: `finish` used to REMOVE the walk, so a relay
+        // that completed left the numerator and the denominator together and a
+        // stream whose fast relays drained first fell from 60% to 20% while
+        // strictly gaining ground.
         val p = PagingProgress()
-        p.begin("a", top = 1_000L, bottom = 0L)
-        p.begin("b", top = 1_000L, bottom = 0L)
-        p.mark("b", 500L)
+        p.begin("s|a", top = 1_000L, bottom = 0L)
+        p.begin("s|b", top = 1_000L, bottom = 0L)
+        p.mark("s|b", 500L)
 
-        p.finish("a")
+        val before = p.fraction("s")!!
+        p.finish("s|a", covered = true)
 
-        assertEquals(0.5, p.fraction()!!, 0.001, "only b is still walking")
-        p.finish("b")
-        assertNull(p.fraction(), "nothing walking means no number to report")
+        assertEquals(0.75, p.fraction("s")!!, 0.001, "a is done (1.0) and b is half way")
+        assertTrue(p.fraction("s")!! >= before, "finishing a walk may never lower the fraction")
+
+        p.finish("s|b", covered = true)
+        assertEquals(1.0, p.fraction("s")!!, 0.001, "every walk settled")
+    }
+
+    @Test
+    fun `a walk that ended without draining counts only what it reached`() {
+        // The other half of the same rule. A leg that was capped, closed on, or
+        // threw did not settle its window, and rounding it to 1.0 would make a
+        // failed cycle read as a complete one — which is exactly how success and
+        // failure came to render identically.
+        val p = PagingProgress()
+        p.begin("s|a", top = 1_000L, bottom = 0L)
+        p.mark("s|a", 800L)
+
+        p.finish("s|a", covered = false)
+
+        assertEquals(0.2, p.fraction("s")!!, 0.001, "20% walked is 20%, finished or not")
+    }
+
+    @Test
+    fun `a drained walk is a full share even though its last page stopped short`() {
+        // `mark` is fed the cursor of each page RECEIVED, so the last thing a
+        // drained walk reports is the oldest event the relay actually held —
+        // routinely well above the filter's floor. Measured against the floor a
+        // fully exhausted relay would sit near 70% forever.
+        val p = PagingProgress()
+        p.begin("s|a", top = 1_000L, bottom = 0L)
+        p.mark("s|a", 700L)
+
+        p.finish("s|a", covered = true)
+
+        assertEquals(1.0, p.fraction("s")!!, 0.001)
+    }
+
+    @Test
+    fun `the next cycle clears what the last one finished, and only that`() {
+        // A stream name can carry both `urls` and `relaySource`, so a static
+        // backfill's LIVE walk sits under the same prefix as the dynamic
+        // cycle's. Clearing it would make the walk stop existing while it was
+        // still running — every later mark and finish on a removed key is
+        // silently a no-op.
+        val p = PagingProgress()
+        p.begin("s|done", top = 1_000L, bottom = 0L)
+        p.begin("s|live", top = 1_000L, bottom = 0L)
+        p.finish("s|done", covered = true)
+
+        p.reset("s")
+
+        assertEquals(0.0, p.fraction("s")!!, 0.001, "only the live walk is left, and it has walked nothing")
+        p.mark("s|live", 500L)
+        assertEquals(0.5, p.fraction("s")!!, 0.001, "the live walk still advances after the reset")
+    }
+
+    @Test
+    fun `reached names where the walk IS, not the deepest point it ever touched`() {
+        // The fraction counts finished walks; this one must not. The line prints
+        // it as "back to <date>", and a finished walk's floor would pin that
+        // date at the deepest thing the cycle touched while the relays still
+        // walking are nowhere near it.
+        val p = PagingProgress()
+        p.begin("s|deep", top = 1_000L, bottom = 0L)
+        p.begin("s|shallow", top = 1_000L, bottom = 0L)
+        p.mark("s|deep", 10L)
+        p.mark("s|shallow", 900L)
+        p.finish("s|deep", covered = true)
+
+        assertEquals(900L, p.reached("s"))
+    }
+
+    @Test
+    fun `a leg whose window is inverted cannot inherit the previous leg's result`() {
+        // The key is `stream|url` and one relay is walked leg after leg. While
+        // `finish` DELETED the entry a skipped `begin` was harmless — the later
+        // mark/finish found nothing. With the walk retained, leaving the old one
+        // in place let the skipped leg's `finish` land on the finished one.
+        val p = PagingProgress()
+        p.begin("s|a", top = 1_000L, bottom = 0L)
+        p.finish("s|a", covered = true)
+        assertEquals(1.0, p.fraction("s")!!, 0.001)
+
+        // The next leg is inverted, so nothing is walked for it at all.
+        p.begin("s|a", top = 100L, bottom = 900L)
+        p.mark("s|a", 950L)
+        p.finish("s|a", covered = false)
+
+        assertNull(p.fraction("s"), "the drained walk is gone, and the inverted leg never became one")
     }
 
     @Test
@@ -98,10 +189,13 @@ class PagingProgressTest {
         // a real, one-second range, not an inverted one.
         val p = PagingProgress()
 
-        p.begin("a", top = 500L, bottom = 500L)
+        p.begin("s|a", top = 500L, bottom = 500L)
 
         assertEquals(0.0, p.fraction()!!, 0.001)
-        p.finish("a")
+        // `finish` keeps it — see the monotonicity test above — so it takes a
+        // cycle boundary to make the number go away.
+        p.finish("s|a")
+        p.reset("s")
         assertNull(p.fraction())
     }
 

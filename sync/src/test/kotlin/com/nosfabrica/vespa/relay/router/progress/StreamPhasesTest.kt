@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router.progress
 import com.nosfabrica.vespa.relay.util.fmtCount
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -131,15 +132,112 @@ class StreamPhasesTest {
     }
 
     @Test
-    fun `syncing reports skipped and unreachable only when there are any`() {
+    fun `syncing reports what was not dialled and what failed, only when there are any`() {
         val p = StreamPhases()
         p.set("s", StreamPhases.Phase.Syncing(6, 19, 1204, 0, 0))
-        assertTrue(!p.report().single().contains("skipped"), "zero should not be noise")
+        assertTrue(!p.report().single().contains("not dialled"), "zero should not be noise")
 
         p.set("s", StreamPhases.Phase.Syncing(6, 19, 1204, 19104, 412))
         val line = p.report().single()
-        assertTrue(line.contains("19104 skipped as dead"), "got: $line")
-        assertTrue(line.contains("412 unreachable"), "got: $line")
+        // "skipped as dead" said nothing about what dead MEANT or when it is
+        // retried, and it was the phrase an operator quoted back when asking.
+        assertTrue(line.contains("19104 not dialled (struck out, no route, or no transport)"), "got: $line")
+        assertTrue(line.contains("412 dialled and failed"), "got: $line")
+    }
+
+    @Test
+    fun `the count of returned legs says it is legs returning, not work finished`() {
+        // The single most misread number this router publishes: it includes
+        // every leg that came back unreachable, capped or out of budget.
+        val p = StreamPhases()
+        p.set("s", StreamPhases.Phase.Fetching(16747, 16752, 900))
+
+        val line = p.report().single()
+        assertTrue(line.contains("16747/16752 relay(s) returned"), "got: $line")
+        assertTrue(line.contains("event(s) received"), "an event count has to say what it counted: $line")
+    }
+
+    @Test
+    fun `idle and failed carry an elapsed clock, because stillness and silence differ`() {
+        // A 45-minute ingest drain behind a finished cycle printed the same line
+        // as a cycle that ended a second ago.
+        val p = StreamPhases()
+        p.set("s", StreamPhases.Phase.Idle(12, 60))
+        assertTrue(p.report().single().contains("ago"), "got: ${p.report().single()}")
+
+        p.set("t", StreamPhases.Phase.Failed("connection reset", 30))
+        assertTrue(p.report().last().contains("ago"), "got: ${p.report().last()}")
+    }
+
+    @Test
+    fun `a cycle's outcome survives its phase, so failed and finished stop reading alike`() {
+        val p = StreamPhases()
+        val tally = CycleTally(discovered = 10, foldedOntoAnother = 2, hosts = 5)
+        p.beginCycle("s", StreamPhases.DYNAMIC, tally, nowSeconds = 1_000)
+
+        assertEquals("running", p.snapshot().single().outcome)
+        assertNull(p.snapshot().single().cycleEndedSec, "a running cycle has not ended")
+
+        p.endCycle("s", StreamPhases.DYNAMIC, "failed", nowSeconds = 1_100)
+        assertEquals("failed", p.snapshot().single().outcome)
+        assertEquals(1_100L, p.snapshot().single().cycleEndedSec)
+
+        // A stream that fails during DISCOVERY has no cycle running, and
+        // stamping an end on the finished one would re-date it every retry.
+        p.endCycle("s", StreamPhases.DYNAMIC, "completed", nowSeconds = 1_200)
+        assertEquals("failed", p.snapshot().single().outcome)
+        assertEquals(1_100L, p.snapshot().single().cycleEndedSec)
+    }
+
+    @Test
+    fun `one stream name, two owners — the slot is never a blend of both`() {
+        // A stream can carry BOTH `urls` and `relaySource`, so StaticBackfill and
+        // DynamicSync open a cycle under the same name, at boot, at once. The
+        // second begin used to overwrite the first's tally and the first end used
+        // to stamp `completed` on the other's still-running fan-out.
+        val p = StreamPhases()
+        val dynamic = CycleTally(discovered = 300, foldedOntoAnother = 0, hosts = 300)
+        val static = CycleTally(discovered = 2, foldedOntoAnother = 0, hosts = 2)
+
+        p.beginCycle("both", StreamPhases.DYNAMIC, dynamic, nowSeconds = 1_000)
+        p.beginCycle("both", StreamPhases.STATIC, static, nowSeconds = 1_010)
+        assertEquals(
+            300,
+            p
+                .snapshot()
+                .single()
+                .tally
+                ?.discovered,
+            "the live cycle is not replaced by the other half's",
+        )
+
+        // …and the other half finishing does not close it.
+        p.endCycle("both", StreamPhases.STATIC, "completed", nowSeconds = 1_020)
+        assertEquals("running", p.snapshot().single().outcome)
+        assertNull(p.snapshot().single().cycleEndedSec)
+
+        // The owner closes its own, and the slot is then free for either.
+        p.endCycle("both", StreamPhases.DYNAMIC, "completed", nowSeconds = 1_030)
+        assertEquals("completed", p.snapshot().single().outcome)
+        p.beginCycle("both", StreamPhases.STATIC, static, nowSeconds = 1_040)
+        assertEquals(
+            2,
+            p
+                .snapshot()
+                .single()
+                .tally
+                ?.discovered,
+            "a finished slot takes whoever asks next",
+        )
+    }
+
+    @Test
+    fun `the snapshot names phases in words a published series can keep`() {
+        val p = StreamPhases()
+        p.set("s", StreamPhases.Phase.Fetching(1, 2, 3))
+        assertEquals("fetching", p.snapshot().single().phase)
+        p.set("s", StreamPhases.Phase.Idle(3, null))
+        assertEquals("idle", p.snapshot().single().phase)
     }
 
     @Test

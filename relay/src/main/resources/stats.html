@@ -115,7 +115,10 @@
   .wrap + .card-sub { margin: .7rem 0 0; }
   .card {
     background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
-    padding: 1rem 1.1rem; margin-bottom: 1rem;
+    /* Symmetric. It was `1rem 1.1rem`, so the horizontal inset sat 1.6px wider
+       than the vertical for no reason anyone could name, and every child
+       inherited the discrepancy as its left margin. */
+    padding: 1rem; margin-bottom: 1rem;
   }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
   /* A titled row of tiles standing on the page background instead of inside a
@@ -197,7 +200,21 @@
      The frame is full width on purpose. A bar sized to its own extent makes
      every relay look finished; against a common frame the uncovered time is
      the loud part, which is the question this card is here to answer. */
-  .cov { --lab: 11rem; }
+  /* The label column, and the one number on this card that has to give way.
+     It was a flat 11rem: at 380px that left the url 176px and the TRACK 109px —
+     62% of every row spent on an address the box then ellipsises anyway, and
+     38% on the bars, which are the content. `clamp` keeps the desktop width and
+     lets the column shrink to a still-readable 6.5rem as the card narrows, so
+     the data always holds the majority of the row. `22vw` rather than a
+     breakpoint because the loss is continuous — there is no width at which the
+     url suddenly stops mattering.
+
+     The 8rem FLOOR is not a round number: below it the tail of a
+     `*.nostr.land` family clips to `…s.nostr.land` / `…n.nostr.land`, three
+     rows that no longer identify three different relays. 8rem keeps the label
+     distinguishable and still leaves the track the majority of the row at
+     380px (128px of label against ~162px of track, against 176/109 before). */
+  .cov { --lab: clamp(8rem, 22vw, 11rem); }
   .cov-row { display: grid; grid-template-columns: var(--lab) 1fr; gap: .6rem; align-items: center; margin-bottom: 3px; }
   /* The url filter hides rows with `[hidden]`, and `[hidden] { display: none }`
      is a UA rule — which ANY author `display` outranks, whatever the
@@ -275,6 +292,61 @@
      per-kind spans disagree, which is the band bug made visible. */
   .cov-seg.every { top: 4px; bottom: 4px; background: var(--text); opacity: .35; border-radius: 1px; }
 
+  /* ---- the cycle's disposition -------------------------------------------
+     One stacked bar per stream, over the urls it took on. A bar rather than a
+     table because the reader's question is proportional — "what became of the
+     fan-out" — and because a stack CANNOT be drawn unless the parts sum to the
+     whole, which is exactly the property the numbers behind it now have. */
+  /* 12px, the SAME height as a coverage `.track`. Two bar systems on one card
+     drawn 2px apart read as two different kinds of measurement; they are both
+     "a proportion of a whole" and should look it. */
+  .disp { display: flex; height: 12px; border-radius: 2px; overflow: hidden; background: var(--grid); margin: .4rem 0 .35rem; }
+  .disp > i { display: block; height: 100%; }
+  /* Reached and gave us something / reached and had nothing to give. Both are
+     the relay working, which is why they share the accent and differ in weight
+     rather than in hue. */
+  /* One rule per outcome, covering BOTH the bar segment and the key's swatch,
+     so the key cannot drift from the thing it is a key to. That was the point of
+     the `getComputedStyle` probe this replaces — which read a card still
+     DETACHED from the document, so no rule and no `var()` resolved and every
+     swatch rendered fully transparent (measured: `rgba(0, 0, 0, 0)`). It also
+     forced a style recalc per bucket per render, on a page that re-renders every
+     poll. */
+  .disp > i.delivered, .disp-key b.delivered { background: var(--accent); }
+  .disp > i.nothingNew, .disp-key b.nothingNew { background: var(--accent); opacity: .45; }
+  /* Not reached. Warm, not red: a dead url in an old relay list is the ordinary
+     case on a fan-out this wide, not an incident. */
+  .disp > i.unreachable, .disp > i.noRoute, .disp > i.hostStruckOut,
+  .disp-key b.unreachable, .disp-key b.noRoute, .disp-key b.hostStruckOut { background: var(--warn); opacity: .6; }
+  /* Skipped on a DURABLE verdict rather than on anything measured this cycle —
+     the one segment whose relays were never dialled at all, and the one whose
+     retry is a TTL rather than the next cycle. */
+  .disp > i.knownDead, .disp-key b.knownDead { background: var(--warn); opacity: .35; }
+  /* Our own fault, or at least our own side: the transfer broke after a
+     handshake, or our proxy was down. */
+  .disp > i.transferFailed, .disp > i.torUnavailable,
+  .disp-key b.transferFailed, .disp-key b.torUnavailable { background: var(--warn); }
+  .disp > i.pending, .disp-key b.pending { background: var(--bar); }
+  /* `row-gap` under `column-gap`: the key runs to nine buckets and wraps to two
+     or three rows at any real width, and an equal gap on both axes made the
+     wrapped rows read as separate paragraphs rather than as more of the key. */
+  .disp-key { display: flex; gap: .35rem .8rem; flex-wrap: wrap; font-size: .72rem; color: var(--muted); }
+  .disp-key b { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px; vertical-align: -.02em; margin-right: .25rem; }
+  /* The prose under a cycle's bar — the fold summary, then the accounting line.
+     NOT `.why`, which is deliberately margin-free because it ENDS a card; used
+     three times mid-block it collapsed a legend, a list and a sentence into one
+     undifferentiated slab with 0px between them. Same muted register, its own
+     spacing. */
+  .cyc-line { color: var(--muted); font-size: .85rem; margin: .45rem 0 0; }
+  .cyc { margin: 0 0 .9rem; }
+  .cyc-head { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
+  .cyc-head .nm { font-weight: 600; }
+  .cyc-head .ph { color: var(--muted); font-variant-numeric: tabular-nums; }
+  /* A failed cycle is the one thing on this line worth looking at, and `.err`
+     alone loses to `.cyc-head .ph` on specificity — which drew it in the same
+     muted grey as a stream that finished cleanly. */
+  .cyc-head .ph.err { color: var(--warn); margin: 0; font-size: inherit; }
+
   .axis-track { position: relative; height: 1.15rem; margin-left: calc(var(--lab) + .6rem); }
   .axis-track span {
     position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted);
@@ -303,8 +375,17 @@
      it ellipsises (below), the counts do not. */
   .grp-head {
     display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; flex-wrap: nowrap;
-    position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface); padding: .35rem 0 .3rem;
+    position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface);
+    /* `.6rem` below, against `.35rem` above. The head is 51px of name, filter
+       chip and counts (100px on a phone, where it stacks) and it sat 4.8px off
+       its own data while 17.6px separated one group from the next — the
+       heaviest element on the card had the least room around it. Asymmetric on
+       purpose: this is a heading, and a heading belongs to what follows it. */
+    padding: .35rem 0 .6rem;
   }
+  /* The first group's head sat flush on the axis (measured: 0px), so the pinned
+     ruler and the first stream name touched. */
+  .axis.pin + .grp > .grp-head { padding-top: .55rem; }
   /* ONE line, ellipsised. A stream filtering a dozen kinds prints a chip that
      wrapped to three lines, and this head is STICKY — every wrapped line is
      taken off the top of the coverage rows scrolling under it, on every group,
@@ -356,7 +437,15 @@
   }
   .depth i { display: block; flex: 1 1 0; min-width: 0; background: var(--accent); }
   .depth i.thin { background: var(--bar); }
-  .legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); margin: 0 0 .8rem; }
+  /* The two halves of this card answer different questions — what the router is
+     doing NOW, and how far it has walked — and every gap in it was 12-14px, so
+     they never separated. The rule is the boundary; the space above it is
+     larger than the gap between two cycle blocks, which is what makes the
+     blocks read as members of the panel rather than as peers of it. */
+  .cyc-end { margin: 1.4rem 0 1.1rem; border: 0; border-top: 1px solid var(--line); }
+  /* Sits directly above the scroll box it describes. It used to sit under the
+     cycle bars — 14px from what it does not explain, 60px from what it does. */
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); margin: 0 0 .55rem; }
   .legend b { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px; vertical-align: -.05em; margin-right: .3rem; }
   .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
   .bar-row input {
@@ -1164,6 +1253,191 @@ function mirrorLine(mirrors) {
 }
 
 /**
+ * WHAT THE ROUTER IS DOING, and what became of everything the current cycle
+ * took on.
+ *
+ * This sits above the coverage bars because it answers the questions asked
+ * first and because the coverage card cannot answer any of them. Coverage is
+ * accumulated across every run this router has ever made; this is one cycle,
+ * live, with an outcome.
+ *
+ * Three readings the card is arranged to make impossible:
+ *
+ *  - **"16,747/16,752" as progress.** That number is legs that RETURNED, and it
+ *    counts every leg that came back unreachable or capped. The stacked bar is
+ *    what actually became of them, and it is drawn from members that sum to the
+ *    total by construction — a stack cannot be drawn from counts that do not.
+ *  - **"discovered" as "dialled".** `foldedOntoAnother` is stated on its own
+ *    line, beside the host count, because most of the gap between a fan-out's
+ *    two big numbers is duplicate urls rather than lost relays.
+ *  - **A stopped router as a quiet one.** `staleForSec` is a heartbeat and is
+ *    rendered loudly past a couple of minutes, whatever the streams claim to be
+ *    doing — a phase line frozen mid-`fetching` is exactly what a dead process
+ *    leaves behind.
+ */
+const DISPOSITION = [
+  ["delivered", "delivered — reached, and it had events we did not"],
+  ["nothingNew", "in sync — reached, nothing new to give"],
+  // The one label that depends on the cycle's outcome — see `pendingLabel`.
+  ["pending", "still in flight"],
+  ["noRoute", "no route — TCP refused or the name does not resolve"],
+  ["unreachable", "unreachable — never answered"],
+  ["hostStruckOut", "host struck out by a sibling url this cycle — dialled again next cycle"],
+  ["knownDead", "known dead — an earlier run's unreachability record is still current; retried when it ages out"],
+  ["transferFailed", "answered, then the transfer broke"],
+  ["torUnavailable", "our Tor proxy was down — nothing is claimed about these"],
+];
+
+/** Past this, a router that has not written its heartbeat is not running. */
+const HEARTBEAT_STALE_SEC = 150;
+
+/**
+ * What `pending` means for THIS cycle.
+ *
+ * It is `taken` minus the eight terminal outcomes, so it always closes the
+ * partition — but the same number means opposite things on either side of the
+ * cycle's end. Running, these urls are in flight. Finished or failed, nothing is
+ * in flight: they never reached a verdict because the cycle stopped first, which
+ * on a `failed` cycle is most of what the reader wants to know. One label for
+ * both would be wrong exactly half the time.
+ */
+function pendingLabel(outcome) {
+  return outcome === "running" || outcome == null
+    ? "still in flight"
+    : "never got a verdict — the cycle ended first; dialled again next cycle";
+}
+
+function progressPanel(progress) {
+  if (!progress) return null;
+  const wrap = el("div");
+  const beat = el("p", "card-sub");
+  // Phrased against the ROLLUP's clock, not the reader's, because that is the
+  // only clock that saw the file. `ago(writtenAt)` would fold in however long
+  // this document has been cached and report a working router as dead every
+  // time a rollup ran late — and the footer already says how old the document
+  // is, which is the reader-side half of the same question.
+  if (progress.staleForSec == null) {
+    beat.append("The router published no heartbeat, so nothing here can be dated.");
+  } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
+    // The loud case, and deliberately louder than the phase lines under it: a
+    // stream frozen mid-`fetching` looks busy, and looks exactly the same
+    // whether the process is working or gone.
+    beat.appendChild(el("span", "err",
+      `The router had said nothing for ${fmtDur(progress.staleForSec)} when this was computed — ` +
+      `the sync process is probably not running. Everything below is what it was doing then.`));
+  } else {
+    beat.append(`Router heartbeat ${fmtDur(progress.staleForSec)} before this rollup.`);
+  }
+  beat.title = `router last wrote at ${isoOf(progress.writtenAt)}`;
+  wrap.appendChild(beat);
+
+  for (const s of progress.streams || []) {
+    const box = el("div", "cyc");
+    const head = el("div", "cyc-head");
+    head.appendChild(el("span", "nm", s.name));
+    const c = s.cycle;
+    // The phase, its age, and the cycle's verdict — the three together are what
+    // separate "working", "finished" and "died here".
+    const outcome = c && c.outcome;
+    const phase = el("span", "ph",
+      `${s.phase || "unknown"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}` +
+      (outcome && outcome !== "running" ? ` · last cycle ${outcome}` : ""));
+    if (outcome === "failed") phase.className = "ph err";
+    head.appendChild(phase);
+    box.appendChild(head);
+    if (!c) {
+      box.appendChild(el("p", "cyc-line", "No cycle has run yet on this stream."));
+      wrap.appendChild(box);
+      continue;
+    }
+
+    const u = c.urls || {};
+    const taken = c.taken || {};
+    const total = u.taken || 0;
+    if (total > 0) {
+      const bar = el("div", "disp");
+      for (const [key] of DISPOSITION) {
+        const n = taken[key] || 0;
+        if (!n) continue;
+        const seg = el("i", key);
+        seg.style.width = (n / total) * 100 + "%";
+        const meaning = key === "pending" ? pendingLabel(outcome) : DISPOSITION.find((d) => d[0] === key)[1];
+        seg.title = `${fmt(n)} of ${fmt(total)} — ${meaning}`;
+        bar.appendChild(seg);
+      }
+      box.appendChild(bar);
+      const key = el("div", "disp-key");
+      for (const [k, label] of DISPOSITION) {
+        const n = taken[k] || 0;
+        if (!n) continue;
+        const item = el("span");
+        // The SAME class the bar segment carries, so one CSS rule paints both
+        // and the key cannot drift from the bar. Never read back a computed
+        // style here: this card is still detached from the document, so
+        // `getComputedStyle` resolves nothing.
+        const b = el("b", k);
+        const meaning = k === "pending" ? pendingLabel(outcome) : label;
+        item.appendChild(b);
+        item.append(`${fmt(n)} ${meaning.split(" — ")[0]}`);
+        item.title = meaning;
+        key.appendChild(item);
+      }
+      box.appendChild(key);
+    }
+
+    // The line that accounts for the OTHER gap — the one between what discovery
+    // found and what was dialled. On a real fan-out this is most of it, and it
+    // is duplicate urls rather than relays that went missing.
+    const acct = el("p", "cyc-line");
+    acct.append(
+      `${fmt(u.discovered || 0)} url(s) discovered · ` +
+      `${fmt(u.foldedOntoAnother || 0)} folded onto another url · ` +
+      (u.excluded ? `${fmt(u.excluded)} excluded by config · ` : "") +
+      `${fmt(total)} taken on` +
+      (c.hosts != null ? ` across ${fmt(c.hosts)} host(s)` : "") +
+      `. ${fmt(c.received || 0)} event(s) received at the socket` +
+      ` (ingest drops the copies other relays already sent, so the store gains fewer).`);
+    // WHICH urls folded, not only how many — "which server is wearing forty
+    // urls" is the question an operator can act on, and the count alone answers
+    // a different one. Bounded, and it says what it left out.
+    const fold = c.foldedOnto;
+    if (fold && (fold.relays || []).length) {
+      const list = el("p", "cyc-line");
+      list.append("Folded onto: ");
+      fold.relays.forEach((r, i) => {
+        const one = el("span", null, `${String(r.relay).replace(/^wss:\/\//, "")} ×${fmt(r.urls)}`);
+        one.title =
+          `${fmt(r.urls)} url(s) fold onto ${r.relay}` +
+          ((r.examples || []).length ? `\ne.g. ${r.examples.join("\n    ")}` : "") +
+          `\nthe per-url verdict is a signed NIP-66 30166 same-as record in this relay's own store`;
+        list.appendChild(one);
+        if (i < fold.relays.length - 1) list.append(" · ");
+      });
+      // Never silent: a truncated list that does not say it is truncated reads
+      // as the whole answer, and the whole answer is thousands of urls long.
+      if (fold.omitted) list.append(` · and ${fmt(fold.omitted)} more relay(s) not listed`);
+      box.appendChild(list);
+    }
+    if (c.accountedFor === false) {
+      // Published rather than hidden: the counts are still worth having, and
+      // this is what stops a reader treating a broken partition as a whole one.
+      acct.appendChild(el("span", "err", " These counts do not add up to their own total — read them as approximate."));
+    }
+    box.appendChild(acct);
+    wrap.appendChild(box);
+  }
+  return wrap;
+}
+
+/** `4m` / `2h 10m` — a duration in seconds, for the phase clock. */
+function fmtDur(sec) {
+  if (sec < 90) return `${sec}s`;
+  if (sec < 5400) return `${Math.round(sec / 60)}m`;
+  const h = Math.floor(sec / 3600);
+  return `${h}h ${Math.round((sec - h * 3600) / 60)}m`;
+}
+
+/**
  * How much of each stream's relay list is in sync, and how far the current
  * sweeps have got.
  *
@@ -1207,6 +1481,22 @@ function syncCard(section) {
   // could otherwise only describe as emptiness.
   const mirrors = mirrorLine(d.mirrors);
   if (mirrors) card.appendChild(mirrors);
+  // ABOVE the bars, and before the early return: what the router is doing right
+  // now is the question asked first, and it is the one thing on this card that
+  // still has an answer when the mirror has walked nothing at all. A router
+  // three minutes into its first cycle used to render as an empty card.
+  const progress = progressPanel(d.progress);
+  if (progress) card.appendChild(progress);
+  // The boundary between the card's two subjects — what the router is doing
+  // now, and how far it has walked. Every gap in here was 12-14px, including
+  // the one between those two, so they never separated; the rule plus the space
+  // above it is what makes the cycle blocks read as members of the panel rather
+  // than as peers of the section below.
+  //
+  // Appended only when BOTH sides exist. A router mid-first-cycle has progress
+  // and no coverage, and an unconditional rule would end that card with a line
+  // ruling off nothing.
+  if (progress && streams.length) card.appendChild(el("hr", "cyc-end"));
   if (!streams.length) return card;
 
   const from = d.from, to = d.to;
@@ -1222,8 +1512,11 @@ function syncCard(section) {
 
   const legend = el("div", "legend");
   for (const [tone, text] of [
-    ["done", "reconciled — negentropy finished"],
-    ["paged", "paged — walked, not proven exhaustive"],
+    // The words are the document's, not this page's — see `sync.terms`. "done"
+    // used to cover three different states here and elsewhere; these are the
+    // two the bar can actually distinguish.
+    ["done", "settled — nothing outstanding below this span"],
+    ["paged", "open — walked, not proven exhaustive"],
     ["live", "sweeping now"],
   ]) {
     const s = el("span");
@@ -1234,7 +1527,10 @@ function syncCard(section) {
     s.append(text);
     legend.appendChild(s);
   }
-  card.appendChild(legend);
+  // NOT appended here. It is built with the tones it describes, but it belongs
+  // BESIDE the bars — it went in directly under the cycle panel, 14px from the
+  // stacked bars it says nothing about and ~60px above the coverage bars it is
+  // the key to. It is placed below, under the filter row.
 
   /** Year ticks, plus the two ends — the frame spans years, so months would be a smear. */
   const axis = () => {
@@ -1291,7 +1587,11 @@ function syncCard(section) {
       const seg = el("i", `cov-seg ${r.complete ? "done" : "paged"}`);
       place(seg, r.min, r.max);
       seg.title =
-        `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
+        `${r.relay}\n${day(r.min)} → ${day(r.max)} — the span this stream WALKED here\n` +
+        // A band is walk state, not holdings, and the two were read as one. A
+        // floor newer than the oldest stored event of that kind is ordinary:
+        // another stream, or an earlier config, put those events in the store.
+        `(walk state for this stream, not what the store holds)\n` +
         // `complete` stopped meaning "negentropy" when a drained paged walk
         // started earning it too — an EOSE on an empty page proves the same
         // thing a finished reconcile does, that there is nothing left below.
@@ -1366,7 +1666,7 @@ function syncCard(section) {
       // normalise it away; it is the closest this page gets to the "never asked"
       // count SyncCoverageReport says it cannot give.
       i.style.height = Math.max(1, (n[b] / Math.max(1, rows.length)) * 24) + "px";
-      i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays (${fmt(done[b])} reconciled)`;
+      i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays walked here (${fmt(done[b])} settled)`;
       strip.appendChild(i);
     }
     return strip;
@@ -1397,7 +1697,7 @@ function syncCard(section) {
       if (r.sweep) sweeping++;
     }
     return (
-      `${fmt(reconciled)} reconciled · ${fmt(paged)} paged` +
+      `${fmt(reconciled)} settled · ${fmt(paged)} open` +
       (sweeping ? ` · ${fmt(sweeping)} sweeping` : "") +
       // The denominator stays visible, same rule as the Kinds table: a head
       // reading "3 relays walked" describes a stream that walked thousands.
@@ -1422,6 +1722,8 @@ function syncCard(section) {
   controls.appendChild(filter);
   controls.appendChild(status);
   card.appendChild(controls);
+  // The key, immediately above the track it is a key to.
+  card.appendChild(legend);
 
   // One scroll box for every stream, and one axis pinned at its top: the frame
   // is shared by design — that is what makes two streams comparable — so a
@@ -1445,6 +1747,16 @@ function syncCard(section) {
       const who = el("span", "grp-stream", s.name);
       who.title = `router stream "${s.name}"`;
       name.appendChild(who);
+    } else if (s.unnamed) {
+      // SAID, not left to be inferred from a missing label. Two of these turned
+      // up on a production card carrying 2,600 relays between them and no
+      // identity at all, which reads as two undocumented mirrors rather than as
+      // one migration shim.
+      const who = el("span", "grp-stream", "unnamed");
+      who.title =
+        "state written before the router's files nested by stream, so these keys name no stream. " +
+        "Not a second mirror — it disappears once every deployment has booted on a build that writes the nested shape.";
+      name.appendChild(who);
     }
     const kinds = (s.filter && s.filter.kinds) || [];
     // What the group's legs were split BY, spelled out. A `relaySource` that
@@ -1467,9 +1779,14 @@ function syncCard(section) {
     name.appendChild(chip);
     head.appendChild(name);
     const stat = el("div", "grp-stat",
-      `${fmt(s.reconciled || 0)} reconciled · ${fmt(s.paged || 0)} paged` +
+      `${fmt(s.reconciled || 0)} settled · ${fmt(s.paged || 0)} open` +
       (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
       ` · ${fmt(s.relays || 0)} relays walked` +
+      // Beside the url count, never instead of it. One server answers on every
+      // path, so a relay list mints urls without limit and every url-keyed
+      // number here is inflated until the alias fold decides them — measured,
+      // 3,272 urls on 850 hosts. The GAP is the disclosure.
+      (s.hosts != null && s.hosts !== s.relays ? ` on ${fmt(s.hosts)} host(s)` : "") +
       // Present only when a narrow asked one relay more than once, and then it
       // is the number that explains the other three: these counts are per
       // RELAY, and a relay counts as reconciled only when every leg of it did.
@@ -1806,6 +2123,14 @@ function render(doc) {
   }
 
   bodyEl.replaceChildren();
+  // FIRST, above the hero numbers, because everything under it is being served
+  // from a document the relay has already declared out of date. A rollup that
+  // has been failing all night otherwise draws a page indistinguishable from a
+  // healthy one — the numbers simply stop moving, which is how a stale cache
+  // comes to look like a crash. The footer's age line is a heuristic on the
+  // reader's side; this is the relay saying it, with a reason.
+  const stale = staleBanner(doc.stale);
+  if (stale) bodyEl.appendChild(stale);
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
 
   // Trust sits SECOND, right under the corpus totals, because it is the only
@@ -1852,6 +2177,29 @@ function render(doc) {
   }
 
   renderFoot(doc);
+}
+
+/**
+ * The relay's own statement that this document is no longer current.
+ *
+ * Distinct from the footer's age line, and both are wanted. The footer measures
+ * `generatedAt` against the reader's clock and INFERS that something may have
+ * stopped; this is the relay reporting that its last rollup failed, or that it
+ * is serving a file written by a previous process, and saying WHY. An operator
+ * seeing the second one does not have to work out whether fifteen minutes is
+ * long enough to worry about.
+ */
+function staleBanner(stale) {
+  if (!stale || !stale.reason) return null;
+  const p = el("p", "err");
+  p.append(`These numbers are not current: ${stale.reason}.`);
+  if (stale.since != null) {
+    const when = el("span", null, ` Noticed ${ago(stale.since)}`);
+    when.title = isoOf(stale.since);
+    p.appendChild(when);
+    p.append(stale.generatedAt ? `; they were computed at ${stale.generatedAt}.` : ".");
+  }
+  return p;
 }
 
 function renderFoot(doc) {

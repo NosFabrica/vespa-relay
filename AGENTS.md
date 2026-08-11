@@ -160,8 +160,15 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       AliasMonitor.kt       the schedule measure() runs on, off the sync cycle
       RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `same-as` tag
     progress/             observability
-      StreamPhases.kt       per-stream progress reporting
+      StreamPhases.kt       per-stream progress reporting, and the snapshot the
+                            progress file is written from
       PagingProgress.kt     time-axis progress for paged walks
+      CycleTally.kt         where every url a cycle took on ENDED UP — a
+                            partition that sums to what discovery handed over,
+                            not a bag of counters
+      SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
+                            the heartbeat that tells a quiet router from a
+                            stopped one
 
 relay/src/main/resources/
   index.html            the search UI's markup + styles; its behavior lives in web/
@@ -299,6 +306,13 @@ jobs, and talks to Vespa directly rather than through the store:
 ```
 relay/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/
+    SyncProgressReport.kt  the router's progress file as `sync.progress` —
+                     staleness against THIS rollup's clock, and the disposition
+                     partition re-derived rather than forwarded
+    SyncVocabulary.kt  what every number in the `sync` section means, shipped
+                     inside the document as `sync.terms`. Pinned in both
+                     directions by `SyncVocabularyTest`: no published count
+                     without a term, no term without a count
     StatsYql.kt      the grouping pipelines and the readers for what comes
                      back — pure, so both halves are tested against captured
                      engine output rather than against an assumed shape
@@ -408,8 +422,81 @@ drew *35% mirroring* on a mirror missing nothing, the whole gap being kinds
 3/4/5/6/7/1059 that no stream asks for. Scope both sides to `mirrors.kinds` and
 the number means something — `web/shared/mirrors.js` is the one consumer, and
 the rule it holds is that an unreadable manifest suppresses the question rather
-than falling back to the unscoped count. Do not fold it into the band file:
+than falling back to the unscoped count. **It reads `sync.data.mirrors`**: every
+section of `/stats.json` is wrapped in `StatsRollup.section`'s status envelope
+and the payload is `data`. Read one level too high — which it was, on ship — the
+member is undefined against every real document, the scope answers null, and the
+panel silently stops asking. That failure is CLOSED, which is why nothing looked
+wrong: no bad number is published, the right one simply never is. Its fixture had
+the same wrong shape, so the tests agreed with it; a fixture that is not the
+shape of the thing it stands in for tests the fixture. Do not fold it into the band file:
 bands are rewritten every 30 seconds and this changes only on a restart.
+
+**A FOURTH file says what the router is DOING.** `SYNC_PROGRESS_FILE`
+(`SyncProgress`, published as `sync.progress` by `SyncProgressReport`) is
+rewritten on the progress tick with each stream's phase and the disposition of
+every url its current cycle took on. Three things it fixes, all of which were
+unanswerable from the serving side:
+
+- **`writtenAt` is a HEARTBEAT**, not a modification time — it advances every
+  tick whatever the streams are doing, so the relay can publish `staleForSec`,
+  and a mirror that stopped an hour ago stops looking like one between cycles.
+- **`urls` and `taken` are a PARTITION.** `discovered = foldedOntoAnother +
+  excluded + taken`, and the nine outcomes under `taken` sum to it exactly, with
+  `pending` DERIVED from the other eight so the identity closes mid-fan-out. A production
+  document reported 16,752 discovered against 5,323 band-bearing and published
+  no account whatever of the ~11,400 in between; every one of them had a
+  disposition the router knew at the time. `balanced` is the router's own check;
+  the relay recomputes it as `accountedFor`, and the two disagreeing localises
+  the fault to the read or to the writer.
+- **`outcome` is `running`/`completed`/`failed`.** A cycle that aborted at 80%
+  and one that finished left the identical trace — both simply stopped saying
+  anything.
+
+**Three words, and they are not synonyms.** "Done" covered all three, and the
+least meaningful of them was the one being read as progress:
+
+| word | means | where |
+|---|---|---|
+| **returned** | a fan-out leg started and CAME BACK — including unreachable, capped, out of budget | `fetching 16747/16752 relay(s) returned` |
+| **settled** | nothing outstanding below the span this stream walked here | `complete` on a band, `reconciled` on a group |
+| **evidence** | the span in which EVERY kind in the filter has produced an event | `everyKindMin`/`everyKindMax` |
+
+**Two not-dialled states are not one state.** `HostStrikes.isDead` was true for
+two reasons with OPPOSITE retry policies, reported as one number: a
+`hostStruckOut` url is dialled again on the very next cycle (a strike is
+cycle-local, nothing persists), while a `knownDead` one waits out a signed NIP-66
+unreachability record's TTL — 24h, `RelayReachabilityStore.DEFAULT_TTL_SECONDS`
+— or its host delivering something. `whyDead` returns which; do not collapse
+them again.
+
+**The fold publishes WHICH urls, not only how many.** `foldedOnto` groups them by
+the survivor that absorbed them, bounded to the biggest few with `omitted` naming
+what was left out — the full list is thousands of urls on a document fetched
+every poll, the same reason a discovery filter's `authors` never reaches
+`/stats.json`. The complete per-url verdict stays where it was earned: a signed
+30166 `same-as` record in this store. Note that a folded url has no row in the
+coverage section at all — `SyncBands.dropFolded` removes it — so the count and
+`foldedOnto` are the only places it appears.
+
+And a fourth thing none of them is: **holdings**. A band is walk state — where a
+stream has asked — not what the store contains. A band floor newer than the
+oldest stored event of that kind is ordinary; another stream put those events
+there. `SyncVocabulary` ships all of this inside `/stats.json` as `sync.terms`,
+because a definition that lives only in a KDoc is one the reader of the JSON
+does not have.
+
+**A finished paged walk stays in `PagingProgress`'s denominator.** It used to be
+removed, which made the percentage run BACKWARDS — every relay that drained left
+the numerator and the denominator together, so a stream whose fast relays
+finished first fell from 60% to 20% while strictly gaining ground. `finish` now
+retains the walk and `reset` clears it at the next cycle boundary; a walk that
+DRAINED counts 1.0 and anything else counts the share it really reached, which
+is also the only place a failed leg and a successful one stop looking alike.
+`reset` deletes only FINISHED walks, because one stream name can carry both
+`urls` and `relaySource` and a blanket clear would delete a static backfill's
+live walk out from under it — every later `mark` and `finish` on a removed key
+is silently a no-op.
 Three traps if you touch either format: both files nest **stream → filter →
 relay**, and the sweep file's filter also strips `since`/`until`/`limit` (time is
 what a sweep varies) while the band file's keeps them, so joining the two still

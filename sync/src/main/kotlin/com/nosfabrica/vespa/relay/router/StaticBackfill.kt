@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
 import com.nosfabrica.vespa.relay.router.heal.Healer
+import com.nosfabrica.vespa.relay.router.progress.CycleTally
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
@@ -33,6 +34,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.count
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
@@ -90,7 +92,53 @@ internal class StaticBackfill(
 ) {
     private val progress = BackfillProgress()
 
+    /**
+     * The disposition of each stream's configured upstreams, keyed by stream
+     * name so `pageOne` and `reconcileOne` can settle a url without threading
+     * the tally through five signatures.
+     *
+     * A static stream folds nothing and discovers nothing — its urls are in
+     * `router.conf` — so `discovered` is the configured count and
+     * `foldedOntoAnother` is 0. The partition is otherwise the dynamic one, and
+     * that is the point: a reader must not need to know which kind of stream it
+     * is looking at to read the numbers.
+     */
+    private val tallies = ConcurrentHashMap<String, CycleTally>()
+
     fun begin(totalUpstreams: Int) = progress.begin(totalUpstreams)
+
+    /**
+     * Record what became of one configured upstream, exactly once.
+     *
+     * Called beside every `progress.done` — the two answer different questions
+     * (how far through the boot are we, and what happened to this relay) and
+     * the one place they agree on is that a upstream reaches each of them once.
+     * `nothingNew` covers both "answered, we were in sync" and "its band already
+     * covers the filter, so nothing was asked": neither downloaded anything and
+     * neither is a failure, and splitting them would need a fourth outcome the
+     * dynamic side has no equivalent for.
+     */
+    private fun settle(
+        upstream: SyncUpstream,
+        events: Int,
+        failed: Boolean = false,
+    ) {
+        val tally = tallies[upstream.streamName] ?: return
+        when {
+            failed -> {
+                tally.transferFailed.incrementAndGet()
+            }
+
+            events > 0 -> {
+                tally.delivered.incrementAndGet()
+                tally.received.addAndGet(events.toLong())
+            }
+
+            else -> {
+                tally.nothingNew.incrementAndGet()
+            }
+        }
+    }
 
     /**
      * Backfill every down upstream, grouped by stream — one group is one
@@ -122,6 +170,27 @@ internal class StaticBackfill(
         group: List<IndexedValue<SyncUpstream>>,
     ) {
         val name = group.first().value.streamName
+        // A backfill runs once per process, so this clears nothing it wrote —
+        // it clears whatever a same-named stream left behind, which is exactly
+        // the case a config carrying both `urls` and `relaySource` produces.
+        // See [PagingProgress.reset].
+        paging.reset(name)
+        val tally =
+            CycleTally(
+                discovered = group.size,
+                foldedOntoAnother = 0,
+                hosts =
+                    group
+                        .map {
+                            it.value.url.url
+                                .substringAfter("://")
+                                .substringBefore("/")
+                        }.distinct()
+                        .size,
+            ).also {
+                tallies[name] = it
+                phases.beginCycle(name, StreamPhases.STATIC, it)
+            }
         // Our own count, taken once for the stream — the cheap half of the
         // reconcile-or-page decision.
         val ours = runCatching { store.count(filter) }.getOrNull() ?: 0
@@ -147,6 +216,7 @@ internal class StaticBackfill(
             }
         if (reconcilers.isEmpty()) {
             early?.join()
+            phases.endCycle(name, StreamPhases.STATIC, "completed")
             phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), null))
             return
         }
@@ -190,6 +260,7 @@ internal class StaticBackfill(
                     }
                 }
                 early?.join()
+                phases.endCycle(name, StreamPhases.STATIC, "completed")
                 phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), null))
             }
         } catch (e: CancellationException) {
@@ -201,8 +272,16 @@ internal class StaticBackfill(
             // propagating failure would cancel their backfills too, and
             // relays never marked done would tick the progress loop forever.
             System.err.println("router: $name backfill failed before reconcile (${e.message}) — ${reconcilers.size} relay(s) skipped until next boot")
-            reconcilers.forEach { (idx, _) -> progress.done(idx, 0) }
+            reconcilers.forEach { (idx, up) ->
+                progress.done(idx, 0)
+                settle(up, 0, failed = true)
+            }
             early?.join()
+            // `failed`, and the distinction is the whole point of publishing an
+            // outcome: this stream stopped before it reconciled anything, and
+            // the Idle line below it is byte-identical to the one a stream that
+            // finished cleanly leaves.
+            phases.endCycle(name, StreamPhases.STATIC, "failed")
             phases.set(name, StreamPhases.Phase.Idle(eventsEarly.get(), null))
         }
     }
@@ -270,6 +349,7 @@ internal class StaticBackfill(
         val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
+            settle(upstream, 0)
             return 0
         }
         var downloaded = 0
@@ -301,8 +381,12 @@ internal class StaticBackfill(
                 // caller catches Exception, and a throw between begin and
                 // finish strands this walk in PagingProgress at 0%, which
                 // `fraction` then averages into the stream's number forever.
-                val walked =
-                    try {
+                // Assigned inside the try rather than taken from its value:
+                // `finally` runs first, and it is what tells PagingProgress
+                // whether this walk drained — see [PagingProgress.finish].
+                var walked: PagedFetchResult? = null
+                try {
+                    walked =
                         client.fetchAllPages(
                             upstream.url,
                             listOf(window),
@@ -327,10 +411,10 @@ internal class StaticBackfill(
                             live.incrementAndGet()
                             progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
                         }
-                    } finally {
-                        paging.finish(walk)
-                    }
-                downloaded += walked.downloaded
+                } finally {
+                    paging.finish(walk, covered = walked?.drained == true)
+                }
+                downloaded += walked?.downloaded ?: 0
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
                 bands.record(
@@ -345,6 +429,7 @@ internal class StaticBackfill(
                 )
             }
             progress.done(idx, downloaded)
+            settle(upstream, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
             downloaded
         } catch (e: CancellationException) {
@@ -353,6 +438,7 @@ internal class StaticBackfill(
             throw e
         } catch (e: Exception) {
             progress.done(idx, 0)
+            settle(upstream, 0, failed = true)
             System.err.println("router: static backfill ${upstream.url.url} paged fetch failed: ${e.message}")
             0
         } finally {
@@ -480,6 +566,7 @@ internal class StaticBackfill(
             }
         }
         early?.join()
+        phases.endCycle(name, StreamPhases.STATIC, "completed")
         phases.set(name, StreamPhases.Phase.Idle(events.get() + eventsEarly.get(), null))
     }
 
@@ -499,6 +586,7 @@ internal class StaticBackfill(
         val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
+            settle(upstream, 0)
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
@@ -562,8 +650,11 @@ internal class StaticBackfill(
                     // finally: see the paged site above — an orphaned walk is
                     // averaged into `fraction` at 0% for as long as the process
                     // lives.
-                    val walked =
-                        try {
+                    // Inside the try, so `finally` can report the drain — see
+                    // [PagingProgress.finish].
+                    var walked: PagedFetchResult? = null
+                    try {
+                        walked =
                             client.fetchAllPages(
                                 upstream.url,
                                 listOf(rest),
@@ -571,10 +662,10 @@ internal class StaticBackfill(
                                 onNewPage = { until -> paging.mark(walk, until) },
                                 onEvent = onEvent,
                             )
-                        } finally {
-                            paging.finish(walk)
-                        }
-                    downloaded += walked.downloaded
+                    } finally {
+                        paging.finish(walk, covered = walked?.drained == true)
+                    }
+                    downloaded += walked?.downloaded ?: 0
                     pagedWindows++
                     legsDone++
                     // Against `rest`, not `leg`: a resumed sweep leaves only the
@@ -612,6 +703,7 @@ internal class StaticBackfill(
                 )
             }
             progress.done(idx, downloaded)
+            settle(upstream, downloaded)
             System.err.println(
                 "router: static backfill ${upstream.url.url} downloaded $downloaded over $windows window(s)" +
                     (if (pagedWindows > 0) " ($pagedWindows paged)" else "") +
@@ -622,6 +714,7 @@ internal class StaticBackfill(
             throw e
         } catch (e: Exception) {
             progress.done(idx, 0)
+            settle(upstream, 0, failed = true)
             System.err.println("router: static backfill ${upstream.url.url} sweep failed: ${e.message}")
             0
         } finally {
@@ -637,6 +730,7 @@ internal class StaticBackfill(
         val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
+            settle(upstream, 0)
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
@@ -711,6 +805,7 @@ internal class StaticBackfill(
                 )
             }
             progress.done(idx, downloaded)
+            settle(upstream, downloaded)
             val band = bands.band(upstream.streamName, upstream.url, upstream.filter)
             System.err.println(
                 "router: static backfill ${upstream.url.url} downloaded $downloaded" +
@@ -725,6 +820,7 @@ internal class StaticBackfill(
             throw e
         } catch (e: Exception) {
             progress.done(idx, 0)
+            settle(upstream, 0, failed = true)
             System.err.println("router: static backfill ${upstream.url.url} failed: ${e.message}")
             return 0
         } finally {

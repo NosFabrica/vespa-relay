@@ -14,8 +14,21 @@ import {
 
 const ok = (name) => console.log(`  ✓ ${name}`);
 
-/** A `/stats.json` with whatever `sync.mirrors` the case is about. */
-const doc = (mirrors) => ({ schema: 3, relay: "wss://relay.example.com", sync: { mirrors } });
+// A `/stats.json` in THE SHAPE THE RELAY SERVES. Every section is wrapped in a
+// status envelope by `StatsRollup.section` — `{status, generatedAt, tookMs,
+// data, errors?}` — and the payload is `data`. This fixture used to omit it, so
+// the module could read `stats.sync.mirrors`, pass every case here, and return
+// undefined against every real document: the panel failed CLOSED and simply
+// stopped asking the question, with no wrong number to notice. A fixture that
+// does not have the shape of the thing it stands in for tests the fixture.
+const doc = (mirrors) => ({
+  schema: 3,
+  relay: "wss://relay.example.com",
+  sync: { status: "ok", generatedAt: "2026-08-11T10:00:00Z", tookMs: 3, data: { mirrors } },
+});
+
+/** The same document with the envelope off — a hand-built one, still accepted. */
+const bare = (mirrors) => ({ schema: 3, relay: "wss://relay.example.com", sync: { mirrors } });
 
 // ---- the bound, when the relay states one ---------------------------------
 {
@@ -55,7 +68,8 @@ const doc = (mirrors) => ({ schema: 3, relay: "wss://relay.example.com", sync: {
     ["no document at all", null],
     ["a 503 body", { error: "no statistics computed yet" }],
     ["a relay that mirrors nothing", { schema: 3 }],
-    ["a sync section with no mirrors", { sync: { coverage: {} } }],
+    ["a sync section with no mirrors", { sync: { status: "ok", data: { streams: [] } } }],
+    ["a sync section that failed outright", { sync: { status: "failed", data: {}, errors: { sync: "boom" } } }],
     ["a manifest naming streams but no kinds", doc({ writtenAt: 1, streams: [{ name: "content", dir: "up" }] })],
     ["kinds present and unreadable", doc({ kinds: "0,1,30023" })],
     ["an empty list", doc({ kinds: [] })],
@@ -65,6 +79,23 @@ const doc = (mirrors) => ({ schema: 3, relay: "wss://relay.example.com", sync: {
     assert.equal(mirrorScope(stats), null, what);
   }
   ok("an unreadable, absent or empty bound is null — never a bound of nothing");
+}
+
+// ---- the envelope the relay actually serves -------------------------------
+{
+  // The regression this file could not catch, because its own fixture was the
+  // wrong shape. `sync.data.mirrors` is what `GET /stats.json` carries; nothing
+  // is published at `sync.mirrors`, and reading one level too high answered null
+  // for every relay that has ever run.
+  assert.deepEqual(mirrorScope(doc({ kinds: [0, 1] })), { kinds: [0, 1] }, "the served shape is the one that has to work");
+  assert.deepEqual(mirrorScope(bare({ kinds: [0, 1] })), { kinds: [0, 1] }, "and an unwrapped document still reads");
+  // The envelope wins, so a document carrying both cannot be read two ways.
+  assert.deepEqual(
+    mirrorScope({ sync: { data: { mirrors: { kinds: [7] } }, mirrors: { kinds: [0, 1] } } }),
+    { kinds: [7] },
+    "`data` is the payload; anything beside it is not what the relay publishes",
+  );
+  ok("the bound is read out of the section's `data` envelope, which is what the relay serves");
 }
 
 // ---- and null must never quietly become the old comparison ----------------

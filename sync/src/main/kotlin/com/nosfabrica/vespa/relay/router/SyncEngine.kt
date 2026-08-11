@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
+import com.nosfabrica.vespa.relay.router.progress.SyncProgress
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.router.refused.RouterRefusalSink
@@ -123,6 +124,10 @@ class SyncEngine(
     // replaceable is dropped before it is verified. Same reason as knownIds:
     // the query is the store's, the pipeline takes a function.
     newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
+    // SYNC_PROGRESS_FILE: what each stream is doing, and the disposition of
+    // every url its current cycle took on, written where the relay can publish
+    // it. Unset writes nothing — see [SyncProgress].
+    private val progressFile: SyncProgress = SyncProgress(null),
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -378,6 +383,19 @@ class SyncEngine(
         // static backfill's progress loop: a dynamic-only config has no
         // backfill loop at all, and everyone else's dynamic streams — the
         // larger half of the fill — outlive it.
+        // The heartbeat is its own loop, NOT a passenger on the phase report.
+        // That report is skipped when a config has neither a down upstream nor a
+        // dynamic stream — a push-only router — and with the write inside it
+        // `writtenAt` never advanced, so the relay reported a perfectly healthy
+        // mirror as "probably not running". The whole point of this file is that
+        // it ticks whatever the streams are doing, and "there are no streams to
+        // report" is exactly that case.
+        scope.launch {
+            while (scope.isActive) {
+                delay(PROGRESS_INTERVAL_MS)
+                progressFile.write(phases.snapshot())
+            }
+        }
         if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
             scope.launch {
                 while (scope.isActive) {

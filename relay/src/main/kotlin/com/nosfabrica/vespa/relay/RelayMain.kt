@@ -216,6 +216,7 @@ fun main() {
                     syncBandsFile = syncFile(env, "SYNC_STATE_FILE", "/var/lib/vespa-relay/sync-cursors.json"),
                     syncSweepsFile = syncFile(env, "SYNC_SWEEP_STATE_FILE", "/var/lib/vespa-relay/sync-sweeps.json"),
                     syncManifestFile = syncFile(env, "SYNC_MANIFEST_FILE", "/var/lib/vespa-relay/sync-manifest.json"),
+                    syncProgressFile = syncFile(env, "SYNC_PROGRESS_FILE", "/var/lib/vespa-relay/sync-progress.json"),
                 ),
             snapshot = statsSnapshot,
             everySeconds = statsIntervalSeconds,
@@ -343,7 +344,7 @@ private fun resourceText(path: String): String? = object {}.javaClass.getResourc
  * The router files the stats rollup reads. Shared names, not relay-side copies —
  * see the exemption in the unused-settings warning above.
  */
-private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_STATE_FILE", "SYNC_SWEEP_STATE_FILE", "SYNC_MANIFEST_FILE")
+private val SYNC_FILES_THE_RELAY_READS = setOf("SYNC_STATE_FILE", "SYNC_SWEEP_STATE_FILE", "SYNC_MANIFEST_FILE", "SYNC_PROGRESS_FILE")
 
 /**
  * Where one of the router's files lives, from the env or the path
