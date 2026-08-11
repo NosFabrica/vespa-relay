@@ -322,6 +322,13 @@ services:
       SYNC_NEG_PAGE_TARGET: ${SYNC_NEG_PAGE_TARGET:-}
       SYNC_NEG_PAGE_SLACK_SECONDS: ${SYNC_NEG_PAGE_SLACK_SECONDS:-}
       SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
+      # WHAT this router mirrors — the streams it is running and their kinds —
+      # written once at boot for the relay to serve on /stats.json. The kind
+      # list only exists in router.conf, which no other process reads, so
+      # without this a client comparing our count for an author against their
+      # own relay's total is comparing a filtered mirror to an unfiltered one
+      # and reads a complete mirror as 35% done. Same path on both services.
+      SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
       # The ids the store has twice refused as permanently unstorable — an older
       # version of a replaceable event, a NIP-09 target, a vanished author's
       # history — so a reconcile stops asking upstreams for them every cycle.

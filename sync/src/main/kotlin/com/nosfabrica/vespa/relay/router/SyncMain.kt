@@ -144,6 +144,17 @@ fun main() {
     // restart resumes instead of re-reading the corpus.
     val bands = SyncBands.fromEnv(env)
 
+    // What this router mirrors, published for the relay to serve. Written from
+    // `config.streams`, which is what is RUNNING (SYNC_STREAMS narrows it), and
+    // written here — after the config is loaded, before anything dials — because
+    // a `router.conf` edit is a restart, so boot is the only moment it changes.
+    if (!SyncManifest.fromEnv(env).write(config.streams)) {
+        System.err.println(
+            "router: SYNC_MANIFEST_FILE unset — the relay cannot say which kinds this mirror holds, " +
+                "so a client comparing our count against an upstream's total will read a complete mirror as partial",
+        )
+    }
+
     // One level finer than the bands: what each peer will reconcile in one
     // window, and how far down the timeline the running sweep already got.
     val sweepState = SweepState.fromEnv(env)

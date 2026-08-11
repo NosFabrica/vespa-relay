@@ -61,6 +61,21 @@ queries, publishes it as a public JSON document, and charts it on a page:
 - **kindActivity** — a daily series per kind, for the largest few
 - **relayDistribution** — the relays this store's NIP-65 lists name
 - **zaps** — kind-9735 receipt counts, and the wallets that signed them
+- **sync** — present only where a router writes beside this relay. The
+  *coverage* half is how far the mirror has walked each relay (`streams`, from
+  `SYNC_STATE_FILE` and `SYNC_SWEEP_STATE_FILE`); the *`mirrors`* half is what it
+  was ever going to hold — `kinds`, the union of the kind filters of the streams
+  that pull down, from `SYNC_MANIFEST_FILE`. **That set is the scope any count
+  against this relay has to carry.** Counting our events for an author against
+  their own relay's unfiltered total compares a filtered mirror to everything:
+  measured at 31,118 here of 89,485 there, drawn as *35% mirroring* on a mirror
+  that was missing nothing — the gap was kinds 3, 4, 5, 6, 7 and 1059, which this
+  relay never asks for and two of which (DMs, gift wraps) it must never hold. A
+  reader scopes the remote `COUNT` to `mirrors.kinds` and gets a number that can
+  reach 100%. `mirrors.allKinds` replaces the list when some stream mirrors
+  without a kind bound — there is then no bound to apply, and a union over the
+  other streams would be smaller than the truth. `writtenAt` is the router's own
+  timestamp: this file outlives the process that wrote it
 
 Per-kind `lastSeen` and the corpus-wide newest event are both bounded to the
 present, and the page renders them as **ages** rather than dates: "kind 1 four
@@ -242,6 +257,7 @@ makes the re-run resume instead of re-downloading.
 | `SYNC_NEG_PAGE_MIN` / `SYNC_NEG_PAGE_MAX` | floor and ceiling for that learned per-peer size. A peer that refuses the floor is refusing negentropy, not sizing it | `1000` / `1000000` |
 | `SYNC_NEG_PAGE_SLACK_SECONDS` | how far below `now` a sweep stops. A window is only checkpointable while it is immutable, and the top of the range is still receiving events — this is the seam between the sweep and the live subscription that covers the head | `60` |
 | `SYNC_SWEEP_STATE_FILE` | where the per-peer window size (and the cap a peer stated in a rejection) and the in-progress sweep cursor are kept — cursors nested `{stream: {filter: {relay: {…}}}}` like the bands, window sizes flat under `peers` because a peer's cap belongs to its config and not to any ask. Distinct from `SYNC_STATE_FILE`: bands are the long-lived record of what a relay has given us, this is working state a finished sweep throws away. Unset, both are re-learned on every boot — correct, but it pays the sizing ladder again and restarts a partial sweep from the top. Read by the relay too, on the same terms as `SYNC_STATE_FILE` — it is what draws the in-flight sweeps on the coverage card | unset ⇒ in memory only |
+| `SYNC_MANIFEST_FILE` | where the router writes **what it mirrors** — one entry per running stream with its `name`, `dir`, `kinds` and (where it has one) `since`. Config, not state: written once at boot, because a `router.conf` edit is a `restart sync` and there is no other moment it can change. **Read by the relay**, on the same terms as the two state files — same name on both services, so moving the path cannot leave the relay reading where the router used to write — and published as `sync.mirrors` on `/stats.json` — which is the only way anything outside this process can learn the kind list, since it exists nowhere but `router.conf`. Without it a client comparing our count for an author against that author's own relay's total compares a *filtered* mirror against an *unfiltered* one and reads a complete mirror as partial (measured: 31,118 of 89,485, drawn as 35%). The streams written are the ones actually running, so `SYNC_STREAMS` narrows this too. Unset ⇒ nothing is published and the router says so on boot | compose: `/var/lib/vespa-relay/sync-manifest.json`; bare: unset |
 | `SYNC_STREAMS` | run only these streams (comma-separated), to tune one part of the sync without the rest competing for the same sockets, heap and ingest queue. The router prints which streams it is *not* running on startup | every stream in the config |
 | `SYNC_TOR_SOCKS` | a Tor SOCKS5 proxy (`host:port`) — the transport `.onion` upstreams are dialled through, and the only way one is reachable at all. The hostname is resolved **inside** Tor rather than here, which is what makes a hidden service resolve and what keeps the local resolver from learning which ones this relay syncs with. Unset ⇒ discovery drops every `.onion` it finds and a `.onion` in a stream's `urls` **refuses to boot**, naming the urls — a stream that quietly mirrors nothing is indistinguishable from one that is failing. Malformed ⇒ startup fails rather than degrading to "no Tor". Only hidden services take this route; clearnet relays keep the direct client | compose: `tor:9050`; bare: unset |
 | `SYNC_TOR_ALL` | send **every** upstream through Tor, not only the hidden services. A different deployment — no relay learns this box's address — rather than a stronger default: a 20,000-relay dynamic cycle over Tor is a fraction of the throughput, and some large relays refuse exit traffic outright | `false` |

@@ -534,6 +534,40 @@ router: outbox cycle done — 214,880 event(s) from 1102/3184 relay(s) in 1:12:4
 router: ingested 214880 accepted, 402113 rejected [duplicate: already have this event x401980]; 14 relay(s) connected, 12 pinned + dynamic
 ```
 
+## Publishing what this router mirrors
+
+The kind list in `filter` exists here and nowhere else, and that is a problem for
+anything counting events on the relay this router feeds. "How much of my history
+is here yet" gets answered by counting our events for an author against the
+author's own relay's total for them, and that is a *filtered* mirror over an
+*unfiltered* one: measured at **31,118 here of 89,485 there — 35%** — on a mirror
+that was missing nothing it had ever been asked to hold. The entire gap was kinds
+3, 4, 5, 6, 7 and 1059, which no stream here asks for, and two of which
+(encrypted DMs, gift wraps) it must never hold.
+
+Set `SYNC_MANIFEST_FILE` and the router writes what it is running, once at boot:
+
+```json
+{
+  "writtenAt": 1770000000,
+  "streams": [
+    {"name": "content",    "dir": "down", "kinds": [0, 1, 3, 6, 7, 16, 20, …]},
+    {"name": "assertions", "dir": "down", "kinds": [30382]},
+    {"name": "monitor",    "dir": "up",   "kinds": [30166]}
+  ]
+}
+```
+
+The relay reads it off the shared volume and publishes the union of the `down`
+kinds as `sync.mirrors.kinds` on `/stats.json`. A client scopes its remote
+`COUNT` to that list, and the percentage becomes one that can reach 100%.
+
+Once at boot is the whole lifecycle: a `router.conf` edit is a `restart sync`, so
+there is no other moment this can change, and `writtenAt` is how a reader tells a
+live declaration from one left behind by a router that was switched off. What is
+written is what is **running** — `SYNC_STREAMS` narrows the file too, because a
+stream that is not running mirrors nothing.
+
 ## Enabling it under docker compose
 
 The router is the `sync` service, behind the `sync` profile — the profile is

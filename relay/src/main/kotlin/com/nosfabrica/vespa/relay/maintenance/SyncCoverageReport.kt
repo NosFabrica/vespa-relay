@@ -81,10 +81,11 @@ import kotlinx.serialization.json.putJsonArray
  * ## What this cannot say
  *
  * **"Never asked" is not knowable here.** These files hold the relays the router
- * HAS walked; the list a stream was configured with lives in `router.conf`,
- * which the relay does not read. So the denominator is "relays this stream has
- * touched", not "relays this stream names", and the page must not claim
- * otherwise.
+ * HAS walked. The router's manifest ([MirrorReport]) names the streams it runs
+ * and the kinds they ask for, but no urls — a dynamic stream discovers its
+ * relays, so there is no configured list to publish. So the denominator is
+ * "relays this stream has touched", not "relays this stream names", and the page
+ * must not claim otherwise.
  *
  * ## Why a group's `filter` is what its legs AGREE on
  *
