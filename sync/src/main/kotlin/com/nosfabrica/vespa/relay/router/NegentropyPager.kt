@@ -142,11 +142,17 @@ internal class ClientWindowSync(
             onEvent = onEvent,
         )
 
+    // The count only. A page here is a SUB-WINDOW of a leg — one slice the
+    // reconcile could not compare, or one dense second split by kind — so
+    // draining it means "nothing below this slice's own floor", which is a
+    // point inside the leg rather than the leg's bottom. Only a walk that
+    // reached the filter's floor may settle history, and that judgement lives
+    // at the leg's call site in `drainSettlesThePast`.
     override suspend fun page(
         url: NormalizedRelayUrl,
         window: Filter,
         onEvent: suspend (Event) -> Unit,
-    ): Int = client.fetchAllPages(url, listOf(window), idleTimeoutMs, onEvent = onEvent)
+    ): Int = client.fetchAllPages(url, listOf(window), idleTimeoutMs, onEvent = onEvent).downloaded
 }
 
 /** What one [NegentropyPager.sweep] did with one leg of one peer. */
@@ -225,8 +231,9 @@ internal class NegentropyPager(
     /**
      * Reconcile [leg] against [url], one right-sized window at a time.
      *
-     * [shape] is the stream's filter — the cursor's identity and the shape every
-     * window keeps. Only `since`/`until` vary across windows, deliberately:
+     * [stream] and [shape] are the cursor's identity: the stream asking, and
+     * the filter it asks. [shape] is also the shape every window keeps — only
+     * `since`/`until` vary across windows, deliberately:
      * strfry matches a declared negentropy tree by comparing canonicalised
      * filter JSON, so a shape that stays byte-identical rides their index across
      * the whole sweep, while sub-partitioning on any other axis drops the
@@ -234,6 +241,7 @@ internal class NegentropyPager(
      * is an escape hatch and not a strategy.
      */
     suspend fun sweep(
+        stream: String,
         url: NormalizedRelayUrl,
         shape: Filter,
         leg: Filter,
@@ -256,7 +264,7 @@ internal class NegentropyPager(
         val startedTarget = target
         // Once per sweep, not per window: building it serialises the filter, and
         // a discovery stream's filter carries thousands of authors.
-        val cursor = SweepState.keyFor(url, shape)
+        val cursor = SweepState.keyFor(stream, url, shape)
         val stack = ArrayDeque<LongRange>()
         pushResumed(stack, url, cursor, floor, ceiling)
 
@@ -423,7 +431,7 @@ internal class NegentropyPager(
         shape: Filter,
         floor: Long,
         ceiling: Long,
-        cursor: String,
+        cursor: SweepState.Cursor,
     ): Filter {
         val done = state.reconciled(cursor)
         val top = if (done != null && done.downTo > floor) done.downTo - 1 else ceiling
@@ -441,7 +449,7 @@ internal class NegentropyPager(
     private fun pushResumed(
         stack: ArrayDeque<LongRange>,
         url: NormalizedRelayUrl,
-        cursor: String,
+        cursor: SweepState.Cursor,
         floor: Long,
         ceiling: Long,
     ) {
@@ -537,7 +545,7 @@ internal class NegentropyPager(
 
     /** One window finished, by any route: move the cursor. */
     private fun complete(
-        cursor: String,
+        cursor: SweepState.Cursor,
         w: LongRange,
     ) = state.advance(cursor, w.first, w.last)
 

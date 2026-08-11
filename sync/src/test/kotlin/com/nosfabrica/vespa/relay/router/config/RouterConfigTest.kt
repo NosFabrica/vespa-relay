@@ -20,9 +20,11 @@
  */
 package com.nosfabrica.vespa.relay.router.config
 
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -252,7 +254,7 @@ class RouterConfigTest {
         val outbox = cfg.streams.first { it.name == "outbox" }.dynamic!!
         assertEquals(3600L, outbox.refreshSeconds)
         assertEquals(4, outbox.concurrency)
-        assertEquals(listOf("wss://skip.example/"), outbox.exclude.map { it.url })
+        assertEquals(listOf("wss://skip.example/"), outbox.exclude.urls.map { it.url })
         assertEquals(2, outbox.sources.size)
 
         // One scan over three kinds, three selects sorting them out.
@@ -298,6 +300,74 @@ class RouterConfigTest {
         assertTrue(cfg.upUpstreams().isEmpty())
     }
 
+    @Test
+    fun `a plain exclude url matches by normalized equality and a regex entry matches the whole url`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    outbox {
+                        filter  = { "kinds": [10002] }
+                        exclude = [ "PURPLEPAG.ES", "wss://DIRECTORY.YABU.ME:443", "wss://filter.nostr.wine/npub.*" ]
+                        relaySource = [
+                            {
+                                select = [ { tag = "r" } ]
+                                filter = { "kinds": [10002] }
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent(),
+            )
+        val exclude =
+            cfg.streams
+                .single()
+                .dynamic!!
+                .exclude
+        // No regex metacharacter (a dot is not one), so the first two entries
+        // are plain urls: normalized like a `urls` entry — covering the
+        // scheme-less uppercase spelling a pre-regex config could carry, and
+        // an uppercase host with a redundant :443, which discovery also
+        // strips from every url before the exclude check — and excluding
+        // exactly one relay each...
+        assertTrue(RelayUrlNormalizer.normalize("wss://purplepag.es") in exclude)
+        assertTrue(RelayUrlNormalizer.normalize("wss://directory.yabu.me") in exclude)
+        // ...never a longer url it sits inside, nor the look-alike host its
+        // dots would reach as a regex.
+        assertFalse(RelayUrlNormalizer.normalize("wss://purplepag.es.evil.example") in exclude)
+        assertFalse(RelayUrlNormalizer.normalize("wss://purplepagXes") in exclude)
+        // The `.*` makes the second entry a regex, and it reaches only what
+        // it names: the per-user urls the host mints, not the relay itself.
+        assertTrue(RelayUrlNormalizer.normalize("wss://filter.nostr.wine/npub1xyz") in exclude)
+        assertFalse(RelayUrlNormalizer.normalize("wss://filter.nostr.wine") in exclude)
+        assertFalse(RelayUrlNormalizer.normalize("wss://nostr.wine") in exclude)
+    }
+
+    @Test
+    fun `a broken exclude regex refuses the config naming the stream and the entry`() {
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    """
+                    streams {
+                        outbox {
+                            filter  = { "kinds": [10002] }
+                            exclude = [ "wss://filter.nostr.wine/[" ]
+                            relaySource = [
+                                {
+                                    select = [ { tag = "r" } ]
+                                    filter = { "kinds": [10002] }
+                                }
+                            ]
+                        }
+                    }
+                    """.trimIndent(),
+                )
+            }
+        assertTrue("outbox" in e.message!!, "the error names the stream: ${e.message}")
+        assertTrue("wss://filter.nostr.wine/[" in e.message!!, "the error names the entry: ${e.message}")
+    }
+
     /** A one-source `relaySource` list, with [filter] as the scan. */
     private fun sourced(
         filter: String,
@@ -328,6 +398,116 @@ class RouterConfigTest {
         // Replaceable and addressable kinds are one event per author — safe whole.
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002] }"""))
         RouterConfigLoader.parse(sourced("""{ "kinds": [30166] }"""))
+    }
+
+    @Test
+    fun `a negative since, until or limit is refused at parse time`() {
+        // None of the three can be negative under NIP-01, and every way a relay
+        // reacts to one is a failure that never names the config behind it:
+        // strfry CLOSEs the subscription, three of the five `indexers` answer a
+        // NOTICE and then never EOSE (so each page burns a whole idle timeout),
+        // and purplepag.es drops the bound and serves its NEWEST page instead —
+        // the opposite end of the relay from the one asked for.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": -1 }"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": -1 }"""))
+        }
+        // The quietest of the three: quartz drops a filter whose limit is already
+        // met before the first REQ, so the stream downloads nothing and reports
+        // LIMIT_REACHED every cycle, reading as a relay that simply has no events.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": -1 }"""))
+        }
+        // Zero is not negative and stays legal, but for a DIFFERENT reason in
+        // each of the three — see the two tests below.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "until": 0 }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
+    }
+
+    @Test
+    fun `a zero limit stays legal — it is the live-only idiom, not a mistake`() {
+        // Worth pinning with its reason, because the paged path makes zero look
+        // broken from one side: quartz's `stillNeedsMore` is
+        // `matchCountPerFilter[i] < filter.limit`, so `0 < 0` drops the filter
+        // before the first REQ and the walk reports LIMIT_REACHED having
+        // downloaded nothing.
+        //
+        // That is the correct outcome, not a bug to validate away. `limit = 0`
+        // is the NIP-01 way to say "send me no stored events, just stream the
+        // live ones", and this router honours it: `SyncEngine`'s down tail
+        // subscribes with this same filter, overriding `since` but NOT `limit`,
+        // so the live subscription still runs. LIMIT_REACHED is not DRAINED, so
+        // no band claims coverage from it either. A stream configured to want
+        // no history downloading no history is the truth.
+        val cfg = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "limit": 0 }"""))
+        assertEquals(
+            0,
+            cfg
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .filter.limit,
+        )
+    }
+
+    @Test
+    fun `a zero since is the absence of a floor, so it is normalised to absent`() {
+        // `created_at` is unsigned: the epoch IS the bottom, so `since = 0` asks
+        // for exactly what omitting `since` asks for. Two places read
+        // `since != null` as "bounded" and were both fooled by the long
+        // spelling — `flooredForPaging` passed it through unfloored (leaving the
+        // leg to end UNPAGEABLE and re-walk every boot), and the `narrowed`
+        // check below counted it as narrowing a regular-kind scan.
+        val cfg = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
+        assertNull(
+            cfg
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .filter.since,
+        )
+        // A real floor is untouched — this normalises the epoch, nothing else.
+        val real = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 1577836800 }"""))
+        assertEquals(
+            1577836800L,
+            real
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .sources
+                .single()
+                .filter.since,
+        )
+        // And it is not a back door into the unbounded-scan guard: kind 1 is a
+        // regular kind, and `since = 0` no longer counts as narrowing it.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [1], "since": 0 }"""))
+        }
+    }
+
+    @Test
+    fun `an inverted window is refused rather than recorded as settled history`() {
+        // since > until matches nothing, and nothing downstream notices: the
+        // relay EOSEs an empty page, the walk reports DRAINED, and
+        // `drainSettlesThePast` compares the leg's floor to the filter's — the
+        // same value — and says yes. The band then records a settled past for a
+        // window that could not have returned an event.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 1700000000, "until": 1600000000 }"""))
+        }
+        // Equal bounds are a real one-second window, not an inversion — a
+        // band's re-read edge leg is exactly that shape.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 1600000000, "until": 1600000000 }"""))
+        // And normalising `since = 0` must not turn a legal filter into an
+        // inverted one: null since, bounded until, still fine.
+        RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0, "until": 1600000000 }"""))
     }
 
     @Test

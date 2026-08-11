@@ -65,12 +65,33 @@ streams {
         filter = { "kinds": [0, 10002, 10040] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 100          # relays synced at the same time
+        # Ignore any single event naming more relays than this — a real outbox
+        # list is single digits, and the ones this exists for run to five
+        # (measured: 148 pubkeys publishing kind 10002s of 100-10,591 entries,
+        # every entry a dial). The event is dropped WHOLE, never truncated, so
+        # its author cannot choose what we see by ordering it.
+        #
+        # SETTING THIS GIVES UP THE TAG PROJECTION for this source: a per-event
+        # limit needs the event, and the projection returns values already
+        # flattened across every event it matched. Unset, discovery keeps the
+        # projection (a 2.6M-event scan became its walk). Duplicate urls are
+        # folded either way — see AGENTS.md, "One relay behind many urls".
+        maxRelaysPerList = 50
+        # A plain url excludes exactly that relay, matched by its normalized
+        # form — host case, a redundant :443, or a missing trailing slash
+        # don't matter. An entry with a regex metacharacter (* + ? [ ] etc; a dot
+        # doesn't count) is instead a regex that must match a discovered url
+        # in full, ignoring case: "wss://filter.nostr.wine/npub.*" drops the
+        # per-user urls that host mints (wss://filter.nostr.wine/npub1...)
+        # while leaving the relay itself in — a shape no literal list could
+        # keep up with.
         exclude = [
-            "wss://purplepag.es",
-            "wss://profiles.nostr1.com",
-            "wss://indexer.coracle.social",
-            "wss://user.kindpag.es",
-            "wss://directory.yabu.me"
+            "wss://purplepag.es/",
+            "wss://profiles.nostr1.com/",
+            "wss://indexer.coracle.social/",
+            "wss://user.kindpag.es/",
+            "wss://directory.yabu.me/",
+            "wss://filter.nostr.wine/npub.*"
         ]
         relaySource = [
             {
@@ -95,7 +116,7 @@ streams {
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 8            # relays synced at the same time
-        exclude = []               # relays to skip however many sources name them
+        exclude = []               # urls or regexes for relays to skip however many sources name them
         relaySource = [
             {
                 select = [
@@ -144,11 +165,12 @@ streams {
         refreshSeconds = 21600     # re-read the sources and re-sync every 6h
         concurrency = 100          # relays synced at the same time
         exclude = [
-            "wss://purplepag.es",
-            "wss://profiles.nostr1.com",
-            "wss://indexer.coracle.social",
-            "wss://user.kindpag.es",
-            "wss://directory.yabu.me"
+            "wss://purplepag.es/",
+            "wss://profiles.nostr1.com/",
+            "wss://indexer.coracle.social/",
+            "wss://user.kindpag.es/",
+            "wss://directory.yabu.me/",
+            "wss://filter.nostr.wine/npub.*"
         ]
         relaySource = [
             {

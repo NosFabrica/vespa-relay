@@ -31,7 +31,7 @@ import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
-import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import java.io.File
 import java.nio.file.AtomicMoveNotSupportedException
@@ -59,10 +59,23 @@ import java.util.concurrent.ConcurrentHashMap
  *    cursor is written per finished window, so a crash costs one window.
  *
  * Both live in one file with one flusher because they share a lifetime: they
- * are per (peer, filter shape) knowledge about a sync that is still running.
- * The on-disk shape is `{"peers": {...}, "sweeps": {...}}`, separate from
- * `SYNC_STATE_FILE` — bands are the long-lived record of what a relay has
- * given us, these are working state a completed sweep throws away.
+ * are per (stream, filter shape, peer) knowledge about a sync that is still
+ * running. Separate from `SYNC_STATE_FILE` — bands are the long-lived record of
+ * what a relay has given us, these are working state a completed sweep throws
+ * away.
+ *
+ * The on-disk shape nests the three parts of a cursor's identity rather than
+ * concatenating them:
+ *
+ * ```json
+ * {
+ *   "peers":  { "wss://relay/": { "target": 12500, "cap": 500000 } },
+ *   "sweeps": { "<stream>": { "<filter>": { "wss://relay/": { "downTo": …, "upTo": …, "at": … } } } }
+ * }
+ * ```
+ *
+ * `peers` stays flat because it is keyed by the peer ALONE — `max_sync_events`
+ * is a property of their config, not of anything we ask for.
  */
 class SweepState(
     private val file: File?,
@@ -89,8 +102,44 @@ class SweepState(
         val at: Long,
     )
 
+    /**
+     * Who is asking, for what, and of whom — the three parts of a cursor's
+     * identity, held apart instead of joined into a string.
+     *
+     * [filter] is the serialised shape, not the [Filter]: it is taken ONCE per
+     * sweep ([keyFor]) because serialising a discovery stream's filter renders
+     * thousands of authors, and it is what the file nests under, so keeping the
+     * rendered form is also what makes a save free of that cost.
+     *
+     * [stream] is part of the identity, not a label. Two streams that happen to
+     * ask one relay the same filter are two sweeps: they start at different
+     * moments and stop at different depths, and a cursor one of them wrote is a
+     * claim about ITS walk. Sharing them let a stream inherit ground it had not
+     * compared; keeping them apart costs at most one window walked twice, which
+     * is the cheap side of that trade.
+     */
+    data class Cursor(
+        val stream: String,
+        val filter: String,
+        val relay: String,
+    )
+
     private val peers = ConcurrentHashMap<String, Peer>()
-    private val sweeps = ConcurrentHashMap<String, Reconciled>()
+    private val sweeps = ConcurrentHashMap<Cursor, Reconciled>()
+
+    /**
+     * MIGRATION SHIM — cursors read from a file written before the format
+     * nested, keyed by (filter, relay) because the flat key never said which
+     * stream wrote them.
+     *
+     * They are claimed by the first stream to ask for that pair (see
+     * [reconciled]) and re-written flat until then, so a router that restarts
+     * before its slower streams have got to their first window does not lose
+     * them. Delete this map, [claim], the flat branch in [load] and the flat
+     * branch in [save] together once every deployment has started once on a
+     * build that writes the nested shape.
+     */
+    private val preStream = ConcurrentHashMap<Pair<String, String>, Reconciled>()
 
     @Volatile private var dirty = false
 
@@ -140,24 +189,28 @@ class SweepState(
     // ---- how far the current sweep got --------------------------------------
 
     /**
-     * What this (peer, filter shape) already reconciled, or null when there is
-     * nothing usable — no cursor, or one old enough that re-comparing is the
-     * honest answer.
+     * What this (stream, filter shape, peer) already reconciled, or null when
+     * there is nothing usable — no cursor, or one old enough that re-comparing
+     * is the honest answer.
      */
-    fun reconciled(key: String): Reconciled? {
-        val mark = sweeps[key] ?: return null
+    fun reconciled(key: Cursor): Reconciled? {
+        val mark = sweeps[key] ?: claim(key) ?: return null
         return if (nowSeconds() - mark.at > staleAfterSeconds) null else mark
     }
 
     /** Widen the reconciled slice to include a window that just finished. */
     fun advance(
-        key: String,
+        key: Cursor,
         downTo: Long,
         upTo: Long,
     ) {
+        // Before the compute(), so a pre-stream cursor this sweep is resuming
+        // is widened rather than overwritten by its first finished window.
+        claim(key)
         // compute(), not read-then-write: the flusher reads this map on another
-        // thread, and two sweeps sharing a key (a relay in two streams with the
-        // same filter) would otherwise be able to drop one's progress.
+        // thread, and two coroutines advancing one cursor (the same stream's
+        // legs against one relay) would otherwise be able to drop one's
+        // progress.
         //
         // Only ever widened, never replaced: windows land newest-first, so the
         // low edge is the one that moves, and a `downTo` that jumped BACKWARD
@@ -177,11 +230,45 @@ class SweepState(
      * same moment is the durable statement; keeping the cursor too would let a
      * later, narrower leg inherit a claim it never earned.
      */
-    fun finish(key: String) {
-        if (sweeps.remove(key) != null) dirty = true
+    fun finish(key: Cursor) {
+        val had = sweeps.remove(key) != null
+        // The pre-stream cursor for the same pair goes with it, or the next
+        // stream to ask would claim a slice this leg has already superseded.
+        val hadOld = preStream.remove(key.filter to key.relay) != null
+        if (had || hadOld) dirty = true
     }
 
-    fun size(): Int = sweeps.size
+    fun size(): Int = sweeps.size + preStream.size
+
+    /**
+     * MIGRATION SHIM — adopt a pre-stream cursor for this pair, once, into the
+     * stream that asked for it.
+     *
+     * The stream that asks IS the stream that wrote it, in every case but two
+     * streams sharing a filter against one relay — where first-ask-wins is the
+     * behaviour the flat file already had, since they shared the one key.
+     */
+    private fun claim(key: Cursor): Reconciled? {
+        if (preStream.isEmpty()) return null
+        val mark = preStream.remove(key.filter to key.relay) ?: return null
+        dirty = true
+        // Staleness is absolute, not per stream: a claim this old is not worth
+        // acting on for ANY stream, so it is dropped here rather than moved
+        // into one stream's map to sit there being ignored — and dropping it
+        // leaves it claimable by nobody, which is what it is worth.
+        if (nowSeconds() - mark.at > staleAfterSeconds) return null
+        // merge(), not put: a sweep may be advancing this cursor on another
+        // coroutine right now (claim runs from advance() too), and a put would
+        // drop the window it has just finished. Same widening rule as
+        // [advance] — the low edge only ever falls.
+        return sweeps.merge(key, mark) { held, old ->
+            Reconciled(
+                downTo = minOf(held.downTo, old.downTo),
+                upTo = maxOf(held.upTo, old.upTo),
+                at = maxOf(held.at, old.at),
+            )
+        }
+    }
 
     // ---- the file ------------------------------------------------------------
 
@@ -228,20 +315,46 @@ class SweepState(
                 val o = v.jsonObject
                 peers[url] = Peer(o.getValue("target").jsonPrimitive.int, o["cap"]?.jsonPrimitive?.int)
             }
-            root["sweeps"]?.jsonObject?.forEach { (k, v) ->
+            root["sweeps"]?.jsonObject?.forEach { (streamOrFlatKey, v) ->
                 val o = v.jsonObject
-                sweeps[k] =
-                    Reconciled(
-                        o.getValue("downTo").jsonPrimitive.long,
-                        o.getValue("upTo").jsonPrimitive.long,
-                        o["at"]?.jsonPrimitive?.long ?: 0L,
-                    )
+                // MIGRATION SHIM. Told apart by SHAPE, not by the key: a
+                // pre-stream entry is the mark itself, a stream is filters all
+                // the way down. A filter can never be named `downTo` — it is
+                // serialised JSON and starts with `{`.
+                if (o["downTo"] != null) {
+                    val at = streamOrFlatKey.indexOf('|')
+                    if (at <= 0 || at == streamOrFlatKey.length - 1) return@forEach
+                    val relay = streamOrFlatKey.substring(0, at)
+                    val filter = streamOrFlatKey.substring(at + 1)
+                    preStream[filter to relay] = mark(o) ?: return@forEach
+                    return@forEach
+                }
+                o.forEach { (filter, byRelay) ->
+                    byRelay.jsonObject.forEach { (relay, m) ->
+                        sweeps[Cursor(streamOrFlatKey, filter, relay)] = mark(m.jsonObject) ?: return@forEach
+                    }
+                }
             }
         }.onFailure {
             // Same trade as a corrupt band file: losing this costs one re-sweep,
             // refusing to start costs the mirror.
             System.err.println("router: could not read sweep state from ${f.path} (${it.message}); starting fresh")
         }
+    }
+
+    /** One cursor, as it is written. */
+    private fun mark(r: Reconciled): JsonObject =
+        buildJsonObject {
+            put("downTo", r.downTo)
+            put("upTo", r.upTo)
+            put("at", r.at)
+        }
+
+    /** One cursor's edges, or null for an entry too damaged to be a claim. */
+    private fun mark(o: JsonObject): Reconciled? {
+        val downTo = o["downTo"]?.jsonPrimitive?.longOrNull ?: return null
+        val upTo = o["upTo"]?.jsonPrimitive?.longOrNull ?: return null
+        return Reconciled(downTo, upTo, o["at"]?.jsonPrimitive?.longOrNull ?: 0L)
     }
 
     @Synchronized
@@ -267,16 +380,36 @@ class SweepState(
                     put(
                         "sweeps",
                         buildJsonObject {
+                            // Grouped once here rather than held grouped: the
+                            // maps are read and written by sweep coroutines,
+                            // and one flat ConcurrentHashMap is the shape that
+                            // needs no lock to stay consistent.
+                            val byStream = LinkedHashMap<String, LinkedHashMap<String, LinkedHashMap<String, Reconciled>>>()
                             sweeps.forEach { (k, r) ->
+                                byStream
+                                    .getOrPut(k.stream) { LinkedHashMap() }
+                                    .getOrPut(k.filter) { LinkedHashMap() }[k.relay] = r
+                            }
+                            byStream.forEach { (stream, byFilter) ->
                                 put(
-                                    k,
+                                    stream,
                                     buildJsonObject {
-                                        put("downTo", r.downTo)
-                                        put("upTo", r.upTo)
-                                        put("at", r.at)
+                                        byFilter.forEach { (filter, byRelay) ->
+                                            put(
+                                                filter,
+                                                buildJsonObject {
+                                                    byRelay.forEach { (relay, r) -> put(relay, mark(r)) }
+                                                },
+                                            )
+                                        }
                                     },
                                 )
                             }
+                            // MIGRATION SHIM: unclaimed pre-stream cursors go
+                            // back out flat, because there is still no stream to
+                            // file them under. They drain as their streams reach
+                            // them; goes when the reader above does.
+                            preStream.forEach { (pair, r) -> put("${pair.second}|${pair.first}", mark(r)) }
                         },
                     )
                 }
@@ -295,7 +428,8 @@ class SweepState(
 
     companion object {
         /**
-         * The cursor key: the peer, plus the filter with its time bounds removed.
+         * The cursor's identity: the stream asking, the filter with its time
+         * bounds removed, and the peer.
          *
          * Time is what the sweep VARIES, so a key that included `since`/`until`
          * would mint a fresh cursor per window and never resume anything.
@@ -309,9 +443,10 @@ class SweepState(
          * that JSON for every window, for nothing.
          */
         fun keyFor(
+            stream: String,
             url: NormalizedRelayUrl,
             shape: Filter,
-        ): String = "${url.url}|${shape.copy(since = null, until = null, limit = null).toJson()}"
+        ): Cursor = Cursor(stream, shape.copy(since = null, until = null, limit = null).toJson(), url.url)
 
         // Read by a human asking why a peer is being asked for 12,500 events at
         // a time, so it is written to be read.

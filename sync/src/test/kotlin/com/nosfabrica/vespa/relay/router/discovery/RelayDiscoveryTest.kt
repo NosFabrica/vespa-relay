@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router.discovery
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.Slot
@@ -71,11 +72,15 @@ class RelayDiscoveryTest {
     private fun dynamic(
         vararg sources: RelaySource,
         exclude: Set<String> = emptySet(),
+        maxRelaysPerList: Int? = null,
     ) = RelayDiscoveryConfig(
         sources = sources.toList(),
         refreshSeconds = 3_600,
         concurrency = 4,
-        exclude = exclude.map { RelayUrlNormalizer.normalize(it) }.toSet(),
+        // Production compilation, so these tests exercise the same entry
+        // classification and case rules the loader produces.
+        exclude = RelayExcludes.parse(exclude.toList()),
+        maxRelaysPerList = maxRelaysPerList,
     )
 
     private fun event(
@@ -299,6 +304,87 @@ class RelayDiscoveryTest {
 
         assertEquals(listOf("wss://scores.example/"), urls(list, select(index = 2)))
     }
+
+    @Test
+    fun `a default port is dropped, so one relay is not dialled twice`() {
+        val list =
+            event(
+                10002,
+                arrayOf("r", "wss://relay.example:443"),
+                arrayOf("r", "wss://relay.example"),
+                arrayOf("r", "ws://plain.example:80/alpha"),
+                // NOT a default for its scheme, and not the scheme's business
+                // to remove: this is a different listener.
+                arrayOf("r", "wss://relay.example:4443"),
+            )
+
+        val found = urls(list, select(tag = "r"))
+
+        assertEquals(listOf("wss://relay.example/", "ws://plain.example/alpha", "wss://relay.example:4443/"), found)
+    }
+
+    @Test
+    fun `an ipv6 literal keeps the colons that are not a port`() {
+        val list = event(10002, arrayOf("r", "ws://[2001:db8::1]:80/alpha"), arrayOf("r", "ws://[2001:db8::2]/beta"))
+
+        assertEquals(listOf("ws://[2001:db8::1]/alpha", "ws://[2001:db8::2]/beta"), urls(list, select(tag = "r")))
+    }
+
+    // ---- oversized lists ---------------------------------------------------
+
+    @Test
+    fun `a relay list too long to be one is dropped whole`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // The shape this exists for: measured on the live store, 148 pubkeys
+            // published a kind 10002 of 100-10,591 entries, no other tags and no
+            // content, and every entry cost the router a dial.
+            store.insert(event(10002, *Array(12) { arrayOf("r", "wss://bulk$it.example") }))
+            store.insert(event(10002, arrayOf("r", "wss://ordinary.example")))
+
+            val found =
+                RelayDiscovery
+                    .discover(store, dynamic(source(10002, selects = listOf(select(tag = "r"))), maxRelaysPerList = 10))
+                    .map { it.url.url }
+
+            // Not the first ten of the bulk list — none of it. Taking a prefix
+            // would let its author choose which relays we see by ordering them.
+            assertEquals(listOf("wss://ordinary.example/"), found)
+        }
+
+    @Test
+    fun `the cap counts the relays a select reads, not every tag on the event`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // A NIP-51 set: hundreds of `p` tags around four relays. Judged on
+            // its relays, it is an ordinary list and stays.
+            store.insert(
+                event(
+                    30002,
+                    *Array(50) { arrayOf("p", "%064d".format(it)) },
+                    arrayOf("relay", "wss://one.example"),
+                    arrayOf("relay", "wss://two.example"),
+                ),
+            )
+
+            val found =
+                RelayDiscovery
+                    .discover(store, dynamic(source(30002, selects = listOf(select(tag = "relay"))), maxRelaysPerList = 10))
+                    .map { it.url.url }
+
+            assertEquals(listOf("wss://one.example/", "wss://two.example/"), found)
+        }
+
+    @Test
+    fun `no cap configured reads every list however long`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            store.insert(event(10002, *Array(12) { arrayOf("r", "wss://bulk$it.example") }))
+
+            val found = RelayDiscovery.discover(store, dynamic(source(10002, selects = listOf(select(tag = "r")))))
+
+            assertEquals(12, found.size)
+        }
 
     // ---- bindings ----------------------------------------------------------
 
@@ -547,6 +633,34 @@ class RelayDiscoveryTest {
                     skip = setOf(RelayUrlNormalizer.normalize("wss://quiet.example")),
                 )
             assertEquals(listOf("wss://lonely.example/"), kept.map { it.url.url })
+        }
+
+    @Test
+    fun `one exclude pattern drops every per-user url a host mints`() =
+        runBlocking {
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+            // The shape filter.nostr.wine produces: a distinct url per user, so
+            // no literal exclude list could ever be complete.
+            store.insert(
+                event(
+                    10002,
+                    arrayOf("r", "wss://filter.nostr.wine/npub1aaa", "write"),
+                    arrayOf("r", "wss://filter.nostr.wine/npub1bbb", "write"),
+                    arrayOf("r", "wss://filter.nostr.wine", "write"),
+                    arrayOf("r", "wss://keep.example", "write"),
+                ),
+            )
+
+            val kept =
+                RelayDiscovery.discover(
+                    store,
+                    dynamic(
+                        source(10002, selects = listOf(select(tag = "r", where = marker("write")))),
+                        exclude = setOf("wss://filter\\.nostr\\.wine/npub.*"),
+                    ),
+                )
+            // The per-user urls fall; the relay itself and everything else stay.
+            assertEquals(listOf("wss://filter.nostr.wine/", "wss://keep.example/"), kept.map { it.url.url })
         }
 
     @Test

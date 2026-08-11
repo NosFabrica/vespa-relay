@@ -98,7 +98,8 @@ back to paged REQ — and a paged fetch has no such memory. It walks `created_at
 newest-first and re-reads everything it read last time, every restart.
 
 Set `SYNC_STATE_FILE` and the router remembers the band it has covered per
-relay and per filter, then asks only for what lies outside it:
+stream, per filter and per relay — the three levels the file nests under — then
+asks only for what lies outside it:
 
 ```
 stored band:        |<-------- covered -------->|
@@ -272,7 +273,13 @@ it again — so the fan-out widens on its own as the store fills.
 
 Nothing truncates that set: no cap on relays synced and no popularity floor.
 `concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
-way to leave a relay out.
+way to leave a relay out. A plain url entry excludes exactly the relay it
+names, compared by normalized form — host case, a redundant `:443`, or a
+missing trailing slash don't matter. An entry carrying a regex metacharacter (a dot
+doesn't count — urls are full of them) is instead a regex that must match the
+whole discovered url, ignoring case: `wss://filter.nostr.wine/npub.*` drops
+every per-user url that host mints (`wss://filter.nostr.wine/npub1…`) while
+leaving the relay itself in — a shape no literal list could keep up with.
 
 **No kind needs its own code.** Every relay list in the protocol is a tag with a
 url at a fixed offset, so a select is just that shape:

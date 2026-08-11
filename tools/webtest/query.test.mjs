@@ -1,5 +1,6 @@
-// The search box's own language — `from:`/`to:`, `since:`/`until:` and
-// `#hashtag`: what the field draws, and what the relay is asked.
+// The search box's own language — `from:`/`to:`, `since:`/`until:`,
+// `#hashtag` and the NIP-73 scopes (`site:`, `isbn:`, `doi:`, …): what the
+// field draws, and what the relay is asked.
 //
 // This is the whole feature's contract in one place. The field renderer and
 // the query builder are in different modules and must agree EXACTLY about
@@ -9,7 +10,7 @@
 // is asserted here rather than any particular arrangement of the DOM.
 import assert from "assert";
 
-const { tokenize, parseQuery, mentionAt, dateAt, isKey, tagValues, buildFilters, drawable, dayBound, ymd } =
+const { tokenize, parseQuery, mentionAt, dateAt, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd } =
   await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 
 // Real npubs, minted by the page's own encoder from these hex keys.
@@ -217,6 +218,136 @@ assert.deepStrictEqual(
   "a window composes with everything else the box can say",
 );
 
+// ---- scopes: the other NIP-73 subjects ------------------------------------
+//
+// `site:`, `isbn:`, `geo:`, `isan:`, `doi:` and the three `podcast:` prefixes
+// narrow a search to the kind-1111 comments written ON an external id — the
+// same door the hashtag's comment half already uses, for the subjects that
+// have no `#` spelling.
+
+let sc = tokenize("site:https://example.com/article").find((s) => s.type === "scope");
+assert.deepStrictEqual(
+  [sc.field, sc.value, sc.raw],
+  ["site", "https://example.com/article", "site:https://example.com/article"],
+  "a scope is its own segment, the value verbatim and raw the token as typed",
+);
+assert.strictEqual(tokenize("SITE:example.com")[0].field, "site", "the prefix is case-insensitive, like the others");
+assert.strictEqual(tokenize("podcast:item:guid:PC2491")[0].field, "podcast:item:guid", "an episode is not a feed: the longer prefix is its own family");
+assert.strictEqual(tokenize("podcast:guid:c90e609a")[0].field, "podcast:guid", "…and the shorter one still matches its own");
+assert.strictEqual(tokenize("podcast:publisher:guid:920666")[0].value, "guid:920666", "a publisher id keeps whatever follows its prefix");
+
+// Trailing sentence punctuation stays punctuation, exactly as it does after a
+// hashtag — but ONLY sentence punctuation: real ids contain brackets and
+// semicolons (`10.1002/(SICI)…;2-F` is a published DOI), so anything more
+// aggressive would cut ids that exist to tidy ones that do not.
+sc = tokenize("doi:10.1000/182.")[0];
+assert.strictEqual(sc.value, "10.1000/182", "a full stop after a DOI is not part of it");
+assert.strictEqual(tokenize("doi:10.1000/182.").at(-1).text, ".", "…and stays in the text");
+const SICI = "10.1002/(SICI)1097-0142(19960315)77:6<1039::AID-CNCR6>3.0.CO;2-F";
+assert.strictEqual(tokenize(`doi:${SICI}`)[0].value, SICI, "brackets and mid-value semicolons are the id's own");
+
+assert.deepStrictEqual(tokenize("site:").map((s) => s.type), ["text"], "a bare prefix is not a token — there is nothing to ask for");
+assert.deepStrictEqual(tokenize("site:.").map((s) => s.type), ["text"], "…and neither is a value that is all punctuation");
+
+// A value with no askable id must not become a token: the pill would claim a
+// filter while buildFilters sent NONE, and the leftover base filter would
+// answer as a match-all wearing a scope's face.
+assert.deepStrictEqual(parseQuery("site:#top").scopes, [], "a site: value that strips to nothing asks nothing, so it is not a token");
+assert.deepStrictEqual(tokenize("site:#top").map((s) => s.type), ["text", "tag"], "…no pill forms, and the # reads as the hashtag it is");
+const fragOnly = buildFilters("site:#top", { limit: 40, searchString: (t) => t });
+assert(fragOnly.every((x) => "#t" in x || "#l" in x || "#I" in x || "#i" in x), "…so nothing degrades to an unscoped match-all");
+assert.deepStrictEqual(tokenize("xsite:example.com").map((s) => s.type), ["text"], "a scope glued to a word is not a token");
+assert.strictEqual(mentionAt("site:ex", 7), null, "a scope opens no people picker");
+assert.strictEqual(dateAt("site:ex", 7), null, "…and no calendar — a url is pasted, not picked");
+
+q = parseQuery("cats site:https://example.com/a dogs");
+assert.strictEqual(q.terms, "cats dogs", "the token leaves the NIP-50 search entirely");
+assert.deepStrictEqual(q.scopes, [{ field: "site", value: "https://example.com/a" }], "…and becomes a scope");
+
+q = parseQuery("isbn:9780765382030 isbn:9780765382030 geo:u4pruy");
+assert.deepStrictEqual(
+  q.scopes,
+  [{ field: "isbn", value: "9780765382030" }, { field: "geo", value: "u4pruy" }],
+  "repeats collapse; two scopes are two scopes",
+);
+
+// A url INSIDE a scope value is the value: the fragment's `#` must not be
+// lifted as a hashtag out of the middle of a token.
+q = parseQuery("site:https://x.example/a#frag cats");
+assert.deepStrictEqual(q.hashtags, [], "a fragment inside a scope value is not a hashtag");
+assert.strictEqual(q.terms, "cats", "…and nothing of the token leaks into the terms");
+
+assert.deepStrictEqual(
+  tokenize(`cats since:2026-08-06 doi:10.1000/182 from:${A} #nostr`).map((s) => s.type),
+  ["text", "date", "text", "scope", "text", "key", "text", "tag"],
+  "all four token families come back in the order they were typed",
+);
+
+// ---- scopeIds: the id spellings the filter carries ------------------------
+//
+// NIP-73 fixes a canonical form per family — hyphenless isbn, lowercase geo
+// and doi, the bare fragmentless url for the web — and commenters do not
+// reliably write it, so the ask is the canonical spelling first with the typed
+// one beside it. An OR list compiles to one dictionary probe; the variants
+// cost strings, not queries.
+
+assert.deepStrictEqual(
+  scopeIds("isbn", "978-0765382030"),
+  ["isbn:9780765382030", "isbn:978-0765382030"],
+  "isbn: drops hyphens (NIP-73's own words), and asks the typed spelling beside it",
+);
+assert.deepStrictEqual(scopeIds("isbn", "9780765382030"), ["isbn:9780765382030"], "already canonical is one ask, not two");
+assert.deepStrictEqual(scopeIds("doi", "10.1000/ABC"), ["doi:10.1000/abc", "doi:10.1000/ABC"], "doi: is lowercase per NIP-73");
+assert.deepStrictEqual(scopeIds("geo", "U4PRUY"), ["geo:u4pruy", "geo:U4PRUY"], "…and so is geo:");
+assert.deepStrictEqual(
+  scopeIds("podcast:guid", "C90E609A-DF1E"),
+  ["podcast:guid:C90E609A-DF1E", "podcast:guid:c90e609a-df1e"],
+  "a guid is asked as typed and lowercased — namespace guids are lowercase uuids, pasted ones often are not",
+);
+assert.deepStrictEqual(
+  scopeIds("podcast:publisher", "920666"),
+  ["podcast:publisher:guid:920666", "podcast:publisher:920666"],
+  "a publisher id typed without guid: is asked WITH it, first — NIP-73's canonical form carries the segment",
+);
+assert.deepStrictEqual(
+  scopeIds("podcast:publisher", "guid:920666"),
+  ["podcast:publisher:guid:920666"],
+  "…and one typed with it is already canonical",
+);
+assert.deepStrictEqual(
+  scopeIds("isan", "0000-0000-401a-0000-7"),
+  ["isan:0000-0000-401A-0000-7", "isan:0000-0000-401a-0000-7"],
+  "isan: is uppercase hex in every NIP-73 example",
+);
+assert.strictEqual(
+  scopeIds("isan", "0000-0000-401A-0000-7-0000-0000-X")[0],
+  "isan:0000-0000-401A-0000-7",
+  "a full ISAN is ALSO asked without its version part — NIP-73's id is the root",
+);
+
+// The web family is the one whose id is NOT prefix-plus-value: NIP-73 writes
+// the bare url, normalized and fragmentless.
+assert.deepStrictEqual(
+  scopeIds("site", "https://example.com/a"),
+  ["https://example.com/a", "https://example.com/a/"],
+  "a web id is the bare url — no site: prefix — with the trailing slash both ways",
+);
+assert.deepStrictEqual(
+  scopeIds("site", "example.com"),
+  ["https://example.com", "https://example.com/", "http://example.com", "http://example.com/"],
+  "no scheme typed asks both, because NIP-73's id always has one",
+);
+assert.deepStrictEqual(
+  scopeIds("site", "https://example.com/a#frag"),
+  ["https://example.com/a", "https://example.com/a/"],
+  "the fragment is not part of the id",
+);
+assert.deepStrictEqual(
+  scopeIds("site", "HTTPS://Example.COM/Page"),
+  ["https://example.com/Page", "https://example.com/Page/", "HTTPS://Example.COM/Page", "HTTPS://Example.COM/Page/"],
+  "scheme and host are lowercased like NIP-73's normalized url — the PATH keeps its case",
+);
+
 // ---- drawable: which tokens the FIELD may pill ----------------------------
 //
 // A hashtag is a token one character in — `#n` already is one — so a field that
@@ -253,6 +384,16 @@ assert.strictEqual(drawn(DATED, 0), `[${DATED}]`, "the caret before it is not in
 assert.strictEqual(drawn(DATED, null), `[${DATED}]`, "and a paste, a restore or a blur pills it");
 assert.strictEqual(drawn(`${DATED} cats`, 20), `[${DATED}] cats`, "…as does typing on past it");
 
+// A scope settles like a hashtag, being a hashtag with a longer `#`: a token
+// at `site:e` and one character longer at every keystroke after, so a field
+// that pilled on sight would re-render on each of them.
+const SCOPED = "site:example.com";
+assert.strictEqual(drawn(SCOPED, SCOPED.length), SCOPED, "the scope under the caret is still being typed");
+assert.strictEqual(drawn(SCOPED, 7), SCOPED, "…anywhere inside it");
+assert.strictEqual(drawn(SCOPED, 0), `[${SCOPED}]`, "the caret before it is not inside it");
+assert.strictEqual(drawn(SCOPED, null), `[${SCOPED}]`, "a paste, a restore or a blur pills it");
+assert.strictEqual(drawn(`${SCOPED} cats`, 18), `[${SCOPED}] cats`, "…as does typing on past it");
+
 // THE caret invariant, and the reason any of this is safe: whatever is drawn,
 // the raw text of the segments IS the value, character for character. Every
 // offset this feature passes around — the caret, a splice, a drop point — is an
@@ -261,6 +402,7 @@ assert.strictEqual(drawn(`${DATED} cats`, 20), `[${DATED}] cats`, "…as does ty
 for (const typed of [
   "cats #nostr dogs", `#a from:${A} #b!`, "#covid-19, x", "(#nostr)", "#🔥 fire", `hi from:${A}`,
   "since:2026-08-06 until:2026-09-01", `#a since:2026-08-06 to:${B} x`, "since:2026-02-31 nope",
+  "site:https://x.example/a#frag cats", "doi:10.1000/182. next", `isbn:978-3 #a podcast:guid:abc-def`,
 ]) {
   for (const at of [null, 0, 1, 3, 7, typed.length]) {
     const back = drawable(typed, at).map((s) => (s.type === "text" ? s.text : s.raw)).join("");
@@ -348,6 +490,49 @@ assert(f.every((x) => !("search" in x)), "…and an EMPTY string is still omitte
 f = buildFilters(`from:${A}`, { limit: 40, searchString: sortRank });
 assert.deepStrictEqual(f, [{ search: " sort:rank", authors: [HEX_A], limit: 40 }], "the same holds for a person-only query");
 
+// ---- buildFilters: scopes -------------------------------------------------
+//
+// A scope is the comment question ALONE: no `t` and no `l`, because nothing
+// tags a book or a paper from the outside the way notes tag topics. `#I`
+// carries the full limit — every comment in a thread on the scope names it as
+// root — and `#i` rides at the side for the odd event whose PARENT is the
+// scope while its root is something else.
+
+const SITE_IDS = ["https://example.com/a", "https://example.com/a/"];
+f = build("site:https://example.com/a");
+assert.strictEqual(f.length, 2, "a scope is two filters, and nothing else");
+assert.deepStrictEqual(f[0], { kinds: [1111], "#I": SITE_IDS, limit: 40 }, "the root scope, at the full limit");
+assert.deepStrictEqual(f[1], { kinds: [1111], "#i": SITE_IDS, limit: 10 }, "the parent scope, at a side limit");
+assert(f.every((x) => !("#i" in x && "#I" in x)), "the two scope tags never share a filter — one filter would AND them");
+
+// UNGATED on the tab, unlike the hashtag's comment half — the gate there
+// leaves the t/l filters standing, here it would leave NOTHING standing for
+// the token, and the leftover base filter would answer as if it had never
+// been typed: a visible filter, silently inert.
+f = build("isbn:9780765382030", { kinds: [1] });
+assert.deepStrictEqual(f.map((x) => x.kinds), [[1111], [1111]], "a scope keeps its own kind whatever the tab says");
+
+// Every OTHER token narrows the scope filters, exactly as it narrows a
+// hashtag's: `from:alice site:x` must not return everybody's comments.
+f = build(`from:${A} site:https://example.com/a since:2026-08-06 cats`);
+assert(
+  f.every((x) => x.authors[0] === HEX_A && x.since === secs(2026, 8, 6) && x.search === "cats"),
+  "person, window and words ride on both scope filters",
+);
+
+// Two SUBJECTS grow the union, the way two hashtags already do: the hashtag's
+// four filters and the scope's two, side by side in one REQ.
+f = build("#nostr site:https://example.com/a");
+assert.strictEqual(f.length, 6, "a hashtag and a scope are two subjects: four filters plus two");
+assert.deepStrictEqual(f[4]["#I"], SITE_IDS, "the scope's ids stay its own");
+assert.deepStrictEqual(f[2]["#I"], ["#nostr", "nostr"], "…and the hashtag's stay the hashtag's");
+
+// Two scopes are one value list per tag, not four filters: a tag filter's
+// list is already an OR.
+f = build("isbn:9780765382030 doi:10.1000/182");
+assert.strictEqual(f.length, 2, "two scopes still ask two filters");
+assert.deepStrictEqual(f[0]["#I"], ["isbn:9780765382030", "doi:10.1000/182"], "…their ids merged into one OR list");
+
 // ---- mentionAt: the token being TYPED --------------------------------------
 
 let m = mentionAt("from:ali", 8);
@@ -423,4 +608,4 @@ for (const typed of ["since:2026-08-06", "until:2026-02-28", "since:2026-02-31",
   assert.strictEqual(at.complete, dates.length === 1, `complete agrees with tokenize for ${typed}`);
 }
 
-console.log("query: from:/to:, since:/until: and #hashtags tokenize, build their REQ, and complete consistently");
+console.log("query: from:/to:, since:/until:, #hashtags and NIP-73 scopes tokenize, build their REQ, and complete consistently");

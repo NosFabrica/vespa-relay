@@ -24,8 +24,11 @@ import com.nosfabrica.vespa.relay.router.config.DeleteMissing
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
+import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
+import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
+import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
 import com.nosfabrica.vespa.relay.router.heal.Healer
@@ -37,6 +40,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropySyncOrFetch
@@ -105,6 +109,16 @@ internal class DynamicSync(
     // Relays with a live static subscription, whose sockets must never be
     // dropped out from under their tail.
     private val pinnedUrls: Set<NormalizedRelayUrl>,
+    // NIP-66 again, saying the other thing a dial can prove: that two of the
+    // discovered urls are one relay. Null when there is no identity to sign a
+    // verdict with, and then every url is dialled as its own relay.
+    //
+    // Split in two on purpose: this one only READS verdicts, on the cycle's
+    // critical path, and the monitor below EARNS them somewhere else.
+    private val folding: AliasFolding?,
+    // Where the dialling half of that fold lives. Null exactly when [folding]
+    // is: same identity, same reason.
+    private val aliasMonitor: AliasMonitor?,
     // The Tor transport, when configured: what makes discovered .onion urls
     // dialable at all, and what decides whether they may be dialled today.
     private val tor: TorTransport?,
@@ -152,7 +166,7 @@ internal class DynamicSync(
             try {
                 // Never fan out onto ourselves: our own url is in plenty of lists.
                 phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
-                val relays =
+                val discovered =
                     RelayDiscovery.discover(
                         store,
                         dynamic,
@@ -161,6 +175,71 @@ internal class DynamicSync(
                         // reading when something can dial them.
                         allowOnion = tor != null,
                     )
+                // Before the fan-out, and before the snapshot it sizes itself
+                // against: a folded url must never reach [cycle], or it takes
+                // a socket, a cursor band and a place in the concurrency gate
+                // for events another url in the same list already delivered.
+                // The fold hands back an alias MAP, not a rewritten relay list:
+                // it deals in urls, and this stream is the only thing that
+                // knows each url also carries the authors its tag paired it
+                // with. [RelayAliases.fold] is that one line — and dropping a
+                // url without moving its authors onto the survivor would stop
+                // asking for those authors entirely.
+                //
+                // READ ONLY here. Applying verdicts is a store query; EARNING
+                // them is a probe pass, and that belongs to [AliasMonitor] on
+                // its own clock — inline, it sat between "discovery finished"
+                // and the first downloaded byte on every cycle. The cost of the
+                // split is that a newly discovered url is dialled unfolded once,
+                // before the pass that measures it.
+                val candidates = discovered.map { it.url }
+                val cleaned = folding?.apply(candidates)
+                // The state an EARLIER cycle left behind, cleared as the fold
+                // takes hold. Everything above is about what this cycle dials;
+                // this is about what the last one already did — a url that used
+                // to be dialled in its own right has bands on disk, and once it
+                // is folded nothing will ever advance them again. Left there
+                // they are what `/stats.json` charts, so the coverage card goes
+                // on naming a dozen urls of one host as separately walked while
+                // exactly one of them is being synced. See [SyncBands.dropFolded]
+                // for why they are dropped rather than merged onto the survivor.
+                cleaned?.aliases?.keys?.let { aliased ->
+                    // Never a url a static subscription is holding: one stream
+                    // may carry both `urls` and `relaySource`, and its
+                    // backfill records under this same name. See
+                    // [SyncBands.dropFolded].
+                    val dropped = bands.dropFolded(stream.name, aliased, keep = pinnedUrls)
+                    // Only the cycle that changes something says so. After the
+                    // first these are the same verdicts every time, and after a
+                    // restart they are verdicts whose state the last process
+                    // already dropped — the count is what this pass took out of
+                    // the file, not how many urls are folded.
+                    if (dropped > 0) {
+                        System.err.println("router: ${stream.name} dropped the band state of $dropped folded url(s)")
+                    }
+                }
+                val relays =
+                    cleaned
+                        ?.let { RelayAliases.foldOnto(discovered, it.aliases) }
+                        // A verdict's canonical is whatever the probe measured,
+                        // which is NOT necessarily a url discovery would hand
+                        // out today: `exclude` and our own url are applied when
+                        // relay lists are read, and a fold can name a url from
+                        // before that config changed. Re-applying them here is
+                        // what stops a stored verdict putting an excluded relay
+                        // — or this relay, syncing itself — back into the
+                        // fan-out through the side door.
+                        ?.filter { it.url !in dynamic.exclude && it.url != store.relay }
+                        ?: discovered
+                // What this stream would like measured before the next cycle.
+                // Non-blocking; the callbacks are this stream's own transport
+                // guard and ingest, since the monitor has neither.
+                aliasMonitor?.submit(
+                    label = stream.name,
+                    candidates = candidates,
+                    canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
+                    onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
+                )
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {
@@ -233,7 +312,7 @@ internal class DynamicSync(
         // the start — already true anyway, since ingest is asynchronous — and
         // the store dedups on insert. Narrowed to what the hungriest relay
         // still needs ([SyncBands.coveringWindow]).
-        val snapshotWindow = bands.coveringWindow(relays.map { it.url }, window)
+        val snapshotWindow = bands.coveringWindow(stream.name, relays.map { it.url }, window)
         val snapStartedMs = System.currentTimeMillis()
 
         val local: List<IdAndTime> =
@@ -258,7 +337,7 @@ internal class DynamicSync(
                     },
                 )
                 emptyList()
-            } else if (!bands.anyOutstanding(relays.map { it.url }, window)) {
+            } else if (!bands.anyOutstanding(stream.name, relays.map { it.url }, window)) {
                 // Nothing outside any relay's band, so every syncOne below
                 // returns at its own leg check without ever reading the id set.
                 // Distinct from holdsIdSet above, which asks whether this STREAM
@@ -507,7 +586,7 @@ internal class DynamicSync(
             if (diagnose == stream.name) {
                 System.err.println(
                     "router: [diag] ${url.url} authors=${window.authors?.size ?: 0} " +
-                        "ask(s)=${asks.size} leg(s)=${asks.sumOf { bands.legs(url, it).size }} " +
+                        "ask(s)=${asks.size} leg(s)=${asks.sumOf { bands.legs(stream.name, url, it).size }} " +
                         "downloaded=$downloaded",
                 )
             }
@@ -558,7 +637,7 @@ internal class DynamicSync(
         // below, which ran on every mirrored event and allocated an identical
         // object each time.
         val origin = originFor(stream, url)
-        for (leg in bands.legs(url, window)) {
+        for (leg in bands.legs(stream.name, url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             // Per-kind spans, which quartz's SyncCoverage requires before it
@@ -582,20 +661,43 @@ internal class DynamicSync(
             // for what is outside what we already walked — the band IS the
             // mechanism here, there is no id set to fall back on.
             val fetched = stream.sync == SyncMode.FETCH
+            // Set only on the fetch branch: the negentropy path below runs through
+            // `negentropySyncOrFetch`, which does not surface how its paging ended.
+            var walked: PagedFetchResult? = null
             val result =
                 if (fetched) {
                     null.also {
                         val walk = "${stream.name}|${url.url}"
-                        paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                        downloaded +=
-                            client.fetchAllPages(
-                                url,
-                                listOf(leg),
-                                NEG_IDLE_MS,
-                                onNewPage = { until -> paging.mark(walk, until) },
-                                onEvent = onEvent,
-                            )
-                        paging.finish(walk)
+                        // Floored on the PAGED branch only: a walk that runs past
+                        // `created_at = 0` never returns ([flooredForPaging]), while
+                        // narrowing the negentropy branch's leg the same way would
+                        // leave the local id set wider than the remote one.
+                        val flooredLeg = leg.flooredForPaging()
+                        paging.begin(walk, flooredLeg.until ?: nowSeconds(), flooredLeg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                        // finally, because `syncRelay` catches Exception around
+                        // this: a throw between begin and finish leaves the walk
+                        // in PagingProgress with `current` still at `top`, and
+                        // `fraction` AVERAGES over every live walk, so one
+                        // orphan reads as a relay stuck at 0% and drags the
+                        // stream's percentage and ETA down. `begin` overwrites
+                        // by key, so it is one stale entry per stream|url rather
+                        // than a growing leak — but it never clears on its own,
+                        // and a relay that stops being walked keeps it forever.
+                        // `DeleteMissingSync.pageAsk` already does this.
+                        val w =
+                            try {
+                                client.fetchAllPages(
+                                    url,
+                                    listOf(flooredLeg),
+                                    NEG_IDLE_MS,
+                                    onNewPage = { until -> paging.mark(walk, until) },
+                                    onEvent = onEvent,
+                                )
+                            } finally {
+                                paging.finish(walk)
+                            }
+                        walked = w
+                        downloaded += w.downloaded
                     }
                 } else {
                     client
@@ -608,6 +710,7 @@ internal class DynamicSync(
                         ).also { downloaded += it.downloaded }
                 }
             bands.record(
+                stream.name,
                 url,
                 window,
                 seenMin,
@@ -615,6 +718,9 @@ internal class DynamicSync(
                 paged = fetched || result?.pagedFallback == true,
                 reconciledThrough = syncStartedAt.takeIf { result != null && !result.pagedFallback },
                 observedByKind = seenByKind,
+                // Against `window`, which is what the band is keyed by — the
+                // same filter [legs] derived `leg` from.
+                drained = drainSettlesThePast(walked, leg, window),
             )
         }
         // The socket is still open here and it will not be after this returns:

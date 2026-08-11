@@ -96,8 +96,23 @@
   main { max-width: 60rem; margin: 0 auto; }
   h1 { font-size: 1.35rem; margin: 0 0 .25rem; }
   h2 { font-size: 1rem; margin: 0 0 .15rem; }
+  /* A heading and its own `.card-sub` are ONE unit and stay at the .15rem
+     above; a heading standing directly over a chart, a table or a row of tiles
+     is a LABEL and needs the gap. Every card here was the second case, so a
+     1rem bold heading sat 2.4px off the mark below it and read as part of that
+     mark rather than as the thing naming it. Collapses with the .15rem rather
+     than adding to it, so this is 8px in both cases and not 8+2.4. */
+  h2 + :not(.card-sub) { margin-top: .5rem; }
   .sub { color: var(--muted); margin: 0 0 1.25rem; font-size: .9rem; }
   .card-sub { color: var(--muted); font-size: .85rem; margin: 0 0 .9rem; }
+  /* A note UNDER a bounded scroll box wants its gap on the other side.
+     `.card-sub` carries all of its margin on the bottom — correct for the
+     subtitle under a heading, which is every other use — so the sync card's
+     frame note began 0px below a coverage row the box had clipped in half, and
+     a sentence starting flush against a half-cut relay name reads as that
+     row's own text. The trailing margin goes with it: as a card's last child it
+     was doubling the card's own 1rem of bottom padding. */
+  .wrap + .card-sub { margin: .7rem 0 0; }
   .card {
     background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
     padding: 1rem 1.1rem; margin-bottom: 1rem;
@@ -107,16 +122,58 @@
      card — see trustCard. A .card here would put the tiles' own border inside
      the card's, on the same surface colour, and the four numbers would read as
      boxes in a box rather than as the same kind of headline the corpus totals
-     directly above them are. Only the heading needs a rule: the tiles carry
-     their own bottom margin. */
-  .panel > h2 { margin-bottom: .5rem; }
+     directly above them are. It needs no heading rule of its own: the general
+     `h2 + :not(.card-sub)` gives this heading the same 8px it gives every
+     card's, and the tiles carry their own bottom margin. */
   /* Prose the panel ENDS on — the "no pubkey carries trust state" warning —
      needs the gap a card would have given it. Without this it inherits `.err`'s
      zero bottom margin and sits closer to the next card than to the tiles it is
      about, which on a page of stacked cards reads as that card's subtitle. */
   .panel > p:last-child { margin-bottom: 1rem; }
-  .tile { background: var(--surface); border: 1px solid var(--line); border-radius: .6rem; padding: .9rem 1.1rem; }
-  .tile .v { font-size: 1.9rem; font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15; }
+  /* A container, so the number inside can size itself to THIS TILE. The tiles
+     are an auto-fit grid: the track width is what the number has to fit in and
+     the viewport says nothing about it, so `vw` would be measuring the wrong
+     box. */
+  .tile {
+    background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
+    padding: .9rem 1.1rem; container-type: inline-size;
+  }
+  /* Sized from the tile's width AND from the number's own length, because a
+     fixed 1.9rem overflowed its own border on an ordinary deployment: ten
+     tabular digits are ~6.3em, the 11rem track affords 190px, and 1.9rem wants
+     192 — so "68,412,907" crossed the tile's right edge at a 1100px window, and
+     the Zaps row's narrower 8rem track cut "1,882,401" off mid-digit against
+     the tile beside it. Both are the page's headline numbers and neither was
+     recoverable by scrolling.
+     [--len] is a character count, inherited from the row — `fitTiles` sets it
+     there, from the LONGEST value in the row, so the row reads at one size. No
+     CSS unit expresses "the width of my own text", since `ch` is defined in
+     terms of the font size the declaration is trying to compute. .64 is a
+     conservative per-character
+     em for tabular digits (commas are narrower, so this over-reserves, which is
+     the safe direction). Capped at the original 1.9rem so nothing moves where
+     it already fit, floored so a phone still reads as a headline. */
+  .tile .v {
+    /* Declared TWICE on purpose. A browser too old for container queries drops
+       the `cqw` declaration whole — and an unparsed `font-size` does not fall
+       back to 1.9rem, it inherits the body's 15px and the headline stops being
+       one. The first line is what that browser keeps: the size this was before,
+       overflow and all, which is the right failure. */
+    font-size: 1.9rem;
+    font-size: clamp(1rem, calc(100cqw / (var(--len, 10) * .64)), 1.9rem);
+    font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1.15;
+  }
+  /* A phone spends its width on the tile's own gutters: at 360px the Zaps row's
+     two tracks are 129px each, of which the 1.1rem sides took 35 — so the
+     narrowest screen gave the longest number the least room to be a number in,
+     and the clamp floor above (a legibility floor, not a fitting one) could not
+     absorb it. Buying the digits 16px back here is what keeps that floor from
+     having to be chosen around today's largest count. A container query cannot
+     do this: `@container` styles a container's descendants, never the container
+     itself, and the box that needs the narrower padding IS the tile. */
+  @media (max-width: 30rem) {
+    .tile { padding: .9rem .75rem; }
+  }
   .tile .k { color: var(--muted); font-size: .8rem; text-transform: uppercase; letter-spacing: .04em; }
   .tile .v.stale { color: var(--warn); }
   .chart { width: 100%; display: block; overflow: visible; }
@@ -142,14 +199,60 @@
      the loud part, which is the question this card is here to answer. */
   .cov { --lab: 11rem; }
   .cov-row { display: grid; grid-template-columns: var(--lab) 1fr; gap: .6rem; align-items: center; margin-bottom: 3px; }
+  /* The url filter hides rows with `[hidden]`, and `[hidden] { display: none }`
+     is a UA rule — which ANY author `display` outranks, whatever the
+     specificity, because author sheets beat the UA sheet before specificity is
+     even consulted. So `display: grid` one line up would keep every
+     filtered-out row on screen without this. The Kinds table needs no such rule
+     only because nothing here gives `tr` a display of its own. */
+  .cov-row[hidden] { display: none; }
+  /* Off-screen rows cost nothing to lay out. A fan-out puts thousands of rows
+     in a 32rem box that shows about forty, and the url filter turns "lay them
+     all out" from a once-per-load cost into a per-keystroke one. Measured on a
+     6,025-row document, median of six cycles, three interleaved runs: CLEARING
+     the box — every row back on screen — cost 240–337ms of layout, and 57–61ms
+     with this; narrowing to two rows, 39–46ms against 18–19ms. Nothing else
+     here needs it — no other list on the page runs to thousands of rows inside
+     a scroll box.
+
+     `contain-intrinsic-size` is what keeps the scrollbar honest while those
+     rows are skipped, and the size is not a guess: a row is `max(12px, .78rem)`
+     tall by construction — the track's height against the label's font-size at
+     `line-height: 1` — which is why it is written that way rather than as the
+     12.48px it computes to at a 16px root. Measured against the same document,
+     that lands the scroll height within 0.1% of laying every row out. `auto`
+     then replaces the estimate with the real size once a row has been on
+     screen, so even that error anneals as the reader scrolls. */
+  .cov-row { content-visibility: auto; contain-intrinsic-size: auto max(12px, .78rem); }
+  /* The "your filter matched nothing" line, which stands where the whole list
+     was. `.why` is margin-free because it normally ends a card; this one is
+     followed by the frame note in the same muted register, and flush against it
+     the two read as one paragraph. Tag-qualified on purpose: `.why` is declared
+     further down this sheet, so at equal specificity it would win on order. */
+  p.cov-none { margin-bottom: .5rem; }
   /* line-height 1, not the body's 1.5: a .78rem label in a 1.5 line box is
      taller than the 12px track beside it, and the overflow slid under the
      sticky header above — every group's first row lost its top third. */
+  /* `direction: rtl` is here to put the ELLIPSIS ON THE LEFT — the inline
+     direction decides which end overflows, and for a relay url the tail is the
+     end worth keeping. It must not reach the text itself, though: the url is an
+     LTR construct full of bidi-NEUTRAL characters (`/ : . [ ] @ ? &`), and in an
+     rtl paragraph a trailing neutral takes the paragraph's direction and moves
+     to the other side. That is not a truncation artefact, it mis-renders urls
+     that FIT — `nos.lol/` drew as `/nos.lol`, and an IPv6 authority
+     `[2001:db8:85a3::8a2e:370:7334]:7777/` reordered into a plausible but
+     DIFFERENT address, which is worse than clipping because a reader cannot see
+     that anything was lost. So the url goes inside an LTR isolate (see `row`)
+     and only the box stays rtl. */
   .cov-lab {
     font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; line-height: 1;
     color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
     direction: rtl; text-align: left;
   }
+  /* Belt and braces with `row`'s `dir` attribute: the UA stylesheet gives
+     `[dir]` an isolate, but saying it here means the rule cannot be lost to a
+     future refactor that drops the attribute. */
+  .cov-lab > span { direction: ltr; unicode-bidi: isolate; }
   /* `overflow: hidden` is load-bearing, not tidiness. Every mark carries a
      minimum width so a one-day band is still visible, and a band that starts
      at the frame's right edge — a future-dated `created_at`, which quartz
@@ -218,6 +321,11 @@
     display: inline-block; max-width: 100%; vertical-align: bottom;
     overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
   }
+  /* The stream's name, ahead of its filter chip: the name is what a reader
+     matches against `router.conf`, so it leads and the chip explains it. Not
+     ellipsised — a name is short, and clipping the one identifier the config
+     shares with this page would defeat the point. */
+  .grp-stream { margin-right: .4rem; }
   .grp-stat { color: var(--muted); font-size: .78rem; font-variant-numeric: tabular-nums; white-space: nowrap; flex: 0 0 auto; }
   /* On a phone the counts alone are wider than the card, and `nowrap` had them
      running off its right edge with the chip crushed to an ellipsis beside
@@ -225,14 +333,25 @@
      filter on ONE line, now a full-width one. */
   @media (max-width: 45rem) {
     .grp-head { flex-wrap: wrap; }
-    .grp-stat { flex-basis: 100%; }
+    /* `nowrap` is dropped along with the row, not kept with it. It earns its
+       place at desktop widths, where the counts fit on the line it saves; here
+       they do not — on a 390px phone the string ran 50px past the card and
+       "relays walked" was clipped away entirely, which loses a number rather
+       than a line. A head that has already taken a second row can afford a
+       third. */
+    .grp-stat { flex-basis: 100%; white-space: normal; }
   }
   /* How many of a group's relays cover each bucket — the mark that answers
      "how much of the list is in sync" for a fan-out, where a row each is
      reachable but not readable. Indented to the track: it is a chart on the
-     SAME axis, and flush left its 2023 bucket sat over the rows' 2022. */
+     SAME axis, and flush left its 2023 bucket sat over the rows' 2022.
+
+     The TOP margin keeps the tallest bucket off the sticky head above it: the
+     strip is bottom-aligned and a full-depth bucket reaches the whole 24px, so
+     at 0 the bars touched the filter chip's own box and the chart read as
+     hanging off the heading rather than as the first mark under it. */
   .depth {
-    position: relative; height: 24px; margin: 0 0 .3rem calc(var(--lab) + .6rem);
+    position: relative; height: 24px; margin: .3rem 0 .3rem calc(var(--lab) + .6rem);
     display: flex; align-items: flex-end;
   }
   .depth i { display: block; flex: 1 1 0; min-width: 0; background: var(--accent); }
@@ -259,9 +378,18 @@
      its own — the number is the data, this is only its shape. */
   td.share { position: relative; min-width: 6rem; }
   td.share i { display: block; height: .5rem; border-radius: 0 2px 2px 0; background: var(--bar); }
+  /* The "nothing here to draw" states, in the same muted register as
+     `.card-sub` — "Not in this document." is the same KIND of line. This rule
+     was scoped to `.pending`, so the identical sentence in a chart card had NO
+     styling at all: it fell through to the UA's `margin: 1em 0` and the body's
+     full size and colour, which printed an absence louder than the numbers
+     around it and left those cards 15px of extra floor. Unscoping it also lets
+     `h2 + :not(.card-sub)` reach these paragraphs, which `.pending .why` was
+     outspecifying — that is why the pending card kept the 2.4px gap the rest of
+     the page had already lost. */
+  .why { color: var(--muted); font-size: .85rem; margin: 0; }
   .pending { border-style: dashed; }
   .pending h2 { color: var(--muted); }
-  .pending .why { color: var(--muted); font-size: .85rem; margin: 0; }
   .badge {
     display: inline-block; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
     padding: .1rem .4rem; border-radius: .25rem; background: var(--bar); color: var(--muted);
@@ -394,6 +522,27 @@ const el = (tag, cls, text) => {
   if (text != null) n.textContent = text;
   return n;
 };
+/**
+ * Size a row of tiles to its LONGEST number, and hand the row back.
+ *
+ * `.tile .v` sizes itself from the track it landed in and from this length, so
+ * a number can never cross its own tile's border — see the CSS for why a fixed
+ * size could not hold, and why the length cannot come from CSS (`ch` is defined
+ * in terms of the font size the declaration is trying to compute).
+ *
+ * Written once on the ROW rather than per tile, and not only because it is one
+ * line instead of four: sizing each tile to its own text left "1,882,401" a
+ * third smaller than the "27" beside it, which reads as the small number being
+ * the important one. One size per row, set by the value with the least room,
+ * keeps a row of headline numbers reading as one row. Custom properties
+ * inherit, and the grid's tracks are all `1fr`, so every tile resolves the same
+ * `cqw` against the same length and they land on the same size.
+ */
+const fitTiles = (row) => {
+  const len = [...row.querySelectorAll(".v")].reduce((m, v) => Math.max(m, v.textContent.length), 1);
+  row.style.setProperty("--len", String(len));
+  return row;
+};
 const SVG = "http://www.w3.org/2000/svg";
 const svgEl = (tag, attrs) => {
   const n = document.createElementNS(SVG, tag);
@@ -441,7 +590,7 @@ const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "O
  * to spell what it bucketed.
  */
 const dayTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ${+iso.slice(8, 10)}`;
-/** "2025-07" → "Jul ’25". The year is on every month label because a 12-month window crosses one. */
+/** "2025-07" → "Jul ’25". The year is on every month label because the window spans several. */
 const monthTick = (iso) => `${MONTH[+iso.slice(5, 7) - 1]} ’${iso.slice(2, 4)}`;
 
 /**
@@ -459,6 +608,45 @@ function tickStride(points, plotW) {
   // from touching. Two labels is the floor: first and last still beats none.
   const room = Math.max(2, Math.floor(plotW / (widest * 6.2 + 18)));
   return Math.max(1, Math.ceil(points.length / room));
+}
+
+/**
+ * Hide the axis ticks that would overlap — the sync frame's answer to [tickStride].
+ *
+ * That frame spans years and its axis prints every boundary, which is a legible
+ * ruler at a card's full width and a smear below it: at 390px each of "2022"
+ * through "2026" overlapped its neighbour by 2px and the frame's start date
+ * overlapped the first year by 59, drawing "20222023202420252026now" as one
+ * token. Even at 1100px the start date and the first year stood 1.9px apart and
+ * read as a single label. Same problem the charts solve with [tickStride] and
+ * the same answer — what the labels ACTUALLY measure decides how many fit —
+ * except these are positioned in percentages of a fluid track rather than in a
+ * fixed viewBox, so the measuring has to wait for layout.
+ *
+ * THE TWO ENDS WIN and the years give way to them, not the other way round.
+ * "now" is what every question on this card is asked against, and the frame's
+ * start is the one label no bare year can stand in for — it is the date the
+ * card's own "not a target" note is about. The start yields only when even the
+ * two ends cannot both fit.
+ */
+function thinTicks(track) {
+  if (!track) return;
+  const spans = [...track.children];
+  // Unhidden before measuring, because this re-runs on every resize and a tick
+  // hidden at the previous width has no box to measure at this one.
+  for (const s of spans) s.hidden = false;
+  if (spans.length < 2) return;
+  // Enough that neighbours read as two labels rather than one hyphenless word.
+  const GAP = 6;
+  const r = spans.map((s) => s.getBoundingClientRect());
+  const end = spans.length - 1;
+  const startFits = r[0].right + GAP <= r[end].left;
+  spans[0].hidden = !startFits;
+  let edge = startFits ? r[0].right : -Infinity;
+  for (let i = 1; i < end; i++) {
+    if (r[i].left - GAP >= edge && r[i].right + GAP <= r[end].left) edge = r[i].right;
+    else spans[i].hidden = true;
+  }
 }
 
 /** A bar chart of one series. See the header for why single-series and why never two y-axes. */
@@ -628,7 +816,7 @@ function tiles(corpus) {
     t.appendChild(el("div", "k", "Newest event"));
     wrap.appendChild(t);
   }
-  out.push(wrap);
+  out.push(fitTiles(wrap));
 
   // `corpus.futureDated` is deliberately NOT drawn. It is still counted, and it
   // is still in /stats.json for anyone watching it grow, but a card that only
@@ -663,13 +851,17 @@ function tiles(corpus) {
  * newest event predated the window rendered a page with the daily charts simply
  * missing and no indication anything was wrong.
  */
-function chartCard(title, sub, points, section) {
+function chartCard(title, sub, points, section, noun = "events") {
   const card = el("div", "card");
   cardHead(card, title, sub, section);
   if (!points.length) {
     card.appendChild(el("p", "why", "Not in this document."));
   } else if (points.every((p) => !p.value)) {
-    card.appendChild(el("p", "err", "No events in this window."));
+    // [noun] names what the series counts, because this sentence is the whole
+    // finding when a window is empty and it was hardcoded to "events" — so the
+    // pubkeys chart reported "No events in this window." over a chart that is
+    // not counting events, next to an events chart that might be full of them.
+    card.appendChild(el("p", "err", `No ${noun} in this window.`));
   } else {
     card.appendChild(barChart(points, { label: title }));
   }
@@ -692,10 +884,36 @@ const GRAINS = [
   // unambiguous one — and for weeks it has to say WHICH day that key is, since
   // a week bucket is keyed by the Monday it starts on and "Jul 9" alone would
   // read as a single day's bar.
-  { key: "days", label: "Daily", unit: "day", span: (d) => `${d.windowDays} days`, tick: dayTick, tip: (p) => p },
-  { key: "weeks", label: "Weekly", unit: "week", span: (d) => `${d.windowWeeks} weeks`, tick: dayTick, tip: (p) => `week of ${p}` },
-  { key: "months", label: "Monthly", unit: "month", span: (d) => `${d.windowMonths} months`, tick: monthTick, tip: (p) => p },
+  // [span] returns NULL rather than a string built around a missing field. When
+  // the whole activity section fails the engine, `data` is absent and every one
+  // of these read `undefined` straight into the card title — "Events per day ·
+  // last undefined days", printed in bold above the badge that already said
+  // `failed`. A window this page cannot state is one it should not mention.
+  //
+  // It is the WHOLE phrase, "last" included, and it was a bare length the
+  // caller prefixed with that word. The monthly series is anchored to a date
+  // and grows rather than trailing the present, so "last 44 months" described a
+  // rolling window this chart deliberately is not.
+  { key: "days", label: "Daily", unit: "day", span: (d) => (d.windowDays == null ? null : `last ${d.windowDays} days`), tick: dayTick, tip: (p) => p },
+  { key: "weeks", label: "Weekly", unit: "week", span: (d) => (d.windowWeeks == null ? null : `last ${d.windowWeeks} weeks`), tick: dayTick, tip: (p) => `week of ${p}` },
+  { key: "months", label: "Monthly", unit: "month", span: monthSpan, tick: monthTick, tip: (p) => p },
 ];
+
+/**
+ * "since Jan ’23" — the monthly window stated as where it starts.
+ *
+ * Falls back to the count for a document written before `monthsSince` existed,
+ * rather than dropping the window from the title entirely: an older rollup's
+ * monthly chart really was a rolling N months, and that is what its own field
+ * says.
+ */
+function monthSpan(d) {
+  if (d.monthsSince) return `since ${monthTick(d.monthsSince)}`;
+  return d.windowMonths == null ? null : `last ${d.windowMonths} months`;
+}
+
+/** "· last 30 days" when the document states a window, and nothing at all when it does not. */
+const spanNote = (span) => (span ? ` · ${span}` : "");
 let grain = null;
 
 /** The granularities this document actually carries, finest first. */
@@ -750,7 +968,7 @@ function activityCards(activity) {
   // The window is in the title because it is the one thing a bare "Events per
   // day" cannot be read without: 30 days and 30 months are the same 30 bars.
   out.push(chartCard(
-    `Events per ${g.unit} · last ${span}`,
+    `Events per ${g.unit}${spanNote(span)}`,
     null,
     series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.events })),
     activity,
@@ -761,10 +979,11 @@ function activityCards(activity) {
   // a correlation that is not in the data.
   if (series.some((x) => x.pubkeys != null)) {
     out.push(chartCard(
-      `Publishing pubkeys per ${g.unit} · last ${span}`,
+      `Publishing pubkeys per ${g.unit}${spanNote(span)}`,
       null,
       series.map((x) => ({ label: g.tip(x.period), tick: g.tick(x.period), value: x.pubkeys || 0 })),
       null,
+      "publishing pubkeys",
     ));
   }
 
@@ -772,7 +991,7 @@ function activityCards(activity) {
   // whose every other axis label is one. The tooltip names the whole hour and
   // the zone, because "14:00" alone invites the reader to apply their own.
   out.push(chartCard(
-    `Events by hour of day · last ${d.hourWindowDays} days`,
+    `Events by hour of day${spanNote(d.hourWindowDays == null ? null : `last ${d.hourWindowDays} days`)}`,
     null,
     hours.map((x) => {
       const hh = String(x.hour).padStart(2, "0");
@@ -891,7 +1110,7 @@ function trustCard(section) {
     t.title = help;
     row.appendChild(t);
   }
-  card.appendChild(row);
+  card.appendChild(fitTiles(row));
 
   // The one state worth shouting about, and the reason this panel exists.
   if (d.scoredPubkeys === 0) {
@@ -922,10 +1141,17 @@ function trustCard(section) {
  * the card says so, and should not be trimmed for the same reason the scope
  * line under the title is not.
  *
- * `relays` counts the relays this filter has TOUCHED, never the relays its
- * stream was configured with — that list is in `router.conf`, which this relay
- * does not read. A "never asked" count would be the honest headline and it is
- * not available here; see SyncCoverageReport.
+ * `relays` counts the relays a stream has TOUCHED, never the relays it was
+ * configured with — that list is in `router.conf`, which this relay does not
+ * read. A "never asked" count would be the honest headline and it is not
+ * available here; see SyncCoverageReport.
+ *
+ * The URL FILTER is the same bargain as the Kinds one: a fan-out puts thousands
+ * of rows in this card and "how far back is nos.lol" should not be a scroll.
+ * What it hides it hides EVERYWHERE — the depth strip and the group counts are
+ * recomputed over the rows still on screen, because a strip drawn over 4,000
+ * relays above three visible rows is a mark answering a question the reader is
+ * no longer asking. See [statOf] for the one number a subset cannot restate.
  */
 function syncCard(section) {
   const d = (section && section.data) || {};
@@ -1001,7 +1227,14 @@ function syncCard(section) {
 
   const row = (r) => {
     const wrap = el("div", "cov-row");
-    const lab = el("div", "cov-lab", String(r.relay).replace(/^wss:\/\//, ""));
+    const lab = el("div", "cov-lab");
+    // The url in its own LTR isolate inside the rtl box — see `.cov-lab`. The
+    // box being rtl is what puts the ellipsis on the left; the isolate is what
+    // stops that direction leaking into the url's own punctuation and quietly
+    // rewriting the address.
+    const url = el("span", null, String(r.relay).replace(/^wss:\/\//, ""));
+    url.dir = "ltr";
+    lab.appendChild(url);
     lab.title = r.relay;
     wrap.appendChild(lab);
     const track = el("div", "track");
@@ -1010,16 +1243,30 @@ function syncCard(section) {
       place(seg, r.min, r.max);
       seg.title =
         `${r.relay}\n${day(r.min)} → ${day(r.max)}\n` +
-        (r.complete ? "reconciled — negentropy finished over this span" : "paged — walked, not proven exhaustive") +
+        // `complete` stopped meaning "negentropy" when a drained paged walk
+        // started earning it too — an EOSE on an empty page proves the same
+        // thing a finished reconcile does, that there is nothing left below.
+        // Saying "negentropy" here would report every `sync = "fetch"` relay
+        // as reconciled, which is a claim about HOW, not about what is covered.
+        (r.complete ? "settled — nothing left outstanding below this span" : "paged — walked, not proven exhaustive") +
         (r.target ? `\nwindow ${fmt(r.target)}${r.cap ? ` (peer cap ${fmt(r.cap)})` : ""}` : "");
       track.appendChild(seg);
       // Present only when the per-kind spans disagree — one band holds a span
-      // per kind and min/max are the outer edges, so a long-lived kind vouches
-      // for a short-lived one. This is the part no kind is missing from.
+      // per kind and min/max are the outer edges, so the widest kind sets them.
+      // This is the intersection: the part no kind is missing evidence for.
+      //
+      // EVIDENCE, not coverage, and the wording says so. A band's span is built
+      // from the events actually received per kind, so a floor above the outer
+      // one means "the oldest event of that kind we have seen", which is not
+      // the same as "we never walked below it" — a walk that ran that deep and
+      // found nothing looks identical here. Calling it "covered only from"
+      // asserted a gap the data cannot support.
       if (r.everyKindMin != null) {
         const inner = el("i", "cov-seg every");
         place(inner, r.everyKindMin, r.everyKindMax);
-        inner.title = `every kind in this filter is covered only from ${day(r.everyKindMin)} to ${day(r.everyKindMax)}`;
+        inner.title =
+          `evidence for every kind in this filter reaches only ${day(r.everyKindMin)} → ${day(r.everyKindMax)}\n` +
+          `outside it at least one kind has none, so the band cannot vouch for it`;
         track.appendChild(inner);
       }
     }
@@ -1050,10 +1297,8 @@ function syncCard(section) {
     const strip = el("div", "depth");
     const step = span / buckets;
     const n = new Int32Array(buckets), done = new Int32Array(buckets);
-    let covering = 0;
     for (const r of rows) {
       if (r.min == null || r.max == null) continue;
-      covering++;
       const lo = Math.max(0, Math.floor((r.min - from) / step));
       const hi = Math.min(buckets - 1, Math.floor((r.max - from) / step));
       for (let i = lo; i <= hi; i++) {
@@ -1063,12 +1308,71 @@ function syncCard(section) {
     }
     for (let b = 0; b < buckets; b++) {
       const i = el("i", done[b] ? null : "thin");
-      i.style.height = Math.max(1, (n[b] / Math.max(1, covering)) * 24) + "px";
+      // OVER EVERY ROW IN THE GROUP, which is the same denominator the tooltip
+      // prints. The height used to divide by the relays that have a band at all,
+      // so a bucket every banded relay covered drew FULL while its own tooltip
+      // read "14 of 28 relays" — a mark claiming the list is in sync over a
+      // number saying half of it is. A relay nobody has got a band from covers
+      // nothing, and this card exists to make that visible rather than to
+      // normalise it away; it is the closest this page gets to the "never asked"
+      // count SyncCoverageReport says it cannot give.
+      i.style.height = Math.max(1, (n[b] / Math.max(1, rows.length)) * 24) + "px";
       i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays (${fmt(done[b])} reconciled)`;
       strip.appendChild(i);
     }
     return strip;
   };
+
+  /**
+   * A group's counts, restated over whichever of its rows are on screen.
+   *
+   * Every term here is derivable from the rows themselves and agrees with the
+   * document's own numbers when nothing is filtered — one row per relay, a band
+   * carries min/max, `sweeping` is the rows with a cursor. That is why the
+   * filtered head can be recomputed at all rather than left to contradict the
+   * list under it.
+   *
+   * `legs` is the exception and is dropped the moment a filter is on: it counts
+   * BANDS across a narrow's legs, not relays, and no arithmetic over a subset of
+   * rows can recover the number for that subset. Carrying the group's total
+   * down beside three rows would be a count of something not on screen, which
+   * is the failure mode every other number on this card is arranged to avoid.
+   */
+  const statOf = (rows, total) => {
+    let reconciled = 0, paged = 0, sweeping = 0;
+    for (const r of rows) {
+      if (r.min != null && r.max != null) {
+        if (r.complete) reconciled++;
+        else paged++;
+      }
+      if (r.sweep) sweeping++;
+    }
+    return (
+      `${fmt(reconciled)} reconciled · ${fmt(paged)} paged` +
+      (sweeping ? ` · ${fmt(sweeping)} sweeping` : "") +
+      // The denominator stays visible, same rule as the Kinds table: a head
+      // reading "3 relays walked" describes a stream that walked thousands.
+      ` · ${fmt(rows.length)} of ${fmt(total)} relays walked`
+    );
+  };
+
+  // Above the list and below the legend, so the control sits against the thing
+  // it controls. Matching on the FULL url including `wss://`, not on the text
+  // the row draws with that scheme stripped: the displayed form is a substring
+  // of the full one, so this can only ever show a row the visible text also
+  // matches — while still answering a reader who typed the whole address in.
+  const controls = el("div", "bar-row");
+  const filter = el("input");
+  filter.type = "search";
+  // Named, because render() restores what was typed by name — there are two
+  // search boxes on this page now and they must not restore into each other.
+  filter.name = "sync";
+  filter.placeholder = "filter by relay url";
+  filter.setAttribute("aria-label", "filter relays by url");
+  const status = el("span", "status");
+  controls.appendChild(filter);
+  controls.appendChild(status);
+  card.appendChild(controls);
 
   // One scroll box for every stream, and one axis pinned at its top: the frame
   // is shared by design — that is what makes two streams comparable — so a
@@ -1079,13 +1383,20 @@ function syncCard(section) {
   pinned.classList.add("pin");
   scroll.appendChild(pinned);
 
+  const groups = [];
   for (const s of streams) {
     const box = el("div", "grp");
     const head = el("div", "grp-head");
     const name = el("div", "grp-name");
-    // Labelled by FILTER, not by stream name: a band is keyed by the filter, so
-    // the filter is what actually determines coverage, and the name lives in a
-    // config file this relay does not read.
+    // The router's own stream name, when the state files carry one. They did
+    // not before the format nested by stream, so a group read from a
+    // pre-stream key still falls back to being labelled by its filter alone —
+    // which is what every group used to be.
+    if (s.name) {
+      const who = el("span", "grp-stream", s.name);
+      who.title = `router stream "${s.name}"`;
+      name.appendChild(who);
+    }
     const kinds = (s.filter && s.filter.kinds) || [];
     // What the group's legs were split BY, spelled out. A `relaySource` that
     // binds authors gives every relay its own filter, so this one group is
@@ -1106,31 +1417,116 @@ function syncCard(section) {
     chip.title = label;
     name.appendChild(chip);
     head.appendChild(name);
-    head.appendChild(el("div", "grp-stat",
+    const stat = el("div", "grp-stat",
       `${fmt(s.reconciled || 0)} reconciled · ${fmt(s.paged || 0)} paged` +
       (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
       ` · ${fmt(s.relays || 0)} relays walked` +
       // Present only when a narrow asked one relay more than once, and then it
       // is the number that explains the other three: these counts are per
       // RELAY, and a relay counts as reconciled only when every leg of it did.
-      (s.legs ? ` · ${fmt(s.legs)} legs` : "")));
+      (s.legs ? ` · ${fmt(s.legs)} legs` : ""));
+    head.appendChild(stat);
     box.appendChild(head);
     const rows = s.rows || [];
-    if (rows.length > 24) box.appendChild(depthStrip(rows));
+    // The strip gets a slot of its own rather than being appended straight to
+    // the group: filtering redraws it from the surviving rows, and it comes and
+    // goes with the 24-row threshold, so the filter needs somewhere to put the
+    // new one that is still between the head and the first row.
+    const stripBox = el("div");
+    box.appendChild(stripBox);
+    if (rows.length > 24) stripBox.appendChild(depthStrip(rows));
     // EVERY relay, no top-N: the relays a cap would drop are the ones the
     // question is about. Same argument as the Kinds table.
-    for (const r of rows) box.appendChild(row(r));
+    const nodes = rows.map(row);
+    for (const node of nodes) box.appendChild(node);
     scroll.appendChild(box);
+    // Lowercased ONCE per relay rather than per keystroke: this array runs to
+    // thousands of urls on a fan-out and the filter re-reads all of them on
+    // every character typed.
+    groups.push({ box, stat, stripBox, rows, nodes, urls: rows.map((r) => String(r.relay).toLowerCase()) });
   }
   card.appendChild(scroll);
+
+  // Distinct across streams, because the same relay is a row in every stream
+  // that walked it — summing the rows would report a list several times its own
+  // length. The set is the card's denominator and does not change, so it is
+  // built once and only the matching side is recounted.
+  const every = [...new Set(groups.flatMap((g) => g.urls))];
+  // Shown only when a query empties the card. The scroll box goes with it: what
+  // is left in there is the pinned axis over nothing, which reads as a card
+  // that failed to load rather than as a filter that matched nothing.
+  const none = el("p", "why cov-none");
+  none.hidden = true;
+  card.appendChild(none);
+
+  // What the heads read as built: the document's own numbers, `legs` and all,
+  // restored verbatim when the box is emptied rather than recomputed — an
+  // unfiltered card should print exactly what SyncCoverageReport published.
+  const statText = groups.map((g) => g.stat.textContent);
+  // Whether the last pass drew a narrowed view. Without it the first render —
+  // and every keystroke that leaves the box empty — pays to rebuild strips and
+  // heads that already hold the values it is about to write back.
+  let narrowed = false;
+
+  const applyFilter = () => {
+    const q = filter.value.trim().toLowerCase();
+    let live = 0;
+    groups.forEach((g, gi) => {
+      const kept = [];
+      g.nodes.forEach((node, i) => {
+        const hit = !q || g.urls[i].includes(q);
+        node.hidden = !hit;
+        if (hit) kept.push(g.rows[i]);
+      });
+      // A stream with nothing left is hidden whole — its head and depth strip
+      // are about relays that are no longer on screen.
+      g.box.hidden = !kept.length;
+      if (kept.length) live++;
+      if (!q && !narrowed) return;
+      g.stripBox.replaceChildren();
+      const drawn = q ? kept : g.rows;
+      if (drawn.length > 24) g.stripBox.appendChild(depthStrip(drawn));
+      g.stat.textContent = q ? statOf(kept, g.rows.length) : statText[gi];
+    });
+    narrowed = !!q;
+    const hits = q ? every.reduce((n, u) => n + (u.includes(q) ? 1 : 0), 0) : every.length;
+    status.textContent =
+      (q ? `${fmt(hits)} of ${fmt(every.length)} relays` : `${fmt(every.length)} relays`) +
+      // Named only while filtering, and only when it costs the reader a group:
+      // a vanished stream is otherwise a silent omission on the one card whose
+      // job is to show what is missing.
+      (q && live < groups.length ? ` · ${fmt(live)} of ${fmt(groups.length)} streams` : "");
+    // Gated on the QUERY, not just on `live`. A document whose streams carry no
+    // rows would otherwise hide its own list and print "…contains “”" — nothing
+    // upstream can produce that shape today, but `s.rows || []` above says this
+    // function does not assume so, and "no match" and "nothing to show" are not
+    // the same state to report.
+    const empty = !!q && !live;
+    scroll.hidden = empty;
+    none.hidden = !empty;
+    if (empty) none.textContent = `No relay in this document's sync state contains “${filter.value.trim()}”.`;
+  };
+  filter.addEventListener("input", applyFilter);
+  applyFilter();
   // Measured, not guessed: a hardcoded rem offset is wrong at any root font
   // size but the author's, and 2px out hides a sliver of one sticky element
   // behind the other.
-  requestAnimationFrame(() => scroll.style.setProperty("--pin-h", pinned.getBoundingClientRect().height + "px"));
+  //
+  // On a ResizeObserver rather than the one rAF this was, because BOTH of these
+  // measurements go stale the moment the card changes width — the axis loses or
+  // regains a tick and `--pin-h` is off by whatever the pinned strip now is,
+  // which pins every group head to the wrong offset. The observer fires once on
+  // insertion too, which is all the rAF was there for.
+  const remeasure = () => {
+    const h = pinned.getBoundingClientRect().height + "px";
+    if (scroll.style.getPropertyValue("--pin-h") !== h) scroll.style.setProperty("--pin-h", h);
+    thinTicks(pinned.querySelector(".axis-track"));
+  };
+  new ResizeObserver(remeasure).observe(scroll);
 
   card.appendChild(el("p", "card-sub",
     `Frame: ${day(from)} → now. Not a target — these filters carry no lower bound, so a full row means ` +
-    `"as deep as anything here reaches", not "done". Counts relays this filter has walked, not the relays its stream names.`));
+    `"as deep as anything here reaches", not "done". Counts relays each stream has walked, not the relays it names.`));
   return card;
 }
 
@@ -1198,7 +1594,7 @@ function zapsCard(section) {
     wrapTitle(t, key === "wallets" ? "Distinct authors of zap receipts — the LNURL services that settled them, not the people who zapped" : "");
     row.appendChild(t);
   }
-  card.appendChild(row);
+  card.appendChild(fitTiles(row));
 
   const days = d.days || [];
   if (!days.length) {
@@ -1250,6 +1646,9 @@ function kindsCard(kinds) {
   const controls = el("div", "bar-row");
   const filter = el("input");
   filter.type = "search";
+  // Named, so render() restores what was typed into THIS box and not into the
+  // one on Sync coverage — see the restore loop there.
+  filter.name = "kinds";
   filter.placeholder = "filter by kind number or name";
   filter.setAttribute("aria-label", "filter kinds");
   const count = el("span", "status");
@@ -1267,7 +1666,11 @@ function kindsCard(kinds) {
   const table = el("table");
   const thead = el("thead");
   const hr = el("tr");
-  for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Pubkeys", "n"], ["Last event", "n"]]) {
+  // No Pubkeys column: distinct authors per kind cost a grouping over the
+  // whole corpus (every event has exactly one kind, so the inner pubkey sets
+  // union to the entire store) and took the engine down. Dropped in the
+  // rollup, so `k.pubkeys` is now always absent — see StatsRollup.kindsSection.
+  for (const [label, cls] of [["Kind", ""], ["Name", ""], ["Events", "n"], ["", ""], ["Last event", "n"]]) {
     const th = el("th", cls, label);
     hr.appendChild(th);
   }
@@ -1284,7 +1687,6 @@ function kindsCard(kinds) {
     bar.style.width = Math.max(2, (k.events / max) * 100) + "%";
     share.appendChild(bar);
     tr.appendChild(share);
-    tr.appendChild(el("td", "n", k.pubkeys == null ? "—" : fmt(k.pubkeys)));
     // An AGE, not a date. Per kind this is the useful form: "kind 1 four
     // minutes ago, kind 30023 six days ago" localises which stream stalled,
     // where a column of dates makes the reader subtract thirty times. The
@@ -1325,8 +1727,8 @@ function kindsCard(kinds) {
  *
  * The page polls every 5 minutes and the rollup runs every 15, so MOST polls
  * return bytes the body is already showing. Rebuilding on those is not merely
- * wasted work — `replaceChildren` destroys what the reader was doing: the kinds
- * filter loses what they typed, and every bounded scroll box (Kinds, Relay
+ * wasted work — `replaceChildren` destroys what the reader was doing: both
+ * filters lose what they typed, and every bounded scroll box (Kinds, Relay
  * distribution, and a Sync coverage card thousands of rows tall) jumps back to
  * the top. Measured: filter "blogs" → "", scrollTop 5000 → 0, on every tick.
  */
@@ -1344,7 +1746,15 @@ function render(doc) {
 
   // A genuine new document does have to rebuild — but the reader's filter is
   // an instruction about the table, not about the document, so it survives.
-  const typed = bodyEl.querySelector("input[type=search]")?.value || "";
+  //
+  // Keyed by NAME over every search box, because there are two of them now
+  // (Kinds and Sync coverage). The `querySelector` this replaced read and wrote
+  // whichever box came first in the tree, so with two it would have carried the
+  // kinds query across every poll and dropped the sync one on the floor.
+  const typed = new Map();
+  for (const box of bodyEl.querySelectorAll("input[type=search]")) {
+    if (box.value) typed.set(box.name, box.value);
+  }
 
   bodyEl.replaceChildren();
   for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
@@ -1383,14 +1793,13 @@ function render(doc) {
   // not mirror, and an empty coverage card there would read as a broken mirror
   // rather than as no mirror.
   if (doc.sync) bodyEl.appendChild(syncCard(doc.sync));
-  if (typed) {
-    const box = bodyEl.querySelector("input[type=search]");
-    if (box) {
-      box.value = typed;
-      // `input` rather than calling applyFilter: the handler is a closure over
-      // the freshly built rows, and this card is rebuilt from a new document.
-      box.dispatchEvent(new Event("input"));
-    }
+  for (const box of bodyEl.querySelectorAll("input[type=search]")) {
+    const was = typed.get(box.name);
+    if (!was) continue;
+    box.value = was;
+    // `input` rather than calling applyFilter: the handler is a closure over
+    // the freshly built rows, and these cards are rebuilt from a new document.
+    box.dispatchEvent(new Event("input"));
   }
 
   renderFoot(doc);
@@ -1460,11 +1869,30 @@ async function load() {
     if (!res.ok) throw new Error(`GET /stats.json — ${res.status} ${res.statusText}`);
     render(await res.json());
   } catch (e) {
+    const why = String(e && e.message ? e.message : e);
+    // A FAILED POLL IS NOT A FAILED PAGE. This wiped the body unconditionally,
+    // which meant one blip on a five-minute timer — a relay restart, a proxy
+    // 502, a dropped wifi — replaced nine cards of good numbers with a single
+    // error line, and took the reader's filter text and scroll position with it.
+    // The document already on screen is still the last thing this relay
+    // computed, and saying so beats destroying it: the numbers were never
+    // claimed to be live, and the footer is already where this page admits to
+    // their age.
+    if (renderedAt) {
+      // Replaced, not appended: polls keep failing while a relay is down, and a
+      // footer that grows a line every five minutes is its own bug.
+      const note = el("p", "err", `Could not refresh: ${why}. The numbers above are from the last successful read.`);
+      note.dataset.refresh = "";
+      const prior = footEl.querySelector("[data-refresh]");
+      if (prior) prior.replaceWith(note);
+      else footEl.appendChild(note);
+      return;
+    }
     scopeEl.textContent = "Could not load the statistics document.";
     renderedAt = null;
     bodyEl.replaceChildren();
     const c = el("div", "card");
-    c.appendChild(el("p", "err", String(e && e.message ? e.message : e)));
+    c.appendChild(el("p", "err", why));
     bodyEl.appendChild(c);
   }
 }

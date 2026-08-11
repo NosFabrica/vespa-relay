@@ -20,15 +20,25 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.eventstore.engine.IngestStats
+import com.nosfabrica.vespa.eventstore.engine.QUERY_FANOUT
+import com.nosfabrica.vespa.eventstore.engine.mapBounded
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.router.refused.RefusalSink
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.core.isAddressable
+import com.vitorpamplona.quartz.nip01Core.core.isEphemeral
+import com.vitorpamplona.quartz.nip01Core.core.isReplaceable
 import com.vitorpamplona.quartz.nip01Core.crypto.verify
+import com.vitorpamplona.quartz.nip01Core.crypto.verifyId
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
+import com.vitorpamplona.quartz.nip09Deletions.DeletionEvent
+import com.vitorpamplona.quartz.nip62RequestToVanish.RequestToVanishEvent
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.asCoroutineDispatcher
 import kotlinx.coroutines.channels.Channel
@@ -45,8 +55,9 @@ import java.util.concurrent.atomic.AtomicLong
 /**
  * The download-to-store pipeline every mirrored event funnels through: a
  * bounded channel, a pool of workers draining it in batches through
- * [IEventStore.batchInsert], and signature verification off the download
- * threads (skipped for trusted upstreams).
+ * [IEventStore.batchInsert], with duplicates dropped and the rest signature-
+ * verified off the download threads (verification is skipped for trusted
+ * upstreams).
  *
  * The channel is bounded so a fast download (negentropy can deliver >10k/s)
  * cannot outrun Vespa ingest and pile events onto the heap: when it fills,
@@ -62,6 +73,20 @@ internal class IngestPipeline(
     // Clients first: ingest yields when their reads slow down.
     private val servingPressure: ServingPressure?,
     private val scope: CoroutineScope,
+    /**
+     * Which of these ids the store ALREADY holds — `VespaEventIndex.existingIds`
+     * in the router, the same summary-free existence check the store's own bulk
+     * path runs. Null disables the probe entirely, which is only slower, never
+     * wrong: the store deduplicates again regardless. See [dropDuplicates].
+     */
+    private val knownIds: (suspend (List<String>) -> Set<String>)? = null,
+    /**
+     * The newest stored version of each `(kind, author)` address in a chunk —
+     * the read that lets a superseded replaceable be dropped before it is
+     * verified. Null disables it; the store then resolves supersession itself,
+     * as it always did. See [dropSuperseded].
+     */
+    private val newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
     /**
      * Where store refusals are reported and where suppression is asked about.
      * Defaults to off, so every existing caller and test behaves exactly as it
@@ -140,6 +165,8 @@ internal class IngestPipeline(
     // routinely dwarfs accepts and reads like an emergency when it is the
     // system working — while a bad signature means an upstream serves junk.
     private val unverified = AtomicLong()
+
+    /** Rejections by reason. Only ever written through [noteRejection] — see there for why the ceiling matters. */
     private val rejectReasons = ConcurrentHashMap<String, Long>()
 
     /**
@@ -162,6 +189,20 @@ internal class IngestPipeline(
     // one per distinct defect.
     private val poisonSeen = ConcurrentHashMap.newKeySet<String>()
 
+    /**
+     * Measured break-even for the id probe: a dropped duplicate saves ~33-44µs
+     * (the whole 49-56µs a duplicate costs, less the few it costs to drop it)
+     * and the probe costs 11-23µs per id it covers — so it stops paying below
+     * roughly a third. See `IngestCostBench`.
+     */
+    private val idGate = ProbeGate(minHitRate = 0.35)
+
+    /**
+     * And for the version probe: 29µs/event against the 123 a dropped stale
+     * replaceable saves (158 to ~35), so break-even is ~20%.
+     */
+    private val versionGate = ProbeGate(minHitRate = 0.20)
+
     fun start() {
         // Announced when the batch is capped: an operator who set
         // SYNC_INGEST_BATCH and silently got a different number would be
@@ -171,6 +212,16 @@ internal class IngestPipeline(
                 "router: SYNC_INGEST_BATCH=$configuredBatch capped to $batchSize — " +
                     "$workers worker(s) share a $capacity-event queue, and a batch bigger than " +
                     "one worker's share collapses ingest to a single thread",
+            )
+        }
+        // The dedup probe needs a wide batch to be worth its round trip, so
+        // below that width every copy of an event is signature-checked before
+        // the store drops it. Silent, and the operator who lowered the batch to
+        // cut memory is the one who most needs to know they bought that.
+        if (knownIds != null && batchSize < PROBE_MIN_VERIFIABLE) {
+            System.err.println(
+                "router: ingest batch $batchSize is under the $PROBE_MIN_VERIFIABLE-event width the dedup " +
+                    "probe needs — duplicates will be verified before the store rejects them",
             )
         }
         repeat(workers) { scope.launch(pool) { loop() } }
@@ -247,25 +298,36 @@ internal class IngestPipeline(
                 queued.decrementAndGet()
                 batch.add(next)
             }
-            val valid = ArrayList<Event>(batch.size)
+            // BEFORE verify, which is the whole point — see [dropDuplicates]
+            // and [dropSuperseded].
+            val fresh = dropSuperseded(dropDuplicates(batch))
+            if (fresh.isEmpty()) continue
+            val valid = ArrayList<Event>(fresh.size)
             // Only built when something will read it. The sink is inert unless
             // SYNC_REFUSED_DIR is set, and the pipeline is shared by every
             // stream, so an unconditional map made every existing deployment
             // allocate and hash one entry per event for a lookup that never
             // happens.
-            val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(batch.size) else null
+            val origins = if (refusals.tracksOrigins) HashMap<String, IngestOrigin>(fresh.size) else null
             var verifyRejected = 0
-            for (msg in batch) {
-                if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
-                    valid.add(msg.event)
-                    // A bad signature never reaches this map, and so can never
-                    // reach the refusal sink: an id is the hash of the CONTENT,
-                    // not of the signature, so the same id can arrive correctly
-                    // signed from another relay. Remembering it would make one
-                    // relay's corruption permanent.
-                    origins?.put(msg.event.id, msg.origin)
-                } else {
-                    verifyRejected++
+            // Booked as a stage so it lands on the same `router: ingest stages`
+            // line as the store's own dedup/guards/write. It was invisible
+            // there for as long as it existed, which made "is verification the
+            // limit?" a question no instrument in this repo could answer.
+            IngestStats.timed("verify") {
+                for (msg in fresh) {
+                    if (msg.skipVerify || runCatching { msg.event.verify() }.getOrDefault(false)) {
+                        valid.add(msg.event)
+                        // A bad signature never reaches this map, and so can
+                        // never reach the refusal sink: an id is the hash of
+                        // the CONTENT, not of the signature, so the same id can
+                        // arrive correctly signed from another relay.
+                        // Remembering it would make one relay's corruption
+                        // permanent.
+                        origins?.put(msg.event.id, msg.origin)
+                    } else {
+                        verifyRejected++
+                    }
                 }
             }
             if (verifyRejected > 0) {
@@ -279,6 +341,111 @@ internal class IngestPipeline(
             audit?.let { for (event in valid) it.inspect(event) }
             insertIsolating(valid, origins ?: emptyMap())
         }
+    }
+
+    /**
+     * The batch minus everything that cannot be written because we already hold
+     * it — dropped BEFORE the signature check, which is the entire reason this
+     * exists. A schnorr verify costs ~48µs/event isolated (quartz over JNI
+     * secp256k1; the id re-hash is 1.5µs of it and event size barely moves it)
+     * and **~70-95µs in situ**, because the router shares its cores with the
+     * engine it is feeding. On a duplicate every one of those microseconds buys
+     * nothing: the event is already stored, and it was verified when it first
+     * landed. Verification used to run over the whole batch, so a mirror paid it
+     * per COPY — a popular event held by 40 discovered relays was verified 40
+     * times to be stored once.
+     *
+     * Measured end to end against a real Vespa (`IngestCostBench`, 4 cores
+     * shared with the engine, 72k-doc corpus, 20k-event batches): a batch of
+     * duplicates went **56µs/event to 21µs/event, and 49 to 16 on the
+     * interleaved repeat — 2.7-3.1x**, with the `verify` stage disappearing
+     * from the ingest stage line entirely.
+     *
+     * Two passes, cheapest first:
+     *
+     *  - **in batch**, by id, no I/O. This is the fan-out case: the same event
+     *    arrives from every relay carrying it, usually inside one batch.
+     *    Ephemeral kinds are exempt — the store counts a repeat of one as
+     *    accepted-not-stored rather than as a duplicate, and this must not
+     *    quietly move a number the health line prints.
+     *  - **in the store**, via [knownIds]. Same existence check the store's own
+     *    stage B runs, so it costs one extra round trip — 11-23µs per id at
+     *    full batch width, against the 70-95µs a verification costs and the
+     *    ~600µs/event a fresh batch spends being written. Gated on
+     *    [PROBE_MIN_VERIFIABLE] because that trade only holds at width: on a
+     *    small live-tail batch the round trip can cost more than the
+     *    verifications it saves, and it adds dedup load to the engine the
+     *    relay is serving reads from.
+     *
+     * **Why this is safe.** An event dropped here is never stored, so its
+     * signature is a fact about a document nobody will read. The id it is
+     * matched on is the CLAIMED id, unverified at this point — a forged event
+     * naming an id we hold is dropped without being checked, which is the same
+     * outcome verifying it would have produced. Nothing unverified reaches
+     * [IEventStore.batchInsert]: everything that survives this is verified in
+     * full, id hash included, so a lying id cannot smuggle a document in under
+     * some other id.
+     *
+     * What it costs in exchange: an upstream serving junk that happens to
+     * collide with our corpus no longer shows up as `bad signature` on the
+     * stats line. Junk naming events we already have is the one flavour of it
+     * this relay was never going to store anyway.
+     */
+    private suspend fun dropDuplicates(batch: List<Inbound>): List<Inbound> {
+        val ids = HashSet<String>(batch.size)
+        val once = ArrayList<Inbound>(batch.size)
+        var dropped = 0
+        for (msg in batch) {
+            if (msg.event.kind.isEphemeral() || ids.add(msg.event.id)) once.add(msg) else dropped++
+        }
+
+        val probe = knownIds
+        // The count that justifies the round trip is what it would save, and it
+        // saves verifications — a batch of trusted events skips those already.
+        val verifiable = once.count { !it.skipVerify }
+        val probed = probe != null && verifiable >= PROBE_MIN_VERIFIABLE && idGate.worthIt()
+        val stored =
+            if (!probed) {
+                emptySet()
+            } else {
+                try {
+                    IngestStats.timed("dedup.pre") {
+                        once
+                            .map { it.event.id }
+                            .chunked(DEDUP_CHUNK)
+                            .mapBounded(QUERY_FANOUT) { probe!!(it) }
+                            .flatMapTo(HashSet()) { it }
+                    }
+                } catch (e: CancellationException) {
+                    // NOT runCatching: it swallows this too, and shutdown
+                    // reaches the probe as a cancellation. Swallowed, the batch
+                    // would go on to verify and WRITE into a store the process
+                    // is closing. Same rethrow-first shape as insertBisecting.
+                    throw e
+                } catch (_: Throwable) {
+                    // A failed probe must cost time, never correctness: fall
+                    // through knowing nothing and let the store's stage B
+                    // decide, exactly as it did before this existed.
+                    emptySet()
+                }
+            }
+
+        val fresh = if (stored.isEmpty()) once else once.filter { it.event.id !in stored }
+        // Recorded whenever the probe RAN, including when it found nothing —
+        // a round trip that drops nothing is precisely what the gate has to
+        // learn from, and only the probe's own verdict teaches it (the
+        // in-batch pass is free and would flatter a query it says nothing
+        // about).
+        if (probed) idGate.record(once.size, once.size - fresh.size)
+        dropped += once.size - fresh.size
+        if (dropped > 0) {
+            rejected.addAndGet(dropped.toLong())
+            // The store's own word for it, verbatim, so dropping a duplicate
+            // here and dropping it there are ONE line on the stats breakdown
+            // rather than two that have to be added up.
+            noteRejection(RejectionReason.DUPLICATE.take(48), dropped.toLong())
+        }
+        return fresh
     }
 
     /**
@@ -310,7 +477,7 @@ internal class IngestPipeline(
 
                     is IEventStore.InsertOutcome.Rejected -> {
                         rejected.incrementAndGet()
-                        rejectReasons.merge(outcome.reason.take(48), 1L, Long::plus)
+                        noteRejection(outcome.reason.take(48), 1L)
                         // Attributed to the event that earned it. Only the
                         // REJECTED branch reports: a Failed outcome is the
                         // STORE's fault and the event is good, so recording
@@ -318,8 +485,7 @@ internal class IngestPipeline(
                         // silent loss.
                         if (aligned) {
                             written.getOrNull(i)?.let { event ->
-                                if (outcome.reason.startsWith(RejectionReason.PREFIX_REPLACED)) replacedRejects.incrementAndGet()
-                                refusals.onRefused(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
+                                reportRefusal(event, origins[event.id] ?: IngestOrigin.Local, outcome.reason)
                             }
                         }
                     }
@@ -331,7 +497,7 @@ internal class IngestPipeline(
                         // lostToStore so the loss is loud on the health
                         // line instead of blending into the duplicates.
                         rejected.incrementAndGet()
-                        rejectReasons.merge("store failed: ${outcome.reason.take(40)}", 1L, Long::plus)
+                        noteRejection("store failed: ${outcome.reason.take(40)}", 1L)
                         lostToStore.incrementAndGet()
                     }
                 }
@@ -339,7 +505,7 @@ internal class IngestPipeline(
         },
         onPoison = { event, e ->
             rejected.incrementAndGet()
-            rejectReasons.merge("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L, Long::plus)
+            noteRejection("store ${e.javaClass.simpleName}: ${e.message?.take(40)}", 1L)
             reportPoison(event, e)
         },
         onGaveUp = { batch, e ->
@@ -347,12 +513,235 @@ internal class IngestPipeline(
             // tallied apart from the isolated ones — "we could not say
             // which" is a different fact from "this event is bad".
             rejected.addAndGet(batch.size.toLong())
-            rejectReasons.merge("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong(), Long::plus)
+            noteRejection("store ${e.javaClass.simpleName} (batch, unisolated)", batch.size.toLong())
             // These are LOST, not merely rejected: the events were good,
             // the failure is the store's, and nothing re-offers them.
             lostToStore.addAndGet(batch.size.toLong())
         },
     )
+
+    /**
+     * One permanent refusal, reported to the filter and the healer.
+     *
+     * Shared by the store's own verdict above and by [dropSuperseded], which
+     * is the part that matters: the fast path drops a superseded replaceable
+     * BEFORE the store ever sees it, so the `replaced:` rejection this
+     * subsystem is built on stops being produced there. Without this call at
+     * both sites the suppression filter learns nothing and the healer never
+     * discovers a stale relay — the feature would still be configured, still
+     * report zero, and still be doing nothing.
+     */
+    private fun reportRefusal(
+        event: Event,
+        origin: IngestOrigin,
+        reason: String,
+    ) {
+        if (reason.startsWith(RejectionReason.PREFIX_REPLACED)) replacedRejects.incrementAndGet()
+        refusals.onRefused(event, origin, reason)
+    }
+
+    /**
+     * The batch minus every replaceable event a NEWER version already beats —
+     * dropped, like a duplicate, before it can be verified.
+     *
+     * This is the arrival the id probe structurally cannot see. A newer
+     * generation of a profile is a DIFFERENT id (different `created_at`,
+     * different hash), so [dropDuplicates] calls it new, it pays full
+     * verification, and only then does the store reject it as `replaced`.
+     * Measured against a real Vespa (`IngestCostBench`): **158µs/event**, of
+     * which `versions` is 38% and `verify` 32%.
+     *
+     * It is not a rare shape. Under the outbox model different relays hold
+     * different generations of the same address — relay B never received the
+     * generation the author published to relay A — so a fan-out is offered
+     * stale versions permanently, and negentropy cannot converge them away:
+     * it reconciles ids, and a replaceable's identity is its ADDRESS. One
+     * production backfill runs at 94% replaced-or-duplicate.
+     *
+     * Two passes again, and only the second costs anything:
+     *
+     *  - **in batch**, by address. Saves only the losers' VERIFICATION — the
+     *    store's stage D already collapses an in-run group to one write, so
+     *    there is no write here to save.
+     *  - **in the store**, via [newestVersions]: 29µs/event for the batched
+     *    read, against the 158 a stale arrival costs today. It pays for itself
+     *    once ~20% of replaceable arrivals are stale, which [versionGate]
+     *    measures rather than assumes.
+     *
+     * **Plain replaceable kinds only** (0, 3, 10002, 10040 — not 30382 and the
+     * other addressables). Their version query is one `(kind, authors…)` per
+     * chunk. An addressable's is not: the store recalls it per (kind, author)
+     * with the d-set, never across authors, because a (authors × d-tags) query
+     * is a cross product that is unbounded on the ingest path and silently
+     * truncated where hits are capped — and a truncated answer here is a
+     * DROPPED event, not a slow one. Reproducing that shape in the router is
+     * the fork AGENTS.md warns about; addressables stay the store's business.
+     *
+     * **Why dropping is safe, and the one place it is not.** A superseded
+     * event is not stored either way, so its signature decides nothing. The
+     * comparison is NIP-01's own — newest `created_at`, ties to the lower id —
+     * copied from the rule stage D applies. Where this differs from letting
+     * the store decide: the store re-reads under the writer lock, and this
+     * reads before it. If a NIP-09 deletion removes the newer version in that
+     * window, the store would have accepted the older event and this drops it.
+     * The event is re-offered on the next full resync, and the window is one
+     * batch wide.
+     */
+    private suspend fun dropSuperseded(batch: List<Inbound>): List<Inbound> {
+        // NOT for a batch carrying a deletion or a vanish. Those take the
+        // store's replay path, where an event's fate depends on its POSITION
+        // among the others: `[v1, delete(v2), v2]` stores v1, because v2 lands
+        // on its own tombstone. Choosing v2 here and dropping v1 would leave
+        // that address empty. [dropDuplicates] needs no such guard — it only
+        // ever drops an event identical to one already held, and a deletion
+        // reaching either copy reaches both — but this one CHOOSES between
+        // distinct events, and the replay is entitled to disagree. Keyed on
+        // the KIND, not the type: an Event that never went through quartz's
+        // factory is a plain Event whatever its kind, and `is DeletionEvent`
+        // would wave it through.
+        if (batch.any { it.event.kind == DeletionEvent.KIND || it.event.kind == RequestToVanishEvent.KIND }) return batch
+
+        // Winner per address, by first appearance so the batch keeps its order.
+        val keys = arrayOfNulls<Pair<Int, String>>(batch.size)
+        val winners = LinkedHashMap<Pair<Int, String>, Int>()
+        var candidates = 0
+        batch.forEachIndexed { i, msg ->
+            val e = msg.event
+            if (!e.kind.isReplaceable() || e.kind.isAddressable()) return@forEachIndexed
+            candidates++
+            // Held rather than rebuilt on the second pass: one Pair per
+            // candidate, not two, on a path that runs per batch forever.
+            val key = e.kind to e.pubKey
+            keys[i] = key
+            val held = winners[key]
+            if (held == null || beats(e, batch[held].event)) winners[key] = i
+        }
+        if (candidates == 0) return batch
+
+        val drop = BooleanArray(batch.size)
+        keys.forEachIndexed { i, key -> if (key != null && winners[key] != i) drop[i] = true }
+        var dropped = candidates - winners.size
+
+        val probe = newestVersions
+        if (probe != null && winners.size >= PROBE_MIN_VERIFIABLE && versionGate.worthIt()) {
+            val stored = readNewestVersions(probe, winners.keys)
+            var beaten = 0
+            for ((key, i) in winners) {
+                val held = stored[key] ?: continue
+                // Strictly beaten only: an equal stamp is the same event, and
+                // the id probe already had its chance at that.
+                if (held.createdAt > batch[i].event.createdAt ||
+                    (held.createdAt == batch[i].event.createdAt && held.id < batch[i].event.id)
+                ) {
+                    drop[i] = true
+                    beaten++
+                }
+            }
+            versionGate.record(winners.size, beaten)
+            dropped += beaten
+        }
+
+        if (dropped == 0) return batch
+        noteRejection(RejectionReason.REPLACED.take(48), dropped.toLong())
+        rejected.addAndGet(dropped.toLong())
+        // The store never sees these, so the `replaced:` verdict it would have
+        // returned has to be reported from here instead.
+        //
+        // This is load-bearing rather than tidy. The refused-id filter and the
+        // healer are both fed by exactly one signal — a store refusal — and
+        // this fast path exists precisely to stop the store producing it for
+        // the commonest case. Report only at `insertIsolating` and the two
+        // structures go quiet in proportion to how well this optimisation
+        // works: at the 94%-replaced backfill quoted above, almost nothing
+        // would ever reach the gate. Configured, reporting zero, doing
+        // nothing.
+        //
+        // Both drop classes belong here. An in-batch loser is not necessarily
+        // this relay's fault — a batch is shared by every stream, so the
+        // winner may have come from a different relay entirely — and a
+        // store-beaten arrival is the loop itself.
+        //
+        // SAFETY: the id is checked, the signature is not, and the asymmetry
+        // is the point. Nothing here has been verified yet, so an unchecked id
+        // is ATTACKER-CHOSEN: forge a kind 0 for any pubkey with an old
+        // `created_at`, stamp it with the id of an event you want this relay
+        // never to fetch, and two of those suppress that id permanently.
+        // `verifyId` closes it for ~1.5us against the ~48-95us a signature
+        // costs, because it binds the id to the content that earned the
+        // verdict; naming someone else's id would take a preimage.
+        //
+        // The signature genuinely is not needed for THIS class. Supersession
+        // is decided by (kind, pubkey, created_at), all of them inside the
+        // hashed content, so a correctly-signed twin carrying the same id is
+        // superseded identically and suppressing it costs nothing. That is
+        // what makes this narrower check sufficient here and nowhere else —
+        // see `PermanentRefusals`, where "a bad signature must never become
+        // permanent" is about ids whose storability differs between copies.
+        for (i in batch.indices) {
+            if (!drop[i]) continue
+            val msg = batch[i]
+            if (msg.event.verifyId()) reportRefusal(msg.event, msg.origin, RejectionReason.REPLACED)
+        }
+        return batch.filterIndexed { i, _ -> !drop[i] }
+    }
+
+    /** NIP-01 newest-wins, tie to the lower id — the rule the store's stage D resolves by. */
+    private fun beats(
+        candidate: Event,
+        incumbent: Event,
+    ): Boolean =
+        candidate.createdAt > incumbent.createdAt ||
+            (candidate.createdAt == incumbent.createdAt && candidate.id < incumbent.id)
+
+    /** One query per kind per chunk of authors, same width and fan-out the store's version stage uses. */
+    private suspend fun readNewestVersions(
+        probe: suspend (Int, List<String>) -> Map<String, Version>,
+        addresses: Set<Pair<Int, String>>,
+    ): Map<Pair<Int, String>, Version> =
+        try {
+            IngestStats.timed("versions.pre") {
+                addresses
+                    .groupBy({ it.first }, { it.second })
+                    .flatMap { (kind, authors) -> authors.chunked(CHECK_CHUNK).map { kind to it } }
+                    .mapBounded(QUERY_FANOUT) { (kind, authors) -> probe(kind, authors).mapKeys { (author, _) -> kind to author } }
+                    .fold(HashMap()) { all, part -> all.apply { putAll(part) } }
+            }
+        } catch (e: CancellationException) {
+            throw e
+        } catch (_: Throwable) {
+            // Same rule as the id probe: a failed optimisation costs time, not
+            // correctness. The store still resolves supersession itself.
+            emptyMap()
+        }
+
+    /**
+     * Tally [count] rejections under [reason], keeping at most
+     * [REASON_LIMIT] distinct reasons.
+     *
+     * The store's own reasons are a fixed vocabulary on purpose (`Rejections`
+     * builds one constant string rather than one per field, so a tally cannot
+     * fragment). Its *throws* are not: they embed per-event content — a Vespa
+     * 400 quotes the document — so a store failing on every event mints a new
+     * key here per event. That is the same run [poisonSeen] is capped for, and
+     * this map was left uncapped two fields away from that guard: 2.3M distinct
+     * failures would have been 2.3M retained strings, during the one incident
+     * where heap is already the thing to protect.
+     *
+     * Past the ceiling everything folds into one bucket, which costs nothing
+     * real — [rejectionBreakdown] prints the top two.
+     */
+    private fun noteRejection(
+        reason: String,
+        count: Long,
+    ) {
+        // Racy by a worker or two at the boundary: the point is a bound, not an
+        // exact size, and each worker can add at most one key past it.
+        if (rejectReasons.size >= REASON_LIMIT && !rejectReasons.containsKey(reason)) {
+            rejectReasons.merge(OVERFLOW_REASON, count, Long::plus)
+        } else {
+            rejectReasons.merge(reason, count, Long::plus)
+        }
+    }
 
     /**
      * Log an event the store threw on, once per distinct failure, with the
@@ -409,6 +798,33 @@ internal class IngestPipeline(
         }
 
     /**
+     * What each drop-probe is currently doing, for the stats line. Without it
+     * a gated-off probe is invisible: ingest slows, the `dedup.pre` and
+     * `versions.pre` stages simply stop appearing, and nothing says whether
+     * that is a converged stream (working as designed) or a probe that was
+     * never wired. Empty until a gate has judged anything.
+     */
+    fun probeStatus(): String {
+        val parts =
+            listOfNotNull(
+                describeGate("id", idGate, knownIds != null),
+                describeGate("version", versionGate, newestVersions != null),
+            )
+        return if (parts.isEmpty()) "" else "router: ingest probes ${parts.joinToString(", ")}"
+    }
+
+    private fun describeGate(
+        name: String,
+        gate: ProbeGate,
+        wired: Boolean,
+    ): String? {
+        if (!wired) return "$name off (not wired)"
+        val rate = gate.hitRate()
+        if (rate == 0.0 && !gate.hasJudged()) return null
+        return "$name ${"%.0f".format(rate * 100)}% dropped${if (gate.paying()) "" else ", sampling only"}"
+    }
+
+    /**
      * What the rejections actually were, for the stats line — the bare total
      * hides whether you are looking at routine duplicates or a failing store.
      */
@@ -442,6 +858,44 @@ internal class IngestPipeline(
          */
         private const val MAX_INBOUND_QUEUE = 16_384
 
+        /**
+         * How many events a batch must expect to VERIFY before the dedup probe
+         * is worth its round trip.
+         *
+         * The per-id price falls with batch width as the round trip amortises
+         * — 23µs/id over 4k ids, 11µs over 20k (`IngestCostBench`) — while a
+         * verification is a flat 70-95µs. So at full width the probe wins once
+         * roughly a sixth of the batch is duplicate, and at a single chunk's
+         * width the fixed cost of the round trip makes it about a wash. 128 is
+         * where that wash sits, and it keeps small live-tail batches — whose
+         * events are mostly new, and whose duplicates the in-batch pass has
+         * already caught — off the engine the relay serves reads from.
+         */
+        private const val PROBE_MIN_VERIFIABLE = 128
+
+        /**
+         * Authors per version query. Deliberately NOT [DEDUP_CHUNK]: that is
+         * stage B's width and carries `VESPA_DEDUP_CHUNK`, which widens the id
+         * check alone. Widening a version query is a different trade — the
+         * store keeps it at its own CHECK_CHUNK — and riding the dedup knob
+         * would silently retune this one too.
+         */
+        private const val CHECK_CHUNK = 500
+
+        /**
+         * Ids per probe query. Read from the store's OWN knob, not a private
+         * one: stage B chunks at `VESPA_DEDUP_CHUNK` (default 500), and a
+         * deployment that widens it for sync speed should not have to discover
+         * that the router in front of it kept probing at the old width.
+         */
+        private val DEDUP_CHUNK: Int = System.getenv("VESPA_DEDUP_CHUNK")?.toIntOrNull()?.coerceAtLeast(1) ?: 500
+
+        /** Distinct rejection reasons kept before [noteRejection] folds the rest into one. */
+        private const val REASON_LIMIT = 64
+
+        /** Where reasons past [REASON_LIMIT] land — named, so the line says a tally was folded rather than implying two. */
+        private const val OVERFLOW_REASON = "other store failures"
+
         // Distinct store failures to dump a raw event for; past a handful it
         // is a stuck loop, not news.
         private const val POISON_SAMPLE_LIMIT = 20
@@ -450,3 +904,9 @@ internal class IngestPipeline(
         private const val POISON_JSON_CHARS = 4_000
     }
 }
+
+/** The newest stored version of one address — what an arriving replaceable has to beat. */
+data class Version(
+    val createdAt: Long,
+    val id: String,
+)

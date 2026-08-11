@@ -21,6 +21,8 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.eventstore.engine.doc.EventDoc
+import com.nosfabrica.vespa.eventstore.engine.query.EventQuery
 import com.nosfabrica.vespa.relay.config.RelayIdentity
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
@@ -177,6 +179,26 @@ fun main() {
             wireLogMode = env.syncEnv("SYNC_WIRE_LOG", "ROUTER_WIRE_LOG")?.trim()?.lowercase() ?: "",
             servingPressure = servingPressure,
             torSettings = torSettings,
+            // The raw engine index, not the trust-projected store: the
+            // projection's existingIds delegates straight through, and this is
+            // a pure read that counts and never mutates — the use its own
+            // KDoc names. Membership is what ingest needs to skip verifying an
+            // event it cannot write.
+            knownIds = store.eventIndex::existingIds,
+            // The newest stored version per author for one plain replaceable
+            // kind. Built here rather than in the pipeline so the store's query
+            // types stay at the one seam that already knows them, and the
+            // pipeline keeps taking a plain function it can be tested against.
+            // The winner rule is stage D's, verbatim: newest created_at, ties
+            // to the LOWER id (hence thenByDescending on a max).
+            newestVersions = { kind, authors ->
+                store.eventIndex
+                    .search(EventQuery(kinds = listOf(kind), authors = authors))
+                    .groupBy { it.pubkey }
+                    .mapValues { (_, docs) ->
+                        docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { Version(it.createdAt, it.id) }
+                    }
+            },
         ).start()
 
     Runtime.getRuntime().addShutdownHook(

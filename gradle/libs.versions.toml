@@ -15,35 +15,110 @@ app = "0.1.0"
 # So on any bump of EITHER pin, check the direction. The forces stay regardless:
 # they are per-module (:common, :relay, :sync), a new module needs its own, and
 # they are what stops a store bump from silently dragging its own quartz in.
-quartz = "35f96a936d"
+#
+# a5507f9a4d = amethyst main through PR #3889, 24 commits. It is taken FOR that
+# PR: the upstream half of this repo's own paged-walk fix. `fetchAllPages` now
+# floors its cursor at epoch 0 and ends a walk `UNPAGEABLE` when a relay answers
+# entirely ABOVE the `until` it asked for, instead of stepping one second lower
+# and asking the same unanswerable question forever. purplepag.es is what found
+# it — twelve kind-10002 events at `created_at = 0` and a relay that reads
+# `until <= 0` as no bound at all.
+#
+# Do NOT let that read as "the workaround can go". `flooredForPaging` in :sync
+# stays, and the KDoc there says why at length: quartz's guard is the structural
+# one (a `since` cannot bound the step path, so an unguarded walk descends from
+# any window floor to 0 regardless), but quartz's guard ALONE ends purplepag.es'
+# leg UNPAGEABLE — which settles nothing and re-walks 1.49M events next boot.
+# The floor is what makes the same walk end DRAINED with the leg closed.
+#
+# ADDITIVE at every signature we call: the diff to
+# `nip01Core/relay/client/accessories/NostrClientFetchAllPagesExt.kt` across
+# 875531afb0..a5507f9a4d is 73 insertions and ZERO deletions, and `UNPAGEABLE`
+# was already in `PagedFetchEnd` (the search-filter case), so nothing this
+# repo's seven `fetchAllPages` call sites compile against moved. Unlike the
+# #3884 bump before it, this one is not source-breaking.
+#
+# Nothing else in the range reaches us, by two separate arguments — the range is
+# 24 commits, not just the 12 that touch `quartz/`:
+#   - OUTSIDE quartz/: ~51 files under amethyst/, commons/, nappletHost/, docs/
+#     and geode/ (#3886 notification grouping, #3858 NIP-5D). We consume the
+#     `quartz` artifact alone, so none of it is on this classpath.
+#   - INSIDE quartz/: the remainder is concord — the Control Plane soft-ban
+#     audit (#3885) plus AuthorityResolver, EditionFold, ConcordStrandedRecovery,
+#     ConcordRefounding. This repo does not compile against concord at all
+#     (`grep -r quartz.concord` over every .kt here returns 0).
+#
+# DIRECTION: 875531afb0 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates), and the store pin below compiles against
+# EXACTLY a5507f9a4d — so this is the equality case, not merely at-or-ahead.
+#
+# LEXICOGRAPHIC: 'a550…' > '8755…', so unlike the pin it replaces this one sorts
+# the SAFE way and would win a conflict on version order alone. It has none to
+# win: the store requests the same hash, so resolution is equality on both
+# counts. Verified rather than assumed — the absence of the arrow is the proof:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep quartz
+# → `com.github.vitorpamplona.amethyst:quartz:a5507f9a4d` with no `->` anywhere.
+#
+# Do not read that as the forces being unnecessary. They are what holds this the
+# next time the two pins drift, which is every time one moves without the other,
+# and a bump in the other direction fails SILENTLY without them.
+quartz = "a5507f9a4d"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
-# 98972c31c2 = store main through PR #61. Carries everything 3efbf16e69 had —
-# #56's coverage guard (a response judged by Vespa's own isDegraded(), not by
-# its `full`, which disagrees in BOTH directions), #57's quartz alignment, and
-# WriterTopology on open(), which this deployment needs because the guard-owner
-# cache that skips the NIP-09/NIP-62 probes is exact only for a single writer
-# and there are two here (STORE_WRITERS in :common).
 #
-# What is new is the container access log (#59): a deployment choice rather than
-# a constant, injected into services.xml as parsed XML instead of spliced text,
-# and defaulted off — this relay passes nothing, so it keeps the behaviour it
-# had. #60 made that feature's IT poll for the log rather than race Vespa's
-# reconfiguration, and #61 cleared two compiler warnings that were dead code.
+# 685b059d37 = store main through PR #67, whose own range is its quartz bump to
+# a5507f9a4d — the same hash pinned above. The two move TOGETHER this time, so
+# equality is held across the bump rather than restored a few commits later.
 #
-# It also DROPS engine/app/validation-overrides.xml, the stemming override —
-# the store's position is that every deployment has upgraded past needing it.
-# Ours redeploys the bundled package on boot, so a Vespa old enough to still
-# want that override would fail the deploy rather than warn.
+# Measured from the e129c094a6 this branch started at, the range is three PRs
+# and four files, none of them the contract:
+#   #65  writer-lock attribution — `IngestStats.timed("remove")` wrapped around
+#        `TrustProjection.removeDocs`, and the same in `BulkRecordInsert`. Pure
+#        instrumentation; the guarded body is unchanged. (main pinned exactly
+#        this, at 8587db434d, while this branch was in flight — see below.)
+#   #66  a CI fix in `AccessLogIT` — retry traffic dropped by reconfiguration
+#        rather than failing on it. benchmark/src/test only, not shipped.
+#   #67  the quartz bump.
+# So relative to what main carries today, this adds #66 and #67 alone.
+# `IEventStore`, `SQLiteEventStore`, `IndexableFields` and `SearchFieldExtractor`
+# are untouched across e129c094a6..685b059d37 (checked by name against
+# `git diff --name-only`), so the store contract, filter semantics and
+# searchable-kind table carry through as they have since a308d6723f.
 #
-# Its own quartz pin is still 35f96a936d, so the direction above is satisfied by
-# equality, not by luck.
+# DIRECTION: e129c094a6 is a strict ancestor of this, and its quartz is the hash
+# pinned above — equality, the state the top comment calls the one to hold.
 #
-# VERIFY the hash resolved rather than reading this line: Gradle breaks a version
-# conflict lexicographically, so a hash that sorts below one dragged in
-# transitively loses silently and the bump does nothing. This one sorts ABOVE
-# the hash it replaces ('9' > '3'), which is the safe direction, but check.
+# LEXICOGRAPHIC: '685b…' < 'e129…', so this pin now sorts BELOW the one it
+# replaces — the REVERSE of what the previous comment here recorded, and the
+# same trap the quartz pin fell into at 875531afb0. It costs nothing only
+# because nothing else on the graph brings the store in, so there is no
+# conflict to lose. Do not carry "this one sorts the safe way" forward as a
+# property of the store pin; it was a property of that hash.
 # `./gradlew :relay:dependencies --configuration runtimeClasspath`
-vespaEventStore = "98972c31c2"
+#
+# Bumping this pin is NOT done until the store's own integration gate has run
+# against the commit — see AGENTS.md. `InMemoryEventIndex` cannot see a
+# Vespa-only regression.
+#
+# Previously a308d6723f = store main through PR #62. Its `IEventStore`,
+# `SQLiteEventStore`, `IndexableFields` and `SearchFieldExtractor` were
+# byte-identical to 98972c31c2 before it, so the store contract, filter
+# semantics and searchable-kind table have carried through untouched across all
+# three. #59's container access log is a deployment choice, defaulted off, and
+# this relay passes nothing — so it keeps the behaviour it had. #62 also DROPPED
+# engine/app/validation-overrides.xml, the stemming override; ours redeploys the
+# bundled package on boot, so a Vespa old enough to want it would fail the
+# deploy rather than warn.
+# The writer-lock instrumentation main pinned at 8587db434d is CARRIED, not
+# replaced — that hash is an ancestor of this one, so #63 and #65 are both in
+# here. Kept because the reason it was taken still applies: on staging the lock
+# reads 60.0s held per 60s window with 400-550s of wait across eight ingest
+# workers, and the stages that existed accounted for only ~9-13s of it. #63
+# added lock.ingest.wait / .hold and lock.gate.wait / .hold around the single
+# writer mutex, booked after release so the timer cannot lengthen the section it
+# measures; #65 added guards.apply, supersede and remove, the spans inside that
+# mutex that were still untimed. The router can attribute that gap rather than
+# guess at it, and this bump does not give any of it up.
+vespaEventStore = "685b059d37"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

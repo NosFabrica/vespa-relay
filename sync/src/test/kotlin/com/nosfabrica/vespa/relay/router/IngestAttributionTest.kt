@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.router.refused.RefusalSink
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.crypto.EventHasher
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip01Core.store.RejectionReason
 import kotlinx.coroutines.CoroutineScope
@@ -105,7 +106,7 @@ class IngestAttributionTest {
         count: Int,
     ) {
         val scope = CoroutineScope(SupervisorJob())
-        val pipeline = IngestPipeline(store, config(), null, null, scope, sink)
+        val pipeline = IngestPipeline(store, config(), null, null, scope, null, null, sink)
         try {
             pipeline.start()
             repeat(count) { pipeline.submit(event(it), skipVerify = true, IngestOrigin.Local) }
@@ -152,4 +153,104 @@ class IngestAttributionTest {
             )
         }
     }
+
+    /**
+     * A real event, hashed the way NIP-01 says, so `verifyId` accepts it. The
+     * signature is still junk — deliberately: the fast path below runs before
+     * verification, and these pin that it is the ID and not the signature that
+     * gates what may be remembered.
+     */
+    private fun hashed(
+        n: Int,
+        kind: Int = 0,
+        createdAt: Long = 1_700_000_000L + n,
+        pubKey: String = "a1".repeat(32),
+    ): Event {
+        val tags = emptyArray<Array<String>>()
+        val content = "c$n"
+        return Event(
+            id = EventHasher.hashId(pubKey, createdAt, kind, tags, content),
+            pubKey = pubKey,
+            createdAt = createdAt,
+            kind = kind,
+            tags = tags,
+            content = content,
+            sig = "b2".repeat(32),
+        )
+    }
+
+    @Test
+    fun `a replaceable superseded inside the batch is reported even though the store never sees it`() =
+        runBlocking {
+            // The merge hazard. `dropSuperseded` exists to keep a stale
+            // replaceable away from verification and the store — which is
+            // exactly where the `replaced:` verdict used to come from. If the
+            // refusal is not reported from the fast path too, the filter and
+            // the healer go quiet in proportion to how well that optimisation
+            // works, and a backfill running at 94% replaced would feed them
+            // almost nothing.
+            val sink = Recorder()
+            val older = hashed(1, createdAt = 1_700_000_000L)
+            val newer = hashed(2, createdAt = 1_700_009_999L)
+
+            val scope = CoroutineScope(SupervisorJob())
+            val pipeline = IngestPipeline(base(), config(), null, null, scope, null, null, sink)
+            try {
+                pipeline.start()
+                pipeline.submit(older, skipVerify = true, IngestOrigin.Local)
+                pipeline.submit(newer, skipVerify = true, IngestOrigin.Local)
+                var spins = 0
+                while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
+                delay(300)
+            } finally {
+                pipeline.close()
+                scope.cancel()
+            }
+
+            assertTrue(
+                sink.refusals.any { it.first == older.id && it.second.startsWith("replaced") },
+                "the superseded copy must still be reported; got ${sink.refusals}",
+            )
+        }
+
+    @Test
+    fun `an event whose id does not match its content is never remembered`() =
+        runBlocking {
+            // SAFETY. The fast path runs before any verification, so an
+            // unchecked id here is attacker-chosen: forge a stale kind 0 for
+            // any pubkey, stamp it with the id of an event you want this relay
+            // never to fetch, and two of them suppress that id for good. The
+            // id hash is what makes the claim self-certifying.
+            val sink = Recorder()
+            val real = hashed(3, createdAt = 1_700_009_999L)
+            val forged =
+                Event(
+                    id = "%064x".format(0xDEAD),
+                    pubKey = "a1".repeat(32),
+                    createdAt = 1_700_000_000L,
+                    kind = 0,
+                    tags = emptyArray(),
+                    content = "forged",
+                    sig = "b2".repeat(32),
+                )
+
+            val scope = CoroutineScope(SupervisorJob())
+            val pipeline = IngestPipeline(base(), config(), null, null, scope, null, null, sink)
+            try {
+                pipeline.start()
+                pipeline.submit(forged, skipVerify = true, IngestOrigin.Local)
+                pipeline.submit(real, skipVerify = true, IngestOrigin.Local)
+                var spins = 0
+                while (pipeline.queued.get() > 0 && spins++ < 400) delay(25)
+                delay(300)
+            } finally {
+                pipeline.close()
+                scope.cancel()
+            }
+
+            assertTrue(
+                sink.refusals.none { it.first == forged.id },
+                "an id that does not hash its own content must never enter the filter; got ${sink.refusals}",
+            )
+        }
 }

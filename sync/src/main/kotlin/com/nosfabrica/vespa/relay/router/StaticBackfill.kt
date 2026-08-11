@@ -89,14 +89,27 @@ internal class StaticBackfill(
 
     fun begin(totalUpstreams: Int) = progress.begin(totalUpstreams)
 
-    /** Backfill every down upstream, grouped by stream (shared filter). */
+    /**
+     * Backfill every down upstream, grouped by stream — one group is one
+     * stream's relay list, and a stream carries exactly one filter.
+     *
+     * Grouped by the FILTER until bands became per stream, which read the same
+     * for every config anyone had and is now wrong for the one that motivated
+     * the change: two streams sharing a filter landed in one group, whose
+     * snapshot was narrowed from `group.first()`'s bands and then recorded into
+     * each upstream's OWN stream. The second stream's relays would be compared
+     * against a window sized for the first stream's progress — every event
+     * outside it re-downloaded, every cycle, while both bands claimed to be
+     * fine. The cost of splitting them is one id snapshot each instead of one
+     * shared, serialised behind the same gate.
+     */
     suspend fun run(upstreams: List<SyncUpstream>) {
         coroutineScope {
             upstreams
                 .withIndex()
-                .groupBy { it.value.filter }
-                .forEach { (filter, group) ->
-                    launch { backfillStream(filter, group) }
+                .groupBy { it.value.streamName }
+                .forEach { (_, group) ->
+                    launch { backfillStream(group.first().value.filter, group) }
                 }
         }
     }
@@ -251,7 +264,7 @@ internal class StaticBackfill(
         upstream: SyncUpstream,
         live: AtomicLong,
     ): Int {
-        val legs = bands.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             return 0
@@ -262,7 +275,11 @@ internal class StaticBackfill(
         val origin = originFor(upstream)
         transferring.incrementAndGet()
         return try {
-            for (window in legs) {
+            for (leg in legs) {
+                // Floored before it is walked, or an upstream holding an event
+                // stamped `created_at = 0` drives this walk past zero and it
+                // never returns. See [flooredForPaging].
+                val window = leg.flooredForPaging()
                 var seenMin: Long? = null
                 var seenMax: Long? = null
                 // Per-kind spans, which quartz's SyncCoverage requires before it
@@ -274,35 +291,55 @@ internal class StaticBackfill(
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
                 paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                downloaded +=
-                    client.fetchAllPages(
-                        upstream.url,
-                        listOf(window),
-                        NEG_IDLE_MS,
-                        onNewPage = { until -> paging.mark(walk, until) },
-                    ) { event ->
-                        if (upstream.filter.match(event)) {
-                            if (SyncCoverage.isPlausible(event.createdAt)) {
-                                seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                                seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                // The walk's own account of why it stopped. Only `DRAINED` — the
+                // relay EOSEd an empty page, so there is nothing older — earns the
+                // band the right to close its older leg. See `drainSettlesThePast`.
+                // In a try/finally for the same reason as DynamicSync's: the
+                // caller catches Exception, and a throw between begin and
+                // finish strands this walk in PagingProgress at 0%, which
+                // `fraction` then averages into the stream's number forever.
+                val walked =
+                    try {
+                        client.fetchAllPages(
+                            upstream.url,
+                            listOf(window),
+                            NEG_IDLE_MS,
+                            onNewPage = { until -> paging.mark(walk, until) },
+                        ) { event ->
+                            if (upstream.filter.match(event)) {
+                                if (SyncCoverage.isPlausible(event.createdAt)) {
+                                    seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                                    seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                }
+                                // Per KIND too: a band holding one interval for a
+                                // multi-kind filter lets a long-lived kind vouch
+                                // for a short-lived one, and quartz now declines to
+                                // record such a band at all rather than over-claim.
+                                // Without this, every multi-kind stream here would
+                                // stop resuming.
+                                SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
+                                ingest.submit(event, upstream.trusted, origin)
                             }
-                            // Per KIND too: a band holding one interval for a
-                            // multi-kind filter lets a long-lived kind vouch
-                            // for a short-lived one, and quartz now declines to
-                            // record such a band at all rather than over-claim.
-                            // Without this, every multi-kind stream here would
-                            // stop resuming.
-                            SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                            ingest.submit(event, upstream.trusted, origin)
+                            seenSoFar++
+                            live.incrementAndGet()
+                            progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
                         }
-                        seenSoFar++
-                        live.incrementAndGet()
-                        progress.update(idx, downloaded + seenSoFar, downloaded + seenSoFar)
+                    } finally {
+                        paging.finish(walk)
                     }
+                downloaded += walked.downloaded
                 // paged = true: this walked a span, it did not reconcile a
                 // range, so the band it earns is the span it saw.
-                paging.finish(walk)
-                bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                bands.record(
+                    upstream.streamName,
+                    upstream.url,
+                    upstream.filter,
+                    seenMin,
+                    seenMax,
+                    paged = true,
+                    observedByKind = seenByKind,
+                    drained = drainSettlesThePast(walked, window, upstream.filter),
+                )
             }
             progress.done(idx, downloaded)
             System.err.println("router: static backfill ${upstream.url.url} paged $downloaded (no snapshot needed)")
@@ -387,13 +424,13 @@ internal class StaticBackfill(
         // coveringWindow cannot help here, because once no relay needs anything
         // there is no window to narrow TO and it correctly hands back the whole
         // filter. Asking first is the only place the saving exists.
-        if (!bands.anyOutstanding(urls, filter)) {
+        if (!bands.anyOutstanding(group.first().streamName, urls, filter)) {
             System.err.println(
                 "router: static backfill ${group.first().streamName} — all ${group.size} relay(s) already cover the filter, skipping the snapshot",
             )
             return StreamSnapshot(emptyList(), nowSeconds())
         }
-        val window = bands.coveringWindow(urls, filter)
+        val window = bands.coveringWindow(group.first().streamName, urls, filter)
         val startedMs = System.currentTimeMillis()
         val takenAt = startedMs / 1000
         val name = group.first().streamName
@@ -456,7 +493,7 @@ internal class StaticBackfill(
         idx: Int,
         upstream: SyncUpstream,
     ): Int {
-        val legs = bands.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
@@ -492,6 +529,7 @@ internal class StaticBackfill(
                 val here = downloaded
                 val outcome =
                     pager.sweep(
+                        stream = upstream.streamName,
                         url = upstream.url,
                         shape = upstream.filter,
                         leg = leg,
@@ -509,21 +547,47 @@ internal class StaticBackfill(
                     // Only what the sweep has NOT already covered: a resumed
                     // sweep may be most of the way down the leg, and paging the
                     // whole thing would throw that away.
-                    val rest = outcome.outstanding ?: leg
+                    // The `?: leg` is unreachable today — the ONE path that sets
+                    // `negentropyUsable = false` always supplies `outstanding` —
+                    // but the field is nullable, so this is the type's required
+                    // handling rather than dead code. Do not "simplify" it to
+                    // `!!`: falling back to the whole leg re-pages, which is
+                    // wasteful, while `!!` would crash the stream.
+                    val rest = (outcome.outstanding ?: leg).flooredForPaging()
                     val walk = "${upstream.streamName}|${upstream.url.url}"
                     paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
-                    downloaded +=
-                        client.fetchAllPages(
-                            upstream.url,
-                            listOf(rest),
-                            NEG_IDLE_MS,
-                            onNewPage = { until -> paging.mark(walk, until) },
-                            onEvent = onEvent,
-                        )
-                    paging.finish(walk)
+                    // finally: see the paged site above — an orphaned walk is
+                    // averaged into `fraction` at 0% for as long as the process
+                    // lives.
+                    val walked =
+                        try {
+                            client.fetchAllPages(
+                                upstream.url,
+                                listOf(rest),
+                                NEG_IDLE_MS,
+                                onNewPage = { until -> paging.mark(walk, until) },
+                                onEvent = onEvent,
+                            )
+                        } finally {
+                            paging.finish(walk)
+                        }
+                    downloaded += walked.downloaded
                     pagedWindows++
                     legsDone++
-                    bands.record(upstream.url, upstream.filter, seenMin, seenMax, paged = true, observedByKind = seenByKind)
+                    // Against `rest`, not `leg`: a resumed sweep leaves only the
+                    // part it had not reached, and that remainder is what was
+                    // actually paged. Its floor is the leg's whenever the sweep
+                    // was working downward, which is the only case that matters.
+                    bands.record(
+                        upstream.streamName,
+                        upstream.url,
+                        upstream.filter,
+                        seenMin,
+                        seenMax,
+                        paged = true,
+                        observedByKind = seenByKind,
+                        drained = drainSettlesThePast(walked, rest, upstream.filter),
+                    )
                     continue
                 }
                 if (!outcome.complete) continue
@@ -534,6 +598,7 @@ internal class StaticBackfill(
                 // claim untrue for the leg.
                 val paged = outcome.pagedWindows > 0
                 bands.record(
+                    upstream.streamName,
                     upstream.url,
                     upstream.filter,
                     seenMin,
@@ -566,7 +631,7 @@ internal class StaticBackfill(
         upstream: SyncUpstream,
         snapshot: StreamSnapshot,
     ): Int {
-        val legs = bands.legs(upstream.url, upstream.filter)
+        val legs = bands.legs(upstream.streamName, upstream.url, upstream.filter)
         if (legs.isEmpty()) {
             progress.done(idx, 0)
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
@@ -617,6 +682,7 @@ internal class StaticBackfill(
                 // compared against, and erring early only costs a small
                 // re-fetch, never a gap.
                 bands.record(
+                    upstream.streamName,
                     upstream.url,
                     upstream.filter,
                     seenMin,
@@ -627,10 +693,17 @@ internal class StaticBackfill(
                     // reconcile compares the whole filter at once and earns the
                     // same span for every kind in it.
                     observedByKind = seenByKind,
+                    // No `drained` here, deliberately: the paging happens inside
+                    // quartz's `negentropySyncOrFetch`, which returns its own
+                    // result and does not carry the walk's `end` out. So a NIP-77-less
+                    // relay reached through this path keeps the old behaviour and
+                    // re-asks its older leg — the conservative direction, and not
+                    // the path a `sync = "fetch"` stream takes anyway. Thread the
+                    // signal through that helper upstream to close this last gap.
                 )
             }
             progress.done(idx, downloaded)
-            val band = bands.band(upstream.url, upstream.filter)
+            val band = bands.band(upstream.streamName, upstream.url, upstream.filter)
             System.err.println(
                 "router: static backfill ${upstream.url.url} downloaded $downloaded" +
                     (if (paged) " (paged REQ fallback — no NIP-77)" else " (negentropy)") +
