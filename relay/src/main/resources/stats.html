@@ -115,7 +115,10 @@
   .wrap + .card-sub { margin: .7rem 0 0; }
   .card {
     background: var(--surface); border: 1px solid var(--line); border-radius: .6rem;
-    padding: 1rem 1.1rem; margin-bottom: 1rem;
+    /* Symmetric. It was `1rem 1.1rem`, so the horizontal inset sat 1.6px wider
+       than the vertical for no reason anyone could name, and every child
+       inherited the discrepancy as its left margin. */
+    padding: 1rem; margin-bottom: 1rem;
   }
   .tiles { display: grid; grid-template-columns: repeat(auto-fit, minmax(11rem, 1fr)); gap: 1rem; margin-bottom: 1rem; }
   /* A titled row of tiles standing on the page background instead of inside a
@@ -197,7 +200,21 @@
      The frame is full width on purpose. A bar sized to its own extent makes
      every relay look finished; against a common frame the uncovered time is
      the loud part, which is the question this card is here to answer. */
-  .cov { --lab: 11rem; }
+  /* The label column, and the one number on this card that has to give way.
+     It was a flat 11rem: at 380px that left the url 176px and the TRACK 109px —
+     62% of every row spent on an address the box then ellipsises anyway, and
+     38% on the bars, which are the content. `clamp` keeps the desktop width and
+     lets the column shrink to a still-readable 6.5rem as the card narrows, so
+     the data always holds the majority of the row. `22vw` rather than a
+     breakpoint because the loss is continuous — there is no width at which the
+     url suddenly stops mattering.
+
+     The 8rem FLOOR is not a round number: below it the tail of a
+     `*.nostr.land` family clips to `…s.nostr.land` / `…n.nostr.land`, three
+     rows that no longer identify three different relays. 8rem keeps the label
+     distinguishable and still leaves the track the majority of the row at
+     380px (128px of label against ~162px of track, against 176/109 before). */
+  .cov { --lab: clamp(8rem, 22vw, 11rem); }
   .cov-row { display: grid; grid-template-columns: var(--lab) 1fr; gap: .6rem; align-items: center; margin-bottom: 3px; }
   /* The url filter hides rows with `[hidden]`, and `[hidden] { display: none }`
      is a UA rule — which ANY author `display` outranks, whatever the
@@ -280,7 +297,10 @@
      table because the reader's question is proportional — "what became of the
      fan-out" — and because a stack CANNOT be drawn unless the parts sum to the
      whole, which is exactly the property the numbers behind it now have. */
-  .disp { display: flex; height: 10px; border-radius: 2px; overflow: hidden; background: var(--grid); margin: .35rem 0 .3rem; }
+  /* 12px, the SAME height as a coverage `.track`. Two bar systems on one card
+     drawn 2px apart read as two different kinds of measurement; they are both
+     "a proportion of a whole" and should look it. */
+  .disp { display: flex; height: 12px; border-radius: 2px; overflow: hidden; background: var(--grid); margin: .4rem 0 .35rem; }
   .disp > i { display: block; height: 100%; }
   /* Reached and gave us something / reached and had nothing to give. Both are
      the relay working, which is why they share the accent and differ in weight
@@ -298,8 +318,17 @@
      handshake, or our proxy was down. */
   .disp > i.transferFailed, .disp > i.torUnavailable { background: var(--warn); }
   .disp > i.pending { background: var(--bar); }
-  .disp-key { display: flex; gap: .8rem; flex-wrap: wrap; font-size: .72rem; color: var(--muted); }
+  /* `row-gap` under `column-gap`: the key runs to nine buckets and wraps to two
+     or three rows at any real width, and an equal gap on both axes made the
+     wrapped rows read as separate paragraphs rather than as more of the key. */
+  .disp-key { display: flex; gap: .35rem .8rem; flex-wrap: wrap; font-size: .72rem; color: var(--muted); }
   .disp-key b { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px; vertical-align: -.02em; margin-right: .25rem; }
+  /* The prose under a cycle's bar — the fold summary, then the accounting line.
+     NOT `.why`, which is deliberately margin-free because it ENDS a card; used
+     three times mid-block it collapsed a legend, a list and a sentence into one
+     undifferentiated slab with 0px between them. Same muted register, its own
+     spacing. */
+  .cyc-line { color: var(--muted); font-size: .85rem; margin: .45rem 0 0; }
   .cyc { margin: 0 0 .9rem; }
   .cyc-head { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
   .cyc-head .nm { font-weight: 600; }
@@ -337,8 +366,17 @@
      it ellipsises (below), the counts do not. */
   .grp-head {
     display: flex; justify-content: space-between; gap: .75rem; align-items: baseline; flex-wrap: nowrap;
-    position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface); padding: .35rem 0 .3rem;
+    position: sticky; top: var(--pin-h, 1.7rem); z-index: 2; background: var(--surface);
+    /* `.6rem` below, against `.35rem` above. The head is 51px of name, filter
+       chip and counts (100px on a phone, where it stacks) and it sat 4.8px off
+       its own data while 17.6px separated one group from the next — the
+       heaviest element on the card had the least room around it. Asymmetric on
+       purpose: this is a heading, and a heading belongs to what follows it. */
+    padding: .35rem 0 .6rem;
   }
+  /* The first group's head sat flush on the axis (measured: 0px), so the pinned
+     ruler and the first stream name touched. */
+  .axis.pin + .grp > .grp-head { padding-top: .55rem; }
   /* ONE line, ellipsised. A stream filtering a dozen kinds prints a chip that
      wrapped to three lines, and this head is STICKY — every wrapped line is
      taken off the top of the coverage rows scrolling under it, on every group,
@@ -390,7 +428,15 @@
   }
   .depth i { display: block; flex: 1 1 0; min-width: 0; background: var(--accent); }
   .depth i.thin { background: var(--bar); }
-  .legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); margin: 0 0 .8rem; }
+  /* The two halves of this card answer different questions — what the router is
+     doing NOW, and how far it has walked — and every gap in it was 12-14px, so
+     they never separated. The rule is the boundary; the space above it is
+     larger than the gap between two cycle blocks, which is what makes the
+     blocks read as members of the panel rather than as peers of it. */
+  .cyc-end { margin: 1.4rem 0 1.1rem; border: 0; border-top: 1px solid var(--line); }
+  /* Sits directly above the scroll box it describes. It used to sit under the
+     cycle bars — 14px from what it does not explain, 60px from what it does. */
+  .legend { display: flex; gap: 1rem; flex-wrap: wrap; font-size: .78rem; color: var(--muted); margin: 0 0 .55rem; }
   .legend b { display: inline-block; width: .8rem; height: .8rem; border-radius: 2px; vertical-align: -.05em; margin-right: .3rem; }
   .bar-row { display: flex; gap: .75rem; align-items: center; flex-wrap: wrap; margin-bottom: .75rem; }
   .bar-row input {
@@ -1291,7 +1337,7 @@ function progressPanel(progress) {
     head.appendChild(phase);
     box.appendChild(head);
     if (!c) {
-      box.appendChild(el("p", "why", "No cycle has run yet on this stream."));
+      box.appendChild(el("p", "cyc-line", "No cycle has run yet on this stream."));
       wrap.appendChild(box);
       continue;
     }
@@ -1337,7 +1383,7 @@ function progressPanel(progress) {
     // The line that accounts for the OTHER gap — the one between what discovery
     // found and what was dialled. On a real fan-out this is most of it, and it
     // is duplicate urls rather than relays that went missing.
-    const acct = el("p", "why");
+    const acct = el("p", "cyc-line");
     acct.append(
       `${fmt(u.discovered || 0)} url(s) discovered · ` +
       `${fmt(u.foldedOntoAnother || 0)} folded onto another url · ` +
@@ -1351,7 +1397,7 @@ function progressPanel(progress) {
     // a different one. Bounded, and it says what it left out.
     const fold = c.foldedOnto;
     if (fold && (fold.relays || []).length) {
-      const list = el("p", "why");
+      const list = el("p", "cyc-line");
       list.append("Folded onto: ");
       fold.relays.forEach((r, i) => {
         const one = el("span", null, `${String(r.relay).replace(/^wss:\/\//, "")} ×${fmt(r.urls)}`);
@@ -1436,6 +1482,16 @@ function syncCard(section) {
   // three minutes into its first cycle used to render as an empty card.
   const progress = progressPanel(d.progress);
   if (progress) card.appendChild(progress);
+  // The boundary between the card's two subjects — what the router is doing
+  // now, and how far it has walked. Every gap in here was 12-14px, including
+  // the one between those two, so they never separated; the rule plus the space
+  // above it is what makes the cycle blocks read as members of the panel rather
+  // than as peers of the section below.
+  //
+  // Appended only when BOTH sides exist. A router mid-first-cycle has progress
+  // and no coverage, and an unconditional rule would end that card with a line
+  // ruling off nothing.
+  if (progress && streams.length) card.appendChild(el("hr", "cyc-end"));
   if (!streams.length) return card;
 
   const from = d.from, to = d.to;
@@ -1466,7 +1522,10 @@ function syncCard(section) {
     s.append(text);
     legend.appendChild(s);
   }
-  card.appendChild(legend);
+  // NOT appended here. It is built with the tones it describes, but it belongs
+  // BESIDE the bars — it went in directly under the cycle panel, 14px from the
+  // stacked bars it says nothing about and ~60px above the coverage bars it is
+  // the key to. It is placed below, under the filter row.
 
   /** Year ticks, plus the two ends — the frame spans years, so months would be a smear. */
   const axis = () => {
@@ -1658,6 +1717,8 @@ function syncCard(section) {
   controls.appendChild(filter);
   controls.appendChild(status);
   card.appendChild(controls);
+  // The key, immediately above the track it is a key to.
+  card.appendChild(legend);
 
   // One scroll box for every stream, and one axis pinned at its top: the frame
   // is shared by design — that is what makes two streams comparable — so a
