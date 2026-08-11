@@ -74,8 +74,9 @@ internal object SyncProgressReport {
         }
 
     /**
-     * The nine terminal outcomes of a url the cycle took on, in the order the
-     * card reads them: what worked, then what did not, then what is still going.
+     * The ten outcomes of a url the cycle took on, in the order the card reads
+     * them: what worked, then what did not, then what our own rotation declined
+     * to hand out, then what is still going.
      *
      * A fixed list, spelled here rather than taken from the file's key order.
      * The document is a partition and a reader adds these up; taking the members
@@ -93,6 +94,7 @@ internal object SyncProgressReport {
             "hostStruckOut",
             "knownDead",
             "torUnavailable",
+            "busy",
             "pending",
         )
 

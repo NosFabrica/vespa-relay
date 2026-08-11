@@ -451,7 +451,7 @@ unanswerable from the serving side:
   tick whatever the streams are doing, so the relay can publish `staleForSec`,
   and a mirror that stopped an hour ago stops looking like one between cycles.
 - **`urls` and `taken` are a PARTITION.** `discovered = foldedOntoAnother +
-  excluded + taken`, and the nine outcomes under `taken` sum to it exactly, with
+  excluded + taken`, and the ten outcomes under `taken` sum to it exactly, with
   `pending` DERIVED from the other eight so the identity closes mid-fan-out. A production
   document reported 16,752 discovered against 5,323 band-bearing and published
   no account whatever of the ~11,400 in between; every one of them had a
@@ -950,6 +950,56 @@ was in memory only: a fold persisted, "this url is its own relay" did not, so
 every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
 that — see the verdict section above for the shape and what it does not claim.
 
+**The fan-out no longer JOINS, and that is the change to understand before
+touching `DynamicSync`.** A dynamic stream used to launch every discovered relay,
+await all of them, and only then start the next cycle. One relay could therefore
+stop a mirror: measured, `fetchAllPages` against purplepag.es never returned at
+all before the paging floor landed, and a 16,752-relay stream sat at "cycle in
+progress" for the life of the process while every other relay in its list had
+long since finished and nothing was due to dial any of them again.
+
+It is a ROTATION now. The stream walks its relay list handing each url to a pool
+of `concurrency` workers — `pool.acquire()` happens in the walk, not inside the
+worker, which is what makes it a pool pulling from a queue rather than 16,752
+coroutines contending for a permit — and a **pass ends when the last url has
+been handed out, not when the last worker returns**. A slow relay costs one slot
+and nothing else. Four consequences, each with its own home:
+
+- **Passes overlap, so a url must not be handed out twice.** `RelayRotation` is
+  the busy set: `take` is the claim, `release` goes in a `finally`, and a url a
+  worker still holds is passed over and counted as `busy` — a tally outcome of
+  its own, because "still going from last time" and "never reached" are the same
+  silence otherwise. It is per STREAM; `DynamicSync.inFlight` is the wider,
+  cross-stream socket refcount and stays what it was.
+- **The shared id set outlives the pass that built it.** `SharedIdSet` bounds
+  the generations: an ask leases the set it started against, and a new one is
+  installed only when nothing older is still being read (`mayInstall`). At most
+  two are ever alive. A pass that arrives while a straggler holds the previous
+  one reuses what it has — a diff against a slightly stale set costs some
+  duplicate downloads that ingest drops, which is the cheap side against a third
+  gigabyte-scale list on the heap.
+- **The stream gate moved.** It used to wrap the whole fan-out; on a rotation
+  that would be forever, since a stream that never finishes never releases and
+  every other id-set stream plus `StaticBackfill` would queue behind it for the
+  life of the process. It now wraps the snapshot BUILD, so two full store walks
+  are still never in flight at once. **What it no longer bounds is residency** —
+  a negentropy dynamic stream's set is resident continuously rather than only
+  during its cycle, so worst case is one per id-set stream plus one draining
+  generation, where it used to be one across the process. The levers if that
+  matters for a deployment are `sync = "fetch"` (which every wide stream in
+  `router.conf.example` already uses — only `assertions`, at concurrency 8,
+  holds a set at all) and narrowing the stream's filter.
+- **"The cycle finished" stopped meaning "everything settled".** `pending`
+  non-zero at the end of a pass is now the ordinary state rather than a sign the
+  cycle was killed, and the phase line carries `running` — relays syncing right
+  now, across every pass — beside `done/total`, which is only how far the WALK
+  got. A rotation with a full pool and a finished walk was rendering as idle.
+
+Workers are launched into the ENGINE's scope, not a per-pass `coroutineScope`,
+so every worker body is wrapped: an escaping exception would cancel the scope and
+take every stream, the ingest pipeline and the live tails with it. It used to be
+caught one level up and lose only the cycle.
+
 **One knob paced two different things, so a 6h refresh also meant 6h of
 idling.** Everything between a dynamic stream waking up and its first downloaded
 byte is derivation: the discovery scans, a normalisation pass over every url
@@ -958,7 +1008,8 @@ minutes on a full store, to produce a list differing from the last cycle's by a
 handful of urls. The DOWNLOAD is what should repeat often; that is not.
 `recycleSeconds` splits them: the list is held in memory
 (`CachedRelayList`, a local in `loop`, per stream by construction) and the next
-cycle starts that many seconds after the previous one ENDS. `refreshSeconds`
+pass starts that many seconds after the previous walk ENDS — the stragglers of
+that walk are still running through the gap, which is the point. `refreshSeconds`
 keeps the meaning it always had — how often the sources are re-read — and is now
 the cache's TTL. Unset, nothing is held and the loop is what it always was.
 

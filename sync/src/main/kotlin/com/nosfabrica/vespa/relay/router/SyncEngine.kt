@@ -218,8 +218,15 @@ class SyncEngine(
     /** Relays with a transfer actually running, across every path. */
     private val transferring = AtomicInteger()
 
-    // One stream reconciles at a time (static and dynamic both): each holds
-    // its whole id set for its whole run, and concurrent sets sum on the heap.
+    // One stream BUILDS its id set at a time, static and dynamic both: the set
+    // is a full store walk and concurrent ones sum on the heap.
+    //
+    // It used to be held for a whole run, which was the same thing while a
+    // dynamic fan-out ended in a join. It cannot be now: `DynamicSync` is a
+    // rotation with no join, so "the whole run" is forever and every other
+    // id-set stream would queue behind it for the life of the process. What
+    // bounds RESIDENCY on that side is `SharedIdSet`, which never lets a stream
+    // hold more than the set in use plus one still being read by a straggler.
     private val streamGate = Semaphore(1)
 
     private val downUpstreams = config.downUpstreams()

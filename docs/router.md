@@ -266,10 +266,44 @@ and the `filter` saying which events to pull them from. The filter runs once and
 every select is applied to what comes back, so a whole shelf of relay-list kinds
 costs one query rather than one each.
 
-Each cycle runs every scan, unions the relays they name, and negentropy-syncs the
+Each pass runs every scan, unions the relays they name, and negentropy-syncs the
 stream `filter` against **all** of them, `concurrency` at a time (paged REQ where
 NIP-77 is missing, same as a backfill). Then it sleeps `refreshSeconds` and does
 it again — so the fan-out widens on its own as the store fills.
+
+### The fan-out is a rotation, not a batch
+
+`concurrency` is a **pool of workers**, and the pass walks the relay list handing
+each url to whichever worker frees up next. A pass ends when the last url has
+been **handed out** — not when the last relay has finished. The slow ones keep
+their slots and run on into the next pass.
+
+That distinction is the whole design. With a join at the end of the fan-out, one
+relay could stop the mirror: a paged walk that cannot terminate held a
+16,752-relay stream at "cycle in progress" indefinitely, with every other relay
+in the list long since finished and nothing due to dial any of them again. Now it
+costs one slot out of `concurrency`.
+
+Three things follow, and they change how the logs and `/stats.json` read:
+
+- A relay still syncing when the next pass reaches it is **passed over**, counted
+  under `taken.busy`, and picked up on the pass after. So a relay slower than a
+  pass is dialled every other pass, and never twice at once.
+- A pass that `completed` routinely reports `pending` above zero. That is the
+  tail of the pool, not a cycle that died — `outcome` is what tells those apart,
+  as it always did.
+- The stream's progress line carries `running` beside `done/total`: `done/total`
+  is how far the current **walk** got over its list, `running` is how many relays
+  are on a socket right now including legs from earlier passes. A finished walk
+  with a busy pool used to render as idle.
+
+For a stream that reconciles (`sync = "negentropy"`, or `auto` resolving to it),
+the shared local id set now outlives the pass that built it, since a straggler is
+still comparing against it. At most two are ever alive at once: a new one is
+built only when nothing is still reading the previous one, and a pass that
+arrives too early reuses the set it has. The cost of reusing is some events
+arriving that we already hold, which ingest drops. Streams on `sync = "fetch"`
+build no id set at all and are unaffected.
 
 ### `recycleSeconds`: syncing more often than you rediscover
 
@@ -284,13 +318,13 @@ Set `recycleSeconds` and the two come apart:
 
 ```hocon
 refreshSeconds = 21600   # re-read the sources every 6h
-recycleSeconds = 30      # …but start the next cycle 30s after this one ends
+recycleSeconds = 30      # …but start the next pass 30s after this walk ends
 ```
 
 The stream then derives its list once, runs cycles back to back off it, and
 rebuilds it when the list is `refreshSeconds` old — or sooner, as soon as the
 alias monitor publishes a fold verdict, since a list built before that verdict
-would go on dialling urls now known to be one relay. Every cycle that reuses a
+would go on dialling urls now known to be one relay. Every pass that reuses a
 list says so in the log, and `/stats.json` carries `relayListAgeSec` beside the
 url counts, because otherwise `discovered` silently starts describing a store
 walk from hours ago.
@@ -299,12 +333,12 @@ Nothing about *dialling* is cached. The NIP-66 known-dead set is re-read at the
 top of every cycle and host strikes are cycle-local, so a relay that died an
 hour ago is skipped on a reused list exactly as it would be on a fresh one.
 
-What it costs: each relay is dialled once per fan-out rather than once per
-refresh period. With bands recorded that is a small ask per relay — everything
-below the band's edge is already settled — but it is still a connection per
-relay per cycle, so treat `recycleSeconds` as a rate against the whole
-discovered set and not as a free tightening. Leave it unset and the loop behaves
-exactly as it always has.
+What it costs: each relay is dialled once per pass rather than once per refresh
+period. With bands recorded that is a small ask per relay — everything below the
+band's edge is already settled — but it is still a connection per relay per pass,
+so treat `recycleSeconds` as a rate against the whole discovered set and not as a
+free tightening. Leave it unset and a pass runs once per `refreshSeconds`, as it
+always has.
 
 Nothing truncates that set: no cap on relays synced and no popularity floor.
 `concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
@@ -649,7 +683,7 @@ long the router has gone without saying anything — and a mirror that stopped a
 hour ago stops looking like one that is simply between cycles.
 
 **`urls` and `taken` are a partition, not a tally.** `discovered =
-foldedOntoAnother + excluded + taken`, and the nine outcomes under `taken` sum to
+foldedOntoAnother + excluded + taken`, and the ten outcomes under `taken` sum to
 it exactly. `pending` is what closes the second identity *while the cycle runs*:
 it is derived from the other eight rather than counted, so the numbers add up
 mid-fan-out instead of only at the end. `balanced` is the router's own check on

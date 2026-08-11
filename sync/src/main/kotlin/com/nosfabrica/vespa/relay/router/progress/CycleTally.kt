@@ -41,11 +41,11 @@ import java.util.concurrent.atomic.AtomicLong
  * ```
  * discovered = foldedOntoAnother + excluded + taken
  * taken      = delivered + nothingNew + unreachable + transferFailed
- *            + noRoute + hostStruckOut + knownDead + torUnavailable + pending
+ *            + noRoute + hostStruckOut + knownDead + torUnavailable + busy + pending
  * ```
  *
  * [pending] is what closes the second identity WHILE THE CYCLE RUNS. It is
- * derived, never incremented: whatever has not yet landed in one of the eight
+ * derived, never incremented: whatever has not yet landed in one of the nine
  * terminal outcomes is still in flight, and publishing it as its own member is
  * the difference between a partition a reader can check and a bag of numbers
  * that happens not to sum today. On a cycle that reaches its end `pending` is 0;
@@ -149,17 +149,39 @@ class CycleTally(
     /** OUR Tor proxy was not answering. A fact about this container, not about their server. */
     val torUnavailable = AtomicLong()
 
+    /**
+     * Not handed out because a worker from an EARLIER pass was still syncing it
+     * when this pass came round.
+     *
+     * Passes overlap by design — one ends when its last url is handed out, not
+     * when its last worker returns — so a relay slower than a pass is dialled
+     * every other pass rather than twice at once. That is the rotation working,
+     * and it is an outcome rather than an absence: without a member of its own,
+     * these urls would sit in `pending` for the whole pass and read as a
+     * fan-out that never finished.
+     *
+     * Distinct from [hostStruckOut] and [knownDead], which are also "not
+     * dialled" and mean the opposite thing: those are verdicts about the relay,
+     * this one is a fact about our own pool.
+     */
+    val busy = AtomicLong()
+
     /** Events this cycle received from upstreams — see [SyncProgress] on what that counts. */
     val received = AtomicLong()
 
     /** The urls that have reached a terminal outcome. */
     fun settled(): Long =
         delivered.get() + nothingNew.get() + unreachable.get() + transferFailed.get() +
-            noRoute.get() + hostStruckOut.get() + knownDead.get() + torUnavailable.get()
+            noRoute.get() + hostStruckOut.get() + knownDead.get() + torUnavailable.get() + busy.get()
 
     /**
-     * Still in flight — derived, so the eight outcomes plus this one always
+     * Still in flight — derived, so the nine terminal outcomes plus this one always
      * cover [taken] exactly.
+     *
+     * On a rotation this is routinely non-zero when the pass ENDS, and that is
+     * not a killed cycle: the walk finishes handing out urls while the pool is
+     * still working through the last of them. `outcome` is what separates the
+     * two, exactly as it always did.
      */
     fun pending(): Long = (taken - settled()).coerceAtLeast(0)
 

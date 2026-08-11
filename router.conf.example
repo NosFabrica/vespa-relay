@@ -65,12 +65,15 @@ streams {
         filter = { "kinds": [0, 10002, 10040] }
         refreshSeconds = 21600     # re-read the relay list out of the store every 6h
         # recycleSeconds = 30      # …and start the next cycle 30s after this one
-        #                          # ends, reusing that list. Deriving it is the
+        #                          # walk ends, reusing that list. Deriving it is the
         #                          # expensive part of starting a cycle (a store
         #                          # walk, a normalisation pass, one #d query per
         #                          # 500 urls); the download is the part worth
-        #                          # repeating. Unset = one cycle per refresh.
-        concurrency = 100          # relays synced at the same time
+        #                          # repeating. Unset = one pass per refresh.
+        concurrency = 100          # worker pool: relays synced at the same time.
+                                   # A pass ends when the last url is handed out,
+                                   # not when the last relay finishes, so one slow
+                                   # relay costs one slot and not the mirror
         # Ignore any single event naming more relays than this — a real outbox
         # list is single digits, and the ones this exists for run to five
         # (measured: 148 pubkeys publishing kind 10002s of 100-10,591 entries,
@@ -122,12 +125,12 @@ streams {
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600     # re-read the relay list out of the store every 6h
         # recycleSeconds = 30      # …and start the next cycle 30s after this one
-        #                          # ends, reusing that list. Deriving it is the
+        #                          # walk ends, reusing that list. Deriving it is the
         #                          # expensive part of starting a cycle (a store
         #                          # walk, a normalisation pass, one #d query per
         #                          # 500 urls); the download is the part worth
-        #                          # repeating. Unset = one cycle per refresh.
-        concurrency = 8            # relays synced at the same time
+        #                          # repeating. Unset = one pass per refresh.
+        concurrency = 8            # worker pool: relays synced at the same time
         exclude = []               # urls or regexes for relays to skip however many sources name them
         relaySource = [
             {
@@ -176,12 +179,15 @@ streams {
         ] }
         refreshSeconds = 21600     # re-read the relay list out of the store every 6h
         # recycleSeconds = 30      # …and start the next cycle 30s after this one
-        #                          # ends, reusing that list. Deriving it is the
+        #                          # walk ends, reusing that list. Deriving it is the
         #                          # expensive part of starting a cycle (a store
         #                          # walk, a normalisation pass, one #d query per
         #                          # 500 urls); the download is the part worth
-        #                          # repeating. Unset = one cycle per refresh.
-        concurrency = 100          # relays synced at the same time
+        #                          # repeating. Unset = one pass per refresh.
+        concurrency = 100          # worker pool: relays synced at the same time.
+                                   # A pass ends when the last url is handed out,
+                                   # not when the last relay finishes, so one slow
+                                   # relay costs one slot and not the mirror
         exclude = [
             "wss://purplepag.es/",
             "wss://profiles.nostr1.com/",

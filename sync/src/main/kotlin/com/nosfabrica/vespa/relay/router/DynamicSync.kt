@@ -31,6 +31,7 @@ import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
+import com.nosfabrica.vespa.relay.router.discovery.RelayRotation
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.progress.CycleTally
@@ -55,7 +56,6 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -65,6 +65,7 @@ import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
+import java.util.concurrent.atomic.AtomicReference
 
 /**
  * Is the cheap TCP pre-probe able to answer anything about this relay?
@@ -153,13 +154,28 @@ internal class DynamicSync(
     private val inFlight = ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
     /**
-     * One stream, forever: discover, sync, sleep, repeat — with the discover
-     * step skipped while the list it produced is still good enough to run on.
+     * One stream, forever: walk the relay list handing work to a fixed pool of
+     * workers, wrap round, walk it again.
      *
-     * The cache is a local, so it is per stream by construction and dies with
-     * the process. See [CachedRelayList] for what it does and does not stand in
-     * for, and [RelayDiscoveryConfig.recycleSeconds] for why the two intervals
-     * are separate at all.
+     * **There is no join.** A pass ENDS when the last url has been handed out,
+     * not when the last worker returns, so a relay that takes hours costs one
+     * slot out of [RelayDiscoveryConfig.concurrency] and nothing else. The
+     * previous shape — launch every discovered relay, await all of them, then
+     * start the next cycle — made a single leg able to stop a mirror: measured,
+     * `fetchAllPages` against purplepag.es never returned at all, and a
+     * 16,752-relay stream sat at "cycle in progress" for the life of the process
+     * with every other relay in the list long since finished and nothing due to
+     * dial any of them again.
+     *
+     * The three things that fall out of removing it, each handled in its own
+     * place: passes overlap, so a url still being synced must not be handed out
+     * twice ([RelayRotation]); the shared id set outlives the pass that built
+     * it, so generations must be bounded ([SharedIdSet]); and "the cycle
+     * finished" stops meaning "everything settled", so the count still running
+     * is published rather than left to be inferred from silence.
+     *
+     * The relay list itself is held across passes and re-derived on the refresh
+     * period — see [CachedRelayList] and [RelayDiscoveryConfig.recycleSeconds].
      */
     suspend fun loop(stream: SyncStream) {
         val dynamic = stream.dynamic ?: return
@@ -167,100 +183,202 @@ internal class DynamicSync(
             dynamic.sources.joinToString { s ->
                 "kinds ${s.filter.kinds?.joinToString("/") ?: "?"} x${s.selects.size} select(s)"
             }
-        // Back off from short when a cycle could NOT run (an empty store, a
+        // Back off from short when a pass could NOT run (an empty store, a
         // degraded engine) instead of waiting the full refresh interval —
         // both are usually fine again in moments.
         var retrySec = RETRY_BASE_SECONDS
         var cached: CachedRelayList? = null
-        while (scope.isActive) {
-            var ran = false
-            try {
-                val nowMs = System.currentTimeMillis()
-                // Unset `recycleSeconds` is not a long TTL — it is the old
-                // behaviour, where every cycle rediscovers and nothing is ever
-                // reused. Checked here rather than inside [CachedRelayList] so
-                // that a stream not opted in never even holds one.
-                val reused =
-                    dynamic.recycleSeconds?.let {
-                        cached?.takeIf { c -> c.reusableAt(nowMs, dynamic.refreshSeconds, aliasMonitor?.generation() ?: 0L) }
+        // THE POOL, and it belongs to the stream rather than to a pass. A slot
+        // is held by the relay using it, so a leg still running when the walk
+        // wraps keeps its slot and the next pass simply has fewer to hand out.
+        // Rebuilt per pass it would be a fresh set of permits with the old ones
+        // still occupied, i.e. a concurrency limit that means nothing.
+        val pool = Semaphore(dynamic.concurrency)
+        val rotation = RelayRotation()
+        val idSet = SharedIdSet()
+        // What the ticker reports. The ticker belongs to the stream too: between
+        // two passes there are still relays syncing, and a stream that went
+        // quiet for the gap read exactly like one that had stopped.
+        val live = AtomicReference<PassProgress?>(null)
+        val ticker = scope.launch { report(stream, dynamic, rotation, live) }
+        try {
+            while (scope.isActive) {
+                var ran = false
+                try {
+                    val nowMs = System.currentTimeMillis()
+                    // Unset `recycleSeconds` is not a long TTL — it is the old
+                    // behaviour, where every pass rediscovers and nothing is
+                    // ever reused. Checked here rather than inside
+                    // [CachedRelayList] so that a stream not opted in never even
+                    // holds one.
+                    val reused =
+                        dynamic.recycleSeconds?.let {
+                            cached?.takeIf { c -> c.reusableAt(nowMs, dynamic.refreshSeconds, aliasMonitor?.generation() ?: 0L) }
+                        }
+                    if (reused != null) {
+                        // Said out loud every time. A pass that re-read the
+                        // store and one that started on a five-hour-old list are
+                        // the same fan-out from every other line this stream
+                        // prints, and the difference is exactly what an operator
+                        // needs when the set looks wrong.
+                        System.err.println(
+                            "router: ${stream.name} reusing the relay list from ${fmtDuration(reused.ageSec(nowMs) * 1000)} ago" +
+                                " — ${reused.relays.size} relay(s), rediscovering after ${dynamic.refreshSeconds}s",
+                        )
                     }
-                if (reused != null) {
-                    // Said out loud every time. A cycle that re-read the store
-                    // and one that started on a five-hour-old list are the same
-                    // fan-out from every other line this stream prints, and the
-                    // difference is exactly what an operator needs when the set
-                    // looks wrong.
-                    System.err.println(
-                        "router: ${stream.name} reusing the relay list from ${fmtDuration(reused.ageSec(nowMs) * 1000)} ago" +
-                            " — ${reused.relays.size} relay(s), rediscovering after ${dynamic.refreshSeconds}s",
-                    )
+                    val list = reused ?: discoverRelayList(stream, dynamic, sourceNames, nowMs)
+                    // Held for the next pass even when it is empty: `reusableAt`
+                    // refuses an empty list, so this only ever means the next
+                    // pass rediscovers, and keeping it makes the "cached or not"
+                    // state one variable instead of two.
+                    //
+                    // A pass that THROWS leaves it in place, so a stream whose
+                    // discovery has started failing — a degraded engine, a query
+                    // that now times out — keeps mirroring off the last good
+                    // list until it ages out, rather than stopping. The failure
+                    // is still said once, through `Phase.Failed` below.
+                    cached = list
+                    if (list.relays.isEmpty()) {
+                        // Cleared, or the ticker paints the previous pass's
+                        // `Idle` over this within a tick and "the sources named
+                        // no relays" — the one thing an operator can act on
+                        // here — never reaches the log.
+                        live.set(null)
+                        phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
+                    } else {
+                        runPass(stream, dynamic, sourceNames, list, rotation, pool, idSet, live)
+                        ran = true
+                    }
+                } catch (e: CancellationException) {
+                    // Shutdown, not a failure — close() almost always lands
+                    // mid-pass. End quietly.
+                    throw e
+                } catch (e: Exception) {
+                    phases.set(stream.name, StreamPhases.Phase.Failed(e.message?.take(80) ?: e.javaClass.simpleName, retrySec))
+                    // A pass that threw at 80% used to leave exactly what one
+                    // that finished leaves: nothing. The outcome is stamped here
+                    // so the two stop reading the same, and `endCycle` ignores
+                    // the call when no pass was running — a stream that failed
+                    // during DISCOVERY must not re-date the last one that did.
+                    phases.endCycle(stream.name, StreamPhases.DYNAMIC, "failed")
                 }
-                val list = reused ?: discoverRelayList(stream, dynamic, sourceNames, nowMs)
-                // Held for the next cycle even when it is empty: `reusableAt`
-                // refuses an empty list, so this only ever means the next cycle
-                // rediscovers, and keeping it makes the "cached or not" state
-                // one variable instead of two.
-                //
-                // A cycle that THROWS leaves it in place, so a stream whose
-                // discovery has started failing — a degraded engine, a query
-                // that now times out — keeps mirroring off the last good list
-                // until it ages out, rather than stopping. The failure is still
-                // said once, through `Phase.Failed` below.
-                cached = list
-                val relays = list.relays
-                // The disposition of this cycle's urls, opened here rather than
-                // in [cycle] so that `discovered` counts what discovery handed
-                // over and `foldedOntoAnother` the difference the fold made —
-                // both of which are decided in [discoverRelayList] and neither
-                // of which [cycle] can see. Without this the ~11,400 urls
-                // between "discovered" and "has a band" had no published account
-                // at all. A FRESH one per cycle even on a reused list — see
-                // [CachedRelayList.tally].
-                val tally = list.tally(nowMs)
-                if (relays.isEmpty()) {
-                    phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
-                } else if (holdsIdSet(stream)) {
-                    // Serialised with every other stream: this holds its id
-                    // set for the whole fan-out, and two large sets resident
-                    // at once is what pushed the heap to its ceiling.
-                    phases.set(stream.name, StreamPhases.Phase.Queued(relays.size))
-                    streamGate.withPermit { cycle(stream, dynamic, sourceNames, relays, tally) }
-                    ran = true
-                } else {
-                    // No id set, so nothing to serialise for. Taking the permit
-                    // anyway is not free caution: measured, a 50-minute
-                    // assertions cycle that downloaded 46 events held the only
-                    // slot while two fetch streams sat on 15,458 discovered
-                    // relays each, for a heap cost neither of them can incur.
-                    // StaticBackfill has always gated this way — it takes the
-                    // permit only when it has reconcilers to snapshot for.
-                    cycle(stream, dynamic, sourceNames, relays, tally)
-                    ran = true
-                }
-            } catch (e: CancellationException) {
-                // Shutdown, not a failure — close() almost always lands
-                // mid-cycle. End quietly.
-                throw e
-            } catch (e: Exception) {
-                phases.set(stream.name, StreamPhases.Phase.Failed(e.message?.take(80) ?: e.javaClass.simpleName, retrySec))
-                // A cycle that threw at 80% used to leave exactly what a cycle
-                // that finished leaves: nothing. The outcome is stamped here so
-                // the two stop reading the same, and `endCycle` ignores the call
-                // when no cycle was running — a stream that failed during
-                // DISCOVERY must not re-date the last one that did.
-                phases.endCycle(stream.name, StreamPhases.DYNAMIC, "failed")
-            }
 
-            if (ran) {
-                retrySec = RETRY_BASE_SECONDS
-                // The recycle gap where one is configured, the refresh period
-                // otherwise — and the same number the cycle's last line and
-                // `Phase.Idle` just promised.
-                delay(dynamic.nextCycleSeconds * 1000)
-            } else {
-                delay(retrySec * 1000)
-                retrySec = (retrySec * 2).coerceAtMost(dynamic.refreshSeconds)
+                if (ran) {
+                    retrySec = RETRY_BASE_SECONDS
+                    // The recycle gap where one is configured, the refresh
+                    // period otherwise — and the same number the pass's last
+                    // line and `Phase.Idle` just promised. Measured from the end
+                    // of the WALK, not from the last worker: the workers are
+                    // still going, which is the point.
+                    delay(dynamic.nextCycleSeconds * 1000)
+                } else {
+                    delay(retrySec * 1000)
+                    retrySec = (retrySec * 2).coerceAtMost(dynamic.refreshSeconds)
+                }
             }
+        } finally {
+            ticker.cancel()
+        }
+    }
+
+    /**
+     * One pass's live state, shared by its workers and read by the ticker.
+     *
+     * Per pass rather than per stream because the counters are what
+     * [CycleTally] publishes, and a straggler must settle into the pass that
+     * handed it out — otherwise a url is counted against a `taken` it was never
+     * part of and the partition stops closing.
+     */
+    private class PassProgress(
+        val number: Long,
+        /** Urls in the relay list this pass walked, including the ones it skipped as busy. */
+        val total: Int,
+        val tally: CycleTally,
+        val strikes: HostStrikes,
+    ) {
+        val startedMs = System.currentTimeMillis()
+
+        /** Set when the WALK ends — the workers carry on past it. */
+        @Volatile
+        var walkEndedMs: Long? = null
+
+        val downloaded = AtomicLong()
+        val failed = AtomicLong()
+        val skipped = AtomicLong()
+
+        /** Urls of this pass that have reached an outcome. Reaches [total] after the walk, not at it. */
+        val done = AtomicLong()
+
+        /** Skipped because OUR proxy was not answering — never filed as a relay being unreachable. */
+        val torless = AtomicLong()
+
+        /** Why the unreachable ones were unreachable: normal churn, or a broken pass. */
+        val reasons = ConcurrentHashMap<String, Long>()
+    }
+
+    /**
+     * The stream's progress line, forever.
+     *
+     * Reads whichever pass is current and reports `running` beside it, because
+     * the two answer different questions once passes overlap: `done/total` is
+     * how far the WALK got, and `running` is how much of the pool is committed —
+     * including legs from passes that ended minutes ago. A rotation with a full
+     * pool and a finished walk is working hard and used to render as idle.
+     */
+    private suspend fun report(
+        stream: SyncStream,
+        dynamic: RelayDiscoveryConfig,
+        rotation: RelayRotation,
+        live: AtomicReference<PassProgress?>,
+    ) {
+        while (true) {
+            delay(PROGRESS_INTERVAL_MS)
+            val p = live.get() ?: continue
+            val running = rotation.busyCount()
+            val ended = p.walkEndedMs
+            if (ended != null) {
+                // The walk is done; what is left is the tail plus the gap. The
+                // countdown is real — it is the same delay the loop is sitting
+                // in — so it can say when, rather than repeating a constant.
+                val waitedSec = (System.currentTimeMillis() - ended) / 1000
+                phases.set(
+                    stream.name,
+                    StreamPhases.Phase.Idle(
+                        events = p.downloaded.get(),
+                        nextInSec = (dynamic.nextCycleSeconds - waitedSec).coerceAtLeast(0),
+                        running = running,
+                    ),
+                )
+                continue
+            }
+            if (stream.sync == SyncMode.FETCH) {
+                // A fetch-only stream has a real denominator — the time window
+                // each relay is walking.
+                phases.set(
+                    stream.name,
+                    StreamPhases.Phase.Fetching(
+                        done = p.done.get().toInt(),
+                        total = p.total,
+                        events = p.downloaded.get(),
+                        fraction = paging.fraction(stream.name),
+                        etaMs = paging.etaMs(stream.name),
+                        reachedSeconds = paging.reached(stream.name),
+                        running = running,
+                    ),
+                )
+                continue
+            }
+            phases.set(
+                stream.name,
+                StreamPhases.Phase.Syncing(
+                    done = p.done.get().toInt(),
+                    total = p.total,
+                    events = p.downloaded.get(),
+                    skipped = p.skipped.get(),
+                    unreachable = p.failed.get(),
+                    running = running,
+                ),
+            )
         }
     }
 
@@ -415,315 +533,399 @@ internal class DynamicSync(
     /**
      * Does a cycle of this stream build the one big local id set?
      *
-     * That set — every id we hold for the stream's filter — is what the stream
-     * gate serialises, because two of them resident at once is what pushed the
-     * heap to its ceiling. A stream that never builds one has nothing to
-     * serialise for, and must not queue behind a stream that does.
+     * That set — every id we hold for the stream's filter — is the most
+     * expensive thing this router builds, which is why the build is serialised
+     * behind the stream gate and why [SharedIdSet] bounds how many of them a
+     * rotation can leave alive. A stream that never builds one has neither
+     * concern, and must not queue behind a stream that does.
      */
     private fun holdsIdSet(stream: SyncStream): Boolean = stream.sync != SyncMode.FETCH && stream.deleteMissing == DeleteMissing.OFF
 
-    /** Sync every discovered relay, [RelayDiscoveryConfig.concurrency] of them at a time. */
-    private suspend fun cycle(
+    /**
+     * ONE WALK of the relay list, handing each url to the pool and returning
+     * when the last one has been handed out.
+     *
+     * Not when the last one has FINISHED — that is the join this replaced. The
+     * workers this launches run in the engine's scope and outlive the call, so
+     * everything after the loop below ("pass done", `endCycle`, the band flush)
+     * describes the walk rather than the work, and says how much of the work is
+     * still going instead of implying there is none.
+     */
+    private suspend fun runPass(
         stream: SyncStream,
         dynamic: RelayDiscoveryConfig,
         sourceNames: String,
-        relays: List<DiscoveredRelay>,
-        tally: CycleTally,
+        list: CachedRelayList,
+        rotation: RelayRotation,
+        pool: Semaphore,
+        idSet: SharedIdSet,
+        live: AtomicReference<PassProgress?>,
     ) {
-        val startedMs = System.currentTimeMillis()
-        phases.beginCycle(stream.name, StreamPhases.DYNAMIC, tally)
-        // The walks of the PREVIOUS cycle, which are this cycle's noise. They
-        // are retained past their own end on purpose — that is what stops the
-        // percentage running backwards as relays finish — so the cycle boundary
-        // is the one place they can be cleared. See [PagingProgress.reset].
+        val relays = list.relays
+        // Skipping what is still being synced is the first thing that happens,
+        // not something discovered mid-walk: a url a worker still holds is not
+        // work this pass can do, and counting it as taken-but-pending would
+        // leave the partition open on every pass forever.
+        val work = rotation.beginPass(relays)
+        val progress =
+            PassProgress(
+                number = rotation.pass(),
+                total = relays.size,
+                // The disposition of this pass's urls. Opened here rather than
+                // deeper so that `discovered` counts what discovery handed over
+                // and `foldedOntoAnother` the difference the fold made — both
+                // decided in [discoverRelayList], neither visible from inside
+                // the walk. A FRESH one per pass even on a reused list — see
+                // [CachedRelayList.tally].
+                tally = list.tally(System.currentTimeMillis()),
+                // What earlier runs already proved unreachable — a policy input
+                // loaded once for the walk, not a per-dial lookup.
+                strikes = HostStrikes(knownDead = monitor?.deadSet().orEmpty()),
+            )
+        // Settled before a single dial: these urls have an outcome for this
+        // pass already, and it is not `pending`.
+        progress.tally.busy.addAndGet(work.busy.toLong())
+        progress.done.addAndGet(work.busy.toLong())
+        progress.skipped.addAndGet(work.busy.toLong())
+        live.set(progress)
+        phases.beginCycle(stream.name, StreamPhases.DYNAMIC, progress.tally)
+        // The walks of the PREVIOUS pass, which are this pass's noise. They are
+        // retained past their own end on purpose — that is what stops the
+        // percentage running backwards as relays finish — so the pass boundary
+        // is the one place they can be cleared. `reset` deletes only FINISHED
+        // walks, which is also what makes it safe here: a straggler's walk is
+        // live and stays.
         paging.reset(stream.name)
-        val gate = Semaphore(dynamic.concurrency)
-        val downloaded = AtomicLong()
-        val failed = AtomicLong()
-
-        // What earlier runs already proved unreachable — a policy input loaded
-        // once for the fan-out, not a per-dial lookup.
-        val knownDead = monitor?.deadSet().orEmpty()
-        val strikes = HostStrikes(knownDead = knownDead)
 
         val window = stream.filter
-        // ONE snapshot for the whole cycle: every relay reconciles the same
-        // filter, so per-relay snapshots were hundreds of identical full store
-        // scans. A relay synced late compares against the store as it was at
-        // the start — already true anyway, since ingest is asynchronous — and
-        // the store dedups on insert. Narrowed to what the hungriest relay
-        // still needs ([SyncBands.coveringWindow]).
-        val snapshotWindow = bands.coveringWindow(stream.name, relays.map { it.url }, window)
-        val snapStartedMs = System.currentTimeMillis()
+        refreshIdSet(stream, relays, window, idSet)
+        val sharedAuthors = sharedAuthors(stream, relays)
 
-        val local: List<IdAndTime> =
-            if (!holdsIdSet(stream)) {
-                // The same predicate that decided whether to hold the stream
-                // gate decides whether to build the set it exists to protect.
-                // Split in two, they drift, and the drift is invisible: a
-                // stream queues behind a slot it never needed.
-                System.err.println(
-                    if (stream.sync == SyncMode.FETCH) {
-                        // A fetch-only stream never reads the id set, and
-                        // building one is the most expensive thing this router
-                        // does (24.8M ids and gigabytes held live, measured).
-                        "router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot"
-                    } else {
-                        // [DeleteMissingSync] reads its OWN ids per ask, and
-                        // must: the shared snapshot spans every service on the
-                        // stream, and handing it to a one-service reconcile
-                        // would report every other service's records as
-                        // retracted.
-                        "router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot"
-                    },
-                )
-                emptyList()
-            } else if (!bands.anyOutstanding(stream.name, relays.map { it.url }, window)) {
-                // Nothing outside any relay's band, so every syncOne below
-                // returns at its own leg check without ever reading the id set.
-                // Distinct from holdsIdSet above, which asks whether this STREAM
-                // ever needs one; this asks whether it needs one THIS cycle.
-                // coveringWindow cannot save it — with nothing outstanding there
-                // is no window to narrow to, and it correctly hands back the
-                // whole filter. Asking first is where the saving is.
-                System.err.println("router: ${stream.name} — all ${relays.size} relay(s) already cover the filter, skipping the snapshot")
-                emptyList()
-            } else {
-                val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
-                phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
-                store
-                    .snapshotIdsReporting(snapshotWindow) { collected ->
-                        phases.set(stream.name, StreamPhases.Phase.Snapshotting(collected, expected, relays.size))
-                    }.also {
-                        System.err.println(
-                            "router: ${stream.name} local snapshot ${it.size} id(s) in ${fmtDuration(System.currentTimeMillis() - snapStartedMs)}" +
-                                (snapshotWindow.since?.let { s -> ", since $s" } ?: ", full filter (no relay is caught up yet)"),
-                        )
-                    }
-            }
-        // Authors this cycle found at MORE THAN ONE relay. Deletion reads one
-        // relay's silence as a retraction, and that only holds while it is the
-        // author's sole upstream — measured, 3 of 266 NIP-85 services are
-        // bound to several relays and two of those name general relays that
-        // will never serve their scores, so an empty answer there is a wrong
-        // pointer rather than a withdrawal. They still get mirrored.
-        val sharedAuthors: Set<String> =
-            if (stream.deleteMissing == DeleteMissing.OFF) {
-                emptySet()
-            } else {
-                relays
-                    .flatMap { it.narrow["authors"].orEmpty() }
-                    .groupingBy { it }
-                    .eachCount()
-                    .filterValues { it > 1 }
-                    .keys
-                    .also {
-                        if (it.isNotEmpty()) {
-                            System.err.println(
-                                "router: ${stream.name} ${it.size} author(s) are bound to more than one relay" +
-                                    " — mirroring them, deleting nothing for them",
-                            )
-                        }
-                    }
-            }
-        // Why the unreachable ones were unreachable: the shape of the
-        // failures tells an operator whether that is normal churn or a broken
-        // cycle.
-        val reasons = ConcurrentHashMap<String, Long>()
-
-        // Relays skipped because OUR proxy was not answering. Counted apart
-        // from `reasons`, which prints its top three under "unreachable:" — a
-        // failure of this router's own transport must never be filed as, or
-        // crowded out by, other people's relays being unreachable.
-        val torless = AtomicLong()
         System.err.println(
-            "router: ${stream.name} syncing ${relays.size} relay(s) from [$sourceNames]" +
-                " against ${local.size} local id(s)" +
-                " (e.g. ${relays.take(3).joinToString { it.url.url }})",
+            "router: ${stream.name} pass ${progress.number} — ${work.relays.size} relay(s) to hand out from [$sourceNames]" +
+                (if (work.busy > 0) ", ${work.busy} still syncing from an earlier pass" else "") +
+                " against ${idSet.size()} local id(s)" +
+                " (e.g. ${work.relays.take(3).joinToString { it.url.url }})",
         )
-        val done = AtomicLong()
-        val skipped = AtomicLong()
-        coroutineScope {
-            // A cycle runs for hours; without a ticker a stalled fan-out and a
-            // working one look the same from outside.
-            val ticker =
-                launch {
-                    while (true) {
-                        delay(PROGRESS_INTERVAL_MS)
-                        val finished = done.get()
-                        if (stream.sync == SyncMode.FETCH) {
-                            // A fetch-only stream has a real denominator — the
-                            // time window each relay is walking.
-                            phases.set(
-                                stream.name,
-                                StreamPhases.Phase.Fetching(
-                                    done = finished.toInt(),
-                                    total = relays.size,
-                                    events = downloaded.get(),
-                                    fraction = paging.fraction(stream.name),
-                                    etaMs = paging.etaMs(stream.name),
-                                    reachedSeconds = paging.reached(stream.name),
-                                ),
-                            )
-                            continue
-                        }
-                        phases.set(
-                            stream.name,
-                            StreamPhases.Phase.Syncing(
-                                done = finished.toInt(),
-                                total = relays.size,
-                                events = downloaded.get(),
-                                skipped = skipped.get(),
-                                unreachable = failed.get(),
-                            ),
-                        )
-                    }
+
+        for (relay in work.relays) {
+            if (!scope.isActive) break
+            // ACQUIRED BY THE WALK, not inside the worker. That is what makes
+            // this a pool of [RelayDiscoveryConfig.concurrency] workers pulling
+            // from a queue rather than 16,752 coroutines contending for a
+            // permit: the walk suspends here until a slot frees, so the number
+            // of live workers is the pool size and the queue is the rest of the
+            // list, where it costs nothing.
+            pool.acquire()
+            // The claim comes AFTER the slot, so the busy set is relays being
+            // synced rather than relays plus whichever one is queued behind a
+            // full pool — that set is published as `running`, and a number that
+            // counts something not on a socket is the kind of small lie this
+            // report exists to stop telling.
+            //
+            // [beginPass] read the same set at the top of the walk, so this
+            // cannot lose a race within a pass: each url appears once. It is
+            // the authoritative claim all the same.
+            if (!rotation.take(relay.url)) {
+                pool.release()
+                progress.tally.busy.incrementAndGet()
+                progress.skipped.incrementAndGet()
+                progress.done.incrementAndGet()
+                continue
+            }
+            scope.launch {
+                try {
+                    syncOne(stream, relay, window, idSet, sharedAuthors, progress)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    // These are launched into the ENGINE's scope now rather
+                    // than a per-pass `coroutineScope`, so an exception that
+                    // escaped would cancel the scope and take every stream, the
+                    // ingest pipeline and the live tails with it. It used to be
+                    // caught one level up, by the loop's own handler, and lose
+                    // only the cycle.
+                    System.err.println(
+                        "router: ${stream.name} ${relay.url.url} — worker failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}",
+                    )
+                    progress.failed.incrementAndGet()
+                    progress.tally.transferFailed.incrementAndGet()
+                } finally {
+                    // Exactly once per url handed out, on every path, which is
+                    // what keeps `done` a count of urls rather than of outcomes.
+                    progress.done.incrementAndGet()
+                    rotation.release(relay.url)
+                    pool.release()
                 }
-            try {
-                // The inner scope is what keeps the ticker alive:
-                // `forEach { launch }` returns the moment the jobs are issued,
-                // and cancelling on the way out of THAT killed the ticker
-                // before its first delay ever elapsed.
-                coroutineScope {
-                    relays.forEach { relay ->
-                        launch {
-                            // Our own transport, before anything is said about
-                            // theirs. A Tor that is down, restarting or renamed
-                            // fails every dial it carries in a way that reads
-                            // exactly like the relay being gone — so ask our
-                            // SOCKS port instead, and skip rather than dial.
-                            //
-                            // Per relay, not once per cycle: the answer is
-                            // cached for [TorSettings.PROBE_TTL_MS], so this
-                            // costs one connect per 30s, and a Tor that comes
-                            // back is picked up inside the running cycle. Held
-                            // to the cycle boundary it would have cost a full
-                            // refresh interval — six hours, by default — to
-                            // notice a container that restarted in seconds.
-                            if (tor?.routes(relay.url) == true && !tor.socksAnswers()) {
-                                torless.incrementAndGet()
-                                tally.torUnavailable.incrementAndGet()
-                                skipped.incrementAndGet()
-                                done.incrementAndGet()
-                                return@launch
-                            }
-                            // A TCP connect before the websocket handshake: a
-                            // refused connection or unresolvable host answers
-                            // in milliseconds, where each of ~20k corpses
-                            // would otherwise cost a full connect timeout.
-                            if (!tcpReachable(relay.url)) {
-                                reasons.merge("tcp: no route or refused", 1L, Long::plus)
-                                tally.noRoute.incrementAndGet()
-                                skipped.incrementAndGet()
-                                done.incrementAndGet()
-                                publishStrike(strikes, relay.url)
-                                return@launch
-                            }
-                            gate.withPermit {
-                                // Re-checked INSIDE the permit: with thousands
-                                // of relays behind a small gate, the wait for
-                                // a slot is exactly when sibling urls strike
-                                // an authority out — checked before the wait,
-                                // a dead host's urls would still be dialled.
-                                // WHY it is being skipped, not just that it is.
-                                // The two reasons carry opposite retry policies
-                                // — a struck-out authority is dialled again next
-                                // cycle, a known-dead url waits out a signed
-                                // record's TTL — and one counter for both is
-                                // unreadable in exactly the way "skipped as
-                                // dead" was.
-                                val skip = strikes.whyDead(relay.url)
-                                if (skip != null) {
-                                    when (skip) {
-                                        HostStrikes.Skip.KNOWN_DEAD -> {
-                                            reasons.merge("skipped: unreachable in an earlier run, record still current", 1L, Long::plus)
-                                            tally.knownDead.incrementAndGet()
-                                        }
-
-                                        HostStrikes.Skip.STRUCK_OUT -> {
-                                            reasons.merge("skipped: authority already struck out this cycle", 1L, Long::plus)
-                                            tally.hostStruckOut.incrementAndGet()
-                                        }
-                                    }
-                                    skipped.incrementAndGet()
-                                    done.incrementAndGet()
-                                    return@launch
-                                }
-                                // The relay's own filter, narrowed by what the
-                                // tags that named it paired it with; identical
-                                // to `window` for a select that binds only the
-                                // url.
-                                val got =
-                                    syncRelay(stream, relay.url, relay.narrowed(window), local, sharedAuthors) { reason ->
-                                        reasons.merge(reason, 1L, Long::plus)
-                                    }
-                                when {
-                                    // Could not reach it: strike and publish,
-                                    // the finding NIP-66 exists for.
-                                    got == UNREACHABLE -> {
-                                        failed.incrementAndGet()
-                                        tally.unreachable.incrementAndGet()
-                                        publishStrike(strikes, relay.url)
-                                    }
-
-                                    // Reached it; the transfer broke. NOT
-                                    // struck and NOT published: the relay
-                                    // answered our handshake, so calling it
-                                    // unreachable would be a false statement
-                                    // about someone else's server.
-                                    got == TRANSFER_FAILED -> {
-                                        failed.incrementAndGet()
-                                        tally.transferFailed.incrementAndGet()
-                                    }
-
-                                    got > 0 -> {
-                                        downloaded.addAndGet(got.toLong())
-                                        tally.received.addAndGet(got.toLong())
-                                        tally.delivered.incrementAndGet()
-                                        strikes.produced(relay.url)
-                                    }
-
-                                    // Answered cleanly with nothing new — a
-                                    // working relay we are in sync with.
-                                    else -> {
-                                        tally.nothingNew.incrementAndGet()
-                                        strikes.produced(relay.url)
-                                    }
-                                }
-                                done.incrementAndGet()
-                            }
-                        }
-                    }
-                }
-            } finally {
-                ticker.cancel()
             }
         }
+        progress.walkEndedMs = System.currentTimeMillis()
+
         val topReasons =
-            reasons.entries
+            progress.reasons.entries
                 .sortedByDescending { it.value }
                 .take(3)
                 .joinToString { "${it.key} x${it.value}" }
-        // One write for the whole fan-out, not one per relay.
+        // One write for the walk, not one per relay. The stragglers' bands are
+        // written by the next flush, which is what the flush thread is for.
         bands.flush()
-        val elapsedMs = System.currentTimeMillis() - startedMs
+        val elapsedMs = System.currentTimeMillis() - progress.startedMs
+        val running = rotation.busyCount()
         System.err.println(
-            "router: ${stream.name} cycle done — ${downloaded.get()} event(s) from ${relays.size - failed.get() - skipped.get()}/${relays.size} relay(s)" +
+            "router: ${stream.name} pass ${progress.number} handed out ${work.relays.size} relay(s)" +
                 " in ${fmtDuration(elapsedMs)}" +
-                (if (elapsedMs >= 1_000 && downloaded.get() > 0) " (${downloaded.get() * 1000 / elapsedMs}/s)" else "") +
-                "; ${strikes.summary(relays.size)}" +
+                // "so far", because the walk ending is not the work ending —
+                // every straggler is still adding to this number.
+                "; ${progress.downloaded.get()} event(s) so far" +
+                (if (elapsedMs >= 1_000 && progress.downloaded.get() > 0) " (${progress.downloaded.get() * 1000 / elapsedMs}/s)" else "") +
+                (if (running > 0) "; $running still syncing" else "") +
+                "; ${progress.strikes.summary(relays.size)}" +
                 (if (topReasons.isNotEmpty()) "; unreachable: $topReasons" else "") +
                 (
-                    if (torless.get() > 0) {
-                        "; ${torless.get()} skipped — tor SOCKS ${tor?.settings?.socksAddress} not answering, nothing published about them"
+                    if (progress.torless.get() > 0) {
+                        "; ${progress.torless.get()} skipped — tor SOCKS ${tor?.settings?.socksAddress} not answering," +
+                            " nothing published about them"
                     } else {
                         ""
                     }
                 ) +
-                "; next in ${dynamic.nextCycleSeconds}s",
+                "; next pass in ${dynamic.nextCycleSeconds}s",
         )
+        // The WALK completed. `pending` is what says how many of its urls are
+        // still in flight, which on a rotation is the ordinary state at this
+        // point rather than a sign the pass was killed — see [CycleTally].
         phases.endCycle(stream.name, StreamPhases.DYNAMIC, "completed")
-        phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.nextCycleSeconds))
+    }
+
+    /**
+     * One relay's turn: the guards that can decline it without dialling, then
+     * the sync.
+     *
+     * Order matters and is not the order the cost suggests. [HostStrikes] is
+     * asked FIRST because it is free and because the wait for a pool slot is
+     * exactly when a sibling url strikes an authority out — a check made before
+     * that wait would dial a host already known dead. The transport question is
+     * next (ours, not theirs), then the TCP pre-probe, which is the only guard
+     * that costs a round trip.
+     */
+    private suspend fun syncOne(
+        stream: SyncStream,
+        relay: DiscoveredRelay,
+        window: Filter,
+        idSet: SharedIdSet,
+        sharedAuthors: Set<String>,
+        p: PassProgress,
+    ) {
+        // WHY it is being skipped, not just that it is. The two reasons carry
+        // opposite retry policies — a struck-out authority is dialled again on
+        // the next pass, a known-dead url waits out a signed record's TTL — and
+        // one counter for both is unreadable in exactly the way "skipped as
+        // dead" was.
+        val skip = p.strikes.whyDead(relay.url)
+        if (skip != null) {
+            when (skip) {
+                HostStrikes.Skip.KNOWN_DEAD -> {
+                    p.reasons.merge("skipped: unreachable in an earlier run, record still current", 1L, Long::plus)
+                    p.tally.knownDead.incrementAndGet()
+                }
+
+                HostStrikes.Skip.STRUCK_OUT -> {
+                    p.reasons.merge("skipped: authority already struck out this pass", 1L, Long::plus)
+                    p.tally.hostStruckOut.incrementAndGet()
+                }
+            }
+            p.skipped.incrementAndGet()
+            return
+        }
+        // Our own transport, before anything is said about theirs. A Tor that is
+        // down, restarting or renamed fails every dial it carries in a way that
+        // reads exactly like the relay being gone — so ask our SOCKS port
+        // instead, and skip rather than dial.
+        //
+        // Per relay, not once per pass: the answer is cached for
+        // [TorSettings.PROBE_TTL_MS], so this costs one connect per 30s, and a
+        // Tor that comes back is picked up inside the running pass.
+        if (tor?.routes(relay.url) == true && !tor.socksAnswers()) {
+            p.torless.incrementAndGet()
+            p.tally.torUnavailable.incrementAndGet()
+            p.skipped.incrementAndGet()
+            return
+        }
+        // A TCP connect before the websocket handshake: a refused connection or
+        // unresolvable host answers in milliseconds, where each of ~20k corpses
+        // would otherwise cost a full connect timeout.
+        if (!tcpReachable(relay.url)) {
+            p.reasons.merge("tcp: no route or refused", 1L, Long::plus)
+            p.tally.noRoute.incrementAndGet()
+            p.skipped.incrementAndGet()
+            publishStrike(p.strikes, relay.url)
+            return
+        }
+        // Leased, not passed: the set this ask reconciles against must stay
+        // alive for as long as the ask does, and a pass that ends while this
+        // one runs may install a newer one. Released in the `finally` — a lease
+        // left open pins its generation and stops every future rebuild.
+        val lease = idSet.lease()
+        val got =
+            try {
+                // The relay's own filter, narrowed by what the tags that named
+                // it paired it with; identical to `window` for a select that
+                // binds only the url.
+                syncRelay(stream, relay.url, relay.narrowed(window), lease.ids, sharedAuthors) { reason ->
+                    p.reasons.merge(reason, 1L, Long::plus)
+                }
+            } finally {
+                lease.release()
+            }
+        when {
+            // Could not reach it: strike and publish, the finding NIP-66 exists
+            // for.
+            got == UNREACHABLE -> {
+                p.failed.incrementAndGet()
+                p.tally.unreachable.incrementAndGet()
+                publishStrike(p.strikes, relay.url)
+            }
+
+            // Reached it; the transfer broke. NOT struck and NOT published: the
+            // relay answered our handshake, so calling it unreachable would be a
+            // false statement about someone else's server.
+            got == TRANSFER_FAILED -> {
+                p.failed.incrementAndGet()
+                p.tally.transferFailed.incrementAndGet()
+            }
+
+            got > 0 -> {
+                p.downloaded.addAndGet(got.toLong())
+                p.tally.received.addAndGet(got.toLong())
+                p.tally.delivered.incrementAndGet()
+                p.strikes.produced(relay.url)
+            }
+
+            // Answered cleanly with nothing new — a working relay we are in sync
+            // with.
+            else -> {
+                p.tally.nothingNew.incrementAndGet()
+                p.strikes.produced(relay.url)
+            }
+        }
+    }
+
+    /**
+     * Build this pass's shared local id set, or decide not to.
+     *
+     * Three reasons not to, and they are different questions. A stream that
+     * never reads one ([holdsIdSet]); a pass with nothing outstanding anywhere,
+     * where every leg check returns before the set is touched; and a previous
+     * generation still being read by a straggler, which is [SharedIdSet]'s
+     * bound — the third is the one a rotation introduced, and the answer is to
+     * keep reconciling against the set we have rather than put a third
+     * gigabyte-scale list on the heap.
+     */
+    private suspend fun refreshIdSet(
+        stream: SyncStream,
+        relays: List<DiscoveredRelay>,
+        window: Filter,
+        idSet: SharedIdSet,
+    ) {
+        if (!holdsIdSet(stream)) {
+            System.err.println(
+                if (stream.sync == SyncMode.FETCH) {
+                    // A fetch-only stream never reads the id set, and building
+                    // one is the most expensive thing this router does (24.8M
+                    // ids and gigabytes held live, measured).
+                    "router: ${stream.name} sync=fetch — no local id set needed, skipping the snapshot"
+                } else {
+                    // [DeleteMissingSync] reads its OWN ids per ask, and must:
+                    // the shared snapshot spans every service on the stream, and
+                    // handing it to a one-service reconcile would report every
+                    // other service's records as retracted.
+                    "router: ${stream.name} deleteMissing — ids are read per ask, skipping the shared snapshot"
+                },
+            )
+            return
+        }
+        if (!bands.anyOutstanding(stream.name, relays.map { it.url }, window)) {
+            // Nothing outside any relay's band, so every syncOne below returns
+            // at its own leg check without ever reading the id set. Distinct
+            // from holdsIdSet above, which asks whether this STREAM ever needs
+            // one; this asks whether it needs one THIS pass. coveringWindow
+            // cannot save it — with nothing outstanding there is no window to
+            // narrow to, and it correctly hands back the whole filter. Asking
+            // first is where the saving is.
+            System.err.println("router: ${stream.name} — all ${relays.size} relay(s) already cover the filter, skipping the snapshot")
+            return
+        }
+        if (!idSet.mayInstall()) {
+            // A straggler is still reading the generation this would replace.
+            // Building anyway is unbounded — a hung leg holding one for hours
+            // while pass after pass installs another is the heap ceiling with
+            // extra steps — so the pass reuses what it has. The cost is a diff
+            // computed against a slightly old set, i.e. some events arriving
+            // that ingest then drops as duplicates.
+            System.err.println(
+                "router: ${stream.name} — reusing the ${idSet.size()} id snapshot," +
+                    " an earlier pass's relays are still reading the previous one",
+            )
+            return
+        }
+        // ONE snapshot for the whole pass: every relay reconciles the same
+        // filter, so per-relay snapshots were hundreds of identical full store
+        // scans. A relay synced late compares against the store as it was at the
+        // start — already true anyway, since ingest is asynchronous — and the
+        // store dedups on insert. Narrowed to what the hungriest relay still
+        // needs ([SyncBands.coveringWindow]).
+        val snapshotWindow = bands.coveringWindow(stream.name, relays.map { it.url }, window)
+        val startedMs = System.currentTimeMillis()
+        val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
+        phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
+        // THE GATE IS ROUND THE BUILD, not round the pass. It used to wrap the
+        // whole fan-out, which on a rotation would be forever — a stream that
+        // never finishes never releases, and every other id-set stream and the
+        // static backfill would queue behind it for the life of the process.
+        // What it still buys is the expensive half: two full store walks are
+        // never in flight at once. What it no longer bounds is RESIDENCY, which
+        // is [SharedIdSet]'s job now.
+        val ids =
+            streamGate.withPermit {
+                store.snapshotIdsReporting(snapshotWindow) { collected ->
+                    phases.set(stream.name, StreamPhases.Phase.Snapshotting(collected, expected, relays.size))
+                }
+            }
+        idSet.install(ids)
+        System.err.println(
+            "router: ${stream.name} local snapshot ${ids.size} id(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
+                (snapshotWindow.since?.let { s -> ", since $s" } ?: ", full filter (no relay is caught up yet)"),
+        )
+    }
+
+    /**
+     * Authors this pass found at MORE THAN ONE relay.
+     *
+     * Deletion reads one relay's silence as a retraction, and that only holds
+     * while it is the author's sole upstream — measured, 3 of 266 NIP-85
+     * services are bound to several relays and two of those name general relays
+     * that will never serve their scores, so an empty answer there is a wrong
+     * pointer rather than a withdrawal. They still get mirrored.
+     */
+    private fun sharedAuthors(
+        stream: SyncStream,
+        relays: List<DiscoveredRelay>,
+    ): Set<String> {
+        if (stream.deleteMissing == DeleteMissing.OFF) return emptySet()
+        return relays
+            .flatMap { it.narrow["authors"].orEmpty() }
+            .groupingBy { it }
+            .eachCount()
+            .filterValues { it > 1 }
+            .keys
+            .also {
+                if (it.isNotEmpty()) {
+                    System.err.println(
+                        "router: ${stream.name} ${it.size} author(s) are bound to more than one relay" +
+                            " — mirroring them, deleting nothing for them",
+                    )
+                }
+            }
     }
 
     /**
@@ -966,11 +1168,18 @@ internal class DynamicSync(
         // quartz's own observer still records what a failed connection said;
         // this is the claim we synthesise, and we cannot support it.
         if (tor?.routes(url) == true) return
-        monitor?.observer?.record(
-            url,
-            reachable = false,
-            error = "host ${evicted.authority} silent after ${evicted.strikes} attempts",
-        )
+        // Guarded, because every caller has ALREADY recorded this url's outcome
+        // in the tally by the time it gets here. An exception escaping would be
+        // caught by the worker's handler and counted a second time, as
+        // `transferFailed`, and the partition would stop closing — a publish
+        // failing is not worth a document that says its own numbers are wrong.
+        runCatching {
+            monitor?.observer?.record(
+                url,
+                reachable = false,
+                error = "host ${evicted.authority} silent after ${evicted.strikes} attempts",
+            )
+        }
     }
 
     /**
