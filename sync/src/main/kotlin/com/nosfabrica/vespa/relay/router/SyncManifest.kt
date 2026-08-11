@@ -107,6 +107,18 @@ class SyncManifest(
     private val file: File?,
 ) {
     /**
+     * Whether this router publishes a manifest at all — i.e. whether
+     * `SYNC_MANIFEST_FILE` named a path.
+     *
+     * Separate from [write]'s result on purpose. Both a router that was never
+     * given a path and one whose disk refused the write end up publishing
+     * nothing, but they are different problems with different fixes, and the two
+     * were briefly one boolean — which had the caller announce "unset" at an
+     * operator who had set it perfectly well and whose volume was read-only.
+     */
+    val publishes: Boolean get() = file != null
+
+    /**
      * Publish [streams]. Returns whether anything was written, so the caller can
      * say so on the one line a boot gets.
      *

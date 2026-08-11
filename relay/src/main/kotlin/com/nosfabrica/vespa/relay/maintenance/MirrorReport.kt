@@ -22,13 +22,14 @@ package com.nosfabrica.vespa.relay.maintenance
 
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
+import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
 import kotlinx.serialization.json.intOrNull
 import kotlinx.serialization.json.jsonObject
-import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
 import kotlinx.serialization.json.putJsonArray
@@ -109,7 +110,7 @@ internal object MirrorReport {
             // Straight from the writer: this document outlives the process that
             // wrote it, so a reader comparing against a mirror that was turned
             // off last month needs to be able to see that it was.
-            doc["writtenAt"]?.jsonPrimitive?.longOrNull?.let { put("writtenAt", it) }
+            (doc["writtenAt"] as? JsonPrimitive)?.longOrNull?.let { put("writtenAt", it) }
             if (unbounded) {
                 put("allKinds", true)
             } else if (union.isNotEmpty()) {
@@ -152,13 +153,17 @@ internal object MirrorReport {
      * which is the failure this whole report exists to end.
      */
     private fun stream(o: JsonObject): Stream? {
-        val name = o["name"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: return null
+        val name = text(o["name"]) ?: return null
         val kinds =
             when (val raw = o["kinds"]) {
                 // Absent is the writer saying "no kind bound on this stream".
                 null -> null
 
-                is JsonArray -> raw.mapNotNull { it.jsonPrimitive.intOrNull }.distinct().sorted()
+                // Element by element, through the same cast: `jsonPrimitive`
+                // THROWS on an object or an array, and a manifest holding
+                // `"kinds": [[1], 2]` would take that exception out of build()
+                // and cost the whole sync section — the coverage half with it.
+                is JsonArray -> raw.mapNotNull { (it as? JsonPrimitive)?.intOrNull }.distinct().sorted()
 
                 // PRESENT and unreadable is not evidence of an unbounded stream.
                 // It is a bound this build could not read, so the stream
@@ -169,11 +174,25 @@ internal object MirrorReport {
             }
         return Stream(
             name = name,
-            dir = o["dir"]?.jsonPrimitive?.contentOrNull?.takeIf { it.isNotBlank() } ?: "down",
+            dir = text(o["dir"]) ?: "down",
             kinds = kinds,
-            since = o["since"]?.jsonPrimitive?.longOrNull,
+            since = (o["since"] as? JsonPrimitive)?.longOrNull,
         )
     }
+
+    /**
+     * A member's text, or null when it is absent, null, blank — or not a
+     * primitive at all.
+     *
+     * The cast is the load-bearing part. `jsonPrimitive` is an ASSERTION: it
+     * throws `IllegalArgumentException` on an object or an array, and every
+     * caller here is reading a file this process did not write. One
+     * `"name": {}` would leave the exception to `StatsRollup`'s per-section
+     * catch, which reports the whole `sync` section as failed and drops the
+     * coverage that had already been computed beside it — the exact "a router
+     * file may never cost the relay its rollup" rule this object is written to.
+     */
+    private fun text(value: JsonElement?): String? = (value as? JsonPrimitive)?.contentOrNull?.takeIf { it.isNotBlank() }
 
     /**
      * A corrupt or half-written manifest costs this object, not the rollup. Same

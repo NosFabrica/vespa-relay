@@ -180,6 +180,21 @@ services:
       # reason as the cursor above: a deploy would otherwise blank the page for
       # as long as the first rollup takes, and the file is readable on the host.
       STATS_FILE: ${STATS_FILE:-/var/lib/vespa-relay/stats.json}
+      # The router's three files, which the stats rollup READS off the shared
+      # volume — the two state files draw the Sync coverage card, the manifest
+      # is what /stats.json publishes as `sync.mirrors`. The router stays the
+      # only writer.
+      #
+      # Passed through with the SAME expressions the sync service uses, and that
+      # is the point: the relay compiles in these exact paths as its defaults,
+      # so a .env that moves one used to move the WRITER only — the relay went
+      # on reading where the router no longer wrote, and the card and the kind
+      # set silently emptied. Same failure the ban-list pass-throughs above were
+      # added for, and .env.example ships live values for all three — so it was
+      # one uncommented edit away in the shipped configuration.
+      SYNC_STATE_FILE: ${SYNC_STATE_FILE:-${ROUTER_SYNC_STATE_FILE:-/var/lib/vespa-relay/sync-cursors.json}}
+      SYNC_SWEEP_STATE_FILE: ${SYNC_SWEEP_STATE_FILE:-/var/lib/vespa-relay/sync-sweeps.json}
+      SYNC_MANIFEST_FILE: ${SYNC_MANIFEST_FILE:-/var/lib/vespa-relay/sync-manifest.json}
       # How many engine queries the store's bulk stages keep in flight. The
       # store's default is 4, measured on heavy bulk-stage queries; too high
       # 504s the summary stage ("Summary data is incomplete").

@@ -174,20 +174,24 @@ internal class StatsRollup(
         var data: JsonObject? = null
         val section =
             section { attempts ->
-                attempt(attempts, "sync") {
-                    val coverage = SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds())
-                    val mirrors = MirrorReport.build(readOrNull(syncManifestFile))
-                    data =
-                        if (coverage == null && mirrors == null) {
-                            null
-                        } else {
-                            buildJsonObject {
-                                coverage?.forEach { (member, value) -> put(member, value) }
-                                mirrors?.let { put("mirrors", it) }
-                            }
+                // TWO attempts, not one, and that is the whole reason this reads
+                // the way it does: the coverage is minutes of the router's work
+                // and the manifest is a few hundred bytes of config, so an
+                // unreadable manifest must not be able to take the card with it.
+                // Under one key it could — a throw anywhere in the lambda leaves
+                // `data` unassigned, and the section reports `failed` with the
+                // coverage it had already computed thrown away.
+                val coverage = attempt(attempts, "sync") { SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds()) }
+                val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
+                data =
+                    if (coverage == null && mirrors == null) {
+                        null
+                    } else {
+                        buildJsonObject {
+                            coverage?.forEach { (member, value) -> put(member, value) }
+                            mirrors?.let { put("mirrors", it) }
                         }
-                    data
-                }
+                    }
                 data ?: buildJsonObject { }
             }
         // Nothing read AND nothing failed means no router has ever written here.

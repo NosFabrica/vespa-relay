@@ -224,6 +224,65 @@ class MirrorReportTest {
         assertNull(MirrorReport.build("not json at all"))
     }
 
+    /**
+     * A member of the RIGHT name and the WRONG type must not throw.
+     *
+     * `jsonPrimitive` is an assertion, not an accessor: it throws on an object
+     * or an array. Every one of these parsed fine and then blew up inside the
+     * reader, and the blast radius was not this object — [StatsRollup] catches
+     * per section, so the whole `sync` section came back `failed` and took the
+     * coverage card, already computed beside it, with it. A file this process
+     * did not write may cost its own member and nothing else.
+     */
+    @Test
+    fun `a member of the wrong type costs that member, never a throw`() {
+        val doc =
+            MirrorReport.build(
+                """
+                {
+                  "writtenAt": {"nope": 1},
+                  "streams": [
+                    {"name": {"nope": 1}, "dir": "down", "kinds": [7]},
+                    {"name": "content", "dir": ["down"], "kinds": [[1], 2, "3"], "since": {"nope": 1}}
+                  ]
+                }
+                """.trimIndent(),
+            )
+        assertNotNull(doc)
+        // The named entry survives; the one whose name was an object is gone,
+        // and its kinds went with it rather than into the set.
+        assertEquals(listOf("content"), streamsOf(doc).map { it.getValue("name").jsonPrimitive.content })
+        // A `dir` that is not text reads as `down` — the same default an absent
+        // one gets, and the direction that cannot silently drop kinds.
+        assertEquals(
+            "down",
+            streamsOf(doc)
+                .single()
+                .getValue("dir")
+                .jsonPrimitive.content,
+        )
+        // Element by element: the array member survives, the nested one does not.
+        assertEquals(listOf(2, 3), kindsOf(doc))
+        assertNull(doc["writtenAt"])
+        assertNull(streamsOf(doc).single()["since"])
+    }
+
+    /** Whatever a manifest holds, reading it is not allowed to be a way to crash the rollup. */
+    @Test
+    fun `no shape of manifest throws`() {
+        listOf(
+            "{\"streams\":{}}",
+            "{\"streams\":[[]]}",
+            "{\"streams\":[null]}",
+            "{\"streams\":[{\"name\":\"a\",\"kinds\":{}}]}",
+            "{\"streams\":[{\"name\":\"a\",\"kinds\":[null]}]}",
+            "{\"streams\":[{\"name\":true,\"dir\":7}]}",
+            "[]",
+            "\"a string\"",
+            "3",
+        ).forEach { MirrorReport.build(it) }
+    }
+
     @Test
     fun `a manifest naming no streams says nothing`() {
         assertNull(MirrorReport.build(manifest()))

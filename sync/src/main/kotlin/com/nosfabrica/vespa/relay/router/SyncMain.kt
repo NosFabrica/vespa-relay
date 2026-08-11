@@ -148,7 +148,13 @@ fun main() {
     // `config.streams`, which is what is RUNNING (SYNC_STREAMS narrows it), and
     // written here — after the config is loaded, before anything dials — because
     // a `router.conf` edit is a restart, so boot is the only moment it changes.
-    if (!SyncManifest.fromEnv(env).write(config.streams)) {
+    val manifest = SyncManifest.fromEnv(env)
+    // Only the UNSET case is announced here. A write that fails has already said
+    // so, with the path and the reason, and following that with "unset" sends
+    // the operator after a config problem they do not have.
+    if (manifest.publishes) {
+        manifest.write(config.streams)
+    } else {
         System.err.println(
             "router: SYNC_MANIFEST_FILE unset — the relay cannot say which kinds this mirror holds, " +
                 "so a client comparing our count against an upstream's total will read a complete mirror as partial",

@@ -1123,39 +1123,6 @@ function trustCard(section) {
 }
 
 /**
- * How much of each stream's relay list is in sync, and how far the current
- * sweeps have got.
- *
- * Three facts per relay, on one mark. The bar's EXTENT is the created_at span
- * already walked; its TONE is whether that span was reconciled (negentropy
- * finished — provably identical) or merely paged (we asked and stored what came
- * back); and its right edge against `now` is freshness. The sweep cursor rides
- * the same row in a warm tone with a leading edge at `downTo`, because a sweep
- * killed at 80% records no band at all — without the cursor a relay mid-walk is
- * indistinguishable from one nobody has touched, which is the state this card
- * exists to reveal.
- *
- * THE FRAME IS NOT A TARGET. These filters carry no `since`, so "100% covered"
- * is not a defined quantity; the frame is the oldest span anything here reaches
- * and exists to make two relays comparable, not to grade them. The note under
- * the card says so, and should not be trimmed for the same reason the scope
- * line under the title is not.
- *
- * `relays` counts the relays a stream has TOUCHED, never the relays it was
- * configured with. The router's manifest says which streams exist and what
- * kinds they ask for (see [mirrorLine]) but names no urls — a dynamic stream's
- * relay list is discovered, so there is no configured list to publish. A "never
- * asked" count would be the honest headline and it is still not available here;
- * see SyncCoverageReport.
- *
- * The URL FILTER is the same bargain as the Kinds one: a fan-out puts thousands
- * of rows in this card and "how far back is nos.lol" should not be a scroll.
- * What it hides it hides EVERYWHERE — the depth strip and the group counts are
- * recomputed over the rows still on screen, because a strip drawn over 4,000
- * relays above three visible rows is a mark answering a question the reader is
- * no longer asking. See [statOf] for the one number a subset cannot restate.
- */
-/**
  * The one line on this page about what the mirror is FOR, rather than how far
  * it has got: the kinds the router asks for, from its manifest.
  *
@@ -1196,6 +1163,39 @@ function mirrorLine(mirrors) {
   return p;
 }
 
+/**
+ * How much of each stream's relay list is in sync, and how far the current
+ * sweeps have got.
+ *
+ * Three facts per relay, on one mark. The bar's EXTENT is the created_at span
+ * already walked; its TONE is whether that span was reconciled (negentropy
+ * finished — provably identical) or merely paged (we asked and stored what came
+ * back); and its right edge against `now` is freshness. The sweep cursor rides
+ * the same row in a warm tone with a leading edge at `downTo`, because a sweep
+ * killed at 80% records no band at all — without the cursor a relay mid-walk is
+ * indistinguishable from one nobody has touched, which is the state this card
+ * exists to reveal.
+ *
+ * THE FRAME IS NOT A TARGET. These filters carry no `since`, so "100% covered"
+ * is not a defined quantity; the frame is the oldest span anything here reaches
+ * and exists to make two relays comparable, not to grade them. The note under
+ * the card says so, and should not be trimmed for the same reason the scope
+ * line under the title is not.
+ *
+ * `relays` counts the relays a stream has TOUCHED, never the relays it was
+ * configured with. The router's manifest says which streams exist and what
+ * kinds they ask for (see [mirrorLine]) but names no urls — a dynamic stream's
+ * relay list is discovered, so there is no configured list to publish. A "never
+ * asked" count would be the honest headline and it is still not available here;
+ * see SyncCoverageReport.
+ *
+ * The URL FILTER is the same bargain as the Kinds one: a fan-out puts thousands
+ * of rows in this card and "how far back is nos.lol" should not be a scroll.
+ * What it hides it hides EVERYWHERE — the depth strip and the group counts are
+ * recomputed over the rows still on screen, because a strip drawn over 4,000
+ * relays above three visible rows is a mark answering a question the reader is
+ * no longer asking. See [statOf] for the one number a subset cannot restate.
+ */
 function syncCard(section) {
   const d = (section && section.data) || {};
   const streams = d.streams || [];

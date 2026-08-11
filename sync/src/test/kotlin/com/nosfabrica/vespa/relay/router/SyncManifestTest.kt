@@ -182,6 +182,25 @@ class SyncManifestTest {
     }
 
     /**
+     * "Never asked to publish" and "asked, and the disk refused" both write
+     * nothing, and only the first is a config mistake. They were one boolean
+     * once, and the boot line then told an operator with a read-only volume
+     * that the setting they had just set was unset.
+     */
+    @Test
+    fun `an unset manifest is distinguishable from a failed write`() {
+        assertFalse(SyncManifest(null).publishes)
+        val blocked = File.createTempFile("sync-manifest-not-a-dir", ".txt")
+        try {
+            val configured = SyncManifest(File(blocked, "nested/manifest.json"))
+            assertTrue(configured.publishes, "a path was given — the write failing is a different fact")
+            assertFalse(configured.write(listOf(stream("content")), now))
+        } finally {
+            blocked.delete()
+        }
+    }
+
+    /**
      * An unwritable path costs the manifest, never the mirror. The directory is
      * created where it can be, so a first boot on a fresh volume does not need
      * anyone to have made it.
