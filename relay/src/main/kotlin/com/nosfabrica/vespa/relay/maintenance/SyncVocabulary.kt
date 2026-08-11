@@ -161,6 +161,16 @@ internal object SyncVocabulary {
                     "`discovered = foldedOntoAnother + excluded + taken` exactly.",
             )
             put(
+                "relayListAgeSec",
+                "How old the relay list this cycle fanned out over was when the cycle began. 0 means discovery ran for " +
+                    "this cycle; anything else means the router reused the set a previous cycle derived, which it may do " +
+                    "for up to that stream's refresh period. IT QUALIFIES `discovered`: on a recycling stream that count " +
+                    "describes a store walk from this many seconds ago, so two consecutive documents carrying identical " +
+                    "url counts are a mirror whose network has not been re-read, not necessarily one whose network has " +
+                    "not changed. Says nothing about the dial decisions — the NIP-66 known-dead set and the host strikes " +
+                    "are re-read every cycle whatever the list's age.",
+            )
+            put(
                 "foldedOntoAnother",
                 "Urls an alias verdict proved are the same server as another url in the same list, so they were never " +
                     "dialled. Their earlier band state is dropped rather than merged: a containment measurement is enough " +

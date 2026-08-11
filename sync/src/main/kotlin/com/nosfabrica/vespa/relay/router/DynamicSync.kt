@@ -26,6 +26,7 @@ import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
+import com.nosfabrica.vespa.relay.router.discovery.CachedRelayList
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
@@ -151,7 +152,15 @@ internal class DynamicSync(
      */
     private val inFlight = ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
-    /** One stream, forever: discover, sync, sleep, repeat. */
+    /**
+     * One stream, forever: discover, sync, sleep, repeat — with the discover
+     * step skipped while the list it produced is still good enough to run on.
+     *
+     * The cache is a local, so it is per stream by construction and dies with
+     * the process. See [CachedRelayList] for what it does and does not stand in
+     * for, and [RelayDiscoveryConfig.recycleSeconds] for why the two intervals
+     * are separate at all.
+     */
     suspend fun loop(stream: SyncStream) {
         val dynamic = stream.dynamic ?: return
         val sourceNames =
@@ -162,134 +171,52 @@ internal class DynamicSync(
         // degraded engine) instead of waiting the full refresh interval —
         // both are usually fine again in moments.
         var retrySec = RETRY_BASE_SECONDS
+        var cached: CachedRelayList? = null
         while (scope.isActive) {
             var ran = false
             try {
-                // Never fan out onto ourselves: our own url is in plenty of lists.
-                phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
-                val discovered =
-                    RelayDiscovery.discover(
-                        store,
-                        dynamic,
-                        skip = setOfNotNull(store.relay),
-                        // A relay list full of .onion urls is only worth
-                        // reading when something can dial them.
-                        allowOnion = tor != null,
-                    )
-                // Before the fan-out, and before the snapshot it sizes itself
-                // against: a folded url must never reach [cycle], or it takes
-                // a socket, a cursor band and a place in the concurrency gate
-                // for events another url in the same list already delivered.
-                // The fold hands back an alias MAP, not a rewritten relay list:
-                // it deals in urls, and this stream is the only thing that
-                // knows each url also carries the authors its tag paired it
-                // with. [RelayAliases.fold] is that one line — and dropping a
-                // url without moving its authors onto the survivor would stop
-                // asking for those authors entirely.
-                //
-                // READ ONLY here. Applying verdicts is a store query; EARNING
-                // them is a probe pass, and that belongs to [AliasMonitor] on
-                // its own clock — inline, it sat between "discovery finished"
-                // and the first downloaded byte on every cycle. The cost of the
-                // split is that a newly discovered url is dialled unfolded once,
-                // before the pass that measures it.
-                val candidates = discovered.map { it.url }
-                val cleaned = folding?.apply(candidates)
-                // The state an EARLIER cycle left behind, cleared as the fold
-                // takes hold. Everything above is about what this cycle dials;
-                // this is about what the last one already did — a url that used
-                // to be dialled in its own right has bands on disk, and once it
-                // is folded nothing will ever advance them again. Left there
-                // they are what `/stats.json` charts, so the coverage card goes
-                // on naming a dozen urls of one host as separately walked while
-                // exactly one of them is being synced. See [SyncBands.dropFolded]
-                // for why they are dropped rather than merged onto the survivor.
-                cleaned?.aliases?.keys?.let { aliased ->
-                    // Never a url a static subscription is holding: one stream
-                    // may carry both `urls` and `relaySource`, and its
-                    // backfill records under this same name. See
-                    // [SyncBands.dropFolded].
-                    val dropped = bands.dropFolded(stream.name, aliased, keep = pinnedUrls)
-                    // Only the cycle that changes something says so. After the
-                    // first these are the same verdicts every time, and after a
-                    // restart they are verdicts whose state the last process
-                    // already dropped — the count is what this pass took out of
-                    // the file, not how many urls are folded.
-                    if (dropped > 0) {
-                        System.err.println("router: ${stream.name} dropped the band state of $dropped folded url(s)")
+                val nowMs = System.currentTimeMillis()
+                // Unset `recycleSeconds` is not a long TTL — it is the old
+                // behaviour, where every cycle rediscovers and nothing is ever
+                // reused. Checked here rather than inside [CachedRelayList] so
+                // that a stream not opted in never even holds one.
+                val reused =
+                    dynamic.recycleSeconds?.let {
+                        cached?.takeIf { c -> c.reusableAt(nowMs, dynamic.refreshSeconds, aliasMonitor?.generation() ?: 0L) }
                     }
+                if (reused != null) {
+                    // Said out loud every time. A cycle that re-read the store
+                    // and one that started on a five-hour-old list are the same
+                    // fan-out from every other line this stream prints, and the
+                    // difference is exactly what an operator needs when the set
+                    // looks wrong.
+                    System.err.println(
+                        "router: ${stream.name} reusing the relay list from ${fmtDuration(reused.ageSec(nowMs) * 1000)} ago" +
+                            " — ${reused.relays.size} relay(s), rediscovering after ${dynamic.refreshSeconds}s",
+                    )
                 }
-                // The fold's OWN output, held before the exclude filter runs.
-                // Both counts below are then differences between two lists this
-                // code actually has, rather than inferences from a subtraction —
-                // which is what made them wrong: `foldOnto` MERGES onto a
-                // survivor, and a survivor discovery did not itself hand over is
-                // synthesised into the result, so `candidates.size - relays.size`
-                // is not the number of urls the fold removed and the identity
-                // `discovered = folded + excluded + taken` did not hold.
-                val foldedList = cleaned?.let { RelayAliases.foldOnto(discovered, it.aliases) } ?: discovered
-                val relays =
-                    foldedList
-                        // A verdict's canonical is whatever the probe measured,
-                        // which is NOT necessarily a url discovery would hand
-                        // out today: `exclude` and our own url are applied when
-                        // relay lists are read, and a fold can name a url from
-                        // before that config changed. Re-applying them here is
-                        // what stops a stored verdict putting an excluded relay
-                        // — or this relay, syncing itself — back into the
-                        // fan-out through the side door.
-                        .filter { it.url !in dynamic.exclude && it.url != store.relay }
-                // What this stream would like measured before the next cycle.
-                // Non-blocking; the callbacks are this stream's own transport
-                // guard and ingest, since the monitor has neither.
-                aliasMonitor?.submit(
-                    label = stream.name,
-                    candidates = candidates,
-                    canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
-                    onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
-                )
+                val list = reused ?: discoverRelayList(stream, dynamic, sourceNames, nowMs)
+                // Held for the next cycle even when it is empty: `reusableAt`
+                // refuses an empty list, so this only ever means the next cycle
+                // rediscovers, and keeping it makes the "cached or not" state
+                // one variable instead of two.
+                //
+                // A cycle that THROWS leaves it in place, so a stream whose
+                // discovery has started failing — a degraded engine, a query
+                // that now times out — keeps mirroring off the last good list
+                // until it ages out, rather than stopping. The failure is still
+                // said once, through `Phase.Failed` below.
+                cached = list
+                val relays = list.relays
                 // The disposition of this cycle's urls, opened here rather than
                 // in [cycle] so that `discovered` counts what discovery handed
                 // over and `foldedOntoAnother` the difference the fold made —
-                // both of which are decided above and neither of which [cycle]
-                // can see. Without this the ~11,400 urls between "discovered"
-                // and "has a band" had no published account at all.
-                // Each member is a difference between two lists this code
-                // holds, so the identity closes for every case including a
-                // synthesised survivor:
-                //   discovered      = candidates
-                //   foldedOntoAnother = candidates - foldedList
-                //   excluded        = foldedList - relays   (the `exclude` list
-                //                     and our own url being obeyed)
-                //   taken           = relays                (what is dialled)
-                // It was `candidates.size - relays.size` for the fold and a
-                // remainder for the rest, which folded an operator's exclusion
-                // list into the duplicate-url count and could leave `taken`
-                // over-counted — so a healthy cycle ended with `pending` stuck
-                // above zero and the page printed "these counts do not add up".
-                val tally =
-                    CycleTally(
-                        discovered = candidates.size,
-                        foldedOntoAnother = (candidates.size - foldedList.size).coerceAtLeast(0),
-                        excluded = (foldedList.size - relays.size).coerceAtLeast(0),
-                        // By AUTHORITY, so the count says how many servers this
-                        // is, not how many strings. Arithmetic over urls, not
-                        // the fold's verdict — see [CycleTally].
-                        hosts =
-                            relays
-                                .mapNotNull {
-                                    it.url.url
-                                        .substringAfter("://")
-                                        .substringBefore("/")
-                                        .ifEmpty { null }
-                                }.distinct()
-                                .size,
-                        folded =
-                            cleaned
-                                ?.aliases
-                                ?.let { verdicts -> candidates.mapNotNull { url -> verdicts[url]?.let { url.url to it.url } }.toMap() }
-                                .orEmpty(),
-                    )
+                // both of which are decided in [discoverRelayList] and neither
+                // of which [cycle] can see. Without this the ~11,400 urls
+                // between "discovered" and "has a band" had no published account
+                // at all. A FRESH one per cycle even on a reused list — see
+                // [CachedRelayList.tally].
+                val tally = list.tally(nowMs)
                 if (relays.isEmpty()) {
                     phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                 } else if (holdsIdSet(stream)) {
@@ -326,12 +253,163 @@ internal class DynamicSync(
 
             if (ran) {
                 retrySec = RETRY_BASE_SECONDS
-                delay(dynamic.refreshSeconds * 1000)
+                // The recycle gap where one is configured, the refresh period
+                // otherwise — and the same number the cycle's last line and
+                // `Phase.Idle` just promised.
+                delay(dynamic.nextCycleSeconds * 1000)
             } else {
                 delay(retrySec * 1000)
                 retrySec = (retrySec * 2).coerceAtMost(dynamic.refreshSeconds)
             }
         }
+    }
+
+    /**
+     * Read this stream's fan-out set out of the store: discover, fold, exclude.
+     *
+     * Everything expensive about starting a cycle is here, which is what makes
+     * the result worth holding on to ([CachedRelayList]).
+     */
+    private suspend fun discoverRelayList(
+        stream: SyncStream,
+        dynamic: RelayDiscoveryConfig,
+        sourceNames: String,
+        nowMs: Long,
+    ): CachedRelayList {
+        // Never fan out onto ourselves: our own url is in plenty of lists.
+        phases.set(stream.name, StreamPhases.Phase.Discovering(sourceNames))
+        // Read BEFORE the work, not after. A pass that publishes verdicts while
+        // this discovery is running has not been applied to its result, and
+        // stamping the later generation on the list would mark it current for a
+        // fold it never saw — the one case a version check has to get right.
+        val aliasGeneration = aliasMonitor?.generation() ?: 0L
+        val discovered =
+            RelayDiscovery.discover(
+                store,
+                dynamic,
+                skip = setOfNotNull(store.relay),
+                // A relay list full of .onion urls is only worth
+                // reading when something can dial them.
+                allowOnion = tor != null,
+            )
+        // Before the fan-out, and before the snapshot it sizes itself
+        // against: a folded url must never reach [cycle], or it takes
+        // a socket, a cursor band and a place in the concurrency gate
+        // for events another url in the same list already delivered.
+        // The fold hands back an alias MAP, not a rewritten relay list:
+        // it deals in urls, and this stream is the only thing that
+        // knows each url also carries the authors its tag paired it
+        // with. [RelayAliases.fold] is that one line — and dropping a
+        // url without moving its authors onto the survivor would stop
+        // asking for those authors entirely.
+        //
+        // READ ONLY here. Applying verdicts is a store query; EARNING
+        // them is a probe pass, and that belongs to [AliasMonitor] on
+        // its own clock — inline, it sat between "discovery finished"
+        // and the first downloaded byte on every cycle. The cost of the
+        // split is that a newly discovered url is dialled unfolded once,
+        // before the pass that measures it.
+        val candidates = discovered.map { it.url }
+        val cleaned = folding?.apply(candidates)
+        // The state an EARLIER cycle left behind, cleared as the fold
+        // takes hold. Everything above is about what this cycle dials;
+        // this is about what the last one already did — a url that used
+        // to be dialled in its own right has bands on disk, and once it
+        // is folded nothing will ever advance them again. Left there
+        // they are what `/stats.json` charts, so the coverage card goes
+        // on naming a dozen urls of one host as separately walked while
+        // exactly one of them is being synced. See [SyncBands.dropFolded]
+        // for why they are dropped rather than merged onto the survivor.
+        cleaned?.aliases?.keys?.let { aliased ->
+            // Never a url a static subscription is holding: one stream
+            // may carry both `urls` and `relaySource`, and its
+            // backfill records under this same name. See
+            // [SyncBands.dropFolded].
+            val dropped = bands.dropFolded(stream.name, aliased, keep = pinnedUrls)
+            // Only the cycle that changes something says so. After the
+            // first these are the same verdicts every time, and after a
+            // restart they are verdicts whose state the last process
+            // already dropped — the count is what this pass took out of
+            // the file, not how many urls are folded.
+            if (dropped > 0) {
+                System.err.println("router: ${stream.name} dropped the band state of $dropped folded url(s)")
+            }
+        }
+        // The fold's OWN output, held before the exclude filter runs.
+        // Both counts below are then differences between two lists this
+        // code actually has, rather than inferences from a subtraction —
+        // which is what made them wrong: `foldOnto` MERGES onto a
+        // survivor, and a survivor discovery did not itself hand over is
+        // synthesised into the result, so `candidates.size - relays.size`
+        // is not the number of urls the fold removed and the identity
+        // `discovered = folded + excluded + taken` did not hold.
+        val foldedList = cleaned?.let { RelayAliases.foldOnto(discovered, it.aliases) } ?: discovered
+        val relays =
+            foldedList
+                // A verdict's canonical is whatever the probe measured,
+                // which is NOT necessarily a url discovery would hand
+                // out today: `exclude` and our own url are applied when
+                // relay lists are read, and a fold can name a url from
+                // before that config changed. Re-applying them here is
+                // what stops a stored verdict putting an excluded relay
+                // — or this relay, syncing itself — back into the
+                // fan-out through the side door.
+                .filter { it.url !in dynamic.exclude && it.url != store.relay }
+        // What this stream would like measured before the next cycle.
+        // Non-blocking; the callbacks are this stream's own transport
+        // guard and ingest, since the monitor has neither.
+        //
+        // Only on the path that rediscovered: the monitor holds the LATEST
+        // candidate set per stream, replacing rather than appending, so
+        // re-submitting a list that has not changed hands it the work it is
+        // already holding.
+        aliasMonitor?.submit(
+            label = stream.name,
+            candidates = candidates,
+            canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
+            onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
+        )
+        // Each member is a difference between two lists this code
+        // holds, so the identity closes for every case including a
+        // synthesised survivor:
+        //   discovered      = candidates
+        //   foldedOntoAnother = candidates - foldedList
+        //   excluded        = foldedList - relays   (the `exclude` list
+        //                     and our own url being obeyed)
+        //   taken           = relays                (what is dialled)
+        // It was `candidates.size - relays.size` for the fold and a
+        // remainder for the rest, which folded an operator's exclusion
+        // list into the duplicate-url count and could leave `taken`
+        // over-counted — so a healthy cycle ended with `pending` stuck
+        // above zero and the page printed "these counts do not add up".
+        return CachedRelayList(
+            relays = relays,
+            discovered = candidates.size,
+            foldedOntoAnother = (candidates.size - foldedList.size).coerceAtLeast(0),
+            excluded = (foldedList.size - relays.size).coerceAtLeast(0),
+            // By AUTHORITY, so the count says how many servers this
+            // is, not how many strings. Arithmetic over urls, not
+            // the fold's verdict — see [CycleTally].
+            hosts =
+                relays
+                    .mapNotNull {
+                        it.url.url
+                            .substringAfter("://")
+                            .substringBefore("/")
+                            .ifEmpty { null }
+                    }.distinct()
+                    .size,
+            folded =
+                cleaned
+                    ?.aliases
+                    ?.let { verdicts -> candidates.mapNotNull { url -> verdicts[url]?.let { url.url to it.url } }.toMap() }
+                    .orEmpty(),
+            // The clock the cycle about to run was timed from, not a second
+            // reading taken after a discovery that may have run for minutes:
+            // a list is as old as the walk that produced it.
+            builtAtMs = nowMs,
+            aliasGeneration = aliasGeneration,
+        )
     }
 
     /**
@@ -642,10 +720,10 @@ internal class DynamicSync(
                         ""
                     }
                 ) +
-                "; next in ${dynamic.refreshSeconds}s",
+                "; next in ${dynamic.nextCycleSeconds}s",
         )
         phases.endCycle(stream.name, StreamPhases.DYNAMIC, "completed")
-        phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.refreshSeconds))
+        phases.set(stream.name, StreamPhases.Phase.Idle(downloaded.get(), dynamic.nextCycleSeconds))
     }
 
     /**

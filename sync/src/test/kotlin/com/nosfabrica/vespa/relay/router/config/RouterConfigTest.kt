@@ -820,11 +820,99 @@ class RouterConfigTest {
                         """.trimIndent(),
                     "SYNC_DYNAMIC_REFRESH_SECONDS" to "900",
                     "SYNC_DYNAMIC_CONCURRENCY" to "16",
+                    "SYNC_DYNAMIC_RECYCLE_SECONDS" to "30",
                 ),
             )
         val dynamic = cfg!!.dynamicStreams().single().dynamic!!
         assertEquals(900L, dynamic.refreshSeconds)
         assertEquals(16, dynamic.concurrency)
+        assertEquals(30L, dynamic.recycleSeconds)
+        assertEquals(30L, dynamic.nextCycleSeconds, "the sleep must be the gap the operator asked for")
+    }
+
+    @Test
+    fun `recycleSeconds separates the cycle period from the rediscovery period`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    outbox {
+                        filter         = { "kinds": [1] }
+                        refreshSeconds = 21600
+                        recycleSeconds = 10
+                        relaySource = [
+                            {
+                                select = [ { tag = "r" } ]
+                                filter = { "kinds": [10002] }
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent(),
+            )
+        val dynamic = cfg.dynamicStreams().single().dynamic!!
+        assertEquals(21_600L, dynamic.refreshSeconds, "the relay list is still re-read every 6h")
+        assertEquals(10L, dynamic.recycleSeconds)
+        assertEquals(10L, dynamic.nextCycleSeconds)
+    }
+
+    @Test
+    fun `an unset recycleSeconds keeps a rediscovery per cycle`() {
+        // Not a long default TTL: null means the stream never holds a relay
+        // list, which is what this router did before it could. A default would
+        // change every existing deployment's dial rate on upgrade.
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    outbox {
+                        filter         = { "kinds": [1] }
+                        refreshSeconds = 3600
+                        relaySource = [
+                            {
+                                select = [ { tag = "r" } ]
+                                filter = { "kinds": [10002] }
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent(),
+            )
+        val dynamic = cfg.dynamicStreams().single().dynamic!!
+        assertNull(dynamic.recycleSeconds)
+        assertEquals(3600L, dynamic.nextCycleSeconds)
+    }
+
+    @Test
+    fun `recycleSeconds has a floor, and it is not the refresh floor`() {
+        // 60s is right for a store walk and wrong for the pause after a fan-out
+        // that just took hours. Zero is refused too: an empty relay list or a
+        // cycle that fails instantly would spin.
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    outbox {
+                        filter         = { "kinds": [1] }
+                        recycleSeconds = 0
+                        relaySource = [
+                            {
+                                select = [ { tag = "r" } ]
+                                filter = { "kinds": [10002] }
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent(),
+            )
+        assertEquals(
+            RouterConfigLoader.MIN_RECYCLE_SECONDS,
+            cfg
+                .dynamicStreams()
+                .single()
+                .dynamic!!
+                .recycleSeconds,
+        )
     }
 
     /** A one-stream config, with [body] as the stream's keys. */

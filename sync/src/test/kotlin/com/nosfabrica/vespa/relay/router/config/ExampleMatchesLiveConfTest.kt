@@ -64,6 +64,7 @@ class ExampleMatchesLiveConfTest {
             s.sync,
             s.deleteMissing,
             s.dynamic?.refreshSeconds,
+            s.dynamic?.recycleSeconds,
             s.dynamic?.concurrency,
             s.dynamic?.authorsPerLeg,
             s.dynamic

@@ -950,6 +950,44 @@ was in memory only: a fold persisted, "this url is its own relay" did not, so
 every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
 that — see the verdict section above for the shape and what it does not claim.
 
+**One knob paced two different things, so a 6h refresh also meant 6h of
+idling.** Everything between a dynamic stream waking up and its first downloaded
+byte is derivation: the discovery scans, a normalisation pass over every url
+they carry, `apply` (one `#d` query per 500 urls) and the exclude filter —
+minutes on a full store, to produce a list differing from the last cycle's by a
+handful of urls. The DOWNLOAD is what should repeat often; that is not.
+`recycleSeconds` splits them: the list is held in memory
+(`CachedRelayList`, a local in `loop`, per stream by construction) and the next
+cycle starts that many seconds after the previous one ENDS. `refreshSeconds`
+keeps the meaning it always had — how often the sources are re-read — and is now
+the cache's TTL. Unset, nothing is held and the loop is what it always was.
+
+Three things about it are load-bearing:
+
+- **The alias fold is the second expiry.** `AliasMonitor.generation()` counts
+  verdicts learned this process; a list built at an older generation is thrown
+  out. Without it a stream would go on dialling urls a pass has since folded —
+  a socket, a band and a gate slot each, for events the survivor in the same
+  list is already delivering — until the TTL happened to lapse. The generation
+  is read BEFORE discovery runs, not after: a pass that publishes while
+  discovery is walking has not been applied to its result.
+- **Nothing about DIALLING is cached.** The NIP-66 known-dead set is re-read at
+  the top of every cycle and `HostStrikes` is cycle-local, so a reused list
+  skips a dead relay exactly as a fresh one does. The cache is a list of urls to
+  consider, not a decision about any of them.
+- **A cycle gets a FRESH `CycleTally`, with the same provenance numbers.** The
+  outcome counters are mutated as urls settle, so handing one object to two
+  cycles publishes the second's dispositions added to the first's against a
+  `taken` that counts each url once — a partition that cannot close.
+  `relayListAgeSec` is published beside them because `discovered` otherwise
+  changes meaning silently: on a recycling stream that count can describe a
+  store walk from five hours ago, and two identical documents would read as a
+  network that stopped changing rather than one nobody re-read.
+
+What it costs is a dial per relay per fan-out instead of per refresh period,
+which is a rate against the whole discovered set — not free, and the reason it
+is opt-in rather than defaulted.
+
 **A fold has to take the earlier sync's state with it.** Nothing dials a folded
 url again, so the bands it earned before the fold can never advance — but they
 stay in `SYNC_STATE_FILE`, and that file is what `SyncCoverageReport` charts. The

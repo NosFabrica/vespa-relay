@@ -63,7 +63,13 @@ streams {
         dir = "down"
         sync = "fetch"
         filter = { "kinds": [0, 10002, 10040] }
-        refreshSeconds = 21600     # re-read the sources and re-sync every 6h
+        refreshSeconds = 21600     # re-read the relay list out of the store every 6h
+        # recycleSeconds = 30      # …and start the next cycle 30s after this one
+        #                          # ends, reusing that list. Deriving it is the
+        #                          # expensive part of starting a cycle (a store
+        #                          # walk, a normalisation pass, one #d query per
+        #                          # 500 urls); the download is the part worth
+        #                          # repeating. Unset = one cycle per refresh.
         concurrency = 100          # relays synced at the same time
         # Ignore any single event naming more relays than this — a real outbox
         # list is single digits, and the ones this exists for run to five
@@ -114,7 +120,13 @@ streams {
         # being absent from a relay that was never going to have them.
         ownedKinds = [30382]
         filter = { "kinds": [0, 10002, 30382] }
-        refreshSeconds = 21600     # re-read the sources and re-sync every 6h
+        refreshSeconds = 21600     # re-read the relay list out of the store every 6h
+        # recycleSeconds = 30      # …and start the next cycle 30s after this one
+        #                          # ends, reusing that list. Deriving it is the
+        #                          # expensive part of starting a cycle (a store
+        #                          # walk, a normalisation pass, one #d query per
+        #                          # 500 urls); the download is the part worth
+        #                          # repeating. Unset = one cycle per refresh.
         concurrency = 8            # relays synced at the same time
         exclude = []               # urls or regexes for relays to skip however many sources name them
         relaySource = [
@@ -162,7 +174,13 @@ streams {
             34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089,
             39092, 39701, 40002, 40100, 45001, 45003, 48106
         ] }
-        refreshSeconds = 21600     # re-read the sources and re-sync every 6h
+        refreshSeconds = 21600     # re-read the relay list out of the store every 6h
+        # recycleSeconds = 30      # …and start the next cycle 30s after this one
+        #                          # ends, reusing that list. Deriving it is the
+        #                          # expensive part of starting a cycle (a store
+        #                          # walk, a normalisation pass, one #d query per
+        #                          # 500 urls); the download is the part worth
+        #                          # repeating. Unset = one cycle per refresh.
         concurrency = 100          # relays synced at the same time
         exclude = [
             "wss://purplepag.es/",

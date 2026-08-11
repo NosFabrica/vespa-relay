@@ -181,6 +181,11 @@ internal object SyncProgressReport {
             // is inflated by whatever the alias fold has not decided yet, and the
             // gap between the two numbers IS the disclosure.
             num(o["hosts"])?.let { put("hosts", it) }
+            // Absent only on a file written before this member existed, where it
+            // is omitted rather than defaulted to 0 — "the list was derived for
+            // this cycle" is a claim, and an older router made no such claim
+            // either way. A current one always writes it, 0 included.
+            num(o["relayListAgeSec"])?.let { put("relayListAgeSec", it) }
             put("taken", buildJsonObject { for ((k, v) in byOutcome) put(k, v) })
             put("received", num(o["received"]) ?: 0L)
             // Both halves of the partition, checked on this side.

@@ -53,6 +53,20 @@ internal fun Map<String, String>.syncEnv(
  * of the config's streams (see [select]).
  */
 object RouterConfigLoader {
+    /**
+     * The floor under `recycleSeconds`, well below the 60s `refreshSeconds`
+     * carries.
+     *
+     * They bound different things. `refreshSeconds` paces a store walk, and one
+     * a minute is already more than any relay list changes. This paces the gap
+     * between two fan-outs, i.e. the pause after work that took as long as
+     * dialling every discovered relay — "start again shortly" is what an
+     * operator setting it is asking for, and a 60s floor would refuse it. Not
+     * zero: an empty relay list or a cycle that fails instantly would otherwise
+     * spin.
+     */
+    const val MIN_RECYCLE_SECONDS = 5L
+
     fun fromEnv(env: Map<String, String>): RouterConfig? {
         val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
         val fromFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
@@ -97,6 +111,15 @@ object RouterConfigLoader {
                         ?.trim()
                         ?.toIntOrNull()
                         ?.coerceIn(1, 256) ?: fallback.concurrency,
+                // Unset means "rediscover every cycle", which is what this
+                // router did before the relay list was cacheable at all — so
+                // there is no default to fall back to and `?:` would be wrong.
+                recycleSeconds =
+                    env
+                        .syncEnv("SYNC_DYNAMIC_RECYCLE_SECONDS", "ROUTER_DYNAMIC_RECYCLE_SECONDS")
+                        ?.trim()
+                        ?.toLongOrNull()
+                        ?.coerceAtLeast(MIN_RECYCLE_SECONDS) ?: fallback.recycleSeconds,
             )
         // Window sizing for the automatic negentropy pager. Applied with copy()
         // rather than threaded through parse(): they are runtime tuning, not
@@ -329,6 +352,9 @@ object RouterConfigLoader {
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
+            recycleSeconds =
+                (if (s.hasPath("recycleSeconds")) s.getLong("recycleSeconds") else defaults.recycleSeconds)
+                    ?.coerceAtLeast(MIN_RECYCLE_SECONDS),
             exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,

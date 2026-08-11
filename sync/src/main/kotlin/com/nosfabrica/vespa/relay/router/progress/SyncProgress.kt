@@ -175,6 +175,16 @@ class SyncProgress(
                                             // urls on 850 hosts, in the run that
                                             // motivated this.
                                             put("hosts", t.hosts)
+                                            // How old the list those urls came
+                                            // from was when this cycle started.
+                                            // Without it `discovered` changes
+                                            // meaning silently on a stream that
+                                            // recycles its relay list: the count
+                                            // can describe a store walk from
+                                            // hours ago, and two identical
+                                            // documents cannot be told from a
+                                            // mirror that stopped looking.
+                                            put("relayListAgeSec", t.listAgeSec)
                                             put(
                                                 "taken",
                                                 buildJsonObject {

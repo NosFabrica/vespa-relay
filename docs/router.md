@@ -271,6 +271,41 @@ stream `filter` against **all** of them, `concurrency` at a time (paged REQ wher
 NIP-77 is missing, same as a backfill). Then it sleeps `refreshSeconds` and does
 it again — so the fan-out widens on its own as the store fills.
 
+### `recycleSeconds`: syncing more often than you rediscover
+
+Deriving that relay list is the only expensive thing between a stream waking up
+and the first downloaded byte: the scans above, a normalisation pass over every
+url they carry, an alias `apply` (one `#d` query per 500 urls), then the
+`exclude` filter. On a full store that is minutes of work to produce a list
+which differs from the previous cycle's by a handful of urls — and with one knob
+pacing both, a 6h refresh means the mirror also *idles* for 6h between fan-outs.
+
+Set `recycleSeconds` and the two come apart:
+
+```hocon
+refreshSeconds = 21600   # re-read the sources every 6h
+recycleSeconds = 30      # …but start the next cycle 30s after this one ends
+```
+
+The stream then derives its list once, runs cycles back to back off it, and
+rebuilds it when the list is `refreshSeconds` old — or sooner, as soon as the
+alias monitor publishes a fold verdict, since a list built before that verdict
+would go on dialling urls now known to be one relay. Every cycle that reuses a
+list says so in the log, and `/stats.json` carries `relayListAgeSec` beside the
+url counts, because otherwise `discovered` silently starts describing a store
+walk from hours ago.
+
+Nothing about *dialling* is cached. The NIP-66 known-dead set is re-read at the
+top of every cycle and host strikes are cycle-local, so a relay that died an
+hour ago is skipped on a reused list exactly as it would be on a fresh one.
+
+What it costs: each relay is dialled once per fan-out rather than once per
+refresh period. With bands recorded that is a small ask per relay — everything
+below the band's edge is already settled — but it is still a connection per
+relay per cycle, so treat `recycleSeconds` as a rate against the whole
+discovered set and not as a free tightening. Leave it unset and the loop behaves
+exactly as it always has.
+
 Nothing truncates that set: no cap on relays synced and no popularity floor.
 `concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
 way to leave a relay out. A plain url entry excludes exactly the relay it
