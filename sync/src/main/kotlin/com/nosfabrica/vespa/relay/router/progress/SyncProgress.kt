@@ -175,10 +175,10 @@ class SyncProgress(
                                                         buildJsonObject {
                                                             put("relay", r.relay)
                                                             put("heldForSec", r.heldForSec)
-                                                            // Absent when the worker is not on a
-                                                            // socket — it is still deciding whether
-                                                            // the relay is worth dialling, which is
-                                                            // where most of a fan-out's workers are.
+                                                            // Absent when the worker has no transfer
+                                                            // slot — in the guards, or queued behind
+                                                            // other legs, which is where most of a
+                                                            // fan-out's workers are.
                                                             r.transferringForSec?.let { put("transferringForSec", it) }
                                                             // The pair that separates a real backlog
                                                             // from a walk that will not end.

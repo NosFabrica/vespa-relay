@@ -1335,12 +1335,14 @@ function inFlightLine(inFlight) {
     // Absent means "not on a socket", which is a different fault from a slow
     // download and must not render as one.
     span.append(r.transferringForSec == null
-      ? ", not yet on a socket"
+      ? ", waiting for a transfer slot"
       : `, quiet ${fmtDur(r.quietForSec || 0)}`);
     span.title = r.transferringForSec == null
-      ? "the worker is still deciding whether to dial — a strike check, our Tor proxy, or a TCP connect that has not answered"
-      : `on a socket for ${fmtDur(r.transferringForSec)}; last event ${fmtDur(r.quietForSec || 0)} ago` +
-        ` (or never — the quiet clock runs from the claim when nothing has arrived)`;
+      ? "not admitted to the transfer pool yet — in the guards (an earlier strike, our Tor proxy, the TCP pre-probe)" +
+        " or queued behind other legs. With a long hold this says our own pool is saturated, not that the relay is slow."
+      : `holding a transfer slot for ${fmtDur(r.transferringForSec)}; last event ${fmtDur(r.quietForSec || 0)} ago` +
+        ` (or never — the quiet clock runs from the claim when nothing has arrived).` +
+        ` The connect happens inside the slot, so this covers a handshake that never completes.`;
     line.appendChild(span);
   });
   // Never silent about the tail: most of a fan-out's workers are connect

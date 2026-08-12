@@ -207,10 +207,13 @@ internal object SyncVocabulary {
             )
             put(
                 "transferringForSec",
-                "How long that leg has been on a socket. ABSENT means it is not on one — it is still deciding whether " +
-                    "the relay is worth dialling at all, which is where most of a fan-out's workers are at any " +
-                    "instant. Absent with a large `heldForSec` is a connect that is not answering; present with a " +
-                    "large one is a transfer that is not finishing.",
+                "How long that leg has held a TRANSFER SLOT — not how long it has been on a socket, because the " +
+                    "websocket connect happens inside the slot and a url that never connects at all still holds one " +
+                    "while it tries. ABSENT means it has not been admitted to the pool: it is in the guards (an " +
+                    "earlier strike, our Tor proxy, the TCP pre-probe) or queued behind other legs, which is where " +
+                    "most of a fan-out's workers are at any instant — 8 slots routinely carry 128 workers. Absent " +
+                    "with a large `heldForSec` says OUR pool is saturated; present with a large one says a slot is " +
+                    "committed to a transfer that is not finishing.",
             )
             put(
                 "events",

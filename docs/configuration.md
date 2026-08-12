@@ -87,7 +87,7 @@ queries, publishes it as a public JSON document, and charts it on a page:
   it left out disclosed. `inFlight` does the same for the relays a stream is
   holding RIGHT NOW: `pending` read 2 on a stream that had received two events
   in eleven hours and nothing recorded which two urls, so each row carries the
-  name plus `heldForSec`, `transferringForSec` (absent = not on a socket at all),
+  name plus `heldForSec`, `transferringForSec` (absent = holds no transfer slot),
   `events` and `quietForSec` — the last being what separates a relay with a real
   backlog from a walk that will not end. `staleForSec` is the heartbeat — how long the router
   has gone without writing, measured against this rollup's clock — and anything

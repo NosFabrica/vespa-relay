@@ -802,7 +802,7 @@ a real backlog and a walk that cannot terminate are both "held for hours":
 | member | says |
 |---|---|
 | `heldForSec` | since the rotation CLAIMED it — before the strike checks, the TCP pre-probe and the queue for a transfer slot, not just the download |
-| `transferringForSec` | since it went on a socket. **Absent means it is not on one**, which is where most of a fan-out's workers are at any instant; absent with a large `heldForSec` is a connect that is not answering |
+| `transferringForSec` | since it took a **transfer slot** — not since it went on a socket, because the connect happens inside the slot and a url that never connects still holds one while it tries (measured). **Absent means no slot**: in the guards, or queued behind other legs, which is where most of a fan-out's workers are. Absent with a large `heldForSec` says *our* pool is saturated |
 | `events` | what that leg has received so far, counted as they arrive rather than when the leg ends — the leg worth watching is the one that has not ended |
 | `quietForSec` | since the last one, or since the claim if none ever came. **The one that decides**: events still landing is a slot well spent, this climbing is a walk that is not going to end |
 

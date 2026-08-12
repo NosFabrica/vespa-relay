@@ -72,32 +72,42 @@ class InFlight(
      * One relay a worker is holding, and the clocks that say what it is doing
      * with it.
      *
-     * Three questions, in the order an operator asks them: is it even dialled
-     * ([transferringForSec]), has it given us anything ([events]), and is it
-     * still giving ([quietForSec]). Naming the relay without them only moves the
-     * guesswork — a relay held for eleven hours is doing something reasonable
-     * about as often as it is not.
+     * Three questions, in the order an operator asks them: has it got a transfer
+     * slot at all ([transferringForSec]), has it given us anything ([events]),
+     * and is it still giving ([quietForSec]). Naming the relay without them only
+     * moves the guesswork — a relay held for eleven hours is doing something
+     * reasonable about as often as it is not.
      */
     class Relay(
         val relay: String,
         /**
          * Since the rotation CLAIMED it — which is before the guards, the TCP
          * pre-probe and the wait for a transfer slot, not just the transfer.
-         * A relay held for hours with this the only clock running is queued or
-         * probing, and that is a different fault from a slow download.
+         * A relay held for hours with this the only clock running never got a
+         * slot, and that is a different fault from a slow download.
          */
         val heldForSec: Long,
         /**
-         * …and since it went on a socket, or null when it is not on one yet.
+         * …and since it took a TRANSFER SLOT, or null when it has not got one.
+         *
+         * The slot, not the socket, and the difference was measured rather than
+         * assumed: `InFlightReportProbe` watched a url that could not be
+         * connected to at all report `transferring 0s` for its whole life and
+         * end `CANNOT_CONNECT`. The clock starts when the worker is admitted to
+         * the pool and the connect happens INSIDE it, so a leg stuck on a
+         * websocket handshake is `transferring` and not absent.
          *
          * Absent is the ordinary answer for most of the set and is not missing
-         * data: a worker spends most of its life deciding whether the relay is
-         * worth dialling at all. Present and large is the interesting case —
-         * that is a transfer that is not ending.
+         * data: a stream with 8 slots routinely has 128 workers, and the other
+         * 120 are in the guards (strikes, our Tor proxy, the TCP pre-probe) or
+         * queued for a slot. Absent with a large [heldForSec] therefore says the
+         * POOL is saturated — this worker is waiting behind other legs — which
+         * is a fact about our own capacity. Present and large is the other one:
+         * a slot committed to a transfer that is not ending.
          */
         val transferringForSec: Long?,
         /**
-         * Events this leg has received at the socket so far.
+         * Events this leg has received off the wire so far.
          *
          * The leg's own count, not the stream's: `cycle.received` is every leg
          * added together and cannot single one out. Counted before ingest, like

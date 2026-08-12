@@ -173,10 +173,10 @@ internal object SyncProgressReport {
                         buildJsonObject {
                             put("relay", relay)
                             put("heldForSec", num(row["heldForSec"]) ?: 0)
-                            // Absent means "not on a socket", which is a
+                            // Absent means "holds no transfer slot", which is a
                             // statement. Defaulting it to 0 would turn a worker
-                            // stuck on a connect into one that just started
-                            // transferring — the opposite reading.
+                            // queued behind a saturated pool into one that just
+                            // took a slot — the opposite reading.
                             num(row["transferringForSec"])?.let { put("transferringForSec", it) }
                             put("events", num(row["events"]) ?: 0)
                             put("quietForSec", num(row["quietForSec"]) ?: 0)

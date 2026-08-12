@@ -83,14 +83,15 @@ internal class RelayRotation {
      * One worker's claim on one relay.
      *
      * Two clocks rather than one, because "held for six hours" says nothing
-     * about WHERE the six hours went: a leg waiting on a connect that will never
-     * answer and a transfer that cannot terminate are different faults with
-     * different fixes, and they are indistinguishable from the claim alone.
+     * about WHERE the six hours went: a leg that never got a transfer slot and
+     * one that has held a slot for six hours are different faults with different
+     * fixes — the first is our own pool being saturated, the second is one
+     * relay — and they are indistinguishable from the claim alone.
      */
     private class Hold(
         val sinceMs: Long,
     ) {
-        /** Set while the worker is on a socket — see [transferring]. */
+        /** Set while the worker holds a transfer slot — see [transferring]. */
         @Volatile
         var transferringSinceMs: Long? = null
 
@@ -180,7 +181,7 @@ internal class RelayRotation {
     }
 
     /**
-     * Relays on a socket right now, which is NOT [busyCount].
+     * Relays holding a TRANSFER SLOT right now, which is NOT [busyCount].
      *
      * The two are far apart by design and reporting one as the other was a
      * small lie this codebase does not get to tell. A worker spends most of its
@@ -189,6 +190,12 @@ internal class RelayRotation {
      * stream with 8 transfer slots routinely has 128 workers, of which 120 are
      * probing or queued. `busyCount` is how much of the ADMISSION gate is
      * committed; this is how much of the transfer pool is.
+     *
+     * "Slot", not "socket", and the wording is load-bearing: the websocket
+     * connect happens INSIDE the block [transferring] wraps, so a url that
+     * cannot be connected to at all counts here for as long as it is trying.
+     * Measured — `InFlightReportProbe` watched exactly that and got
+     * `CANNOT_CONNECT` at the end of it.
      */
     fun transferringCount(): Int = transferring.get()
 
@@ -196,7 +203,7 @@ internal class RelayRotation {
      * Run [block] counted as an open transfer on [url].
      *
      * The url is what makes [held] able to say which of a stuck leg's clocks is
-     * running — the claim's, or the socket's. Tolerates a url with no hold (the
+     * running — the claim's, or the slot's. Tolerates a url with no hold (the
      * caller released it, or never took it) rather than asserting: this is
      * reporting, and a report that can throw into the sync path is worse than a
      * report with a gap in it.

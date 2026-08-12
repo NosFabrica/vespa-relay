@@ -110,14 +110,16 @@ class StreamPhases {
              */
             val running: Int = 0,
             /**
-             * …and of those, how many are actually on a socket.
+             * …and of those, how many hold a transfer SLOT.
              *
-             * Published separately because the gap is large and reporting the
-             * wider number alone overstated the work: a stream with 8 transfer
-             * slots routinely shows 128 workers, of which 120 are waiting on a
-             * connect to a host that will never answer. One number for both
-             * read as "128 relays syncing" on a stream that cannot sync more
-             * than 8.
+             * The slot, not the socket: the websocket connect happens inside the
+             * slot, so a url that never connects counts here while it tries
+             * (measured — `InFlightReportProbe`). Published separately because
+             * the gap to [running] is large and reporting the wider number alone
+             * overstated the work: a stream with 8 transfer slots routinely
+             * shows 128 workers, of which 120 are in the guards or queued. One
+             * number for both read as "128 relays syncing" on a stream that
+             * cannot sync more than 8.
              */
             val transferring: Int = 0,
         ) : Phase

@@ -512,11 +512,24 @@ that leg has received, counted as they ARRIVE rather than when the leg returns �
 the leg worth watching is the one that has not returned, so a boundary counter
 reports zero for exactly as long as the fault lasts; and `quietForSec` is the one
 that decides, running from the last event or from the claim if none ever came.
-The measured shapes: directory.yabu.me holding a slot with events still landing
-is a 1.2M-event backlog and the slot is well spent, while the purplepag.es loop
-is `transferring` for hours with `events` frozen and `quietForSec` climbing —
-quartz's own matcher discards those pages before our callback, so the leg reads
-as genuinely silent, which is the true finding rather than a missing one.
+The measured shapes, from `InFlightReportProbe` against live relays:
+directory.yabu.me streamed **84,359 events in 42s** (~2,000/s) with `quietForSec`
+pinned at 0 for the whole run — a real backlog, slot well spent — while the
+purplepag.es loop is `transferring` for hours with `events` frozen and
+`quietForSec` climbing, because quartz's own matcher discards those pages before
+our callback, so the leg reads as genuinely silent. That is the true finding
+rather than a missing one. `events` was checked against `fetchAllPages`'
+own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
+
+**`transferringForSec` is the transfer SLOT, not the socket, and the probe is
+what caught the difference.** A url that could not be connected to at all
+reported `transferring 0s` for its whole life and ended `CANNOT_CONNECT`: the
+websocket connect happens INSIDE the block `RelayRotation.transferring` wraps.
+So ABSENT means "not admitted to the pool" — in the guards, or queued behind
+other legs — and absent with a long `heldForSec` is a statement about OUR pool
+being saturated, not about their server. The docs said the opposite before the
+probe ran, which is the whole argument for running one: the plumbing was right
+and the description was not, and no hermetic test can tell those apart.
 
 **The next pass will not start until half the transfer pool is free**
 (`DynamicSync.poolHeadroom`, `awaitPoolHeadroom`). Passes overlap by design, but

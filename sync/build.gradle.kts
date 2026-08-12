@@ -44,10 +44,12 @@ tasks.test {
     useJUnitPlatform()
     // Forwarded, not inherited: a system property on the Gradle command line
     // reaches the DAEMON, and the tests run in a forked JVM that never sees it.
-    // These two dial the public internet, so they stay off unless asked for by
-    // name — `RealRelayDrainProbe` and `DeleteMissingBandProbe`.
+    // These three dial the public internet, so they stay off unless asked for
+    // by name — `RealRelayDrainProbe`, `DeleteMissingBandProbe` and
+    // `InFlightReportProbe`.
     System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
     System.getProperty("deleteMissingBandProbe")?.let { systemProperty("deleteMissingBandProbe", it) }
+    System.getProperty("inFlightProbe")?.let { systemProperty("inFlightProbe", it) }
     // Same forwarding, same reason. `SyncBandsProdScaleProbe` builds a ~14MB
     // corpus and hands the two files to the relay-side probe through
     // `prodScaleDir`, so both properties have to cross into the fork.
