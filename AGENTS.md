@@ -995,6 +995,22 @@ and nothing else. Four consequences, each with its own home:
   one reuses what it has — a diff against a slightly stale set costs some
   duplicate downloads that ingest drops, which is the cheap side against a third
   gigabyte-scale list on the heap.
+
+  **The consequence is not obvious from the bound, and is pinned by a test: ONE
+  long leg freezes the snapshot for its whole stream.** The straggler holds
+  generation A, the next pass installs B and thereby RETIRES A, and nothing may
+  be built over an occupied retirement slot — so a ten-hour leg buys every other
+  relay on that stream exactly one refresh and then the same set for ten hours.
+  Probed rather than assumed: `worthRebuilding` says yes at every hour and
+  `mayInstall` says no at every hour but the first. It is logged with the
+  offending urls NAMED — `busyUrls()` at the top of a pass is exactly the
+  stragglers, since that pass has handed nothing out yet — because "reusing the
+  id snapshot" repeating for hours is otherwise a symptom with no subject.
+
+  And a pass is **not** a walk over history: no shared cursor, no lockstep
+  across relays, no snapshot advancing mid-pass. The set is built once before
+  the walk and is static for it, and each relay's whole outstanding history —
+  every leg `bands.legs()` hands back, past and present — is one worker's job.
 - **The stream gate moved.** It used to wrap the whole fan-out; on a rotation
   that would be forever, since a stream that never finishes never releases and
   every other id-set stream plus `StaticBackfill` would queue behind it for the
