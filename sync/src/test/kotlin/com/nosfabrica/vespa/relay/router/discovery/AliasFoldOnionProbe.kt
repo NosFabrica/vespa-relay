@@ -103,6 +103,12 @@ class AliasFoldOnionProbe {
             println("[skip] AliasFoldOnionProbe — set -DonionFoldProbe=true to dial a hidden service")
             return
         }
+        // Before anything is built: `-DonionFoldUrls` is free text, and a value
+        // that normalises to nothing would otherwise reach `urls.first()`.
+        if (urls.size < 2) {
+            println("[skip] AliasFoldOnionProbe — need at least two urls to compare, got ${urls.size}")
+            return
+        }
         val socks = System.getProperty("onionFoldSocks") ?: System.getenv("SYNC_TOR_SOCKS") ?: "127.0.0.1:9050"
         val settings = TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to socks))
         if (settings == null) {

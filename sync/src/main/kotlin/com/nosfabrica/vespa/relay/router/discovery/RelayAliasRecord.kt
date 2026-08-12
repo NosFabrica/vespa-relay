@@ -107,6 +107,16 @@ class RelayAliasRecord(
      * own `d`: pointing elsewhere is a fold, pointing at itself is the cleared
      * verdict. Normalising both sides first, so `wss://nos.lol` and
      * `wss://nos.lol/` cannot read as a fold of a url onto itself.
+     *
+     * **THROWS when the store cannot answer, and must go on doing so.** A
+     * fan-out of 16,000 urls is 30-odd chunks and this used to swallow a failed
+     * one into an empty result — while [AliasFolding.adopt] forgets every
+     * verdict it holds before adopting what comes back, precisely on the promise
+     * that a failed read arrives as a failure. One unlucky query therefore
+     * unfolded up to [QUERY_CHUNK] urls for that cycle: they were dialled as
+     * their own relays, re-probed for a verdict already published, and nothing
+     * anywhere said so. A partial answer is not "no verdict", and the only
+     * reading that keeps the fold honest is to let the caller keep what it has.
      */
     suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
         val self = signer?.pubKey ?: return Verdicts()
@@ -116,9 +126,7 @@ class RelayAliasRecord(
         val distinct = HashSet<NormalizedRelayUrl>()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
             val held: List<Event> =
-                runCatching {
-                    store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
-                }.getOrNull() ?: continue
+                store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
             for (event in held) {
                 if (event.createdAt < floor) continue
                 val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue

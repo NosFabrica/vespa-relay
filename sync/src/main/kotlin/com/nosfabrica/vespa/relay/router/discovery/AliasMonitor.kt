@@ -54,11 +54,13 @@ import java.util.concurrent.atomic.AtomicLong
  * works from the current shape of the network, and a stream that has stopped
  * discovering a url stops paying for it.
  *
- * Work is kept per stream and not merged into one set because the two callbacks
+ * Work is kept per stream and not merged into one set because the callbacks
  * belong to the stream: [Work.canDial] is its transport guard (a stream without
- * Tor must not probe a `.onion`) and [Work.onEvent] is its ingest, filtered by
- * its own window. Merging them would mean guessing which stream a downloaded
- * event belongs to.
+ * Tor must not probe a `.onion`), [Work.onEvent] is its ingest, filtered by
+ * its own window, and [Work.sockets] is its connection refcount — the one thing
+ * that can close a probe's websocket without closing it under another stream's
+ * transfer. Merging them would mean guessing which stream a downloaded event
+ * belongs to.
  */
 class AliasMonitor(
     private val pass: Pass,
@@ -82,6 +84,7 @@ class AliasMonitor(
             candidates: List<NormalizedRelayUrl>,
             canDial: suspend (NormalizedRelayUrl) -> Boolean,
             onEvent: suspend (Event) -> Unit,
+            sockets: AliasFolding.Sockets,
         ): Int
     }
 
@@ -90,6 +93,7 @@ class AliasMonitor(
         val candidates: List<NormalizedRelayUrl>,
         val canDial: suspend (NormalizedRelayUrl) -> Boolean,
         val onEvent: suspend (Event) -> Unit,
+        val sockets: AliasFolding.Sockets,
     )
 
     private val pending = ConcurrentHashMap<String, Work>()
@@ -131,9 +135,10 @@ class AliasMonitor(
         candidates: List<NormalizedRelayUrl>,
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
         onEvent: suspend (Event) -> Unit = {},
+        sockets: AliasFolding.Sockets = AliasFolding.Sockets.NONE,
     ) {
         if (candidates.size < 2) return
-        pending[label] = Work(candidates, canDial, onEvent)
+        pending[label] = Work(candidates, canDial, onEvent, sockets)
     }
 
     /**
@@ -183,7 +188,7 @@ class AliasMonitor(
         var learned = 0
         for ((label, work) in pending.entries.map { it.key to it.value }) {
             try {
-                val n = pass.measure(label, work.candidates, work.canDial, work.onEvent)
+                val n = pass.measure(label, work.candidates, work.canDial, work.onEvent, work.sockets)
                 learned += n
                 // Per stream, not once at the end: a pass over many streams can
                 // run for a quarter of an hour, and a stream whose fan-out

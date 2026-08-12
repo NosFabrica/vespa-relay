@@ -626,6 +626,19 @@ internal class DynamicSync(
             candidates = candidates,
             canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
             onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
+            // A fingerprint is a websocket, and quartz closes none of its own:
+            // the pass has to hand its connections back through the same
+            // refcount the fan-out uses, or it leaves up to `probesPerCycle` of
+            // them open against a 1024-socket dispatcher — worst on exactly the
+            // hosts it probes first, where the per-host budget is 20.
+            sockets =
+                object : AliasFolding.Sockets {
+                    override fun claim(url: NormalizedRelayUrl) {
+                        inFlight.merge(url, 1, Int::plus)
+                    }
+
+                    override fun release(url: NormalizedRelayUrl) = releaseSocket(url)
+                },
         )
         // Each member is a difference between two lists this code
         // holds, so the identity closes for every case including a

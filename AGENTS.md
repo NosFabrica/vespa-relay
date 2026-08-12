@@ -1310,6 +1310,49 @@ retrying once at the smaller page), so a dead onion group holds one of the fold'
 16 permits for minutes rather than seconds — background work on a 6h clock
 against the handful of relays Tor reaches.
 
+**Three more ways a url was permanently unmeasurable, all found auditing the
+above and all the same silence from outside:**
+
+- **AUTH.** A relay that gates reads behind NIP-42 answers the fingerprint's REQ
+  with `CLOSED auth-required`. `fetchAll` treats a CLOSED as terminal and returns
+  EMPTY — while `RelayAuthenticator`, attached to the very same client, is still
+  signing the challenge on that socket. The AUTH lands, quartz re-fires the
+  subscription, and the events arrive at a caller that returned seconds ago. The
+  fold never had a window for any auth-gated relay, and 120 of the 732 urls the
+  unreachability re-probe found answering perfectly well had challenged us.
+  `AliasProbe.over` asks through `fetchAllWithHooks` with
+  `pendingOnAuthRequired = true`, which is quartz's own parameter for exactly
+  this. Note the fold is built only when there is a signer, and so is the
+  authenticator — a pass is never unauthenticated by configuration.
+- **NULL AND EMPTY collapsed in the live wiring.** `AliasProbe` is written around
+  "returns null when the url could not be asked at all — which is NOT the same as
+  an empty page", and `over()` used `fetchAll`, which returns a list whatever
+  happened. So a relay that never spoke arrived as one holding nothing, and the
+  empty-page retry at `FALLBACK_PROBE_PAGE` was paid on every dead url — two idle
+  windows instead of one, and at the Tor budget that is minutes. `doneOut` tells
+  them apart now: EOSE *or* a CLOSED means the relay spoke (so the smaller-page
+  retry a `blocked: limit too high` needs still happens), and only `cannot:` or a
+  window that lapsed in silence is null.
+- **A failed store read unfolded the fan-out, silently.** `AliasFolding.adopt`
+  forgets every verdict before adopting what comes back — that is what makes the
+  store authoritative and the 30-day TTL mean anything — on the documented
+  promise that a failure arrives AS a failure. `RelayAliasRecord.load` swallowed
+  a failed chunk into an empty result instead, so one unlucky query silently
+  unfolded up to 500 urls for that cycle. `load` throws now, and
+  `AliasFoldingTest` pins it against a store that refuses every read.
+
+**A fingerprint is a websocket, and quartz closes none of its own.** `fetchAll`
+unsubscribes and leaves the connection in the pool; the client's keep-alive only
+ever RECONNECTS. `DynamicSync.releaseSocket` is the only thing in this repo that
+closes a dynamic relay's socket, and the fold never called it — so a pass left
+one socket per url it measured, up to `probesPerCycle`, against a dispatcher
+budget of 1024 for the whole process and **20 per host**. The fold probes widest
+group first, which is precisely the host wearing 55 urls. `AliasFolding.Sockets`
+is the stream's own refcount handed to the pass: claim before the dial, release
+in a `finally`. It has to be the stream's, because that refcount is what stops a
+probe closing a socket a fan-out leg is transferring on — the failure
+`DynamicSync.inFlight` was added for in the first place.
+
 **The other half of that question needs no probe, and answer it FIRST.** The
 verdict is a signed kind-30166 addressed by the url, served by this relay:
 `["REQ","v",{"kinds":[30166],"authors":["<this relay's pubkey>"],"#d":[<the urls>]}]`.

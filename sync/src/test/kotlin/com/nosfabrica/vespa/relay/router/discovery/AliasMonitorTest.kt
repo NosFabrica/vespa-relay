@@ -58,6 +58,7 @@ class AliasMonitorTest {
             candidates: List<NormalizedRelayUrl>,
             canDial: suspend (NormalizedRelayUrl) -> Boolean,
             onEvent: suspend (Event) -> Unit,
+            sockets: AliasFolding.Sockets,
         ): Int {
             calls.incrementAndGet()
             passes += label to candidates
@@ -171,7 +172,7 @@ class AliasMonitorTest {
             // rediscovery, which is the cost the cache exists to avoid.
             var learn = 0
             val pass =
-                AliasMonitor.Pass { _, _, _, _ -> learn }
+                AliasMonitor.Pass { _, _, _, _, _ -> learn }
             val m = monitor(pass)
             m.submit("outbox", listOf(a, b), canDial = { true })
 
@@ -192,7 +193,7 @@ class AliasMonitorTest {
         runBlocking {
             // A verdict is about a URL, and two streams routinely discover the
             // same one. There is nothing per stream to version.
-            val pass = AliasMonitor.Pass { label, _, _, _ -> if (label == "outbox") 4 else 0 }
+            val pass = AliasMonitor.Pass { label, _, _, _, _ -> if (label == "outbox") 4 else 0 }
             val m = monitor(pass)
             m.submit("outbox", listOf(a, b), canDial = { true })
             m.submit("assertions", listOf(a, c), canDial = { true })

@@ -22,7 +22,7 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllWithHooks
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
@@ -274,6 +274,33 @@ class AliasProbe(
          * handshake budget comes back empty while its circuit is still being
          * built, and an empty window is a url that can never fold. See
          * `probeIdleMs`, which is what the engine passes here.
+         *
+         * **`fetchAllWithHooks` rather than `fetchAll`, for the two things this
+         * class is built on and the plain call cannot express.**
+         *
+         * `pendingOnAuthRequired`, because a relay that gates reads behind
+         * NIP-42 answers a REQ with `CLOSED auth-required` — which `fetchAll`
+         * takes as terminal and returns EMPTY on, while the router's
+         * `RelayAuthenticator` is still signing the challenge on the same
+         * socket. The AUTH lands, quartz re-fires the subscription, and the
+         * events arrive at a caller that returned seconds ago. Kept pending, the
+         * fetch waits for its own AUTH and collects the answer. Every relay
+         * gated that way was otherwise permanently unfoldable: no window, no
+         * verdict, every one of its urls dialled forever. (Measured in this
+         * fan-out: of 732 urls a re-probe found answering perfectly well, 120
+         * challenged us for AUTH.) It costs the idle window on a relay whose
+         * AUTH never satisfies, which is the shape of every other failure here.
+         *
+         * `doneOut`, because NULL AND EMPTY ARE DIFFERENT ANSWERS and the plain
+         * call flattens them: it returns a list, so a relay that never spoke
+         * arrives here as one that holds nothing. That is the distinction
+         * [fingerprint] is written around, and losing it cost a second window on
+         * every dead url — the empty-page retry at [RelayAliases.FALLBACK_PROBE_PAGE]
+         * fired for hosts that had not answered at all. A relay that reached
+         * EOSE *or refused with a CLOSED* did speak: its empty list is an
+         * answer, and the smaller-page retry that a `blocked: limit too high`
+         * needs still happens. Only `cannot:` and a window that lapsed in
+         * silence are null.
          */
         fun over(
             client: NostrClient,
@@ -282,10 +309,24 @@ class AliasProbe(
         ): AliasProbe =
             AliasProbe(
                 fetch = { url, size, until, kinds ->
-                    client.fetchAll(url, Filter(limit = size, until = until, kinds = kinds), idleMs(url))
+                    val done = HashMap<NormalizedRelayUrl, String>()
+                    val events =
+                        client.fetchAllWithHooks(
+                            filters = mapOf(url to listOf(Filter(limit = size, until = until, kinds = kinds))),
+                            idleTimeoutMs = idleMs(url),
+                            pendingOnAuthRequired = true,
+                            doneOut = done,
+                        ) { _, _ -> true }
+                    // "Spoke" is any terminal state that came from the relay.
+                    // `cannot:` is our own transport failing and is exactly the
+                    // case null exists for.
+                    if (done.values.any { !it.startsWith(CANNOT_CONNECT) }) events.map { it.second } else null
                 },
                 target = target,
             )
+
+        /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */
+        private const val CANNOT_CONNECT = "cannot:"
 
         /**
          * What to ask a relay that will not take a bare filter. Kind 1 because

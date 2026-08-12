@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -116,6 +117,47 @@ class AliasFolding(
     }
 
     /**
+     * The stream's socket bookkeeping, because a fingerprint opens a websocket
+     * and NOTHING in quartz ever closes one.
+     *
+     * `fetchAll` unsubscribes when it returns — it sends a CLOSE — and leaves
+     * the connection in the pool; the client's own keep-alive only ever
+     * RECONNECTS. So a pass that fingerprints up to [DEFAULT_PROBES_PER_CYCLE]
+     * urls used to leave up to that many sockets open behind it, against a
+     * router whose whole dispatcher budget is 1024 and whose per-HOST budget is
+     * 20 — and the fold probes widest group first, i.e. the hosts wearing 55
+     * urls. Every one of those sockets is a slot the fan-out cannot have.
+     *
+     * It is the STREAM's, not this component's, for the reason
+     * `DynamicSync.releaseSocket` exists at all: two streams routinely land on
+     * one relay, so closing a socket is only safe behind a refcount, and this
+     * pass runs alongside a fan-out that may be holding the same url. Claiming
+     * before the dial is what puts the probe INTO that count instead of
+     * decrementing somebody else's.
+     */
+    interface Sockets {
+        /** Take a share of this url's socket before dialling it. */
+        fun claim(url: NormalizedRelayUrl)
+
+        /** Give it back — and close the socket if nothing else holds one. */
+        fun release(url: NormalizedRelayUrl)
+
+        companion object {
+            /**
+             * Leaves every socket where it is. The honest default for a caller
+             * with no refcount to offer: leaking a connection is recoverable,
+             * closing one out from under a live transfer is not.
+             */
+            val NONE =
+                object : Sockets {
+                    override fun claim(url: NormalizedRelayUrl) = Unit
+
+                    override fun release(url: NormalizedRelayUrl) = Unit
+                }
+        }
+    }
+
+    /**
      * Fingerprint what [apply] could not answer, and publish what that proves.
      *
      * The dialling half, and the reason the two are separate: this walks up to
@@ -131,13 +173,16 @@ class AliasFolding(
      * applies — so a probe never dials what the caller would refuse to.
      * [onEvent] receives everything the probes downloaded; hand it an ingest and
      * a fingerprint stops being wasted bandwidth. Discard it and the probe is
-     * pure overhead, which is a choice a caller is allowed to make.
+     * pure overhead, which is a choice a caller is allowed to make. [sockets] is
+     * the caller's connection refcount: without one every fingerprint leaves a
+     * websocket behind — see [Sockets].
      */
     suspend fun measure(
         label: String,
         candidates: List<NormalizedRelayUrl>,
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
         onEvent: suspend (Event) -> Unit = {},
+        sockets: Sockets = Sockets.NONE,
     ): Int {
         if (candidates.size < 2) return 0
         val startedMs = System.currentTimeMillis()
@@ -151,8 +196,9 @@ class AliasFolding(
         if (groups.isNotEmpty()) {
             val budget = AtomicInteger(probesPerCycle)
             val gate = Semaphore(concurrency)
+            // The pass-wide count of folds, and nothing else: a second map of
+            // the cleared urls was accumulated here and never read.
             val newVerdicts = ConcurrentHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
-            val newCleared = ConcurrentHashMap<NormalizedRelayUrl, Cleared>()
             val taken = AtomicInteger()
             coroutineScope {
                 // Widest group first: a host wearing 55 urls is 54 dials a
@@ -212,17 +258,29 @@ class AliasFolding(
                         // nothing, and did it again every pass, forever. The
                         // leader alone still costs one dial per pass, which is
                         // the right price for noticing it has recovered.
+                        var dialled = false
                         val lead =
                             gate.withPermit {
                                 if (!canDial(leader)) return@withPermit null
+                                dialled = true
                                 taken.incrementAndGet()
-                                probe.leaderPrint(leader, anchor, onEvent)
+                                sockets.claim(leader)
+                                try {
+                                    probe.leaderPrint(leader, anchor, onEvent)
+                                } finally {
+                                    sockets.release(leader)
+                                }
                             }
                         if (lead == null || !aliases.usableWindow(lead.ids)) {
                             // Hand back what this group reserved and did not
                             // spend, or the budget is consumed by intentions and
-                            // a later group goes unprobed for it.
-                            budget.addAndGet(wanted.size - 1)
+                            // a later group goes unprobed for it. A leader the
+                            // transport guard DECLINED cost nothing at all, so
+                            // the whole reservation goes back — refunding
+                            // `size - 1` there paid a fingerprint that was never
+                            // taken, out of the budget of a group that would
+                            // have used it.
+                            budget.addAndGet(if (dialled) wanted.size - 1 else wanted.size)
                             return@launch
                         }
                         prints[leader] = lead.ids
@@ -233,7 +291,12 @@ class AliasFolding(
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit
                                         taken.incrementAndGet()
-                                        probe.fingerprint(url, anchor, lead.kinds, onEvent)?.let { prints[url] = it }
+                                        sockets.claim(url)
+                                        try {
+                                            probe.fingerprint(url, anchor, lead.kinds, onEvent)?.let { prints[url] = it }
+                                        } finally {
+                                            sockets.release(url)
+                                        }
                                     }
                                 }
                             }
@@ -242,7 +305,7 @@ class AliasFolding(
                         val result = aliases.learn(group, leader, prints)
                         // This group's share of the pass, kept separately so it
                         // can be written the moment the group is decided. The
-                        // pass-wide maps are only counters for the summary line.
+                        // pass-wide map is only a counter for the summary line.
                         val verdicts = LinkedHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
                         val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
                         for ((alias, canonical) in result.folded) {
@@ -274,7 +337,6 @@ class AliasFolding(
                                         ?: 0
                                 cleared[url] = Cleared(print.size, "$compared compared peer(s)", best)
                             }
-                            newCleared[url] = cleared.getValue(url)
                         }
 
                         // WRITTEN AS THIS GROUP FINISHES, not when the pass
@@ -332,7 +394,18 @@ class AliasFolding(
      * empty result rather than take a fan-out down with it.
      */
     private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
-        val held = runCatching { record.load(candidates) }.getOrNull() ?: return
+        val held =
+            try {
+                record.load(candidates)
+            } catch (e: CancellationException) {
+                // Not a store failure — the scope is shutting down, and
+                // swallowing it here would let a cancelled cycle carry on
+                // rewriting the verdict cache. `runCatching` catches it, which
+                // is why this is spelled out.
+                throw e
+            } catch (e: Exception) {
+                return
+            }
         // FORGET FIRST, so the store is authoritative on every pass and its TTL
         // means something. `load` already refuses a record past its TTL, but a
         // verdict adopted while it was still fresh used to live in memory for
