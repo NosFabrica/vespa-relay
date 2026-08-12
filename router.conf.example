@@ -64,11 +64,18 @@ streams {
         sync = "fetch"
         filter = { "kinds": [0, 10002, 10040] }
         refreshSeconds = 21600     # re-read the relay list out of the store every 6h
-        # recycleSeconds = 30      # …and start the next cycle 30s after this one
-        #                          # walk ends, reusing that list. Deriving it is the
-        #                          # expensive part of starting a cycle (a store
-        #                          # walk, a normalisation pass, one #d query per
-        #                          # 500 urls); the download is the part worth
+        # recycleSeconds = 30      # …and start the next pass 30s after this one
+        #                          # finishes HANDING OUT its list — not after the
+        #                          # relays finish, which is the whole point: the
+        #                          # slow ones keep their slots and run on into the
+        #                          # next pass. So this is a floor on the gap
+        #                          # between laps, NOT a cycle period: the period
+        #                          # is the walk plus this, and the walk is paced by
+        #                          # the worker pool (18,687 urls took 26:29 to hand
+        #                          # out, against which 30s is a tail). Reusing the
+        #                          # list is what it buys — deriving one is a store
+        #                          # walk, a normalisation pass and one #d query per
+        #                          # 500 urls, while the download is the part worth
         #                          # repeating. Unset = one pass per refresh.
         concurrency = 100          # worker pool: relays synced at the same time.
                                    # A pass ends when the last url is handed out,
@@ -124,11 +131,18 @@ streams {
         ownedKinds = [30382]
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600     # re-read the relay list out of the store every 6h
-        # recycleSeconds = 30      # …and start the next cycle 30s after this one
-        #                          # walk ends, reusing that list. Deriving it is the
-        #                          # expensive part of starting a cycle (a store
-        #                          # walk, a normalisation pass, one #d query per
-        #                          # 500 urls); the download is the part worth
+        # recycleSeconds = 30      # …and start the next pass 30s after this one
+        #                          # finishes HANDING OUT its list — not after the
+        #                          # relays finish, which is the whole point: the
+        #                          # slow ones keep their slots and run on into the
+        #                          # next pass. So this is a floor on the gap
+        #                          # between laps, NOT a cycle period: the period
+        #                          # is the walk plus this, and the walk is paced by
+        #                          # the worker pool (18,687 urls took 26:29 to hand
+        #                          # out, against which 30s is a tail). Reusing the
+        #                          # list is what it buys — deriving one is a store
+        #                          # walk, a normalisation pass and one #d query per
+        #                          # 500 urls, while the download is the part worth
         #                          # repeating. Unset = one pass per refresh.
         concurrency = 8            # worker pool: relays synced at the same time
         exclude = []               # urls or regexes for relays to skip however many sources name them
@@ -178,11 +192,18 @@ streams {
             39092, 39701, 40002, 40100, 45001, 45003, 48106
         ] }
         refreshSeconds = 21600     # re-read the relay list out of the store every 6h
-        # recycleSeconds = 30      # …and start the next cycle 30s after this one
-        #                          # walk ends, reusing that list. Deriving it is the
-        #                          # expensive part of starting a cycle (a store
-        #                          # walk, a normalisation pass, one #d query per
-        #                          # 500 urls); the download is the part worth
+        # recycleSeconds = 30      # …and start the next pass 30s after this one
+        #                          # finishes HANDING OUT its list — not after the
+        #                          # relays finish, which is the whole point: the
+        #                          # slow ones keep their slots and run on into the
+        #                          # next pass. So this is a floor on the gap
+        #                          # between laps, NOT a cycle period: the period
+        #                          # is the walk plus this, and the walk is paced by
+        #                          # the worker pool (18,687 urls took 26:29 to hand
+        #                          # out, against which 30s is a tail). Reusing the
+        #                          # list is what it buys — deriving one is a store
+        #                          # walk, a normalisation pass and one #d query per
+        #                          # 500 urls, while the download is the part worth
         #                          # repeating. Unset = one pass per refresh.
         concurrency = 100          # worker pool: relays synced at the same time.
                                    # A pass ends when the last url is handed out,

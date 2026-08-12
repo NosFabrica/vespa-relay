@@ -321,6 +321,26 @@ refreshSeconds = 21600   # re-read the sources every 6h
 recycleSeconds = 30      # …but start the next pass 30s after this walk ends
 ```
 
+**"The walk ends" means the last url has been handed to a worker** — not that the
+relays have finished. That is the rotation working: the slow ones keep their
+slots and run on into the next pass. Three things follow, and they are the
+difference between reading this knob as a cycle time and reading it correctly:
+
+- **It is a floor on the gap between laps, not a period.** The period is the walk
+  plus this. And the walk is paced by the worker pool — it advances only as fast
+  as workers free up — so on a real list the walk *is* most of the period:
+  measured, 18,687 urls took **26:29** to hand out, against which a 30s gap is a
+  tail. Setting it to 5 does not buy a five-second cycle; it buys a five-second
+  pause between laps that are as long as the network makes them.
+- **A pass whose whole list is still busy hands out nothing and ends at once.**
+  Normal on a short list — every url is with a worker from the previous pass —
+  and the loop then ticks at `recycleSeconds` until slots free. That is why the
+  floor is 5s rather than 0.
+- **The walk can still stall, but it now takes the whole pool to do it.** The
+  producer suspends when every admission slot is held, so a stream stops only if
+  128–512 relays are simultaneously stuck. The join it replaced needed exactly
+  one.
+
 The stream then derives its list once, runs cycles back to back off it, and
 rebuilds it when the list is `refreshSeconds` old — or sooner, as soon as the
 alias monitor publishes a fold verdict, since a list built before that verdict
