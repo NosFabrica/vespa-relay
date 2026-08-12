@@ -888,7 +888,34 @@ decorative. Below it sits `espelho.girino.org`, which is not measurable at all:
 the same url walked twice from the same anchor self-scores **0.435** (nos.lol
 scores 0.998, nostr.oxtr.dev 1.000). Its 17 urls can never fold, and the fold
 reports that identically to "this is a different relay" — safe, but only one of
-those is a correct conclusion. 1 host in 513; left uncoded deliberately.
+those is a correct conclusion. 1 host in 513 by count — but see the cost below, which is not proportional to
+the count.
+
+**A host that cannot be decided must not be re-probed at the front of every
+pass.** The three exits that end a group with no verdict — leader silent, leader
+window under `minSample`, leader not reproducible — all write NOTHING down, on
+purpose: each is a case where publishing would claim more than was measured. But
+nothing written down means `RelayAliases.unresolved` hands the group straight
+back next pass, and groups are probed WIDEST FIRST, which is exactly the shape
+these hosts have. So an undecidable host was re-dialled first, every pass,
+forever, spending a `probesPerCycle` budget that foldable hosts then never got.
+Reported live as `relay.lightning.pub` wearing six unfolded paths while folding,
+when finally measured, in **two seconds at containment 1.000** across all of
+them. `AliasFolding.undecidable` is the fix: a 24h in-memory cooldown per host,
+in memory and never signed, because "our pass could not measure this" is a fact
+about us and not a claim about their server.
+
+**The reproducibility bar gates the NEGATIVE claim only, and that asymmetry is
+deliberate.** Noise in the yardstick is not symmetric between the fold's two
+conclusions. A relay handing back a shuffled subset drives every containment
+DOWN, so a sibling that still clears `minOverlap` did it in spite of the noise —
+folding is the conservative read. The same noise pushes urls over the bar in the
+other direction for free, which is how two paths of one server get signed as
+separate relays for a month. Measured: `fiatjaf.com` self-scores 0.638 while its
+two minted paths score 0.787 and 0.730 against it, and the pass publishes both
+folds; `multiplexer.huszonegy.world` is self 0.594, siblings 0.622–0.870, four
+folds. So a group that folds cleanly never pays for the second walk, and only a
+group about to claim "these are different relays" does.
 
 **A replaceable event has one address and more than one writer, so writing it
 is always an EDIT.** NIP-66's relay record is addressed by `d` = the relay url,
@@ -1675,6 +1702,20 @@ statement about someone else's server.
   146 asks: a 15s deadline scored 55 answered and 91 "timed out" with a median
   answer of 75ms — and **zero** of those 91 were ever refused. Size an idle
   window by the slowest SINGLE answer, not by the queue.
+- **…but an idle window bounds ONE ask, and a leg is a sequence of them.** A
+  stream with `authorsPerLeg` set asks a relay once per author chunk, in
+  sequence, and nothing bounded the sequence — so a relay answering every chunk
+  with a full `NEG_IDLE_MS` window costs `chunks × 30s` of a transfer slot, a
+  socket and a rotation claim, and the url is skipped by every pass meanwhile.
+  Measured in production: `wss://fiatjaf.com/xenon-lima` held **5h00m** having
+  delivered 85 events, quiet for the last 4h56m — 600 empty asks. The fix is
+  `LEG_QUIET_GIVE_UP_MS`, and note what it is NOT: it fires on SILENCE, not on
+  elapsed time, so it cannot cut a leg that is working (every event resets the
+  clock). A wall-clock deadline here was tried and removed for exactly that —
+  it truncated four healthy upstreams at its 4h mark. `DynamicSync.givesUp` is
+  the predicate; it also never fires before the first ask, because the quiet
+  clock starts at the CLAIM and a leg that queued behind a saturated pool
+  arrives already "quiet".
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

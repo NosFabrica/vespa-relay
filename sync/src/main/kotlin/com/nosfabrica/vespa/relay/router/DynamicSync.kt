@@ -1193,8 +1193,46 @@ internal class DynamicSync(
         return try {
             var downloaded = 0
             val asks = splitByAuthors(window, stream.dynamic?.authorsPerLeg)
-            for (ask in asks) {
+            var abandoned = 0
+            for ((n, ask) in asks.withIndex()) {
+                // STOP ASKING A RELAY THAT HAS STOPPED ANSWERING.
+                //
+                // `NEG_IDLE_MS` bounds ONE ask. A narrowed stream makes
+                // `authorsPerLeg` of them per relay, in sequence, and nothing
+                // bounded the sequence — so a relay that answers every chunk
+                // with a full idle window costs `asks.size * 30s` of a transfer
+                // slot, a socket and a rotation claim. Measured in production:
+                // `wss://fiatjaf.com/xenon-lima` held for 5h00m having delivered
+                // 85 events, quiet for the last 4h56m of it — 18,007s, which is
+                // 600 empty asks at the idle window apiece. The url is skipped by
+                // every pass in the meantime, because the claim is still ours.
+                //
+                // NOT the wall-clock deadline this file used to have, and the
+                // difference is the whole reason this is safe: that one fired on
+                // elapsed time and so could only ever cut a leg that was
+                // WORKING — it truncated four healthy upstreams at its 4h mark,
+                // which is why `NEG_IDLE_MS` is documented as an idle window and
+                // not a deadline. This fires on SILENCE. Every event resets the
+                // clock ([LegProgress.received]), so a relay with a real backlog
+                // — directory.yabu.me's 1.2M events below one band floor — is
+                // never touched however long it takes.
+                //
+                // Nothing is lost by stopping: the bands for the chunks already
+                // walked are recorded, and the chunks not reached simply have no
+                // band, so the next pass asks them again. This defers work, it
+                // does not drop it.
+                if (givesUp(n, legProgress?.quietForMs(System.currentTimeMillis()))) {
+                    abandoned = asks.size - n
+                    onFailure("gave up: silent for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)} with $abandoned ask(s) left")
+                    break
+                }
                 downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress)
+            }
+            if (abandoned > 0) {
+                System.err.println(
+                    "router: ${stream.name} ${url.url} — stopped after ${asks.size - abandoned} of ${asks.size} ask(s): " +
+                        "nothing has arrived for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)}, $downloaded event(s) this leg",
+                )
             }
             // DIAGNOSTIC: what this relay was asked and what came back. Enabled
             // by SYNC_DIAGNOSE, which names one stream — the fan-out is 16k
@@ -1579,6 +1617,33 @@ internal class DynamicSync(
          * job as the general rule at the smallest size instead of a special case.
          */
         internal fun poolHeadroom(concurrency: Int): Int = ((concurrency + 1) / 2).coerceAtLeast(1)
+
+        /**
+         * Should the rest of this relay's asks be left for the next pass?
+         *
+         * [askIndex] is which ask is about to be made and [quietForMs] is how
+         * long since anything arrived from this relay, or null when nothing is
+         * reporting on the leg.
+         *
+         * Three properties this has to hold, each of them a way the wall-clock
+         * deadline that used to live here got it wrong:
+         *
+         *  - **never before the first ask.** The quiet clock runs from the CLAIM
+         *    ([LegProgress]), and the claim is taken before the guards and the
+         *    queue for a transfer slot — so a leg that waited out a saturated
+         *    pool arrives here already "quiet" for minutes and would be given up
+         *    on without being asked anything at all.
+         *  - **never on elapsed time.** Every event resets the clock, so a relay
+         *    still delivering cannot trip this however long its backlog takes.
+         *    That is the whole difference from a deadline, which can only fire
+         *    on the healthy case.
+         *  - **never without a leg to measure.** No reporter, no evidence of
+         *    silence, and a guess is not evidence.
+         */
+        internal fun givesUp(
+            askIndex: Int,
+            quietForMs: Long?,
+        ): Boolean = askIndex > 0 && quietForMs != null && quietForMs >= LEG_QUIET_GIVE_UP_MS
 
         /**
          * How often the gate re-reads the pool.

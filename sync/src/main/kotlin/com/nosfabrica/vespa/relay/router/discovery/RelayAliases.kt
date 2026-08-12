@@ -149,11 +149,28 @@ class RelayAliases(
      * Does this relay give the same answer twice — the question that has to be
      * settled before ANY verdict is published about the host it leads.
      *
-     * Two walks of the SAME url from the SAME anchor. A relay that cannot
-     * reproduce its own window measures nothing, in either direction: a
-     * containment against it is noise, and the fold's two conclusions ("these
-     * are one relay", "these are different relays") are then a coin flip that
-     * gets signed and stands for [RelayAliasRecord.DEFAULT_TTL_SECONDS].
+     * Two walks of the SAME url from the SAME anchor, and the answer gates ONE
+     * of the fold's two conclusions rather than both.
+     *
+     * **It gates "these are different relays" and deliberately not "these are
+     * one relay",** which this used to claim it gated in either direction. Noise
+     * in the yardstick is not symmetric between them. A relay handing back a
+     * shuffled subset of its own window drives every containment DOWN — so a
+     * sibling that still clears [minOverlap] against it did so in spite of the
+     * noise, and folding is the conservative reading. The same noise pushes urls
+     * over the bar in the other direction for free, which is how two paths of
+     * one server get signed as separate relays for a month.
+     *
+     * Measured, and this is what corrected the claim: `fiatjaf.com` self-scores
+     * 0.638 — far under the bar — while its two minted paths score 0.787 and
+     * 0.730 against it, and [AliasFolding.measure] publishes both folds. That is
+     * the right answer for a host serving one pool of events on three urls, and
+     * demanding reproducibility first would have kept all three in the fan-out.
+     * `multiplexer.huszonegy.world` is the same shape: self 0.594, siblings
+     * 0.622-0.870, four folds.
+     *
+     * So the guard is paid only where a NEGATIVE claim is about to be made —
+     * see the call site — and a group that folds cleanly never pays for it.
      *
      * The bar sits in an empty gap in the measurements rather than at a round
      * number. Stable relays self-score at the top of the range — nos.lol 0.998,

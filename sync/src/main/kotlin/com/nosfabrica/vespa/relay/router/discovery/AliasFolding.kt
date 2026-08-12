@@ -72,7 +72,43 @@ class AliasFolding(
     private val probe: AliasProbe,
     private val probesPerCycle: Int = DEFAULT_PROBES_PER_CYCLE,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
+    /** How long a host that could not be decided is left alone — see [undecidable]. */
+    private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
 ) {
+    /**
+     * Hosts a pass DIALLED and could not decide anything about, and the moment
+     * each becomes worth trying again.
+     *
+     * **This is what stops the widest groups eating the budget forever.** Three
+     * exits below leave a group with no verdict at all — the leader would not
+     * answer, its window was too short to be a yardstick, or it could not
+     * reproduce itself and the group was forgotten — and NONE of them write
+     * anything down, by design: they are all cases where publishing would be a
+     * claim the measurement does not support.
+     *
+     * Nothing written down means [RelayAliases.unresolved] hands the same group
+     * back on the next pass. Groups are probed WIDEST FIRST, and a host wearing
+     * dozens of minted paths is exactly the shape that fails these tests, so an
+     * undecidable host is re-dialled at the FRONT of every pass, learns nothing,
+     * and does it again six hours later — permanently.
+     *
+     * Measured against the four hosts this was reported on: `relay.lightning.pub`
+     * folds four urls in TWO SECONDS at containment 1.000, and
+     * `multiplexer.huszonegy.world` folds four more in fourteen. Neither is hard;
+     * they were simply queued behind hosts that can never be decided and can
+     * never stop being asked. [probesPerCycle] is a per-pass ceiling, so budget
+     * spent re-proving that `groups.satsdisco.com` still says nothing is budget a
+     * foldable host does not get.
+     *
+     * In memory rather than signed, and that is the point. "I could not measure
+     * this" is a fact about OUR pass, not about somebody's server — the
+     * distinction the reproducibility guard exists to protect — so it must not
+     * become a NIP-66 record. The cost of holding it here is that a restart pays
+     * one pass to rediscover it, which is the correct price for never publishing
+     * a claim we cannot support.
+     */
+    private val undecidable = ConcurrentHashMap<String, Long>()
+
     /**
      * What a set of urls collapses to.
      *
@@ -190,7 +226,20 @@ class AliasFolding(
         // What a previous pass — this boot or another — already measured.
         adopt(candidates)
 
-        val groups = aliases.unresolved(candidates)
+        // Everything unresolved, minus the hosts a recent pass already dialled
+        // and could not decide. Held back rather than dropped: the cooldown
+        // lapses and they are tried again, just not at the front of every pass
+        // between now and then. See [undecidable].
+        val startedAtMs = System.currentTimeMillis()
+        val all = aliases.unresolved(candidates)
+        val groups = all.filter { group -> !onCooldown(group, startedAtMs) }
+        val heldBack = all.size - groups.size
+        if (heldBack > 0) {
+            System.err.println(
+                "router: $label alias pass skipped $heldBack host(s) an earlier pass dialled and could not decide — " +
+                    "each retried after ${fmtDuration(undecidableCooldownMs)}",
+            )
+        }
         var learned = 0
         var probed = 0
         if (groups.isNotEmpty()) {
@@ -272,6 +321,12 @@ class AliasFolding(
                                 }
                             }
                         if (lead == null || !aliases.usableWindow(lead.ids)) {
+                            // Only when the leader was actually ASKED. A url the
+                            // transport guard declined was never measured — our
+                            // Tor being down is not evidence about their server
+                            // — and cooling it down would hold a foldable host
+                            // back for a day on our own outage.
+                            if (dialled) markUndecidable(leader, startedAtMs)
                             // Hand back what this group reserved and did not
                             // spend, or the budget is consumed by intentions and
                             // a later group goes unprobed for it. A leader the
@@ -346,6 +401,12 @@ class AliasFolding(
                             if (again == null || !aliases.reproducible(leaderPrint, again)) {
                                 val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
                                 aliases.forget(group)
+                                // Forgotten means nothing was written down, which
+                                // means this group comes back on the next pass —
+                                // widest first — and fails the same way. A host
+                                // that cannot reproduce its own window today is
+                                // very unlikely to manage it in six hours.
+                                markUndecidable(leader, startedAtMs)
                                 System.err.println(
                                     "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
                                         "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor) — " +
@@ -405,6 +466,9 @@ class AliasFolding(
                         // One at a time and each guarded: these are signed public
                         // statements about other people's servers, and a failure
                         // to write one must not take the pass down with it.
+                        // Something was decided here, so an older "could not
+                        // measure this host" no longer describes it.
+                        if (verdicts.isNotEmpty() || cleared.isNotEmpty()) clearUndecidable(leader)
                         for ((alias, v) in verdicts) {
                             runCatching { record.publish(alias, v.first, v.second.first, v.second.second) }
                         }
@@ -428,6 +492,46 @@ class AliasFolding(
             )
         }
         return learned
+    }
+
+    /**
+     * Is this group's host still inside the window a failed pass bought it?
+     *
+     * Keyed by host, because that is what a group IS — [RelayAliases.unresolved]
+     * groups by hostname — and because the thing that could not be measured is
+     * the server, not the individual url that happened to lead this time.
+     */
+    private fun onCooldown(
+        group: List<NormalizedRelayUrl>,
+        nowMs: Long,
+    ): Boolean {
+        val host = RelayAliases.hostOf(group.first().url)
+        val until = undecidable[host] ?: return false
+        // Lapsed: drop it so the map cannot grow without bound over a long run,
+        // and let the group through.
+        if (nowMs >= until) {
+            undecidable.remove(host)
+            return false
+        }
+        return true
+    }
+
+    /** This host was dialled and proved nothing. Leave it alone for a while. */
+    private fun markUndecidable(
+        leader: NormalizedRelayUrl,
+        nowMs: Long,
+    ) {
+        undecidable[RelayAliases.hostOf(leader.url)] = nowMs + undecidableCooldownMs
+    }
+
+    /**
+     * This host decided something, so whatever an earlier pass could not measure
+     * about it no longer applies. Cheap to call on every decided group and it
+     * keeps a recovered host from serving out a cooldown it has already
+     * disproved.
+     */
+    private fun clearUndecidable(leader: NormalizedRelayUrl) {
+        undecidable.remove(RelayAliases.hostOf(leader.url))
     }
 
     /** The evidence behind one cleared url, held until the group is decided. */
@@ -495,5 +599,22 @@ class AliasFolding(
 
         /** Probes in flight. Below the fan-out's own concurrency: this is a side quest. */
         const val DEFAULT_CONCURRENCY = 16
+
+        /**
+         * How long a host that was dialled and could not be decided is left
+         * alone — a day, i.e. four passes at [AliasMonitor.DEFAULT_INTERVAL_MS].
+         *
+         * Long enough that such a host stops crowding out the ones that fold in
+         * seconds, short enough that a relay which was merely having a bad
+         * afternoon — mid-restart, briefly serving a shuffled window — is back
+         * in the fold within a day rather than waiting out
+         * [RelayAliasRecord.DEFAULT_TTL_SECONDS].
+         *
+         * Deliberately far shorter than that TTL: this is the weakest thing the
+         * fold records, so it gets the shortest memory. A verdict is a
+         * measurement of somebody's server; this is only a note that ours could
+         * not take one.
+         */
+        const val DEFAULT_UNDECIDABLE_COOLDOWN_MS = 24L * 60 * 60 * 1000
     }
 }

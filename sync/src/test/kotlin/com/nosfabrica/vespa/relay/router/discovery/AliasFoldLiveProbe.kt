@@ -51,11 +51,15 @@ import kotlin.test.Test
  *
  * What each group is here to show:
  *
- *  - **an unreproducible host** — `fiatjaf.com` serves an arbitrary ten events
- *    per REQ whatever limit is asked, so its own window does not survive a second
- *    walk. Expect the guard to fire and NOTHING to be published: not a fold, and
- *    above all not a signed "these are separate relays" that would pin both urls
- *    in the fan-out for thirty days.
+ *  - **an unreproducible host** — `fiatjaf.com` serves an arbitrary slice per
+ *    REQ whatever limit is asked, so its own window does not survive a second
+ *    walk (self 0.638, measured). Expect its paths to FOLD anyway: the guard
+ *    gates the negative claim only, because a shuffled window drives containment
+ *    down, so a sibling clearing the bar against it cleared it in spite of the
+ *    noise. What must never appear here is a signed "these are separate relays"
+ *    that would pin both urls in the fan-out for thirty days. This bullet said
+ *    the opposite — "expect NOTHING to be published" — until the probe was run
+ *    and published two folds.
  *  - **an ordinary polluted host** — the happy path, and the regression this
  *    could break. Expect the fabricated path to fold onto the bare url.
  *

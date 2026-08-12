@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
 /**
@@ -35,6 +36,52 @@ import kotlin.test.assertTrue
  * minutes. The pass was tracking the pool size and not the network.
  */
 class DynamicSyncGatesTest {
+    @Test
+    fun `a leg is given up on for SILENCE, never for elapsed time`() {
+        // The reported failure: `wss://fiatjaf.com/xenon-lima` held for 5h00m
+        // having delivered 85 events, quiet for the last 4h56m — one ask per
+        // author chunk, each costing a full NEG_IDLE_MS window and nothing
+        // bounding the sequence of them. The url is skipped by every pass in the
+        // meantime, because the rotation claim is still ours.
+        assertTrue(DynamicSync.givesUp(askIndex = 1, quietForMs = LEG_QUIET_GIVE_UP_MS))
+        assertTrue(DynamicSync.givesUp(askIndex = 600, quietForMs = 4 * 60 * 60 * 1000L))
+
+        // A relay that is still delivering resets the clock on every event, so
+        // it cannot trip this however long it runs. That is the difference from
+        // the wall-clock deadline this replaces — one that fired on elapsed time
+        // and so could only ever cut a leg that was WORKING, and did: four
+        // healthy upstreams truncated at its 4h mark.
+        assertFalse(DynamicSync.givesUp(askIndex = 10_000, quietForMs = 0L))
+        assertFalse(DynamicSync.givesUp(askIndex = 600, quietForMs = LEG_QUIET_GIVE_UP_MS - 1))
+    }
+
+    @Test
+    fun `the first ask is always made, however long the claim waited`() {
+        // The quiet clock runs from the CLAIM, which is taken before the guards
+        // and before the queue for a transfer slot. A leg that waited out a
+        // saturated pool therefore arrives already "quiet" for minutes — giving
+        // up there would abandon the relay without asking it anything, which is
+        // the opposite of the fault this fixes.
+        assertFalse(DynamicSync.givesUp(askIndex = 0, quietForMs = 6 * 60 * 60 * 1000L))
+    }
+
+    @Test
+    fun `no leg reporter is not evidence of silence`() {
+        // Nothing is measuring this leg, so there is nothing to conclude from.
+        // A guess in this direction costs a relay its whole pass.
+        assertFalse(DynamicSync.givesUp(askIndex = 99, quietForMs = null))
+    }
+
+    @Test
+    fun `the give-up window is well clear of a single ask's idle window`() {
+        // An ask that returns nothing legitimately costs one idle window, so a
+        // threshold near NEG_IDLE_MS would cut a relay for answering one empty
+        // chunk slowly. Ten of them means a relay has to be genuinely silent for
+        // five minutes.
+        assertTrue(LEG_QUIET_GIVE_UP_MS >= 5 * NEG_IDLE_MS, "one slow empty ask must never be enough to abandon a relay")
+        assertEquals(300_000L, LEG_QUIET_GIVE_UP_MS)
+    }
+
     @Test
     fun `admission is far wider than the transfer pool`() {
         // The guards are a TCP connect and the sync is a whole transfer; the

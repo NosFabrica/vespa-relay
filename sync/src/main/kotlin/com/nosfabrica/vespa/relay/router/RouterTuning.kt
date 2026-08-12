@@ -30,5 +30,24 @@ package com.nosfabrica.vespa.relay.router
  */
 internal const val NEG_IDLE_MS = 30_000L
 
+/**
+ * How long one relay may deliver NOTHING before the rest of its asks are left
+ * for the next pass.
+ *
+ * [NEG_IDLE_MS] bounds a single ask; this bounds the SEQUENCE of them. A stream
+ * with `authorsPerLeg` set asks one relay once per author chunk, and a relay
+ * that answers each chunk with a full idle window costs `chunks * NEG_IDLE_MS`
+ * of a transfer slot and a socket — measured at 5h00m on one url, of which
+ * 4h56m arrived nothing.
+ *
+ * Ten idle windows, so an ordinary run of empty-but-prompt chunks never reaches
+ * it and a relay must be genuinely silent for five minutes to be given up on.
+ *
+ * Still not a deadline, and that distinction is the one the comment above is
+ * about: this clock is reset by every event that arrives, so it cannot fire on a
+ * leg that is working, however long that leg runs.
+ */
+internal const val LEG_QUIET_GIVE_UP_MS = 10 * NEG_IDLE_MS
+
 /** How often progress lines and phase reports refresh. */
 internal const val PROGRESS_INTERVAL_MS = 15_000L
