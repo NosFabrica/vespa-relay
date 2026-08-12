@@ -42,8 +42,124 @@ import java.time.Instant
 import java.time.YearMonth
 
 /**
+ * Which cadence a section is computed on — the two halves of `/stats.json`, and
+ * the whole reason there are two.
+ *
+ * ## The costs are not within an order of magnitude of each other
+ *
+ * Every number in this document used to be recomputed on one timer, so the
+ * cheapest counter in it moved as rarely as the most expensive chart: a total
+ * that Vespa answers in milliseconds was fifteen minutes stale because a
+ * distinct-authors-per-month series over four years of corpus was computed
+ * beside it. The split is by MEASURED COST, and the shapes sort into two clear
+ * groups — the cost model is [StatsYql]'s and the measurements that established
+ * it are in [StatsRollup.kindsSection] and [StatsRollup.DEFAULT_MONTH_SERIES_START]:
+ *
+ * **Cheap — cost is bounded by something other than the corpus.** A `count()`
+ * over a match set (Vespa counts matches without materialising them, and
+ * [StatsYql.UNRANKED] means there is no match phase to cap it); a grouping whose
+ * group set is small AND whose match set is bounded by a `kind` filter that is
+ * genuinely selective (kind 10040 observer lists and 30382 scores are thousands
+ * of events, not millions); a grouping over a window of days rather than over the
+ * store; anything read off a file.
+ *
+ * **Expensive — cost scales with the corpus, the distinct pubkeys in it, or
+ * both.** `group(pubkey)` over everything materialises the store's whole
+ * distinct-pubkey set. `distinctAuthorsBy(bucket)` materialises one such set
+ * PER BUCKET — the shape that OOMKilled this engine twice at a 64Gi limit when
+ * it was partitioned by kind. A grouping over `tag_index` emits every tag pair
+ * on every matched document. A full-corpus histogram walks all 90M+ documents
+ * even when the group set is only a few hundred kinds wide. And a `kind` filter
+ * over a POPULOUS kind is not a bound worth having: `group(pubkey)` over the
+ * store's zap receipts keeps a small group set but still walks every one of
+ * millions of documents to build it.
+ *
+ * ## Why the tier is the section and not the query
+ *
+ * A section carries ONE `generatedAt` and ONE `tookMs` for everything in its
+ * `data` — so a section whose members were measured on two different cadences
+ * would be a section that lies about when half its numbers were taken. That is
+ * the constraint that moved `pubkeys` out of `corpus` into [authors]: it is a
+ * counter by shape and a chart by cost, and the honest place for it is a
+ * section of its own that says when it was last asked.
+ *
+ * The one number that crosses the boundary anyway is `corpus.newestEvent`,
+ * because freshness is exactly what a per-minute cadence is FOR — see
+ * [StatsRollup.recentNewest], which asks for it in a way that costs a window
+ * rather than the store.
+ *
+ * ## What the split does not buy
+ *
+ * Isolation from each other's load. Both tiers query the same engine and
+ * nothing here serialises them: a counters pass fires while a monthly series is
+ * still running, on purpose, because a mutex would make the fast cadence as slow
+ * as the slow one. What keeps that safe is that the counters are cheap — if a
+ * query ends up in [COUNTERS] that is not, it is now being run fifteen times
+ * more often than before, and the per-query `tookMs` this document publishes is
+ * how that gets caught.
+ */
+internal enum class StatsTier(
+    /** What this tier is called in the document, under `tiers`. */
+    val member: String,
+    /**
+     * The top-level members this tier OWNS.
+     *
+     * Ownership is total: the tier computes every one of these, nothing else
+     * writes them, and a member missing from a pass is REMOVED from the served
+     * document rather than left behind at whatever the last pass said — see
+     * `StatsSnapshot.publish`. That is what makes a section that stops existing
+     * (a router whose files are gone) disappear instead of going quietly stale.
+     */
+    val sections: Set<String>,
+) {
+    /**
+     * The numbers a relay is watched by: totals, freshness, trust health, and
+     * whatever the router last said about itself.
+     *
+     * `sync` is here because it costs three file reads, and because its
+     * `staleForSec` is a HEARTBEAT — a router that stopped four minutes ago is
+     * a thing an operator wants to see in four minutes, and on the old single
+     * timer that number was up to fifteen minutes blunt.
+     *
+     * A SMALL SET, deliberately. Every query in it runs fifteen times for each
+     * charts pass, so the bar is not "cheap enough" but "cheap AND worth being
+     * a minute fresh". `zaps` failed the first half of that and is in [CHARTS]:
+     * its counts are behind a `kind` filter, which bounds the group set but not
+     * the walk — a mirror holds millions of kind-9735 receipts, and
+     * `group(pubkey)` over them touches every one.
+     */
+    COUNTERS("counters", setOf("corpus", "trust", "sync")),
+
+    /**
+     * Everything whose cost scales with the corpus or with a populous kind: the
+     * series, the per-kind histogram, the relay distribution, the store's
+     * distinct pubkeys, and the zap receipts.
+     *
+     * None of it is worth asking for often. A monthly chart anchored at January
+     * 2023 does not change shape in a minute, the kinds table's tail moves on
+     * the order of days, and a zap total that is fifteen minutes old is a zap
+     * total — nothing is watched by it the way a mirror is watched by its
+     * freshness.
+     */
+    CHARTS("charts", setOf("kinds", "authors", "activity", "kindActivity", "zaps", "relayDistribution")),
+}
+
+/**
  * The corpus statistics document this relay publishes at `GET /stats.json`,
  * and the background job that recomputes it.
+ *
+ * ## Two cadences, one document
+ *
+ * [compute] takes a [StatsTier] and returns only that tier's members;
+ * `StatsSnapshot` merges them into the served document. The cheap counters run
+ * about once a minute and the corpus-wide groupings about once every fifteen,
+ * which is where the numbers in this document come from and why two of them
+ * beside each other may carry different `generatedAt`s. Each section says when
+ * it was computed, and `tiers` says on which cadence and how often it repeats.
+ *
+ * A pleasant side effect on boot: the counters tier finishes in about a second,
+ * so a fresh relay serves totals, trust health and router progress immediately
+ * instead of nothing at all for the minutes the first histogram takes.
  *
  * ## What this answers, and what it does not
  *
@@ -76,7 +192,7 @@ import java.time.YearMonth
  * without a debugger.
  */
 internal class StatsRollup(
-    private val vespa: StatsVespa,
+    private val vespa: StatsQueries,
     private val relayUrl: String,
     /** Wall clock in epoch seconds; injected so the window bounds are assertable. */
     private val nowSeconds: () -> Long = { System.currentTimeMillis() / 1000 },
@@ -91,6 +207,8 @@ internal class StatsRollup(
      */
     private val monthSeriesStart: YearMonth = DEFAULT_MONTH_SERIES_START,
     private val hourWindowDays: Int = DEFAULT_HOUR_WINDOW_DAYS,
+    /** How far back the counters tier looks for the newest event — see [recentNewest]. */
+    private val newestWindowDays: Int = DEFAULT_NEWEST_WINDOW_DAYS,
     private val topRelays: Int = DEFAULT_TOP_RELAYS,
     private val kindSeries: Int = DEFAULT_KIND_SERIES,
     /**
@@ -113,27 +231,60 @@ internal class StatsRollup(
      */
     private val syncProgressFile: File? = null,
 ) {
-    /** Compute the whole document. Never throws: a section that fails says so in the document. */
-    suspend fun compute(): JsonObject {
+    /**
+     * Compute one [tier]'s members. Never throws: a section that fails says so
+     * in the document.
+     *
+     * [previous] is the document currently being served, or null before the
+     * first pass — read for the one number a cheap query cannot fully answer on
+     * its own (see [carriedNewest]) and for nothing else. Passing the document
+     * rather than holding state here keeps the rollup a pure function of the
+     * engine plus what is already published: two processes, or a restart, cannot
+     * disagree about what "the previous pass" was.
+     *
+     * [everySeconds] is the schedule this tier is on, published so that a reader
+     * of `/stats.json` — the page included — knows how often each half of the
+     * document moves without having to know an operator's env.
+     */
+    suspend fun compute(
+        tier: StatsTier,
+        previous: JsonObject? = null,
+        everySeconds: Long = 0,
+    ): JsonObject {
         val startedMs = System.currentTimeMillis()
-        // Kinds first: its per-kind spans are where the corpus-wide newest event
-        // comes from, since Vespa cannot answer a bare max() without a grouping.
-        val kinds = kindsSection()
-        val corpus = corpusSection(newestOf(kinds), distinctKindsOf(kinds))
-        val activity = activitySection()
-        // The per-kind series follow the histogram the kinds section just
-        // computed, so the panel tracks the corpus rather than a hardcoded list
-        // that would go stale in the direction of hiding whatever grew.
-        val kindActivity = kindActivitySection(topKindNumbers(kinds))
-        val relays = relaysSection()
-        val zaps = zapsSection()
-        val trust = trustSection()
-        val sync = syncSection()
+        val sections = LinkedHashMap<String, JsonObject>()
+        when (tier) {
+            StatsTier.COUNTERS -> {
+                sections["corpus"] = corpusSection(previous)
+                sections["trust"] = trustSection()
+                // Absent, not empty, when there is no router: a serve-only relay
+                // has no sync to report and a card saying "0 relays" would read
+                // as a broken mirror rather than as no mirror.
+                syncSection()?.let { sections["sync"] = it }
+            }
+
+            StatsTier.CHARTS -> {
+                // Kinds first: the per-kind series follow the histogram it
+                // computes, so that panel tracks the corpus rather than a
+                // hardcoded list that would go stale in the direction of hiding
+                // whatever grew.
+                val kinds = kindsSection()
+                sections["kinds"] = kinds
+                sections["authors"] = authorsSection()
+                sections["activity"] = activitySection()
+                sections["kindActivity"] = kindActivitySection(topKindNumbers(kinds))
+                sections["zaps"] = zapsSection()
+                sections["relayDistribution"] = relaysSection()
+            }
+        }
         return buildJsonObject {
             put("schema", SCHEMA_VERSION)
             put("relay", relayUrl)
+            // When this document was last TOUCHED, by either tier. The honest
+            // per-half timestamps are in `tiers` and on every section, and a
+            // reader asking "how current is this number" wants those — this one
+            // exists so a poller can tell two fetches apart at all.
             put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
-            put("tookMs", System.currentTimeMillis() - startedMs)
             put(
                 "scope",
                 "This relay's own store — the events it has mirrored and serves. NOT the Nostr network: " +
@@ -141,17 +292,22 @@ internal class StatsRollup(
             )
             put("countedAs", "anonymous")
             put("timezone", "UTC")
-            put("corpus", corpus)
-            put("kinds", kinds)
-            put("activity", activity)
-            put("kindActivity", kindActivity)
-            put("relayDistribution", relays)
-            put("zaps", zaps)
-            put("trust", trust)
-            // Absent, not empty, when there is no router: a serve-only relay has
-            // no sync to report and a card saying "0 relays" would read as a
-            // broken mirror rather than as no mirror.
-            sync?.let { put("sync", it) }
+            putJsonObject("tiers") {
+                putJsonObject(tier.member) {
+                    put("generatedAt", Instant.ofEpochMilli(startedMs).toString())
+                    put("tookMs", System.currentTimeMillis() - startedMs)
+                    // Omitted rather than zero when unknown: "every 0 seconds"
+                    // is not a cadence, and a page reading it would either
+                    // divide by it or poll on it.
+                    if (everySeconds > 0) put("everySeconds", everySeconds)
+                    // What this pass ACTUALLY produced, not what the tier owns.
+                    // The two differ for `sync` on a serve-only relay, and a
+                    // list naming a member that is not in the document would
+                    // read as a section that failed silently.
+                    putJsonArray("sections") { sections.keys.forEach { add(it) } }
+                }
+            }
+            sections.forEach { (member, value) -> put(member, value) }
         }
     }
 
@@ -220,7 +376,7 @@ internal class StatsRollup(
 
     /**
      * The newest `created_at` anywhere in the store, taken as the maximum over
-     * the per-kind spans [kindsSection] already computed.
+     * the per-kind spans a [kindsSection] computed.
      *
      * Derived rather than queried because a bare `max(created_at)` with no
      * grouping level is not something Vespa will answer — see
@@ -228,15 +384,67 @@ internal class StatsRollup(
      * this is too, which is what makes it usable as a freshness signal instead
      * of a report on the corpus's worst-dated spam.
      */
-    private fun newestOf(kinds: JsonObject): Long? =
-        (kinds["data"] as? JsonObject)
+    private fun newestOf(kinds: JsonObject?): Long? =
+        (kinds?.get("data") as? JsonObject)
             ?.get("all")
             ?.let { it as? JsonArray }
             ?.mapNotNull { entry -> (entry as? JsonObject)?.get("lastSeen")?.jsonPrimitive?.longOrNull }
             ?.maxOrNull()
 
-    /** How many distinct kinds the histogram found — the same number `distinct("kind")` would have cost a query for. */
-    private fun distinctKindsOf(kinds: JsonObject): Int? = (kinds["data"] as? JsonObject)?.get("total")?.jsonPrimitive?.intOrNull
+    /**
+     * The newest event in the store, asked for over a WINDOW rather than over
+     * the store — the one freshness number the counters tier computes itself.
+     *
+     * "Is the mirror still filling" is the first question an operator has, and
+     * it is the whole reason a per-minute cadence exists: a total that moves is
+     * reassuring, but a `newestEvent` that stops moving is the actual alarm.
+     * Answering it the way [kindsSection] does — spans over every kind in the
+     * corpus — is a full-corpus grouping, which is exactly what must not run
+     * every minute.
+     *
+     * So the same `spanBy(kind)` pipeline is asked with a window on it. The
+     * match set is then a couple of days of events rather than 90M, the group
+     * set is only the kinds that were active in it, and the answer is identical
+     * whenever the mirror is alive at all — which is the only case where this
+     * number needs to be current.
+     *
+     * Null when nothing was published in the window, which is not a failure: a
+     * dead or serve-only mirror has no recent events, and [carriedNewest] is
+     * what answers for it. Bounded above at [now] for the reason every window
+     * here is — see [StatsYql.window].
+     */
+    private suspend fun recentNewest(now: Long): Long? =
+        spansByGroup(StatsYql.spanBy("kind"), StatsYql.window(now - newestWindowDays * DAY_SECONDS, now))
+            .values
+            .maxOfOrNull { (_, last) -> last }
+
+    /**
+     * The newest event the LAST document knew about — what answers for a mirror
+     * with nothing in [recentNewest]'s window.
+     *
+     * A timestamp can be carried forward without going stale, and that is the
+     * whole trick here: `newestEvent` is an absolute `created_at`, so a value
+     * measured fifteen minutes ago is not fifteen minutes wrong — it is exactly
+     * as true as when it was taken, and the page's age arithmetic runs off the
+     * timestamp rather than off when we looked. Carrying a COUNT this way would
+     * be a lie; carrying this one is not.
+     *
+     * Both places the previous document may hold it, because they go stale at
+     * different rates and neither is reliably present: `corpus.newestEvent` is
+     * the counters tier's own last answer (a minute old, absent on the first
+     * pass) and the charts tier's per-kind spans are the authoritative
+     * whole-corpus maximum (fifteen minutes old, absent until the first
+     * histogram finishes). The caller takes the maximum of these and a fresh
+     * window, so the number only ever moves forward.
+     */
+    private fun carriedNewest(previous: JsonObject?): Long? {
+        val corpus =
+            ((previous?.get("corpus") as? JsonObject)?.get("data") as? JsonObject)
+                ?.get("newestEvent")
+                ?.jsonPrimitive
+                ?.longOrNull
+        return listOfNotNull(corpus, newestOf(previous?.get("kinds") as? JsonObject)).maxOrNull()
+    }
 
     /**
      * The kinds to draw a per-kind series for: the largest few from the
@@ -257,38 +465,82 @@ internal class StatsRollup(
 
     // ---- sections -----------------------------------------------------------
 
-    /** Corpus totals: independent distinct/count queries over everything. */
-    private suspend fun corpusSection(
-        newestEvent: Long?,
-        distinctKinds: Int?,
-    ): JsonObject =
+    /**
+     * The headline counters: how many events, how fresh, and how much of it is
+     * signed for a time that has not happened.
+     *
+     * Every query here is CHEAP, and that is the section's defining property
+     * rather than an observation about it — this is the half of the document
+     * that runs about once a minute. A `count()` over a match set does not
+     * materialise the match set, and [recentNewest] asks over a two-day window.
+     *
+     * TWO NUMBERS ARE DELIBERATELY NOT HERE, both of them counters by shape:
+     *
+     *  - `pubkeys`, the store's distinct authors, which is a full pubkey set
+     *    over 90M+ documents. It is in [authorsSection], on the slow cadence.
+     *  - `kinds`, how many distinct kinds the store holds, which the kinds
+     *    histogram already counts as `kinds.total`. It was copied in here so
+     *    the page could read one object; a copy that is refreshed on a
+     *    different timer than its original is how a page comes to show "412
+     *    kinds" above a table headed "413 kinds", so the page reads the
+     *    histogram's own number now.
+     */
+    private suspend fun corpusSection(previous: JsonObject?): JsonObject =
         section { attempts ->
             val now = nowSeconds()
             val events = attempt(attempts, "events") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL)) }
-            val pubkeys = attempt(attempts, "pubkeys") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"))) }
             // Events signed for a time that has not happened. Clock skew and
             // spam both land here, and the count is worth having on its own:
             // it is the reason every freshness number on this page is bounded,
             // and a corpus where it grows is one where something upstream is
             // publishing garbage that ordinary charts would silently absorb.
             val future = attempt(attempts, "futureDated") { StatsYql.singleCount(vespa.group(StatsYql.TOTAL, StatsYql.after(now))) }
+            val newest = attempt(attempts, "newestEvent") { recentNewest(now) }
             buildJsonObject {
                 events?.let { put("events", it) }
-                pubkeys?.let { put("pubkeys", it) }
-                // The histogram already counted these, and asking twice was not
-                // only a wasted query: two counts of the same thing taken
-                // seconds apart can disagree on a live corpus, and a page
-                // showing "412 kinds" beside a table headed "All 413 kinds" has
-                // no way to explain itself.
-                distinctKinds?.let { put("kinds", it) }
                 future?.let { put("futureDated", it) }
-                // Derived from the per-kind spans rather than asked for: a bare
-                // `max(created_at)` with no grouping level is not a query Vespa
-                // can answer at all — see StatsYql.NO_BARE_AGGREGATES — and the
-                // kinds histogram has already paid for this number.
-                newestEvent?.let { put("newestEvent", it) }
+                // The maximum of what we just measured and what was already
+                // known, so this only ever moves forward: a quiet window must
+                // not retract a newer timestamp the charts tier established,
+                // and a failed query must not blank the freshness tile on a
+                // relay that has been reporting one all along.
+                listOfNotNull(newest, carriedNewest(previous)).maxOrNull()?.let { put("newestEvent", it) }
                 put("asOf", now)
             }
+        }
+
+    /**
+     * How many distinct pubkeys the store holds events from.
+     *
+     * ## Why one number gets a section of its own
+     *
+     * Because of what it costs. `group(pubkey)` over the whole corpus is a
+     * distinct count over the highest-cardinality field in the store, and a
+     * distinct count over a high-cardinality field IS the group set — the engine
+     * materialises every pubkey it has ever seen. That is the same shape that,
+     * partitioned by kind, drove 2 GiB `PartialResult` buffers per match thread
+     * and OOMKilled this engine at a 64Gi limit (the measurement is in
+     * [kindsSection]); one global set instead of 122 per-kind ones is the
+     * cheapest form of it, and still nothing to ask for every minute.
+     *
+     * It lived in [corpusSection] until the document grew two cadences, and it
+     * could not stay: a section carries one `generatedAt` for everything in it,
+     * so a `pubkeys` refreshed every fifteen minutes sitting beside an `events`
+     * refreshed every minute would have been a section whose timestamp was wrong
+     * for half its members. A section of its own states its own age.
+     *
+     * Named for the population rather than for the query, so there is somewhere
+     * obvious for the next expensive author-shaped number to go.
+     */
+    private suspend fun authorsSection(): JsonObject =
+        section(
+            note =
+                "Every pubkey this relay holds an event from — the store's distinct authors, which is why it is " +
+                    "computed on the slow cadence rather than beside the corpus totals. NOT the same population as " +
+                    "`trust.scoredPubkeys`; see that section's note.",
+        ) { attempts ->
+            val pubkeys = attempt(attempts, "pubkeys") { StatsYql.singleCount(vespa.group(StatsYql.distinct("pubkey"))) }
+            buildJsonObject { pubkeys?.let { put("pubkeys", it) } }
         }
 
     /**
@@ -312,7 +564,7 @@ internal class StatsRollup(
     private suspend fun trustSection(): JsonObject =
         section(
             note =
-                "`scoredPubkeys` and the corpus's `pubkeys` are INDEPENDENT populations, not a ratio: the web of " +
+                "`scoredPubkeys` and `authors.pubkeys` are INDEPENDENT populations, not a ratio: the web of " +
                     "trust scores people whose events this relay may not hold, and holds events from people nobody " +
                     "has scored. Compare their magnitudes, not their quotient.",
         ) { attempts ->
@@ -564,6 +816,21 @@ internal class StatsRollup(
 
     /**
      * Zap receipts: how many, from how many wallets, and their shape over time.
+     *
+     * ## On the slow cadence, despite being counts
+     *
+     * A `kind` filter bounds the GROUP SET, not the walk, and kind 9735 is a
+     * populous kind: a mirror holds millions of receipts, so `group(pubkey)` over
+     * them returns a handful of LNURL services and touches every document to find
+     * out. That is the shape [StatsTier] calls out — cheap-looking because the
+     * answer is small — and it belongs beside the charts rather than in a pass
+     * that repeats fifteen times as often.
+     *
+     * Nothing is lost by it. A zap total is not a signal anyone watches a relay
+     * by, in the way `newestEvent` is: fifteen minutes late, it is still the
+     * answer to the question being asked.
+     *
+     * ## What cannot be here at all
      *
      * Deliberately NOT sats. The amount lives in the `bolt11` tag and in the
      * kind-9734 request nested in `description`, both multi-character tag names
@@ -826,6 +1093,18 @@ internal class StatsRollup(
             put("tookMs", System.currentTimeMillis() - startedMs)
             note?.let { put("note", it) }
             put("data", data)
+            // What each query in this section cost, under the same keys `errors`
+            // uses. Published rather than logged because it is the evidence for
+            // the one decision in this file that cannot be reasoned out from the
+            // pipelines alone: which of them belong on the per-minute cadence.
+            // A corpus twice this size, a different Vespa, a kind filter that
+            // stops being selective — any of those move a query between tiers,
+            // and this is what an operator re-tiers from instead of guessing.
+            // Failures are timed too: a query that took a minute to be refused
+            // is a different problem from one refused instantly.
+            if (attempts.queryMs.isNotEmpty()) {
+                putJsonObject("queryMs") { attempts.queryMs.forEach { (k, v) -> put(k, v) } }
+            }
             if (attempts.errors.isNotEmpty()) {
                 putJsonObject("errors") { attempts.errors.forEach { (k, v) -> put(k, v) } }
             }
@@ -844,6 +1123,9 @@ internal class StatsRollup(
      */
     private class Attempts {
         val errors = LinkedHashMap<String, String>()
+
+        /** What each attempt took, keyed as its errors would be. See [section]. */
+        val queryMs = LinkedHashMap<String, Long>()
         var succeeded = 0
             private set
 
@@ -870,15 +1152,22 @@ internal class StatsRollup(
         attempts: Attempts,
         key: String,
         query: suspend () -> T?,
-    ): T? =
-        try {
+    ): T? {
+        val startedMs = System.currentTimeMillis()
+        return try {
             query().also { attempts.ok() }
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             attempts.errors[key] = e.message ?: e.toString()
             null
+        } finally {
+            // In a finally so a refusal is timed as well as a success, and NOT
+            // for the cancellation path's sake — that rethrows, and this map
+            // goes nowhere.
+            attempts.queryMs[key] = System.currentTimeMillis() - startedMs
         }
+    }
 
     // ---- readers ------------------------------------------------------------
 
@@ -983,8 +1272,16 @@ internal class StatsRollup(
          * number tracks our editing rather than their contract. A version
          * describes what consumers can depend on; there are none until this
          * merges, so it stays at 1 until the first change AFTER that.
+         *
+         * **2** is that first change, and it is two fields leaving `corpus`:
+         * `pubkeys` moved to `authors.pubkeys` because it is the one counter
+         * whose cost is a full pubkey set over the store, and `kinds` was
+         * dropped as a duplicate of `kinds.total` that a second cadence would
+         * have let disagree with its original. `tookMs` also left the top level
+         * for `tiers.<name>.tookMs`, where a document computed in two passes can
+         * state both. See [StatsTier].
          */
-        const val SCHEMA_VERSION = 1
+        const val SCHEMA_VERSION = 2
 
         const val DEFAULT_WINDOW_DAYS = 30
 
@@ -1027,6 +1324,22 @@ internal class StatsRollup(
         val DEFAULT_MONTH_SERIES_START: YearMonth = YearMonth.of(2023, 1)
 
         const val DEFAULT_HOUR_WINDOW_DAYS = 7
+
+        /**
+         * How far back [recentNewest] looks for the newest event, in days.
+         *
+         * Two rather than one so the window cannot be emptied by an ordinary
+         * gap: a mirror that pauses for a few hours overnight, a relay whose
+         * upstreams all went quiet, a router restart. And two rather than
+         * thirty because the point is a window small enough that a full pass is
+         * never involved — this runs every minute, and the events in the last
+         * two days are a rounding error against the store.
+         *
+         * A wider window would not be more correct anyway. Beyond it,
+         * [carriedNewest] answers, and it answers with a timestamp rather than
+         * with a guess.
+         */
+        const val DEFAULT_NEWEST_WINDOW_DAYS = 2
         const val DEFAULT_TOP_RELAYS = 50
 
         /**
@@ -1046,32 +1359,54 @@ internal class StatsRollup(
 }
 
 /**
- * Recompute the stats document every [everySeconds] into [snapshot], persisting
- * each result so a restart serves the last one instead of an empty page.
+ * Recompute one [tier] of the stats document every [everySeconds] into
+ * [snapshot], persisting each result so a restart serves the last one instead of
+ * an empty page.
  *
- * Runs BEHIND the server like every other job in this package — the first
- * rollup on a large corpus is minutes of grouping, and no client should wait on
- * it. Until it finishes, `/stats.json` serves whatever the state file held.
+ * ONE CALL PER TIER, each with its own coroutine and its own interval — see
+ * [StatsTier] for why the document has two halves. The tiers do not coordinate:
+ * each computes its own members, hands them to [StatsSnapshot.publish] with the
+ * set it owns, and the snapshot merges them into what is being served. A tier
+ * that is never launched (its interval set to 0) simply leaves its sections out
+ * of the document, which the page draws as "not in this document" rather than as
+ * zeros.
+ *
+ * Runs BEHIND the server like every other job in this package — the first charts
+ * pass on a large corpus is minutes of grouping, and no client should wait on
+ * it. Until it finishes, `/stats.json` serves whatever the state file held, plus
+ * whatever the counters tier has already published.
+ *
+ * The interval is the GAP between passes, not a period: a pass that takes longer
+ * than [everySeconds] delays the next one rather than overlapping it, so a
+ * counters tier that has become slow cannot pile up against itself. What it does
+ * do is stop being a per-minute number, which is what the `tiers` metadata and
+ * the per-query `queryMs` in the document are for.
  */
 internal fun launchStatsRollup(
     scope: CoroutineScope,
     rollup: StatsRollup,
     snapshot: StatsSnapshot,
+    tier: StatsTier,
     everySeconds: Long,
 ) {
     scope.launch {
         while (true) {
             val startedMs = System.currentTimeMillis()
-            runCatching { rollup.compute() }
-                .onSuccess { doc ->
-                    snapshot.publish(doc)
+            // The document being served, for the one number that is carried
+            // rather than recomputed — see StatsRollup.carriedNewest. Read at
+            // the start of every pass rather than held, so a tier picks up
+            // whatever the other one has published since.
+            val previous = snapshot.served()?.doc
+            runCatching { rollup.compute(tier, previous, everySeconds) }
+                .onSuccess { members ->
+                    snapshot.publish(members, owns = tier.sections, tier = tier.member)
                     val secs = (System.currentTimeMillis() - startedMs) / 1000
                     // The failure count, not the failures: a section's own
                     // error text is in the document, where the operator can
                     // read it beside the query that produced it.
-                    val failed = doc.entries.count { (_, v) -> (v as? JsonObject)?.statusOf() in setOf("failed", "partial") }
+                    val failed = members.entries.count { (_, v) -> (v as? JsonObject)?.statusOf() in setOf("failed", "partial") }
                     println(
-                        "stats: rolled up in ${secs}s" +
+                        "stats: ${tier.member} rolled up in ${secs}s" +
                             (if (failed > 0) " — $failed section(s) incomplete, see /stats.json" else ""),
                     )
                 }.onFailure { e ->
@@ -1079,13 +1414,19 @@ internal fun launchStatsRollup(
                     // compute() catches per query, so reaching here means the
                     // assembly itself broke — worth a loud line, and worth
                     // keeping the previous document rather than blanking it.
-                    System.err.println("stats: rollup failed (${e.message}) — serving the previous document")
+                    System.err.println("stats: ${tier.member} rollup failed (${e.message}) — serving the previous document")
                     // …and saying so IN the document. A stats service that has
                     // been failing all night otherwise serves a page
                     // indistinguishable from a healthy one, which is how a
                     // stale cache comes to look like a crash: the numbers stop
                     // moving and nothing anywhere says why.
-                    snapshot.markStale("the last rollup failed: ${e.message ?: e.javaClass.simpleName}")
+                    //
+                    // NAMED BY TIER, because with two cadences one half can fail
+                    // for hours while the other keeps publishing. An unattributed
+                    // notice on a document whose counters are ten seconds old
+                    // reads as a page-wide outage; naming the tier says which
+                    // numbers to stop trusting.
+                    snapshot.markStale("the last ${tier.member} rollup failed: ${e.message ?: e.javaClass.simpleName}", tier = tier.member)
                 }
             delay(everySeconds * 1000)
         }

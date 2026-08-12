@@ -170,11 +170,15 @@ services:
       # resumable by design and holding it only in memory cost 12.2M events
       # when one page failed.
       FTS_CURSOR_FILE: ${FTS_CURSOR_FILE:-/var/lib/vespa-relay/fts-cursor.txt}
-      # How often the corpus statistics behind GET /stats.json are recomputed.
-      # The grouping queries compete with client reads, so 0 (off) is a
-      # legitimate choice on a busy box — the endpoint then serves whatever the
-      # state file holds. Runs behind the server either way; a first pass over
-      # this corpus is minutes and no restart waits on it.
+      # How often the corpus statistics behind GET /stats.json are recomputed,
+      # on the two schedules the document is computed on: the cheap counters
+      # (totals, freshness, trust health, the router's heartbeat) and the
+      # corpus-wide groupings behind the charts. The grouping queries compete
+      # with client reads, so 0 (off) on either is a legitimate choice on a busy
+      # box — the endpoint then carries only the other half. Both run behind the
+      # server; a first charts pass over this corpus is minutes, no restart waits
+      # on it, and the counters fill the page within seconds meanwhile.
+      STATS_COUNTERS_INTERVAL_SECONDS: ${STATS_COUNTERS_INTERVAL_SECONDS:-}
       STATS_INTERVAL_SECONDS: ${STATS_INTERVAL_SECONDS:-}
       # …and where that document lands. In the mounted volume for the same
       # reason as the cursor above: a deploy would otherwise blank the page for

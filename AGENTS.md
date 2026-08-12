@@ -340,11 +340,49 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                      for the same reason: `full` answers it in neither
                      direction)
     StatsRollup.kt   the document, section by section, each failing on its own
+                     — and `StatsTier`, the two schedules it is computed on
   server/
     StatsSnapshot.kt what GET /stats.json serves — held in memory with an
                      ETag, written through to STATS_FILE so a deploy does not
-                     blank the page for the minutes a first rollup takes
+                     blank the page for the minutes a first rollup takes, and
+                     the MERGE point for the two tiers
 ```
+
+**The document is computed in two passes, and the split is by measured cost.**
+`STATS_COUNTERS_INTERVAL_SECONDS` (60s) runs `corpus`, `trust` and `sync`;
+`STATS_INTERVAL_SECONDS` (900s, the setting that always meant this) runs `kinds`,
+`authors`, `activity`, `kindActivity`, `zaps` and `relayDistribution`. The line
+between them is whether cost scales with the corpus: a `count()` over a match set
+does not materialise the match set, a grouping behind a *selective* `kind` filter
+is bounded by that kind's population (10040/30382 are thousands of events), and a
+windowed bucket grouping is bounded by the window — while `group(pubkey)` over
+everything materialises the store's whole pubkey set, `distinctAuthorsBy(bucket)`
+materialises one such set PER BUCKET (the shape that OOMKilled the engine twice),
+a full-corpus histogram walks all 90M+ documents, and grouping `tag_index` emits
+every tag pair on every matched document. **A `kind` filter bounds the group set,
+not the walk**, which is why `zaps` is with the charts despite being three counts:
+a mirror holds millions of kind-9735 receipts and `group(pubkey)` over them
+touches every one to return a handful of LNURL services. Nothing is watched by a
+zap total the way a mirror is watched by its freshness, so fifteen minutes is fine
+for it. **The tier is the section, never the query**, because a section carries
+one `generatedAt` for all of its members — which is what moved the store's
+distinct pubkeys out of `corpus` into its own `authors` section, and why
+`corpus.kinds` is gone in favour of the histogram's own `kinds.total`. The one
+number that crosses the boundary is `corpus.newestEvent`: asked over a two-day
+window (cheap, and freshness is what a per-minute cadence is FOR), carried
+forward from the previous document when that window is empty, and published as
+the maximum of the two so a quiet mirror never winds the tile back.
+
+Every section publishes `queryMs` per query and every pass publishes
+`tiers.<name>.{generatedAt,tookMs,everySeconds}`. That is deliberate and
+load-bearing: which queries can afford the fast cadence is a MEASUREMENT on the
+corpus in front of you, not a deduction, and a pipeline that drifts into the fast
+tier does not break a chart — it quietly runs fifteen times more often than it
+can afford. `StatsRollupTest` holds the invariant from the other side, against a
+`StatsQueries` fake: a counters query may not group without a bound, nest a
+grouping inside `each(...)`, touch `tag_index`, or lean on a `kind` filter for a
+kind outside its `SELECTIVE_KINDS` — the allowlist that keeps "bounded by a kind"
+from meaning "bounded", and that kind 9735 is deliberately not in.
 
 Four of the pipelines are `EventYql`'s own shapes, reused verbatim because this
 deployment has already run them; the rest extend them along `created_at`. It

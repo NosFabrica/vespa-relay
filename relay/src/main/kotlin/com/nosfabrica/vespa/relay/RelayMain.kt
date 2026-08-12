@@ -36,6 +36,7 @@ import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
+import com.nosfabrica.vespa.relay.maintenance.StatsTier
 import com.nosfabrica.vespa.relay.maintenance.StatsVespa
 import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
@@ -189,44 +190,53 @@ fun main() {
     // Seeded from the state file first, so a restart serves the last document
     // instead of a blank page for however long the first rollup takes.
     val statsSnapshot = StatsSnapshot(env["STATS_FILE"] ?: "/var/lib/vespa-relay/stats.json").also { it.loadFromFile() }
-    // A value that will not parse STOPS the boot rather than falling back to the
-    // default. `STATS_INTERVAL_SECONDS=0s` or `=off` are the obvious ways an
-    // operator writes "turn this off", and `?: 900L` accepted both by silently
-    // running the rollup every fifteen minutes — a setting that was read, was
-    // wrong, and did the opposite of what it said, which is exactly the silent
-    // inertness this codebase refuses elsewhere.
-    val statsIntervalSeconds =
-        env["STATS_INTERVAL_SECONDS"]?.trim()?.takeIf { it.isNotEmpty() }?.let {
-            it.toLongOrNull()
-                ?: error("STATS_INTERVAL_SECONDS='$it' is not a number of seconds. Use 0 to disable the rollup.")
-        } ?: 900L
-    if (statsIntervalSeconds > 0) {
-        launchStatsRollup(
-            scope = maintenanceScope,
-            // The NORMALIZED url, the same string NIP-42 and NIP-62 key off —
-            // so a document fetched from two of this relay's addresses names
-            // one relay rather than reading as two.
-            rollup =
-                StatsRollup(
-                    StatsVespa(vespaUrl),
-                    relayUrl = relayUrl.url,
-                    // Read-only, off the volume the sync service writes them to.
-                    // Absent is the normal case — a serve-only deployment has no
-                    // router — and the section is then simply not in the document.
-                    syncBandsFile = syncFile(env, "SYNC_STATE_FILE", "/var/lib/vespa-relay/sync-cursors.json"),
-                    syncSweepsFile = syncFile(env, "SYNC_SWEEP_STATE_FILE", "/var/lib/vespa-relay/sync-sweeps.json"),
-                    syncManifestFile = syncFile(env, "SYNC_MANIFEST_FILE", "/var/lib/vespa-relay/sync-manifest.json"),
-                    syncProgressFile = syncFile(env, "SYNC_PROGRESS_FILE", "/var/lib/vespa-relay/sync-progress.json"),
-                ),
-            snapshot = statsSnapshot,
-            everySeconds = statsIntervalSeconds,
-        )
+    // TWO INTERVALS, because the queries behind this document are not within an
+    // order of magnitude of each other in cost — see `StatsTier`. The
+    // corpus-wide groupings keep the setting they always had; the cheap counters
+    // (totals, freshness, trust health, the router's heartbeat) get their own,
+    // fifteen times faster, because nothing about them justified being that
+    // stale.
+    val statsIntervalSeconds = statsInterval(env, "STATS_INTERVAL_SECONDS", 900L)
+    val statsCountersIntervalSeconds = statsInterval(env, "STATS_COUNTERS_INTERVAL_SECONDS", 60L)
+    if (statsIntervalSeconds > 0 || statsCountersIntervalSeconds > 0) {
+        val rollup =
+            StatsRollup(
+                StatsVespa(vespaUrl),
+                // The NORMALIZED url, the same string NIP-42 and NIP-62 key off —
+                // so a document fetched from two of this relay's addresses names
+                // one relay rather than reading as two.
+                relayUrl = relayUrl.url,
+                // Read-only, off the volume the sync service writes them to.
+                // Absent is the normal case — a serve-only deployment has no
+                // router — and the section is then simply not in the document.
+                syncBandsFile = syncFile(env, "SYNC_STATE_FILE", "/var/lib/vespa-relay/sync-cursors.json"),
+                syncSweepsFile = syncFile(env, "SYNC_SWEEP_STATE_FILE", "/var/lib/vespa-relay/sync-sweeps.json"),
+                syncManifestFile = syncFile(env, "SYNC_MANIFEST_FILE", "/var/lib/vespa-relay/sync-manifest.json"),
+                syncProgressFile = syncFile(env, "SYNC_PROGRESS_FILE", "/var/lib/vespa-relay/sync-progress.json"),
+            )
+        // ONE ROLLUP, two timers: the tiers write disjoint halves of the
+        // document and share nothing else, so a second instance would only be a
+        // second copy of the same config.
+        //
+        // The counters go first so a fresh relay has totals, trust health and
+        // router progress within a second or two of boot, rather than a blank
+        // page for however long the first histogram takes.
+        if (statsCountersIntervalSeconds > 0) {
+            launchStatsRollup(maintenanceScope, rollup, statsSnapshot, StatsTier.COUNTERS, statsCountersIntervalSeconds)
+        } else {
+            println("stats: STATS_COUNTERS_INTERVAL_SECONDS=$statsCountersIntervalSeconds — no counters; /stats.json will carry only the chart sections")
+        }
+        if (statsIntervalSeconds > 0) {
+            launchStatsRollup(maintenanceScope, rollup, statsSnapshot, StatsTier.CHARTS, statsIntervalSeconds)
+        } else {
+            println("stats: STATS_INTERVAL_SECONDS=$statsIntervalSeconds — no charts; /stats.json will carry only the counter sections")
+        }
     } else {
         // A zero/negative interval is "don't compute", which is a legitimate
         // choice on a busy box — the grouping competes with client reads. Say
         // so, because the alternative is an operator watching a page that never
         // fills and looking for the bug in the rollup.
-        println("stats: STATS_INTERVAL_SECONDS=$statsIntervalSeconds — no rollup; /stats.json serves the state file, or 503 if there is none")
+        println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
     }
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
         maintenanceScope.launch {
@@ -339,6 +349,26 @@ private fun String.httpFromWs(): String =
 
 /** A bundled classpath resource, or null if it isn't there. */
 private fun resourceText(path: String): String? = object {}.javaClass.getResource(path)?.readText()
+
+/**
+ * One of the stats rollup's two intervals, in seconds.
+ *
+ * A value that will not parse STOPS the boot rather than falling back to the
+ * default. `=0s` or `=off` are the obvious ways an operator writes "turn this
+ * off", and `?: default` accepted both by silently running the rollup on the
+ * schedule they were trying to change — a setting that was read, was wrong, and
+ * did the opposite of what it said, which is exactly the silent inertness this
+ * codebase refuses elsewhere. The message names [key] because there are two of
+ * these now and they are off by a factor of fifteen.
+ */
+private fun statsInterval(
+    env: Map<String, String>,
+    key: String,
+    default: Long,
+): Long =
+    env[key]?.trim()?.takeIf { it.isNotEmpty() }?.let {
+        it.toLongOrNull() ?: error("$key='$it' is not a number of seconds. Use 0 to disable it.")
+    } ?: default
 
 /**
  * The router files the stats rollup reads. Shared names, not relay-side copies —

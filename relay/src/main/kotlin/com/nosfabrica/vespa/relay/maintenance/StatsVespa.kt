@@ -36,6 +36,27 @@ import java.net.http.HttpResponse
 import java.time.Duration
 
 /**
+ * Somewhere to send a [StatsYql] pipeline — the seam [StatsRollup] depends on
+ * rather than on the engine.
+ *
+ * One method, because that is the whole of the rollup's vocabulary. It exists
+ * for the one thing about the rollup a test can otherwise not reach: WHICH
+ * queries each cadence asks. The tiering in [StatsTier] is a claim about cost —
+ * that the counters never ask the question that materialises a pubkey set over
+ * the whole corpus — and against a concrete [StatsVespa] that claim is only
+ * checkable by owning a 90M-document corpus and a stopwatch. Against this it is
+ * an assertion over a recorded list of pipelines.
+ */
+internal interface StatsQueries {
+    /** Run [pipeline] over the [source] documents [where] selects and return Vespa's `root`. */
+    suspend fun group(
+        pipeline: String,
+        where: String = "true",
+        source: String = StatsYql.EVENTS,
+    ): JsonObject
+}
+
+/**
  * The one place the dashboard talks to Vespa: POST a [StatsYql] pipeline to
  * `/search/`, refuse a degraded answer, hand back the parsed root.
  *
@@ -51,7 +72,7 @@ internal class StatsVespa(
             .newBuilder()
             .connectTimeout(Duration.ofSeconds(10))
             .build(),
-) {
+) : StatsQueries {
     private val searchUrl = URI.create(vespaUrl.trimEnd('/') + "/search/")
 
     /**
@@ -63,10 +84,11 @@ internal class StatsVespa(
      * on the page as a named failure; a swallowed one shows up as a chart that
      * is simply wrong, and no reader could tell which.
      */
-    suspend fun group(
+    // The defaults are on [StatsQueries.group]; an override may not restate them.
+    override suspend fun group(
         pipeline: String,
-        where: String = "true",
-        source: String = StatsYql.EVENTS,
+        where: String,
+        source: String,
     ): JsonObject {
         val yql = StatsYql.query(pipeline, where, source)
         val body =

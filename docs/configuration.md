@@ -118,9 +118,32 @@ how many lists name each relay but cannot split read from write: that marker is
 an `r` tag's *third* element, and `tag_index` stores only `<letter>:<value>`.
 Both want a walk over their kind, which is the job neither has yet.
 
+The document is computed in **two passes on two schedules**, because the queries
+behind it are not within an order of magnitude of each other in cost. A `count()`
+over a match set is milliseconds and a distinct-authors-per-month series over
+four years of corpus is minutes, and on one timer the cheap numbers were as stale
+as the expensive ones.
+
+| pass | sections | why it is on that cadence |
+|---|---|---|
+| **counters** | `corpus`, `trust`, `sync` | costs are bounded by something other than the corpus: `count()` over a match set, groupings behind a *selective* `kind` filter (10040/30382 run to thousands of events), a two-day window for the newest event, three file reads for the router's heartbeat |
+| **charts** | `kinds`, `authors`, `activity`, `kindActivity`, `zaps`, `relayDistribution` | costs scale with the store or with a populous kind: full-corpus histograms, `group(pubkey)` over everything, one pubkey set **per bucket** for the distinct-author series, every tag pair on every kind-10002, and every one of millions of kind-9735 receipts to name a handful of wallets |
+
+`zaps` is the entry worth explaining, since three counts look like counters: a
+`kind` filter bounds the group set, not the walk. Nothing is lost by the slower
+cadence — a zap total fifteen minutes old is still the answer, where a
+`newestEvent` fifteen minutes old is the number an operator was watching.
+
+Each section states its own `generatedAt`, each pass its own
+`tiers.<name>.{generatedAt,tookMs,everySeconds}`, and every query its own
+`queryMs` — so the tiering above is checkable against your corpus rather than
+taken on faith, and a query that has outgrown the fast cadence can be found and
+moved. The page follows the fastest cadence the document states.
+
 | var | meaning | default |
 |---|---|---|
-| `STATS_INTERVAL_SECONDS` | how often to recompute. `0` or negative disables the rollup entirely — a legitimate choice on a busy box, since the grouping competes with client reads; `/stats.json` then serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it | `900` |
+| `STATS_COUNTERS_INTERVAL_SECONDS` | how often the **counters** pass runs. `0` or negative turns it off; the document then carries only the chart sections | `60` |
+| `STATS_INTERVAL_SECONDS` | how often the **charts** pass runs — the corpus-wide groupings, and the setting that has always meant this. `0` or negative disables it — a legitimate choice on a busy box, since the grouping competes with client reads; with both off, `/stats.json` serves whatever the state file holds, or 503. The first pass on a large corpus takes minutes and runs **behind** the server, so a restart never waits on it (the counters land within seconds and fill the page meanwhile) | `900` |
 | `STATS_FILE` | where the document is persisted, so a restart serves the last one instead of a blank page while the first rollup runs. Written atomically (temp file + move). Readable on the host through the same bind mount as the FTS cursor and the parse audit | `/var/lib/vespa-relay/stats.json` |
 
 `GET /stats.json` is public, like `GET /pressure` and the other stats pages, and
