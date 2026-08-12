@@ -57,10 +57,11 @@ import java.time.YearMonth
  *
  * **Cheap — cost is bounded by something other than the corpus.** A `count()`
  * over a match set (Vespa counts matches without materialising them, and
- * [StatsYql.UNRANKED] means there is no match phase to cap it); a grouping
- * whose group set is small AND whose match set is bounded by a `kind` filter
- * (kind 9735 zap receipts, kind 10040/30382 trust state); a grouping over a
- * window of days rather than over the store; anything read off a file.
+ * [StatsYql.UNRANKED] means there is no match phase to cap it); a grouping whose
+ * group set is small AND whose match set is bounded by a `kind` filter that is
+ * genuinely selective (kind 10040 observer lists and 30382 scores are thousands
+ * of events, not millions); a grouping over a window of days rather than over the
+ * store; anything read off a file.
  *
  * **Expensive — cost scales with the corpus, the distinct pubkeys in it, or
  * both.** `group(pubkey)` over everything materialises the store's whole
@@ -68,7 +69,10 @@ import java.time.YearMonth
  * PER BUCKET — the shape that OOMKilled this engine twice at a 64Gi limit when
  * it was partitioned by kind. A grouping over `tag_index` emits every tag pair
  * on every matched document. A full-corpus histogram walks all 90M+ documents
- * even when the group set is only a few hundred kinds wide.
+ * even when the group set is only a few hundred kinds wide. And a `kind` filter
+ * over a POPULOUS kind is not a bound worth having: `group(pubkey)` over the
+ * store's zap receipts keeps a small group set but still walks every one of
+ * millions of documents to build it.
  *
  * ## Why the tier is the section and not the query
  *
@@ -116,18 +120,28 @@ internal enum class StatsTier(
      * `staleForSec` is a HEARTBEAT — a router that stopped four minutes ago is
      * a thing an operator wants to see in four minutes, and on the old single
      * timer that number was up to fifteen minutes blunt.
+     *
+     * A SMALL SET, deliberately. Every query in it runs fifteen times for each
+     * charts pass, so the bar is not "cheap enough" but "cheap AND worth being
+     * a minute fresh". `zaps` failed the first half of that and is in [CHARTS]:
+     * its counts are behind a `kind` filter, which bounds the group set but not
+     * the walk — a mirror holds millions of kind-9735 receipts, and
+     * `group(pubkey)` over them touches every one.
      */
-    COUNTERS("counters", setOf("corpus", "trust", "zaps", "sync")),
+    COUNTERS("counters", setOf("corpus", "trust", "sync")),
 
     /**
-     * Everything whose cost scales with the corpus: the series, the per-kind
-     * histogram, the relay distribution, and the store's distinct pubkeys.
+     * Everything whose cost scales with the corpus or with a populous kind: the
+     * series, the per-kind histogram, the relay distribution, the store's
+     * distinct pubkeys, and the zap receipts.
      *
      * None of it is worth asking for often. A monthly chart anchored at January
-     * 2023 does not change shape in a minute, and the kinds table's tail moves
-     * on the order of days.
+     * 2023 does not change shape in a minute, the kinds table's tail moves on
+     * the order of days, and a zap total that is fifteen minutes old is a zap
+     * total — nothing is watched by it the way a mirror is watched by its
+     * freshness.
      */
-    CHARTS("charts", setOf("kinds", "authors", "activity", "kindActivity", "relayDistribution")),
+    CHARTS("charts", setOf("kinds", "authors", "activity", "kindActivity", "zaps", "relayDistribution")),
 }
 
 /**
@@ -243,7 +257,6 @@ internal class StatsRollup(
             StatsTier.COUNTERS -> {
                 sections["corpus"] = corpusSection(previous)
                 sections["trust"] = trustSection()
-                sections["zaps"] = zapsSection()
                 // Absent, not empty, when there is no router: a serve-only relay
                 // has no sync to report and a card saying "0 relays" would read
                 // as a broken mirror rather than as no mirror.
@@ -260,6 +273,7 @@ internal class StatsRollup(
                 sections["authors"] = authorsSection()
                 sections["activity"] = activitySection()
                 sections["kindActivity"] = kindActivitySection(topKindNumbers(kinds))
+                sections["zaps"] = zapsSection()
                 sections["relayDistribution"] = relaysSection()
             }
         }
@@ -802,6 +816,21 @@ internal class StatsRollup(
 
     /**
      * Zap receipts: how many, from how many wallets, and their shape over time.
+     *
+     * ## On the slow cadence, despite being counts
+     *
+     * A `kind` filter bounds the GROUP SET, not the walk, and kind 9735 is a
+     * populous kind: a mirror holds millions of receipts, so `group(pubkey)` over
+     * them returns a handful of LNURL services and touches every document to find
+     * out. That is the shape [StatsTier] calls out — cheap-looking because the
+     * answer is small — and it belongs beside the charts rather than in a pass
+     * that repeats fifteen times as often.
+     *
+     * Nothing is lost by it. A zap total is not a signal anyone watches a relay
+     * by, in the way `newestEvent` is: fifteen minutes late, it is still the
+     * answer to the question being asked.
+     *
+     * ## What cannot be here at all
      *
      * Deliberately NOT sats. The amount lives in the `bolt11` tag and in the
      * kind-9734 request nested in `description`, both multi-character tag names

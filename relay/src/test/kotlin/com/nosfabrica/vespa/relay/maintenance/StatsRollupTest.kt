@@ -113,14 +113,15 @@ class StatsRollupTest {
      *
      * Stated as an invariant over the pipelines rather than as a list of the
      * queries we happen to make today, because the failure this guards against
-     * is a NEW query landing in the fast tier. Three shapes are the expensive
-     * ones, and all three are recognisable in the YQL:
+     * is a NEW query landing in the fast tier. Four shapes are the expensive
+     * ones, and all four are recognisable in the YQL:
      *
      *  - `group(pubkey)` with no `kind` filter materialises the store's whole
      *    distinct-pubkey set
      *  - a grouping nested inside `each(...)` materialises one such set per
      *    bucket — the shape that OOMKilled this engine twice
      *  - `tag_index` emits every tag pair on every matched document
+     *  - a grouping bounded ONLY by a populous `kind` — see [SELECTIVE_KINDS]
      *
      * …and a bucketed grouping is only affordable over a window.
      */
@@ -134,13 +135,16 @@ class StatsRollupTest {
             for ((pipeline, where, _) in queries.asked) {
                 assertFalse(pipeline.contains(StatsYql.TAG), "tag_index is a per-tag emission, not a counter: `$pipeline`")
                 assertFalse(pipeline.contains("each(all(group("), "a set per bucket is the shape that OOMs: `$pipeline`")
-                if (pipeline.contains("group(pubkey)")) {
-                    assertTrue(where.contains("kind = "), "an unfiltered distinct-pubkey count is a full pubkey set: `$pipeline` where `$where`")
-                }
-                if (pipeline.startsWith("all(group(") && !pipeline.contains("group(pubkey)")) {
+                // A count() needs no bound at all: it does not materialise what
+                // it counts. Everything that GROUPS does.
+                if (!pipeline.startsWith("all(group(")) continue
+                val windowed = where.contains("created_at >=")
+                val kinds = KIND_FILTER.findAll(where).map { it.groupValues[1].toInt() }.toSet()
+                assertTrue(windowed || kinds.isNotEmpty(), "a grouping over the whole store cannot run every minute: `$pipeline` where `$where`")
+                if (!windowed) {
                     assertTrue(
-                        where.contains("created_at >=") || where.contains("kind = "),
-                        "a grouping over the whole store cannot run every minute: `$pipeline` where `$where`",
+                        kinds.all { it in SELECTIVE_KINDS },
+                        "a `kind` filter bounds the group set, not the walk — $kinds is not a selective kind: `$pipeline` where `$where`",
                     )
                 }
             }
@@ -162,6 +166,10 @@ class StatsRollupTest {
             assertTrue(asked.any { it.pipeline == StatsYql.countsBy("kind") && it.where == "true" }, "the kind histogram walks the whole store")
             assertTrue(asked.any { it.pipeline.contains("each(all(group(pubkey)") }, "distinct authors per bucket is a charts cost")
             assertTrue(asked.any { it.pipeline.contains(StatsYql.TAG) }, "the relay distribution groups tag_index")
+            assertTrue(
+                asked.any { it.pipeline == StatsYql.distinct("pubkey") && it.where.contains("kind = 9735") },
+                "the zap wallets walk every receipt in the store to return a handful of services",
+            )
         }
     }
 
@@ -387,6 +395,24 @@ class StatsRollupTest {
     private companion object {
         /** A fixed clock, so a window is an exact string a test can assert. */
         const val NOW = 1_800_000_000L
+
+        /** Every `kind = N` a WHERE clause pins. */
+        val KIND_FILTER = Regex("""kind = (\d+)""")
+
+        /**
+         * The kinds a counters query may lean on as its only bound.
+         *
+         * A CLAIM ABOUT POPULATIONS, which is what makes it worth pinning here.
+         * A `kind` filter bounds the group set — `group(pubkey)` over kind 30382
+         * returns the few services that publish scores — but it does not bound
+         * the walk, and the engine still touches every matching document. That is
+         * fine for the NIP-85 kinds, which run to thousands of events on a real
+         * mirror, and is not fine for kind 9735: a mirror holds millions of zap
+         * receipts, which is why `zaps` sits with the charts despite being three
+         * counts. A new fast-tier query filtered on kind 1 would look exactly as
+         * bounded as these and cost a full pass.
+         */
+        val SELECTIVE_KINDS = setOf(10040, 30382)
 
         // Vespa 8.733 — the same captures StatsYqlTest asserts the readers against.
         const val TOTAL =

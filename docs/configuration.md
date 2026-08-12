@@ -126,8 +126,13 @@ as the expensive ones.
 
 | pass | sections | why it is on that cadence |
 |---|---|---|
-| **counters** | `corpus`, `trust`, `zaps`, `sync` | costs are bounded by something other than the corpus: `count()` over a match set, groupings behind a `kind` filter (9735, 10040, 30382), a two-day window for the newest event, three file reads for the router's heartbeat |
-| **charts** | `kinds`, `authors`, `activity`, `kindActivity`, `relayDistribution` | costs scale with the store: full-corpus histograms, `group(pubkey)` over everything, one pubkey set **per bucket** for the distinct-author series, every tag pair on every kind-10002 |
+| **counters** | `corpus`, `trust`, `sync` | costs are bounded by something other than the corpus: `count()` over a match set, groupings behind a *selective* `kind` filter (10040/30382 run to thousands of events), a two-day window for the newest event, three file reads for the router's heartbeat |
+| **charts** | `kinds`, `authors`, `activity`, `kindActivity`, `zaps`, `relayDistribution` | costs scale with the store or with a populous kind: full-corpus histograms, `group(pubkey)` over everything, one pubkey set **per bucket** for the distinct-author series, every tag pair on every kind-10002, and every one of millions of kind-9735 receipts to name a handful of wallets |
+
+`zaps` is the entry worth explaining, since three counts look like counters: a
+`kind` filter bounds the group set, not the walk. Nothing is lost by the slower
+cadence — a zap total fifteen minutes old is still the answer, where a
+`newestEvent` fifteen minutes old is the number an operator was watching.
 
 Each section states its own `generatedAt`, each pass its own
 `tiers.<name>.{generatedAt,tookMs,everySeconds}`, and every query its own
