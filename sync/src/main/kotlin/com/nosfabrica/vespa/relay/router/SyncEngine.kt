@@ -289,7 +289,15 @@ class SyncEngine(
             AliasFolding(
                 aliases = RelayAliases(),
                 record = RelayAliasRecord(store, it),
-                probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET, config.connectionTimeoutSec * 1000L),
+                // Per url, not per process: a `.onion` fingerprint that is only
+                // given the clearnet handshake budget times out while its
+                // circuit is still being built, and comes back as an empty
+                // window — which folds nothing, clears nothing, and leaves every
+                // url on that host in the fan-out forever. See [probeIdleMs].
+                probe =
+                    AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
+                        probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
+                    },
             )
         }
 

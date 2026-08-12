@@ -264,15 +264,25 @@ class AliasProbe(
         /** Consecutive pages that add nothing before the walk gives up. */
         private const val MAX_STALLS = 2
 
-        /** The live wiring: one paged REQ per ask, over the router's own client. */
+        /**
+         * The live wiring: one paged REQ per ask, over the router's own client.
+         *
+         * [idleMs] is asked PER URL rather than fixed for the process, because
+         * the router dials over two transports and their budgets are not the
+         * same number. Quartz's window is measured from the start of the fetch,
+         * so it covers the connect: a hidden service given the clearnet
+         * handshake budget comes back empty while its circuit is still being
+         * built, and an empty window is a url that can never fold. See
+         * `probeIdleMs`, which is what the engine passes here.
+         */
         fun over(
             client: NostrClient,
             target: Int,
-            timeoutMs: Long,
+            idleMs: (NormalizedRelayUrl) -> Long,
         ): AliasProbe =
             AliasProbe(
                 fetch = { url, size, until, kinds ->
-                    client.fetchAll(url, Filter(limit = size, until = until, kinds = kinds), timeoutMs)
+                    client.fetchAll(url, Filter(limit = size, until = until, kinds = kinds), idleMs(url))
                 },
                 target = target,
             )

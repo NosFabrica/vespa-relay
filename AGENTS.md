@@ -38,6 +38,15 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # dryRun, but it downloads a provider's whole score set (~150k events, ~3 min).
 ./gradlew :sync:test --tests '*DeleteMissingBandProbe*' -DdeleteMissingBandProbe=true --rerun -i
 
+# Asks a hidden service whether the fold could ever measure it: fingerprints
+# every url of one onion host through the operator's own Tor, at the old
+# clearnet window AND at the Tor one, and prints what `RelayAliases.learn` would
+# decide from each. Answers the three ways a `.onion` fails to fold — window too
+# short, relay will not answer a fingerprint, paths genuinely distinct — which
+# are the same silence from the outside. Asserts nothing.
+./gradlew :sync:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
+  -DonionFoldSocks=127.0.0.1:9050 --rerun -i
+
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
 # 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
 # and after.json in $D; the :relay half charts both through SyncCoverageReport,
@@ -1278,6 +1287,37 @@ were adopted from the store — `0 new alias(es) from 10 fingerprint(s), 12
 known` — so the probe really is a one-off per url, not a recurring cost. Both
 figures were measured while the fold still ran inline; the same work is now a
 monitor pass, which is why the 20s is no longer time a fan-out waits.
+
+**The fingerprint's clock is an IDLE window that starts before the connect, so a
+`.onion` was never foldable.** Quartz's `idleTimeoutMs` runs from the start of
+the fetch — `IdleClock` is constructed with the walk and nothing has bumped it
+yet — and the probe was handed `connectionTimeout`, the 20s that sizes a
+clearnet TCP handshake. A hidden service is allowed
+`SYNC_TOR_CONNECT_TIMEOUT_SECONDS` (90s) for the circuit and the rendezvous
+ALONE, for exactly the reason that 20s is the wrong size for them. The two
+disagreeing is not a slow probe, it is one that cannot finish: `fetchAll` returns
+what it collected when the window lapses, and what it collected is nothing, which
+reaches `RelayAliases` as an EMPTY window — not "measured and distinct" but **no
+verdict at all**, so nothing folds, nothing is cleared, and every url on that
+host is dialled again on every cycle for as long as the router runs. Symptom, off
+a live coverage card: three urls of one onion host in *Running now* at once.
+`probeIdleMs` gives a Tor-routed url the proxy's budget on top of the clearnet
+window (summed, not maxed — one buys the connect, the other is the silence every
+relay is allowed while answering) and `SYNC_TOR_ALL` carries it to clearnet urls
+with everything else. What it costs is paid by hosts that never answer: a silent
+leader is asked four times a pass (bare filter, then the kinds fallback, each
+retrying once at the smaller page), so a dead onion group holds one of the fold's
+16 permits for minutes rather than seconds — background work on a 6h clock
+against the handful of relays Tor reaches.
+
+**The other half of that question needs no probe, and answer it FIRST.** The
+verdict is a signed kind-30166 addressed by the url, served by this relay:
+`["REQ","v",{"kinds":[30166],"authors":["<this relay's pubkey>"],"#d":[<the urls>]}]`.
+A `same-as` pointing elsewhere means the fold DID remove the url and what the
+card showed was a leg outliving the pass that dialled it — `inFlight` spans
+passes by design and nothing cancels a running leg when its url folds. A
+`same-as` pointing at itself means measured and kept. No record means never
+measured, which is when `AliasFoldOnionProbe` earns its run.
 
 `maxRelaysPerList` (config, per stream) drops an event naming more relays than a
 relay list plausibly holds — measured, 148 pubkeys published a kind 10002 of
