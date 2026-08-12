@@ -65,4 +65,6 @@ tasks.test {
     System.getProperty("onionFoldProbe")?.let { systemProperty("onionFoldProbe", it) }
     System.getProperty("onionFoldSocks")?.let { systemProperty("onionFoldSocks", it) }
     System.getProperty("onionFoldUrls")?.let { systemProperty("onionFoldUrls", it) }
+    System.getProperty("selfConsistency")?.let { systemProperty("selfConsistency", it) }
+    System.getProperty("selfConsistencyUrls")?.let { systemProperty("selfConsistencyUrls", it) }
 }

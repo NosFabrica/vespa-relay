@@ -57,6 +57,15 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 #   …or a group of your own, `;` between groups and `,` within one:
 #   -DliveFoldGroups='wss://relay.example,wss://relay.example/alpha'
 
+# Walks each url TWICE from one anchor and prints the containment, at anchors of
+# 1min / 1hour / 1day / 7days. Answers whether a relay that fails the
+# reproducibility bar is failing because its window is still moving (an older
+# anchor fixes it) or because it does not answer the same question twice (an
+# older anchor does not). Those are different facts and want different responses
+# — see the self-consistency section below. Asserts nothing.
+./gradlew :sync:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
+#   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
+
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
 # 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
 # and after.json in $D; the :relay half charts both through SyncCoverageReport,
@@ -916,6 +925,38 @@ two minted paths score 0.787 and 0.730 against it, and the pass publishes both
 folds; `multiplexer.huszonegy.world` is self 0.594, siblings 0.622–0.870, four
 folds. So a group that folds cleanly never pays for the second walk, and only a
 group about to claim "these are different relays" does.
+
+**Self-consistency measures whether a relay is MEASURABLE, not whether it is
+honest, and an older anchor separates two failure modes that look identical at
+one minute.** Each url walked twice from one anchor, `RelaySelfConsistencyProbe`:
+
+| url | 1min | 1hour | 1day | 7days |
+|---|---|---|---|---|
+| `nos.lol` | 1.000 | 1.000 | 1.000 | 1.000 |
+| `nostr.oxtr.dev` | 1.000 | 1.000 | 1.000 | 1.000 |
+| `relay.lightning.pub` | 1.000 | 1.000 | 1.000 | 1.000 |
+| `multiplexer.huszonegy.world` | 0.446 | 0.712 | 0.770 | **0.964** |
+| `fiatjaf.com` | 0.803 | 0.664 | 0.694 | 0.715 |
+
+Three things follow. **A stable relay is 1.000 at every depth** — the check has
+essentially no false-positive rate on good actors, at any anchor. **A sharded
+backend converges as the anchor ages**: huszonegy's window is still replicating
+across shards for hours, and by 7 days it passes the 0.9 bar outright, so most
+of what reads as misbehaviour at one minute is our own anchor being too shallow.
+**A relay serving an arbitrary slice per REQ never converges**: fiatjaf.com
+returns a *different number of events* for the identical filter (152, 146, 111,
+203 against 212, 181, 181, 179) and age does not help.
+
+So do NOT drop on this signal. Both hosts that fail it are legitimate —
+`fiatjaf.com` is the spec author's own relay, and huszonegy serves a coherent
+pool (its paths fold onto each other at 0.62–0.87). What the signal supports is
+refusing to sign verdicts measured against such a relay, and distrusting a band
+it claims to have covered; it does not support removing it from the fan-out,
+which would drop real events on evidence of nothing worse than an unusual REQ
+implementation. It also does not detect the "feed us events forever" attack at
+all — a relay returning a consistent 500 passes. That one is novelty and drain
+(`PagedFetchResult.drained`, `LegProgress`, `LEG_QUIET_GIVE_UP_MS`), not
+identity.
 
 **A replaceable event has one address and more than one writer, so writing it
 is always an EDIT.** NIP-66's relay record is addressed by `d` = the relay url,
