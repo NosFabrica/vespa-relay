@@ -1007,6 +1007,15 @@ and nothing else. Four consequences, each with its own home:
   stragglers, since that pass has handed nothing out yet — because "reusing the
   id snapshot" repeating for hours is otherwise a symptom with no subject.
 
+  **The pool is the stream's, not the pass's**, so a straggler does not merely
+  get skipped by later passes — it is still holding its slot. A new pass gets
+  `concurrency` minus the stragglers transferring, and `admission` minus the
+  stragglers holding a worker at all. The number to watch is `concurrency`: at 8
+  it takes eight wedged relays for a stream to stop downloading, while it goes
+  on logging a pass a minute because the guards keep declining dead hosts and
+  `done/total` keeps advancing. A pass that opens on a fully-held pool says so,
+  with urls named.
+
   And a pass is **not** a walk over history: no shared cursor, no lockstep
   across relays, no snapshot advancing mid-pass. The set is built once before
   the walk and is static for it, and each relay's whole outstanding history —

@@ -650,6 +650,31 @@ internal class DynamicSync(
             preparing.set(false)
         }
 
+        // THE POOL MAY ALREADY BE SPENT, and if it is, this pass will hand out
+        // urls that can only queue. Every transfer open at the top of a pass
+        // belongs to an EARLIER one — this pass has dialled nothing yet — so the
+        // count is exact, and a stream whose slots are all held by wedged legs
+        // does no new downloading at all while still logging a pass a minute.
+        //
+        // It takes `concurrency` of them, which on a stream configured at 8 is
+        // eight relays, not eight hundred. Said out loud with the urls named,
+        // because the alternative is an operator watching `done/total` advance
+        // (the guards still decline dead hosts for free) while the event count
+        // never moves, and nothing anywhere connecting the two.
+        val held = rotation.transferringCount()
+        if (held >= dynamic.concurrency) {
+            System.err.println(
+                "router: ${stream.name} pass ${progress.number} — ALL ${dynamic.concurrency} transfer slot(s) are still held by" +
+                    " earlier passes, so nothing new can download until one returns" +
+                    (
+                        rotation
+                            .busyUrls()
+                            .take(3)
+                            .takeIf { it.isNotEmpty() }
+                            ?.let { " (e.g. ${it.joinToString { u -> u.url }})" } ?: ""
+                    ),
+            )
+        }
         // The walk is about to start, so the ticker takes the phase back. See
         // the `live.set(null)` in [loop] for what it was overwriting.
         live.set(progress)
