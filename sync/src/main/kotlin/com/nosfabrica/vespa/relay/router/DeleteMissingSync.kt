@@ -110,6 +110,12 @@ internal class DeleteMissingSync(
         // against an empty local set is precisely "give me everything"; the
         // delete side then no-ops on its own.
 
+        // Stamped BEFORE the comparison, never after: the band below claims
+        // coverage through this moment, and anything the provider published
+        // while the reconcile ran is outside what was compared. Same reading
+        // as the ordinary path's `syncStartedAt`.
+        val startedAt = nowSeconds()
+
         // A COMPLETED reconcile is the whole licence to delete. quartz throws
         // rather than falling back, so a normal return means every window was
         // compared and an empty answer is the relay's answer, not its
@@ -124,6 +130,13 @@ internal class DeleteMissingSync(
                 )
                 return attachedDownloaded + pageAsk(stream, url, ownedAsk)
             }
+
+        // Whether this reconcile compared a RANGE at all. Read by both things
+        // that need the licence — the band below and the delete further down —
+        // and named once so they cannot drift apart: two copies of `windows <
+        // 1` is one edit away from a band claiming coverage a delete would not
+        // dare act on, or the reverse.
+        val compared = diff.windows >= 1
 
         // fetchAll, not fetchAllPages: an id set is not a time range, and
         // paging it by `until` re-asks for events it just received.
@@ -141,19 +154,69 @@ internal class DeleteMissingSync(
         if (skipped > 0) {
             System.err.println("router: ${stream.name} ${url.url} skipped $skipped id(s) already twice refused")
         }
+        // The edges of what came back, on the same terms as every other sync
+        // path: screened per event, because one misdated stamp among a
+        // thousand honest ones must not cost the relay its whole band.
+        var seenMin: Long? = null
+        var seenMax: Long? = null
+        val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
         for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
                 if (stream.filter.match(event)) {
+                    if (SyncCoverage.isPlausible(event.createdAt)) {
+                        seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
+                        seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                    }
+                    SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                     ingest.submit(event, stream.trusted, origin)
                     downloaded++
                 }
             }
         }
+
+        // The band this path used to leave unwritten — the reason a relay that
+        // reconciled CLEANLY with nothing to send was invisible on the coverage
+        // card while one that happened to have an event was drawn.
+        //
+        // A reconcile is exactly the walk that can say something when nothing
+        // came back: the comparison itself proves the two sides are level, so
+        // the claim rests on `reconciledThrough` rather than on event times,
+        // which is why an empty PAGE records nothing and an empty RECONCILE
+        // records this. The ordinary streams have always recorded it
+        // ([DynamicSync.syncOneFilter]); only the deleteMissing path, which
+        // reconciles through a different quartz call to get at `haveIds`, never
+        // carried the line across.
+        //
+        // Gated on [compared], the same licence the delete below runs on: a
+        // band is a claim that a range WAS compared, which is the thing that
+        // makes an empty answer mean anything in either direction.
+        //
+        // What this now narrows, stated plainly: [pageAsk] reads bands
+        // ([SyncBands.legs]), so a later reconcile that FAILS pages from this
+        // moment instead of walking the provider's whole history again. That is
+        // the same claim every other stream makes off a clean reconcile, and it
+        // is the intended second effect — the fallback re-walked everything,
+        // every cycle, because nothing was ever recorded here. It reaches
+        // nothing else: the delete side deletes BY ID out of `ownedAsk`, which
+        // is the stream's filter narrowed by discovery alone, and this stream
+        // holds no shared snapshot to narrow ([DynamicSync.holdsIdSet]).
+        if (compared) {
+            bands.record(
+                stream.name,
+                url,
+                ownedAsk,
+                seenMin,
+                seenMax,
+                paged = false,
+                reconciledThrough = startedAt,
+                observedByKind = seenByKind,
+            )
+        }
         if (diff.haveIds.isEmpty()) return downloaded
 
         // A reconcile that split into no windows compared no range. It cannot
         // have returned a meaningful diff, whatever it says.
-        if (diff.windows < 1) {
+        if (!compared) {
             System.err.println(
                 "router: ${stream.name} ${url.url} reconciled 0 window(s) — nothing was compared, deleting nothing",
             )

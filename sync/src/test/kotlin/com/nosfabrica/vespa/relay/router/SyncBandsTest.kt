@@ -172,6 +172,41 @@ class SyncBandsTest {
     }
 
     @Test
+    fun `an empty reconcile carries the ceiling forward and leaves the floor alone`() {
+        // What the coverage card reads, and the shape [DeleteMissingSync]'s
+        // reconcile now records: a relay we are level with must keep the depth
+        // its first pass earned. A band that RESET here would chart a mirror's
+        // oldest, best-covered relays as freshly discovered on every cycle —
+        // the ceiling is the only thing an empty answer is evidence about.
+        val c = SyncBands(null)
+        c.record(mirror, relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = false, reconciledThrough = now() - 600)
+        val first = c.band(mirror, relay, profiles)!!
+
+        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = now())
+        val second = c.band(mirror, relay, profiles)!!
+
+        assertEquals(1_700_001_000L, second.minCreatedAt, "the floor is pass 1's oldest event, not the empty pass's clock")
+        assertTrue(second.maxCreatedAt > first.maxCreatedAt, "the ceiling advances to the moment we reconciled")
+        assertTrue(second.complete)
+    }
+
+    @Test
+    fun `a first contact that finds nothing on either side is still a row`() {
+        // The degenerate case the card has to survive: we hold nothing, the
+        // relay serves nothing, and the reconcile proves it. min == max at the
+        // clock is honest — coverage of no width, at a known instant — and it
+        // is what puts the relay on the card at all. Both edges must be
+        // readable, because `SyncCoverageReport` drops a band missing either.
+        val c = SyncBands(null)
+        val startedAt = now()
+        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = startedAt)
+
+        val band = c.band(mirror, relay, profiles)!!
+        assertEquals(startedAt, band.minCreatedAt)
+        assertEquals(startedAt, band.maxCreatedAt)
+    }
+
+    @Test
     fun `a complete band drops its older leg, a paged one keeps it`() {
         val reconciled = SyncBands(null)
         reconciled.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = 1_700_002_000L)
