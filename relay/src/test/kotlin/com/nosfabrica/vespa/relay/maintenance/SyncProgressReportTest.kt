@@ -129,7 +129,7 @@ class SyncProgressReportTest {
             """.trimIndent()
         val taken = firstCycle(SyncProgressReport.build(thin, nowSeconds = 1)!!)["taken"]!!.jsonObject
 
-        assertEquals(9, taken.size, "every outcome is named, present in the file or not")
+        assertEquals(10, taken.size, "every outcome is named, present in the file or not")
         assertEquals(0L, taken["noRoute"]!!.jsonPrimitive.long)
         assertEquals(4L, taken.values.sumOf { it.jsonPrimitive.long })
     }

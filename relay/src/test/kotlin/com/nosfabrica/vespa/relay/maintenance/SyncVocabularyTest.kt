@@ -100,7 +100,7 @@ class SyncVocabularyTest {
                 {"writtenAt": 900, "streams": [{"name": "content", "phase": "idle", "phaseForSec": 5,
                  "cycle": {"startedAt": 800, "outcome": "completed",
                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3},
-                   "hosts": 2, "taken": {"delivered": 3}, "balanced": true, "received": 9}}]}
+                   "hosts": 2, "relayListAgeSec": 120, "taken": {"delivered": 3, "busy": 1}, "balanced": true, "received": 9}}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
             )!!
@@ -153,6 +153,7 @@ class SyncVocabularyTest {
                 setOf(
                     "relays",
                     "hosts",
+                    "relayListAgeSec",
                     "legs",
                     "sweeping",
                     "rows",
@@ -167,6 +168,7 @@ class SyncVocabularyTest {
                     "hostStruckOut",
                     "knownDead",
                     "torUnavailable",
+                    "busy",
                     "excluded",
                     "foldedOnto",
                     "pending",

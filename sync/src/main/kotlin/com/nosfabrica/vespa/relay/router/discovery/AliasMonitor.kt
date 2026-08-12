@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
+import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
@@ -28,6 +29,7 @@ import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The probing half of the fold, on its own clock.
@@ -91,6 +93,29 @@ class AliasMonitor(
     )
 
     private val pending = ConcurrentHashMap<String, Work>()
+
+    private val learnedTotal = AtomicLong()
+
+    /**
+     * How many aliases this monitor has learned since the process started —
+     * used as a VERSION for the fold, not as a statistic.
+     *
+     * A stream that holds its discovered relay list in memory across cycles
+     * ([RelayDiscoveryConfig.recycleSeconds]) is holding a list the fold has
+     * since had something to say about: a url that folded away between two
+     * cycles goes on being dialled, taking a socket and a band for events its
+     * survivor already delivers, until the list is rebuilt. This number
+     * changing is the cheapest possible signal that rebuilding it would now
+     * produce something different.
+     *
+     * Monotonic and global on purpose. It is bumped by whichever stream's pass
+     * learned something, and every stream re-reads its list — a verdict is
+     * about a url, and two streams routinely discover the same one. The rest of
+     * what makes a stale list stale (a verdict aged past its TTL, one written by
+     * another router signing with the same key) is invisible from here, which is
+     * why age remains the primary expiry and this is only an early one.
+     */
+    fun generation(): Long = learnedTotal.get()
 
     /**
      * Hand the monitor this stream's current candidate set. Returns
@@ -158,7 +183,13 @@ class AliasMonitor(
         var learned = 0
         for ((label, work) in pending.entries.map { it.key to it.value }) {
             try {
-                learned += pass.measure(label, work.candidates, work.canDial, work.onEvent)
+                val n = pass.measure(label, work.candidates, work.canDial, work.onEvent)
+                learned += n
+                // Per stream, not once at the end: a pass over many streams can
+                // run for a quarter of an hour, and a stream whose fan-out
+                // starts in the middle of it should see the verdicts already
+                // published rather than wait out the whole pass.
+                if (n > 0) learnedTotal.addAndGet(n.toLong())
             } catch (e: CancellationException) {
                 throw e
             } catch (e: Exception) {

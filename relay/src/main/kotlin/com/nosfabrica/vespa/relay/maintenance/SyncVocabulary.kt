@@ -161,6 +161,16 @@ internal object SyncVocabulary {
                     "`discovered = foldedOntoAnother + excluded + taken` exactly.",
             )
             put(
+                "relayListAgeSec",
+                "How old the relay list this cycle fanned out over was when the cycle began. 0 means discovery ran for " +
+                    "this cycle; anything else means the router reused the set a previous cycle derived, which it may do " +
+                    "for up to that stream's refresh period. IT QUALIFIES `discovered`: on a recycling stream that count " +
+                    "describes a store walk from this many seconds ago, so two consecutive documents carrying identical " +
+                    "url counts are a mirror whose network has not been re-read, not necessarily one whose network has " +
+                    "not changed. Says nothing about the dial decisions — the NIP-66 known-dead set and the host strikes " +
+                    "are re-read every cycle whatever the list's age.",
+            )
+            put(
                 "foldedOntoAnother",
                 "Urls an alias verdict proved are the same server as another url in the same list, so they were never " +
                     "dialled. Their earlier band state is dropped rather than merged: a containment measurement is enough " +
@@ -184,8 +194,19 @@ internal object SyncVocabulary {
             )
             put(
                 "taken",
-                "Urls the cycle is responsible for, and the total the nine outcomes under it sum to. `pending` is derived " +
-                    "from the other eight, which is what keeps the partition closed while the cycle is still running.",
+                "Urls the cycle is responsible for, and the total the ten outcomes under it sum to. `pending` is derived " +
+                    "from the other nine, which is what keeps the partition closed while the cycle is still running.",
+            )
+            put(
+                "busy",
+                "Not dialled because a worker from an EARLIER pass was still syncing that relay when this one came round. " +
+                    "The router walks its relay list handing work to a fixed pool and does NOT wait for the pool to empty " +
+                    "before walking again — one relay that takes hours costs one slot instead of stopping the mirror — so " +
+                    "passes overlap and a relay slower than a pass is dialled every other pass. That is the rotation " +
+                    "working. Read it against `pending` and `outcome`: a `completed` pass routinely ends with urls still " +
+                    "in flight, which is the tail of the pool rather than a cycle that was killed. And do not read it as a " +
+                    "verdict about the relay — `hostStruckOut` and `knownDead` are also 'not dialled' and are the opposite " +
+                    "kind of fact.",
             )
             put(
                 "delivered",
@@ -253,7 +274,7 @@ internal object SyncVocabulary {
             put(
                 "accountedFor",
                 "Whether the partition actually holds in THIS document — `discovered = foldedOntoAnother + excluded + " +
-                    "taken`, and the nine outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
+                    "taken`, and the ten outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
                     "having, and this is what stops a reader treating a broken partition as a whole one. `balanced` beside " +
                     "it is the router's own check, kept separate so a disagreement localises the fault.",
             )

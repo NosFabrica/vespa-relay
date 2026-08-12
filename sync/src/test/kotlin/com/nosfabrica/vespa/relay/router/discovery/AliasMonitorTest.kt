@@ -162,6 +162,47 @@ class AliasMonitorTest {
         }
 
     @Test
+    fun `the generation moves only when a pass learns something`() =
+        runBlocking {
+            // It is a VERSION for the fold, read by streams holding a relay list
+            // across cycles: a list built before a verdict was published goes on
+            // dialling urls now known to be one relay. Bumping it on a pass that
+            // learned nothing would throw that list away for no gain — a full
+            // rediscovery, which is the cost the cache exists to avoid.
+            var learn = 0
+            val pass =
+                AliasMonitor.Pass { _, _, _, _ -> learn }
+            val m = monitor(pass)
+            m.submit("outbox", listOf(a, b), canDial = { true })
+
+            m.runPass()
+            assertEquals(0L, m.generation(), "a pass that folded nothing changed the version")
+
+            learn = 2
+            m.runPass()
+            assertEquals(2L, m.generation())
+
+            learn = 1
+            m.runPass()
+            assertEquals(3L, m.generation(), "the version is not monotonic across passes")
+        }
+
+    @Test
+    fun `one stream's verdicts move the generation for every stream`() =
+        runBlocking {
+            // A verdict is about a URL, and two streams routinely discover the
+            // same one. There is nothing per stream to version.
+            val pass = AliasMonitor.Pass { label, _, _, _ -> if (label == "outbox") 4 else 0 }
+            val m = monitor(pass)
+            m.submit("outbox", listOf(a, b), canDial = { true })
+            m.submit("assertions", listOf(a, c), canDial = { true })
+
+            m.runPass()
+
+            assertEquals(4L, m.generation())
+        }
+
+    @Test
     fun `a single url is not worth a pass`() =
         runBlocking {
             val pass = Recording()

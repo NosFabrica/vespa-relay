@@ -73,7 +73,7 @@ import java.nio.file.StandardCopyOption
  *         "hosts": 850,
  *         "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
  *                   "transferFailed": 100, "noRoute": 1100, "hostStruckOut": 200,
- *                   "knownDead": 100, "torUnavailable": 0, "pending": 23},
+ *                   "knownDead": 100, "torUnavailable": 0, "busy": 12, "pending": 23},
  *         "foldedOnto": {"relays": [{"relay": "wss://nostr.oxtr.dev/", "urls": 55,
  *                                    "examples": ["wss://nostr.oxtr.dev/alpha"]}],
  *                        "omitted": 480},
@@ -175,6 +175,16 @@ class SyncProgress(
                                             // urls on 850 hosts, in the run that
                                             // motivated this.
                                             put("hosts", t.hosts)
+                                            // How old the list those urls came
+                                            // from was when this cycle started.
+                                            // Without it `discovered` changes
+                                            // meaning silently on a stream that
+                                            // recycles its relay list: the count
+                                            // can describe a store walk from
+                                            // hours ago, and two identical
+                                            // documents cannot be told from a
+                                            // mirror that stopped looking.
+                                            put("relayListAgeSec", t.listAgeSec)
                                             put(
                                                 "taken",
                                                 buildJsonObject {
@@ -186,6 +196,15 @@ class SyncProgress(
                                                     put("hostStruckOut", t.hostStruckOut.get())
                                                     put("knownDead", t.knownDead.get())
                                                     put("torUnavailable", t.torUnavailable.get())
+                                                    // Not dialled because a
+                                                    // worker from an earlier
+                                                    // pass still had it. Its
+                                                    // own member because
+                                                    // "the rotation is
+                                                    // overlapping" and "the
+                                                    // relay is dead" are
+                                                    // opposite findings.
+                                                    put("busy", t.busy.get())
                                                     // Derived, and it is what
                                                     // makes the eight members
                                                     // sum to `urls.taken` while

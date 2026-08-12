@@ -74,8 +74,9 @@ internal object SyncProgressReport {
         }
 
     /**
-     * The nine terminal outcomes of a url the cycle took on, in the order the
-     * card reads them: what worked, then what did not, then what is still going.
+     * The ten outcomes of a url the cycle took on, in the order the card reads
+     * them: what worked, then what did not, then what our own rotation declined
+     * to hand out, then what is still going.
      *
      * A fixed list, spelled here rather than taken from the file's key order.
      * The document is a partition and a reader adds these up; taking the members
@@ -93,6 +94,7 @@ internal object SyncProgressReport {
             "hostStruckOut",
             "knownDead",
             "torUnavailable",
+            "busy",
             "pending",
         )
 
@@ -181,6 +183,11 @@ internal object SyncProgressReport {
             // is inflated by whatever the alias fold has not decided yet, and the
             // gap between the two numbers IS the disclosure.
             num(o["hosts"])?.let { put("hosts", it) }
+            // Absent only on a file written before this member existed, where it
+            // is omitted rather than defaulted to 0 — "the list was derived for
+            // this cycle" is a claim, and an older router made no such claim
+            // either way. A current one always writes it, 0 included.
+            num(o["relayListAgeSec"])?.let { put("relayListAgeSec", it) }
             put("taken", buildJsonObject { for ((k, v) in byOutcome) put(k, v) })
             put("received", num(o["received"]) ?: 0L)
             // Both halves of the partition, checked on this side.

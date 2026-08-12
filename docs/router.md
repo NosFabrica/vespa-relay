@@ -266,10 +266,137 @@ and the `filter` saying which events to pull them from. The filter runs once and
 every select is applied to what comes back, so a whole shelf of relay-list kinds
 costs one query rather than one each.
 
-Each cycle runs every scan, unions the relays they name, and negentropy-syncs the
+Each pass runs every scan, unions the relays they name, and negentropy-syncs the
 stream `filter` against **all** of them, `concurrency` at a time (paged REQ where
 NIP-77 is missing, same as a backfill). Then it sleeps `refreshSeconds` and does
 it again — so the fan-out widens on its own as the store fills.
+
+### The fan-out is a rotation, not a batch
+
+`concurrency` is a **pool of workers**, and the pass walks the relay list handing
+each url to whichever worker frees up next. A pass ends when the last url has
+been **handed out** — not when the last relay has finished. The slow ones keep
+their slots and run on into the next pass.
+
+That distinction is the whole design. With a join at the end of the fan-out, one
+relay could stop the mirror: a paged walk that cannot terminate held a
+16,752-relay stream at "cycle in progress" indefinitely, with every other relay
+in the list long since finished and nothing due to dial any of them again. Now it
+costs one slot out of `concurrency`.
+
+Three things follow, and they change how the logs and `/stats.json` read:
+
+- A relay still syncing when the next pass reaches it is **passed over**, counted
+  under `taken.busy`, and picked up on the pass after. So a relay slower than a
+  pass is dialled every other pass, and never twice at once.
+- A pass that `completed` routinely reports `pending` above zero. That is the
+  tail of the pool, not a cycle that died — `outcome` is what tells those apart,
+  as it always did.
+- The stream's progress line carries `running` beside `done/total`: `done/total`
+  is how far the current **walk** got over its list, `running` is how many relays
+  are on a socket right now including legs from earlier passes. A finished walk
+  with a busy pool used to render as idle.
+
+### What a pass is NOT
+
+It is not a walk over history, and there is no shared cursor across relays. The
+id snapshot is built **once, before the walk**, and is static for that pass — it
+never advances mid-pass, and relays do not move through it in step.
+
+Each relay's whole outstanding history is one worker's job. `bands.legs()` hands
+that worker every region outside the relay's band — the newer leg above it and
+the older leg below — and the worker walks all of them to completion, reconcile
+or paged fetch, past and present together, before releasing its slot. So a relay
+with ten hours of history to pull is **one worker running for ten hours**, while
+the walk that handed it out finished long before.
+
+That is why "the walk ended" and "the work finished" are different sentences, and
+why the pass line reports `busy` and `running` separately from `done/total`.
+
+### One consequence worth knowing before you tune anything
+
+For a stream that reconciles (`sync = "negentropy"`, or `auto` resolving to it),
+the shared id set outlives the pass that built it, because a straggler is still
+comparing against it. At most two are ever alive: a new one is built only when
+nothing is still reading the previous one.
+
+**A single long-running leg therefore freezes the snapshot for its whole
+stream.** The straggler holds generation A; the next pass installs B, which
+*retires* A; and nothing may be built over an occupied retirement slot. So every
+pass after that reuses B until the straggler finishes. A ten-hour leg means every
+other relay on that stream gets exactly **one** snapshot refresh and then shares
+it for ten hours.
+
+That is stale, not wrong — the diff asks for events already stored, they arrive,
+and ingest drops them as duplicates. The alternative is a third and fourth
+gigabyte-scale id list on the heap, which is what the bound exists to prevent.
+The router says so rather than leaving you to infer it:
+
+```
+router: profiles — reusing the 25516 id snapshot (2:15:00 old); 3 relay(s) from
+        an earlier pass are still syncing and hold the previous one
+        (e.g. wss://slow.example/)
+```
+
+If that line repeats for hours, the named relay is the reason. The levers are
+`sync = "fetch"` (builds no id set at all), narrowing the stream's filter, or
+`exclude` for a relay that is pathological rather than merely large. Streams on
+`sync = "fetch"` never see any of this.
+
+### `recycleSeconds`: syncing more often than you rediscover
+
+Deriving that relay list is the only expensive thing between a stream waking up
+and the first downloaded byte: the scans above, a normalisation pass over every
+url they carry, an alias `apply` (one `#d` query per 500 urls), then the
+`exclude` filter. On a full store that is minutes of work to produce a list
+which differs from the previous cycle's by a handful of urls — and with one knob
+pacing both, a 6h refresh means the mirror also *idles* for 6h between fan-outs.
+
+Set `recycleSeconds` and the two come apart:
+
+```hocon
+refreshSeconds = 21600   # re-read the sources every 6h
+recycleSeconds = 30      # …but start the next pass 30s after this walk ends
+```
+
+**"The walk ends" means the last url has been handed to a worker** — not that the
+relays have finished. That is the rotation working: the slow ones keep their
+slots and run on into the next pass. Three things follow, and they are the
+difference between reading this knob as a cycle time and reading it correctly:
+
+- **It is a floor on the gap between laps, not a period.** The period is the walk
+  plus this. And the walk is paced by the worker pool — it advances only as fast
+  as workers free up — so on a real list the walk *is* most of the period:
+  measured, 18,687 urls took **26:29** to hand out, against which a 30s gap is a
+  tail. Setting it to 5 does not buy a five-second cycle; it buys a five-second
+  pause between laps that are as long as the network makes them.
+- **A pass whose whole list is still busy hands out nothing and ends at once.**
+  Normal on a short list — every url is with a worker from the previous pass —
+  and the loop then ticks at `recycleSeconds` until slots free. That is why the
+  floor is 5s rather than 0.
+- **The walk can still stall, but it now takes the whole pool to do it.** The
+  producer suspends when every admission slot is held, so a stream stops only if
+  128–512 relays are simultaneously stuck. The join it replaced needed exactly
+  one.
+
+The stream then derives its list once, runs cycles back to back off it, and
+rebuilds it when the list is `refreshSeconds` old — or sooner, as soon as the
+alias monitor publishes a fold verdict, since a list built before that verdict
+would go on dialling urls now known to be one relay. Every pass that reuses a
+list says so in the log, and `/stats.json` carries `relayListAgeSec` beside the
+url counts, because otherwise `discovered` silently starts describing a store
+walk from hours ago.
+
+Nothing about *dialling* is cached. The NIP-66 known-dead set is re-read at the
+top of every cycle and host strikes are cycle-local, so a relay that died an
+hour ago is skipped on a reused list exactly as it would be on a fresh one.
+
+What it costs: each relay is dialled once per pass rather than once per refresh
+period. With bands recorded that is a small ask per relay — everything below the
+band's edge is already settled — but it is still a connection per relay per pass,
+so treat `recycleSeconds` as a rate against the whole discovered set and not as a
+free tightening. Leave it unset and a pass runs once per `refreshSeconds`, as it
+always has.
 
 Nothing truncates that set: no cap on relays synced and no popularity floor.
 `concurrency` paces the fan-out, it doesn't bound it, and `exclude` is the only
@@ -614,7 +741,7 @@ long the router has gone without saying anything — and a mirror that stopped a
 hour ago stops looking like one that is simply between cycles.
 
 **`urls` and `taken` are a partition, not a tally.** `discovered =
-foldedOntoAnother + excluded + taken`, and the nine outcomes under `taken` sum to
+foldedOntoAnother + excluded + taken`, and the ten outcomes under `taken` sum to
 it exactly. `pending` is what closes the second identity *while the cycle runs*:
 it is derived from the other eight rather than counted, so the numbers add up
 mid-fan-out instead of only at the end. `balanced` is the router's own check on
