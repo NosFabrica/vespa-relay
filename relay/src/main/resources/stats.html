@@ -509,6 +509,9 @@
   td.relay { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .85rem; word-break: break-all; }
   .err code { word-break: break-all; }
   footer { margin-top: 1.25rem; color: var(--muted); font-size: .85rem; }
+  /* One line per cadence, tight enough to read as one block: the two tiers are
+     a pair of facts about the same document, not two paragraphs. */
+  footer .foot-tier { margin: 0 0 .2rem; }
   code { background: var(--bar); padding: .1rem .3rem; border-radius: .25rem; }
   a { color: var(--accent); }
   .tip {
@@ -650,15 +653,30 @@ const footEl = document.getElementById("foot");
 const tipEl = document.getElementById("tip");
 
 /**
- * How old a document may be before the page says so out loud.
+ * How old a tier may be before the page says so out loud, for a document that
+ * does not state its own cadence.
  *
- * Not a guess at the rollup interval — that is an operator setting this page
- * cannot see (STATS_INTERVAL_SECONDS), and hardcoding it here would mean
- * telling anyone who changed it that fresh numbers are stale. This is the point
- * past which a document is old enough that "the rollup has stopped" is the more
- * likely explanation than "it is between runs", for any sane interval.
+ * Not a guess at the rollup interval — that is an operator setting
+ * (STATS_INTERVAL_SECONDS, STATS_COUNTERS_INTERVAL_SECONDS), and hardcoding it
+ * here would mean telling anyone who changed it that fresh numbers are stale.
+ * This is the point past which a document is old enough that "the rollup has
+ * stopped" is the more likely explanation than "it is between runs", for any
+ * sane interval.
+ *
+ * Used only as the fallback now: the document publishes `tiers.<name>.everySeconds`,
+ * so a tier can be judged in units of its own passes — see [STALE_PASSES].
  */
 const STALE_AFTER_MS = 6 * 3600 * 1000;
+
+/**
+ * How many of its own passes a tier may miss before the page calls it late.
+ *
+ * Six, so a single slow pass — a charts rollup that ran long, a counters pass
+ * that queued behind it — is never reported as a stopped one, and a genuinely
+ * dead tier is named within six minutes on the fast cadence and ninety on the
+ * slow one. Both are far inside the flat six hours this replaced.
+ */
+const STALE_PASSES = 6;
 
 /**
  * The document schema this page was written against — see SCHEMA_VERSION in
@@ -669,7 +687,7 @@ const STALE_AFTER_MS = 6 * 3600 * 1000;
  * comparing against one and offering to explain itself in terms of another. A
  * version check that can disagree with itself is worse than no check.
  */
-const SCHEMA = 1;
+const SCHEMA = 2;
 
 const MONTH = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 
@@ -877,15 +895,33 @@ function cardHead(parent, title, sub, section) {
   }
 }
 
-function tiles(corpus) {
+/**
+ * The four hero numbers — read from THREE sections, because they are not all
+ * computed on the same cadence.
+ *
+ * `corpus` is the per-minute half of the document: the event total and the
+ * newest event's timestamp. `authors.pubkeys` and the kinds table's own `total`
+ * are corpus-wide groupings and move on the slow cadence — see `StatsTier` in
+ * StatsRollup for why. They sit in one row anyway because that is how they are
+ * READ, and each section carries its own `generatedAt` for anyone who needs to
+ * know which of these was measured when.
+ *
+ * The Kinds tile takes the histogram's `total` rather than a copy of it in
+ * `corpus`, which is where it used to come from. One number in one place: two
+ * copies refreshed on different timers is how a tile comes to say "412" above a
+ * table headed "All 413 kinds" with nothing on the page able to explain it.
+ */
+function tiles(doc) {
   const out = [];
   const wrap = el("div", "tiles");
-  const d = (corpus && corpus.data) || {};
-  for (const [key, label] of [["events", "Events"], ["pubkeys", "Pubkeys"], ["kinds", "Kinds"]]) {
+  const d = (doc.corpus && doc.corpus.data) || {};
+  const authors = (doc.authors && doc.authors.data) || {};
+  const kinds = (doc.kinds && doc.kinds.data) || {};
+  for (const [value, label] of [[d.events, "Events"], [authors.pubkeys, "Pubkeys"], [kinds.total, "Kinds"]]) {
     const t = el("div", "tile");
     // A hero number, not a one-bar chart. An absent value is an em dash: this
     // page never prints a zero it did not measure.
-    t.appendChild(el("div", "v", d[key] == null ? "—" : fmt(d[key])));
+    t.appendChild(el("div", "v", value == null ? "—" : fmt(value)));
     t.appendChild(el("div", "k", label));
     wrap.appendChild(t);
   }
@@ -922,16 +958,21 @@ function tiles(corpus) {
   // without this an em dash where a number belongs is the ONLY sign anything
   // went wrong — with the engine's message, which names the failing pipeline,
   // dropped on the floor. Carried in its own strip instead.
-  if (corpus && corpus.errors) {
-    const strip = el("div", "card");
-    for (const [k, v] of Object.entries(corpus.errors)) {
+  //
+  // Both sections feeding this row, and each error PREFIXED with the one it
+  // came from: these keys used to be unique because they came from one section,
+  // and a bare "pubkeys:" beside a bare "events:" now says nothing about which
+  // half of the document to go and read.
+  const strip = el("div", "card");
+  for (const [name, section] of [["corpus", doc.corpus], ["authors", doc.authors]]) {
+    for (const [k, v] of Object.entries((section && section.errors) || {})) {
       const p = el("p", "err");
-      p.append(`${k}: `);
+      p.append(`${name}.${k}: `);
       p.appendChild(el("code", null, v));
       strip.appendChild(p);
     }
-    out.push(strip);
   }
+  if (strip.firstChild) out.push(strip);
   return out;
 }
 
@@ -2168,94 +2209,157 @@ function kindsCard(kinds) {
 }
 
 /**
- * The document the body was last built from.
+ * The activity charts and the control that switches between them, as one
+ * element.
  *
- * The page polls every 5 minutes and the rollup runs every 15, so MOST polls
- * return bytes the body is already showing. Rebuilding on those is not merely
- * wasted work — `replaceChildren` destroys what the reader was doing: both
- * filters lose what they typed, and every bounded scroll box (Kinds, Relay
- * distribution, and a Sync coverage card thousands of rows tall) jumps back to
- * the top. Measured: filter "blogs" → "", scrollTop 5000 → 0, on every tick.
+ * Together on purpose: the toggle and the two series it drives are re-rendered
+ * by the same closure, so switching granularity cannot leave the control and the
+ * charts disagreeing about which one is showing.
  */
+function activityPanel(activity) {
+  const wrap = el("div");
+  const draw = () => {
+    wrap.replaceChildren();
+    const toggle = grainToggle(activity, draw);
+    if (toggle) wrap.appendChild(toggle);
+    for (const card of activityCards(activity)) wrap.appendChild(card);
+  };
+  draw();
+  return wrap;
+}
+
+/**
+ * The body, panel by panel — what each draws and which sections it reads from.
+ *
+ * The `reads` list is not documentation, it is the REDRAW KEY: a panel is
+ * rebuilt when one of the sections it reads has been recomputed, and left
+ * untouched when none has. That distinction is what makes two cadences liveable
+ * on one page. The document now changes every minute, and rebuilding the whole
+ * body on every change destroys what the reader was doing — both search boxes
+ * lose what they typed, and every bounded scroll box (Kinds, Relay distribution,
+ * and a Sync coverage card thousands of rows tall) jumps back to the top. The
+ * old guard against that was "the document is unchanged, draw nothing", which
+ * stops helping the moment half of it is refreshed fifteen times as often as the
+ * other half.
+ *
+ * Order is the order they appear. Trust sits SECOND, right under the corpus
+ * totals, because it is the only panel here that can report the relay broken: a
+ * store with no projected trust state answers every ranked search unranked, and
+ * nothing else on this page changes when that happens. The two reference tables
+ * are last, in the order of how far you have to scroll to get past them.
+ */
+const PANELS = [
+  { name: "totals", reads: ["corpus", "authors", "kinds"], build: (doc) => tiles(doc) },
+  { name: "trust", reads: ["trust"], build: (doc) => [trustCard(doc.trust)] },
+  { name: "activity", reads: ["activity"], build: (doc) => [activityPanel(doc.activity)] },
+  { name: "kindActivity", reads: ["kindActivity"], build: (doc) => [kindActivityCard(doc.kindActivity)] },
+  { name: "zaps", reads: ["zaps"], build: (doc) => [zapsCard(doc.zaps)] },
+  { name: "relays", reads: ["relayDistribution"], build: (doc) => [relaysCard(doc.relayDistribution)] },
+  { name: "kinds", reads: ["kinds"], build: (doc) => [kindsCard(doc.kinds)] },
+  // Only when a router has written state we can read. A serve-only relay does
+  // not mirror, and an empty coverage card there would read as a broken mirror
+  // rather than as no mirror.
+  { name: "sync", reads: ["sync"], build: (doc) => (doc.sync ? [syncCard(doc.sync)] : []) },
+];
+
+/**
+ * A section's identity for redraw purposes: when the relay computed it, and
+ * whether it worked.
+ *
+ * The rollup stamps every section with its own `generatedAt`, so this is the
+ * relay's answer to "is this the same section I already drew" rather than this
+ * page's guess at one. `status` is in the key because a section can be
+ * recomputed into the same numbers and a different verdict — a chart that came
+ * back `partial` needs its badge and its error lines drawn even when the bars
+ * are identical. A section this document does not carry stamps as `-`, so a
+ * panel whose section disappears is redrawn into its empty state exactly once.
+ */
+const stampOf = (section) => (section ? `${section.generatedAt || "?"}/${section.status || "?"}` : "-");
+
+/** What each panel was last built from, by name. Cleared whenever the body is. */
+const drawn = new Map();
+
+/** The document the body was last built from, or null when the body shows none. */
 let renderedAt = null;
 
 function render(doc) {
   scopeEl.textContent = doc.scope || "";
-
-  // Same rollup as the one on screen — leave the body, and its reader, alone.
-  // The FOOTER is still redrawn below, because the one thing that does change
-  // between two views of the same document is how old it now is, and that is
-  // the line that says the rollup may have stopped.
-  if (doc.generatedAt && doc.generatedAt === renderedAt) return renderFoot(doc);
-  renderedAt = doc.generatedAt || null;
-
-  // A genuine new document does have to rebuild — but the reader's filter is
-  // an instruction about the table, not about the document, so it survives.
+  settlePoll(doc);
+  // The containers are laid out once and then kept, which is the whole point:
+  // a panel keeps its identity across polls, so an untouched one keeps its
+  // scroll position, its filter, and its ResizeObserver too.
   //
-  // Keyed by NAME over every search box, because there are two of them now
-  // (Kinds and Sync coverage). The `querySelector` this replaced read and wrote
-  // whichever box came first in the tree, so with two it would have carried the
-  // kinds query across every poll and dropped the sync one on the floor.
-  const typed = new Map();
-  for (const box of bodyEl.querySelectorAll("input[type=search]")) {
-    if (box.value) typed.set(box.name, box.value);
+  // Keyed on the containers themselves rather than on an empty body, because
+  // the body is not empty in either state that has to rebuild it: a 503 puts a
+  // "waiting for the first rollup" card there and a failed first load puts an
+  // error card, and both must be cleared out from under the panels rather than
+  // left above them.
+  if (!bodyEl.querySelector("[data-panel]")) {
+    bodyEl.replaceChildren();
+    drawn.clear();
+    // The staleness banner FIRST, above the hero numbers, because everything
+    // under it is served from a document the relay has already declared out of
+    // date. A rollup that has been failing all night otherwise draws a page
+    // indistinguishable from a healthy one — the numbers simply stop moving,
+    // which is how a stale cache comes to look like a crash.
+    for (const name of ["stale", ...PANELS.map((p) => p.name)]) {
+      const box = el("div");
+      box.dataset.panel = name;
+      bodyEl.appendChild(box);
+    }
   }
-
-  bodyEl.replaceChildren();
-  // FIRST, above the hero numbers, because everything under it is being served
-  // from a document the relay has already declared out of date. A rollup that
-  // has been failing all night otherwise draws a page indistinguishable from a
-  // healthy one — the numbers simply stop moving, which is how a stale cache
-  // comes to look like a crash. The footer's age line is a heuristic on the
-  // reader's side; this is the relay saying it, with a reason.
-  const stale = staleBanner(doc.stale);
-  if (stale) bodyEl.appendChild(stale);
-  for (const part of tiles(doc.corpus)) bodyEl.appendChild(part);
-
-  // Trust sits SECOND, right under the corpus totals, because it is the only
-  // panel here that can report the relay broken. A store with no projected
-  // trust state answers every ranked search unranked, and nothing else on this
-  // page changes when that happens — the charts above and below it look
-  // identical either way. Buried under the charts it was a panel you found
-  // after you already had a theory; here it is one of the first things read.
-  bodyEl.appendChild(trustCard(doc.trust));
-
-  // The toggle and the two series it drives are re-rendered together, so
-  // switching granularity cannot leave the control and the charts disagreeing.
+  renderedAt = doc.generatedAt || null;
+  // Unconditionally, on every read: it is one element, it holds nothing the
+  // reader can disturb, and it is the one thing on this page that can change
+  // while no section has.
+  fill(panelBox("stale"), [staleBanner(doc.stale)]);
+  // Before the panels, because the activity panel draws whichever grain this
+  // settles on and a document may have stopped carrying the one on screen.
   settleGrain(doc.activity);
-  const activityWrap = el("div");
-  const drawActivity = () => {
-    activityWrap.replaceChildren();
-    const toggle = grainToggle(doc.activity, drawActivity);
-    if (toggle) activityWrap.appendChild(toggle);
-    for (const card of activityCards(doc.activity)) activityWrap.appendChild(card);
-  };
-  drawActivity();
-  bodyEl.appendChild(activityWrap);
-
-  bodyEl.appendChild(kindActivityCard(doc.kindActivity));
-  bodyEl.appendChild(zapsCard(doc.zaps));
-  bodyEl.appendChild(relaysCard(doc.relayDistribution));
-  // The two reference panels last, in the order of how far you have to scroll
-  // to get past them: every kind in the store rather than a top-50, then a
-  // coverage row per relay the sync has touched. Both run to hundreds of rows
-  // on a real deployment, and a table nobody scrolls past is worse placed above
-  // the charts everyone reads.
-  bodyEl.appendChild(kindsCard(doc.kinds));
-  // Only when a router has written state we can read. A serve-only relay does
-  // not mirror, and an empty coverage card there would read as a broken mirror
-  // rather than as no mirror.
-  if (doc.sync) bodyEl.appendChild(syncCard(doc.sync));
-  for (const box of bodyEl.querySelectorAll("input[type=search]")) {
-    const was = typed.get(box.name);
-    if (!was) continue;
-    box.value = was;
-    // `input` rather than calling applyFilter: the handler is a closure over
-    // the freshly built rows, and these cards are rebuilt from a new document.
-    box.dispatchEvent(new Event("input"));
+  for (const panel of PANELS) {
+    const stamp = panel.reads.map((member) => stampOf(doc[member])).join("|");
+    if (drawn.get(panel.name) === stamp) continue;
+    drawn.set(panel.name, stamp);
+    fill(panelBox(panel.name), panel.build(doc));
   }
-
   renderFoot(doc);
+}
+
+const panelBox = (name) => bodyEl.querySelector(`[data-panel="${name}"]`);
+
+/**
+ * Put [parts] in [box], keeping what the reader was doing inside it.
+ *
+ * A rebuilt panel is new DOM, so anything the reader put INTO the old DOM is
+ * gone unless it is carried across. Two things are:
+ *
+ * Filter text, keyed by the box's NAME rather than by position — there are two
+ * search boxes on this page (Kinds and Sync coverage) and a positional read
+ * would carry one's query into the other. Re-applied by dispatching `input`
+ * rather than by calling the filter directly: the handler is a closure over the
+ * rows that were just built.
+ *
+ * Scroll position, by index within the panel, and AFTER the filter is re-applied
+ * — filtering changes how tall the content is, so restoring a scrollTop before
+ * it would land somewhere else. This is the state the old whole-body rebuild
+ * could not preserve at all (measured: scrollTop 5000 → 0 on every tick), and
+ * with the counters refreshing every minute it is the difference between a live
+ * page and an unusable one.
+ */
+function fill(box, parts) {
+  const typed = new Map();
+  for (const b of box.querySelectorAll("input[type=search]")) if (b.value) typed.set(b.name, b.value);
+  const scrolled = [...box.querySelectorAll(".wrap.tall")].map((s) => s.scrollTop);
+  box.replaceChildren(...parts.filter(Boolean));
+  for (const b of box.querySelectorAll("input[type=search]")) {
+    const was = typed.get(b.name);
+    if (!was) continue;
+    b.value = was;
+    b.dispatchEvent(new Event("input"));
+  }
+  [...box.querySelectorAll(".wrap.tall")].forEach((s, i) => {
+    if (scrolled[i]) s.scrollTop = scrolled[i];
+  });
 }
 
 /**
@@ -2267,11 +2371,16 @@ function render(doc) {
  * is serving a file written by a previous process, and saying WHY. An operator
  * seeing the second one does not have to work out whether fifteen minutes is
  * long enough to worry about.
+ *
+ * WHICH numbers, when the relay says: a failed pass names its tier, and with two
+ * cadences "these numbers are not current" over a page whose totals are forty
+ * seconds old is a sentence a reader has to disbelieve. The notice is about the
+ * sections that tier computes, and the page says so rather than implying the lot.
  */
 function staleBanner(stale) {
   if (!stale || !stale.reason) return null;
   const p = el("p", "err");
-  p.append(`These numbers are not current: ${stale.reason}.`);
+  p.append(stale.tier ? `The ${stale.tier} on this page are not current: ${stale.reason}.` : `These numbers are not current: ${stale.reason}.`);
   if (stale.since != null) {
     const when = el("span", null, ` Noticed ${ago(stale.since)}`);
     when.title = isoOf(stale.since);
@@ -2281,21 +2390,55 @@ function staleBanner(stale) {
   return p;
 }
 
+/**
+ * The two cadences, in the order they are read rather than the order the
+ * document happens to list them.
+ *
+ * A tier the document carries and this list does not still gets a line, under
+ * its own name — a page that silently omits a half of the document it does not
+ * recognise is how a third cadence would go unnoticed for a release.
+ */
+const TIERS = [["counters", "Counters"], ["charts", "Charts"]];
+
+/**
+ * When each half of the document was computed, and whether either is late.
+ *
+ * ONE LINE PER TIER, because one line for the document cannot be honest about
+ * it: the counters are refreshed every minute and the charts every fifteen, so a
+ * single "rolled up 40s ago" would describe the fast half and quietly cover for
+ * a charts pass that died four hours ago. That is the exact failure this page
+ * already refuses elsewhere — numbers that stop moving with nothing saying why.
+ *
+ * "Late" is measured against the tier's OWN stated cadence, which the document
+ * carries as `everySeconds`. This page used to have no way of knowing it (the
+ * comment on STALE_AFTER_MS says so) and warned at a flat six hours for that
+ * reason; a tier that says how often it repeats can be judged in units of its
+ * own passes instead.
+ */
 function renderFoot(doc) {
   footEl.replaceChildren();
-  const at = doc.generatedAt ? new Date(doc.generatedAt) : null;
-  const ageMs = at ? Date.now() - at.getTime() : 0;
-  footEl.append(
-    `Rolled up ${at ? at.toISOString().replace("T", " ").slice(0, 19) + "Z" : "at an unknown time"}`,
-    doc.tookMs != null ? ` in ${(doc.tookMs / 1000).toFixed(1)}s` : "",
-    ". Counted anonymously against the whole store. ",
-  );
-  if (at && ageMs > STALE_AFTER_MS) {
-    // Loud, because every number above still looks freshly computed.
-    const w = el("span", "err", `This document is ${Math.floor(ageMs / 3600000)}h old — the rollup may have stopped.`);
-    footEl.appendChild(w);
-    footEl.append(" ");
+  const tiers = doc.tiers || {};
+  const named = new Set(TIERS.map(([key]) => key));
+  const rows = [...TIERS.filter(([key]) => tiers[key]), ...Object.keys(tiers).filter((k) => !named.has(k)).map((k) => [k, k])];
+  for (const [key, label] of rows) {
+    const tier = tiers[key] || {};
+    const at = tier.generatedAt ? new Date(tier.generatedAt) : null;
+    const line = el("p", "foot-tier");
+    line.append(
+      `${label} rolled up ${at ? ago(Math.floor(at.getTime() / 1000)) : "at an unknown time"}`,
+      tier.tookMs != null ? ` in ${(tier.tookMs / 1000).toFixed(1)}s` : "",
+      tier.everySeconds ? `, every ${fmtDur(tier.everySeconds)}` : "",
+      ". ",
+    );
+    const lateAfterMs = tier.everySeconds ? tier.everySeconds * 1000 * STALE_PASSES : STALE_AFTER_MS;
+    if (at && Date.now() - at.getTime() > lateAfterMs) {
+      // Loud, because every number that pass computed still looks fresh.
+      line.appendChild(el("span", "err", `${label} have not been recomputed since — that half of this page may have stopped.`));
+    }
+    footEl.appendChild(line);
   }
+  if (!rows.length) footEl.append("Rolled up at an unknown time. ");
+  footEl.append("Counted anonymously against the whole store. ");
   const a = el("a", null, "/stats.json");
   a.href = "/stats.json";
   footEl.append("Source: ");
@@ -2337,8 +2480,9 @@ async function load() {
       const c = el("div", "card pending");
       c.appendChild(el("h2", null, "Waiting for the first rollup"));
       c.appendChild(el("p", "why",
-        "The relay computes these behind the server; the first pass over a large corpus takes a while. " +
-        "If this persists, check the relay log for `stats:` lines — and that STATS_INTERVAL_SECONDS is not 0."));
+        "The relay computes these behind the server; the counters land within seconds and the first pass over a " +
+        "large corpus takes a while. If this persists, check the relay log for `stats:` lines — and that " +
+        "STATS_COUNTERS_INTERVAL_SECONDS and STATS_INTERVAL_SECONDS are not both 0."));
       bodyEl.appendChild(c);
       return;
     }
@@ -2373,22 +2517,49 @@ async function load() {
   }
 }
 
-load();
-
 /**
- * Re-read the document on a timer.
+ * Re-read the document on a timer, AT THE CADENCE THE DOCUMENT STATES.
  *
  * The route was written asserting this existed — "the page polls this on a
  * timer" is why it mints an ETag and answers 304 — and it did not, which made
  * the claim false and the machinery unexercised. With a conditional request
  * each poll is a header exchange until the rollup actually moves.
  *
- * Five minutes rather than the rollup interval, which this page cannot see:
- * STATS_INTERVAL_SECONDS is an operator setting, and polling faster than it
- * costs only 304s while polling slower would let a screen sit stale for no
- * reason.
+ * It used to be a flat five minutes, because the interval was an operator
+ * setting this page could not see. It can now: every tier publishes its own
+ * `everySeconds`, so the page follows the FASTEST half of the document — a
+ * minute by default, which is what makes the counters actually live on screen
+ * rather than merely live in the JSON. Polling faster than a tier repeats costs
+ * only 304s; polling slower would leave a screen sitting on numbers the relay
+ * has already replaced.
+ *
+ * Clamped at both ends. Never below [POLL_FLOOR_MS], so a mistuned or
+ * deliberately aggressive counters interval cannot turn every open tab into a
+ * per-second poller. Never above the five minutes it always was, so a relay
+ * running charts only — counters disabled — still refreshes on its old schedule
+ * instead of every fifteen minutes.
  */
-setInterval(load, 5 * 60 * 1000);
+const POLL_FLOOR_MS = 30 * 1000;
+const POLL_CEILING_MS = 5 * 60 * 1000;
+let pollEveryMs = POLL_CEILING_MS;
+
+/** The fastest cadence this document says it is on, clamped to something a browser should poll at. */
+function settlePoll(doc) {
+  const stated = Object.values(doc.tiers || {})
+    .map((t) => t.everySeconds)
+    .filter((s) => s > 0);
+  if (!stated.length) return;
+  pollEveryMs = Math.min(POLL_CEILING_MS, Math.max(POLL_FLOOR_MS, Math.min(...stated) * 1000));
+}
+
+// A chain rather than setInterval: each read waits for the previous one to
+// finish — so a slow response cannot stack requests on a struggling relay — and
+// the delay is re-read every time, which is how a document that states a new
+// cadence takes effect without a reload.
+(async function poll() {
+  await load();
+  setTimeout(poll, pollEveryMs);
+})();
 </script>
 </body>
 </html>

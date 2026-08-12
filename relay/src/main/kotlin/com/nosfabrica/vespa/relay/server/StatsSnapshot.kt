@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.server
 
 import kotlinx.serialization.json.Json
+import kotlinx.serialization.json.JsonElement
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.buildJsonObject
@@ -77,11 +78,93 @@ class StatsSnapshot(
     /** The current document's bytes and ETag, or null before the first rollup. */
     fun served(): Served? = current.get()
 
-    /** Replace the served document and persist it. */
-    fun publish(doc: JsonObject) {
+    /**
+     * Publish [members] into the served document and persist the result.
+     *
+     * ## Two writers, one document
+     *
+     * The rollup computes `/stats.json` in two passes on two cadences — cheap
+     * counters about once a minute, corpus-wide groupings about once every
+     * fifteen; see `StatsTier` for the costs that forced the split — so a
+     * publish is a MERGE rather than a replacement. [owns] is what makes that
+     * safe: it names the top-level members this writer is responsible for, so
+     * the merge can tell "the other tier computed this" from "this tier stopped
+     * computing it".
+     *
+     *  - members in [members] replace whatever was there
+     *  - members in [owns] and NOT in [members] are REMOVED — a section that
+     *    stops existing (a router whose state files are gone) must disappear
+     *    rather than sit there forever at its last value with a timestamp
+     *    claiming this pass computed it
+     *  - everything else is left exactly as the other writer left it, timestamps
+     *    included, which is why each section carries its own `generatedAt`
+     *
+     * Called with the defaults — no [owns], no [tier] — it replaces the whole
+     * document, which is what a single-writer caller and every test that hands
+     * over a complete document mean.
+     *
+     * `@Synchronized` because this is now a read-modify-write over the served
+     * document with two coroutines doing it. The [AtomicReference] alone was
+     * enough when a publish only ever overwrote; merging without the lock would
+     * let the slower tier's read-then-write straddle the faster tier's publish
+     * and drop it.
+     */
+    @Synchronized
+    fun publish(
+        members: JsonObject,
+        owns: Set<String> = emptySet(),
+        tier: String? = null,
+    ) {
+        val doc = merged(members, owns, tier)
         val bytes = JSON.encodeToString(JsonObject.serializer(), doc).toByteArray(Charsets.UTF_8)
-        current.set(Served(bytes, etagOf(bytes)))
+        current.set(Served(doc, bytes, etagOf(bytes)))
         save(bytes)
+    }
+
+    /**
+     * [members] folded onto the served document, per the contract in [publish].
+     *
+     * Two members are special, and both for the same reason: they are the only
+     * ones BOTH writers touch, so neither can own them and a plain replacement
+     * would let each tier erase the other's half.
+     *
+     * `tiers` is a union — every writer contributes the entry under its own name
+     * and leaves the rest alone, which is what lets the page print "counters 40s
+     * ago, charts 12m ago" from one object.
+     *
+     * `stale` is the notice a failed pass leaves behind, and it survives ANOTHER
+     * tier's success: with two cadences, a charts tier that has been failing all
+     * night sits beside counters that are ten seconds old, and clearing the
+     * notice on every counters pass would hide exactly the failure the notice
+     * exists for. A writer clears its own notice and an unattributed one (the
+     * seed marker `loadFromFile` leaves, which any successful pass supersedes).
+     */
+    private fun merged(
+        members: JsonObject,
+        owns: Set<String>,
+        tier: String?,
+    ): JsonObject {
+        val base = current.get()?.doc
+        if (base == null || owns.isEmpty()) return members
+        // A document written against another schema is not something to merge
+        // onto: its members can mean different things, and the ones this schema
+        // dropped are owned by nobody now, so they would linger forever beside
+        // numbers that superseded them. Replacing it costs the other tier's
+        // sections until its next pass — visible for minutes after an upgrade,
+        // stated by their absence, and preferable to a document that is half
+        // schema 1 and half schema 2 while claiming to be one of them.
+        if (base["schema"] != members["schema"]) return members
+        val out = LinkedHashMap<String, JsonElement>(base)
+        owns.forEach { out.remove(it) }
+        out.remove("stale")
+        members.forEach { (member, value) -> out[member] = value }
+        val wasTiers = base["tiers"] as? JsonObject
+        val nowTiers = members["tiers"] as? JsonObject
+        if (wasTiers != null && nowTiers != null) out["tiers"] = JsonObject(wasTiers + nowTiers)
+        val stale = base["stale"] as? JsonObject
+        val staleTier = (stale?.get("tier") as? JsonPrimitive)?.contentOrNull
+        if (stale != null && staleTier != null && staleTier != tier) out["stale"] = stale
+        return JsonObject(out)
     }
 
     /**
@@ -113,9 +196,20 @@ class StatsSnapshot(
      * minting a document whose only member is `stale` would serve a shape the
      * page has to special-case for a state it already draws ("not computed yet").
      */
+    @Synchronized
     fun markStale(
         reason: String,
         atSeconds: Long = System.currentTimeMillis() / 1000,
+        /**
+         * Which cadence failed, or null for a notice about the whole document.
+         *
+         * Carried INTO the document because a reader has to know which numbers
+         * the notice is about — a document whose charts are four hours old and
+         * whose counters are forty seconds old is not "stale", it is half stale
+         * — and read back out by [publish], which clears a notice only for the
+         * tier that left it.
+         */
+        tier: String? = null,
         /**
          * Whether the marked document is written back to [path].
          *
@@ -130,7 +224,7 @@ class StatsSnapshot(
     ) {
         val existing = current.get() ?: return
         runCatching {
-            val doc = Json.parseToJsonElement(existing.bytes.decodeToString()).jsonObject
+            val doc = existing.doc
             // Rebuilt rather than mutated in place: `stale` must go on the
             // OUTSIDE of whatever the rollup produced, and a document that
             // already carries one from a previous failure gets the newer reason
@@ -143,16 +237,24 @@ class StatsSnapshot(
                         buildJsonObject {
                             put("reason", reason)
                             put("since", atSeconds)
+                            tier?.let { put("tier", it) }
                             // The reader's arithmetic, done here, because the
                             // interesting quantity is the AGE and the page would
                             // otherwise have to know the rollup's interval to
                             // decide whether one skipped refresh is a problem.
-                            (doc["generatedAt"] as? JsonPrimitive)?.contentOrNull?.let { put("generatedAt", it) }
+                            //
+                            // The failing TIER's own timestamp when there is one,
+                            // not the document's: with two cadences the document
+                            // was touched by the healthy half seconds ago, and
+                            // stamping the notice with that would say the numbers
+                            // it is warning about are current.
+                            (tierGeneratedAt(doc, tier) ?: (doc["generatedAt"] as? JsonPrimitive)?.contentOrNull)
+                                ?.let { put("generatedAt", it) }
                         },
                     )
                 }
             val bytes = JSON.encodeToString(JsonObject.serializer(), marked).toByteArray(Charsets.UTF_8)
-            current.set(Served(bytes, etagOf(bytes)))
+            current.set(Served(marked, bytes, etagOf(bytes)))
             if (persist) save(bytes)
         }.onFailure {
             // The served document stays exactly as it was. Losing the staleness
@@ -176,9 +278,12 @@ class StatsSnapshot(
             val bytes = file.readBytes()
             // Parsed, not trusted as-is: serving whatever the file holds would
             // let a hand-edited or truncated document out under this relay's
-            // name, and the parse is the only check available.
-            Json.parseToJsonElement(bytes.decodeToString()).jsonObject
-            current.set(Served(bytes, etagOf(bytes)))
+            // name, and the parse is the only check available. Kept, not
+            // discarded: the next publish MERGES onto it — one tier's pass must
+            // not blank the other's sections just because the process restarted
+            // between them.
+            val doc = Json.parseToJsonElement(bytes.decodeToString()).jsonObject
+            current.set(Served(doc, bytes, etagOf(bytes)))
             // Seeded, not computed — and the page must be able to tell. This
             // document was written by a previous process and can be arbitrarily
             // old; a deploy that ships a broken rollup would otherwise serve
@@ -213,13 +318,33 @@ class StatsSnapshot(
         }
     }
 
-    /** One published document: the exact bytes served, and the validator over them. */
+    /**
+     * One published document: the exact bytes served, the validator over them,
+     * and the parsed form the next publish merges onto.
+     *
+     * The tree is kept rather than re-parsed on demand because both remaining
+     * readers of it are on a hot-ish path — every merge and every staleness
+     * notice — and because re-parsing 100KB of JSON to answer "what did the
+     * other tier publish" is work this already has the answer to. [bytes] stays
+     * the served form: the ETag is over those exact bytes, and re-encoding the
+     * tree to serve it could mint different bytes for the same validator.
+     */
     class Served(
+        val doc: JsonObject,
         val bytes: ByteArray,
         val etag: String,
     )
 
     private companion object {
+        /** When the tier named [tier] last computed anything, per the document's own `tiers` member. */
+        fun tierGeneratedAt(
+            doc: JsonObject,
+            tier: String?,
+        ): String? =
+            ((doc["tiers"] as? JsonObject)?.get(tier ?: return null) as? JsonObject)
+                ?.get("generatedAt")
+                ?.let { (it as? JsonPrimitive)?.contentOrNull }
+
         /**
          * Not pretty-printed. This document is machine-read first — the page
          * fetches it, and anyone charting our coverage against a network-wide
