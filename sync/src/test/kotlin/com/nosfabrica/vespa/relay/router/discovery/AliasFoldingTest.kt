@@ -278,6 +278,52 @@ class AliasFoldingTest {
             assertTrue(held.isEmpty(), "a refused url left a claim behind")
         }
 
+    /**
+     * A relay that cannot repeat itself must produce NO verdict — not a fold,
+     * and above all not a signed "these are different relays".
+     *
+     * Measured on `fiatjaf.com`, which serves an arbitrary ten events per REQ
+     * whatever limit is asked: one url walked twice from a single anchor,
+     * seconds apart, shared NONE of its ten ids, and over a paged walk it
+     * self-scored 0.694-0.720 while its two sibling paths scored 0.592 and 0.775
+     * against EACH OTHER. The cross-url number sits inside the band the url
+     * scores against itself, so which side of the 0.5 fold threshold a pass
+     * lands on is chance — and the losing side publishes two urls of one relay
+     * as separate relays for thirty days, during which `measured()` answers true
+     * and nothing re-probes them. The duplicate stays in the fan-out for the
+     * whole TTL on evidence that contradicts itself.
+     *
+     * The corpus here rotates per dial the way that relay's does, so the second
+     * leader walk cannot match the first.
+     */
+    @Test
+    fun `a relay that cannot reproduce its own window publishes nothing`() =
+        runBlocking {
+            val store = newStore()
+            val a = RelayUrlNormalizer.normalize("wss://shuffling.example")
+            val b = RelayUrlNormalizer.normalize("wss://shuffling.example/ember")
+            // Every dial hands back a fresh, disjoint 40 events — the extreme of
+            // what that relay does, so no walk can ever agree with another.
+            val served = AtomicInteger()
+            val shuffling =
+                Upstreams {
+                    val n = served.getAndIncrement()
+                    (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "dial$n-e$it") }
+                }
+            val fold = folding(store, shuffling, RelayAliases())
+
+            assertEquals(0, fold.measure("t", listOf(a, b), canDial = { true }), "nothing may be folded on this evidence")
+
+            // The negative claim is the one that used to be published here: two
+            // urls of one host, cleared as separate relays, for 30 days.
+            val held = RelayAliasRecord(store, signer).load(listOf(a, b))
+            assertTrue(held.aliases.isEmpty(), "a fold was published against a yardstick that cannot repeat itself")
+            assertTrue(held.distinct.isEmpty(), "published ${held.distinct.size} url(s) as their own relay on unreproducible evidence")
+            // And nothing is held in memory either, so the next pass re-measures
+            // rather than resuming from half a verdict.
+            assertEquals(listOf(a, b), fold.apply(listOf(a, b)).dial)
+        }
+
     @Test
     fun `a second process does not re-probe urls a previous pass cleared`() =
         runBlocking {

@@ -66,6 +66,11 @@ class RelayAliases(
      * `default_limit` — a truncated window is still the same window.
      */
     private val minOverlap: Double = DEFAULT_MIN_OVERLAP,
+    /**
+     * How much of its own window a relay must hand back on a second walk before
+     * anything it says is treated as evidence. See [reproducible].
+     */
+    private val minSelfOverlap: Double = DEFAULT_MIN_SELF_OVERLAP,
 ) {
     /** alias url -> the url we actually dial for it. Only ever holds folded urls. */
     private val folded = ConcurrentHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
@@ -139,6 +144,39 @@ class RelayAliases(
 
     /** Is this window big enough to be measured against at all? */
     fun usableWindow(print: Set<String>?): Boolean = print != null && print.size >= minSample
+
+    /**
+     * Does this relay give the same answer twice — the question that has to be
+     * settled before ANY verdict is published about the host it leads.
+     *
+     * Two walks of the SAME url from the SAME anchor. A relay that cannot
+     * reproduce its own window measures nothing, in either direction: a
+     * containment against it is noise, and the fold's two conclusions ("these
+     * are one relay", "these are different relays") are then a coin flip that
+     * gets signed and stands for [RelayAliasRecord.DEFAULT_TTL_SECONDS].
+     *
+     * The bar sits in an empty gap in the measurements rather than at a round
+     * number. Stable relays self-score at the top of the range — nos.lol 0.998,
+     * nostr.oxtr.dev 1.000 — while the two hosts found in this state score far
+     * below it: `espelho.girino.org` at 0.435, and `fiatjaf.com` at 0.694-0.720
+     * over a paged walk and **0.000** on a single page, where the same url asked
+     * twice seconds apart shared none of its ten events. Nothing has been
+     * measured between 0.8 and 0.99, which is why 0.9 costs nothing to demand.
+     *
+     * Note what this is NOT: [minOverlap] is about two DIFFERENT urls and is
+     * deliberately generous, because two dials seconds apart on a live relay
+     * legitimately disagree at the edges. One url against itself has no such
+     * excuse.
+     */
+    fun reproducible(
+        first: Set<String>,
+        second: Set<String>,
+    ): Boolean {
+        val smaller = minOf(first.size, second.size)
+        if (smaller < minSample) return false
+        val shared = if (first.size <= second.size) first.count { it in second } else second.count { it in first }
+        return shared.toDouble() / smaller >= minSelfOverlap
+    }
 
     /**
      * Has anything been decided about this url — folded, or probed and cleared?
@@ -382,6 +420,12 @@ class RelayAliases(
          * duplication costs the most.
          */
         const val DEFAULT_MIN_OVERLAP = 0.5
+
+        /**
+         * What a url must score against ITSELF for its host to be measurable at
+         * all — see [reproducible] for the two clusters this sits between.
+         */
+        const val DEFAULT_MIN_SELF_OVERLAP = 0.9
 
         /**
          * Apply an alias map to a discovered set — the one line a caller of

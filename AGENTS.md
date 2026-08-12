@@ -1310,6 +1310,51 @@ retrying once at the smaller page), so a dead onion group holds one of the fold'
 16 permits for minutes rather than seconds — background work on a 6h clock
 against the handful of relays Tor reaches.
 
+**A relay that cannot reproduce its own answers made the fold a coin flip, and
+signed the result for a month.** `fiatjaf.com` was the second host found in the
+state `espelho.girino.org` is described in above, and measuring it settled that
+the case is not rare enough to leave uncoded. What it does, asked directly:
+
+| ask | answer |
+|---|---|
+| `{"limit":500,"until":anchor}` | **10** events, not newest-first, `created_at` spanning 2024–2026 in one page |
+| the same ask again, same anchor, seconds later | 10 events again, **0 of them shared with the first** |
+| `{"kinds":[1]}` / `[0]` / `[1,10002]` | 0 events, promptly EOSE'd |
+| four bare asks, pooled | 40 events, **all kind 30023, all one pubkey** (fiatjaf's own) |
+
+So it is a personal long-form relay serving an arbitrary ten of its own articles
+per REQ whatever limit is asked, and `until` cursoring means nothing against it —
+a paged walk ends on the stall heuristic at a different depth every time (120,
+157, 168, 182, 190, 202 ids across six walks). The consequence for the fold is
+the dangerous one: over a paged walk the url self-scores **0.694–0.720** while
+its sibling paths score **0.592 and 0.775 against each other**, so the cross-url
+number sits INSIDE the band the url scores against itself. Which side of
+`minOverlap` a pass lands on is chance — and landing low publishes two urls of
+one relay as separate relays for `DEFAULT_TTL_SECONDS`, during which `measured()`
+answers true and nothing re-probes them. A duplicate pinned in the fan-out for
+thirty days on evidence a re-run contradicts.
+
+`RelayAliases.reproducible` is the guard: before a group publishes any NEGATIVE
+verdict, the leader is walked a SECOND time from the same anchor through the same
+filter, and unless it hands back `DEFAULT_MIN_SELF_OVERLAP` of its own window the
+group is forgotten and nothing is published. Three things about it:
+
+- **Paid only on the negative path.** A group that folded cleanly is making the
+  safe claim and costs nothing extra; the second walk is one dial on groups that
+  were about to call something a separate relay.
+- **0.9 sits in an empty gap, not at a round number.** Stable relays self-score
+  0.998 (nos.lol) and 1.000 (nostr.oxtr.dev); the two unmeasurable ones score
+  0.435 and 0.694–0.720. Nothing has been measured in between.
+- **It is not `minOverlap` and must not be merged with it.** That bar compares
+  two DIFFERENT urls and is deliberately generous, because two dials seconds
+  apart on a live relay legitimately disagree at the edges. One url against
+  itself has no such excuse.
+
+The host stays in the fan-out, unmeasured and re-probed. Dropping such a host
+from the fan-out entirely is a separate policy question — note that
+`router.conf.example` DOES ask for kind 30023, so this one is not pure cost, it
+is a relay we cannot walk coherently whose events are carried elsewhere.
+
 **Three more ways a url was permanently unmeasurable, all found auditing the
 above and all the same silence from outside:**
 

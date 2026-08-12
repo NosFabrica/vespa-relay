@@ -303,6 +303,58 @@ class AliasFolding(
                         }
                         val leaderPrint = lead.ids
                         val result = aliases.learn(group, leader, prints)
+                        // PROVE THE YARDSTICK BEFORE MAKING A NEGATIVE CLAIM.
+                        //
+                        // Some relays do not answer the same question the same
+                        // way twice, and against one of those every containment
+                        // in this group is noise — including the ones that
+                        // cleared the 0.5 bar and the ones that missed it.
+                        // Measured on `fiatjaf.com`: one url asked twice from
+                        // ONE anchor, seconds apart, shared NONE of its ten
+                        // events; over a paged walk it self-scored 0.694-0.720
+                        // while its two sibling paths scored 0.592 and 0.775
+                        // against each other — a cross-url score sitting inside
+                        // the band the url scores against itself. Whichever side
+                        // of 0.5 a pass happens to land on, it signs the answer
+                        // for a month: land low and two urls of one relay are
+                        // published as separate relays and never re-probed until
+                        // the TTL lapses, which is a duplicate pinned in the
+                        // fan-out for thirty days on evidence a re-run
+                        // contradicts.
+                        //
+                        // So: a second walk of the leader, from the SAME anchor
+                        // through the SAME filter, and nothing is published
+                        // unless it comes back. Paid only where a negative claim
+                        // is about to be made — a group that folded cleanly is
+                        // making the safe claim and pays nothing — and the
+                        // group is forgotten rather than half-kept, so the next
+                        // pass starts from the store exactly as if this one had
+                        // never run.
+                        if (result.distinct.isNotEmpty()) {
+                            budget.decrementAndGet()
+                            val again =
+                                gate.withPermit {
+                                    if (!canDial(leader)) return@withPermit null
+                                    taken.incrementAndGet()
+                                    sockets.claim(leader)
+                                    try {
+                                        probe.fingerprint(leader, anchor, lead.kinds, onEvent)
+                                    } finally {
+                                        sockets.release(leader)
+                                    }
+                                }
+                            if (again == null || !aliases.reproducible(leaderPrint, again)) {
+                                val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
+                                aliases.forget(group)
+                                System.err.println(
+                                    "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
+                                        "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor) — " +
+                                        "${group.size} url(s) left unmeasured rather than published as ${result.distinct.size} " +
+                                        "separate relay(s)",
+                                )
+                                return@launch
+                            }
+                        }
                         // This group's share of the pass, kept separately so it
                         // can be written the moment the group is decided. The
                         // pass-wide map is only a counter for the summary line.
