@@ -163,6 +163,42 @@ class SharedIdSetTest {
     }
 
     @Test
+    fun `a leg that runs for hours buys everyone else ONE more snapshot, then freezes it`() {
+        // The consequence of the two-generation bound, and it is not obvious
+        // from the bound itself. A relay with a long history is one worker
+        // running for hours while the walk that handed it out finished long
+        // ago. It holds the generation it started against; the next pass
+        // installs a fresh one, which RETIRES the held one — and nothing may be
+        // built over an occupied retirement slot. So every pass after that
+        // reuses the same set until the straggler finishes.
+        //
+        // Stale, not wrong: the diff then asks for events already stored, they
+        // arrive, and ingest drops them as duplicates. The alternative is a
+        // third and fourth gigabyte-scale list on the heap.
+        val set = SharedIdSet()
+        val hour = 3_600_000L
+        set.install(ids(100), nowMs = 0, forSince = null, buildMs = 60_000)
+        val tenHourLeg = set.lease()
+
+        // Hour 1: a rebuild lands. Everyone else moves to the new set.
+        assertTrue(set.worthRebuilding(hour, null))
+        assertTrue(set.mayInstall())
+        set.install(ids(101), nowMs = hour, forSince = null, buildMs = 60_000)
+        assertEquals(101, set.size())
+
+        // Hours 2-10: worth rebuilding every time, and refused every time.
+        for (h in 2..10) {
+            assertTrue(set.worthRebuilding(h * hour, null), "the clock says yes at hour $h")
+            assertFalse(set.mayInstall(), "but the straggler still holds the retired generation at hour $h")
+            assertEquals(2, set.generationsAlive(), "never a third, which is the whole bound")
+        }
+        assertEquals(100, tenHourLeg.ids.size, "and it keeps reading the set it started against")
+
+        tenHourLeg.release()
+        assertTrue(set.mayInstall(), "rebuilds resume the moment it finishes")
+    }
+
+    @Test
     fun `a stream that never builds one leases nothing rather than failing`() {
         // Fetch-only and deleteMissing streams never install. Their asks still
         // take a lease, and it has to be an empty read rather than a null the

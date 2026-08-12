@@ -644,7 +644,7 @@ internal class DynamicSync(
         preparing.set(true)
         val sharedAuthors: Set<String>
         try {
-            refreshIdSet(stream, relays, window, idSet)
+            refreshIdSet(stream, relays, window, idSet, rotation)
             sharedAuthors = sharedAuthors(stream, relays)
         } finally {
             preparing.set(false)
@@ -905,6 +905,7 @@ internal class DynamicSync(
         relays: List<DiscoveredRelay>,
         window: Filter,
         idSet: SharedIdSet,
+        rotation: RelayRotation,
     ) {
         if (!holdsIdSet(stream)) {
             System.err.println(
@@ -955,9 +956,24 @@ internal class DynamicSync(
             // extra steps — so the pass reuses what it has. The cost is a diff
             // computed against a slightly old set, i.e. some events arriving
             // that ingest then drops as duplicates.
+            // NAMED, because this is the one line an operator can act on and a
+            // count alone leaves them grepping the wire log. Every url with a
+            // worker at this instant is from an EARLIER pass — this one has not
+            // handed anything out yet — so the set is exactly the stragglers,
+            // and a long-running leg is what freezes the snapshot.
+            //
+            // Frozen is the right word. The generation this straggler holds is
+            // retired the moment the next build lands, and nothing may be built
+            // over an occupied retirement slot, so a leg that runs for hours
+            // buys everyone else ONE more snapshot and then the same one until
+            // it finishes. Bounded heap, staler diff — see
+            // [SharedIdSet.mayInstall].
+            val holding = rotation.busyUrls()
             System.err.println(
-                "router: ${stream.name} — reusing the ${idSet.size()} id snapshot," +
-                    " an earlier pass's relays are still reading the previous one",
+                "router: ${stream.name} — reusing the ${idSet.size()} id snapshot" +
+                    " (${fmtDuration(idSet.ageSec(System.currentTimeMillis()) * 1000)} old);" +
+                    " ${holding.size} relay(s) from an earlier pass are still syncing and hold the previous one" +
+                    (if (holding.isEmpty()) "" else " (e.g. ${holding.take(3).joinToString { it.url }})"),
             )
             return
         }

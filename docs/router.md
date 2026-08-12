@@ -297,13 +297,51 @@ Three things follow, and they change how the logs and `/stats.json` read:
   are on a socket right now including legs from earlier passes. A finished walk
   with a busy pool used to render as idle.
 
+### What a pass is NOT
+
+It is not a walk over history, and there is no shared cursor across relays. The
+id snapshot is built **once, before the walk**, and is static for that pass — it
+never advances mid-pass, and relays do not move through it in step.
+
+Each relay's whole outstanding history is one worker's job. `bands.legs()` hands
+that worker every region outside the relay's band — the newer leg above it and
+the older leg below — and the worker walks all of them to completion, reconcile
+or paged fetch, past and present together, before releasing its slot. So a relay
+with ten hours of history to pull is **one worker running for ten hours**, while
+the walk that handed it out finished long before.
+
+That is why "the walk ended" and "the work finished" are different sentences, and
+why the pass line reports `busy` and `running` separately from `done/total`.
+
+### One consequence worth knowing before you tune anything
+
 For a stream that reconciles (`sync = "negentropy"`, or `auto` resolving to it),
-the shared local id set now outlives the pass that built it, since a straggler is
-still comparing against it. At most two are ever alive at once: a new one is
-built only when nothing is still reading the previous one, and a pass that
-arrives too early reuses the set it has. The cost of reusing is some events
-arriving that we already hold, which ingest drops. Streams on `sync = "fetch"`
-build no id set at all and are unaffected.
+the shared id set outlives the pass that built it, because a straggler is still
+comparing against it. At most two are ever alive: a new one is built only when
+nothing is still reading the previous one.
+
+**A single long-running leg therefore freezes the snapshot for its whole
+stream.** The straggler holds generation A; the next pass installs B, which
+*retires* A; and nothing may be built over an occupied retirement slot. So every
+pass after that reuses B until the straggler finishes. A ten-hour leg means every
+other relay on that stream gets exactly **one** snapshot refresh and then shares
+it for ten hours.
+
+That is stale, not wrong — the diff asks for events already stored, they arrive,
+and ingest drops them as duplicates. The alternative is a third and fourth
+gigabyte-scale id list on the heap, which is what the bound exists to prevent.
+The router says so rather than leaving you to infer it:
+
+```
+router: profiles — reusing the 25516 id snapshot (2:15:00 old); 3 relay(s) from
+        an earlier pass are still syncing and hold the previous one
+        (e.g. wss://slow.example/)
+```
+
+If that line repeats for hours, the named relay is the reason. The levers are
+`sync = "fetch"` (builds no id set at all), narrowing the stream's filter, or
+`exclude` for a relay that is pathological rather than merely large. Streams on
+`sync = "fetch"` never see any of this.
 
 ### `recycleSeconds`: syncing more often than you rediscover
 
