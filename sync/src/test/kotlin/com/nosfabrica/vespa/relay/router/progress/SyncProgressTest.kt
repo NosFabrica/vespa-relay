@@ -165,14 +165,73 @@ class SyncProgressTest {
         dir.deleteRecursively()
     }
 
-    private fun streamWith(tally: CycleTally) =
-        StreamPhases.Stream(
-            name = "content",
-            phase = "fetching",
-            phaseForSec = 412,
-            tally = tally,
-            cycleStartedSec = 900,
-            cycleEndedSec = null,
-            outcome = "running",
+    @Test
+    fun `the relays in flight are NAMED, not just counted`() {
+        // The gap this closes. A production document reported `pending: 2` on a
+        // stream that had received two events in eleven and a half hours, and
+        // nothing anywhere said which two relays: the count is derived by
+        // subtraction, a stalled leg earns no band so the coverage card never
+        // draws it, and the logs rotate inside the hour.
+        val tally = CycleTally(discovered = 3, foldedOntoAnother = 0, hosts = 3)
+        tally.delivered.set(1)
+        val stream =
+            (
+                SyncProgress.document(
+                    listOf(
+                        streamWith(
+                            tally,
+                            InFlight(
+                                relays =
+                                    listOf(
+                                        InFlight.Relay("wss://slow.example/", heldForSec = 41_400, transferringForSec = 41_390, events = 2, quietForSec = 41_000),
+                                        InFlight.Relay("wss://probing.example/", heldForSec = 4, transferringForSec = null, events = 0, quietForSec = 4),
+                                    ),
+                                omitted = 118,
+                            ),
+                        ),
+                    ),
+                    nowSeconds = 1_000,
+                )["streams"] as kotlinx.serialization.json.JsonArray
+            )[0].jsonObject
+
+        val rows = stream["inFlight"]!!.jsonObject["relays"] as kotlinx.serialization.json.JsonArray
+        assertEquals("wss://slow.example/", rows[0].jsonObject["relay"]!!.jsonPrimitive.content)
+        assertEquals(2L, rows[0].jsonObject["events"]!!.jsonPrimitive.long)
+        assertEquals(41_000L, rows[0].jsonObject["quietForSec"]!!.jsonPrimitive.long)
+        assertNull(
+            rows[1].jsonObject["transferringForSec"],
+            "absent means NOT on a socket — a 0 would read as a transfer that just started",
         )
+        assertEquals(118, stream["inFlight"]!!.jsonObject["omitted"]!!.jsonPrimitive.int, "the cap discloses itself")
+    }
+
+    @Test
+    fun `a stream holding nothing publishes no list rather than an empty one`() {
+        // An empty `inFlight` is a claim that the router looked and found
+        // nothing running; a stream with no rotation at all — a static backfill
+        // — never looked. They are different statements.
+        val stream =
+            (
+                SyncProgress.document(
+                    listOf(streamWith(CycleTally(discovered = 1, foldedOntoAnother = 0, hosts = 1), InFlight.NONE)),
+                    nowSeconds = 1_000,
+                )["streams"] as kotlinx.serialization.json.JsonArray
+            )[0].jsonObject
+
+        assertNull(stream["inFlight"])
+    }
+
+    private fun streamWith(
+        tally: CycleTally,
+        inFlight: InFlight? = null,
+    ) = StreamPhases.Stream(
+        name = "content",
+        phase = "fetching",
+        phaseForSec = 412,
+        tally = tally,
+        cycleStartedSec = 900,
+        cycleEndedSec = null,
+        outcome = "running",
+        inFlight = inFlight,
+    )
 }

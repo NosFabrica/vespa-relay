@@ -110,14 +110,16 @@ class StreamPhases {
              */
             val running: Int = 0,
             /**
-             * …and of those, how many are actually on a socket.
+             * …and of those, how many hold a transfer SLOT.
              *
-             * Published separately because the gap is large and reporting the
-             * wider number alone overstated the work: a stream with 8 transfer
-             * slots routinely shows 128 workers, of which 120 are waiting on a
-             * connect to a host that will never answer. One number for both
-             * read as "128 relays syncing" on a stream that cannot sync more
-             * than 8.
+             * The slot, not the socket: the websocket connect happens inside the
+             * slot, so a url that never connects counts here while it tries
+             * (measured — `InFlightReportProbe`). Published separately because
+             * the gap to [running] is large and reporting the wider number alone
+             * overstated the work: a stream with 8 transfer slots routinely
+             * shows 128 workers, of which 120 are in the guards or queued. One
+             * number for both read as "128 relays syncing" on a stream that
+             * cannot sync more than 8.
              */
             val transferring: Int = 0,
         ) : Phase
@@ -133,6 +135,29 @@ class StreamPhases {
             val running: Int = 0,
             /** …and of those, how many are on a socket — see [Fetching.transferring]. */
             val transferring: Int = 0,
+        ) : Phase
+
+        /**
+         * The refresh interval came round and the next pass is being HELD BACK,
+         * because too much of the transfer pool is still committed to the last
+         * one.
+         *
+         * Its own phase rather than a longer `Idle`: idle is "nothing to do
+         * until the timer", this is "the timer fired and we are declining", and
+         * an operator reading the two as one cannot tell a mirror waiting out
+         * its interval from one whose pool never frees up. The elapsed clock on
+         * it is the whole diagnostic — a few seconds is the rotation breathing,
+         * an hour is a stream that has stopped and needs [oldest] looked at.
+         */
+        data class Holding(
+            /** Transfer slots free right now. */
+            val free: Int,
+            /** …and how many this stream will not start a pass without. */
+            val needed: Int,
+            /** Relays with a worker at all, which is far wider — see [Fetching.running]. */
+            val running: Int,
+            /** The leg holding a slot longest, named, or null if none is. */
+            val oldest: InFlight.Relay?,
         ) : Phase
 
         /** Cycle finished; nothing more until the next refresh. */
@@ -191,6 +216,18 @@ class StreamPhases {
          * incomplete; publishing a blend of them is wrong.
          */
         @Volatile var owner: String? = null,
+        /**
+         * WHICH relays this stream has workers on, asked live rather than
+         * pushed.
+         *
+         * A supplier because the set changes on every dial and this class is
+         * read on a tick: mirroring it here would be a second copy of
+         * `RelayRotation`'s state, kept in step by hand, which is the shape that
+         * produces a report disagreeing with the thing it reports on. Null for a
+         * stream with no rotation — a static backfill has none, and inventing an
+         * empty one would claim it has nothing running.
+         */
+        @Volatile var inFlight: (() -> InFlight)? = null,
     )
 
     /**
@@ -216,6 +253,12 @@ class StreamPhases {
          * the identical trace — both simply stopped saying anything.
          */
         val outcome: String?,
+        /**
+         * The relays this stream has workers on right now, longest-held first —
+         * the names behind `running`, `pending` and `busy`, which were counts
+         * and nothing else. Null for a stream that has no rotation to ask.
+         */
+        val inFlight: InFlight? = null,
     )
 
     private val phases = ConcurrentHashMap<String, Entry>()
@@ -286,10 +329,39 @@ class StreamPhases {
         }
     }
 
+    /**
+     * Where to ask [name] which relays it has workers on.
+     *
+     * Registered once, by whoever owns the rotation. A stream that never calls
+     * this publishes no in-flight list at all, which is the honest outcome for a
+     * static backfill: it has no rotation, so there is nothing to ask.
+     */
+    @Synchronized
+    fun namesInFlight(
+        name: String,
+        source: () -> InFlight,
+    ) {
+        register(name)
+        phases[name]?.inFlight = source
+    }
+
     /** The two halves of the router that can own a stream's cycle slot. */
     companion object {
         const val STATIC = "static"
         const val DYNAMIC = "dynamic"
+
+        /**
+         * Past this, a leg is not slow, it is stuck — and every progress line
+         * for the stream holding it names it until it lets go.
+         *
+         * Ten minutes because that is comfortably longer than the slowest
+         * HEALTHY leg measured here: the full `indexers` walk on purplepag.es
+         * downloads 1,490,010 events in ~10.8 minutes, and directory.yabu.me
+         * serves a 1.2M-event backlog below its floor. Anything below that
+         * threshold would print a line about legs doing exactly what they are
+         * supposed to, which is how a warning stops being read.
+         */
+        const val STUCK_LEG_SECONDS = 600L
     }
 
     /** Every registered stream, in registration order, as of now. */
@@ -305,6 +377,11 @@ class StreamPhases {
                 cycleStartedSec = e.cycleStartedSec,
                 cycleEndedSec = e.cycleEndedSec,
                 outcome = e.outcome,
+                // Asked at the moment the snapshot is taken, like everything
+                // else here — the whole class is a view flattened for a reader
+                // outside this process, and a member read a tick earlier would
+                // date a stuck leg's clock from the wrong instant.
+                inFlight = e.inFlight?.invoke(),
             )
         }
 
@@ -324,6 +401,7 @@ class StreamPhases {
             is Phase.Snapshotting -> "snapshotting"
             is Phase.Fetching -> "fetching"
             is Phase.Syncing -> "syncing"
+            is Phase.Holding -> "holding"
             is Phase.Idle -> "idle"
             is Phase.Failed -> "failed"
         }
@@ -351,8 +429,39 @@ class StreamPhases {
         order.mapNotNull { name ->
             val e = phases[name] ?: return@mapNotNull null
             val elapsed = System.currentTimeMillis() - e.sinceMs
-            "router: $name ${describe(e.phase, elapsed)}"
+            "router: $name ${describe(e.phase, elapsed)}${stuck(e)}"
         }
+
+    /**
+     * ` — wss://slow.example held 11h 20m, 2 event(s), quiet 11h 19m`, or
+     * nothing.
+     *
+     * Appended to whatever the phase says, because the phase cannot say it: a
+     * stream is `fetching` or `idle` whether its pool is turning over or wedged
+     * on one relay, and the counts in the line ([Fetching.running] and friends)
+     * name nobody. The url only ever reached stderr for the ONE stream
+     * `SYNC_DIAGNOSE` points at, and container logs here rotate inside the hour
+     * — so a leg that had been holding a slot since the small hours left no
+     * trace at all by the time anyone looked.
+     *
+     * Silent below [STUCK_LEG_SECONDS]: every healthy pass has legs in flight,
+     * and a line on each is the log rather than a finding.
+     */
+    private fun stuck(e: Entry): String {
+        val oldest =
+            e.inFlight
+                ?.invoke()
+                ?.relays
+                ?.firstOrNull() ?: return ""
+        if (oldest.heldForSec < STUCK_LEG_SECONDS) return ""
+        return " — ${oldest.relay} held ${fmtDuration(oldest.heldForSec * 1000)}" +
+            // The two that separate a real backlog from a wedge. Both, always:
+            // "0 events" alone reads as a dead socket on a leg that is merely
+            // reconciling, and a large count alone reads as healthy on a walk
+            // that stopped hours ago.
+            ", ${oldest.events} event(s), quiet ${fmtDuration(oldest.quietForSec * 1000)}" +
+            (if (oldest.transferringForSec == null) " (not on a socket)" else "")
+    }
 
     private fun describe(
         phase: Phase,
@@ -410,6 +519,22 @@ class StreamPhases {
                     // of every cycle, so the retry is the refresh interval.
                     (if (phase.skipped > 0) ", ${phase.skipped} not dialled (struck out, no route, or no transport)" else "") +
                     (if (phase.unreachable > 0) ", ${phase.unreachable} dialled and failed" else "") +
+                    " ($elapsed elapsed)"
+            }
+
+            is Phase.Holding -> {
+                // Says what it is waiting FOR and what it is waiting ON, in that
+                // order. Without the first this is indistinguishable from a
+                // stalled stream; without the second an operator has the
+                // symptom and no subject.
+                "holding the next pass — ${phase.free}/${phase.needed} transfer slot(s) free," +
+                    " ${phase.running} relay(s) still running" +
+                    (
+                        phase.oldest?.let {
+                            ", longest ${it.relay} at ${fmtDuration(it.heldForSec * 1000)}" +
+                                " (${it.events} event(s), quiet ${fmtDuration(it.quietForSec * 1000)})"
+                        } ?: ""
+                    ) +
                     " ($elapsed elapsed)"
             }
 

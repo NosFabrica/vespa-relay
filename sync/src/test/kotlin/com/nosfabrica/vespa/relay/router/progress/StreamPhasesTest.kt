@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router.progress
 import com.nosfabrica.vespa.relay.util.fmtCount
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -238,6 +239,62 @@ class StreamPhasesTest {
         assertEquals("fetching", p.snapshot().single().phase)
         p.set("s", StreamPhases.Phase.Idle(3, null))
         assertEquals("idle", p.snapshot().single().phase)
+    }
+
+    @Test
+    fun `a stuck leg is named on every line until it lets go`() {
+        // The logs here rotate inside the hour and the diagnostic line only ever
+        // fires for the one stream SYNC_DIAGNOSE points at, so a leg holding a
+        // slot since the small hours left nothing at all to find. The phase
+        // cannot say it — a stream is `fetching` whether its pool is turning
+        // over or wedged on one relay — so it is appended to whatever the phase
+        // says.
+        val p = StreamPhases()
+        p.set("content", StreamPhases.Phase.Fetching(done = 5, total = 5, events = 2))
+        p.namesInFlight("content") {
+            InFlight(listOf(InFlight.Relay("wss://slow.example/", heldForSec = 41_400, transferringForSec = 41_390, events = 2, quietForSec = 41_000)), 0)
+        }
+
+        val line = p.report().single()
+
+        assertTrue(line.contains("wss://slow.example/"), "the url is the whole point: $line")
+        assertTrue(line.contains("2 event(s)"), "and whether it is still delivering: $line")
+        assertTrue(line.contains("quiet"), "which is what separates a backlog from a wedge: $line")
+    }
+
+    @Test
+    fun `an ordinary leg in flight says nothing`() {
+        // Every healthy pass has relays in flight. A line on each is the log
+        // rather than a finding, which is how a warning stops being read.
+        val p = StreamPhases()
+        p.set("content", StreamPhases.Phase.Fetching(done = 5, total = 9, events = 2))
+        p.namesInFlight("content") {
+            InFlight(listOf(InFlight.Relay("wss://busy.example/", heldForSec = 12, transferringForSec = 10, events = 900, quietForSec = 0)), 0)
+        }
+
+        assertFalse(p.report().single().contains("wss://busy.example/"))
+    }
+
+    @Test
+    fun `holding is its own phase, because it is not idle`() {
+        // Idle is "nothing to do until the timer"; holding is "the timer fired
+        // and we are declining". Read as one, a mirror waiting out its interval
+        // and one whose pool never frees up are the same line.
+        val p = StreamPhases()
+        p.set(
+            "content",
+            StreamPhases.Phase.Holding(
+                free = 2,
+                needed = 4,
+                running = 130,
+                oldest = InFlight.Relay("wss://slow.example/", heldForSec = 41_400, transferringForSec = 41_390, events = 2, quietForSec = 41_000),
+            ),
+        )
+
+        assertEquals("holding", p.snapshot().single().phase)
+        val line = p.report().single()
+        assertTrue(line.contains("2/4 transfer slot(s) free"), "what it is waiting FOR: $line")
+        assertTrue(line.contains("wss://slow.example/"), "and what it is waiting ON: $line")
     }
 
     @Test

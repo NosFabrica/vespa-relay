@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.maintenance
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.booleanOrNull
+import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
@@ -212,5 +213,65 @@ class SyncProgressReportTest {
 
         assertEquals(10L, doc["staleForSec"]!!.jsonPrimitive.long)
         assertEquals(0, (doc["streams"] as JsonArray).size)
+    }
+
+    @Test
+    fun `a row this side cannot read is counted, not silently dropped`() {
+        // The contract this object states about itself. A truncated list that
+        // does not disclose the truncation reads as the whole answer — and for
+        // `inFlight` the whole answer is the thing an operator is chasing, so a
+        // url that vanished because its row was malformed is the worst possible
+        // silence.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [{"name": "content",
+                 "inFlight": {"relays": [{"relay": "wss://good.example/", "heldForSec": 5, "events": 1, "quietForSec": 0},
+                                         {"relay": {}, "heldForSec": 9},
+                                         {"heldForSec": 9}],
+                              "omitted": 7}}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+
+        val f =
+            (out["streams"] as JsonArray)[0]
+                .jsonObject["inFlight"]!!
+                .jsonObject
+        assertEquals(1, (f["relays"] as JsonArray).size, "only the readable row is published")
+        assertEquals(
+            9,
+            f["omitted"]!!.jsonPrimitive.int,
+            "the writer's 7 plus the two rows this side could not read",
+        )
+    }
+
+    @Test
+    fun `every outcome this object publishes can be drawn by the card`() {
+        // The drift that produced the bug: `busy` was added to the partition,
+        // summed into `accountedFor`, and never added to the card's
+        // `DISPOSITION`. The stack is drawn from members that sum to the total
+        // BY CONSTRUCTION, so a missing one does not fail — it under-fills, and
+        // the count simply disappears from a card that still says the numbers
+        // add up. Nothing else pins the two lists together: one is Kotlin, the
+        // other is inline JS in a resource.
+        val card =
+            SyncProgressReportTest::class.java
+                .getResourceAsStream("/stats.html")!!
+                .readBytes()
+                .decodeToString()
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [{"name": "content",
+                 "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val published =
+            ((out["streams"] as JsonArray)[0].jsonObject["cycle"]!!.jsonObject["taken"] as JsonObject).keys
+
+        val undrawn = published.filterNot { card.contains("[\"$it\",") }
+        assertEquals(emptyList(), undrawn, "published in the partition, drawn by no bar segment: $undrawn")
     }
 }

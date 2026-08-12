@@ -181,6 +181,10 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       CycleTally.kt         where every url a cycle took on ENDED UP — a
                             partition that sums to what discovery handed over,
                             not a bag of counters
+      InFlight.kt           WHICH relays a stream is holding right now, which
+                            those counts never said; bounded to the longest-held
+      LegProgress.kt        one running leg's event clock — the thing that tells
+                            a real backlog from a walk that cannot end
       SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
                             the heartbeat that tells a quiet router from a
                             stopped one
@@ -481,6 +485,22 @@ unanswerable from the serving side:
 - **`outcome` is `running`/`completed`/`failed`.** A cycle that aborted at 80%
   and one that finished left the identical trace — both simply stopped saying
   anything.
+- **`pending` on a `completed` cycle is usually REAL, and the card said the
+  opposite.** A pass ends when its last url is handed out, not when its last
+  worker returns, so a completed pass routinely leaves live legs — but
+  `pendingLabel` keyed off `outcome` alone and drew *"285 never got a verdict"*
+  directly above a line naming three of those 285 downloading at 20k events
+  each. Caught on the live run, not in review. It reads `inFlight` now: held
+  urls are in flight whatever the outcome says, and "never got a verdict" is
+  reserved for the case it was written for — a cycle that stopped with nothing
+  running.
+- **`inFlight` NAMES the relays a stream has workers on**, longest-held first.
+  `pending` read 2 on a production stream that had received two events in eleven
+  and a half hours, and nothing in the system recorded which two urls: the count
+  is derived by subtraction, a leg still running has earned no band so the
+  coverage card cannot draw it, the `SYNC_DIAGNOSE` line fires only for the one
+  stream it names, and container stderr rotates inside the hour. `RelayRotation`
+  was holding both the whole time and published only their number.
 
 **Three words, and they are not synonyms.** "Done" covered all three, and the
 least meaningful of them was the one being read as progress:
@@ -490,6 +510,72 @@ least meaningful of them was the one being read as progress:
 | **returned** | a fan-out leg started and CAME BACK — including unreachable, capped, out of budget | `fetching 16747/16752 relay(s) returned` |
 | **settled** | nothing outstanding below the span this stream walked here | `complete` on a band, `reconciled` on a group |
 | **evidence** | the span in which EVERY kind in the filter has produced an event | `everyKindMin`/`everyKindMax` |
+
+**A DURATION IS NOT A DIAGNOSIS — each in-flight row carries four numbers.** A
+relay with a real backlog and a walk that cannot terminate are both "held for
+hours", and they want opposite responses. `heldForSec` runs from the rotation's
+CLAIM (before the strike checks, the TCP pre-probe and the queue for a slot);
+`transferringForSec` runs from the socket and is ABSENT when there is no socket,
+which is where most of a fan-out's workers are at any instant; `events` is what
+that leg has received, counted as they ARRIVE rather than when the leg returns —
+the leg worth watching is the one that has not returned, so a boundary counter
+reports zero for exactly as long as the fault lasts; and `quietForSec` is the one
+that decides, running from the last event or from the claim if none ever came.
+The measured shapes, from `InFlightReportProbe` against live relays:
+directory.yabu.me streamed **84,359 events in 42s** (~2,000/s) with `quietForSec`
+pinned at 0 for the whole run — a real backlog, slot well spent — while the
+purplepag.es loop is `transferring` for hours with `events` frozen and
+`quietForSec` climbing, because quartz's own matcher discards those pages before
+our callback, so the leg reads as genuinely silent. That is the true finding
+rather than a missing one. `events` was checked against `fetchAllPages`'
+own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
+
+**Verified end to end against a real Vespa and real relays**, not only by
+probe: `docker compose` with the schema deployed, a `profileViaOutbox` stream
+discovering 579 urls off stored 10002s, and 348,770 events mirrored. What the
+live `/stats.json` showed, and what each thing confirms:
+
+| observed | confirms |
+|---|---|
+| `indexers` (static) publishes NO `inFlight` | a stream with no rotation makes no claim, rather than claiming nothing is running |
+| `inFlight: 20 named, 279 omitted`, and `pending` = 299 | the cap is the documented 20, and `omitted` closes the arithmetic exactly |
+| four rows `transferring` with `events` climbing and `quiet 0s`; the rest `transferring` ABSENT, `events 0` | absent means *queued for a slot*, and here it was our own pool being the constraint — 128 workers against 4 slots |
+| ties broken by url, `ws://` before `wss://` | the ordering is total, so two rollups of one state diff cleanly |
+
+**The pool gate only runs BETWEEN passes, so a stream whose walk cannot finish
+never reaches it** — worth knowing before reading a `holding` that never
+appears. Measured: at `concurrency = 4` the admission gate is 128 (the floor in
+`admissionWidth`), so 128 workers queue for 4 transfer slots and the walk was
+still handing out at 63/237 after five minutes. `awaitPoolHeadroom` is never
+called because `runPass` never returns. That is not a fault — nothing is
+starting a redundant pass either, which is what the gate is for — but it means
+the gate earns its keep at the ratios the config actually uses. At
+`concurrency = 30` the walk handed out all 579 urls at once and the gate engaged
+immediately, holding for 11 minutes with `0/15 slots free` while the pool ran
+productively.
+
+**`transferringForSec` is the transfer SLOT, not the socket, and the probe is
+what caught the difference.** A url that could not be connected to at all
+reported `transferring 0s` for its whole life and ended `CANNOT_CONNECT`: the
+websocket connect happens INSIDE the block `RelayRotation.transferring` wraps.
+So ABSENT means "not admitted to the pool" — in the guards, or queued behind
+other legs — and absent with a long `heldForSec` is a statement about OUR pool
+being saturated, not about their server. The docs said the opposite before the
+probe ran, which is the whole argument for running one: the plumbing was right
+and the description was not, and no hermetic test can tell those apart.
+
+**The next pass will not start until half the transfer pool is free**
+(`DynamicSync.poolHeadroom`, `awaitPoolHeadroom`). Passes overlap by design, but
+a pass started against a COMMITTED pool is not parallelism: it re-derives the
+relay list, opens a tally, walks the whole list and hands every url to a slot
+that does not exist. At `recycleSeconds = 1` against `concurrency = 100` that is
+a pass a second producing log lines and a `taken` count nobody can act on. The
+wait is its own phase — `holding`, with an elapsed clock and the url of the leg
+holding the slots — never a longer `Idle`, because "nothing to do until the
+timer" and "the timer fired and we are declining" are different states. **It is a
+real change in failure mode**: a stream whose legs never return now stops passing
+rather than passing uselessly, which is exactly why `holding` names the culprit
+instead of only counting it.
 
 **Two not-dialled states are not one state.** `HostStrikes.isDead` was true for
 two reasons with OPPOSITE retry policies, reported as one number: a
@@ -1008,6 +1094,10 @@ and nothing else. Four consequences, each with its own home:
   its own, because "still going from last time" and "never reached" are the same
   silence otherwise. It is per STREAM; `DynamicSync.inFlight` is the wider,
   cross-stream socket refcount and stays what it was.
+
+  **It is also the only thing that knows WHICH relays are running**, so the
+  claim is stamped and carries the leg's own event counter (`held`, `leg`). The
+  bare set published three counts and no url — see the `inFlight` note above.
 - **The shared id set outlives the pass that built it.** `SharedIdSet` bounds
   the generations: an ask leases the set it started against, and a new one is
   installed only when nothing older is still being read (`mayInstall`). At most

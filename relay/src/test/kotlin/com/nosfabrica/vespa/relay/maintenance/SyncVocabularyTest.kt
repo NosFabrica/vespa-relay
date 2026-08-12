@@ -81,6 +81,9 @@ class SyncVocabularyTest {
             "balanced",
             "urls",
             "taken",
+            // The fold's per-survivor sample urls: strings, and `urls` beside
+            // them is the count a reader looks up.
+            "examples",
         )
 
     @Test
@@ -98,9 +101,14 @@ class SyncVocabularyTest {
             SyncProgressReport.build(
                 """
                 {"writtenAt": 900, "streams": [{"name": "content", "phase": "idle", "phaseForSec": 5,
+                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
+                                          "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
+                              "omitted": 118},
                  "cycle": {"startedAt": 800, "outcome": "completed",
                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3},
-                   "hosts": 2, "relayListAgeSec": 120, "taken": {"delivered": 3, "busy": 1}, "balanced": true, "received": 9}}]}
+                   "hosts": 2, "relayListAgeSec": 120, "taken": {"delivered": 3, "busy": 1}, "balanced": true, "received": 9,
+                   "foldedOnto": {"relays": [{"relay": "wss://a.example/", "urls": 1, "examples": ["wss://a.example/x"]}],
+                                  "omitted": 0}}}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
             )!!
@@ -147,6 +155,7 @@ class SyncVocabularyTest {
                     "frame",
                     "unnamed",
                     "outcome",
+                    "holding",
                     "accountedFor",
                     "staleForSec",
                 ) +
@@ -173,6 +182,12 @@ class SyncVocabularyTest {
                     "foldedOnto",
                     "pending",
                     "received",
+                    "inFlight",
+                    "heldForSec",
+                    "transferringForSec",
+                    "events",
+                    "quietForSec",
+                    "omitted",
                 )
 
         assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")

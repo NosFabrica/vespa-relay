@@ -126,7 +126,9 @@ internal object SyncVocabulary {
                 "Relays TOUCHED — never the relays configured. A dynamic stream discovers its list, so there is no " +
                     "configured denominator to publish and \"never asked\" is not knowable from here. On a stream it counts " +
                     "that stream's relays; at the top of the section it counts DISTINCT relays across every stream, which " +
-                    "is the smaller number and the only one that describes the network rather than the work.",
+                    "is the smaller number and the only one that describes the network rather than the work. " +
+                    "Inside `foldedOnto` and `inFlight` the same name is a LIST rather than a count — those two publish " +
+                    "urls, and each is bounded with its own `omitted`.",
             )
             put(
                 "rows",
@@ -184,6 +186,53 @@ internal object SyncVocabulary {
                     "fetched every poll — and `omitted` names how many survivors were left out, because a truncated list " +
                     "that does not say so reads as the whole answer. The full, per-url verdict is a signed NIP-66 kind " +
                     "30166 `same-as` record in this relay's own store, queryable over the protocol.",
+            )
+            put(
+                "inFlight",
+                "WHICH relays a stream has a worker on right now, longest-held first — the names behind `pending`, " +
+                    "`busy` and the progress line's `running`, which were counts and nothing else. It spans passes, " +
+                    "which is why it sits beside the cycle rather than inside it: a worker outlives the pass that " +
+                    "handed it out, so the same url is this cycle's `pending` if this pass dialled it and its `busy` " +
+                    "if an earlier one did. NOT \"the pending urls\": `pending` also counts urls the walk has not " +
+                    "reached yet, which have no worker and are not here. Bounded to the longest-held few — the rest " +
+                    "of a fan-out's workers are connect timeouts to dead hosts and are counted in `omitted`.",
+            )
+            put(
+                "heldForSec",
+                "How long a worker has held that relay, measured from the CLAIM — before the strike checks, the TCP " +
+                    "pre-probe and the wait for a transfer slot, not just the download. On its own it says only that " +
+                    "the leg is long; read it with `transferringForSec` (is it even on a socket) and `quietForSec` " +
+                    "(is anything still arriving), which is what separates a relay with a real backlog from a walk " +
+                    "that will not end.",
+            )
+            put(
+                "transferringForSec",
+                "How long that leg has held a TRANSFER SLOT — not how long it has been on a socket, because the " +
+                    "websocket connect happens inside the slot and a url that never connects at all still holds one " +
+                    "while it tries. ABSENT means it has not been admitted to the pool: it is in the guards (an " +
+                    "earlier strike, our Tor proxy, the TCP pre-probe) or queued behind other legs, which is where " +
+                    "most of a fan-out's workers are at any instant — 8 slots routinely carry 128 workers. Absent " +
+                    "with a large `heldForSec` says OUR pool is saturated; present with a large one says a slot is " +
+                    "committed to a transfer that is not finishing.",
+            )
+            put(
+                "events",
+                "Events that leg has received at the socket so far — its own count, where `received` is every leg of " +
+                    "the cycle added together. Counted as they ARRIVE rather than when the leg ends, because the leg " +
+                    "worth watching is the one that has not ended.",
+            )
+            put(
+                "quietForSec",
+                "How long since that leg last received anything, or since it was claimed if it never has. THE ONE " +
+                    "THAT DECIDES what a long-held slot means: events still landing is a relay with a backlog and a " +
+                    "slot well spent, this number climbing is a walk that is not going to end. Both look identical " +
+                    "from the durations alone.",
+            )
+            put(
+                "omitted",
+                "How many rows a bounded list left out. Never silent and never zero by omission: these lists run to " +
+                    "thousands of urls on a document fetched every poll, and a truncation that does not disclose " +
+                    "itself reads as the whole answer.",
             )
             put(
                 "excluded",
@@ -253,18 +302,28 @@ internal object SyncVocabulary {
             )
             put(
                 "pending",
-                "READ IT AGAINST `outcome`. Derived, never counted: it is `taken` minus the eight terminal outcomes, which " +
-                    "is what makes the partition add up mid-cycle. While the cycle is `running` these urls are genuinely in " +
-                    "flight. On a cycle that is `completed` or `failed` — or on a router that was killed mid-fan-out, where " +
-                    "the last file written still says `running` and `staleForSec` is what gives it away — a non-zero " +
-                    "`pending` means the opposite: nothing is in flight, these urls never reached a verdict because the " +
-                    "cycle ended first. They are dialled again on the next one.",
+                "READ IT AGAINST `inFlight`, not against `outcome` alone. Derived, never counted: it is `taken` minus the " +
+                    "nine terminal outcomes, which is what makes the partition add up mid-cycle. A `completed` cycle with a " +
+                    "large `pending` is NOT a cycle that died — a pass ends when its last url is handed out, not when its " +
+                    "last worker returns, so the tail of the pool is still running and `inFlight` names it (measured on a " +
+                    "live run: 285 pending, every one of them a live worker, three of them downloading at 20k events each). " +
+                    "The other reading is the one where `inFlight` is empty or absent: those urls never reached a verdict " +
+                    "because the cycle stopped first, and they are dialled again on the next one. A router killed mid-fan-out " +
+                    "is that case with the last file still saying `running`, which `staleForSec` is what gives away.",
             )
             put(
                 "received",
                 "Events this stream received from upstreams this cycle, counted at the socket. NOT the same as the events " +
                     "the store gained: ingest drops the copies other relays already delivered and the versions it already " +
                     "holds, so this is always the larger number, and the two disagreeing is not a fault in either.",
+            )
+            put(
+                "holding",
+                "A `phase` value, and the one that is easy to misread as idle. The stream's refresh interval came " +
+                    "round and it DECLINED to start the next pass, because fewer than half its transfer slots were " +
+                    "free — a pass started against a full pool cannot download anything, it can only walk the relay " +
+                    "list and queue. Seconds of it is the rotation breathing between passes. Minutes or hours of it " +
+                    "is a stream whose pool never frees up, and `inFlight` names the leg holding it.",
             )
             put(
                 "outcome",

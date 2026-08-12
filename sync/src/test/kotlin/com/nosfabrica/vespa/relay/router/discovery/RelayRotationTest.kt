@@ -21,9 +21,11 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -96,6 +98,86 @@ class RelayRotationTest {
         rotation.release(a.url)
 
         assertEquals(listOf(b, c), pass.relays, "the pass already decided what it was handing out")
+    }
+
+    @Test
+    fun `a held relay is NAMED, with the clock that says how long`() {
+        // The whole complaint: a stream held on two relays for eleven hours
+        // published the number 2 and no url, and nothing else in the system
+        // recorded them — a stalled leg earns no band, so the coverage card
+        // never draws it, and the logs had rotated away long before anyone
+        // looked.
+        val rotation = RelayRotation()
+        rotation.take(a.url, nowMs = 1_000_000)
+        rotation.take(b.url, nowMs = 1_030_000)
+
+        val held = rotation.held(nowMs = 1_100_000)
+
+        assertEquals(
+            listOf(a.url.url, b.url.url),
+            held.relays.map { it.relay },
+            "longest-held first, because that is the one worth looking at",
+        )
+        assertEquals(100L, held.relays[0].heldForSec)
+        assertEquals(70L, held.relays[1].heldForSec)
+        assertEquals(0, held.omitted)
+    }
+
+    @Test
+    fun `a leg that has delivered nothing is told from one that is downloading`() {
+        // The duration alone cannot separate them, and they want opposite
+        // responses: a relay with a real backlog is spending its slot well, a
+        // walk that cannot terminate is spending the same slot on nothing.
+        val rotation = RelayRotation()
+        rotation.take(a.url, nowMs = 1_000_000)
+        rotation.take(b.url, nowMs = 1_000_000)
+        repeat(3) { rotation.leg(a.url)!!.received(nowMs = 1_099_000) }
+
+        val held = rotation.held(nowMs = 1_100_000).relays.associateBy { it.relay }
+
+        assertEquals(3L, held[a.url.url]!!.events)
+        assertEquals(1L, held[a.url.url]!!.quietForSec, "it delivered a second ago")
+        assertEquals(0L, held[b.url.url]!!.events)
+        assertEquals(
+            100L,
+            held[b.url.url]!!.quietForSec,
+            "never delivered, so the quiet clock runs from the claim — the true answer, not a missing one",
+        )
+    }
+
+    @Test
+    fun `not being on a socket is a statement, not an absence`() {
+        // Held for hours with no transfer clock is a connect that is not
+        // answering; held for hours WITH one is a transfer that is not
+        // finishing. Reported as one thing they are the same non-finding.
+        val rotation = RelayRotation()
+        rotation.take(a.url, nowMs = 1_000_000)
+
+        assertNull(rotation.held(nowMs = 1_100_000).relays[0].transferringForSec)
+
+        runBlocking {
+            rotation.transferring(a.url, nowMs = 1_090_000) {
+                assertEquals(10L, rotation.held(nowMs = 1_100_000).relays[0].transferringForSec)
+            }
+        }
+        assertNull(
+            rotation.held(nowMs = 1_100_000).relays[0].transferringForSec,
+            "cleared when the transfer ends — a worker still holding the claim afterwards is doing something else",
+        )
+    }
+
+    @Test
+    fun `the list is capped and says what it left out`() {
+        // A fan-out's admission gate is far wider than its transfer pool, so the
+        // whole set is neither small nor interesting. A truncation that does not
+        // disclose itself reads as the whole answer.
+        val rotation = RelayRotation()
+        listOf(a, b, c).forEachIndexed { i, r -> rotation.take(r.url, nowMs = 1_000L + i) }
+
+        val held = rotation.held(nowMs = 2_000, limit = 2)
+
+        assertEquals(2, held.relays.size)
+        assertEquals(1, held.omitted)
     }
 
     @Test
