@@ -131,6 +131,13 @@ internal class DeleteMissingSync(
                 return attachedDownloaded + pageAsk(stream, url, ownedAsk)
             }
 
+        // Whether this reconcile compared a RANGE at all. Read by both things
+        // that need the licence — the band below and the delete further down —
+        // and named once so they cannot drift apart: two copies of `windows <
+        // 1` is one edit away from a band claiming coverage a delete would not
+        // dare act on, or the reverse.
+        val compared = diff.windows >= 1
+
         // fetchAll, not fetchAllPages: an id set is not a time range, and
         // paging it by `until` re-asks for events it just received.
         var downloaded = attachedDownloaded
@@ -180,9 +187,9 @@ internal class DeleteMissingSync(
         // reconciles through a different quartz call to get at `haveIds`, never
         // carried the line across.
         //
-        // Gated on `windows`, for the same reason the delete below is: a
-        // reconcile that split into no windows compared no range, and a band is
-        // a claim that a range WAS compared.
+        // Gated on [compared], the same licence the delete below runs on: a
+        // band is a claim that a range WAS compared, which is the thing that
+        // makes an empty answer mean anything in either direction.
         //
         // What this now narrows, stated plainly: [pageAsk] reads bands
         // ([SyncBands.legs]), so a later reconcile that FAILS pages from this
@@ -193,7 +200,7 @@ internal class DeleteMissingSync(
         // nothing else: the delete side deletes BY ID out of `ownedAsk`, which
         // is the stream's filter narrowed by discovery alone, and this stream
         // holds no shared snapshot to narrow ([DynamicSync.holdsIdSet]).
-        if (diff.windows >= 1) {
+        if (compared) {
             bands.record(
                 stream.name,
                 url,
@@ -209,7 +216,7 @@ internal class DeleteMissingSync(
 
         // A reconcile that split into no windows compared no range. It cannot
         // have returned a meaningful diff, whatever it says.
-        if (diff.windows < 1) {
+        if (!compared) {
             System.err.println(
                 "router: ${stream.name} ${url.url} reconciled 0 window(s) — nothing was compared, deleting nothing",
             )
