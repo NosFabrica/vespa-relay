@@ -165,10 +165,19 @@ internal object SyncProgressReport {
         val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
         if (rows.isEmpty()) return null
         val kept = rows.take(MAX_IN_FLIGHT_ROWS)
+        // Rows this side could not read are DROPPED, so they have to be counted
+        // — see `omitted` below. A row with no url says nothing and cannot be
+        // published, but letting it vanish silently is the exact failure the
+        // `omitted` member exists to prevent.
+        var unreadable = 0
         return buildJsonObject {
             putJsonArray("relays") {
                 for (row in kept) {
-                    val relay = text(row["relay"]) ?: continue
+                    val relay =
+                        text(row["relay"]) ?: run {
+                            unreadable++
+                            null
+                        } ?: continue
                     add(
                         buildJsonObject {
                             put("relay", relay)
@@ -184,7 +193,7 @@ internal object SyncProgressReport {
                     )
                 }
             }
-            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size))
+            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
         }
     }
 
@@ -261,10 +270,17 @@ internal object SyncProgressReport {
         val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
         if (rows.isEmpty()) return null
         val kept = rows.take(MAX_FOLD_ROWS)
+        // Counted, not dropped — see [inFlight] for the argument. Same contract,
+        // same failure if it is broken.
+        var unreadable = 0
         return buildJsonObject {
             putJsonArray("relays") {
                 for (row in kept) {
-                    val relay = text(row["relay"]) ?: continue
+                    val relay =
+                        text(row["relay"]) ?: run {
+                            unreadable++
+                            null
+                        } ?: continue
                     add(
                         buildJsonObject {
                             put("relay", relay)
@@ -278,7 +294,7 @@ internal object SyncProgressReport {
                     )
                 }
             }
-            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size))
+            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
         }
     }
 

@@ -303,7 +303,7 @@ internal object SyncVocabulary {
             put(
                 "pending",
                 "READ IT AGAINST `inFlight`, not against `outcome` alone. Derived, never counted: it is `taken` minus the " +
-                    "eight terminal outcomes, which is what makes the partition add up mid-cycle. A `completed` cycle with a " +
+                    "nine terminal outcomes, which is what makes the partition add up mid-cycle. A `completed` cycle with a " +
                     "large `pending` is NOT a cycle that died — a pass ends when its last url is handed out, not when its " +
                     "last worker returns, so the tail of the pool is still running and `inFlight` names it (measured on a " +
                     "live run: 285 pending, every one of them a live worker, three of them downloading at 20k events each). " +

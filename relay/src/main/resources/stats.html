@@ -327,6 +327,11 @@
   .disp > i.transferFailed, .disp > i.torUnavailable,
   .disp-key b.transferFailed, .disp-key b.torUnavailable { background: var(--warn); }
   .disp > i.pending, .disp-key b.pending { background: var(--bar); }
+  /* OUR pool, not their relay — the same family as `pending` and deliberately
+     not the warm "not reached" one, because a busy url is a url this rotation
+     declined to redial while a worker still had it. Lighter, so the two read as
+     a pair without the bar claiming two segments of the same thing. */
+  .disp > i.busy, .disp-key b.busy { background: var(--bar); opacity: .5; }
   /* `row-gap` under `column-gap`: the key runs to nine buckets and wraps to two
      or three rows at any real width, and an equal gap on both axes made the
      wrapped rows read as separate paragraphs rather than as more of the key. */
@@ -1280,6 +1285,12 @@ const DISPOSITION = [
   ["nothingNew", "in sync — reached, nothing new to give"],
   // The one label that depends on the cycle's outcome — see `pendingLabel`.
   ["pending", "still in flight"],
+  // Beside `pending` because both are facts about OUR pool rather than verdicts
+  // about a relay. It was missing entirely: the router publishes it, the relay
+  // sums it into `accountedFor`, and the bar drew nothing — so a stream with a
+  // large `busy` (which is every stream with `recycleSeconds` set) rendered a
+  // stack that silently failed to fill its own total.
+  ["busy", "still syncing from an earlier pass — the rotation passed over it, not a verdict about the relay"],
   ["noRoute", "no route — TCP refused or the name does not resolve"],
   ["unreachable", "unreachable — never answered"],
   ["hostStruckOut", "host struck out by a sibling url this cycle — dialled again next cycle"],

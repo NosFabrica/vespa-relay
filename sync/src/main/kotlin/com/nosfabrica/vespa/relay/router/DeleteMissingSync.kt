@@ -112,7 +112,7 @@ internal class DeleteMissingSync(
         // A relay this author is not alone at cannot prove a retraction; keep
         // mirroring it, decide nothing from it.
         if (ask.authors?.any { it in sharedAuthors } == true) {
-            return attachedDownloaded + pageAsk(stream, url, ask.copy(kinds = ownedKinds))
+            return attachedDownloaded + pageAsk(stream, url, ask.copy(kinds = ownedKinds), legProgress)
         }
 
         val ownedAsk = ask.copy(kinds = ownedKinds)
@@ -140,7 +140,7 @@ internal class DeleteMissingSync(
                 System.err.println(
                     "router: ${stream.name} ${url.url} could not reconcile (${e.reason}) — paging instead, deleting nothing",
                 )
-                return attachedDownloaded + pageAsk(stream, url, ownedAsk)
+                return attachedDownloaded + pageAsk(stream, url, ownedAsk, legProgress)
             }
 
         // Whether this reconcile compared a RANGE at all. Read by both things
