@@ -63,6 +63,7 @@ import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
+import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
 import java.util.concurrent.atomic.AtomicLong
 import java.util.concurrent.atomic.AtomicReference
@@ -205,11 +206,33 @@ internal class DynamicSync(
         // two passes there are still relays syncing, and a stream that went
         // quiet for the gap read exactly like one that had stopped.
         val live = AtomicReference<PassProgress?>(null)
-        val ticker = scope.launch { report(stream, dynamic, rotation, live) }
+        // The loop OWNS the phase while it is discovering or snapshotting, and
+        // the ticker must not paint over it. Both are minutes long on a full
+        // store and both report their own progress; with the ticker writing
+        // every second from the previous pass's state, a multi-minute snapshot
+        // rendered as `syncing 0/18687` and a discovery rendered as `idle` —
+        // the two phases whose duration is most worth seeing were the two that
+        // could not be seen.
+        val preparing = AtomicBoolean(true)
+        val ticker = scope.launch { report(stream, dynamic, rotation, live, preparing) }
         try {
             while (scope.isActive) {
                 var ran = false
                 try {
+                    // THE TICKER IS SILENCED until this pass is walking, and
+                    // that is not tidiness: `live` non-null makes it render
+                    // `Syncing`/`Idle` every tick, which used to land straight
+                    // on top of the two phases that take longest and are the
+                    // only ones an operator can act on. Discovery is a store
+                    // walk of minutes and the snapshot is longer, and both were
+                    // being overwritten within a tick — `Snapshotting` by
+                    // `Syncing 0/N` from the pass that had not started, and
+                    // `Discovering` by `Idle` from the pass that had ended.
+                    // `Failed` and `Waiting` are covered by the same silence,
+                    // which is why this is cleared here rather than in each
+                    // branch below: whatever the loop sets while it holds the
+                    // phase, it keeps.
+                    live.set(null)
                     val nowMs = System.currentTimeMillis()
                     // Unset `recycleSeconds` is not a long TTL — it is the old
                     // behaviour, where every pass rediscovers and nothing is
@@ -231,6 +254,7 @@ internal class DynamicSync(
                                 " — ${reused.relays.size} relay(s), rediscovering after ${dynamic.refreshSeconds}s",
                         )
                     }
+                    preparing.set(true)
                     val list = reused ?: discoverRelayList(stream, dynamic, sourceNames, nowMs)
                     // Held for the next pass even when it is empty: `reusableAt`
                     // refuses an empty list, so this only ever means the next
@@ -243,15 +267,11 @@ internal class DynamicSync(
                     // list until it ages out, rather than stopping. The failure
                     // is still said once, through `Phase.Failed` below.
                     cached = list
+                    preparing.set(false)
                     if (list.relays.isEmpty()) {
-                        // Cleared, or the ticker paints the previous pass's
-                        // `Idle` over this within a tick and "the sources named
-                        // no relays" — the one thing an operator can act on
-                        // here — never reaches the log.
-                        live.set(null)
                         phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                     } else {
-                        runPass(stream, dynamic, sourceNames, list, rotation, pool, admission, idSet, live)
+                        runPass(stream, dynamic, sourceNames, list, rotation, pool, admission, idSet, live, preparing)
                         ran = true
                     }
                 } catch (e: CancellationException) {
@@ -259,6 +279,13 @@ internal class DynamicSync(
                     // mid-pass. End quietly.
                     throw e
                 } catch (e: Exception) {
+                    // Silence the ticker BEFORE saying what went wrong. A pass
+                    // that threw mid-walk leaves `live` holding a progress whose
+                    // walk never ended, so the next tick would render `Syncing`
+                    // straight over `Failed` and the reason would be gone for
+                    // the whole backoff. The workers it already launched are
+                    // unaffected and finish quietly.
+                    live.set(null)
                     phases.set(stream.name, StreamPhases.Phase.Failed(e.message?.take(80) ?: e.javaClass.simpleName, retrySec))
                     // A pass that threw at 80% used to leave exactly what one
                     // that finished leaves: nothing. The outcome is stamped here
@@ -335,9 +362,13 @@ internal class DynamicSync(
         dynamic: RelayDiscoveryConfig,
         rotation: RelayRotation,
         live: AtomicReference<PassProgress?>,
+        preparing: AtomicBoolean,
     ) {
         while (true) {
             delay(PROGRESS_INTERVAL_MS)
+            // Whoever is discovering or snapshotting is reporting it already,
+            // and in more detail than this can.
+            if (preparing.get()) continue
             val p = live.get() ?: continue
             val running = rotation.busyCount()
             val transferring = rotation.transferringCount()
@@ -570,6 +601,7 @@ internal class DynamicSync(
         admission: Semaphore,
         idSet: SharedIdSet,
         live: AtomicReference<PassProgress?>,
+        preparing: AtomicBoolean,
     ) {
         val relays = list.relays
         // Skipping what is still being synced is the first thing that happens,
@@ -597,7 +629,6 @@ internal class DynamicSync(
         progress.tally.busy.addAndGet(work.busy.toLong())
         progress.done.addAndGet(work.busy.toLong())
         progress.skipped.addAndGet(work.busy.toLong())
-        live.set(progress)
         phases.beginCycle(stream.name, StreamPhases.DYNAMIC, progress.tally)
         // The walks of the PREVIOUS pass, which are this pass's noise. They are
         // retained past their own end on purpose — that is what stops the
@@ -608,13 +639,25 @@ internal class DynamicSync(
         paging.reset(stream.name)
 
         val window = stream.filter
-        refreshIdSet(stream, relays, window, idSet)
-        val sharedAuthors = sharedAuthors(stream, relays)
+        // Held across the snapshot for the same reason as discovery: it reports
+        // its own progress and the ticker would overwrite it.
+        preparing.set(true)
+        val sharedAuthors: Set<String>
+        try {
+            refreshIdSet(stream, relays, window, idSet)
+            sharedAuthors = sharedAuthors(stream, relays)
+        } finally {
+            preparing.set(false)
+        }
 
+        // The walk is about to start, so the ticker takes the phase back. See
+        // the `live.set(null)` in [loop] for what it was overwriting.
+        live.set(progress)
         System.err.println(
             "router: ${stream.name} pass ${progress.number} — ${work.relays.size} relay(s) to hand out from [$sourceNames]" +
                 (if (work.busy > 0) ", ${work.busy} still syncing from an earlier pass" else "") +
                 " against ${idSet.size()} local id(s)" +
+                (idSet.ageSec(System.currentTimeMillis()).takeIf { it > 0 }?.let { " (${fmtDuration(it * 1000)} old)" } ?: "") +
                 " (e.g. ${work.relays.take(3).joinToString { it.url.url }})",
         )
 
@@ -887,6 +930,20 @@ internal class DynamicSync(
             System.err.println("router: ${stream.name} — all ${relays.size} relay(s) already cover the filter, skipping the snapshot")
             return
         }
+        val snapshotWindow = bands.coveringWindow(stream.name, relays.map { it.url }, window)
+        if (!idSet.worthRebuilding(System.currentTimeMillis(), snapshotWindow.since)) {
+            // The set is younger than the walk that built it can justify
+            // replacing. Passes are as frequent as `recycleSeconds` now, so
+            // without this a negentropy stream with a short list would spend
+            // effectively all of its time walking the store — see
+            // [SharedIdSet.worthRebuilding] for the rule and for why a stale set
+            // is the cheap side.
+            //
+            // Not logged: at a five-second gap this is the answer on almost
+            // every pass, and a line each would BE the log. The age is on the
+            // pass's own opening line instead.
+            return
+        }
         if (!idSet.mayInstall()) {
             // A straggler is still reading the generation this would replace.
             // Building anyway is unbounded — a hung leg holding one for hours
@@ -906,10 +963,14 @@ internal class DynamicSync(
         // start — already true anyway, since ingest is asynchronous — and the
         // store dedups on insert. Narrowed to what the hungriest relay still
         // needs ([SyncBands.coveringWindow]).
-        val snapshotWindow = bands.coveringWindow(stream.name, relays.map { it.url }, window)
         val startedMs = System.currentTimeMillis()
-        val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
-        phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
+        // `Queued` again, and it had quietly stopped being reachable. The gate
+        // used to wrap the whole fan-out and this phase was set in front of it;
+        // moving the gate to the build alone left nothing emitting `Queued` for
+        // a dynamic stream, so a stream blocked behind another one's store walk
+        // reported the phase it was in BEFORE — for however long the wait
+        // lasted, which is exactly as long as a store walk.
+        phases.set(stream.name, StreamPhases.Phase.Queued(relays.size))
         // THE GATE IS ROUND THE BUILD, not round the pass. It used to wrap the
         // whole fan-out, which on a rotation would be forever — a stream that
         // never finishes never releases, and every other id-set stream and the
@@ -919,13 +980,20 @@ internal class DynamicSync(
         // is [SharedIdSet]'s job now.
         val ids =
             streamGate.withPermit {
+                // Counted INSIDE the permit too: it is a store query of the same
+                // shape as the walk it sizes, and running it while another
+                // stream holds the gate is the contention the gate exists to
+                // prevent.
+                val expected = runCatching { store.count(snapshotWindow) }.getOrNull()
+                phases.set(stream.name, StreamPhases.Phase.Snapshotting(0, expected, relays.size))
                 store.snapshotIdsReporting(snapshotWindow) { collected ->
                     phases.set(stream.name, StreamPhases.Phase.Snapshotting(collected, expected, relays.size))
                 }
             }
-        idSet.install(ids)
+        val buildMs = System.currentTimeMillis() - startedMs
+        idSet.install(ids, System.currentTimeMillis(), snapshotWindow.since, buildMs)
         System.err.println(
-            "router: ${stream.name} local snapshot ${ids.size} id(s) in ${fmtDuration(System.currentTimeMillis() - startedMs)}" +
+            "router: ${stream.name} local snapshot ${ids.size} id(s) in ${fmtDuration(buildMs)}" +
                 (snapshotWindow.since?.let { s -> ", since $s" } ?: ", full filter (no relay is caught up yet)"),
         )
     }

@@ -40,7 +40,7 @@ class SharedIdSetTest {
     fun `a pass whose relays all finished installs freely`() {
         val set = SharedIdSet()
         assertTrue(set.mayInstall())
-        set.install(ids(3))
+        set.install(ids(3), nowMs = 0, forSince = null, buildMs = 0)
 
         val lease = set.lease()
         assertEquals(3, lease.ids.size)
@@ -49,7 +49,7 @@ class SharedIdSetTest {
         // Nothing is reading the outgoing generation, so it is garbage the
         // moment it is replaced and never occupies the retirement slot.
         assertTrue(set.mayInstall())
-        set.install(ids(5))
+        set.install(ids(5), nowMs = 0, forSince = null, buildMs = 0)
         assertEquals(1, set.generationsAlive())
         assertEquals(5, set.size())
     }
@@ -57,13 +57,13 @@ class SharedIdSetTest {
     @Test
     fun `a straggler holds its own generation, and the next install is refused`() {
         val set = SharedIdSet()
-        set.install(ids(3))
+        set.install(ids(3), nowMs = 0, forSince = null, buildMs = 0)
         val straggler = set.lease()
 
         // The pass ends, a new one builds a set. The straggler is still
         // reconciling against the old one, so it stays alive for it — and
         // nothing may be built on top of that.
-        set.install(ids(5))
+        set.install(ids(5), nowMs = 0, forSince = null, buildMs = 0)
         assertEquals(2, set.generationsAlive())
         assertEquals(3, straggler.ids.size, "a straggler must keep reading the set it started against")
         assertEquals(5, set.lease().ids.size, "new asks get the new set")
@@ -78,10 +78,10 @@ class SharedIdSetTest {
     @Test
     fun `several stragglers all have to finish`() {
         val set = SharedIdSet()
-        set.install(ids(3))
+        set.install(ids(3), nowMs = 0, forSince = null, buildMs = 0)
         val a = set.lease()
         val b = set.lease()
-        set.install(ids(5))
+        set.install(ids(5), nowMs = 0, forSince = null, buildMs = 0)
 
         a.release()
         assertFalse(set.mayInstall(), "one reader left is still a reader")
@@ -96,16 +96,70 @@ class SharedIdSetTest {
         // a reader that had already gone, and a later straggler's set is then
         // installed over.
         val set = SharedIdSet()
-        set.install(ids(3))
+        set.install(ids(3), nowMs = 0, forSince = null, buildMs = 0)
         val a = set.lease()
         val b = set.lease()
-        set.install(ids(5))
+        set.install(ids(5), nowMs = 0, forSince = null, buildMs = 0)
 
         a.release()
         a.release()
         assertFalse(set.mayInstall(), "the second release freed a generation b is still reading")
         b.release()
         assertTrue(set.mayInstall())
+    }
+
+    @Test
+    fun `a rebuild has to earn its cost against the last one`() {
+        // The arithmetic a rotation broke. One build per pass meant one per
+        // refreshSeconds while the fan-out ended in a join — six hours by
+        // default. Passes are now as frequent as recycleSeconds, so without a
+        // pace a negentropy stream with a short list rebuilds every few seconds
+        // and spends all of its time walking the store instead of mirroring.
+        val set = SharedIdSet()
+        assertTrue(set.worthRebuilding(0, null), "nothing built yet")
+
+        // A 90s walk buys 15 minutes of reuse — about a tenth of the stream's
+        // time spent building, whatever the corpus turns out to cost.
+        set.install(ids(3), nowMs = 0, forSince = null, buildMs = 90_000)
+        assertFalse(set.worthRebuilding(5_000, null), "five seconds later, against a 90-second walk")
+        assertFalse(set.worthRebuilding(899_000, null))
+        assertTrue(set.worthRebuilding(900_000, null))
+    }
+
+    @Test
+    fun `a walk fast enough to be free still gets the floor`() {
+        // Ten seconds of reuse for a one-second walk is still a rebuild every
+        // other pass at recycleSeconds = 5 — the shape this prevents, not a
+        // small version of it.
+        val set = SharedIdSet()
+        set.install(ids(3), nowMs = 0, forSince = null, buildMs = 1_000)
+        assertFalse(set.worthRebuilding(59_000, null))
+        assertTrue(set.worthRebuilding(60_000, null))
+    }
+
+    @Test
+    fun `a WIDER window rebuilds whatever the clock says`() {
+        // The one direction staleness is not free. The window is narrowed to
+        // what the hungriest relay still needs, so a set built for a narrow one
+        // and reused against a wider one is a SUBSET of what the diff needs —
+        // the reconcile then believes we lack events we hold and downloads them
+        // again, which is the opposite of what the set is for. A widened window
+        // means a relay with no band appeared: a new url, or a fold that expired.
+        val set = SharedIdSet()
+        set.install(ids(3), nowMs = 0, forSince = 1_000, buildMs = 90_000)
+
+        assertTrue(set.worthRebuilding(1_000, neededSince = 500), "reaching further back than the set covers")
+        assertTrue(set.worthRebuilding(1_000, neededSince = null), "unbounded is wider than every bounded window")
+        assertFalse(set.worthRebuilding(1_000, neededSince = 1_000), "the same window")
+        assertFalse(set.worthRebuilding(1_000, neededSince = 5_000), "narrower is free — a superset only means fewer downloads")
+    }
+
+    @Test
+    fun `an unbounded set is never too narrow for anything`() {
+        val set = SharedIdSet()
+        set.install(ids(3), nowMs = 0, forSince = null, buildMs = 90_000)
+        assertFalse(set.worthRebuilding(1_000, neededSince = null))
+        assertFalse(set.worthRebuilding(1_000, neededSince = 0))
     }
 
     @Test

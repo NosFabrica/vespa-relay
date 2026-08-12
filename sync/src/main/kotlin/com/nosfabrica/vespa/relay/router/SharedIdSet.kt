@@ -86,6 +86,17 @@ internal class SharedIdSet {
     @Volatile
     private var retired: Generation? = null
 
+    @Volatile
+    private var builtAtMs = 0L
+
+    /** The `since` of the window the current set was built for; null is unbounded. */
+    @Volatile
+    private var builtForSince: Long? = null
+
+    /** What the last build cost, which is what [worthRebuilding] paces itself against. */
+    @Volatile
+    private var lastBuildMs = 0L
+
     /**
      * One ask's read of the set. [release] from a `finally` — a lease never
      * returned pins its generation forever, which stops every future rebuild.
@@ -141,10 +152,18 @@ internal class SharedIdSet {
      * rather than silently exceeding it.
      */
     @Synchronized
-    fun install(ids: List<IdAndTime>) {
+    fun install(
+        ids: List<IdAndTime>,
+        nowMs: Long,
+        forSince: Long?,
+        buildMs: Long,
+    ) {
         check(mayInstall()) { "a previous id set is still being read — install would leave three generations alive" }
         val outgoing = current
         current = Generation(ids)
+        builtAtMs = nowMs
+        builtForSince = forSince
+        lastBuildMs = buildMs
         // Nothing is reading the outgoing one, so there is nothing to retire and
         // it is garbage immediately. This is the ordinary case: a pass whose
         // stragglers all finished before the next build.
@@ -167,4 +186,82 @@ internal class SharedIdSet {
 
     /** Ids in the set new asks are reading. */
     fun size(): Int = current?.ids?.size ?: 0
+
+    /** How old the set new asks are reading is, in seconds. */
+    fun ageSec(nowMs: Long): Long = if (current == null) 0 else ((nowMs - builtAtMs) / 1000).coerceAtLeast(0)
+
+    /**
+     * Is a fresh build worth what it costs, right now?
+     *
+     * ## The cost this exists to stop paying
+     *
+     * Building the set is a full store walk — measured at 24.8M ids, gigabytes,
+     * and minutes for one stream. While a dynamic fan-out ended in a join, one
+     * build per pass meant one build per `refreshSeconds`, six hours by default,
+     * and asking the question never came up.
+     *
+     * A rotation broke that arithmetic in the direction nothing warns about.
+     * Passes are as frequent as `recycleSeconds` now, so a negentropy stream
+     * with a short list and a five-second gap would rebuild every few seconds:
+     * a stream that spends effectively all of its time walking the store and
+     * none of it mirroring, with no error anywhere and a progress line that
+     * looks busy.
+     *
+     * ## The rule
+     *
+     * Rebuild when the set is older than **ten times what the last build cost**,
+     * with a one-minute floor. Self-pacing rather than a fixed interval, because
+     * the number that matters is the SHARE of the stream's time spent building:
+     * a one-second walk is reused for a minute, a ninety-second walk for fifteen,
+     * and a five-minute walk for fifty — capping the overhead at roughly a tenth
+     * either way, on a corpus whose size this code cannot know in advance.
+     *
+     * ## …and the one thing that overrides age
+     *
+     * A WIDER window. [forSince] narrows the walk to what the hungriest relay
+     * still needs, so a set built for a narrow window and reused against a wider
+     * one is a SUBSET of what the diff needs — the reconcile would then believe
+     * we lack events we hold and re-download them, which is the opposite of what
+     * the set is for. A widened window means a relay with no band appeared (a
+     * new url, or a fold that expired), and that is worth a rebuild whatever the
+     * clock says. Narrower is free: a superset only ever means fewer downloads.
+     *
+     * Staleness in the other direction is safe and deliberate. A set missing
+     * events ingested since it was built makes the reconcile ask for them again;
+     * they arrive, and ingest drops them as duplicates at a measured 17µs.
+     */
+    fun worthRebuilding(
+        nowMs: Long,
+        neededSince: Long?,
+    ): Boolean {
+        if (current == null) return true
+        if (widerThanBuilt(neededSince)) return true
+        return nowMs - builtAtMs >= (lastBuildMs * REBUILD_COST_MULTIPLE).coerceAtLeast(MIN_REBUILD_INTERVAL_MS)
+    }
+
+    /**
+     * Does [neededSince] reach further back than the window the set was built
+     * for? `null` is unbounded, so it is wider than every bounded window and
+     * narrower than none.
+     */
+    private fun widerThanBuilt(neededSince: Long?): Boolean {
+        val built = builtForSince ?: return false
+        return neededSince == null || neededSince < built
+    }
+
+    companion object {
+        /**
+         * The share of a stream's time a rebuild may take: one build per ten
+         * builds' worth of elapsed time, i.e. about a tenth.
+         */
+        const val REBUILD_COST_MULTIPLE = 10L
+
+        /**
+         * …and a floor under that, for the store small enough to walk in a
+         * second. Ten seconds of reuse for a one-second walk would still be a
+         * rebuild every other pass at `recycleSeconds = 5`, which is the shape
+         * this exists to prevent rather than a small version of it.
+         */
+        const val MIN_REBUILD_INTERVAL_MS = 60_000L
+    }
 }
