@@ -47,6 +47,16 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 ./gradlew :sync:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
   -DonionFoldSocks=127.0.0.1:9050 --rerun -i
 
+# Runs a REAL pass of the fold against REAL relays and prints the numbers the
+# verdict rests on: the leader's window, its containment against ITSELF on a
+# second walk (the reproducibility bar), each sibling's containment, what was
+# published, and whether every socket the pass claimed came back. This is the
+# one that tells our reading of a relay apart from the relay — three claims in
+# the sections below were corrected by running it. Asserts nothing.
+./gradlew :sync:test --tests '*AliasFoldLiveProbe*' -DliveFoldProbe=true --rerun -i
+#   …or a group of your own, `;` between groups and `,` within one:
+#   -DliveFoldGroups='wss://relay.example,wss://relay.example/alpha'
+
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
 # 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
 # and after.json in $D; the :relay half charts both through SyncCoverageReport,
@@ -1334,6 +1344,26 @@ one relay as separate relays for `DEFAULT_TTL_SECONDS`, during which `measured()
 answers true and nothing re-probes them. A duplicate pinned in the fan-out for
 thirty days on evidence a re-run contradicts.
 
+**What `AliasFoldLiveProbe` then said, running the REAL walk rather than a
+reimplementation of it — and it corrects the paragraph above.** The numbers, one
+line per comparison:
+
+```
+nos.lol      leader 500 ids   vs ITSELF 1.000    vs /cipher-zulu 0.998
+fiatjaf.com  leader 196 ids   vs ITSELF 0.792    vs /ember 0.664   vs /xenon-lima 0.746
+```
+
+Two things follow. The self-overlap bar separates the two hosts cleanly with the
+real walk — 1.000 against 0.792 — which is what it is for. But `fiatjaf.com`
+FOLDS, and folds every time: five runs, five identical results, 2 aliases in ~11
+seconds. The coin-flip framing came from a Python reimplementation whose stall
+heuristic ended walks shallower than the real one; the real probe's margin over
+`minOverlap` is 0.664 against 0.500, not a knife edge. The guard below therefore
+never fires on this host — `result.distinct` is empty on every run — and it is
+insurance against the pass that lands the other way, not the reason these two
+urls fold. **Do not cite it as the fix for a host you have not run the probe
+against.**
+
 `RelayAliases.reproducible` is the guard: before a group publishes any NEGATIVE
 verdict, the leader is walked a SECOND time from the same anchor through the same
 filter, and unless it hands back `DEFAULT_MIN_SELF_OVERLAP` of its own window the
@@ -1358,17 +1388,22 @@ is a relay we cannot walk coherently whose events are carried elsewhere.
 **Three more ways a url was permanently unmeasurable, all found auditing the
 above and all the same silence from outside:**
 
-- **AUTH.** A relay that gates reads behind NIP-42 answers the fingerprint's REQ
-  with `CLOSED auth-required`. `fetchAll` treats a CLOSED as terminal and returns
-  EMPTY — while `RelayAuthenticator`, attached to the very same client, is still
-  signing the challenge on that socket. The AUTH lands, quartz re-fires the
-  subscription, and the events arrive at a caller that returned seconds ago. The
-  fold never had a window for any auth-gated relay, and 120 of the 732 urls the
-  unreachability re-probe found answering perfectly well had challenged us.
-  `AliasProbe.over` asks through `fetchAllWithHooks` with
-  `pendingOnAuthRequired = true`, which is quartz's own parameter for exactly
-  this. Note the fold is built only when there is a signer, and so is the
-  authenticator — a pass is never unauthenticated by configuration.
+- **AUTH — and read the A/B before repeating the claim this started as.** A relay
+  gating reads behind NIP-42 answers the fingerprint's REQ with `CLOSED
+  auth-required`, which `fetchAll` treats as terminal and returns EMPTY on while
+  `RelayAuthenticator` — attached to the very same client — is still signing the
+  challenge on that socket. `AliasProbe.over` now asks through
+  `fetchAllWithHooks` with `pendingOnAuthRequired = true`. **But the claim that
+  auth-gated relays were therefore unfoldable is false, and `AliasFoldLiveProbe`
+  disproved it**: against `auth.nostr1.com` the leader comes back with a full
+  500-id window either way — `true` in 0:21, `false` in 0:02, twice each. With
+  the flag off the CLOSED ends page one at once and the empty-page retry at
+  `FALLBACK_PROBE_PAGE` re-asks on a socket that has since authenticated, so a
+  fallback meant for page-size refusals recovers an auth refusal by accident.
+  The flag is kept as insurance rather than as the fix: that accident only covers
+  the FIRST page of a walk, so an auth refusal on any later page truncates the
+  window silently. Note the fold is built only when there is a signer, and so is
+  the authenticator — a pass is never unauthenticated by configuration.
 - **NULL AND EMPTY collapsed in the live wiring.** `AliasProbe` is written around
   "returns null when the url could not be asked at all — which is NOT the same as
   an empty page", and `over()` used `fetchAll`, which returns a list whatever

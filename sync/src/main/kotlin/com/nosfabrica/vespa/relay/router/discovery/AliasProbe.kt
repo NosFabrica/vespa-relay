@@ -279,17 +279,35 @@ class AliasProbe(
          * class is built on and the plain call cannot express.**
          *
          * `pendingOnAuthRequired`, because a relay that gates reads behind
-         * NIP-42 answers a REQ with `CLOSED auth-required` — which `fetchAll`
-         * takes as terminal and returns EMPTY on, while the router's
-         * `RelayAuthenticator` is still signing the challenge on the same
-         * socket. The AUTH lands, quartz re-fires the subscription, and the
-         * events arrive at a caller that returned seconds ago. Kept pending, the
-         * fetch waits for its own AUTH and collects the answer. Every relay
-         * gated that way was otherwise permanently unfoldable: no window, no
-         * verdict, every one of its urls dialled forever. (Measured in this
-         * fan-out: of 732 urls a re-probe found answering perfectly well, 120
-         * challenged us for AUTH.) It costs the idle window on a relay whose
-         * AUTH never satisfies, which is the shape of every other failure here.
+         * NIP-42 answers a REQ with `CLOSED auth-required`, which `fetchAll`
+         * takes as terminal and returns EMPTY on while the router's
+         * `RelayAuthenticator` is still signing the challenge on that same
+         * socket. Kept pending, the fetch waits for its own AUTH and collects
+         * the re-fired answer instead of the empty page.
+         *
+         * **It is insurance, not the thing that makes such a relay work, and the
+         * A/B says so.** Against `auth.nostr1.com` — which challenges and then
+         * refuses with `auth-required: you must auth` — the leader comes back
+         * with a full 500-id window either way, twice each:
+         *
+         * ```
+         * pendingOnAuthRequired = true   500 id(s)   0:21
+         * pendingOnAuthRequired = false  500 id(s)   0:02
+         * ```
+         *
+         * Off, the CLOSED ends page one at once and the empty-page retry at
+         * [RelayAliases.FALLBACK_PROBE_PAGE] re-asks on a socket that has since
+         * authenticated — a fallback meant for page-size refusals recovering an
+         * auth refusal by accident. On, the re-fire is waited for and costs most
+         * of an idle window. So the claim that auth-gated relays were
+         * unfoldable is FALSE, and was corrected here rather than left standing.
+         *
+         * Kept anyway, at ~19s per auth-gated leader on a pass that runs every
+         * six hours: the accident only covers the FIRST page of a walk (the
+         * retry fires on `ids.isEmpty()`), so an auth refusal on any later page
+         * truncates the window silently, and depending on a fallback aimed at a
+         * different failure is how the next relay behaves slightly differently
+         * and nobody finds out.
          *
          * `doneOut`, because NULL AND EMPTY ARE DIFFERENT ANSWERS and the plain
          * call flattens them: it returns a list, so a relay that never spoke

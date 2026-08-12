@@ -55,4 +55,14 @@ tasks.test {
     // `prodScaleDir`, so both properties have to cross into the fork.
     System.getProperty("prodScaleProbe")?.let { systemProperty("prodScaleProbe", it) }
     System.getProperty("prodScaleDir")?.let { systemProperty("prodScaleDir", it) }
+    // The fold's two live probes, and the same trap: without these lines the
+    // switch reaches the daemon, the forked JVM never sees it, and the probe
+    // prints its own `[skip]` line — which reads exactly like a probe that was
+    // asked for and had nothing to say. `AliasFoldLiveProbe` runs a real pass
+    // against real relays; `AliasFoldOnionProbe` needs a Tor SOCKS proxy.
+    System.getProperty("liveFoldProbe")?.let { systemProperty("liveFoldProbe", it) }
+    System.getProperty("liveFoldGroups")?.let { systemProperty("liveFoldGroups", it) }
+    System.getProperty("onionFoldProbe")?.let { systemProperty("onionFoldProbe", it) }
+    System.getProperty("onionFoldSocks")?.let { systemProperty("onionFoldSocks", it) }
+    System.getProperty("onionFoldUrls")?.let { systemProperty("onionFoldUrls", it) }
 }
