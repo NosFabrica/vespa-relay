@@ -67,6 +67,9 @@ import java.nio.file.StandardCopyOption
  *       "name": "content",
  *       "phase": "fetching",
  *       "phaseForSec": 412,
+ *       "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
+ *                                "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
+ *                    "omitted": 118},
  *       "cycle": {
  *         "startedAt": 1769999000, "outcome": "running",
  *         "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "excluded": 0, "taken": 5323},
@@ -153,6 +156,44 @@ class SyncProgress(
                                 put("name", s.name)
                                 put("phase", s.phase)
                                 put("phaseForSec", s.phaseForSec)
+                                // WHICH relays are running, beside the cycle
+                                // rather than inside it: a worker outlives the
+                                // pass that handed it out, so this set spans
+                                // passes and the cycle's `pending`/`busy` split
+                                // it between them. It is what those counts never
+                                // said — a stream held on two relays for eleven
+                                // hours published the number 2 and no url. See
+                                // [InFlight], and note it is not "the pending
+                                // urls": the walk has not reached some of them.
+                                s.inFlight?.takeIf { it.relays.isNotEmpty() }?.let { f ->
+                                    put(
+                                        "inFlight",
+                                        buildJsonObject {
+                                            putJsonArray("relays") {
+                                                for (r in f.relays) {
+                                                    add(
+                                                        buildJsonObject {
+                                                            put("relay", r.relay)
+                                                            put("heldForSec", r.heldForSec)
+                                                            // Absent when the worker is not on a
+                                                            // socket — it is still deciding whether
+                                                            // the relay is worth dialling, which is
+                                                            // where most of a fan-out's workers are.
+                                                            r.transferringForSec?.let { put("transferringForSec", it) }
+                                                            // The pair that separates a real backlog
+                                                            // from a walk that will not end.
+                                                            put("events", r.events)
+                                                            put("quietForSec", r.quietForSec)
+                                                        },
+                                                    )
+                                                }
+                                            }
+                                            // Never silent, for the same reason
+                                            // as the fold's.
+                                            put("omitted", f.omitted)
+                                        },
+                                    )
+                                }
                                 s.tally?.let { t ->
                                     put(
                                         "cycle",

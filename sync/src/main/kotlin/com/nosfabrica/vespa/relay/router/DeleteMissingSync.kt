@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.DeleteMissing
 import com.nosfabrica.vespa.relay.router.config.SyncStream
+import com.nosfabrica.vespa.relay.router.progress.LegProgress
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.router.refused.RefusedIds
@@ -83,6 +84,17 @@ internal class DeleteMissingSync(
         url: NormalizedRelayUrl,
         ask: Filter,
         sharedAuthors: Set<String>,
+        /**
+         * The caller's liveness counter for this leg, ticked as events arrive.
+         *
+         * Threaded in rather than derived from the return value because this
+         * call is where a `deleteMissing` stream spends its hours: a reconcile
+         * against a provider holding ~150k score events is minutes on a good
+         * day, and a counter that moves only when the call returns says nothing
+         * at all about the call that never does. Null for a caller with nothing
+         * to report to — the probe, and the tests.
+         */
+        legProgress: LegProgress? = null,
     ): Int {
         val askKinds = ask.kinds.orEmpty()
         val attachedKinds = askKinds.filter { it !in stream.ownedKinds }
@@ -93,7 +105,7 @@ internal class DeleteMissingSync(
         // read their absence as a retraction.
         var attachedDownloaded = 0
         if (attachedKinds.isNotEmpty()) {
-            attachedDownloaded = pageAsk(stream, url, ask.copy(kinds = attachedKinds))
+            attachedDownloaded = pageAsk(stream, url, ask.copy(kinds = attachedKinds), legProgress)
         }
         if (ownedKinds.isEmpty()) return attachedDownloaded
 
@@ -162,6 +174,9 @@ internal class DeleteMissingSync(
         val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
         for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
+                // Where the events ARRIVE — see the parameter's own note. This
+                // loop is the long half of a big provider's reconcile.
+                legProgress?.received()
                 if (stream.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -298,6 +313,7 @@ internal class DeleteMissingSync(
         stream: SyncStream,
         url: NormalizedRelayUrl,
         ask: Filter,
+        legProgress: LegProgress? = null,
     ): Int {
         var downloaded = 0
         // Invariant for this (stream, relay), as in the reconcile path above.
@@ -327,6 +343,7 @@ internal class DeleteMissingSync(
                         NEG_IDLE_MS,
                         onNewPage = { until -> paging.mark(walk, until) },
                     ) { event ->
+                        legProgress?.received()
                         if (stream.filter.match(event)) {
                             if (SyncCoverage.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)

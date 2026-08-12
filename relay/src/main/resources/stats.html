@@ -1292,6 +1292,66 @@ const DISPOSITION = [
 const HEARTBEAT_STALE_SEC = 150;
 
 /**
+ * Past this, a leg is not slow, it is stuck — and the card says so in the loud
+ * style rather than the quiet one.
+ *
+ * Ten minutes, the same floor the router's own log line uses, and for the same
+ * reason: the slowest HEALTHY leg measured on this deployment is the full
+ * purplepag.es `indexers` walk at ~10.8 minutes for 1.49M events. Anything
+ * lower marks legs doing exactly what they should.
+ */
+const STUCK_LEG_SEC = 600;
+
+/** How many held relays the card names before deferring to the JSON. */
+const IN_FLIGHT_SHOWN = 3;
+
+/**
+ * WHICH relays are running right now, which is the half the disposition bar
+ * cannot draw.
+ *
+ * A stacked segment says `pending: 2`; it cannot say *which two*, and that is
+ * the question an operator has when a stream has received two events in eleven
+ * hours. Nothing else on this page can answer it either — the coverage card
+ * only draws relays that have EARNED a band, and a relay stuck mid-leg never
+ * does — so a wedged url was reachable only from container logs that rotate
+ * inside the hour.
+ *
+ * Three facts per row, because the duration alone is ambiguous: a relay with a
+ * genuine backlog and one whose walk cannot terminate are both "held for
+ * hours". Whether events are still ARRIVING is what separates them.
+ */
+function inFlightLine(inFlight) {
+  const rows = (inFlight && inFlight.relays) || [];
+  if (!rows.length) return null;
+  const line = el("p", "cyc-line");
+  line.append("Running now: ");
+  rows.slice(0, IN_FLIGHT_SHOWN).forEach((r, i) => {
+    if (i) line.append("; ");
+    const held = r.heldForSec || 0;
+    // The url first and unabbreviated: it is the thing being looked up, and a
+    // truncated relay url is not a relay url.
+    const span = el("span", held >= STUCK_LEG_SEC ? "err" : "");
+    span.append(`${r.relay} — held ${fmtDur(held)}, ${fmt(r.events || 0)} event(s)`);
+    // Absent means "not on a socket", which is a different fault from a slow
+    // download and must not render as one.
+    span.append(r.transferringForSec == null
+      ? ", not yet on a socket"
+      : `, quiet ${fmtDur(r.quietForSec || 0)}`);
+    span.title = r.transferringForSec == null
+      ? "the worker is still deciding whether to dial — a strike check, our Tor proxy, or a TCP connect that has not answered"
+      : `on a socket for ${fmtDur(r.transferringForSec)}; last event ${fmtDur(r.quietForSec || 0)} ago` +
+        ` (or never — the quiet clock runs from the claim when nothing has arrived)`;
+    line.appendChild(span);
+  });
+  // Never silent about the tail: most of a fan-out's workers are connect
+  // timeouts to dead hosts, and a list that hides them reads as the whole set.
+  const more = (inFlight.omitted || 0) + Math.max(0, rows.length - IN_FLIGHT_SHOWN);
+  if (more) line.append(`. ${fmt(more)} more relay(s) held and not shown`);
+  line.append(".");
+  return line;
+}
+
+/**
  * What `pending` means for THIS cycle.
  *
  * It is `taken` minus the eight terminal outcomes, so it always closes the
@@ -1345,8 +1405,13 @@ function progressPanel(progress) {
     if (outcome === "failed") phase.className = "ph err";
     head.appendChild(phase);
     box.appendChild(head);
+    // Drawn even when no cycle has run — the workers of the LAST one outlive it
+    // and are exactly what a stream stuck between passes is holding, so this is
+    // the case where naming them matters most.
+    const running = inFlightLine(s.inFlight);
     if (!c) {
       box.appendChild(el("p", "cyc-line", "No cycle has run yet on this stream."));
+      if (running) box.appendChild(running);
       wrap.appendChild(box);
       continue;
     }
@@ -1408,6 +1473,9 @@ function progressPanel(progress) {
       acct.appendChild(el("span", "err", " These counts do not add up to their own total — read them as approximate."));
     }
     box.appendChild(acct);
+    // After the accounting line, because it is what that line's `pending` and
+    // `busy` members are the counts OF.
+    if (running) box.appendChild(running);
     wrap.appendChild(box);
   }
   return wrap;

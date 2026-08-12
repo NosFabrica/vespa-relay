@@ -55,6 +55,29 @@ class DynamicSyncGatesTest {
     }
 
     @Test
+    fun `the next pass waits for HALF the transfer pool, not for one slot`() {
+        // A pass started against a committed pool is not extra parallelism: the
+        // walk hands out its whole list regardless, and every url then queues
+        // for a slot that does not exist. At `recycleSeconds = 1` against
+        // `concurrency = 100` that is a pass a second producing log lines and a
+        // `taken` count nobody can act on.
+        assertEquals(50, DynamicSync.poolHeadroom(100))
+        assertEquals(4, DynamicSync.poolHeadroom(8))
+        assertEquals(15, DynamicSync.poolHeadroom(30))
+    }
+
+    @Test
+    fun `rounded up, so a one-slot stream waits for its one leg`() {
+        // `ceil` doing the general rule's job at the smallest size rather than a
+        // special case: a stream configured at 1 cannot dial anything until its
+        // single leg returns, so starting a pass before then is the pure form of
+        // the waste above.
+        assertEquals(1, DynamicSync.poolHeadroom(1))
+        assertEquals(2, DynamicSync.poolHeadroom(3))
+        assertTrue(DynamicSync.poolHeadroom(0) >= 1, "never zero — a gate that always opens is not a gate")
+    }
+
+    @Test
     fun `and a ceiling, because unbounded probing is a file-descriptor limit`() {
         // The shape before this gate existed: every url in the list probed at
         // once. 18,687 concurrent connects is not a concurrency setting, it is

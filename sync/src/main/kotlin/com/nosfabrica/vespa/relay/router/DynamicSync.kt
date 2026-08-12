@@ -35,6 +35,7 @@ import com.nosfabrica.vespa.relay.router.discovery.RelayRotation
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.progress.CycleTally
+import com.nosfabrica.vespa.relay.router.progress.LegProgress
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
@@ -201,6 +202,11 @@ internal class DynamicSync(
         // pool size rather than the network (measured, 20x on this fan-out).
         val admission = Semaphore(admissionWidth(dynamic.concurrency))
         val rotation = RelayRotation()
+        // The rotation is the only thing that knows WHICH relays are running, so
+        // it is what the progress report asks. Registered once, live thereafter
+        // — see [StreamPhases.namesInFlight] for why it is a supplier and not a
+        // copy.
+        phases.namesInFlight(stream.name) { rotation.held(System.currentTimeMillis()) }
         val idSet = SharedIdSet()
         // What the ticker reports. The ticker belongs to the stream too: between
         // two passes there are still relays syncing, and a stream that went
@@ -238,6 +244,10 @@ internal class DynamicSync(
                     // branch below: whatever the loop sets while it holds the
                     // phase, it keeps.
                     live.set(null)
+                    // THE POOL GATE, and it comes before discovery rather than
+                    // after: a store walk of minutes run against a pool that
+                    // cannot accept the result is the cost paid twice.
+                    awaitPoolHeadroom(stream, dynamic, rotation, saidPoolSpent)
                     val nowMs = System.currentTimeMillis()
                     // Unset `recycleSeconds` is not a long TTL — it is the old
                     // behaviour, where every pass rediscovers and nothing is
@@ -276,7 +286,7 @@ internal class DynamicSync(
                     if (list.relays.isEmpty()) {
                         phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                     } else {
-                        runPass(stream, dynamic, sourceNames, list, rotation, pool, admission, idSet, live, preparing, saidPoolSpent, saidSnapshotHeld)
+                        runPass(stream, dynamic, sourceNames, list, rotation, pool, admission, idSet, live, preparing, saidSnapshotHeld)
                         ran = true
                     }
                 } catch (e: CancellationException) {
@@ -351,6 +361,91 @@ internal class DynamicSync(
 
         /** Why the unreachable ones were unreachable: normal churn, or a broken pass. */
         val reasons = ConcurrentHashMap<String, Long>()
+    }
+
+    /**
+     * DO NOT START THE NEXT PASS while most of the transfer pool is still held
+     * by the last one. Returns when at least [poolHeadroom] slots are free.
+     *
+     * ## What it is for
+     *
+     * A pass ending is not the work ending — the walk finishes when the last url
+     * is handed out and the slowest legs run on past it — so `recycleSeconds`
+     * can bring the next pass round while the pool is fully committed. That pass
+     * is not extra parallelism: it re-derives (or reuses) the relay list, opens a
+     * tally, walks the whole list and hands every url to an admission slot, where
+     * each one then queues for a transfer slot that no longer exists. At
+     * `recycleSeconds = 1` against `concurrency = 100` that is a pass a second
+     * producing nothing but log lines and a `taken` count nobody can act on.
+     *
+     * So the stream waits for the pool to come back to HALF free, which is the
+     * point at which a new pass has real work to hand out rather than a queue to
+     * join. Waiting is also strictly better than starting: the list is rediscovered
+     * at the moment it is used rather than minutes earlier, and the guards that
+     * decline dead hosts for free do not spend an admission slot doing it while
+     * a living relay waits behind them.
+     *
+     * ## What it costs, said plainly
+     *
+     * A stream whose pool is genuinely wedged — legs that never return — stops
+     * passing rather than passing uselessly. That is a real change in failure
+     * mode and it is the reason this logs the way it does: the wait is a PHASE,
+     * with its own elapsed clock, naming the relay that has held a slot longest
+     * and whether it is still delivering anything. An hour of `holding` on one
+     * url is exactly the finding, and it is the one that used to require the
+     * container's stderr from twelve hours ago.
+     */
+    private suspend fun awaitPoolHeadroom(
+        stream: SyncStream,
+        dynamic: RelayDiscoveryConfig,
+        rotation: RelayRotation,
+        saidPoolSpent: AtomicBoolean,
+    ) {
+        val needed = poolHeadroom(dynamic.concurrency)
+        while (scope.isActive) {
+            val free = dynamic.concurrency - rotation.transferringCount()
+            if (free >= needed) break
+            // The longest-held leg, and only it: the phase names one and so does
+            // the line, so asking for the default twenty rows would sort a
+            // 500-entry map every second to discard nineteen of them.
+            val oldest = rotation.held(System.currentTimeMillis(), limit = 1).relays.firstOrNull()
+            // ONCE PER EPISODE, not once per poll. This condition is caused by
+            // legs that run for hours, so an unguarded line is one every few
+            // seconds for as long as it lasts — thousands of identical lines
+            // burying the report they were added to improve.
+            if (saidPoolSpent.compareAndSet(false, true)) {
+                System.err.println(
+                    "router: ${stream.name} — holding the next pass: only $free of ${dynamic.concurrency} transfer" +
+                        " slot(s) free, need $needed" +
+                        (
+                            oldest?.let {
+                                " (longest ${it.relay} at ${fmtDuration(it.heldForSec * 1000)}," +
+                                    " ${it.events} event(s), quiet ${fmtDuration(it.quietForSec * 1000)})"
+                            } ?: ""
+                        ),
+                )
+            }
+            phases.set(
+                stream.name,
+                StreamPhases.Phase.Holding(
+                    free = free,
+                    needed = needed,
+                    running = rotation.busyCount(),
+                    oldest = oldest,
+                ),
+            )
+            delay(POOL_GATE_POLL_MS)
+        }
+        // The recovery IS the news, and it is the half a transition-logged
+        // warning usually forgets: without it an operator who saw the first line
+        // has no way to learn it stopped being true. The CAS is the whole
+        // condition — the flag is only ever true because this gate said so.
+        if (saidPoolSpent.compareAndSet(true, false)) {
+            System.err.println(
+                "router: ${stream.name} — transfer slots free again" +
+                    " (${dynamic.concurrency - rotation.transferringCount()}/${dynamic.concurrency}), starting the next pass",
+            )
+        }
     }
 
     /**
@@ -607,7 +702,6 @@ internal class DynamicSync(
         idSet: SharedIdSet,
         live: AtomicReference<PassProgress?>,
         preparing: AtomicBoolean,
-        saidPoolSpent: AtomicBoolean,
         saidSnapshotHeld: AtomicBoolean,
     ) {
         val relays = list.relays
@@ -657,45 +751,6 @@ internal class DynamicSync(
             preparing.set(false)
         }
 
-        // THE POOL MAY ALREADY BE SPENT, and if it is, this pass will hand out
-        // urls that can only queue. Every transfer open at the top of a pass
-        // belongs to an EARLIER one — this pass has dialled nothing yet — so the
-        // count is exact, and a stream whose slots are all held by wedged legs
-        // does no new downloading at all while still logging a pass a minute.
-        //
-        // It takes `concurrency` of them, which on a stream configured at 8 is
-        // eight relays, not eight hundred. Said out loud with the urls named,
-        // because the alternative is an operator watching `done/total` advance
-        // (the guards still decline dead hosts for free) while the event count
-        // never moves, and nothing anywhere connecting the two.
-        val held = rotation.transferringCount()
-        if (held >= dynamic.concurrency) {
-            // ONCE PER EPISODE, not once per pass. This condition is caused by
-            // legs that run for hours and is tested at the top of every pass, so
-            // at `recycleSeconds = 5` an unguarded line is one every five
-            // seconds for as long as it lasts — thousands of identical lines
-            // burying the log this was added to improve.
-            if (saidPoolSpent.compareAndSet(false, true)) {
-                System.err.println(
-                    "router: ${stream.name} pass ${progress.number} — ALL ${dynamic.concurrency} transfer slot(s) are still" +
-                        " held by earlier passes, so nothing new can download until one returns" +
-                        (
-                            rotation
-                                .busyUrls()
-                                .take(3)
-                                .takeIf { it.isNotEmpty() }
-                                ?.let { " (e.g. ${it.joinToString { u -> u.url }})" } ?: ""
-                        ),
-                )
-            }
-        } else if (saidPoolSpent.compareAndSet(true, false)) {
-            // The recovery IS the news, and it is the half a transition-logged
-            // warning usually forgets: without it an operator who saw the first
-            // line has no way to learn it stopped being true.
-            System.err.println(
-                "router: ${stream.name} pass ${progress.number} — transfer slots free again ($held/${dynamic.concurrency} held)",
-            )
-        }
         // The walk is about to start, so the ticker takes the phase back. See
         // the `live.set(null)` in [loop] for what it was overwriting.
         live.set(progress)
@@ -881,9 +936,14 @@ internal class DynamicSync(
         // ONLY NOW is a sync slot taken. Everything above declines the relay
         // without opening a websocket, and a url declined here must not have
         // cost a slot to decline — see the admission gate in [runPass].
+        // This worker's own event counter, hanging off the claim the rotation is
+        // already holding. It is what tells a leg with a real backlog from one
+        // that has stopped delivering — the two are the same durations
+        // otherwise. See [LegProgress].
+        val legProgress = rotation.leg(relay.url)
         val got =
             pool.withPermit {
-                rotation.transferring {
+                rotation.transferring(relay.url) {
                     // Leased, not passed: the set this ask reconciles against
                     // must stay alive for as long as the ask does, and a pass
                     // that ends while this one runs may install a newer one.
@@ -894,7 +954,7 @@ internal class DynamicSync(
                         // The relay's own filter, narrowed by what the tags
                         // that named it paired it with; identical to `window`
                         // for a select that binds only the url.
-                        syncRelay(stream, relay.url, relay.narrowed(window), lease.ids, sharedAuthors) { reason ->
+                        syncRelay(stream, relay.url, relay.narrowed(window), lease.ids, sharedAuthors, legProgress) { reason ->
                             p.reasons.merge(reason, 1L, Long::plus)
                         }
                     } finally {
@@ -1111,6 +1171,8 @@ internal class DynamicSync(
         window: Filter,
         local: List<IdAndTime>,
         sharedAuthors: Set<String>,
+        /** This leg's live event counter, or null when nothing is reporting on it. */
+        legProgress: LegProgress?,
         onFailure: (String) -> Unit,
     ): Int {
         inFlight.merge(url, 1, Int::plus)
@@ -1119,7 +1181,7 @@ internal class DynamicSync(
             var downloaded = 0
             val asks = splitByAuthors(window, stream.dynamic?.authorsPerLeg)
             for (ask in asks) {
-                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors)
+                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress)
             }
             // DIAGNOSTIC: what this relay was asked and what came back. Enabled
             // by SYNC_DIAGNOSE, which names one stream — the fan-out is 16k
@@ -1169,9 +1231,14 @@ internal class DynamicSync(
         window: Filter,
         local: List<IdAndTime>,
         sharedAuthors: Set<String>,
+        legProgress: LegProgress?,
     ): Int {
         if (stream.deleteMissing != DeleteMissing.OFF) {
-            return deleteMissingSync.reconcileAndDelete(stream, url, window, sharedAuthors)
+            // Threaded through rather than left to the caller's return value:
+            // this path can spend minutes inside one reconcile, and a counter
+            // that only moves when the call returns says nothing about the call
+            // that never does.
+            return deleteMissingSync.reconcileAndDelete(stream, url, window, sharedAuthors, legProgress)
         }
         var downloaded = 0
         // Invariant for the whole relay: hoisted out of the per-event callback
@@ -1186,6 +1253,19 @@ internal class DynamicSync(
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             val syncStartedAt = System.currentTimeMillis() / 1000
             val onEvent: suspend (Event) -> Unit = { event ->
+                // Counted where the events ARRIVE, not where the leg returns.
+                // `p.downloaded` is the pass's total and only moves when a leg
+                // ends, so the one leg worth watching — the one that has not
+                // ended — contributes nothing to it for as long as it lasts.
+                //
+                // Before this stream's own `match` on purpose: this is a
+                // liveness clock, and an event we then decline still proves the
+                // socket delivered. What it does NOT see is a page quartz's own
+                // matcher discards before the callback, which is exactly the
+                // measured purplepag.es loop — and that leg then reads as 0
+                // events with `quietForSec` climbing, which is the true finding
+                // rather than a missing one.
+                legProgress?.received()
                 if (stream.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -1471,5 +1551,30 @@ internal class DynamicSync(
          * file-descriptor limit waiting to be found in production.
          */
         internal fun admissionWidth(concurrency: Int): Int = (concurrency * 16).coerceIn(128, 512)
+
+        /**
+         * How many transfer slots must be free before the next pass may start —
+         * see [awaitPoolHeadroom].
+         *
+         * HALF, rounded up. Half rather than one because a pass that can only
+         * download on a slot or two is not a pass, it is a queue: the walk hands
+         * out its whole list regardless, so the urls behind the first free slot
+         * wait exactly as long as they would have waited for the next pass, and
+         * the fan-out has spent a relay list and a tally to achieve it. Rounded
+         * UP so a stream configured at 1 waits for its one leg to finish rather
+         * than starting a pass that cannot dial, which is `ceil` doing the same
+         * job as the general rule at the smallest size instead of a special case.
+         */
+        internal fun poolHeadroom(concurrency: Int): Int = ((concurrency + 1) / 2).coerceAtLeast(1)
+
+        /**
+         * How often the gate re-reads the pool.
+         *
+         * A second, matching the progress tick: the phase it publishes carries
+         * an elapsed clock and the relay it names, and a slower poll would age
+         * both. It costs an `AtomicInteger.get` and a map traversal bounded by
+         * the pool size, only ever while the stream is already doing nothing.
+         */
+        private const val POOL_GATE_POLL_MS = 1_000L
     }
 }

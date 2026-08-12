@@ -284,7 +284,7 @@ relay could stop the mirror: a paged walk that cannot terminate held a
 in the list long since finished and nothing due to dial any of them again. Now it
 costs one slot out of `concurrency`.
 
-Three things follow, and they change how the logs and `/stats.json` read:
+Four things follow, and they change how the logs and `/stats.json` read:
 
 - A relay still syncing when the next pass reaches it is **passed over**, counted
   under `taken.busy`, and picked up on the pass after. So a relay slower than a
@@ -296,6 +296,18 @@ Three things follow, and they change how the logs and `/stats.json` read:
   is how far the current **walk** got over its list, `running` is how many relays
   are on a socket right now including legs from earlier passes. A finished walk
   with a busy pool used to render as idle.
+- **The next pass will not start until half the transfer pool is free.** Passes
+  overlap, but a pass started against a *committed* pool is not parallelism: it
+  re-derives the relay list, opens a tally, walks the whole list and hands every
+  url to a slot that does not exist. At `recycleSeconds = 1` against
+  `concurrency = 100` that is a pass a second producing log lines and a `taken`
+  count nobody can act on. So the stream waits, in a phase of its own —
+  `holding` — with an elapsed clock and the url of the leg holding the slots.
+
+  It is a real change in failure mode and worth stating plainly: a stream whose
+  legs never return now stops passing rather than passing uselessly. That is why
+  `holding` names the culprit rather than only counting it. Seconds of it is the
+  rotation breathing; an hour of it on one url is the finding.
 
 ### What a pass is NOT
 
@@ -715,6 +727,9 @@ Set `SYNC_PROGRESS_FILE` and the router rewrites it on every progress tick:
       "name": "content",
       "phase": "fetching",
       "phaseForSec": 412,
+      "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
+                               "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
+                   "omitted": 118},
       "cycle": {
         "startedAt": 1769999000, "outcome": "running",
         "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "excluded": 0, "taken": 5323},
@@ -733,7 +748,7 @@ Set `SYNC_PROGRESS_FILE` and the router rewrites it on every progress tick:
 }
 ```
 
-Three things are load-bearing here.
+Four things are load-bearing here.
 
 **`writtenAt` is a heartbeat**, not a modification time. It advances on every
 tick whatever the streams are doing, so the relay can publish `staleForSec` — how
@@ -772,6 +787,30 @@ it was earned: a signed NIP-66 kind 30166 `same-as` record in this relay's own
 store, queryable over the protocol. `excluded` is its own member beside it —
 an operator's `exclude` list being obeyed and a duplicate the router worked out
 for itself are different facts with different fixes.
+
+**`inFlight` names the relays that are running**, which is the half the counts
+never said. `pending` on a production stream read `2` while that stream had
+received two events in eleven and a half hours, and nothing anywhere recorded
+*which two*: the count is derived by subtraction, a leg that is still going has
+earned no band so the coverage card cannot draw it, the `SYNC_DIAGNOSE` line
+fires only for the one stream it names, and container logs here rotate inside
+the hour. The router was holding both urls the whole time.
+
+Four numbers per row, because a duration on its own is ambiguous — a relay with
+a real backlog and a walk that cannot terminate are both "held for hours":
+
+| member | says |
+|---|---|
+| `heldForSec` | since the rotation CLAIMED it — before the strike checks, the TCP pre-probe and the queue for a transfer slot, not just the download |
+| `transferringForSec` | since it went on a socket. **Absent means it is not on one**, which is where most of a fan-out's workers are at any instant; absent with a large `heldForSec` is a connect that is not answering |
+| `events` | what that leg has received so far, counted as they arrive rather than when the leg ends — the leg worth watching is the one that has not ended |
+| `quietForSec` | since the last one, or since the claim if none ever came. **The one that decides**: events still landing is a slot well spent, this climbing is a walk that is not going to end |
+
+It sits beside the cycle rather than inside it because a worker outlives the pass
+that handed it out: the same url is this cycle's `pending` if this pass dialled it
+and its `busy` if an earlier one did. It is *not* "the pending urls" — `pending`
+also counts urls the walk has not reached yet, which have no worker. Bounded to
+the longest-held few, `omitted` naming the rest, on the same terms as `foldedOnto`.
 
 **`hosts` sits beside the url counts, never instead of them.** Most relay
 software answers on every path, so one server wears many urls and every url-keyed

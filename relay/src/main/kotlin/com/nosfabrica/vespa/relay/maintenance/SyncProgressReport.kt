@@ -142,7 +142,49 @@ internal object SyncProgressReport {
             put("name", name)
             text(o["phase"])?.let { put("phase", it) }
             (o["phaseForSec"] as? JsonPrimitive)?.longOrNull?.let { put("phaseForSec", it) }
+            // WHICH relays this stream has workers on. Beside the cycle rather
+            // than inside it because a worker outlives the pass that handed it
+            // out — see the router's [InFlight] for the full account, and for
+            // why this is not simply "the pending urls".
+            inFlight(o["inFlight"] as? JsonObject)?.let { put("inFlight", it) }
             (o["cycle"] as? JsonObject)?.let { c -> cycle(c)?.let { put("cycle", it) } }
+        }
+    }
+
+    /**
+     * The longest-held legs, rebuilt row by row and capped again on this side.
+     *
+     * Same terms as [foldedOnto]: the router already bounds its list, and this
+     * bounds it a second time rather than trusting that it did. `omitted` is
+     * carried through and ADDED to whatever this side drops, because a
+     * truncated list that does not say it is truncated reads as the whole
+     * answer — and here the whole answer is what an operator is chasing.
+     */
+    private fun inFlight(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        val kept = rows.take(MAX_IN_FLIGHT_ROWS)
+        return buildJsonObject {
+            putJsonArray("relays") {
+                for (row in kept) {
+                    val relay = text(row["relay"]) ?: continue
+                    add(
+                        buildJsonObject {
+                            put("relay", relay)
+                            put("heldForSec", num(row["heldForSec"]) ?: 0)
+                            // Absent means "not on a socket", which is a
+                            // statement. Defaulting it to 0 would turn a worker
+                            // stuck on a connect into one that just started
+                            // transferring — the opposite reading.
+                            num(row["transferringForSec"])?.let { put("transferringForSec", it) }
+                            put("events", num(row["events"]) ?: 0)
+                            put("quietForSec", num(row["quietForSec"]) ?: 0)
+                        },
+                    )
+                }
+            }
+            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size))
         }
     }
 
@@ -243,6 +285,7 @@ internal object SyncProgressReport {
     /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
     private const val MAX_FOLD_ROWS = 20
     private const val MAX_FOLD_EXAMPLES = 2
+    private const val MAX_IN_FLIGHT_ROWS = 20
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 

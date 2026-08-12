@@ -181,6 +181,10 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       CycleTally.kt         where every url a cycle took on ENDED UP — a
                             partition that sums to what discovery handed over,
                             not a bag of counters
+      InFlight.kt           WHICH relays a stream is holding right now, which
+                            those counts never said; bounded to the longest-held
+      LegProgress.kt        one running leg's event clock — the thing that tells
+                            a real backlog from a walk that cannot end
       SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
                             the heartbeat that tells a quiet router from a
                             stopped one
@@ -481,6 +485,13 @@ unanswerable from the serving side:
 - **`outcome` is `running`/`completed`/`failed`.** A cycle that aborted at 80%
   and one that finished left the identical trace — both simply stopped saying
   anything.
+- **`inFlight` NAMES the relays a stream has workers on**, longest-held first.
+  `pending` read 2 on a production stream that had received two events in eleven
+  and a half hours, and nothing in the system recorded which two urls: the count
+  is derived by subtraction, a leg still running has earned no band so the
+  coverage card cannot draw it, the `SYNC_DIAGNOSE` line fires only for the one
+  stream it names, and container stderr rotates inside the hour. `RelayRotation`
+  was holding both the whole time and published only their number.
 
 **Three words, and they are not synonyms.** "Done" covered all three, and the
 least meaningful of them was the one being read as progress:
@@ -490,6 +501,35 @@ least meaningful of them was the one being read as progress:
 | **returned** | a fan-out leg started and CAME BACK — including unreachable, capped, out of budget | `fetching 16747/16752 relay(s) returned` |
 | **settled** | nothing outstanding below the span this stream walked here | `complete` on a band, `reconciled` on a group |
 | **evidence** | the span in which EVERY kind in the filter has produced an event | `everyKindMin`/`everyKindMax` |
+
+**A DURATION IS NOT A DIAGNOSIS — each in-flight row carries four numbers.** A
+relay with a real backlog and a walk that cannot terminate are both "held for
+hours", and they want opposite responses. `heldForSec` runs from the rotation's
+CLAIM (before the strike checks, the TCP pre-probe and the queue for a slot);
+`transferringForSec` runs from the socket and is ABSENT when there is no socket,
+which is where most of a fan-out's workers are at any instant; `events` is what
+that leg has received, counted as they ARRIVE rather than when the leg returns —
+the leg worth watching is the one that has not returned, so a boundary counter
+reports zero for exactly as long as the fault lasts; and `quietForSec` is the one
+that decides, running from the last event or from the claim if none ever came.
+The measured shapes: directory.yabu.me holding a slot with events still landing
+is a 1.2M-event backlog and the slot is well spent, while the purplepag.es loop
+is `transferring` for hours with `events` frozen and `quietForSec` climbing —
+quartz's own matcher discards those pages before our callback, so the leg reads
+as genuinely silent, which is the true finding rather than a missing one.
+
+**The next pass will not start until half the transfer pool is free**
+(`DynamicSync.poolHeadroom`, `awaitPoolHeadroom`). Passes overlap by design, but
+a pass started against a COMMITTED pool is not parallelism: it re-derives the
+relay list, opens a tally, walks the whole list and hands every url to a slot
+that does not exist. At `recycleSeconds = 1` against `concurrency = 100` that is
+a pass a second producing log lines and a `taken` count nobody can act on. The
+wait is its own phase — `holding`, with an elapsed clock and the url of the leg
+holding the slots — never a longer `Idle`, because "nothing to do until the
+timer" and "the timer fired and we are declining" are different states. **It is a
+real change in failure mode**: a stream whose legs never return now stops passing
+rather than passing uselessly, which is exactly why `holding` names the culprit
+instead of only counting it.
 
 **Two not-dialled states are not one state.** `HostStrikes.isDead` was true for
 two reasons with OPPOSITE retry policies, reported as one number: a
@@ -1008,6 +1048,10 @@ and nothing else. Four consequences, each with its own home:
   its own, because "still going from last time" and "never reached" are the same
   silence otherwise. It is per STREAM; `DynamicSync.inFlight` is the wider,
   cross-stream socket refcount and stays what it was.
+
+  **It is also the only thing that knows WHICH relays are running**, so the
+  claim is stamped and carries the leg's own event counter (`held`, `leg`). The
+  bare set published three counts and no url — see the `inFlight` note above.
 - **The shared id set outlives the pass that built it.** `SharedIdSet` bounds
   the generations: an ask leases the set it started against, and a new one is
   installed only when nothing older is still being read (`mayInstall`). At most
