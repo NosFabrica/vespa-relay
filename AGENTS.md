@@ -32,6 +32,12 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # identical run is SKIPPED and prints nothing, which reads as a silent pass.
 ./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i
 
+# Discovers live NIP-85 providers off the example config's indexers and runs the
+# REAL deleteMissing path against each twice: pass 1 fills an in-memory store,
+# pass 2 is the empty reconcile that used to record no coverage. Read-only and
+# dryRun, but it downloads a provider's whole score set (~150k events, ~3 min).
+./gradlew :sync:test --tests '*DeleteMissingBandProbe*' -DdeleteMissingBandProbe=true --rerun -i
+
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
 # 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
 # and after.json in $D; the :relay half charts both through SyncCoverageReport,
@@ -402,6 +408,20 @@ streams asking one relay the same filter walk it at their own moments and to
 their own depths, and neither may resume from the other's claim. A paged fetch
 records `complete = false`; only a finished negentropy reconcile records
 `complete = true`.
+
+**An EMPTY reconcile records a band; an empty page does not.** The distinction
+is evidence, not bookkeeping: a completed reconcile compared both sides and
+proved them level, so it can claim coverage through the moment it started even
+with nothing to show for it, while an empty page only proves that one window
+was empty. `DeleteMissingSync` used to fall in the crack between them — it
+reconciles through `negentropyReconcileIds` (a different quartz call, because
+the delete side needs `haveIds`) and recorded nothing on that branch, so only
+its paging fallbacks ever wrote a band and only when events came back. The
+`assertions` stream therefore charted the providers that happened to hand over
+an event and none of the ones it was in sync with, which is the whole population
+of a mirror that is keeping up. `DeleteMissingBandProbe` is what proves it
+against real providers; the band's shape — floor from pass 1's oldest event,
+ceiling advancing on the empty pass — is pinned hermetically in `SyncBandsTest`.
 
 **The arithmetic is quartz's** — `SyncCoverage`, in
 `nip01Core.relay.client.accessories`, beside `fetchAllPages` and
