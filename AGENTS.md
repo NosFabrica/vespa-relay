@@ -485,6 +485,15 @@ unanswerable from the serving side:
 - **`outcome` is `running`/`completed`/`failed`.** A cycle that aborted at 80%
   and one that finished left the identical trace — both simply stopped saying
   anything.
+- **`pending` on a `completed` cycle is usually REAL, and the card said the
+  opposite.** A pass ends when its last url is handed out, not when its last
+  worker returns, so a completed pass routinely leaves live legs — but
+  `pendingLabel` keyed off `outcome` alone and drew *"285 never got a verdict"*
+  directly above a line naming three of those 285 downloading at 20k events
+  each. Caught on the live run, not in review. It reads `inFlight` now: held
+  urls are in flight whatever the outcome says, and "never got a verdict" is
+  reserved for the case it was written for — a cycle that stopped with nothing
+  running.
 - **`inFlight` NAMES the relays a stream has workers on**, longest-held first.
   `pending` read 2 on a production stream that had received two events in eleven
   and a half hours, and nothing in the system recorded which two urls: the count
@@ -520,6 +529,30 @@ purplepag.es loop is `transferring` for hours with `events` frozen and
 our callback, so the leg reads as genuinely silent. That is the true finding
 rather than a missing one. `events` was checked against `fetchAllPages`'
 own `downloaded` on every leg that finished and agreed exactly (200/200, 0/0).
+
+**Verified end to end against a real Vespa and real relays**, not only by
+probe: `docker compose` with the schema deployed, a `profileViaOutbox` stream
+discovering 579 urls off stored 10002s, and 348,770 events mirrored. What the
+live `/stats.json` showed, and what each thing confirms:
+
+| observed | confirms |
+|---|---|
+| `indexers` (static) publishes NO `inFlight` | a stream with no rotation makes no claim, rather than claiming nothing is running |
+| `inFlight: 20 named, 279 omitted`, and `pending` = 299 | the cap is the documented 20, and `omitted` closes the arithmetic exactly |
+| four rows `transferring` with `events` climbing and `quiet 0s`; the rest `transferring` ABSENT, `events 0` | absent means *queued for a slot*, and here it was our own pool being the constraint — 128 workers against 4 slots |
+| ties broken by url, `ws://` before `wss://` | the ordering is total, so two rollups of one state diff cleanly |
+
+**The pool gate only runs BETWEEN passes, so a stream whose walk cannot finish
+never reaches it** — worth knowing before reading a `holding` that never
+appears. Measured: at `concurrency = 4` the admission gate is 128 (the floor in
+`admissionWidth`), so 128 workers queue for 4 transfer slots and the walk was
+still handing out at 63/237 after five minutes. `awaitPoolHeadroom` is never
+called because `runPass` never returns. That is not a fault — nothing is
+starting a redundant pass either, which is what the gate is for — but it means
+the gate earns its keep at the ratios the config actually uses. At
+`concurrency = 30` the walk handed out all 579 urls at once and the gate engaged
+immediately, holding for 11 minutes with `0/15 slots free` while the pool ran
+productively.
 
 **`transferringForSec` is the transfer SLOT, not the socket, and the probe is
 what caught the difference.** A url that could not be connected to at all

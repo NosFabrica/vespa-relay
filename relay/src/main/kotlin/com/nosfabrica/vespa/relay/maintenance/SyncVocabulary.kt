@@ -302,12 +302,14 @@ internal object SyncVocabulary {
             )
             put(
                 "pending",
-                "READ IT AGAINST `outcome`. Derived, never counted: it is `taken` minus the eight terminal outcomes, which " +
-                    "is what makes the partition add up mid-cycle. While the cycle is `running` these urls are genuinely in " +
-                    "flight. On a cycle that is `completed` or `failed` — or on a router that was killed mid-fan-out, where " +
-                    "the last file written still says `running` and `staleForSec` is what gives it away — a non-zero " +
-                    "`pending` means the opposite: nothing is in flight, these urls never reached a verdict because the " +
-                    "cycle ended first. They are dialled again on the next one.",
+                "READ IT AGAINST `inFlight`, not against `outcome` alone. Derived, never counted: it is `taken` minus the " +
+                    "eight terminal outcomes, which is what makes the partition add up mid-cycle. A `completed` cycle with a " +
+                    "large `pending` is NOT a cycle that died — a pass ends when its last url is handed out, not when its " +
+                    "last worker returns, so the tail of the pool is still running and `inFlight` names it (measured on a " +
+                    "live run: 285 pending, every one of them a live worker, three of them downloading at 20k events each). " +
+                    "The other reading is the one where `inFlight` is empty or absent: those urls never reached a verdict " +
+                    "because the cycle stopped first, and they are dialled again on the next one. A router killed mid-fan-out " +
+                    "is that case with the last file still saying `running`, which `staleForSec` is what gives away.",
             )
             put(
                 "received",
