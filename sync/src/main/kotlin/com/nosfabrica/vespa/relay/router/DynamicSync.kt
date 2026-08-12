@@ -658,7 +658,11 @@ internal class DynamicSync(
                 (if (work.busy > 0) ", ${work.busy} still syncing from an earlier pass" else "") +
                 " against ${idSet.size()} local id(s)" +
                 (idSet.ageSec(System.currentTimeMillis()).takeIf { it > 0 }?.let { " (${fmtDuration(it * 1000)} old)" } ?: "") +
-                " (e.g. ${work.relays.take(3).joinToString { it.url.url }})",
+                // Omitted when there is nothing to hand out, rather than
+                // printed empty: a pass whose whole list is still being synced
+                // is an ordinary rotation state, and "(e.g. )" reads like the
+                // examples went missing.
+                (if (work.relays.isEmpty()) "" else " (e.g. ${work.relays.take(3).joinToString { it.url.url }})"),
         )
 
         for (relay in work.relays) {

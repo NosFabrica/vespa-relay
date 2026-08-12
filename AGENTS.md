@@ -1075,6 +1075,19 @@ What it costs is a dial per relay per fan-out instead of per refresh period,
 which is a rate against the whole discovered set — not free, and the reason it
 is opt-in rather than defaulted.
 
+**A rotation breaks one piece of arithmetic nothing warns about: per-pass work
+is now per-`recycleSeconds`, not per-`refreshSeconds`.** The id snapshot is the
+case that bit — one build per pass was one per six hours while the fan-out
+joined, and became one per five seconds. `SharedIdSet.worthRebuilding` paces it
+against its OWN cost (ten times the last build, one-minute floor), so the share
+of a stream's time spent walking the store stays near a tenth whatever the
+corpus costs. Measured live in exactly that regime — a negentropy stream whose
+passes are seconds apart — **50 passes produced 5 builds**, against 50 before.
+A WIDER window overrides the clock: the walk is narrowed to what the hungriest
+relay needs, so a set built narrow and reused wide is a subset of what the diff
+needs and the reconcile re-downloads events we hold. Anything else added to a
+pass wants the same question asked of it.
+
 **A fold has to take the earlier sync's state with it.** Nothing dials a folded
 url again, so the bands it earned before the fold can never advance — but they
 stay in `SYNC_STATE_FILE`, and that file is what `SyncCoverageReport` charts. The
