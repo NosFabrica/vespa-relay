@@ -206,6 +206,11 @@ internal class DynamicSync(
         // two passes there are still relays syncing, and a stream that went
         // quiet for the gap read exactly like one that had stopped.
         val live = AtomicReference<PassProgress?>(null)
+        // Two long-lived conditions that are tested every pass and must not be
+        // logged every pass — see their call sites. The STATE is what changes,
+        // so the state is what is said.
+        val saidPoolSpent = AtomicBoolean()
+        val saidSnapshotHeld = AtomicBoolean()
         // The loop OWNS the phase while it is discovering or snapshotting, and
         // the ticker must not paint over it. Both are minutes long on a full
         // store and both report their own progress; with the ticker writing
@@ -271,7 +276,7 @@ internal class DynamicSync(
                     if (list.relays.isEmpty()) {
                         phases.set(stream.name, StreamPhases.Phase.Waiting(sourceNames, retrySec))
                     } else {
-                        runPass(stream, dynamic, sourceNames, list, rotation, pool, admission, idSet, live, preparing)
+                        runPass(stream, dynamic, sourceNames, list, rotation, pool, admission, idSet, live, preparing, saidPoolSpent, saidSnapshotHeld)
                         ran = true
                     }
                 } catch (e: CancellationException) {
@@ -602,6 +607,8 @@ internal class DynamicSync(
         idSet: SharedIdSet,
         live: AtomicReference<PassProgress?>,
         preparing: AtomicBoolean,
+        saidPoolSpent: AtomicBoolean,
+        saidSnapshotHeld: AtomicBoolean,
     ) {
         val relays = list.relays
         // Skipping what is still being synced is the first thing that happens,
@@ -644,7 +651,7 @@ internal class DynamicSync(
         preparing.set(true)
         val sharedAuthors: Set<String>
         try {
-            refreshIdSet(stream, relays, window, idSet, rotation)
+            refreshIdSet(stream, relays, window, idSet, rotation, saidSnapshotHeld)
             sharedAuthors = sharedAuthors(stream, relays)
         } finally {
             preparing.set(false)
@@ -663,16 +670,30 @@ internal class DynamicSync(
         // never moves, and nothing anywhere connecting the two.
         val held = rotation.transferringCount()
         if (held >= dynamic.concurrency) {
+            // ONCE PER EPISODE, not once per pass. This condition is caused by
+            // legs that run for hours and is tested at the top of every pass, so
+            // at `recycleSeconds = 5` an unguarded line is one every five
+            // seconds for as long as it lasts — thousands of identical lines
+            // burying the log this was added to improve.
+            if (saidPoolSpent.compareAndSet(false, true)) {
+                System.err.println(
+                    "router: ${stream.name} pass ${progress.number} — ALL ${dynamic.concurrency} transfer slot(s) are still" +
+                        " held by earlier passes, so nothing new can download until one returns" +
+                        (
+                            rotation
+                                .busyUrls()
+                                .take(3)
+                                .takeIf { it.isNotEmpty() }
+                                ?.let { " (e.g. ${it.joinToString { u -> u.url }})" } ?: ""
+                        ),
+                )
+            }
+        } else if (saidPoolSpent.compareAndSet(true, false)) {
+            // The recovery IS the news, and it is the half a transition-logged
+            // warning usually forgets: without it an operator who saw the first
+            // line has no way to learn it stopped being true.
             System.err.println(
-                "router: ${stream.name} pass ${progress.number} — ALL ${dynamic.concurrency} transfer slot(s) are still held by" +
-                    " earlier passes, so nothing new can download until one returns" +
-                    (
-                        rotation
-                            .busyUrls()
-                            .take(3)
-                            .takeIf { it.isNotEmpty() }
-                            ?.let { " (e.g. ${it.joinToString { u -> u.url }})" } ?: ""
-                    ),
+                "router: ${stream.name} pass ${progress.number} — transfer slots free again ($held/${dynamic.concurrency} held)",
             )
         }
         // The walk is about to start, so the ticker takes the phase back. See
@@ -931,6 +952,7 @@ internal class DynamicSync(
         window: Filter,
         idSet: SharedIdSet,
         rotation: RelayRotation,
+        saidSnapshotHeld: AtomicBoolean,
     ) {
         if (!holdsIdSet(stream)) {
             System.err.println(
@@ -993,6 +1015,8 @@ internal class DynamicSync(
             // buys everyone else ONE more snapshot and then the same one until
             // it finishes. Bounded heap, staler diff — see
             // [SharedIdSet.mayInstall].
+            // Once per episode, for the same reason as the pool warning above.
+            if (!saidSnapshotHeld.compareAndSet(false, true)) return
             val holding = rotation.busyUrls()
             System.err.println(
                 "router: ${stream.name} — reusing the ${idSet.size()} id snapshot" +
@@ -1037,6 +1061,9 @@ internal class DynamicSync(
             }
         val buildMs = System.currentTimeMillis() - startedMs
         idSet.install(ids, System.currentTimeMillis(), snapshotWindow.since, buildMs)
+        // …which is the recovery notice for the warning below: the next time a
+        // straggler freezes the snapshot, it is news again.
+        saidSnapshotHeld.set(false)
         System.err.println(
             "router: ${stream.name} local snapshot ${ids.size} id(s) in ${fmtDuration(buildMs)}" +
                 (snapshotWindow.since?.let { s -> ", since $s" } ?: ", full filter (no relay is caught up yet)"),
