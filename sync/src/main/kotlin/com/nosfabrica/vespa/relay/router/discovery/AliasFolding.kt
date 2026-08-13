@@ -65,6 +65,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * url discovered for the first time has no verdict when [apply] runs, so that
  * cycle dials it; the fold takes hold on the next one. Paying that once per new
  * url is the trade for never making a fan-out wait on a probe.
+ *
+ * **A pass that leaves a host unfolded says which host and why** — see
+ * [Undecided]. That is not decoration. Five different things end a group with
+ * nothing written down, four of them recover on their own and one never will,
+ * and from outside this process all five are the same silence: a url still being
+ * dialled next to eleven siblings that fold.
  */
 class AliasFolding(
     private val aliases: RelayAliases,
@@ -79,15 +85,15 @@ class AliasFolding(
      * Hosts a pass DIALLED and could not decide anything about, and the moment
      * each becomes worth trying again.
      *
-     * **This is what stops the widest groups eating the budget forever.** FOUR
-     * exits below leave a group with no verdict at all — the leader would not
-     * answer, its window was too short to be a yardstick, it could not reproduce
-     * itself and the group was forgotten, or it was a fine yardstick and every
-     * member of its group was silent or too thin to compare, so nothing was held
-     * up against it. None of them write anything down, by design: they are all
-     * cases where publishing would be a claim the measurement does not support.
-     * The fourth is the one the first cut of this cooldown missed, and it fails
-     * exactly like the others.
+     * **This is what stops the widest groups eating the budget forever.** THREE
+     * exits below leave a DIALLED group with no verdict at all — no url on the
+     * host could be a yardstick (silent, or a window too short to measure
+     * against), the yardstick could not reproduce itself and the group was
+     * forgotten, or it was a fine yardstick and every other url was silent or
+     * too thin to compare, so nothing was held up against it. None of them write
+     * anything down, by design: they are all cases where publishing would be a
+     * claim the measurement does not support. [Undecided] is the same list,
+     * reported rather than acted on, plus the two exits that never reach a dial.
      *
      * Nothing written down means [RelayAliases.unresolved] hands the same group
      * back on the next pass. Groups are probed WIDEST FIRST, and a host wearing
@@ -236,15 +242,14 @@ class AliasFolding(
         val startedAtMs = System.currentTimeMillis()
         val all = aliases.unresolved(candidates)
         val groups = all.filter { group -> !onCooldown(group, startedAtMs) }
-        val heldBack = all.size - groups.size
-        if (heldBack > 0) {
-            System.err.println(
-                "router: $label alias pass skipped $heldBack host(s) an earlier pass dialled and could not decide — " +
-                    "each retried after ${fmtDuration(undecidableCooldownMs)}",
-            )
-        }
         var learned = 0
         var probed = 0
+        // Why each host that ended the pass with nothing written down ended
+        // that way — see [Undecided]. Host-keyed, because a group IS a host.
+        val undecided = ConcurrentHashMap<String, Undecided>()
+        for (group in all - groups.toSet()) {
+            undecided[RelayAliases.hostOf(group.first().url)] = Undecided.COOLDOWN
+        }
         if (groups.isNotEmpty()) {
             val budget = AtomicInteger(probesPerCycle)
             val gate = Semaphore(concurrency)
@@ -264,10 +269,17 @@ class AliasFolding(
                         // this cycle is left entirely for the next one.
                         if (budget.addAndGet(-wanted.size) < 0) {
                             budget.addAndGet(wanted.size)
+                            // The one exit that used to leave no trace at all.
+                            // A group refused for budget looks, from every log
+                            // this pass prints, exactly like a group that was
+                            // measured and found to be nothing but distinct
+                            // relays — so a host waiting several passes for its
+                            // turn was indistinguishable from one the fold had
+                            // already decided against.
+                            undecided[RelayAliases.hostOf(group.first().url)] = Undecided.NO_BUDGET
                             return@launch
                         }
                         val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
-                        val leader = wanted.first()
                         // ONE anchor for the whole group, taken before any of
                         // it is dialled, and held a minute behind the clock.
                         //
@@ -285,66 +297,137 @@ class AliasFolding(
                         // [AliasProbe.ANCHOR_LAG_SECONDS].
                         val anchor = AliasProbe.settledAnchor(nowSeconds())
 
-                        // THE LEADER GOES FIRST, alone, for two reasons the
+                        // THE YARDSTICK GOES FIRST, alone, for two reasons the
                         // full-corpus sweep made expensive to ignore.
                         //
                         // It decides the FILTER. 46 of 229 hosts refused a bare
                         // one outright (`CLOSED blocked: can't handle empty
                         // filters`) and answered a kinds filter perfectly well
                         // — but two urls fingerprinted through different
-                        // filters are not comparable, so whatever the leader
+                        // filters are not comparable, so whatever the yardstick
                         // had to be asked is what its whole group is asked.
                         //
-                        // And it decides whether to ask AT ALL. A group whose
-                        // leader has no usable fingerprint can never fold
-                        // ([RelayAliases.learn] returns nothing without one),
-                        // so dialling its members is guaranteed waste: in that
-                        // same sweep, 892 urls behind 46 leaders.
+                        // And it decides whether to ask AT ALL. A group with no
+                        // usable yardstick can never fold ([RelayAliases.learn]
+                        // returns nothing without one), so dialling the rest is
+                        // guaranteed waste: in that same sweep, 892 urls behind
+                        // 46 leaders.
                         //
                         // "No usable fingerprint" means TOO SHORT as well as
-                        // absent. A leader that hands over three ids is under
+                        // absent. A url that hands over three ids is under
                         // [RelayAliases.DEFAULT_MIN_SAMPLE], so nothing can fold
                         // onto it and — since the thin-window guard — nothing
                         // can be cleared against it either. Accepting it as a
                         // yardstick dialled every member of its group to decide
-                        // nothing, and did it again every pass, forever. The
-                        // leader alone still costs one dial per pass, which is
-                        // the right price for noticing it has recovered.
+                        // nothing, and did it again every pass, forever.
+                        //
+                        // **BUT THE PREFERRED LEADER IS NOT THE ONLY URL THAT
+                        // CAN BE THE YARDSTICK, AND TREATING IT AS SUCH LOST
+                        // WHOLE HOSTS.** [RelayAliases.PREFERENCE] picks the
+                        // pathless url, which is the right SURVIVOR — everyone
+                        // else's relay lists name it — but it is only one of the
+                        // group's urls and it can be the one that will not
+                        // answer: a paid endpoint gating reads it does not gate
+                        // on a path, a hidden service whose bare url is dead
+                        // while its paths are not, or simply the url whose dial
+                        // lost the race this pass. Every one of those abandoned
+                        // a group that was perfectly foldable, wrote nothing
+                        // down, and — because nothing was written — came back
+                        // widest-first on the next pass to fail identically.
+                        // Measured on `asia.azzamo.net`: 12 urls, every pair at
+                        // containment 1.000, 11 folds in five seconds once
+                        // ANYTHING on the host is allowed to hold the ruler.
+                        //
+                        // So the walk continues down the preference order while
+                        // urls stay SILENT, capped at [YARDSTICK_ATTEMPTS]. It
+                        // costs nothing in the common case (the first url is the
+                        // yardstick and this is the old single dial) and nothing
+                        // extra in the failing one either: a url tried and
+                        // rejected here was going to be dialled as a member
+                        // anyway, and having failed BOTH filters it cannot
+                        // usefully be dialled again — so it is dropped from the
+                        // member walk rather than asked twice.
                         var dialled = false
-                        val lead =
-                            gate.withPermit {
-                                if (!canDial(leader)) return@withPermit null
-                                dialled = true
-                                taken.incrementAndGet()
-                                sockets.claim(leader)
-                                try {
-                                    probe.leaderPrint(leader, anchor, onEvent)
-                                } finally {
-                                    sockets.release(leader)
+                        var spent = 0
+                        var found: NormalizedRelayUrl? = null
+                        var foundPrint: AliasProbe.Leader? = null
+                        var tried = 0
+                        for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
+                            tried++
+                            val print =
+                                gate.withPermit {
+                                    if (!canDial(candidate)) return@withPermit null
+                                    dialled = true
+                                    spent++
+                                    taken.incrementAndGet()
+                                    sockets.claim(candidate)
+                                    try {
+                                        probe.leaderPrint(candidate, anchor, onEvent)
+                                    } finally {
+                                        sockets.release(candidate)
+                                    }
                                 }
+                            if (print != null) {
+                                // IT ANSWERED, so the search stops here whether
+                                // or not the window is usable — the two failures
+                                // are facts about different things.
+                                //
+                                // A url that hands back a window under
+                                // [RelayAliases.DEFAULT_MIN_SAMPLE] has told us
+                                // about the HOST: it is a relay holding a
+                                // handful of events, and its siblings serve the
+                                // same handful, so walking down the preference
+                                // order buys three thin windows instead of one.
+                                // Silence is the opposite — it is about that url
+                                // alone, and the url next to it may well be
+                                // serving five hundred events happily. Only
+                                // silence is worth another attempt.
+                                if (aliases.usableWindow(print.ids)) {
+                                    found = candidate
+                                    foundPrint = print
+                                }
+                                break
                             }
-                        if (lead == null || !aliases.usableWindow(lead.ids)) {
-                            // Only when the leader was actually ASKED. A url the
-                            // transport guard declined was never measured — our
-                            // Tor being down is not evidence about their server
-                            // — and cooling it down would hold a foldable host
-                            // back for a day on our own outage.
-                            if (dialled) markUndecidable(leader, startedAtMs)
+                        }
+                        if (found == null || foundPrint == null) {
+                            // Only when something was actually ASKED. A group the
+                            // transport guard declined outright was never
+                            // measured — our Tor being down is not evidence about
+                            // their server — and cooling it down would hold a
+                            // foldable host back for a day on our own outage.
+                            if (dialled) {
+                                markUndecidable(group.first(), startedAtMs)
+                                undecided[RelayAliases.hostOf(group.first().url)] = Undecided.NO_YARDSTICK
+                            } else {
+                                undecided[RelayAliases.hostOf(group.first().url)] = Undecided.TRANSPORT
+                            }
                             // Hand back what this group reserved and did not
                             // spend, or the budget is consumed by intentions and
-                            // a later group goes unprobed for it. A leader the
-                            // transport guard DECLINED cost nothing at all, so
-                            // the whole reservation goes back — refunding
-                            // `size - 1` there paid a fingerprint that was never
-                            // taken, out of the budget of a group that would
-                            // have used it.
-                            budget.addAndGet(if (dialled) wanted.size - 1 else wanted.size)
+                            // a later group goes unprobed for it. Counted from
+                            // the fingerprints actually TAKEN: a url the
+                            // transport guard declined cost nothing at all, and
+                            // refunding a flat `size - 1` paid for dials that
+                            // never happened out of the budget of a group that
+                            // would have used them.
+                            budget.addAndGet(wanted.size - spent)
                             return@launch
                         }
+                        // Immutable from here down. The search above has to
+                        // assign across an iteration, and Kotlin will not smart
+                        // cast a captured `var` inside the lambdas below — so the
+                        // null check is paid once, here, rather than at every use.
+                        val leader = found
+                        val lead = foundPrint
                         prints[leader] = lead.ids
 
                         coroutineScope {
-                            for (url in wanted.drop(1)) {
+                            // Everything the yardstick search already looked at
+                            // is dropped, not just the yardstick itself: those
+                            // urls answered neither the bare filter nor the kinds
+                            // one, and asking a third time with the yardstick's
+                            // filter would buy a dial per pass per url to learn
+                            // the same silence.
+                            for (url in wanted.drop(tried)) {
                                 launch {
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit
@@ -410,6 +493,7 @@ class AliasFolding(
                                 // that cannot reproduce its own window today is
                                 // very unlikely to manage it in six hours.
                                 markUndecidable(leader, startedAtMs)
+                                undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOT_REPRODUCIBLE
                                 System.err.println(
                                     "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
                                         "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor) — " +
@@ -484,6 +568,7 @@ class AliasFolding(
                             clearUndecidable(leader)
                         } else {
                             markUndecidable(leader, startedAtMs)
+                            undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
                         }
                         for ((alias, v) in verdicts) {
                             runCatching { record.publish(alias, v.first, v.second.first, v.second.second) }
@@ -507,7 +592,65 @@ class AliasFolding(
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
+        // WHICH HOSTS THIS PASS LEFT UNFOLDED, AND WHY.
+        //
+        // Everything above counts what the pass DID. Nothing counted what it
+        // did not, and the difference was the whole diagnostic gap: a url still
+        // being dialled beside eleven of its siblings is the symptom of five
+        // completely different causes — never reached for budget, held on a
+        // cooldown, no yardstick, nothing to compare against one, a host that
+        // cannot repeat itself — and from outside the process they are one
+        // silence. Every theory about a specific host started by guessing which,
+        // and a guess is a bad place to start when the alternative is one line.
+        //
+        // Bounded per reason, because a first pass over a polluted store can
+        // leave hundreds: this is a diagnostic, not an inventory. The count is
+        // the fact, the examples are the lead.
+        if (undecided.isNotEmpty()) {
+            val byReason = undecided.entries.groupBy({ it.value }, { it.key })
+            System.err.println(
+                "router: $label alias pass left ${undecided.size} host(s) undecided — " +
+                    Undecided.entries
+                        .filter { byReason.containsKey(it) }
+                        .joinToString("; ") { reason ->
+                            val hosts = byReason.getValue(reason)
+                            "${hosts.size} ${reason.reason} (e.g. ${hosts.sorted().take(NAMED_PER_REASON).joinToString()})"
+                        },
+            )
+        }
         return learned
+    }
+
+    /**
+     * Why a pass ended a group with nothing written down.
+     *
+     * Every one of these is a legitimate outcome — none of them is a failure to
+     * be fixed by publishing something anyway, which is the trap the thin-window
+     * guard was written for. What they are not is interchangeable: a host
+     * waiting its turn for budget will fold on a later pass with no
+     * intervention, and a host that cannot reproduce its own window never will.
+     * Telling them apart from outside the process is what this exists for.
+     */
+    private enum class Undecided(
+        val reason: String,
+    ) {
+        /** Never reached: [probesPerCycle] ran out before this group's turn. */
+        NO_BUDGET("out of probe budget"),
+
+        /** Held back by [undecidable] from a pass that already failed on it. */
+        COOLDOWN("cooling down from an earlier failed pass"),
+
+        /** Our own transport declined every url — see the `canDial` note above. */
+        TRANSPORT("declined by our own transport"),
+
+        /** Nothing on the host answered enough to be a yardstick. */
+        NO_YARDSTICK("no url that could be a yardstick"),
+
+        /** A yardstick, but every other url was silent or too thin to compare. */
+        NOTHING_COMPARED("nothing to hold up against the yardstick"),
+
+        /** The yardstick would not give the same window twice — see [RelayAliases.reproducible]. */
+        NOT_REPRODUCIBLE("a host that cannot repeat itself"),
     }
 
     /**
@@ -615,6 +758,32 @@ class AliasFolding(
 
         /** Probes in flight. Below the fan-out's own concurrency: this is a side quest. */
         const val DEFAULT_CONCURRENCY = 16
+
+        /**
+         * How far down a group's preference order the search for a yardstick
+         * goes before the host is given up on for this pass.
+         *
+         * Three, and the shape of the cost is why it can be small. The attempts
+         * are SEQUENTIAL — each has to fail before the next is worth making —
+         * so this is the only place in the pass where a dead url delays another
+         * dial rather than merely occupying a permit. Against a host that
+         * answers nothing, three is three windows of silence in a row on one of
+         * the 16 permits; against the onion window ([probeIdleMs]) that is
+         * minutes.
+         *
+         * What it buys is measured on the two shapes this was reported on:
+         * every url of `asia.azzamo.net` and of one hidden service serves the
+         * same events, so ANY of them is a perfect yardstick and the group folds
+         * whole the moment one answers. A host where the first three all refuse
+         * is a host where the fourth is not the likely difference.
+         *
+         * It costs nothing in the common case: the first url answers, the loop
+         * runs once, and this is the single leader dial it replaced.
+         */
+        const val YARDSTICK_ATTEMPTS = 3
+
+        /** Hosts named per reason in the undecided summary. A lead, not an inventory. */
+        private const val NAMED_PER_REASON = 3
 
         /**
          * How long a host that was dialled and could not be decided is left
