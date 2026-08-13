@@ -148,10 +148,22 @@ class AliasFoldLiveProbe {
                 // agreement with itself is worth.
                 val probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS }
                 val anchor = AliasProbe.settledAnchor(System.currentTimeMillis() / 1000)
-                val leader = aliases.toProbe(group).first()
-                val lead = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.leaderPrint(leader, anchor) {} } }
+                // The same walk down the preference order the pass makes, so the
+                // numbers below are the ones the verdict rests on even when the
+                // preferred survivor is the url that will not speak. Printing the
+                // first url's silence and stopping is what this used to do, and
+                // it described a host as unfoldable that folds whole.
+                val wanted = aliases.toProbe(group)
+                var leader = wanted.first()
+                var lead: AliasProbe.Leader? = null
+                for (candidate in wanted.take(AliasFolding.YARDSTICK_ATTEMPTS)) {
+                    leader = candidate
+                    lead = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.leaderPrint(candidate, anchor) {} } }
+                    if (lead != null) break
+                    println("    ${candidate.url} said nothing — trying the next url on the host")
+                }
                 if (lead == null) {
-                    println("    leader ${leader.url} said nothing — no yardstick, nothing on this host can fold")
+                    println("    no url on this host could be a yardstick — nothing here can fold")
                 } else {
                     val asked = lead.kinds?.let { "kinds=$it" } ?: "bare filter"
                     println("    leader ${leader.url}: ${lead.ids.size} id(s) via $asked")

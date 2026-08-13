@@ -57,11 +57,20 @@
   this table is every kind rather than a top-N, and why it is at the bottom: it
   is a reference list, not a chart, and it is now the longest thing here.
 
-  What went with that page, and is not replaced: it asked its counts as NIP-45
-  COUNTs over the relay's own websocket, so it also TESTED the protocol — a kind
-  that came back "no COUNT" was a finding about this relay rather than a blank
-  cell. Nothing here speaks the protocol. If that check is wanted back it wants
-  to be a test, not a page.
+  What went with that page: it asked its counts as NIP-45 COUNTs over the
+  relay's own websocket, so it also TESTED the protocol — a kind that came back
+  "no COUNT" was a finding about this relay rather than a blank cell. That is
+  still the right call for COUNTS, which have a rollup to fall back on.
+
+  ONE PANEL SPEAKS THE PROTOCOL AGAIN, and the distinction is worth keeping
+  straight. Monitor verdicts (kind 30166) have NO rollup: `/stats.json` says how
+  many urls folded and onto how many relays, and nothing anywhere could answer
+  "what does this store say about THIS url, and when was it measured" — the
+  question every investigation of a still-duplicated relay starts with. So that
+  panel pages the records off the websocket, and it is the only one here that
+  does. It is drawn on a BUTTON rather than on the poll, because this page
+  refreshes itself every minute and a websocket read on that cadence is a load
+  source rather than a debugging aid.
 
   CHARTS: single-series, one hue, no legend (the title names the series), thin
   bars with a rounded data-end, hairline solid gridlines, a 2px surface gap
@@ -462,6 +471,98 @@
     border: 1px solid var(--line); background: var(--surface); color: var(--text); width: 18rem; max-width: 100%;
   }
   .status { color: var(--muted); font-size: .85rem; font-variant-numeric: tabular-nums; }
+
+  /* ---- monitor verdicts --------------------------------------------------
+     The one panel on this page that speaks the PROTOCOL rather than reading
+     the rollup, so it is the one panel that is not drawn until asked: it opens
+     a websocket to this relay and pages kind 30166 out of it, which is not a
+     cost to put on a page that polls itself every minute.
+
+     A row is a url and what the store says about it. The verdict word is the
+     column that matters, so it is fixed-width and first after the url; the
+     evidence is the monitor's own sentence and wraps under it, because
+     truncating the thing that says WHY defeats the panel. */
+  /* A HOST IS THE UNIT, so it gets a box. The flat list this replaced ran host
+     names and url rows down one column at the same weight, and on a store
+     holding a thousand hosts there was nothing to tell you where one ended and
+     the next began — least of all when the filter was on, which is exactly when
+     you are looking at one host. */
+  .vd-group {
+    border: 1px solid var(--line); border-radius: .45rem; overflow: hidden; margin-bottom: .5rem;
+    /* On the GROUP as well as the row, and measured: clearing the filter — every
+       host back on screen — cost 155-162ms with it only on `.vd-row`, because a
+       thousand group boxes still had to be laid out to find out how tall their
+       (skipped) rows made them. The intrinsic size is a guess at a small host
+       and only has to be in the right order of magnitude; being wrong costs a
+       scrollbar that settles, not a wrong render. */
+    content-visibility: auto; contain-intrinsic-size: auto 6rem;
+  }
+  .vd-group[hidden] { display: none; }
+  .vd-ghead {
+    display: grid; grid-template-columns: 1fr auto auto; gap: .6rem; align-items: center;
+    padding: .4rem .55rem; background: var(--grid);
+  }
+  .vd-name { font-weight: 600; font-size: .85rem; word-break: break-all; }
+  .vd-count { color: var(--muted); font-size: .75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* How much of this host collapsed, as a proportion — the same read the
+     coverage card gives a relay's walk. One glance says whether a host is
+     folded, half-folded or untouched, which is the question the panel is for
+     and which no column of words answers at a thousand rows. */
+  .vd-meter { width: 4rem; height: .35rem; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .vd-meter i { display: block; height: 100%; background: var(--accent); }
+  .vd-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 0 .6rem; align-items: baseline;
+    padding: .22rem .55rem; border-top: 1px solid var(--grid);
+    /* Thousands of rows in a bounded box: the same content-visibility the
+       coverage rows use, for the same measured reason. */
+    content-visibility: auto; contain-intrinsic-size: auto 1.4rem;
+  }
+  .vd-row[hidden] { display: none; }
+  /* The SURVIVOR leads its group and is the url actually dialled, so it is the
+     one row drawn at full strength; everything under it folded into it. */
+  .vd-row.vd-keep { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+  .vd-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; word-break: break-all; }
+  .vd-into { color: var(--muted); }
+  .vd-when { color: var(--muted); font-size: .74rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* ONE line, ellipsised, full text on hover. The evidence is the sentence the
+     monitor signed and it is the reason to trust the row — but wrapped, it
+     doubled the height of every row on the page and turned a scannable list
+     into a wall. */
+  .vd-why {
+    grid-column: 1 / -1; color: var(--muted); font-size: .72rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .vd-pill {
+    font-size: .65rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+    padding: .05rem .3rem; border-radius: .25rem; white-space: nowrap;
+  }
+  .vd-pill.fold { color: var(--accent); background: var(--bar); }
+  .vd-pill.keep { color: var(--muted); border: 1px solid var(--line); }
+  /* QUIET, and that is the point. "Not folded" is the resting state of a url
+     the fold has not reached yet — on a store mid-pass it is most rows on the
+     page, and drawn in the warn colour it made every ordinary host look like a
+     fault. The warn colour is kept for the one state that IS one: a verdict
+     that has aged out and is no longer being acted on. */
+  .vd-pill.none { color: var(--muted); opacity: .75; }
+  .vd-pill.expired { color: var(--warn); border: 1px solid currentColor; }
+  .vd-stale { color: var(--warn); }
+  /* The panel's controls on one line: the action, the filter, and whatever the
+     read has to say about itself. */
+  .vd-bar { display: flex; flex-wrap: wrap; gap: .5rem .7rem; align-items: center; margin-bottom: .7rem; }
+  .vd-bar input[type=search] { flex: 1 1 12rem; max-width: 20rem; }
+  /* WHAT THE OTHER WRITERS PUT ON THE RECORD — quartz's monitor, mostly. Dim
+     and small: it is context for the verdict above it, not a second subject. */
+  .vd-meta { grid-column: 1 / -1; color: var(--muted); font-size: .72rem; display: flex; flex-wrap: wrap; gap: .1rem .6rem; }
+  .vd-meta .k { color: var(--text); opacity: .8; }
+  /* A requirement is the one piece of metadata that CHANGES how a row reads: a
+     relay gating reads behind NIP-42 is the first explanation for a url that
+     will not fold, so it is the one that gets a colour. */
+  .vd-req { color: var(--warn); }
+  /* The summary strip over the list: the counts as their own row of numbers
+     rather than a run-on sentence in the status line. */
+  .vd-sum { display: flex; flex-wrap: wrap; gap: .15rem 1.1rem; margin: .1rem 0 .7rem; }
+  .vd-sum div { font-size: .78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .vd-sum b { display: block; font-size: 1.05rem; font-weight: 600; color: var(--text); }
   table { border-collapse: collapse; width: 100%; min-width: 30rem; }
   th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); }
   th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
@@ -503,6 +604,48 @@
   }
   .seg button:last-child { border-right: 0; }
   .seg button.on { background: var(--bar); color: var(--text); font-weight: 600; }
+
+  /* ---- controls ----------------------------------------------------------
+     THE SEARCH BOXES WERE NEVER STYLED — all three of them, on a page that
+     styles everything else. A raw `input[type=search]` inherits the platform's
+     chrome: a different border radius from every card around it, a font that is
+     not the page's, and in dark mode a white field with black text sitting in
+     the middle of a dark card. Styled once, at the element, because the
+     alternative is a class the next search box forgets and the page goes back
+     to having two of them look different. */
+  input[type=search] {
+    font: inherit; font-size: .85rem; padding: .35rem .6rem;
+    border: 1px solid var(--line); border-radius: .4rem;
+    background: var(--surface); color: var(--text);
+    min-width: 0; width: 100%; max-width: 22rem;
+  }
+  input[type=search]::placeholder { color: var(--muted); }
+  /* A focus ring rather than the UA outline: the outline sits hard against a
+     .4rem radius and squares off the corner it is drawn around. */
+  input[type=search]:focus-visible {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  /* The platform's clear button is drawn as a black glyph whatever the field is
+     on, so on dark it is a black × on a dark ground — invisible until hovered. */
+  input[type=search]::-webkit-search-cancel-button { cursor: pointer; opacity: .55; }
+  input[type=search]::-webkit-search-cancel-button:hover { opacity: 1; }
+  @media (prefers-color-scheme: dark) {
+    input[type=search]::-webkit-search-cancel-button { filter: invert(1); }
+  }
+  /* A standalone action, as opposed to `.seg`'s joined toggle. Same family:
+     surface, hairline, the card radius. */
+  .btn {
+    font: inherit; font-size: .85rem; padding: .35rem .8rem; cursor: pointer;
+    border: 1px solid var(--line); border-radius: .4rem;
+    background: var(--surface); color: var(--text); white-space: nowrap;
+  }
+  .btn:hover:not(:disabled) { border-color: var(--accent); color: var(--accent); }
+  .btn:focus-visible {
+    outline: none; border-color: var(--accent);
+    box-shadow: 0 0 0 3px color-mix(in srgb, var(--accent) 20%, transparent);
+  }
+  .btn:disabled { opacity: .55; cursor: progress; }
   .sparks { display: grid; grid-template-columns: repeat(auto-fit, minmax(13rem, 1fr)); gap: .9rem 1.2rem; }
   .spark-cell { min-width: 0; }
   .spark-head { display: flex; justify-content: space-between; gap: .5rem; align-items: baseline; font-size: .8rem; margin-bottom: .2rem; }
@@ -539,6 +682,8 @@
 
 <script type="module">
 import { kindLabel } from "/web/shared/kinds.js";
+import { Relay } from "/web/shared/relay.js";
+import { MONITOR_KIND, groupByHost, summarise, isCurrent, walkRecords } from "/web/shared/verdicts.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -2025,6 +2170,395 @@ function syncCard(section) {
   return card;
 }
 
+/**
+ * WHAT THE MONITOR HAS DECIDED ABOUT EACH RELAY URL, asked over the wire.
+ *
+ * Every other panel here reads `/stats.json`, which is a rollup: the fold's
+ * summary says 373 urls collapsed onto 909 relays and stops there. That number
+ * cannot answer the question an operator actually has when a duplicate is still
+ * being dialled — *what does this store say about THIS url, and when was it
+ * measured?* The verdict is a signed kind-30166 record and nothing on this page
+ * read one.
+ *
+ * A plain NIP-01 REQ over this relay's own websocket, so the panel is a
+ * protocol check as much as a view: a verdict that cannot be read here cannot
+ * be read by any client either. The note at the top of this file records that
+ * the kind histogram lost exactly this property when it stopped asking NIP-45
+ * COUNTs, and judged the check better as a test than a page. That was right
+ * about counts, which have a rollup to fall back on. It is wrong about
+ * verdicts, which have no other reader at all.
+ *
+ * NOT DRAWN UNTIL ASKED, and that is why it takes a button. This page polls
+ * itself every minute; opening a websocket and paging thousands of records on
+ * that cadence would make a debugging aid into a load source. `reads: []` in
+ * PANELS keeps the poller from rebuilding it, so what the reader loaded and
+ * typed survives every refresh underneath it.
+ */
+function verdictsCard() {
+  const card = el("div", "card");
+  cardHead(card, "Monitor verdicts (NIP-66)", null, null);
+  card.appendChild(el("p", "card-sub",
+    `Reads kind ${MONITOR_KIND} out of this relay over its own websocket — the same ask any client makes. ` +
+    "Grouped by host, because a duplicate is never a property of one url: it is a property of a url next to another one."));
+
+  // ONE toolbar, not `.grp-head` — which this borrowed and should not have.
+  // That class is a STICKY heading for the inside of a scroll box: it carries
+  // `position: sticky`, a z-index and its own background, none of which mean
+  // anything at the top of a card, and the background made the control row read
+  // as a header band.
+  const bar = el("div", "vd-bar");
+  const load = el("button", "btn", "Read verdicts from this relay");
+  const filter = el("input");
+  filter.type = "search";
+  // Named like the others so render()'s restore loop cannot carry one search
+  // box's text into another — there are three on this page now.
+  filter.name = "verdicts";
+  filter.placeholder = "filter by host or url";
+  filter.setAttribute("aria-label", "filter verdicts by host or url");
+  filter.hidden = true;
+  const status = el("span", "status", "");
+  bar.append(load, filter, status);
+  card.appendChild(bar);
+
+  const sumBox = el("div");
+  card.appendChild(sumBox);
+
+  const scroll = el("div", "wrap tall");
+  scroll.hidden = true;
+  card.appendChild(scroll);
+  const none = el("p", "cov-none");
+  none.hidden = true;
+  card.appendChild(none);
+
+  let groups = [];
+
+  const applyFilter = () => {
+    const q = filter.value.trim().toLowerCase();
+    let live = 0;
+    for (const g of groups) {
+      // A hit on the HOST keeps the whole group — that is what someone typing a
+      // hostname means, and hiding the non-matching urls of the very host they
+      // asked for would take away the comparison the panel exists to give.
+      const wholeHost = !q || g.host.includes(q);
+      let kept = 0;
+      for (const r of g.rows) {
+        const hit = wholeHost || r.needle.includes(q);
+        r.node.hidden = !hit;
+        if (hit) kept++;
+      }
+      // Heads and rows go together. Hiding only rows left a heading on screen
+      // for every host in the store, each with nothing beneath it.
+      g.box.hidden = !kept;
+      if (kept) live++;
+    }
+    const empty = !!q && !live;
+    none.hidden = !empty;
+    if (empty) none.textContent = `No url in this store's verdicts contains “${filter.value.trim()}”.`;
+  };
+  filter.addEventListener("input", applyFilter);
+
+  load.addEventListener("click", async () => {
+    load.disabled = true;
+    status.textContent = "asking…";
+    try {
+      const { events, complete, self, others } = await readVerdicts((n) => { status.textContent = `${fmt(n)} record(s)…`; });
+      const nowSec = Math.floor(Date.now() / 1000);
+      const byHost = groupByHost(events, nowSec);
+      const sum = summarise(byHost, nowSec);
+      groups = drawVerdicts(scroll, byHost, nowSec);
+      // The numbers as NUMBERS, over the list rather than as a run-on sentence
+      // beside the button. `not folded` is the one that separates two very
+      // different diagnoses: a record with no verdict tag is quartz's passive
+      // monitor writing reachability, so a store full of those beside zero
+      // folds says the monitor is running and the FOLD is not — where no
+      // records at all says neither is.
+      // `replaceChildren`, not `fill`: that helper exists to carry a reader's
+      // filter text and scroll position across a rebuild, and this box holds
+      // neither. Using it here would imply a preservation that is not happening.
+      sumBox.replaceChildren(tally([
+        ["urls", sum.urls],
+        ["hosts", sum.hosts],
+        ["folded away", sum.folded],
+        ["measured, kept", sum.cleared],
+        ["not folded", sum.silent],
+        ...(sum.expired ? [["verdict expired", sum.expired]] : []),
+        ...(sum.unstable ? [["refused as inconsistent", sum.unstable]] : []),
+      ]));
+      // What the read did NOT cover comes first: every number above is over the
+      // records we actually got, and one taken from a partial read means
+      // something different from one taken from a whole store.
+      // WHOSE RECORDS THESE ARE comes before what they say. Every number below
+      // is over one monitor's observations, and a reader who assumes otherwise
+      // reads the panel as a census of the store.
+      const whose = self
+        ? (others === null
+            ? `this relay's own monitor (${self.slice(0, 8)}…)`
+            : others > 0
+              ? `this relay's own monitor (${self.slice(0, 8)}…) — ${fmt(others)} more 30166 record(s) here belong to other monitors and are not counted`
+              : `this relay's own monitor (${self.slice(0, 8)}…), the only one with records here`)
+        : "EVERY monitor in this store — this relay advertises no key of its own, so these are not necessarily its verdicts";
+      status.textContent =
+        (complete ? "" : `partial read — stopped at ${fmt(events.length)} record(s); the store holds more. `) +
+        whose +
+        (sum.inferred ? `. ${fmt(sum.inferred)} survivor(s) inferred from the folds that point at them` : "");
+      status.className = complete && self ? "status" : "status vd-stale";
+      filter.hidden = false;
+      scroll.hidden = false;
+      applyFilter();
+    } catch (e) {
+      // The relay's own message. A panel that speaks the protocol has to report
+      // a protocol failure as one — "0 records" and "the socket closed" are not
+      // the same finding, and this is the panel whose whole job is telling
+      // states apart.
+      status.textContent = "";
+      none.hidden = false;
+      none.textContent = `Could not read verdicts: ${(e && e.message) || e}`;
+    } finally {
+      load.disabled = false;
+    }
+  });
+  return card;
+}
+
+/** A row of labelled numbers — the panel's own small tiles. */
+function tally(pairs) {
+  const box = el("div", "vd-sum");
+  for (const [label, n] of pairs) {
+    const cell = el("div");
+    cell.appendChild(el("b", null, fmt(n)));
+    cell.append(label);
+    box.appendChild(cell);
+  }
+  return box;
+}
+
+/**
+ * Page every kind-30166 record out of this relay, newest first.
+ *
+ * Paged on `until`, because a fan-out of five figures carries five figures of
+ * records and one REQ is bounded by whatever this relay's own limit happens to
+ * be — the same reason `AliasProbe` walks rather than asking once. The cursor
+ * steps strictly below the oldest `created_at` seen when a page adds nothing
+ * new, or a page that is entirely one timestamp cannot move it at all.
+ *
+ * No `authors` filter. The question is what this STORE holds, which includes
+ * records signed by another monitor or by a router sharing the key — and a
+ * verdict we cannot see because we guessed the wrong author reads exactly like
+ * a verdict that was never written, which is the confusion this panel exists to
+ * end. The author is drawn per row instead.
+ */
+async function readVerdicts(onProgress) {
+  const relay = new Relay(location.origin.replace(/^http/, "ws"));
+  // What this relay says it will serve in one ask, and WHO IT IS. Same origin,
+  // so this is the relay describing itself rather than us guessing at it.
+  const { maxPage, self } = await relayIdentity();
+  try {
+    // SCOPED TO THIS RELAY'S OWN MONITOR, and that scoping is load-bearing on a
+    // real store rather than tidiness.
+    //
+    // A router discovers relays from other monitors' reports — the documented
+    // outbox source reads `kinds: [10002, 10050, 30002, 30166]` — so a mirror
+    // holds strangers' 30166s by design, and public monitors publish them by
+    // the tens of thousands. Unscoped, every count on this panel would be our
+    // verdicts plus an unknown quantity of somebody else's observations, which
+    // is worse than no number: "1,621 folded away" would silently include
+    // relays this router never probed.
+    //
+    // `self` is the relay's OWN key, which `RELAY_NSEC` also gives the sync
+    // process precisely so its monitor records speak as the relay it feeds.
+    // Absent — an anonymous relay, or one whose sync was given a different key
+    // — there is nothing to scope to, and the panel says so rather than
+    // guessing an author and hiding every verdict signed under another.
+    const scope = self ? { authors: [self] } : {};
+    const walk = await walkRecords({
+      // Longer than the class's 10s default: a page of signed records off a
+      // loaded relay is a bigger answer than the search box ever asks for, and
+      // a timeout here is indistinguishable from an empty store to the reader.
+      ask: (limit, until) =>
+        relay.req({ kinds: [MONITOR_KIND], limit, ...scope, ...(until == null ? {} : { until }) }, 25000),
+      pageSize: Math.min(500, maxPage),
+      maxPage,
+      onProgress,
+    });
+    // …and then count what we DIDN'T read, so the scoping never hides anything.
+    // A COUNT is one round trip against an index; walking every monitor's
+    // records to arrive at the same number is not worth a debugging panel's
+    // bandwidth. A relay that will not answer it leaves this null, which the
+    // caller renders as "unknown" rather than as zero.
+    const total = self ? await relay.count({ kinds: [MONITOR_KIND] }) : walk.events.length;
+    return { ...walk, self, others: typeof total === "number" ? Math.max(0, total - walk.events.length) : null };
+  } finally {
+    // Always, and through the socket rather than a method: [Relay] has no
+    // close() — the pages that use it keep one connection for their lifetime.
+    // This panel opens one per click, so a leak here is one socket per press
+    // that the reader cannot see and cannot close.
+    try { relay.ws && relay.ws.close(); } catch (e) {}
+  }
+}
+
+/**
+ * What this relay says about itself, out of its own NIP-11 document: the
+ * biggest single ask it will answer, and its own key.
+ *
+ * `maxPage` defaults to 500, which is the conservative reading rather than a
+ * guess at generosity: with no stated ceiling the walk cannot grow its page,
+ * and a run of records longer than that is reported as an incomplete read
+ * instead of stepped over.
+ *
+ * `self` is the relay's OWN key and NOT `pubkey`, which is the admin contact —
+ * two different fields that a reader coming from NIP-11 will expect to be one.
+ * Scoping the panel to the contact key would return nothing at all.
+ */
+async function relayIdentity() {
+  try {
+    const doc = await fetch("/", { headers: { Accept: "application/nostr+json" } }).then((r) => r.json());
+    const stated = doc && doc.limitation && Number(doc.limitation.max_limit);
+    return {
+      maxPage: stated > 0 ? Math.min(stated, 5000) : 500,
+      self: (doc && typeof doc.self === "string" && /^[0-9a-f]{64}$/i.test(doc.self) && doc.self) || null,
+    };
+  } catch (e) {
+    return { maxPage: 500, self: null };
+  }
+}
+
+/**
+ * Draw the host groups into [box]; returns the filterable groups.
+ *
+ * A url is drawn as its PATH, not its whole url. The host is already the box's
+ * heading, so repeating `wss://articles.layer3.news/` on all 23 rows spent the
+ * width that tells them apart on the part they share — and these lists are
+ * nothing but minted paths on one host, so the path is the entire signal.
+ */
+function drawVerdicts(box, groups, nowSec) {
+  box.replaceChildren();
+  const out = [];
+  for (const group of groups) {
+    const wrap = el("div", "vd-group");
+    const head = el("div", "vd-ghead");
+    const folded = group.folded;
+    const meter = el("div", "vd-meter");
+    const fill = el("i");
+    fill.style.width = `${group.urls.length ? Math.round((folded / group.urls.length) * 100) : 0}%`;
+    meter.appendChild(fill);
+    meter.title = `${fmt(folded)} of ${fmt(group.urls.length)} url(s) fold away`;
+    head.append(
+      el("div", "vd-name", group.host),
+      el("span", "vd-count",
+        `${fmt(group.urls.length)} url(s) → ${fmt(group.survivors)} dialled` +
+        (group.expired ? ` · ${fmt(group.expired)} expired` : "")),
+      meter,
+    );
+    wrap.appendChild(head);
+    const rows = [];
+    for (const u of group.urls) {
+      const row = el("div", "vd-row");
+      const left = el("div", "vd-path");
+      const right = el("div", "vd-when");
+      // The path alone, with the bare url named rather than drawn as an empty
+      // cell — "/" is a row that looks like a rendering failure.
+      const path = u.url.replace(/^wss?:\/\/[^/]+/i, "") || "/";
+      left.append(el("span", null, path === "/" ? "(no path)" : path));
+      // The VERDICT's age, not the record's. Kind 30166 is addressable and
+      // shared — quartz's monitor rewrites it on every connection — so
+      // `created_at` tracks the last time we TALKED to the relay, not the last
+      // time we MEASURED it. Reading the record's clock is the bug that made
+      // half these verdicts look immortal on the Kotlin side.
+      // THE TWO VERDICTS ARE DRAWN SEPARATELY, and collapsing them misread the
+      // live store. A url the stability pass has measured but the fold has not
+      // was drawn as "no verdict" with the STABILITY sentence under it, so a
+      // host mid-measurement read as a host nothing had ever looked at — beside
+      // evidence that plainly contradicted the word above it. The fold column
+      // now says only what the fold decided.
+      let tag;
+      if (u.fold) {
+        tag = el("span", u.foldCurrent ? "vd-pill fold" : "vd-pill expired", u.foldCurrent ? "fold" : "expired");
+        // The survivor is at the top of this same box, so the arrow names the
+        // path it points at rather than repeating the whole url.
+        left.append(el("span", "vd-into", ` → ${u.fold.replace(/^wss?:\/\/[^/]+/i, "") || "/"}`));
+      } else if (u.cleared) {
+        tag = el("span", "vd-pill keep", "keep");
+        row.classList.add("vd-keep");
+      } else if (u.synthetic) {
+        // Inferred from what the folds point at, not stated by the monitor —
+        // and said so, because the two are different claims.
+        tag = el("span", "vd-pill keep", "survivor");
+        row.classList.add("vd-keep");
+        left.append(el("span", "vd-into", " · no record of its own"));
+      } else {
+        tag = el("span", "vd-pill none", "not folded");
+      }
+      right.append(tag);
+      const at = u.fold || u.cleared ? u.foldMeasuredAt : null;
+      if (at) {
+        // `ago` takes the INSTANT, not the elapsed time — it does the
+        // subtraction itself. Handing it a duration drew every verdict as
+        // "20679d ago", which is `now` minus five minutes read as an epoch.
+        const when = el("span", null, ` ${ago(at)}`);
+        when.title = isoOf(at);
+        if (!isCurrent(at, nowSec)) when.className = "vd-stale";
+        right.append(when);
+      }
+      if (u.stable === false) left.append(" ", el("span", "badge bad", "inconsistent"));
+      row.append(left, right);
+      // ONE evidence line, and NAMED — the two verdicts answer different
+      // questions about the same url, and an unlabelled sentence is read as
+      // belonging to whatever word is nearest. The fold's is the one that
+      // explains the row, so it wins when both exist; the stability sentence is
+      // still on the title of its own line.
+      if (u.foldEvidence) {
+        const why = el("div", "vd-why", `fold: ${u.foldEvidence}`);
+        why.title = u.foldEvidence;
+        row.appendChild(why);
+      } else if (u.stableEvidence) {
+        const s = u.stable === false ? "inconsistent" : u.stable === true ? "consistent" : "measured";
+        const text = `stability (${s}, ${ago(u.stableMeasuredAt)}): ${u.stableEvidence}`;
+        const why = el("div", "vd-why", text);
+        why.title = text;
+        row.appendChild(why);
+      }
+      // THE REST OF THE RECORD. Everything above is what this router decided;
+      // this is what the other writers on the same address said, and on a
+      // replaceable event with several writers its presence is itself the
+      // finding — a row showing `same-as` and nothing else is what a clobbered
+      // record looks like.
+      const meta = [];
+      if (u.network) meta.push(["", u.network]);
+      for (const r of u.requirements) meta.push(["req", r]);
+      if (u.rttOpen) meta.push(["open", `${u.rttOpen}ms`]);
+      if (u.rttRead) meta.push(["read", `${u.rttRead}ms`]);
+      if (u.rttWrite) meta.push(["write", `${u.rttWrite}ms`]);
+      if (u.software) meta.push(["", u.software.replace(/^git\+https?:\/\//, "")]);
+      if (u.version) meta.push(["", u.version]);
+      if (u.relayType) meta.push(["type", u.relayType]);
+      if (u.geohash) meta.push(["geo", u.geohash]);
+      if (u.hasDoc) meta.push(["", "nip-11 doc"]);
+      // Counted, never dropped: a record carrying a tag this page has not heard
+      // of should look different from one carrying nothing.
+      if (u.extra) meta.push(["", `+${u.extra} other tag(s)`]);
+      if (meta.length) {
+        const line = el("div", "vd-meta");
+        for (const [k, v] of meta) {
+          const cell = el("span", k === "req" ? "vd-req" : null);
+          if (k && k !== "req") cell.append(el("span", "k", k + " "));
+          cell.append(v);
+          line.appendChild(cell);
+        }
+        row.appendChild(line);
+      }
+      wrap.appendChild(row);
+      rows.push({ node: row, needle: (u.url + " " + (u.fold || "")).toLowerCase() });
+    }
+    box.appendChild(wrap);
+    // The GROUP is what the filter hides, and the rows within it. Hiding only
+    // rows left every host's heading on screen — a search for one host drew a
+    // column of a thousand headings with nothing under them, which read as a
+    // thousand matches.
+    out.push({ box: wrap, host: group.host.toLowerCase(), rows });
+  }
+  return out;
+}
+
 function relaysCard(section) {
   const d = (section && section.data) || {};
   const top = d.top || [];
@@ -2269,6 +2803,13 @@ const PANELS = [
   // not mirror, and an empty coverage card there would read as a broken mirror
   // rather than as no mirror.
   { name: "sync", reads: ["sync"], build: (doc) => (doc.sync ? [syncCard(doc.sync)] : []) },
+  // `reads: []` on purpose: this panel is built ONCE and never rebuilt by the
+  // poller. It holds what the reader asked for over a websocket and what they
+  // typed into its filter, and a minute-by-minute rebuild would throw both
+  // away. It is also the only panel drawn whatever the document says — the
+  // verdicts live in the store rather than in `/stats.json`, so a relay whose
+  // rollup carries no `sync` section can still be holding thousands of them.
+  { name: "verdicts", reads: [], build: () => [verdictsCard()] },
 ];
 
 /**

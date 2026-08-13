@@ -311,6 +311,9 @@ class RelayAliases(
         val folds = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val cleared = HashSet<NormalizedRelayUrl>()
         var compared = 0
+        // Measured against the leader and found to be something else. NOT yet a
+        // verdict — see the second pass.
+        val unmatched = ArrayList<NormalizedRelayUrl>()
         for (url in group) {
             if (url == leader || folded.containsKey(url)) continue
             val print = prints[url] ?: continue
@@ -321,12 +324,51 @@ class RelayAliases(
                 distinct -= url
                 folds[url] = leader
             } else if (print.size >= minSample && leaderPrint.size >= minSample) {
-                // Both sides said enough to be compared, and they disagreed.
-                // Probed, and it is its own relay — recorded so the next pass
-                // spends its budget on urls we know nothing about.
+                // Both sides said enough to be compared, and they disagreed —
+                // with the LEADER. Held, not published: the leader is one
+                // endpoint on this host and not the only one it could be.
                 compared++
+                unmatched += url
+            }
+        }
+        // …AND THEN AGAINST EACH OTHER, which is the half that was missing.
+        //
+        // "Not the leader" was being published as "its own relay", and on a host
+        // whose preferred url is a genuinely DIFFERENT endpoint that is a claim
+        // about nothing. `/inbox` is the common shape — haven splits inbox from
+        // the public pool, and NIP-17 made the split ordinary — and it also sorts
+        // first under [PREFERENCE], so it leads its group and every minted path
+        // behind it disagrees with it correctly and gets signed as a separate
+        // relay for a month.
+        //
+        // Measured live on `haven.calva.dev`: seven urls, `/inbox` leading, six
+        // minted paths each sharing 96 of 500 with it — all six published as
+        // distinct relays. Those six are ONE relay at containment **1.000**
+        // against each other. Seven dials for two endpoints, re-proved every
+        // time the TTL lapsed. `h.codingarena.top`, `relay.dergigi.com` and
+        // `relay.shawnyeager.com` are the same shape in the same pass.
+        //
+        // The comparison is free: every print is already in hand, so this costs
+        // set intersections and not one dial. Against the cluster HEADS rather
+        // than every pair, so a host of genuinely distinct endpoints (measured:
+        // `nostr.ac`, 20 of them) stays linear in the number of endpoints rather
+        // than quadratic in urls. [PREFERENCE] order is the group's order, so the
+        // best url of each cluster is the one that becomes its head — and since
+        // `sameRelay` is symmetric, every head really has been held up against
+        // every other head as well as against the leader.
+        val heads = ArrayList<NormalizedRelayUrl>()
+        for (url in unmatched) {
+            val print = prints.getValue(url)
+            val head = heads.firstOrNull { sameRelay(prints.getValue(it), print) }
+            if (head == null) {
+                heads += url
                 markDistinct(url)
                 cleared += url
+            } else {
+                folded[url] = head
+                canonicals += head
+                distinct -= url
+                folds[url] = head
             }
         }
         // Only when something was actually held up against it: a leader whose

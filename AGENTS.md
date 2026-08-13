@@ -393,14 +393,29 @@ relay/src/main/resources/
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
                         what it asks
-  stats.html            the corpus dashboard, and the ONE page here with no
-                        relay client: it charts GET /stats.json and nothing
-                        else. Neither reason observer_stats carries one applies
-                        — no aggregation on it is a protocol feature to test,
-                        and thirty days of distinct-pubkey counts is not a
-                        question to ask over a websocket. THE JSON IS THE
-                        ARTIFACT; the page is one reader of it (see
-                        maintenance/StatsRollup).
+  stats.html            the corpus dashboard: it charts GET /stats.json, and
+                        THE JSON IS THE ARTIFACT — the page is one reader of it
+                        (see maintenance/StatsRollup). No aggregation on it is a
+                        protocol feature to test, and thirty days of
+                        distinct-pubkey counts is not a question to ask over a
+                        websocket, so every chart here is a rollup read.
+                        ONE panel is not. Monitor verdicts (kind 30166) have no
+                        rollup at all — `/stats.json` says how many urls folded
+                        and onto how many relays, and nothing could answer "what
+                        does this store say about THIS url, and when was it
+                        measured", which is where every investigation of a
+                        still-duplicated relay starts. That panel pages the
+                        records off this relay's own websocket (shared/verdicts.js
+                        parses; verdicts.test.mjs holds the tag semantics) and is
+                        drawn on a BUTTON, not on the minute poll.
+                        It draws the WHOLE record, not just our two tags —
+                        quartz's `n` / `rtt-open` / `rtt-read` / `R` as well,
+                        with unknown tag names counted rather than dropped. Two
+                        reasons: `R: auth` is the first explanation for a url
+                        that will not fold, and a row showing `same-as` and
+                        nothing else is what a CLOBBERED record looks like, so
+                        the panel is the production-side check on the tag merge
+                        that `RelayAliasRecordTest` can only pin in isolation.
                         Its Kinds table REPLACED kind_stats.html, whose url now
                         301s here. That page asked one NIP-45 COUNT per kind it
                         already knew to name — shared/kinds.js plus whatever an
@@ -992,6 +1007,30 @@ leader cannot be probed concurrently with its members. It doubles as the cheap
 exit: no usable leader print means `learn` can return nothing, so the members
 are never dialled at all.
 
+**But the preferred leader is not the only url that can hold the ruler, and
+treating it as such lost whole hosts.** `PREFERENCE` picks the pathless url
+because that is the right SURVIVOR — everyone else's relay lists name it — and
+the pass then used it as the only candidate yardstick. When *that one url* would
+not answer, a group whose every member serves an identical window was abandoned,
+wrote nothing down, and came back widest-first next pass to fail the same way.
+Reported live on `wss://asia.azzamo.net` and on a hidden service, both wearing
+minted paths that stayed in the fan-out indefinitely. Measured on the azzamo
+host, all 12 discovered urls: every pair at containment **1.000**, self-walk
+1.000, **11 folds in 5 seconds** — so the fingerprint was never the problem and
+any one of the twelve is a perfect yardstick. `AliasFolding.YARDSTICK_ATTEMPTS`
+walks down the preference order while urls stay SILENT, three deep. The survivor
+then becomes the best url that could actually be *measured* rather than the best
+url in the abstract, which is the correct reading: nothing was proved about the
+silent one, so it stays in the fan-out on its own.
+
+Silence is the only thing worth retrying, and the distinction is load-bearing.
+A url answering with a window under `minSample` has told you about the HOST — it
+holds a handful of events and its siblings hold the same handful — so walking
+further buys three thin windows instead of one. Silence is about that url alone.
+`a leader too thin to be a yardstick does not drag its group onto the wire`
+pins the first half; `a host whose preferred survivor will not answer still folds
+onto one that will` pins the second.
+
 What the sweep says about the thresholds, over 4,551 folds: containment min
 0.500, p1 0.855, p10 0.987, median 1.000. Overwhelmingly bimodal — but there is
 a real tail of relays whose answers are not stable ACROSS CONNECTIONS
@@ -1006,8 +1045,9 @@ those is a correct conclusion. 1 host in 513 by count — but see the cost below
 the count.
 
 **A host that cannot be decided must not be re-probed at the front of every
-pass.** The three exits that end a group with no verdict — leader silent, leader
-window under `minSample`, leader not reproducible — all write NOTHING down, on
+pass.** The three exits that end a DIALLED group with no verdict — no url could
+be a yardstick, nothing answered enough to compare against one, the yardstick not
+reproducible — all write NOTHING down, on
 purpose: each is a case where publishing would claim more than was measured. But
 nothing written down means `RelayAliases.unresolved` hands the group straight
 back next pass, and groups are probed WIDEST FIRST, which is exactly the shape
@@ -1018,6 +1058,38 @@ when finally measured, in **two seconds at containment 1.000** across all of
 them. `AliasFolding.undecidable` is the fix: a 24h in-memory cooldown per host,
 in memory and never signed, because "our pass could not measure this" is a fact
 about us and not a claim about their server.
+
+**A pass says which hosts it left unfolded and why.** Five things end a group
+with nothing written down — out of probe budget, on the cooldown above, no url
+that could be a yardstick, nothing to hold up against one, a host that cannot
+repeat itself (`AliasFolding.Undecided`) — four of which recover on their own
+and one of which never will. From outside the process all five look identical:
+a url still being dialled beside eleven siblings that folded. Every investigation
+of a specific host began by guessing which of the five it was, and the budget
+exit left no trace at all. One line per pass, counted by reason with a few hosts
+named as the lead:
+
+```
+router: outbox alias pass left 37 host(s) undecided — 11 out of probe budget (a.example, …); 9 cooling down from an earlier failed pass (…); 12 no url that could be a yardstick (…)
+```
+
+Do not read the named hosts as the whole set; the count is the fact and the
+names are bounded on purpose.
+
+Measured on a live router — Vespa, a real store seeded with 1,952 real relay
+lists, 1,282 discovered urls — the first pass reported:
+
+```
+outbox measured 782 fingerprint(s) → 373 new alias(es), 1282 url(s) now fold onto 909 relay(s) in 4:32
+outbox alias pass left 84 host(s) undecided — 7 declined by our own transport; 71 no url that
+  could be a yardstick; 5 nothing to hold up against the yardstick; 1 a host that cannot repeat itself
+```
+
+**71 of 84 is "no yardstick"**, which is why that exit is the one worth widening
+(see the yardstick search above) and why the budget exit — the one that used to
+be invisible — turned out not to be the binding constraint at this scale. Do not
+generalise the 84 to a production store without re-measuring; this corpus is an
+order of magnitude narrower.
 
 **The reproducibility bar gates the NEGATIVE claim only, and that asymmetry is
 deliberate.** Noise in the yardstick is not symmetric between the fold's two
@@ -1187,12 +1259,30 @@ anything (everything is compared against IT), so otherwise it would be the only
 url in a fully decided group still carrying no verdict and the group would come
 back forever.
 
-**What the cleared form does not claim.** Every url is compared to its group's
-leader, not to each other, so it says "not the leader" rather than "not any of
-them". Two paths on a host that duplicate EACH OTHER but not the leader are both
-recorded distinct and both keep getting dialled. That is leader-based grouping,
-present within a single pass as much as across boots — persisting the verdict
-neither causes it nor widens it.
+**Members are compared to each other as well as to the leader, and skipping that
+published a lie at scale.** "Not the leader" was being recorded as "its own
+relay" — which on a host whose preferred url is a genuinely DIFFERENT endpoint
+is a claim about nothing. `/inbox` is the shape: haven splits the inbox from the
+public pool, NIP-17 made the split ordinary, and `/inbox` also sorts first under
+`PREFERENCE`, so it leads its group and every minted path behind it disagrees
+with it *correctly* and was signed as a separate relay for thirty days.
+
+Measured live on `haven.calva.dev`: 7 urls, `/inbox` leading, all six minted
+paths at **0.192** against it — and **1.000** against each other. The pass
+published six distinct-relay verdicts and dialled seven urls for two endpoints.
+`h.codingarena.top`, `relay.dergigi.com` and `relay.shawnyeager.com` are the
+same shape in the same pass. After the cross-member pass the same group is
+**5 folds, 2 kept** — `/inbox` and one pool url — which is the right answer.
+
+The comparison costs no dial: every print is already in hand when `learn`
+returns, so it is set intersections only. Against cluster HEADS rather than
+every pair, so a host of genuinely distinct endpoints stays linear in endpoints
+rather than quadratic in urls — and `lang.relays.land` (partitioned by language)
+and `nostr.ac` (20 paths of different content) must still keep every url, which
+is what `a host of genuinely distinct endpoints keeps every one of them` pins.
+Because `sameRelay` is symmetric, every cleared url really has been held up
+against the leader *and* every other head, so the evidence string can name the
+count honestly again.
 
 **REFUSING TO FOLD IS NOT PROOF OF DISTINCTNESS, and conflating them published
 lies.** `sameRelay` declines below `minSample`; for a long time the url then

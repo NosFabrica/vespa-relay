@@ -460,20 +460,23 @@ class AliasFoldingTest {
             // consumed by intentions and a later group goes unprobed for it.
             val store = newStore()
             val dead = RelayUrlNormalizer.normalize("wss://dead.example")
-            val deadAlias = RelayUrlNormalizer.normalize("wss://dead.example/alpha")
+            val deadPaths = (0 until 4).map { RelayUrlNormalizer.normalize("wss://dead.example/p$it") }
             val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
             val up = Upstreams { at -> if (at.url.contains("dead.example")) emptyList() else corpus }
 
-            // Budget of 3: the dead host's group reserves 2 and must return
-            // them, leaving enough for nos.lol's group of 2 to be probed.
+            // The dead host wears 5 urls and answers on none of them, so it
+            // reserves 5 and spends AliasFolding.YARDSTICK_ATTEMPTS looking for
+            // one that will speak. The rest has to come back, or nos.lol's group
+            // of 2 is starved by a reservation nobody drew on.
+            val budget = 5 + 2
             val fold =
                 AliasFolding(
                     aliases = RelayAliases(),
                     record = RelayAliasRecord(store, signer),
                     probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
-                    probesPerCycle = 3,
+                    probesPerCycle = budget - (5 - AliasFolding.YARDSTICK_ATTEMPTS),
                 )
-            val learned = fold.measure("t", listOf(dead, deadAlias, canonical, alias), canDial = { true })
+            val learned = fold.measure("t", listOf(dead) + deadPaths + listOf(canonical, alias), canDial = { true })
 
             assertEquals(1, learned, "the live group was starved by a reservation the dead group never returned")
         }
@@ -559,6 +562,147 @@ class AliasFoldingTest {
             // …and on the pass after, the silent host costs nothing at all while
             // the fold that was already earned still stands.
             assertEquals(listOf(quietHost, quietAlias, canonical), fold.apply(urls).dial)
+        }
+
+    @Test
+    fun `a host whose preferred survivor will not answer still folds onto one that will`() =
+        runBlocking {
+            // AS REPORTED, and the shape both reports had in common: the group's
+            // preferred leader is the pathless url, and that is the one url on
+            // the host that says nothing. Every other url serves the identical
+            // window — measured on `asia.azzamo.net`, twelve urls all at
+            // containment 1.000 — so the host is trivially foldable and was
+            // abandoned whole, every pass, because one member of it was mute.
+            val store = newStore()
+            val bare = RelayUrlNormalizer.normalize("wss://paths.example")
+            val first = RelayUrlNormalizer.normalize("wss://paths.example/kilo-yonder")
+            val second = RelayUrlNormalizer.normalize("wss://paths.example/xray-alpha-jade")
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val up = Upstreams { at -> if (RelayAliases.pathOf(at.url).isEmpty()) emptyList() else corpus }
+            val fold = folding(store, up)
+            val urls = listOf(bare, first, second)
+
+            assertEquals(1, fold.measure("t", urls, canDial = { true }), "the group was abandoned on its silent leader")
+
+            // The survivor is the best url that could actually be MEASURED, not
+            // the best url in the abstract: the bare one stays in the fan-out
+            // because nothing was ever proved about it, which is the correct
+            // reading of silence.
+            assertEquals(listOf(bare, first), fold.apply(urls).dial)
+            assertEquals(mapOf(second to first), fold.apply(urls).aliases)
+        }
+
+    @Test
+    fun `a url the transport declined mid-search is still measured as a member`() =
+        runBlocking {
+            // What the yardstick search SKIPS is not what it exhausts, and
+            // conflating the two costs a url its measurement.
+            //
+            // The distinction is invisible while the transport guard answers the
+            // same way twice — a url it refuses as a yardstick it also refuses
+            // as a member, so dropping it changes nothing. It bites when the
+            // guard RECOVERS: `canDial` is `tor.socksAnswers() && tcpReachable`,
+            // both of which are live checks, so a circuit that comes back
+            // between the search and the member walk is ordinary. Marked
+            // exhausted on the refusal, that url is skipped for the rest of the
+            // pass on OUR outage rather than on its own behaviour.
+            val store = newStore()
+            val flaky = RelayUrlNormalizer.normalize("wss://mixed.example")
+            val first = RelayUrlNormalizer.normalize("wss://mixed.example/alpha")
+            val second = RelayUrlNormalizer.normalize("wss://mixed.example/beacon")
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val up = Upstreams { corpus }
+            val fold = folding(store, up)
+            // Refused once — the yardstick attempt, which is the pathless url
+            // PREFERENCE puts first — and reachable from then on.
+            val refusals = AtomicInteger()
+            val canDial: suspend (NormalizedRelayUrl) -> Boolean = { url ->
+                url != flaky || refusals.getAndIncrement() > 0
+            }
+
+            val learned = fold.measure("t", listOf(flaky, first, second), canDial = canDial)
+
+            assertEquals(2, learned, "the url refused during the search was never re-asked once the transport recovered")
+            assertTrue(flaky in up.contacted, "it was dropped from the member walk rather than dialled")
+            assertEquals(listOf(first), fold.apply(listOf(flaky, first, second)).dial)
+        }
+
+    @Test
+    fun `the yardstick search is bounded and never re-asks a url it has already tried`() =
+        runBlocking {
+            // The one place a dead url delays another dial rather than merely
+            // holding a permit, so the walk stops at YARDSTICK_ATTEMPTS — and a
+            // url that failed BOTH filters as a yardstick is not asked a third
+            // time as a member.
+            val store = newStore()
+            val host = "wss://mute.example"
+            val urls = (listOf(host) + (0 until 5).map { "$host/p$it" }).map { RelayUrlNormalizer.normalize(it) }
+            val up = silentUpstreams()
+
+            assertEquals(0, folding(store, up).measure("t", urls, canDial = { true }))
+
+            // Three urls, and `leaderPrint` asks each of them twice — the bare
+            // filter, then the kinds fallback — with the empty-page retry inside
+            // each. What must not happen is a fourth url being dialled, or one
+            // of the three coming round again as a member.
+            assertEquals(
+                AliasFolding.YARDSTICK_ATTEMPTS,
+                up.contacted.size,
+                "the search went past its cap, or re-asked a url it had already given up on",
+            )
+        }
+
+    @Test
+    fun `paths that duplicate each other fold even when the group's leader is a different endpoint`() =
+        runBlocking {
+            // MEASURED LIVE, and the reason this exists: `haven.calva.dev` wears
+            // `/inbox` plus six minted paths. `/inbox` is a genuinely different
+            // endpoint AND the shortest url, so it leads the group; all six
+            // disagree with it correctly and were each signed as a relay in their
+            // own right for thirty days. Probed against each other they are ONE
+            // relay at containment 1.000 — seven dials for two endpoints.
+            val store = newStore()
+            val inbox = RelayUrlNormalizer.normalize("wss://haven.example/inbox")
+            val paths =
+                listOf("dynamo", "vertex", "victor-tango")
+                    .map { RelayUrlNormalizer.normalize("wss://haven.example/$it") }
+            val pool: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "pool$it") }
+            val mail: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 4, emptyArray(), "mail$it") }
+            val up = Upstreams { at -> if (RelayAliases.pathOf(at.url) == "inbox") mail else pool }
+            val fold = folding(store, up)
+            val urls = listOf(inbox) + paths
+
+            // `/inbox` leads: shortest url on the host.
+            assertEquals(inbox, RelayAliases().toProbe(urls.sortedWith(compareBy { it.url.length })).first())
+            assertEquals(2, fold.measure("t", urls, canDial = { true }), "the minted paths were never compared to each other")
+
+            // Two endpoints, two dials — not four. The inbox keeps its own place;
+            // it really is a different relay and nothing here says otherwise.
+            val cleaned = fold.apply(urls)
+            assertEquals(listOf(inbox, paths.first()), cleaned.dial)
+            assertEquals(paths.drop(1).associateWith { paths.first() }, cleaned.aliases)
+        }
+
+    @Test
+    fun `a host of genuinely distinct endpoints keeps every one of them`() =
+        runBlocking {
+            // The other side of the same change, and the one a clustering bug
+            // would break silently: `lang.relays.land` partitions by language and
+            // `nostr.ac` serves 20 paths of different content. Comparing members
+            // to each other must not collapse them — every url here serves its
+            // own events, so every url has to survive.
+            val store = newStore()
+            val urls =
+                listOf("de", "fr", "ja", "la").map { RelayUrlNormalizer.normalize("wss://lang.example/$it") }
+            val up =
+                Upstreams { at ->
+                    val tag = RelayAliases.pathOf(at.url)
+                    (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "$tag-$it") }
+                }
+            val fold = folding(store, up)
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }), "distinct endpoints were folded together")
+            assertEquals(urls, fold.apply(urls).dial)
         }
 
     @Test
