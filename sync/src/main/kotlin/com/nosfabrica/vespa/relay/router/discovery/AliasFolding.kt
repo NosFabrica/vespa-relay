@@ -510,33 +510,34 @@ class AliasFolding(
                         val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
                         for ((alias, canonical) in result.folded) {
                             val print = prints[alias].orEmpty()
-                            val shared = leaderPrint.count { it in print }
+                            // Against the url it folded ONTO, which since the
+                            // cross-member pass is not always the leader — a
+                            // minted path can fold onto another minted path when
+                            // the leader is a different endpoint. Counting
+                            // against the leader there published a number from a
+                            // comparison the verdict was not based on.
+                            val shared = prints[canonical].orEmpty().count { it in print }
                             newVerdicts[alias] = canonical to (print.size to shared)
                             verdicts[alias] = canonical to (print.size to shared)
                         }
                         // The cleared half, and its evidence has to name what was
-                        // actually held up against what. A member is compared to
-                        // the LEADER and to nothing else — saying "of N peers on
-                        // this host" claimed comparisons that never happened, in
-                        // a signed month-long statement about someone else's
-                        // server, which is the same over-claiming the thin-window
-                        // guard exists to stop.
-                        val compared = result.distinct.count { it != leader }
+                        // actually held up against what. This once said "of N
+                        // peers on this host" while a member had only ever been
+                        // compared to the leader — comparisons that never
+                        // happened, in a signed month-long statement about
+                        // someone else's server.
+                        //
+                        // Since the cross-member pass they HAVE all happened:
+                        // every cleared url is a cluster head, held up against
+                        // the leader and against every other head. So the count
+                        // is true again, and it is the count that matters —
+                        // "distinct from one endpoint" and "distinct from all
+                        // five we found here" are different strengths of claim.
                         for (url in result.distinct) {
                             val print = prints[url].orEmpty()
-                            if (url != leader) {
-                                cleared[url] = Cleared(print.size, leader.url, leaderPrint.count { it in print })
-                            } else {
-                                // The leader's own separation is the best any
-                                // member managed against it; a hardcoded 0 would
-                                // claim a cleaner one than was measured.
-                                val best =
-                                    result.distinct
-                                        .filter { it != leader }
-                                        .maxOfOrNull { other -> prints[other].orEmpty().count { it in leaderPrint } }
-                                        ?: 0
-                                cleared[url] = Cleared(print.size, "$compared compared peer(s)", best)
-                            }
+                            val others = result.distinct.filter { it != url } + listOfNotNull(leader.takeIf { it != url })
+                            val best = others.maxOfOrNull { other -> prints[other].orEmpty().count { it in print } } ?: 0
+                            cleared[url] = Cleared(print.size, "${others.size} compared endpoint(s) on this host", best)
                         }
 
                         // WRITTEN AS THIS GROUP FINISHES, not when the pass

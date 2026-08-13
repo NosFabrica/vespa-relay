@@ -618,6 +618,59 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `paths that duplicate each other fold even when the group's leader is a different endpoint`() =
+        runBlocking {
+            // MEASURED LIVE, and the reason this exists: `haven.calva.dev` wears
+            // `/inbox` plus six minted paths. `/inbox` is a genuinely different
+            // endpoint AND the shortest url, so it leads the group; all six
+            // disagree with it correctly and were each signed as a relay in their
+            // own right for thirty days. Probed against each other they are ONE
+            // relay at containment 1.000 — seven dials for two endpoints.
+            val store = newStore()
+            val inbox = RelayUrlNormalizer.normalize("wss://haven.example/inbox")
+            val paths =
+                listOf("dynamo", "vertex", "victor-tango")
+                    .map { RelayUrlNormalizer.normalize("wss://haven.example/$it") }
+            val pool: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "pool$it") }
+            val mail: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 4, emptyArray(), "mail$it") }
+            val up = Upstreams { at -> if (RelayAliases.pathOf(at.url) == "inbox") mail else pool }
+            val fold = folding(store, up)
+            val urls = listOf(inbox) + paths
+
+            // `/inbox` leads: shortest url on the host.
+            assertEquals(inbox, RelayAliases().toProbe(urls.sortedWith(compareBy { it.url.length })).first())
+            assertEquals(2, fold.measure("t", urls, canDial = { true }), "the minted paths were never compared to each other")
+
+            // Two endpoints, two dials — not four. The inbox keeps its own place;
+            // it really is a different relay and nothing here says otherwise.
+            val cleaned = fold.apply(urls)
+            assertEquals(listOf(inbox, paths.first()), cleaned.dial)
+            assertEquals(paths.drop(1).associateWith { paths.first() }, cleaned.aliases)
+        }
+
+    @Test
+    fun `a host of genuinely distinct endpoints keeps every one of them`() =
+        runBlocking {
+            // The other side of the same change, and the one a clustering bug
+            // would break silently: `lang.relays.land` partitions by language and
+            // `nostr.ac` serves 20 paths of different content. Comparing members
+            // to each other must not collapse them — every url here serves its
+            // own events, so every url has to survive.
+            val store = newStore()
+            val urls =
+                listOf("de", "fr", "ja", "la").map { RelayUrlNormalizer.normalize("wss://lang.example/$it") }
+            val up =
+                Upstreams { at ->
+                    val tag = RelayAliases.pathOf(at.url)
+                    (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "$tag-$it") }
+                }
+            val fold = folding(store, up)
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }), "distinct endpoints were folded together")
+            assertEquals(urls, fold.apply(urls).dial)
+        }
+
+    @Test
     fun `a single url is returned untouched by both halves`() =
         runBlocking {
             val up = upstreams()

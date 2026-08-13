@@ -1004,6 +1004,21 @@ router: outbox alias pass left 37 host(s) undecided — 11 out of probe budget (
 Do not read the named hosts as the whole set; the count is the fact and the
 names are bounded on purpose.
 
+Measured on a live router — Vespa, a real store seeded with 1,952 real relay
+lists, 1,282 discovered urls — the first pass reported:
+
+```
+outbox measured 782 fingerprint(s) → 373 new alias(es), 1282 url(s) now fold onto 909 relay(s) in 4:32
+outbox alias pass left 84 host(s) undecided — 7 declined by our own transport; 71 no url that
+  could be a yardstick; 5 nothing to hold up against the yardstick; 1 a host that cannot repeat itself
+```
+
+**71 of 84 is "no yardstick"**, which is why that exit is the one worth widening
+(see the yardstick search above) and why the budget exit — the one that used to
+be invisible — turned out not to be the binding constraint at this scale. Do not
+generalise the 84 to a production store without re-measuring; this corpus is an
+order of magnitude narrower.
+
 **The reproducibility bar gates the NEGATIVE claim only, and that asymmetry is
 deliberate.** Noise in the yardstick is not symmetric between the fold's two
 conclusions. A relay handing back a shuffled subset drives every containment
@@ -1172,12 +1187,30 @@ anything (everything is compared against IT), so otherwise it would be the only
 url in a fully decided group still carrying no verdict and the group would come
 back forever.
 
-**What the cleared form does not claim.** Every url is compared to its group's
-leader, not to each other, so it says "not the leader" rather than "not any of
-them". Two paths on a host that duplicate EACH OTHER but not the leader are both
-recorded distinct and both keep getting dialled. That is leader-based grouping,
-present within a single pass as much as across boots — persisting the verdict
-neither causes it nor widens it.
+**Members are compared to each other as well as to the leader, and skipping that
+published a lie at scale.** "Not the leader" was being recorded as "its own
+relay" — which on a host whose preferred url is a genuinely DIFFERENT endpoint
+is a claim about nothing. `/inbox` is the shape: haven splits the inbox from the
+public pool, NIP-17 made the split ordinary, and `/inbox` also sorts first under
+`PREFERENCE`, so it leads its group and every minted path behind it disagrees
+with it *correctly* and was signed as a separate relay for thirty days.
+
+Measured live on `haven.calva.dev`: 7 urls, `/inbox` leading, all six minted
+paths at **0.192** against it — and **1.000** against each other. The pass
+published six distinct-relay verdicts and dialled seven urls for two endpoints.
+`h.codingarena.top`, `relay.dergigi.com` and `relay.shawnyeager.com` are the
+same shape in the same pass. After the cross-member pass the same group is
+**5 folds, 2 kept** — `/inbox` and one pool url — which is the right answer.
+
+The comparison costs no dial: every print is already in hand when `learn`
+returns, so it is set intersections only. Against cluster HEADS rather than
+every pair, so a host of genuinely distinct endpoints stays linear in endpoints
+rather than quadratic in urls — and `lang.relays.land` (partitioned by language)
+and `nostr.ac` (20 paths of different content) must still keep every url, which
+is what `a host of genuinely distinct endpoints keeps every one of them` pins.
+Because `sameRelay` is symmetric, every cleared url really has been held up
+against the leader *and* every other head, so the evidence string can name the
+count honestly again.
 
 **REFUSING TO FOLD IS NOT PROOF OF DISTINCTNESS, and conflating them published
 lies.** `sameRelay` declines below `minSample`; for a long time the url then
