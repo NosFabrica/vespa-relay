@@ -336,7 +336,10 @@ class RelayAliasesTest {
         // correctly, and be published as a relay in its own right.
         aliases.adoptDistinct(setOf(host, secureInbox))
 
-        assertEquals(listOf(host, plainInbox, secureInbox), aliases.toProbe(listOf(host, secureInbox, plainInbox)))
+        // In preference order, not appended: that order is what the yardstick
+        // search walks down, and a re-dialled twin is a `wss://` url — the best
+        // kind of yardstick a group has.
+        assertEquals(listOf(host, secureInbox, plainInbox), aliases.toProbe(listOf(host, secureInbox, plainInbox)))
     }
 
     @Test

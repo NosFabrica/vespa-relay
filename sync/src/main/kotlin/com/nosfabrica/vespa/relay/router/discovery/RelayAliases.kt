@@ -263,18 +263,35 @@ class RelayAliases(
      * only when BOTH answered this pass, and a twin nobody re-dials can never be
      * one of the two — so on a host whose `wss://x/inbox` was cleared last month
      * and whose `ws://x/inbox` turned up today, the cheapest verdict available
-     * would go unmade and the pair would be dialled separately forever. One
-     * extra fingerprint, and only for a pair that actually exists.
+     * would go unmade and the pair would be dialled separately forever.
+     *
+     * The bill is one fingerprint per pass per pair whose plain half has no
+     * verdict — including, on a host whose `ws://` url has simply stopped
+     * answering, a pair that will never produce one. That is the same shape the
+     * group already pays for the plain url itself, it is bounded by the 103
+     * `ws://` urls in 1,852 this corpus carries, and it only exists at all where
+     * the pair does: a group of nothing but `wss://` urls does not build so much
+     * as a map here.
      */
     fun toProbe(group: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
         val leader = leaderOf(group)
         val wanted = group.filter { it != leader && it !in distinct && !folded.containsKey(it) }
+        // The overwhelmingly common case, out before anything is allocated: a
+        // host wearing nothing but `wss://` urls has no pair to look for.
+        val plain = wanted.filter { !isSecure(it.url) }
+        if (plain.isEmpty()) return (listOf(leader) + wanted).distinct()
         val secure = secureTwins(group)
-        val twins = wanted.filter { !isSecure(it.url) }.mapNotNull { endpointKey(it.url)?.let(secure::get) }
         // A twin that is itself folded is not worth the dial: its verdict already
         // points somewhere else, and the plain url is compared to the leader in
         // the ordinary way.
-        return (listOf(leader) + wanted + twins.filter { !folded.containsKey(it) }).distinct()
+        val twins = plain.mapNotNull { endpointKey(it.url)?.let(secure::get) }.filter { !folded.containsKey(it) }
+        if (twins.isEmpty()) return (listOf(leader) + wanted).distinct()
+        // Sorted back into PREFERENCE order rather than appended, because that
+        // order is what [AliasFolding]'s yardstick search walks down: a twin
+        // dropped at the end of the queue would be tried after urls it outranks,
+        // and it is by construction a `wss://` url — the best kind of yardstick
+        // the group has.
+        return (listOf(leader) + (wanted + twins).sortedWith(PREFERENCE)).distinct()
     }
 
     /** What one group's fingerprints proved: the folds, and the urls cleared. */
@@ -492,12 +509,26 @@ class RelayAliases(
      *    reverse, a `ws://` serving 500 events beside a `wss://` serving nine or
      *    none, is the shape that would quietly stop mirroring a relay, and it is
      *    refused here whatever the two urls are called.
+     *
+     * Which yields the property that answers "so the url overrules the
+     * measurement?" — it never does. **Where both windows clear [minSample],
+     * this folds a strict SUBSET of what [sameRelay] would fold.** The two
+     * divide the same intersection by different denominators: by the plain
+     * window here, by the smaller of the pair there. When the plain window IS
+     * the smaller they are the same test; when it is the larger, dividing by it
+     * is the stricter one. So the pairing never contradicts a containment that
+     * had the sample to speak — it lowers the floor for the pairs that did not,
+     * and folds a plain url that served nothing at all.
      */
     private fun schemeTwins(
         group: List<NormalizedRelayUrl>,
         leader: NormalizedRelayUrl,
         prints: Map<NormalizedRelayUrl, Set<String>>,
     ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        // Nothing plain to fold, and therefore nothing to build a map for. This
+        // runs for every group of every pass against a corpus that is 94%
+        // `wss://`, so the cheap test comes first.
+        if (group.none { !isSecure(it.url) }) return emptyMap()
         val secure = secureTwins(group)
         if (secure.isEmpty()) return emptyMap()
         val twins = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
@@ -505,7 +536,12 @@ class RelayAliases(
             // Never the leader, even when its group holds a secure twin of it.
             // The leader is the yardstick every other url was just measured
             // against; folding it away would leave a group of verdicts pointing
-            // at an alias.
+            // at an alias, which [canonicalOf] does not follow. What that costs
+            // is narrow and worth naming: a host whose `wss://` url was silent
+            // on the pass that first folded the group has a `ws://` survivor
+            // ([leaderOf] keeps a canonical in place deliberately, so the bands
+            // and records of every other participant keep naming one string),
+            // and it keeps it until those records lapse.
             if (url == leader || isSecure(url.url) || folded.containsKey(url)) continue
             val twin = endpointKey(url.url)?.let { secure[it] } ?: continue
             if (twin == url) continue
