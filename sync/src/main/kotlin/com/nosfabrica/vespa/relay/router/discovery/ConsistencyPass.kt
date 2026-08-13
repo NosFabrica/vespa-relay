@@ -138,7 +138,7 @@ class ConsistencyPass(
             // see. Returning without a word left it indistinguishable from a
             // pass that never ran, which is what a monthly TTL looks like for
             // twenty-nine days out of thirty.
-            report(label, candidates, measured = 0, decided = 0, unmeasurable = emptySet())
+            report(label, candidates, dialled = 0, decided = 0, unmeasurable = emptySet())
             return 0
         }
 
@@ -239,14 +239,14 @@ class ConsistencyPass(
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
-        report(label, candidates, measured = wanted.size, decided = decided.get(), unmeasurable = silent)
+        report(label, candidates, dialled = wanted.size, decided = decided.get(), unmeasurable = silent)
         return decided.get()
     }
 
     /**
      * What this pass reached, where it outlives the log line above.
      *
-     * `outstanding` is re-derived AFTER the walk rather than taken as
+     * `unmeasured` is re-derived AFTER the walk rather than taken as
      * `wanted.size - decided`: a url that was decided is gone from
      * [RelayConsistency.toProbe] and one that proved nothing is still in it, so
      * asking again is the only reading that counts a silent relay as still
@@ -257,7 +257,7 @@ class ConsistencyPass(
     private fun report(
         label: String,
         candidates: List<NormalizedRelayUrl>,
-        measured: Int,
+        dialled: Int,
         decided: Int,
         unmeasurable: Set<NormalizedRelayUrl>,
     ) {
@@ -269,9 +269,9 @@ class ConsistencyPass(
         handle.record(
             Processors.Work(
                 stream = label,
-                subjects = candidates.size,
-                outstanding = consistency.toProbe(candidates).count { it !in folded },
-                measured = measured,
+                candidates = candidates.size,
+                unmeasured = consistency.toProbe(candidates).count { it !in folded },
+                dialled = dialled,
                 decided = decided,
                 undecided =
                     if (hosts.isEmpty()) {

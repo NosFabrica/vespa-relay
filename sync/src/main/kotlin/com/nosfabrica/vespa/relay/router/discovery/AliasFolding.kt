@@ -682,9 +682,9 @@ class AliasFolding(
         progress?.record(
             Processors.Work(
                 stream = label,
-                subjects = candidates.size,
-                outstanding = cleaned?.unmeasured?.size ?: candidates.size,
-                measured = probed,
+                candidates = candidates.size,
+                unmeasured = cleaned?.unmeasured?.size ?: candidates.size,
+                dialled = probed,
                 decided = learned,
                 undecided = undecidedRows(undecided),
                 undecidedOmitted = (undecided.values.distinct().size - Processors.MAX_UNDECIDED_REASONS).coerceAtLeast(0),

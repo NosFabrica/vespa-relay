@@ -594,7 +594,15 @@ class SyncEngine(
                 p.phase(Processors.RUNNING)
                 p.counts {
                     listOf(
-                        Processors.Count("queued", healQueue.enqueued.get()),
+                        // The DEPTH, from `size()`. This published
+                        // `enqueued` — a lifetime counter — under the same name
+                        // ingest uses for a live queue depth, on the row right
+                        // below it: one word, two quantities, adjacent.
+                        Processors.Count("queued", healQueue.size().toLong()),
+                        // The queue coalesces and DROPS rather than
+                        // backpressuring the sweep, so what it threw away is a
+                        // fact about this router that nothing else records.
+                        Processors.Count("dropped", healQueue.dropped.get()),
                         Processors.Count("pushed", healer.pushed.get()),
                     )
                 }
@@ -777,7 +785,12 @@ class SyncEngine(
          * renamed by a Kotlin refactor.
          */
         const val FOLD_PROCESSOR = "aliasFold"
-        const val STABILITY_PROCESSOR = "stability"
+
+        // `consistency`, not `stability`: the class is `ConsistencyPass`, the
+        // state is `RelayConsistency` and the published tag is
+        // `self-consistent`. A fourth word for the same measurement is a word
+        // nobody can grep from the document back to the code.
+        const val STABILITY_PROCESSOR = "consistency"
         const val REACHABILITY_PROCESSOR = "reachability"
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"

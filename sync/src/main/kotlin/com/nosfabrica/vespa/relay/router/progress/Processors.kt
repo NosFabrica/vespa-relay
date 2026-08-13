@@ -79,20 +79,40 @@ class Processors {
     class Work(
         /** The stream whose candidates were measured. */
         val stream: String,
-        /** Urls that stream submitted, before anything was decided. */
-        val subjects: Int,
+        /**
+         * Urls that stream submitted, before anything was decided.
+         *
+         * The word is the code's own — `AliasFolding.measure(label, candidates,
+         * …)` and `AliasMonitor.submit(candidates)` — and that is the whole
+         * reason for it. A published member named for a synonym is a member
+         * nobody can grep their way from the document back to.
+         */
+        val candidates: Int,
         /**
          * …of those, how many still have no verdict after this pass.
          *
          * THE PROGRESS NUMBER. A pass is capped (`probesPerCycle`), a group can
          * be held on a cooldown, and a host that cannot be measured never
          * resolves at all — so this falling pass over pass is what "the fold is
-         * getting somewhere" looks like, and this sitting still while `measured`
+         * getting somewhere" looks like, and this sitting still while [dialled]
          * climbs is the state that used to be invisible.
+         *
+         * Named for [AliasFolding.Cleaned.unmeasured], which is the same set
+         * computed by the same call. It is deliberately NOT the complement of
+         * [dialled]: that one counts what this PASS spent, this one counts what
+         * the whole candidate set still lacks.
          */
-        val outstanding: Int,
-        /** Dials this pass spent — fingerprints for the fold, url walks for the stability gate. */
-        val measured: Int,
+        val unmeasured: Int,
+        /**
+         * Dials this pass spent — fingerprints for the fold, paired walks for
+         * the self-consistency gate.
+         *
+         * `dialled` rather than `measured`, because the router's own verb for
+         * reaching a relay is dial ("never dialled", "dialled again next
+         * cycle") and because `measured`/`unmeasured` would read as a pair that
+         * sums to the candidates, which they do not.
+         */
+        val dialled: Int,
         /** New verdicts it reached and published. Zero with `measured` high is a pass that decided nothing. */
         val decided: Int,
         /**

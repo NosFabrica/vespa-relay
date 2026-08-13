@@ -358,13 +358,19 @@ internal object SyncVocabulary {
                     "it is the router's own check, kept separate so a disagreement localises the fault.",
             )
             put(
+                "passesRun",
+                "How many passes a processor has run since this process started. Its own name because a stream's " +
+                    "`passes` is a LIST of walks, and one word for a list and a count is exactly the overload this " +
+                    "document exists to stop making.",
+            )
+            put(
                 "passes",
-                "TWO THINGS, and the context separates them. On a stream it is the list of WALKS still worth " +
+                "The list of WALKS a stream still has worth reporting. On a stream it is the list of walks still worth " +
                     "reporting: a walk ends when its last url is handed out, not when its last worker returns, so a " +
                     "rotation normally has the previous pass finishing while the new one hands out — two rows, each " +
                     "with its own partition, and the older one's `pending` is exactly the legs still going. Absent " +
-                    "when there is only one, which `cycle` already carries. On a processor it is a COUNT: how many " +
-                    "passes it has run since this process started.",
+                    "when there is only one, which `cycle` already carries. A processor's count of passes is " +
+                    "`passesRun`, deliberately a different word.",
             )
             put(
                 "processors",
@@ -377,24 +383,26 @@ internal object SyncVocabulary {
                     "than missing data.",
             )
             put(
-                "subjects",
-                "Urls a stream handed a processor's pass, before anything was decided. The denominator " +
-                    "`outstanding` is measured against, and NOT the number that was dialled: most of a candidate set " +
-                    "already carries a current verdict and is never asked again until it ages out.",
+                "candidates",
+                "Urls a stream handed a processor's pass, before anything was decided — the router's own word for the " +
+                    "argument it passes (`measure(label, candidates, …)`). The denominator `unmeasured` is counted " +
+                    "against, and NOT the number that was dialled: most of a candidate set already carries a current " +
+                    "verdict and is never asked again until it ages out.",
             )
             put(
-                "outstanding",
-                "THE PROGRESS NUMBER for a processor: how many of its `subjects` still have no verdict after the pass " +
+                "unmeasured",
+                "THE PROGRESS NUMBER for a processor: how many of its `candidates` still have no verdict after the pass " +
                     "that just ran. Falling pass over pass is the fold getting somewhere; standing still while " +
-                    "`measured` climbs is a set of hosts that cannot be decided, and `undecided` says which and why. " +
+                    "`dialled` climbs is a set of hosts that cannot be decided, and `undecided` says which and why. " +
                     "Zero is the state both probe passes are working towards — every url measured, nothing left to " +
-                    "ask — and it is reached and held for most of a monthly TTL.",
+                    "ask — and it is reached and held for most of a monthly TTL. NOT the complement of `dialled`: that " +
+                    "one counts what a single pass spent, this one what the whole candidate set still lacks.",
             )
             put(
-                "measured",
-                "Dials that pass spent: fingerprints for the alias fold, paired walks for the stability gate. Capped " +
-                    "per pass, which is why `outstanding` falls in steps rather than to zero — the cap is what keeps a " +
-                    "first pass over a polluted store from becoming one enormous probe run.",
+                "dialled",
+                "Dials that pass spent: fingerprints for the alias fold, paired walks for the self-consistency gate. " +
+                    "Capped per pass, which is why `unmeasured` falls in steps rather than to zero — the cap is what " +
+                    "keeps a first pass over a polluted store from becoming one enormous probe run.",
             )
             put(
                 "decided",
@@ -436,12 +444,17 @@ internal object SyncVocabulary {
             )
             put(
                 "queued",
-                "Items waiting in a processor's queue right now. For ingest, read it against `capacity`: full means " +
-                    "ingest is the limit and every download is backpressured behind it, empty means the limit is " +
-                    "upstream of ingest. Those are opposite findings and the depth alone tells them apart only " +
-                    "against the ceiling. For the healer it is repairs enqueued since boot rather than a depth — that " +
-                    "queue drops rather than backpressures, because a dropped heal is a retry and a stalled sweep is " +
-                    "not.",
+                "Items waiting in a processor's queue right now — a DEPTH, on both of the queues that publish it. For " +
+                    "ingest, read it against `capacity`: full means ingest is the limit and every download is " +
+                    "backpressured behind it, empty means the limit is upstream of ingest. Those are opposite " +
+                    "findings and the depth alone tells them apart only against the ceiling. The healer's queue has " +
+                    "no ceiling to publish: it coalesces and drops instead of growing, which is what `dropped` counts.",
+            )
+            put(
+                "dropped",
+                "Repairs the healer's queue threw away rather than backpressure the sweep that found them — it " +
+                    "coalesces and drops on purpose, because a dropped heal is a retry and a stalled sweep is not. " +
+                    "Published because a silent drop is the one thing a bounded queue must never do.",
             )
             put(
                 "capacity",

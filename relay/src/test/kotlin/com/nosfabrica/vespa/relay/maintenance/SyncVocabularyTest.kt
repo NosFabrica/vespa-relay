@@ -121,15 +121,15 @@ class SyncVocabularyTest {
                    {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "running",
                     "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3}, "taken": {"delivered": 3}, "received": 9}]}],
                  "processors": [
-                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passes": 3,
+                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
-                    "streams": [{"name": "content", "subjects": 40, "outstanding": 12, "measured": 20, "decided": 4,
+                    "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
                       "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12},
                    {"name": "reachability", "phase": "watching", "phaseForSec": 900, "observed": 40, "knownDead": 8},
-                   {"name": "upstreamPush", "phase": "running", "phaseForSec": 900, "pushed": 5}]}
+                   {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
             )!!
@@ -217,10 +217,11 @@ class SyncVocabularyTest {
                 // monitor, ingest, the healer, the push.
                 setOf(
                     "passes",
+                    "passesRun",
                     "processors",
-                    "subjects",
-                    "outstanding",
-                    "measured",
+                    "candidates",
+                    "unmeasured",
+                    "dialled",
                     "decided",
                     "undecided",
                     "reason",
@@ -232,6 +233,7 @@ class SyncVocabularyTest {
                     "accepted",
                     "rejected",
                     "pushed",
+                    "dropped",
                     "observed",
                 )
 

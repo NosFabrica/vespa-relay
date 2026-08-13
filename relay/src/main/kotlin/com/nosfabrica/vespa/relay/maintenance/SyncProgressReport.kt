@@ -193,7 +193,7 @@ internal object SyncProgressReport {
             put("name", name)
             text(o["phase"])?.let { put("phase", it) }
             num(o["phaseForSec"])?.let { put("phaseForSec", it) }
-            num(o["passes"])?.let { put("passes", it) }
+            num(o["passesRun"])?.let { put("passesRun", it) }
             num(o["lastPassAt"])?.let { put("lastPassAt", it) }
             num(o["lastPassSec"])?.let { put("lastPassSec", it) }
             num(o["nextInSec"])?.let { put("nextInSec", it) }
@@ -212,13 +212,13 @@ internal object SyncProgressReport {
         val name = text(o["name"]) ?: return null
         return buildJsonObject {
             put("name", name)
-            put("subjects", num(o["subjects"]) ?: 0)
+            put("candidates", num(o["candidates"]) ?: 0)
             // The progress number: what still has no verdict. Defaulted to
-            // `subjects` rather than to 0 when a file does not say — "nothing
+            // `candidates` rather than to 0 when a file does not say — "nothing
             // left to measure" is a strong claim and an unreadable row must not
             // make it.
-            put("outstanding", num(o["outstanding"]) ?: num(o["subjects"]) ?: 0)
-            put("measured", num(o["measured"]) ?: 0)
+            put("unmeasured", num(o["unmeasured"]) ?: num(o["candidates"]) ?: 0)
+            put("dialled", num(o["dialled"]) ?: 0)
             put("decided", num(o["decided"]) ?: 0)
             undecided(o["undecided"] as? JsonObject)?.let { put("undecided", it) }
         }
@@ -437,6 +437,7 @@ internal object SyncProgressReport {
             "rejected",
             // the healer and the upstream push
             "pushed",
+            "dropped",
             // the NIP-66 monitor
             "observed",
             "knownDead",

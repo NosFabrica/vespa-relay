@@ -104,14 +104,14 @@ class ProcessorsTest {
         // would publish the same stream once per pass forever.
         val p = Processors()
         val fold = p.of("aliasFold")
-        fold.record(Processors.Work(stream = "content", subjects = 100, outstanding = 90, measured = 10, decided = 5))
-        fold.record(Processors.Work(stream = "content", subjects = 100, outstanding = 80, measured = 10, decided = 6))
-        fold.record(Processors.Work(stream = "assertions", subjects = 4, outstanding = 0, measured = 4, decided = 4))
+        fold.record(Processors.Work(stream = "content", candidates = 100, unmeasured = 90, dialled = 10, decided = 5))
+        fold.record(Processors.Work(stream = "content", candidates = 100, unmeasured = 80, dialled = 10, decided = 6))
+        fold.record(Processors.Work(stream = "assertions", candidates = 4, unmeasured = 0, dialled = 4, decided = 4))
 
         val work = p.snapshot().single().work
 
         assertEquals(listOf("assertions", "content"), work.map { it.stream }, "ordered, so two rollups of one state agree")
-        assertEquals(80, work.last().outstanding, "the latest pass over that stream, not the first")
+        assertEquals(80, work.last().unmeasured, "the latest pass over that stream, not the first")
     }
 
     @Test
@@ -120,7 +120,7 @@ class ProcessorsTest {
         // which asks for it by name — two objects reporting into one row.
         val p = Processors()
         p.of("aliasFold").phase(Processors.MEASURING)
-        p.of("aliasFold").record(Processors.Work(stream = "content", subjects = 2, outstanding = 1, measured = 1, decided = 1))
+        p.of("aliasFold").record(Processors.Work(stream = "content", candidates = 2, unmeasured = 1, dialled = 1, decided = 1))
 
         val rows = p.snapshot()
 

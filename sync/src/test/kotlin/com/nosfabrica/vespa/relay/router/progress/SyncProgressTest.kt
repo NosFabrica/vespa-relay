@@ -293,9 +293,9 @@ class SyncProgressTest {
                         listOf(
                             Processors.Work(
                                 stream = "content",
-                                subjects = 16_752,
-                                outstanding = 4_021,
-                                measured = 2_000,
+                                candidates = 16_752,
+                                unmeasured = 4_021,
+                                dialled = 2_000,
                                 decided = 118,
                                 undecided = listOf(Processors.Undecided("out of probe budget", 214, listOf("relay.example"))),
                             ),
@@ -321,7 +321,7 @@ class SyncProgressTest {
 
         assertEquals(20_800L, fold["nextInSec"]!!.jsonPrimitive.long, "a six-hour clock explains a fold that has said nothing")
         val work = (fold["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
-        assertEquals(4_021, work["outstanding"]!!.jsonPrimitive.int, "the progress number")
+        assertEquals(4_021, work["unmeasured"]!!.jsonPrimitive.int, "the progress number")
         assertEquals(
             "out of probe budget",
             (work["undecided"]!!.jsonObject["reasons"] as kotlinx.serialization.json.JsonArray)[0]
@@ -330,7 +330,7 @@ class SyncProgressTest {
         )
         // A counter-shaped processor answers only what it can: no passes, no
         // clock, and its gauges as members.
-        assertNull(ingest["passes"])
+        assertNull(ingest["passesRun"])
         assertNull(ingest["nextInSec"])
         assertEquals(12L, ingest["queued"]!!.jsonPrimitive.long)
     }

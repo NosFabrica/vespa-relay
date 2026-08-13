@@ -323,9 +323,9 @@ class SyncProgressReportTest {
                 """
                 {"writtenAt": 900, "streams": [],
                  "processors": [
-                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passes": 3, "nextInSec": 20800,
+                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3, "nextInSec": 20800,
                     "somethingInvented": 7,
-                    "streams": [{"name": "content", "subjects": 40, "outstanding": 12, "measured": 20, "decided": 4,
+                    "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
                       "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
                                                  "examples": ["a.example", "b.example", "c.example", "d.example"]}],
                                     "omitted": 1}}]},
@@ -339,7 +339,7 @@ class SyncProgressReportTest {
         assertEquals(20_800L, fold["nextInSec"]!!.jsonPrimitive.long)
         assertNull(fold["somethingInvented"], "a member this side does not name is not passed through")
         val work = (fold["streams"] as JsonArray)[0].jsonObject
-        assertEquals(12L, work["outstanding"]!!.jsonPrimitive.long)
+        assertEquals(12L, work["unmeasured"]!!.jsonPrimitive.long)
         val reason = (work["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject
         assertEquals(3, (reason["examples"] as JsonArray).size, "the examples are capped again on this side")
         assertEquals(1L, work["undecided"]!!.jsonObject["omitted"]!!.jsonPrimitive.long, "and the cap discloses itself")
@@ -372,7 +372,7 @@ class SyncProgressReportTest {
         // other module and cannot be read from here. Restated rather than
         // imported, and the pin is still worth having: it is the page half that
         // silently stops describing a processor.
-        val processors = listOf("aliasFold", "stability", "reachability", "ingest", "heal", "upstreamPush")
+        val processors = listOf("aliasFold", "consistency", "reachability", "ingest", "heal", "upstreamPush")
         val unnamed = processors.filterNot { card.contains("[\"$it\", ") }
         assertEquals(emptyList(), unnamed, "the router registers these and the card names none of them: $unnamed")
     }

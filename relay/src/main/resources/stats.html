@@ -1815,9 +1815,10 @@ const PROCESSORS = [
   ["aliasFold", "Alias fold",
     "Fingerprints the urls of one host against each other and signs a `same-as` verdict when they are the same server," +
     " so the fan-out stops dialling forty urls of one relay. Runs on the alias monitor's clock, not a stream's."],
-  ["stability", "Stability gate",
+  ["consistency", "Self-consistency",
     "Asks each relay one filter twice, at a week-old anchor, and refuses the ones that answer differently: a server" +
-    " whose window is a fresh slice each time holds no stable cursor, so every cycle re-downloads what the last took."],
+    " whose window is a fresh slice each time holds no stable cursor, so every cycle re-downloads what the last took." +
+    " The verdict it writes is the `self-consistent` tag, which is where the name comes from."],
   ["reachability", "NIP-66 reachability",
     "Quartz's monitor. It watches every socket this client opens, measures the round trips and signs what it learns" +
     " into the same kind-30166 records the two passes above write their tags onto — one document per url, three writers."],
@@ -1843,6 +1844,7 @@ function processorCounts(p) {
   }
   if (has("accepted")) parts.push(`${fmt(p.accepted)} accepted`);
   if (has("rejected")) parts.push(`${fmt(p.rejected)} rejected as duplicate, superseded or bad`);
+  if (has("dropped")) parts.push(`${fmt(p.dropped)} dropped rather than backpressure the sweep`);
   if (has("pushed")) parts.push(`${fmt(p.pushed)} pushed out`);
   if (has("observed")) parts.push(`${fmt(p.observed)} relay(s) observed`);
   if (has("knownDead")) parts.push(`${fmt(p.knownDead)} currently known dead — skipped by every fan-out until the record ages out`);
@@ -1882,7 +1884,7 @@ function processorBlock(p) {
         // routinely written in. Absent means something else again — a pass is
         // running right now, so nothing has scheduled the next one.
         (p.nextInSec != null ? (p.nextInSec === 0 ? " · next pass due now" : ` · next pass in ${fmtDur(p.nextInSec)}`) : "") +
-        (p.passes != null ? ` · ${fmt(p.passes)} pass(es) so far` : ""));
+        (p.passesRun != null ? ` · ${fmt(p.passesRun)} pass(es) so far` : ""));
   if (p.lastPassSec != null) phase.title = `the last pass took ${fmtDur(p.lastPassSec)}`;
   head.appendChild(phase);
   box.appendChild(head);
@@ -1891,21 +1893,21 @@ function processorBlock(p) {
   if (counts.length) box.appendChild(el("p", "cyc-line", counts.join(" · ") + "."));
 
   for (const w of p.streams || []) {
-    const subjects = w.subjects || 0;
-    const done = Math.max(0, subjects - (w.outstanding || 0));
+    const candidates = w.candidates || 0;
+    const done = Math.max(0, candidates - (w.unmeasured || 0));
     const line = el("p", "cyc-line");
-    if (subjects > 0) {
+    if (candidates > 0) {
       const meter = el("div", "proc-meter");
       const fill = el("i");
-      fill.style.width = (done / subjects) * 100 + "%";
+      fill.style.width = (done / candidates) * 100 + "%";
       meter.appendChild(fill);
-      meter.title = `${fmt(done)} of ${fmt(subjects)} url(s) carry a verdict; ${fmt(w.outstanding || 0)} still to measure`;
+      meter.title = `${fmt(done)} of ${fmt(candidates)} url(s) carry a verdict; ${fmt(w.unmeasured || 0)} still to measure`;
       box.appendChild(meter);
     }
     line.append(
-      `${w.name}: ${fmt(done)} of ${fmt(subjects)} url(s) decided` +
-      (w.outstanding ? `, ${fmt(w.outstanding)} still to measure` : " — nothing left to measure") +
-      (w.measured ? `. Last pass dialled ${fmt(w.measured)} and learned ${fmt(w.decided || 0)}` : ". Nothing was dialled last pass") +
+      `${w.name}: ${fmt(done)} of ${fmt(candidates)} url(s) decided` +
+      (w.unmeasured ? `, ${fmt(w.unmeasured)} still to measure` : " — nothing left to measure") +
+      (w.dialled ? `. Last pass dialled ${fmt(w.dialled)} and learned ${fmt(w.decided || 0)}` : ". Nothing was dialled last pass") +
       ".");
     box.appendChild(line);
     // WHY the rest were left, which is the half a count cannot give: four of

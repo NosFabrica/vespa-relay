@@ -88,7 +88,7 @@ import java.nio.file.StandardCopyOption
  *     }
  *   ],
  *   "processors": [
- *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passes": 3,
+ *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
  *      "lastPassAt": 1769998000, "lastPassSec": 812, "nextInSec": 20800,
  *      "streams": [{"name": "content", "subjects": 16752, "outstanding": 4021,
  *                   "measured": 2000, "decided": 118,
@@ -353,7 +353,10 @@ class SyncProgress(
                 put("name", p.name)
                 put("phase", p.phase)
                 put("phaseForSec", p.phaseForSec)
-                p.passes?.let { put("passes", it) }
+                // `passesRun`, not `passes`: a stream's `passes` is the LIST of
+                // walks still running, and one name for a list and a count is
+                // the kind of overload this document exists to stop making.
+                p.passes?.let { put("passesRun", it) }
                 p.lastPassAt?.let { put("lastPassAt", it) }
                 p.lastPassSec?.let { put("lastPassSec", it) }
                 // The countdown, and the reason a processor needs one at all:
@@ -368,11 +371,11 @@ class SyncProgress(
                             add(
                                 buildJsonObject {
                                     put("name", w.stream)
-                                    put("subjects", w.subjects)
+                                    put("candidates", w.candidates)
                                     // The one that says whether it is getting
                                     // anywhere. See [Processors.Work].
-                                    put("outstanding", w.outstanding)
-                                    put("measured", w.measured)
+                                    put("unmeasured", w.unmeasured)
+                                    put("dialled", w.dialled)
                                     put("decided", w.decided)
                                     w.undecided.takeIf { it.isNotEmpty() }?.let { reasons ->
                                         put(
