@@ -106,31 +106,28 @@ class AuthGatedFetchProbe {
         println("=".repeat(78))
         try {
             for ((label, pending) in listOf("explicit true" to true, "explicit false" to false, "derived default" to null)) {
-                val done = HashMap<NormalizedRelayUrl, String>()
                 val startedMs = System.currentTimeMillis()
-                val events =
+                val result =
                     runBlocking {
                         if (pending == null) {
                             client.fetchAllWithHooks(
                                 filters = mapOf(url to listOf(Filter(limit = 100))),
                                 idleTimeoutMs = IDLE_MS,
-                                doneOut = done,
                             ) { _, _ -> true }
                         } else {
                             client.fetchAllWithHooks(
                                 filters = mapOf(url to listOf(Filter(limit = 100))),
                                 idleTimeoutMs = IDLE_MS,
                                 pendingOnAuthRequired = pending,
-                                doneOut = done,
                             ) { _, _ -> true }
                         }
                     }
                 println(
                     "  %-16s %4d event(s) in %5dms   done=%s".format(
                         label,
-                        events.size,
+                        result.events.size,
                         System.currentTimeMillis() - startedMs,
-                        done.values
+                        result.doneReasons.values
                             .joinToString()
                             .take(60)
                             .ifEmpty { "(none)" },

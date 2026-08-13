@@ -31,88 +31,88 @@ kotlin = "2.4.0"
 app = "0.1.0"
 # Quartz from JitPack (amethyst @ commit) — the Nostr protocol engine (RelayServerBase).
 #
-# 1ff1077d58 = amethyst main through #3905, which is the reason for the bump:
-# the NIP-42 auth path in the fetch accessories. The router dials relays that
-# gate reads behind AUTH, and the range rebuilds that handling —
-# `auth/AuthOutcome.kt` and `auth/RelayAuthSnapshot.kt` are new, and
-# `RelayAuthenticator`, `RelayAuthStatus` and all five fetch accessories move
-# with them (#3905, #3906, and the four follow-up fixes named
-# `fix(nip42)`/`fix(relay-auth)` in the log).
+# 1866007e99 = amethyst main through #3908, and the whole six-commit range is
+# the `fetchAll` cleanup the previous pin's note flagged as worth watching:
 #
-# WHAT CHANGES FOR OUR CALL SITES: nothing that had to be edited. Every
-# parameter this repo passes still exists with the same meaning —
-# `fetchAllWithHooks(idleTimeoutMs, pendingOnAuthRequired, doneOut)` in
-# `AliasProbe.over`, `fetchAllPages(idleTimeoutMs, onNewPage, onEvent)` in
-# DynamicSync / StaticBackfill / NegentropyPager / DeleteMissingSync. The new
-# parameters (`deadOut`, `onTimeout`, `maxTotalMs`, `authGraceMs`) are all
-# defaulted and additive.
+#   4b8d143376  drop maxTotalMs from fetchAll and fetchAllWithHooks
+#   c5b45a49cc  make the fetchAll drain loop observe cancellation
+#   a12dda31e9  return a FetchAllResult instead of three out-parameters
+#   94d5f18fef  repair doc rot and dead imports left by that refactor
+#   e1ab4d6c56  drop the unused diagnoseSlow drain flag
 #
-# ONE NEW DEFAULT WORTH KNOWING, because this repo has been burned by exactly
-# it: `fetchAll`/`fetchAllWithHooks` gain `maxTotalMs = idleTimeoutMs * 10`, a
-# WALL-CLOCK ceiling. `fetchAllPages` deliberately does NOT have one — its own
-# comment says so — which is the branch every long backfill walks, so the
-# "a timeout is an idle window, not a deadline" rule in AGENTS.md still holds
-# where it matters. What it does bound: a single `AliasProbe` page (20s idle →
-# 200s) and `DeleteMissingSync`'s id-set `fetchAll` (30s idle → 300s). Both are
-# far above what either takes.
+# The first one retires the concern recorded here last bump: `maxTotalMs =
+# idleTimeoutMs * 10` was a WALL-CLOCK ceiling on `fetchAll`, and this repo has
+# been burned by exactly that shape once already. It is gone, so the "a timeout
+# is an idle window, not a deadline" rule now holds on every accessory rather
+# than only on `fetchAllPages`.
 #
-# The rest of the range does not reach us. 32 files under `quartz/`, and the
-# ones outside the auth/fetch cluster are nip45Count, nip56Reports,
-# nip99Classifieds, nip17Dm and nip28PublicChat — none referenced here. Zero
-# concord files this time (`grep -ci concord` over the range's quartz diff → 0),
-# and everything outside `quartz/` is in artifacts we do not consume.
+# THIS ONE IS A SOURCE-BREAKING CHANGE, and the only one in the range that
+# reaches us. `fetchAllWithHooks` no longer takes `doneOut` / `deadOut` /
+# `onTimeout` out-parameters; it returns `FetchAllResult`, carrying `events`,
+# `doneReasons` and `stalled`. `AliasProbe.over` is the single call site and is
+# migrated to read `result.doneReasons` and `result.events`.
 #
-# DIRECTION: c43339e92b is a strict ancestor of this (`git merge-base
+# NOTE WHAT IT WAS NOT MIGRATED TO. `FetchAllResult.anyRelayServed` looks like
+# the tidy replacement for our predicate and is strictly narrower: it is
+# `== DONE_REASON_EOSE`, while the probe must count a relay that answered with a
+# CLOSED as having SPOKEN. Measured on `purplepag.es`, which refuses a bare
+# filter:
+#
+#   0 event(s), done=closed:blocked: filters must specify at least one kind
+#
+# Our predicate (`!startsWith("cannot:")`) reads that as spoke, returns an EMPTY
+# list, and `fingerprint`'s empty-page retry drops to FALLBACK_PROBE_PAGE — and
+# `leaderPrint`'s kinds fallback then recovers the host. `anyRelayServed` would
+# read the same answer as silence, return null, and take every relay that
+# refuses a bare filter or caps under DEFAULT_PROBE_PAGE straight back out of
+# the fold — 892 urls behind 46 leaders, by the sweep recorded in AGENTS.md.
+# The predicate stays ours.
+#
+# DIRECTION: 1ff1077d58 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates), and the store pin below compiles against
-# EXACTLY 1ff1077d58 — the equality case, not merely at-or-ahead. Both pins move
-# together in this bump, which is the state to hold.
+# EXACTLY 1866007e99 — the equality case again. Both pins move together.
 #
-# LEXICOGRAPHIC: '1ff1…' < 'c433…', so this pin sorts BELOW the one it replaces
-# — the DANGEROUS direction, and worth saying plainly: if anything on the graph
-# asked for the old hash, Gradle would keep the old one and say nothing. Nothing
-# does, because the store requests this same hash, and the `resolutionStrategy
-# { force(libs.quartz) }` in every module is what makes that survivable rather
-# than lucky. Ordering settles nothing about whether the pin took; only the
-# resolved graph does:
+# LEXICOGRAPHIC: '1866…' < '1ff1…' ('8' < 'f'), so this sorts BELOW the pin it
+# replaces — the dangerous direction, as the last quartz bump also was. Nothing
+# else on the graph brings quartz in at a different hash (the store asks for
+# this one), and `resolutionStrategy { force(libs.quartz) }` in every module is
+# what makes that survivable rather than lucky. Ordering settles nothing about
+# whether the pin took; only the resolved graph does:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
-quartz = "1ff1077d58"
+quartz = "1866007e99"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 787cdb6f0b = store main through PR #72. Asked for as `c8591b5868`, which does
-# not exist in the repository — 0 matches across main and all nine remote
-# branches — so this is main's HEAD, whose top commit is that PR, `Bump Quartz
-# to 1ff1077d58`. That is the hash pinned above, so the two still match exactly.
+# 13f97e2870 = store main through PR #73, and that PR is the WHOLE range: one
+# commit, `Move Quartz to 1866007e99`, touching one file — its own
+# gradle/libs.versions.toml. Verified with `git log --oneline 787cdb6f0b..` and
+# `git diff --stat`, not assumed from the title.
 #
-# UNLIKE the previous bump, this range is NOT just a version catalog. It carries
-# the near-column work (#70): the parts+tokens attributes merge into one column
-# per tier, measured on a live cluster against 75 GiB of attribute memory, plus
-# the schema-upgrade write path that migration breaks and a proof that the merge
-# loses no results engine-against-engine. #71 makes the background workers'
-# failures visible; #72 is the quartz bump.
+# So there is nothing to say about the store contract this time, because nothing
+# in it moved: `IEventStore`, `SQLiteEventStore`, `IndexableFields` and
+# `SearchFieldExtractor` are untouched by construction when the diff is a single
+# version catalog. The near-column attribute work from #70 and the background
+# worker visibility from #71 are CARRIED — ancestors of this hash, not things
+# this bump gives up.
 #
-# WHAT WE CONSUME IS UNTOUCHED, and that is checked rather than assumed:
-#   git diff --stat 348e408ebd..787cdb6f0b -- '*IEventStore*' '*IndexableFields*' \
-#     '*SearchFieldExtractor*' '*SQLiteEventStore*'
-# → empty. The moving files are VespaEventStore, WriterTopology, the ingest bulk
-# paths and the trust projection — all behind the interface.
+# The integration gate still ran against this commit rather than being waved
+# through on "it's only a catalog": the catalog is the store's QUARTZ, so the
+# code under test is compiled against a different engine than the one #72 was
+# gated on. That is precisely a Vespa-visible change InMemoryEventIndex cannot
+# see.
 #
-# But "behind the interface" is exactly the regression `InMemoryEventIndex`
-# cannot see, and a schema/attribute change is the kind that bites at Vespa and
-# nowhere else. So the store's own integration gate was run against THIS commit
-# before the pin moved — see AGENTS.md for the invocation.
-#
-# DIRECTION: 348e408ebd is a strict ancestor of this, and its quartz IS the hash
+# DIRECTION: 787cdb6f0b is a strict ancestor of this, and its quartz IS the hash
 # pinned above. Equality on both counts.
 #
-# LEXICOGRAPHIC: '787c…' > '348e…', so this bump sorts ABOVE the one it replaces
-# — the safe direction this time, after two bumps running in the dangerous one.
-# Luck, not a property of the pin, and it still settles nothing about whether
-# the pin took; only the resolved graph does.
+# LEXICOGRAPHIC: '13f9…' < '787c…', so this sorts BELOW the pin it replaces —
+# the dangerous direction, and BOTH pins move that way in this bump, which is
+# the first time that has happened. It costs nothing only because nothing else
+# on the dependency graph brings the store in, so there is no conflict for a
+# higher-sorting hash to win. A fact about the graph, not about the pin.
 #
 # Bumping this pin is NOT done until the store's own integration gate has run
 # against the commit — see AGENTS.md. `InMemoryEventIndex` cannot see a
 # Vespa-only regression.
-vespaEventStore = "787cdb6f0b"
+vespaEventStore = "13f97e2870"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

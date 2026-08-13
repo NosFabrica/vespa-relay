@@ -324,17 +324,24 @@ class AliasProbe(
         ): AliasProbe =
             AliasProbe(
                 fetch = { url, size, until, kinds ->
-                    val done = HashMap<NormalizedRelayUrl, String>()
-                    val events =
+                    val result =
                         client.fetchAllWithHooks(
                             filters = mapOf(url to listOf(Filter(limit = size, until = until, kinds = kinds))),
                             idleTimeoutMs = idleMs(url),
-                            doneOut = done,
                         ) { _, _ -> true }
                     // "Spoke" is any terminal state that came from the relay.
                     // `cannot:` is our own transport failing and is exactly the
                     // case null exists for.
-                    if (done.values.any { !it.startsWith(CANNOT_CONNECT) }) events.map { it.second } else null
+                    //
+                    // NOT `result.anyRelayServed`, which is the obvious-looking
+                    // swap and is narrower: it is EOSE alone, while this has to
+                    // count a relay that answered with a CLOSED as having
+                    // spoken. `blocked: limit too high` is an ANSWER — it is
+                    // what the fallback-page retry in [fingerprint] exists to
+                    // react to — and reading it as silence would return null,
+                    // skip the retry, and take every relay capping under
+                    // [RelayAliases.DEFAULT_PROBE_PAGE] out of the fold.
+                    if (result.doneReasons.values.any { !it.startsWith(CANNOT_CONNECT) }) result.events.map { it.second } else null
                 },
                 target = target,
             )
