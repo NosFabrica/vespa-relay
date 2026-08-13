@@ -38,6 +38,43 @@ export const SAME_AS = "same-as";
 export const SELF_CONSISTENT = "self-consistent";
 
 /**
+ * The tags this reader RENDERS besides the two verdicts — quartz's passive
+ * monitor writes them onto the same record every time the client connects.
+ *
+ * They are here because they are the other half of a diagnosis. `R: auth` says
+ * the relay gates reads behind NIP-42, which is the first thing to check when a
+ * url will not fold; `n: tor` says a fingerprint had to go through a circuit
+ * and is given a different idle budget; `rtt-open` says whether a probe's
+ * silence was the relay being slow or being absent.
+ *
+ * Drawing them is also the live check on something the Kotlin side can only
+ * test in isolation. A replaceable record has one address and several writers,
+ * so `RelayAliasRecord.edit` must carry forward every tag it does not own — a
+ * writer that rebuilds instead silently deletes the others, and the result is
+ * still a valid signed record that simply says less. That regression has
+ * happened once (`[d, n, rtt-open]` became `[d, same-as]`). Seeing `n` and
+ * `rtt-open` beside `same-as` on one row is what says the merge still works in
+ * production and not only in a unit test.
+ *
+ * Measured on this store, 6,000 records: `n` on 5,988, `rtt-open` on 2,742,
+ * `rtt-read` on 2,599, `R` on 252, and no NIP-11 content on any of them.
+ */
+const RENDERED = {
+  n: "network",
+  R: "requirements",
+  "rtt-open": "rttOpen",
+  "rtt-read": "rttRead",
+  "rtt-write": "rttWrite",
+  s: "software",
+  v: "version",
+  g: "geohash",
+  T: "relayType",
+};
+
+/** Tags this panel accounts for. Anything else is COUNTED, never dropped silently. */
+const OWNED = new Set(["d", SAME_AS, SELF_CONSISTENT, ...Object.keys(RENDERED)]);
+
+/**
  * How long a verdict stands: thirty days, matching
  * `RelayAliasRecord.DEFAULT_TTL_SECONDS`.
  *
@@ -126,7 +163,23 @@ export function readRecord(event) {
     foldMeasuredAt: null,
     stableEvidence: null,
     stableMeasuredAt: null,
+    // Everything the OTHER writers put on this record. `requirements` is a list
+    // because a relay can be both auth-gated and paid, and `extra` is a count
+    // of tag names this reader does not know — reported rather than dropped, so
+    // a record carrying something new is visible as such instead of looking
+    // like a record that carries nothing.
+    requirements: [],
+    extra: 0,
+    // The NIP-11-ish document the monitor carries in the content. Kept as a
+    // flag, not parsed: this panel is about verdicts, and it should not grow a
+    // second job quietly.
+    hasDoc: !!(event.content && event.content.length),
   };
+  for (const t of tags) {
+    if (t[0] === "R") out.requirements.push(t[1]);
+    else if (RENDERED[t[0]]) out[RENDERED[t[0]]] = t[1];
+    else if (!OWNED.has(t[0])) out.extra++;
+  }
   const sameAs = tag(SAME_AS);
   if (sameAs) {
     out.foldEvidence = sameAs[2] || null;
@@ -218,6 +271,11 @@ export function groupByHost(events, nowSec) {
         url: u.fold,
         host: group.host,
         synthetic: true,
+        // Nobody signed this row — it is inferred from the folds that point at
+        // it — so the two fields that come from an event are explicitly empty
+        // rather than absent.
+        author: null,
+        recordAt: null,
         fold: null,
         cleared: false,
         stable: null,
@@ -226,6 +284,15 @@ export function groupByHost(events, nowSec) {
         foldMeasuredAt: null,
         stableEvidence: null,
         stableMeasuredAt: null,
+        // The same SHAPE a read record has, every field of it. A synthesised
+        // row that omits the collection fields is one `for…of` away from
+        // throwing inside the renderer, which is how a panel that had drawn
+        // 4,000 rows correctly died on the 4,001st and left its own filter
+        // hidden. The fixture rule again: a stand-in that does not have the
+        // shape of the thing it stands in for tests the stand-in.
+        requirements: [],
+        extra: 0,
+        hasDoc: false,
       });
       group.inferred = (group.inferred || 0) + 1;
     }

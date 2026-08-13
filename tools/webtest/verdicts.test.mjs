@@ -205,3 +205,70 @@ const consistent = (v, evidence, at) => ["self-consistent", v, evidence, String(
   assert.equal(readRecord({ tags: [["same-as", "wss://x.example/"]], created_at: NOW }), null);
   ok("an empty store and a record with no d tag are both handled, not thrown on");
 }
+
+// ---- the rest of the record, which several writers share -------------------
+{
+  // A replaceable event has ONE address and more than one writer: quartz's
+  // passive monitor writes `n` / `rtt-*` / `R` onto the same record our fold
+  // writes `same-as` onto, and `RelayAliasRecord.edit` has to carry forward
+  // every tag it does not own. A writer that rebuilds silently deletes the
+  // others — measured once as `[d, n, rtt-open]` becoming `[d, same-as]` — and
+  // the result is still a valid signed record that simply says less. The panel
+  // draws them so that regression is visible in production, not just in a unit
+  // test.
+  const r = readRecord({
+    created_at: NOW,
+    pubkey: "a".repeat(64),
+    content: '{"name":"x"}',
+    tags: [
+      ["d", "wss://gated.example/"],
+      ["n", "clearnet"],
+      ["R", "auth"],
+      ["R", "payment"],
+      ["rtt-open", "875"],
+      ["rtt-read", "897"],
+      ["s", "git+https://github.com/hoytech/strfry.git"],
+      ["something-new", "42"],
+      ["same-as", "wss://gated.example/", "e", String(NOW)],
+    ],
+  });
+  assert.equal(r.network, "clearnet");
+  assert.deepEqual(r.requirements, ["auth", "payment"], "a relay can be both auth-gated and paid");
+  assert.equal(r.rttOpen, "875");
+  assert.equal(r.rttRead, "897");
+  assert.equal(r.software, "git+https://github.com/hoytech/strfry.git");
+  assert.equal(r.hasDoc, true);
+  assert.equal(r.cleared, true, "reading the metadata does not disturb the verdict");
+  // Counted, never dropped: a record carrying a tag this reader has not heard
+  // of must look different from one carrying nothing.
+  assert.equal(r.extra, 1);
+  ok("the tags other writers put on the record are read, and unknown ones are counted");
+}
+
+{
+  // The clobbered shape: our verdict and nothing else. Nothing here throws, and
+  // every metadata field is simply absent — which is what makes the difference
+  // visible on the page.
+  const r = readRecord(rec("wss://lonely.example/a", [sameAs("wss://lonely.example/", "e", NOW)]));
+  assert.equal(r.network, undefined);
+  assert.deepEqual(r.requirements, []);
+  assert.equal(r.extra, 0);
+  assert.equal(r.hasDoc, false);
+  ok("a record carrying only our own tag reads as exactly that");
+}
+
+{
+  // A synthesised survivor must have the SAME SHAPE as a read record, every
+  // field of it. Omitting the collection fields is one `for…of` away from
+  // throwing inside the renderer — which is exactly what happened: the panel
+  // drew thousands of rows correctly, died on the first host whose survivor was
+  // inferred, and left its own filter hidden with no error on screen.
+  const [group] = groupByHost([rec("wss://s.example/a", [sameAs("wss://s.example/b", "e", NOW)])], NOW);
+  const survivor = group.urls.find((u) => u.synthetic);
+  const real = readRecord(rec("wss://s.example/a", [sameAs("wss://s.example/b", "e", NOW)]));
+  for (const key of Object.keys(real)) {
+    assert.ok(key in survivor, `a synthesised survivor is missing "${key}", which the renderer reads on every row`);
+  }
+  assert.deepEqual(survivor.requirements, []);
+  ok("a synthesised survivor carries every field a read record does");
+}

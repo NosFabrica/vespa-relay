@@ -351,6 +351,14 @@ relay/src/main/resources/
                         records off this relay's own websocket (shared/verdicts.js
                         parses; verdicts.test.mjs holds the tag semantics) and is
                         drawn on a BUTTON, not on the minute poll.
+                        It draws the WHOLE record, not just our two tags —
+                        quartz's `n` / `rtt-open` / `rtt-read` / `R` as well,
+                        with unknown tag names counted rather than dropped. Two
+                        reasons: `R: auth` is the first explanation for a url
+                        that will not fold, and a row showing `same-as` and
+                        nothing else is what a CLOBBERED record looks like, so
+                        the panel is the production-side check on the tag merge
+                        that `RelayAliasRecordTest` can only pin in isolation.
                         Its Kinds table REPLACED kind_stats.html, whose url now
                         301s here. That page asked one NIP-45 COUNT per kind it
                         already knew to name — shared/kinds.js plus whatever an
