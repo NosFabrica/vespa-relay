@@ -679,7 +679,7 @@
 <script type="module">
 import { kindLabel } from "/web/shared/kinds.js";
 import { Relay } from "/web/shared/relay.js";
-import { MONITOR_KIND, groupByHost, summarise, isCurrent } from "/web/shared/verdicts.js";
+import { MONITOR_KIND, groupByHost, summarise, isCurrent, walkRecords } from "/web/shared/verdicts.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -2332,51 +2332,24 @@ function tally(pairs) {
  * a verdict that was never written, which is the confusion this panel exists to
  * end. The author is drawn per row instead.
  */
-async function readVerdicts(onProgress, cap = 40000) {
+async function readVerdicts(onProgress) {
   const relay = new Relay(location.origin.replace(/^http/, "ws"));
-  const seen = new Map();
-  // COMPLETE MEANS ONE THING: a page came back empty, so the relay had nothing
-  // older. Every other way out of this loop — the page cap, the url cap, a
-  // relay that stops walking backwards — leaves a store we only partly read,
-  // and the panel has to say so. A capped list drawn as a complete one is the
-  // failure this whole page is careful about elsewhere.
-  let complete = false;
-  let stalls = 0;
+  // What this relay says it will serve in one ask. The walk grows its page when
+  // a whole page falls in one second, and asking OVER a relay's cap risks an
+  // outright refusal rather than a truncation — which arrives as silence. Same
+  // origin, so this is the relay describing itself.
+  const maxPage = await servedLimit();
   try {
-    let until = null;
-    for (let page = 0; page < MAX_VERDICT_PAGES && seen.size < cap; page++) {
-      const filter = { kinds: [MONITOR_KIND], limit: 500 };
-      if (until != null) filter.until = until;
-      // Longer than the class's 10s default: a page of 500 signed records off a
+    return await walkRecords({
+      // Longer than the class's 10s default: a page of signed records off a
       // loaded relay is a bigger answer than the search box ever asks for, and
       // a timeout here is indistinguishable from an empty store to the reader.
-      const events = await relay.req(filter, 25000);
-      if (!events.length) { complete = true; break; }
-      const before = seen.size;
-      let oldest = Infinity;
-      for (const ev of events) {
-        seen.set(ev.id, ev);
-        if (ev.created_at < oldest) oldest = ev.created_at;
-      }
-      onProgress(seen.size);
-      // NOT `events.length < 500`, which is the mistake `AliasProbe` documents
-      // at length: a short page measures the RELAY'S limit, not the end of the
-      // store. Any relay serving fewer than we asked for — a lower `max_limit`,
-      // a policy, a busy moment — would have ended the read at its first page
-      // and the panel would have called that the whole store.
-      //
-      // `until` is inclusive, so every page re-reads its own boundary. A page
-      // that adds nothing new is entirely that boundary: step strictly below
-      // it, and if that still yields nothing new the relay is not walking
-      // backwards for us and there is nothing to be gained by asking again.
-      if (seen.size === before) {
-        until = oldest - 1;
-        if (++stalls >= 2) break;
-      } else {
-        until = oldest;
-        stalls = 0;
-      }
-    }
+      ask: (limit, until) =>
+        relay.req(until == null ? { kinds: [MONITOR_KIND], limit } : { kinds: [MONITOR_KIND], limit, until }, 25000),
+      pageSize: Math.min(500, maxPage),
+      maxPage,
+      onProgress,
+    });
   } finally {
     // Always, and through the socket rather than a method: [Relay] has no
     // close() — the pages that use it keep one connection for their lifetime.
@@ -2384,16 +2357,27 @@ async function readVerdicts(onProgress, cap = 40000) {
     // that the reader cannot see and cannot close.
     try { relay.ws && relay.ws.close(); } catch (e) {}
   }
-  return { events: [...seen.values()], complete };
 }
 
 /**
- * Pages one read will take: 40,000 records at 500 a page, with room for the
- * boundary re-reads `until` being inclusive costs. A bound rather than a
- * budget — nothing should reach it, and reaching it is REPORTED rather than
- * quietly treated as the end of the store.
+ * The biggest single ask this relay says it will answer — its own NIP-11
+ * `limitation.max_limit`.
+ *
+ * Defaults to 500, which is the conservative reading and not a guess at
+ * generosity: with no stated ceiling the walk simply cannot grow its page, and
+ * a run of records longer than that is reported as an incomplete read rather
+ * than stepped over. A relay that publishes a real ceiling gets a walk that can
+ * actually finish.
  */
-const MAX_VERDICT_PAGES = 120;
+async function servedLimit() {
+  try {
+    const doc = await fetch("/", { headers: { Accept: "application/nostr+json" } }).then((r) => r.json());
+    const stated = doc && doc.limitation && Number(doc.limitation.max_limit);
+    return stated > 0 ? Math.min(stated, 5000) : 500;
+  } catch (e) {
+    return 500;
+  }
+}
 
 /**
  * Draw the host groups into [box]; returns the filterable groups.

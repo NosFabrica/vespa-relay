@@ -9,7 +9,7 @@
 // the direction it failed.
 import assert from "node:assert/strict";
 import {
-  MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, TTL_SECONDS,
+  MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
 } from "../../relay/src/main/resources/web/shared/verdicts.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -271,4 +271,65 @@ const consistent = (v, evidence, at) => ["self-consistent", v, evidence, String(
   }
   assert.deepEqual(survivor.requirements, []);
   ok("a synthesised survivor carries every field a read record does");
+}
+
+// ---- the walk, and the run of records it used to step over -----------------
+{
+  // A RELAY IN A BOTTLE. Holds `total` records, hands back the newest `limit`
+  // at or below `until`, and stamps `run` of them with one identical
+  // `created_at` — which is what quartz's monitor does when it flushes a batch.
+  const relay = (total, run, at = 1000) => {
+    const all = [];
+    for (let i = 0; i < total; i++) all.push({ id: "e" + i, created_at: i < run ? at : at - 1 - i });
+    all.sort((a, b) => b.created_at - a.created_at || a.id.localeCompare(b.id));
+    let asks = 0;
+    return {
+      asks: () => asks,
+      ask: async (limit, until) => {
+        asks++;
+        return all.filter((e) => until == null || e.created_at <= until).slice(0, limit);
+      },
+    };
+  };
+
+  // 900 records of which 600 share one second, read 500 at a time. A fixed page
+  // can never span that run: it returns the same 500, the cursor cannot move,
+  // and stepping below the boundary skips the other 100. Measured on the live
+  // store as 4,595 records read of 5,296 — with the read reported COMPLETE.
+  const stuck = relay(900, 600);
+  const fixed = await walkRecords({ ask: stuck.ask, pageSize: 500, maxPage: 500 });
+  assert.ok(fixed.events.length < 900, "the fixture does not reproduce the run this exists for");
+  assert.equal(fixed.complete, false, "a walk that could not get past a run must NOT call itself complete");
+
+  // The same relay, allowed to grow its page: the run fits, the cursor moves,
+  // and every record is read.
+  const grown = relay(900, 600);
+  const full = await walkRecords({ ask: grown.ask, pageSize: 500, maxPage: 5000 });
+  assert.equal(full.events.length, 900, "growing the page past the run is what recovers the missing records");
+  assert.equal(full.complete, true);
+  assert.ok(full.grew > 0, "it should have had to grow at least once");
+  ok("a page that is entirely one second grows until it spans two, instead of stepping over the rest");
+}
+
+{
+  // The ordinary case pays nothing: no run longer than a page, no growth.
+  const all = [];
+  for (let i = 0; i < 1200; i++) all.push({ id: "x" + i, created_at: 9000 - i });
+  const ask = async (limit, until) => all.filter((e) => until == null || e.created_at <= until).slice(0, limit);
+  const walk = await walkRecords({ ask, pageSize: 500, maxPage: 5000 });
+  assert.equal(walk.events.length, 1200);
+  assert.equal(walk.complete, true);
+  assert.equal(walk.grew, 0, "a store with no same-second run must never grow its ask");
+  ok("a store without same-second runs is walked at the base page size");
+}
+
+{
+  // Nothing at all, and a relay that answers every ask with the same page.
+  assert.deepEqual((await walkRecords({ ask: async () => [] })).events, []);
+  assert.equal((await walkRecords({ ask: async () => [] })).complete, true);
+  const same = [{ id: "a", created_at: 5 }, { id: "b", created_at: 4 }];
+  const spin = await walkRecords({ ask: async () => same, pageSize: 500, maxPage: 500, maxPages: 50 });
+  assert.equal(spin.events.length, 2, "a relay that will not walk backwards is given up on, not spun on");
+  assert.ok(spin.pages < 50);
+  ok("an empty store completes, and a relay that repeats itself is abandoned");
 }

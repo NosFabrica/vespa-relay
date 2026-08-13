@@ -309,6 +309,94 @@ export function groupByHost(events, nowSec) {
 }
 
 /**
+ * Every record of this kind the relay holds, paged newest-first.
+ *
+ * **A PAGE THAT IS ENTIRELY ONE `created_at` CANNOT MOVE THE CURSOR, and
+ * stepping below it loses everything in that second we have not seen.** This is
+ * not hypothetical: quartz's monitor flushes its reachability records in
+ * batches, so on this store 5 timestamps carry more than 500 records each — the
+ * largest 879. Measured against that store, a fixed 500-event page returned
+ * **4,595 records and reported the read complete**; the same walk at 1,000
+ * returned **5,296**. 701 records missing, silently, with a completeness claim
+ * on top.
+ *
+ * So the page GROWS while it is entirely one timestamp, which is exactly what
+ * `RelayDiscovery.scan` does on the Kotlin side and for exactly this reason.
+ * The growth is capped by what the relay says it will serve ([maxPage], from
+ * its own NIP-11 `limitation.max_limit`) — asking over a relay's cap risks an
+ * outright refusal rather than a truncation, which would arrive here as
+ * silence.
+ *
+ * If a run is longer than the relay will serve in one ask, the walk CANNOT be
+ * completed and says so rather than stepping over the remainder. `complete` is
+ * true only when a page came back empty.
+ *
+ * [ask] is `(limit, until) -> events` so the walk can be tested without a
+ * relay, the same shape `AliasProbe` takes its `fetch` in.
+ */
+export async function walkRecords({
+  ask,
+  pageSize = 500,
+  maxPage = 500,
+  maxRecords = 40000,
+  maxPages = 120,
+  onProgress = () => {},
+}) {
+  const seen = new Map();
+  let until = null;
+  let stalls = 0;
+  let complete = false;
+  let grew = 0;
+  let pages = 0;
+  for (let p = 0; p < maxPages && seen.size < maxRecords; p++) {
+    let size = pageSize;
+    let events = await ask(size, until);
+    pages++;
+    // Saturated AND all one second: the cursor has nowhere to go. Double the
+    // ask until the page spans two, or until the relay's own ceiling.
+    while (events.length >= size && size < maxPage && oneSecond(events)) {
+      size = Math.min(size * 2, maxPage);
+      events = await ask(size, until);
+      pages++;
+      grew++;
+    }
+    if (!events.length) { complete = true; break; }
+    const before = seen.size;
+    let oldest = Infinity;
+    for (const ev of events) {
+      seen.set(ev.id, ev);
+      if (ev.created_at < oldest) oldest = ev.created_at;
+    }
+    onProgress(seen.size);
+    if (seen.size > before) {
+      until = oldest;
+      stalls = 0;
+      continue;
+    }
+    // Nothing new, and we are already asking as much as this relay will serve.
+    // Stepping below the boundary now would skip whatever is left in that
+    // second — so stop, and let the caller say the read is partial rather than
+    // draw a number that quietly excludes them.
+    if (events.length >= size && size >= maxPage && oneSecond(events)) break;
+    until = oldest - 1;
+    if (++stalls >= 2) break;
+  }
+  return { events: [...seen.values()], complete, pages, grew };
+}
+
+/** Does this page cover a single `created_at`? Then its cursor cannot advance. */
+function oneSecond(events) {
+  if (!events.length) return false;
+  let min = Infinity;
+  let max = -Infinity;
+  for (const e of events) {
+    if (e.created_at < min) min = e.created_at;
+    if (e.created_at > max) max = e.created_at;
+  }
+  return min === max;
+}
+
+/**
  * The totals a reader needs before reading any row: how many records answered,
  * and how many of them say anything at all.
  *
