@@ -692,6 +692,49 @@ unanswerable from the serving side:
   carry both `urls` and `relaySource`, and where the loser used to publish
   nothing at all, both halves now get a row and `owner` says which is which.
 
+**THE PHASE PUBLISHES ITS NUMBERS, not only its word.** `phase` said
+`fetching` and `phaseForSec` said how long, while the phase OBJECT behind them
+carried everything an operator wanted — and that reached a container's stderr
+and stopped there. `StreamPhases.Detail` is those numbers, flat beside the word:
+`returned` (legs that CAME BACK, denominator `urls.taken`), `running` against
+`transferring` (the admission gate is 512 wide where the transfer pool is 100 —
+which is why `pending` is five thousand and not a fault), `fraction`, `etaSec`,
+`reached`, `collected`/`collectedTotal`, `slotsFree`/`slotsNeeded`, `nextInSec`,
+`retryInSec` and `reason`. Only what a phase can answer is written.
+
+**`reached` is the one that matters**, and it wants drawing on the coverage
+axis rather than in a sentence. It is the oldest `created_at` a stream's paged
+walks have got to: on an unbounded walk `fraction` rounds to zero for hours
+while this date moves every page, so it is the only live evidence a deep walk is
+going anywhere. It is the running counterpart of a band's floor — same
+quantity, same axis — which is the one join on this card that would make its
+two halves one picture.
+
+**Two members were checked and deliberately NOT published.** `Fetching.total`
+is the cleaned relay list and `CycleTally.taken` is that same set by
+construction; `Fetching.events` is incremented from the same line as
+`cycle.received`. Both were already in the document under another name. Check
+the source before adding a member here — the same check killed a
+`relayDistribution` join (it counts how many stored NIP-65 lists NAME a relay,
+which is corpus popularity, not events this mirror pulled from it) and
+established that there is no per-relay provenance in the store at all: only a
+live leg knows its own yield.
+
+**Three facts about the PROCESS, not about a stream.** `fatals` is published
+including zero — a `VirtualMachineError` kills whichever thread allocates next
+and is caught by nobody, so the router carries on looking merely quiet, and four
+once passed unnoticed. `lostToStore` is the only counter in this system that
+means data loss (events that passed every check and could not be written), so
+the card draws it alone, loud, and only when non-zero. And `rejections` splits
+the largest number here into the reasons that make it readable: 20M rejected
+against 1.6M accepted looks like damage and is a mirror being offered the same
+event once per relay holding it.
+
+**A held url names the walk that handed it out.** `RelayRotation.Hold` stamped
+the claim time, the transfer clock, the events and the quiet — but not the pass,
+so with two walks live nothing could say which one a leg belonged to. It does
+now, and `inFlight` rows carry `pass`.
+
 **…and a FIFTH member says what is running that is not a stream at all.**
 `processors` (`Processors`, published under `sync.progress.processors` and drawn
 as *Also running* on the coverage card) is the other half of "what is this
