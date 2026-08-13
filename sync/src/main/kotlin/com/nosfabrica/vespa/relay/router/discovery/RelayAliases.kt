@@ -230,7 +230,8 @@ class RelayAliases(
      * one pass folds all three shapes this pollution comes in: the path
      * (`/beacon-glyph`), the redundant default port (`:443`), and the scheme
      * (`ws://` beside `wss://` on a host that serves both). They are the same
-     * server or they are not, and only the fingerprint gets to say.
+     * server or they are not, and — with the one exception a url can settle by
+     * itself, see [schemeTwins] — only the fingerprint gets to say.
      *
      * A group is skipped when every member already has a verdict, and when it
      * has only one member — there is nothing to be a duplicate OF.
@@ -256,10 +257,24 @@ class RelayAliases(
      * verdict, plus the group's [leaderOf] — the yardstick they are measured
      * against, which has to be re-measured because the window it is compared
      * to has moved on since last cycle.
+     *
+     * …plus the SECURE TWIN of anything in that list, even when it already
+     * carries a verdict of its own. [schemeTwins] folds `ws://x` onto `wss://x`
+     * only when BOTH answered this pass, and a twin nobody re-dials can never be
+     * one of the two — so on a host whose `wss://x/inbox` was cleared last month
+     * and whose `ws://x/inbox` turned up today, the cheapest verdict available
+     * would go unmade and the pair would be dialled separately forever. One
+     * extra fingerprint, and only for a pair that actually exists.
      */
     fun toProbe(group: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
         val leader = leaderOf(group)
-        return (listOf(leader) + group.filter { it != leader && it !in distinct && !folded.containsKey(it) }).distinct()
+        val wanted = group.filter { it != leader && it !in distinct && !folded.containsKey(it) }
+        val secure = secureTwins(group)
+        val twins = wanted.filter { !isSecure(it.url) }.mapNotNull { endpointKey(it.url)?.let(secure::get) }
+        // A twin that is itself folded is not worth the dial: its verdict already
+        // points somewhere else, and the plain url is compared to the leader in
+        // the ordinary way.
+        return (listOf(leader) + wanted + twins.filter { !folded.containsKey(it) }).distinct()
     }
 
     /** What one group's fingerprints proved: the folds, and the urls cleared. */
@@ -268,6 +283,15 @@ class RelayAliases(
         val folded: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
         /** Urls compared and found to be their own relay, the leader included. */
         val distinct: Set<NormalizedRelayUrl> = emptySet(),
+        /**
+         * The subset of [folded] decided by [schemeTwins] — a `ws://` url folded
+         * onto the `wss://` url of the same endpoint. Named separately because
+         * the EVIDENCE is different: these rest on the pair of urls and on both
+         * having answered, not on a containment score, and a record that quoted
+         * a containment for them would be quoting a number the verdict was not
+         * based on.
+         */
+        val twins: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /**
@@ -296,6 +320,11 @@ class RelayAliases(
      * Clearing it is sound for the same reason theirs is: it was measured
      * against every member that answered enough to be measured against.
      *
+     * **One pair is settled without a window: `ws://x` against `wss://x`.** See
+     * [schemeTwins] — those are held out of both passes below and folded at the
+     * end, because a containment test is not the question to ask about two urls
+     * that name one endpoint.
+     *
      * [leader] is passed in rather than recomputed. [leaderOf] prefers a url
      * something has already folded onto, and `canonicals` is mutated by every
      * concurrent pass — so recomputing here could name a DIFFERENT url than the
@@ -311,11 +340,16 @@ class RelayAliases(
         val folds = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val cleared = HashSet<NormalizedRelayUrl>()
         var compared = 0
+        // Decided before a single window is compared, and held out of both
+        // passes below: a url whose only difference from another candidate is
+        // `ws://` against `wss://` is not something the containment test should
+        // be asked about. See [schemeTwins].
+        val twins = schemeTwins(group, leader, prints)
         // Measured against the leader and found to be something else. NOT yet a
         // verdict — see the second pass.
         val unmatched = ArrayList<NormalizedRelayUrl>()
         for (url in group) {
-            if (url == leader || folded.containsKey(url)) continue
+            if (url == leader || url in twins || folded.containsKey(url)) continue
             val print = prints[url] ?: continue
             if (sameRelay(leaderPrint, print)) {
                 compared++
@@ -371,16 +405,158 @@ class RelayAliases(
                 folds[url] = head
             }
         }
+        // …AND ONLY NOW THE SCHEME TWINS, onto wherever the secure url itself
+        // ended up rather than onto the secure url as it was found.
+        //
+        // `wss://x/inbox` may have folded onto the leader two lines ago, and
+        // pointing `ws://x/inbox` at it regardless would leave the fan-out
+        // dialling a url that is itself an alias — [canonicalOf] is one hop, by
+        // design, so a chain here is a duplicate that survives the fold.
+        for ((plain, secure) in twins) {
+            val canonical = resolve(secure)
+            // Two verdicts that disagree could walk the chain back to the url we
+            // are folding. Same guard, same reason as [adopt]: a url pinned as
+            // its own duplicate is `measured` forever and never revisited.
+            if (canonical == plain) continue
+            folded[plain] = canonical
+            canonicals += canonical
+            distinct -= plain
+            folds[plain] = canonical
+        }
         // Only when something was actually held up against it: a leader whose
         // whole group was unreachable, or answered too thinly to compare, has
         // been measured against nothing and has proved nothing. And only when
         // it is not a canonical — if anything folded onto it, it is the class,
-        // not a singleton.
+        // not a singleton. Which is why the twin folds land ABOVE this check: a
+        // group of nothing but a `ws://`/`wss://` pair compares nothing, so the
+        // leader is never cleared here, and being folded onto is the only thing
+        // that gives it a verdict and stops the group coming back every pass.
         if (compared > 0 && leaderPrint.size >= minSample && leader !in canonicals) {
             markDistinct(leader)
             cleared += leader
         }
-        return Learned(folds, cleared)
+        return Learned(folds, cleared, twins.keys)
+    }
+
+    /**
+     * The one fold the urls decide by themselves: `ws://x` and `wss://x` are one
+     * endpoint reached two ways, so when BOTH of them answer, the plain one
+     * folds onto the secure one.
+     *
+     * Everything else here refuses to read anything off a url, and for good
+     * reason — a path is routinely a different endpoint (haven splits `/inbox`
+     * from the public pool, and NIP-17 made that ordinary), so `/inbox` folding
+     * onto the bare host on the strength of its spelling would silently stop
+     * mirroring half a relay. **A scheme is not an endpoint.** It is how we
+     * reach one, and no relay software in this corpus serves a DIFFERENT event
+     * pool on plain `ws` than it serves on TLS at the same host and path.
+     *
+     * Which is why this is not merely a shortcut for something the fingerprint
+     * would have reached anyway. Two twins whose windows agree already fold on
+     * containment; what this adds is the pairs that containment cannot answer
+     * for, and there are two shapes of those:
+     *
+     *  - **the window is too thin to decide.** A relay holding nine events hands
+     *    both twins the same nine, and nine is under [minSample] — so nothing
+     *    folds, nothing is cleared, the group is handed back by [unresolved] on
+     *    every pass, and `groups.satsdisco.com` spends a probe budget forever to
+     *    learn what its two urls already said.
+     *  - **only one twin has a verdict.** [toProbe] now re-dials the secure twin
+     *    of an unmeasured plain url precisely so this can fire; without the
+     *    pairing the plain url would be compared to the group's leader — a
+     *    genuinely different endpoint — disagree with it correctly, and be
+     *    published as a relay in its own right.
+     *
+     * **"Both work" is the whole condition, and it is what keeps this honest.**
+     * A print in hand means the url was dialled and the relay answered; a url
+     * missing from [prints] was silent, refused, or never asked (our own
+     * transport can decline it), and none of those is evidence about the pair.
+     * So a `ws://` url whose secure twin said nothing is left exactly where it
+     * was — we would be folding a live url onto a dead one — and a `ws://` url
+     * that says nothing itself is left to [HostStrikes], which is what evicts a
+     * url that has stopped answering.
+     *
+     * **THE WINDOWS STILL HAVE A VETO, IN THE ONE DIRECTION THAT CAN LOSE
+     * DATA.** Everything the plain url served must already be on the secure one,
+     * at the same [minOverlap] the ordinary fold uses. Note what that is not: it
+     * is not [sameRelay], which is symmetric and floored at [minSample], and
+     * both differences are the point.
+     *
+     *  - **No floor**, because the pairing is the argument and nine events are
+     *    plenty to show they do not contradict it. The floor exists so that two
+     *    quiet relays are not called identical on a coincidence; here the urls
+     *    have already said they are one endpoint.
+     *  - **One direction**, because that is the asymmetry the fold cares about.
+     *    A plain url whose window is contained in its secure twin's is a url we
+     *    can stop dialling for free — everything it had, the survivor has. The
+     *    reverse, a `ws://` serving 500 events beside a `wss://` serving nine or
+     *    none, is the shape that would quietly stop mirroring a relay, and it is
+     *    refused here whatever the two urls are called.
+     */
+    private fun schemeTwins(
+        group: List<NormalizedRelayUrl>,
+        leader: NormalizedRelayUrl,
+        prints: Map<NormalizedRelayUrl, Set<String>>,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val secure = secureTwins(group)
+        if (secure.isEmpty()) return emptyMap()
+        val twins = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        for (url in group) {
+            // Never the leader, even when its group holds a secure twin of it.
+            // The leader is the yardstick every other url was just measured
+            // against; folding it away would leave a group of verdicts pointing
+            // at an alias.
+            if (url == leader || isSecure(url.url) || folded.containsKey(url)) continue
+            val twin = endpointKey(url.url)?.let { secure[it] } ?: continue
+            if (twin == url) continue
+            val plainPrint = prints[url] ?: continue
+            val twinPrint = prints[twin] ?: continue
+            if (!alreadyServedBy(plainPrint, twinPrint)) continue
+            twins[url] = twin
+        }
+        return twins
+    }
+
+    /**
+     * Is everything [print] handed over already in [survivor]'s window — i.e.
+     * would folding the first url away cost us nothing?
+     *
+     * An empty window passes vacuously: a url that served nothing has nothing to
+     * lose. That is the same reading of silence the rest of this class takes,
+     * and it is safe HERE — where it decides only whether to stop dialling a url
+     * whose twin is already dialled — in a way it would not be if it were being
+     * asked to prove two urls equal.
+     */
+    private fun alreadyServedBy(
+        print: Set<String>,
+        survivor: Set<String>,
+    ): Boolean = print.isEmpty() || print.count { it in survivor }.toDouble() / print.size >= minOverlap
+
+    /**
+     * The `ws://` url of the same endpoint as [secure], if [group] holds one and
+     * nothing has folded it already.
+     *
+     * Asked by [AliasFolding] of a yardstick whose window came back under
+     * [minSample]. Such a url can measure nothing — but it is still one half of
+     * a pair [schemeTwins] can decide, and the other half is one dial away.
+     */
+    fun plainTwinIn(
+        group: List<NormalizedRelayUrl>,
+        secure: NormalizedRelayUrl,
+    ): NormalizedRelayUrl? {
+        if (!isSecure(secure.url)) return null
+        val key = endpointKey(secure.url) ?: return null
+        return group.firstOrNull { !isSecure(it.url) && endpointKey(it.url) == key && !folded.containsKey(it) }
+    }
+
+    /** The `wss://` urls of a group, by the endpoint each of them reaches. */
+    private fun secureTwins(group: List<NormalizedRelayUrl>): Map<String, NormalizedRelayUrl> {
+        val secure = HashMap<String, NormalizedRelayUrl>()
+        for (url in group) {
+            if (!isSecure(url.url)) continue
+            endpointKey(url.url)?.let { secure.putIfAbsent(it, url) }
+        }
+        return secure
     }
 
     /**
@@ -547,6 +723,35 @@ class RelayAliases(
 
         /** The path, without its leading slash — empty for a bare host. */
         fun pathOf(url: String): String = afterScheme(url).substringAfter('/', "").trim('/')
+
+        /** TLS, the half of a scheme pair we keep — see [schemeTwins]. */
+        private fun isSecure(url: String): Boolean = url.startsWith("wss://", true)
+
+        /**
+         * What a url reaches with the scheme taken out of it — `host/path` — so
+         * that `ws://x/p` and `wss://x/p` land on one key.
+         *
+         * Null when the url names a port its own scheme would not have used
+         * anyway, and that refusal is the point rather than an omission. The
+         * schemes carry different default ports (80 against 443), so "same host,
+         * same path" is already two different sockets and the pairing rests
+         * entirely on those two being the same SERVICE. `wss://x:8443` is
+         * somebody's second endpoint on a port they chose deliberately, and
+         * nothing about `ws://x` says it is the same one — so it is left to the
+         * fingerprint, which can actually tell.
+         */
+        private fun endpointKey(url: String): String? {
+            if (!isDefaultPort(url)) return null
+            return hostOf(url) + "/" + pathOf(url)
+        }
+
+        /** No port at all, or the one this url's scheme implies. */
+        private fun isDefaultPort(url: String): Boolean {
+            val authority = afterScheme(url).substringBefore('/')
+            val port =
+                if (authority.startsWith("[")) authority.substringAfter(']').removePrefix(":") else authority.substringAfter(':', "")
+            return port.isEmpty() || port == (if (isSecure(url)) "443" else "80")
+        }
 
         private fun hasExplicitPort(url: String): Boolean {
             val authority = afterScheme(url).substringBefore('/')

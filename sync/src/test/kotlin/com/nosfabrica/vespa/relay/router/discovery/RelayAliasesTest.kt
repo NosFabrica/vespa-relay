@@ -233,6 +233,113 @@ class RelayAliasesTest {
     }
 
     @Test
+    fun `a ws url folds onto its wss twin on a window neither could be compared on`() {
+        val aliases = RelayAliases()
+        val secure = url("wss://groups.example")
+        val plain = url("ws://groups.example")
+        // Nine events, under `minSample` on both sides — so containment can say
+        // nothing either way, `learn` used to publish nothing, and `unresolved`
+        // handed this pair back on every pass forever. The two urls name one
+        // endpoint and both of them answered, which is the whole verdict.
+        val nine = window(9)
+
+        val learned = aliases.learn(listOf(secure, plain), secure, mapOf(secure to nine, plain to nine))
+
+        assertEquals(mapOf(plain to secure), learned.folded)
+        assertEquals(setOf(plain), learned.twins, "the evidence published for this fold is not a containment")
+        assertEquals(secure, aliases.canonicalOf(plain))
+        assertTrue(aliases.unresolved(listOf(secure, plain)).isEmpty(), "the pair came back for another pass")
+    }
+
+    @Test
+    fun `a ws url is not folded onto a secure twin that said nothing`() {
+        val aliases = RelayAliases()
+        val host = url("wss://relay.example")
+        val secureInbox = url("wss://relay.example/inbox")
+        val plainInbox = url("ws://relay.example/inbox")
+        // The secure twin was asked and never answered. "Both work" is the
+        // condition: folding here retires a live url in favour of a dead one.
+        val learned =
+            aliases.learn(listOf(host, secureInbox, plainInbox), host, mapOf(host to window(100), plainInbox to window(100, from = 500)))
+
+        assertTrue(learned.twins.isEmpty())
+        // Measured against the leader in the ordinary way instead, and it is not
+        // that either — so it stays a url of its own, dialled.
+        assertEquals(plainInbox, aliases.canonicalOf(plainInbox))
+        assertEquals(secureInbox, aliases.canonicalOf(secureInbox))
+    }
+
+    @Test
+    fun `a ws url serving what its secure twin does not is left in the fan-out`() {
+        val aliases = RelayAliases()
+        val secure = url("wss://relay.example")
+        val plain = url("ws://relay.example")
+        // The direction that can lose data: everything the plain url has must
+        // already be on the survivor. Here it holds 100 events the secure url
+        // never returned, so folding it away would stop mirroring them.
+        val learned = aliases.learn(listOf(secure, plain), secure, mapOf(secure to window(9), plain to window(100, from = 500)))
+
+        assertTrue(learned.twins.isEmpty())
+        assertTrue(learned.folded.isEmpty())
+        assertEquals(plain, aliases.canonicalOf(plain))
+    }
+
+    @Test
+    fun `a ws twin folds onto wherever its own secure twin ended up`() {
+        val aliases = RelayAliases()
+        val host = url("wss://relay.example")
+        val secureAlpha = url("wss://relay.example/alpha")
+        val plainAlpha = url("ws://relay.example/alpha")
+        val group = listOf(host, secureAlpha, plainAlpha)
+
+        aliases.learn(group, host, group.associateWith { window(100) })
+
+        assertEquals(host, aliases.canonicalOf(secureAlpha))
+        // …and not onto secureAlpha, which is itself an alias: `canonicalOf` is
+        // one hop by design, so a chain here is a duplicate that survives the
+        // fold and gets dialled every cycle.
+        assertEquals(host, aliases.canonicalOf(plainAlpha))
+    }
+
+    @Test
+    fun `a port the scheme did not imply is a second endpoint, not a twin`() {
+        val aliases = RelayAliases()
+        val chosen = url("wss://relay.example:8443")
+        val plain = url("ws://relay.example")
+        // 8443 is a port somebody picked deliberately. Nothing about `ws://x`
+        // says it reaches the same service, so this is left to the fingerprint —
+        // which, on windows this thin, correctly decides nothing.
+        val learned = aliases.learn(listOf(chosen, plain), chosen, mapOf(chosen to window(9), plain to window(9)))
+
+        assertTrue(learned.folded.isEmpty())
+
+        // The port each scheme would have used anyway is not a difference at all.
+        val implied = RelayAliases()
+        val secure443 = url("wss://relay.example:443")
+        val plain80 = url("ws://relay.example:80")
+        val paired = implied.learn(listOf(secure443, plain80), secure443, mapOf(secure443 to window(9), plain80 to window(9)))
+
+        assertEquals(setOf(plain80), paired.twins)
+        assertEquals(secure443, implied.canonicalOf(plain80))
+    }
+
+    @Test
+    fun `the secure twin is re-dialled so the pair can be compared at all`() {
+        val aliases = RelayAliases()
+        val host = url("wss://relay.example")
+        val secureInbox = url("wss://relay.example/inbox")
+        val plainInbox = url("ws://relay.example/inbox")
+        // Last month's pass cleared the secure path as its own endpoint; the
+        // plain one turned up today. Without re-dialling the twin there is no
+        // "both answered" to be had, and the plain url would be measured against
+        // the group's leader — a genuinely different endpoint — disagree with it
+        // correctly, and be published as a relay in its own right.
+        aliases.adoptDistinct(setOf(host, secureInbox))
+
+        assertEquals(listOf(host, plainInbox, secureInbox), aliases.toProbe(listOf(host, secureInbox, plainInbox)))
+    }
+
+    @Test
     fun `grouping is by host, so scheme port and path all reach one group`() {
         val aliases = RelayAliases()
         val candidates = listOf(nos, nosAlpha, url("ws://nos.lol"), url("wss://other.example"))

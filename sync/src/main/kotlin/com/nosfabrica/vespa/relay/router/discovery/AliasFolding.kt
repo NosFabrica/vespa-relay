@@ -254,8 +254,9 @@ class AliasFolding(
             val budget = AtomicInteger(probesPerCycle)
             val gate = Semaphore(concurrency)
             // The pass-wide count of folds, and nothing else: a second map of
-            // the cleared urls was accumulated here and never read.
-            val newVerdicts = ConcurrentHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
+            // the cleared urls was accumulated here and never read, and the
+            // verdicts themselves are held per group, where they are written.
+            val newVerdicts = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
             val taken = AtomicInteger()
             coroutineScope {
                 // Widest group first: a host wearing 55 urls is 54 dials a
@@ -351,6 +352,11 @@ class AliasFolding(
                         var spent = 0
                         var found: NormalizedRelayUrl? = null
                         var foundPrint: AliasProbe.Leader? = null
+                        // The url that ANSWERED but too thinly to be a yardstick,
+                        // held rather than discarded — see the scheme-twin exit
+                        // below, which is the one thing such a window can settle.
+                        var thin: NormalizedRelayUrl? = null
+                        var thinPrint: AliasProbe.Leader? = null
                         // Urls ASKED to be the yardstick that answered nothing.
                         //
                         // Distinct from "urls the search looked at", which is
@@ -401,8 +407,47 @@ class AliasFolding(
                                 if (aliases.usableWindow(print.ids)) {
                                     found = candidate
                                     foundPrint = print
+                                } else {
+                                    thin = candidate
+                                    thinPrint = print
                                 }
                                 break
+                            }
+                        }
+                        // Everything this group will be asked. Narrowed below when
+                        // the only url that answered is too thin to measure
+                        // against, because then only one member is worth a dial.
+                        var members = wanted
+                        // A WINDOW TOO THIN TO BE A YARDSTICK STILL DECIDES ONE
+                        // THING: its own scheme twin.
+                        //
+                        // The rule above — a leader under
+                        // [RelayAliases.DEFAULT_MIN_SAMPLE] does not drag its
+                        // group onto the wire — is right about the group and was
+                        // wrong about the pair. Nothing can fold ONTO a nine-event
+                        // window on containment and nothing can be cleared against
+                        // it, so the members are correctly left alone; but
+                        // `wss://x` and `ws://x` are decided by naming one
+                        // endpoint and both answering, and nine events are ample
+                        // proof of "it answered". Measured on the shape this was
+                        // reported for: a host serving a handful of events on both
+                        // schemes was permanently undecidable — abandoned here
+                        // every pass, at the FRONT of every pass, for a verdict
+                        // that costs exactly one more dial.
+                        //
+                        // So the walk goes on, and no further than the twin: every
+                        // other member still has nothing to be measured against.
+                        val thinLeader = thin
+                        val thinLead = thinPrint
+                        if (found == null && thinLeader != null && thinLead != null) {
+                            aliases.plainTwinIn(group, thinLeader)?.let { twin ->
+                                found = thinLeader
+                                foundPrint = thinLead
+                                members = listOf(twin)
+                                // The rest of the group's reservation, given back
+                                // for a host that will use it — one dial is all
+                                // this exit intends to spend.
+                                budget.addAndGet(wanted.size - spent - 1)
                             }
                         }
                         if (found == null || foundPrint == null) {
@@ -441,7 +486,7 @@ class AliasFolding(
                             // ASKED and got nothing from. Not the ones it merely
                             // looked at: a candidate the transport declined was
                             // never measured and is still worth a dial here.
-                            for (url in wanted.filter { it != leader && it !in exhausted }) {
+                            for (url in members.filter { it != leader && it !in exhausted }) {
                                 launch {
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit
@@ -520,7 +565,7 @@ class AliasFolding(
                         // This group's share of the pass, kept separately so it
                         // can be written the moment the group is decided. The
                         // pass-wide map is only a counter for the summary line.
-                        val verdicts = LinkedHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
+                        val verdicts = LinkedHashMap<NormalizedRelayUrl, Fold>()
                         val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
                         for ((alias, canonical) in result.folded) {
                             val print = prints[alias].orEmpty()
@@ -531,8 +576,8 @@ class AliasFolding(
                             // against the leader there published a number from a
                             // comparison the verdict was not based on.
                             val shared = prints[canonical].orEmpty().count { it in print }
-                            newVerdicts[alias] = canonical to (print.size to shared)
-                            verdicts[alias] = canonical to (print.size to shared)
+                            newVerdicts += alias
+                            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins)
                         }
                         // The cleared half, and its evidence has to name what was
                         // actually held up against what. This once said "of N
@@ -586,7 +631,15 @@ class AliasFolding(
                             undecided[RelayAliases.hostOf(leader.url)] = Undecided.NOTHING_COMPARED
                         }
                         for ((alias, v) in verdicts) {
-                            runCatching { record.publish(alias, v.first, v.second.first, v.second.second) }
+                            runCatching {
+                                // Each verdict published with the argument it was
+                                // actually made on — see [RelayAliasRecord.publishSecureTwin].
+                                if (v.secureTwin) {
+                                    record.publishSecureTwin(alias, v.canonical, v.sampled)
+                                } else {
+                                    record.publish(alias, v.canonical, v.sampled, v.shared)
+                                }
+                            }
                         }
                         for ((url, c) in cleared) {
                             runCatching { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
@@ -707,6 +760,19 @@ class AliasFolding(
     private fun clearUndecidable(leader: NormalizedRelayUrl) {
         undecidable.remove(RelayAliases.hostOf(leader.url))
     }
+
+    /** One fold and what it rests on, held until the group is decided. */
+    private data class Fold(
+        val canonical: NormalizedRelayUrl,
+        val sampled: Int,
+        val shared: Int,
+        /**
+         * Decided by the two urls naming one endpoint rather than by their
+         * windows — see [RelayAliases.Learned.twins]. It changes nothing about
+         * the fold and everything about the evidence published with it.
+         */
+        val secureTwin: Boolean,
+    )
 
     /** The evidence behind one cleared url, held until the group is decided. */
     private data class Cleared(

@@ -230,6 +230,30 @@ class RelayAliasRecord(
     ): Event? = write(alias, canonical, "$sampled newest events, $shared shared with ${canonical.url}")
 
     /**
+     * Sign and store the one fold whose evidence is not a containment: a `ws://`
+     * url and the `wss://` url of the same host and path, both of which
+     * answered — see [RelayAliases.schemeTwins].
+     *
+     * ```json
+     * ["same-as", "wss://nos.lol/", "same endpoint as wss://nos.lol/ over TLS, both answered; 9 newest events here"]
+     * ```
+     *
+     * A separate call rather than [publish] with the numbers filled in, because
+     * the numbers would be a lie by implication. These pairs are folded
+     * PRECISELY where the windows could not decide — nine events on both sides,
+     * or a twin whose own window was taken a month ago — so quoting "9 shared"
+     * beside a `same-as` would offer a containment as the reason when the reason
+     * is that the two urls name one endpoint and both of them spoke. The reader
+     * of a signed month-long claim about somebody else's server deserves the
+     * argument that was actually made.
+     */
+    suspend fun publishSecureTwin(
+        alias: NormalizedRelayUrl,
+        canonical: NormalizedRelayUrl,
+        sampled: Int,
+    ): Event? = write(alias, canonical, "same endpoint as ${canonical.url} over TLS, both answered; $sampled newest events here")
+
+    /**
      * Sign and store the other verdict: this url was fingerprinted against the
      * other urls on its host and matched none of them.
      *
