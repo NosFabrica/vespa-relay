@@ -209,6 +209,12 @@ class AliasMonitor(
             delay(startupDelayMs)
             while (scope.isActive) {
                 val hadWork = pending.isNotEmpty()
+                // UNSET WHILE A PASS RUNS. The next one is not scheduled until
+                // this one returns — a pass takes as long as it takes — so a
+                // countdown here would be a promise about a time nobody has
+                // computed. It rendered as "measuring · next pass in 0s", which
+                // reads as a pass that is late rather than one in progress.
+                dueAtMs = null
                 runPass()
                 val wait = if (hadWork) intervalMs else emptyRetryMs
                 dueAtMs = System.currentTimeMillis() + wait

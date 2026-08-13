@@ -596,8 +596,15 @@
      outspecifying — that is why the pending card kept the 2.4px gap the rest of
      the page had already lost. */
   .why { color: var(--muted); font-size: .85rem; margin: 0; }
-  .pending { border-style: dashed; }
-  .pending h2 { color: var(--muted); }
+  /* SCOPED TO THE CARD, and the scope is the whole point: `.pending` on its own
+     also matches the disposition bar's `pending` segment and the swatch in its
+     key, both of which carry that class so one rule can paint bar and key
+     alike. `border-style` with no width resolves to `medium`, so the segment
+     for "still in flight" — the largest one on a live fan-out — drew as a 3px
+     dashed black box over its own colour. Caught on a running mirror, not in
+     review. */
+  .card.pending { border-style: dashed; }
+  .card.pending h2 { color: var(--muted); }
   .badge {
     display: inline-block; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
     padding: .1rem .4rem; border-radius: .25rem; background: var(--bar); color: var(--muted);
@@ -1870,7 +1877,11 @@ function processorBlock(p) {
         // The countdown is what makes a pass that has said nothing legible: the
         // fold's clock is six hours, so "it has decided nothing about this host"
         // reads as broken until you know the next turn is four of them away.
-        (p.nextInSec != null ? ` · next pass in ${fmtDur(p.nextInSec)}` : "") +
+        // Zero is a real value and it is not "in 0 seconds": the countdown has
+        // run out and the loop has not woken yet, which is a moment the file is
+        // routinely written in. Absent means something else again — a pass is
+        // running right now, so nothing has scheduled the next one.
+        (p.nextInSec != null ? (p.nextInSec === 0 ? " · next pass due now" : ` · next pass in ${fmtDur(p.nextInSec)}`) : "") +
         (p.passes != null ? ` · ${fmt(p.passes)} pass(es) so far` : ""));
   if (p.lastPassSec != null) phase.title = `the last pass took ${fmtDur(p.lastPassSec)}`;
   head.appendChild(phase);
