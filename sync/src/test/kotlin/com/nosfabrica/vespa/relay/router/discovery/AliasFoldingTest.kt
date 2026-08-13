@@ -453,6 +453,75 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `a leader too thin to measure with still decides its own scheme twin`() =
+        runBlocking {
+            // The other half of that rule. A three-event window can measure
+            // nothing, so the group is correctly left alone — but `ws://x` and
+            // `wss://x` are not decided by a window at all, and both of them
+            // answering is the entire verdict. Left as it was, a small relay
+            // reachable on both schemes was permanently undecidable: abandoned
+            // here at the front of every pass, for a fold that costs one dial.
+            val store = newStore()
+            val secure = RelayUrlNormalizer.normalize("wss://quiet.example")
+            val plain = RelayUrlNormalizer.normalize("ws://quiet.example")
+            val other = RelayUrlNormalizer.normalize("wss://quiet.example/alpha")
+            val thin: List<Event> = (0 until 3).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "t$it") }
+            val up = Upstreams { thin }
+
+            assertEquals(1, folding(store, up).measure("t", listOf(secure, plain, other), canDial = { true }))
+
+            // The twin, and nothing else: the third url still has nothing it
+            // could be measured against.
+            assertEquals(setOf(secure, plain), up.contacted)
+            // Signed, so the next boot and every other router reading this
+            // monitor's records fold it without paying for the dials again.
+            val reader = folding(store, upstreams()).apply(listOf(secure, plain, other))
+            assertEquals(mapOf(plain to secure), reader.aliases)
+            assertEquals(listOf(secure, other), reader.dial)
+        }
+
+    @Test
+    fun `the fold published for a scheme twin quotes the pairing, not a containment`() =
+        runBlocking {
+            // These pairs are folded precisely where the windows could not
+            // decide, so a "9 shared" beside the `same-as` would offer as the
+            // reason a number the verdict was never based on — in a signed,
+            // month-long statement about somebody else's server.
+            val store = newStore()
+            val secure = RelayUrlNormalizer.normalize("wss://quiet.example")
+            val plain = RelayUrlNormalizer.normalize("ws://quiet.example")
+            val thin: List<Event> = (0 until 3).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "t$it") }
+
+            folding(store, Upstreams { thin }).measure("t", listOf(secure, plain), canDial = { true })
+
+            val record =
+                store
+                    .query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(plain.url))))
+                    .single()
+            val sameAs = record.tags.single { it[0] == RelayAliasRecord.SAME_AS_TAG }
+            assertEquals(secure.url, sameAs[1])
+            assertTrue(sameAs[2].startsWith("same endpoint as ${secure.url} over TLS, both answered"), "the evidence reads: ${sameAs[2]}")
+        }
+
+    @Test
+    fun `a ws url serving what its wss twin does not is left in the fan-out`() =
+        runBlocking {
+            // "Both work, keep the secure one" is not "prefer wss whatever it
+            // serves". A plain url holding events its secure twin never returned
+            // is a url that cannot be folded away without losing them, and the
+            // fold's whole failure mode is silently ceasing to mirror a relay
+            // nobody will notice is missing.
+            val store = newStore()
+            val secure = RelayUrlNormalizer.normalize("wss://lopsided.example")
+            val plain = RelayUrlNormalizer.normalize("ws://lopsided.example")
+            val full: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val up = Upstreams { at -> if (at.url.startsWith("wss://")) emptyList() else full }
+
+            assertEquals(0, folding(store, up).measure("t", listOf(secure, plain), canDial = { true }))
+            assertEquals(listOf(secure, plain), folding(store, upstreams()).apply(listOf(secure, plain)).dial)
+        }
+
+    @Test
     fun `a group that cannot be decided returns its probe budget`() =
         runBlocking {
             // The budget is reserved per group up front, so a group that bails

@@ -169,9 +169,16 @@ class AliasFoldLiveProbe {
                     println("    leader ${leader.url}: ${lead.ids.size} id(s) via $asked")
                     val again = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(leader, anchor, lead.kinds) {} } }
                     println("      vs ITSELF on a second walk: ${containment(lead.ids, again.orEmpty())}")
+                    // The leader's own scheme twin, which does NOT fold on the
+                    // number printed beside it — it folds on the two urls naming
+                    // one endpoint and both answering. Called out here because
+                    // the containment line says "decides nothing" for a window
+                    // under minSample, and for this one url that is wrong.
+                    val twin = aliases.plainTwinIn(group, leader)
                     for (url in group.filter { it != leader }) {
                         val print = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(url, anchor, lead.kinds) {} } }
-                        println("      vs ${url.url}: ${containment(lead.ids, print.orEmpty())}")
+                        val pairing = if (url == twin) "  [scheme twin — folds on the pairing, not on this number]" else ""
+                        println("      vs ${url.url}: ${containment(lead.ids, print.orEmpty())}$pairing")
                     }
                 }
                 val startedMs = System.currentTimeMillis()
