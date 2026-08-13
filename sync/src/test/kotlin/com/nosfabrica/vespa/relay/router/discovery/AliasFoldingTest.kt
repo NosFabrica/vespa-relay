@@ -593,6 +593,41 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `a url the transport declined mid-search is still measured as a member`() =
+        runBlocking {
+            // What the yardstick search SKIPS is not what it exhausts, and
+            // conflating the two costs a url its measurement.
+            //
+            // The distinction is invisible while the transport guard answers the
+            // same way twice — a url it refuses as a yardstick it also refuses
+            // as a member, so dropping it changes nothing. It bites when the
+            // guard RECOVERS: `canDial` is `tor.socksAnswers() && tcpReachable`,
+            // both of which are live checks, so a circuit that comes back
+            // between the search and the member walk is ordinary. Marked
+            // exhausted on the refusal, that url is skipped for the rest of the
+            // pass on OUR outage rather than on its own behaviour.
+            val store = newStore()
+            val flaky = RelayUrlNormalizer.normalize("wss://mixed.example")
+            val first = RelayUrlNormalizer.normalize("wss://mixed.example/alpha")
+            val second = RelayUrlNormalizer.normalize("wss://mixed.example/beacon")
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val up = Upstreams { corpus }
+            val fold = folding(store, up)
+            // Refused once — the yardstick attempt, which is the pathless url
+            // PREFERENCE puts first — and reachable from then on.
+            val refusals = AtomicInteger()
+            val canDial: suspend (NormalizedRelayUrl) -> Boolean = { url ->
+                url != flaky || refusals.getAndIncrement() > 0
+            }
+
+            val learned = fold.measure("t", listOf(flaky, first, second), canDial = canDial)
+
+            assertEquals(2, learned, "the url refused during the search was never re-asked once the transport recovered")
+            assertTrue(flaky in up.contacted, "it was dropped from the member walk rather than dialled")
+            assertEquals(listOf(first), fold.apply(listOf(flaky, first, second)).dial)
+        }
+
+    @Test
     fun `the yardstick search is bounded and never re-asks a url it has already tried`() =
         runBlocking {
             // The one place a dead url delays another dial rather than merely

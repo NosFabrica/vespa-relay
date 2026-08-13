@@ -351,12 +351,24 @@ class AliasFolding(
                         var spent = 0
                         var found: NormalizedRelayUrl? = null
                         var foundPrint: AliasProbe.Leader? = null
-                        var tried = 0
+                        // Urls ASKED to be the yardstick that answered nothing.
+                        //
+                        // Distinct from "urls the search looked at", which is
+                        // what this used to drop from the member walk — and a
+                        // url the transport guard DECLINED was never asked. On a
+                        // deployment whose Tor is momentarily down, every
+                        // candidate ahead of the yardstick is refused without a
+                        // dial, and counting those as exhausted silently removed
+                        // perfectly foldable urls from the group's measurement
+                        // for the whole pass, on our outage rather than their
+                        // behaviour.
+                        val exhausted = HashSet<NormalizedRelayUrl>()
                         for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
-                            tried++
+                            var asked = false
                             val print =
                                 gate.withPermit {
                                     if (!canDial(candidate)) return@withPermit null
+                                    asked = true
                                     dialled = true
                                     spent++
                                     taken.incrementAndGet()
@@ -367,6 +379,10 @@ class AliasFolding(
                                         sockets.release(candidate)
                                     }
                                 }
+                            // Asked, and it said nothing. It failed BOTH filters,
+                            // so asking it again as a member this pass buys the
+                            // same silence at the price of a dial.
+                            if (asked && print == null) exhausted += candidate
                             if (print != null) {
                                 // IT ANSWERED, so the search stops here whether
                                 // or not the window is usable — the two failures
@@ -421,13 +437,11 @@ class AliasFolding(
                         prints[leader] = lead.ids
 
                         coroutineScope {
-                            // Everything the yardstick search already looked at
-                            // is dropped, not just the yardstick itself: those
-                            // urls answered neither the bare filter nor the kinds
-                            // one, and asking a third time with the yardstick's
-                            // filter would buy a dial per pass per url to learn
-                            // the same silence.
-                            for (url in wanted.drop(tried)) {
+                            // The yardstick itself, and every url the search
+                            // ASKED and got nothing from. Not the ones it merely
+                            // looked at: a candidate the transport declined was
+                            // never measured and is still worth a dial here.
+                            for (url in wanted.filter { it != leader && it !in exhausted }) {
                                 launch {
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit

@@ -483,7 +483,16 @@
      holding a thousand hosts there was nothing to tell you where one ended and
      the next began — least of all when the filter was on, which is exactly when
      you are looking at one host. */
-  .vd-group { border: 1px solid var(--line); border-radius: .45rem; overflow: hidden; margin-bottom: .5rem; }
+  .vd-group {
+    border: 1px solid var(--line); border-radius: .45rem; overflow: hidden; margin-bottom: .5rem;
+    /* On the GROUP as well as the row, and measured: clearing the filter — every
+       host back on screen — cost 155-162ms with it only on `.vd-row`, because a
+       thousand group boxes still had to be laid out to find out how tall their
+       (skipped) rows made them. The intrinsic size is a guess at a small host
+       and only has to be in the right order of magnitude; being wrong costs a
+       scrollbar that settles, not a wrong render. */
+    content-visibility: auto; contain-intrinsic-size: auto 6rem;
+  }
   .vd-group[hidden] { display: none; }
   .vd-ghead {
     display: grid; grid-template-columns: 1fr auto auto; gap: .6rem; align-items: center;
@@ -2248,7 +2257,7 @@ function verdictsCard() {
     load.disabled = true;
     status.textContent = "asking…";
     try {
-      const events = await readVerdicts((n) => { status.textContent = `${fmt(n)} record(s)…`; });
+      const { events, complete } = await readVerdicts((n) => { status.textContent = `${fmt(n)} record(s)…`; });
       const nowSec = Math.floor(Date.now() / 1000);
       const byHost = groupByHost(events, nowSec);
       const sum = summarise(byHost, nowSec);
@@ -2259,7 +2268,10 @@ function verdictsCard() {
       // monitor writing reachability, so a store full of those beside zero
       // folds says the monitor is running and the FOLD is not — where no
       // records at all says neither is.
-      fill(sumBox, [tally([
+      // `replaceChildren`, not `fill`: that helper exists to carry a reader's
+      // filter text and scroll position across a rebuild, and this box holds
+      // neither. Using it here would imply a preservation that is not happening.
+      sumBox.replaceChildren(tally([
         ["urls", sum.urls],
         ["hosts", sum.hosts],
         ["folded away", sum.folded],
@@ -2267,10 +2279,14 @@ function verdictsCard() {
         ["not folded", sum.silent],
         ...(sum.expired ? [["verdict expired", sum.expired]] : []),
         ...(sum.unstable ? [["refused as inconsistent", sum.unstable]] : []),
-      ])]);
-      status.textContent = sum.inferred
-        ? `${fmt(sum.inferred)} survivor(s) inferred from the folds that point at them`
-        : "";
+      ]));
+      // What the read did NOT cover comes first: every number above is over the
+      // records we actually got, and one taken from a partial read means
+      // something different from one taken from a whole store.
+      status.textContent =
+        (complete ? "" : `partial read — stopped at ${fmt(events.length)} record(s); the store holds more. `) +
+        (sum.inferred ? `${fmt(sum.inferred)} survivor(s) inferred from the folds that point at them` : "");
+      status.className = complete ? "status" : "status vd-stale";
       filter.hidden = false;
       scroll.hidden = false;
       applyFilter();
@@ -2316,19 +2332,26 @@ function tally(pairs) {
  * a verdict that was never written, which is the confusion this panel exists to
  * end. The author is drawn per row instead.
  */
-async function readVerdicts(onProgress, cap = 20000) {
+async function readVerdicts(onProgress, cap = 40000) {
   const relay = new Relay(location.origin.replace(/^http/, "ws"));
   const seen = new Map();
+  // COMPLETE MEANS ONE THING: a page came back empty, so the relay had nothing
+  // older. Every other way out of this loop — the page cap, the url cap, a
+  // relay that stops walking backwards — leaves a store we only partly read,
+  // and the panel has to say so. A capped list drawn as a complete one is the
+  // failure this whole page is careful about elsewhere.
+  let complete = false;
+  let stalls = 0;
   try {
     let until = null;
-    for (let page = 0; page < 60 && seen.size < cap; page++) {
+    for (let page = 0; page < MAX_VERDICT_PAGES && seen.size < cap; page++) {
       const filter = { kinds: [MONITOR_KIND], limit: 500 };
       if (until != null) filter.until = until;
       // Longer than the class's 10s default: a page of 500 signed records off a
       // loaded relay is a bigger answer than the search box ever asks for, and
       // a timeout here is indistinguishable from an empty store to the reader.
       const events = await relay.req(filter, 25000);
-      if (!events.length) break;
+      if (!events.length) { complete = true; break; }
       const before = seen.size;
       let oldest = Infinity;
       for (const ev of events) {
@@ -2336,10 +2359,23 @@ async function readVerdicts(onProgress, cap = 20000) {
         if (ev.created_at < oldest) oldest = ev.created_at;
       }
       onProgress(seen.size);
-      // `until` is inclusive, so a page re-reads its own boundary. Nothing new
-      // means the boundary is the whole page; step below it.
-      until = seen.size === before ? oldest - 1 : oldest;
-      if (events.length < 500) break;
+      // NOT `events.length < 500`, which is the mistake `AliasProbe` documents
+      // at length: a short page measures the RELAY'S limit, not the end of the
+      // store. Any relay serving fewer than we asked for — a lower `max_limit`,
+      // a policy, a busy moment — would have ended the read at its first page
+      // and the panel would have called that the whole store.
+      //
+      // `until` is inclusive, so every page re-reads its own boundary. A page
+      // that adds nothing new is entirely that boundary: step strictly below
+      // it, and if that still yields nothing new the relay is not walking
+      // backwards for us and there is nothing to be gained by asking again.
+      if (seen.size === before) {
+        until = oldest - 1;
+        if (++stalls >= 2) break;
+      } else {
+        until = oldest;
+        stalls = 0;
+      }
     }
   } finally {
     // Always, and through the socket rather than a method: [Relay] has no
@@ -2348,8 +2384,16 @@ async function readVerdicts(onProgress, cap = 20000) {
     // that the reader cannot see and cannot close.
     try { relay.ws && relay.ws.close(); } catch (e) {}
   }
-  return [...seen.values()];
+  return { events: [...seen.values()], complete };
 }
+
+/**
+ * Pages one read will take: 40,000 records at 500 a page, with room for the
+ * boundary re-reads `until` being inclusive costs. A bound rather than a
+ * budget — nothing should reach it, and reaching it is REPORTED rather than
+ * quietly treated as the end of the store.
+ */
+const MAX_VERDICT_PAGES = 120;
 
 /**
  * Draw the host groups into [box]; returns the filterable groups.
