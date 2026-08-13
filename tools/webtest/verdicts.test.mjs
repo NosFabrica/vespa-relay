@@ -152,14 +152,55 @@ const consistent = (v, evidence, at) => ["self-consistent", v, evidence, String(
     rec("wss://h.example/a", [sameAs("wss://h.example/", "new", NOW)], NOW),
   ];
   const [group] = groupByHost(events, NOW);
-  assert.equal(group.urls.length, 1, "one address is one row");
-  assert.equal(group.urls[0].foldEvidence, "new");
+  const real = group.urls.filter((u) => !u.synthetic);
+  assert.equal(real.length, 1, "one address is one row");
+  assert.equal(real[0].foldEvidence, "new");
   ok("two versions of one address collapse to the newest");
+}
+
+// ---- the survivor, which usually has no record of its own ------------------
+{
+  // `RelayAliases.learn` clears — publishes a verdict about — only a leader
+  // that nothing folded onto. So the very url a group collapses TO is the one
+  // url with no `same-as` to find, and a group read purely from records drew
+  // "23 urls · 0 dialled" for a host that is dialled exactly once. Measured on
+  // the live store: `articles.layer3.news`, 23 folds, survivor absent.
+  const events = [
+    rec("wss://a.example/alpha", [sameAs("wss://a.example/lantern", "e", NOW)]),
+    rec("wss://a.example/beta", [sameAs("wss://a.example/lantern", "e", NOW)]),
+  ];
+  const [group] = groupByHost(events, NOW);
+  assert.equal(group.urls.length, 3, "the url the folds point at is on the list");
+  assert.equal(group.inferred, 1);
+  assert.equal(group.survivors, 1, "…and it is what makes the host's dialled count 1 rather than 0");
+  const survivor = group.urls.find((u) => u.synthetic);
+  assert.equal(survivor.url, "wss://a.example/lantern");
+  assert.equal(group.urls[0], survivor, "the survivor leads its own group");
+  // Inferred, not stated. It carries no verdict BY CONSTRUCTION, so counting it
+  // as silent would inflate the one number meaning "nothing has looked at this".
+  const sum = summarise([group], NOW);
+  assert.equal(sum.silent, 0);
+  assert.equal(sum.inferred, 1);
+  ok("a survivor with no record of its own is inferred from the folds that point at it");
+}
+
+{
+  // Only when the target really is on this host. A hand-edited or malformed
+  // record can point anywhere, and inventing a row for it would put one host's
+  // url inside another host's group.
+  const [group] = groupByHost([rec("wss://a.example/x", [sameAs("wss://elsewhere.example/", "e", NOW)])], NOW);
+  assert.equal(group.urls.length, 1, "a fold pointing off-host synthesises nothing");
+  assert.equal(group.inferred, undefined);
+  // An EXPIRED fold points at nothing the router acts on, so its target is not
+  // a survivor to draw either.
+  const stale = groupByHost([rec("wss://b.example/x", [sameAs("wss://b.example/", "e", NOW - TTL_SECONDS - 1)])], NOW);
+  assert.equal(stale[0].urls.length, 1);
+  ok("nothing is synthesised for an off-host target or an expired fold");
 }
 
 {
   assert.deepEqual(groupByHost([], NOW), []);
-  assert.deepEqual(summarise([], NOW), { hosts: 0, urls: 0, folded: 0, cleared: 0, expired: 0, silent: 0, stable: 0, unstable: 0 });
+  assert.deepEqual(summarise([], NOW), { hosts: 0, urls: 0, folded: 0, cleared: 0, expired: 0, silent: 0, stable: 0, unstable: 0, inferred: 0 });
   // A record with no `d` tag is not addressed at anything and cannot be drawn.
   assert.equal(readRecord({ tags: [["same-as", "wss://x.example/"]], created_at: NOW }), null);
   ok("an empty store and a record with no d tag are both handled, not thrown on");

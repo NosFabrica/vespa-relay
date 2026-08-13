@@ -478,17 +478,66 @@
      column that matters, so it is fixed-width and first after the url; the
      evidence is the monitor's own sentence and wraps under it, because
      truncating the thing that says WHY defeats the panel. */
-  .vd-row { display: grid; grid-template-columns: 1fr auto; gap: .2rem .75rem; padding: .3rem 0; border-bottom: 1px solid var(--grid); }
+  /* A HOST IS THE UNIT, so it gets a box. The flat list this replaced ran host
+     names and url rows down one column at the same weight, and on a store
+     holding a thousand hosts there was nothing to tell you where one ended and
+     the next began — least of all when the filter was on, which is exactly when
+     you are looking at one host. */
+  .vd-group { border: 1px solid var(--line); border-radius: .45rem; overflow: hidden; margin-bottom: .5rem; }
+  .vd-group[hidden] { display: none; }
+  .vd-ghead {
+    display: grid; grid-template-columns: 1fr auto auto; gap: .6rem; align-items: center;
+    padding: .4rem .55rem; background: var(--grid);
+  }
+  .vd-name { font-weight: 600; font-size: .85rem; word-break: break-all; }
+  .vd-count { color: var(--muted); font-size: .75rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* How much of this host collapsed, as a proportion — the same read the
+     coverage card gives a relay's walk. One glance says whether a host is
+     folded, half-folded or untouched, which is the question the panel is for
+     and which no column of words answers at a thousand rows. */
+  .vd-meter { width: 4rem; height: .35rem; border-radius: 999px; background: var(--line); overflow: hidden; }
+  .vd-meter i { display: block; height: 100%; background: var(--accent); }
+  .vd-row {
+    display: grid; grid-template-columns: 1fr auto; gap: 0 .6rem; align-items: baseline;
+    padding: .22rem .55rem; border-top: 1px solid var(--grid);
+    /* Thousands of rows in a bounded box: the same content-visibility the
+       coverage rows use, for the same measured reason. */
+    content-visibility: auto; contain-intrinsic-size: auto 1.4rem;
+  }
   .vd-row[hidden] { display: none; }
-  .vd-url { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .8rem; word-break: break-all; }
-  .vd-when { color: var(--muted); font-size: .78rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
-  /* Spans both columns: it is the sentence the monitor signed, and it is long. */
-  .vd-why { grid-column: 1 / -1; color: var(--muted); font-size: .78rem; }
-  .vd-fold { color: var(--accent); }
+  /* The SURVIVOR leads its group and is the url actually dialled, so it is the
+     one row drawn at full strength; everything under it folded into it. */
+  .vd-row.vd-keep { background: color-mix(in srgb, var(--accent) 5%, transparent); }
+  .vd-path { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .78rem; word-break: break-all; }
+  .vd-into { color: var(--muted); }
+  .vd-when { color: var(--muted); font-size: .74rem; white-space: nowrap; font-variant-numeric: tabular-nums; }
+  /* ONE line, ellipsised, full text on hover. The evidence is the sentence the
+     monitor signed and it is the reason to trust the row — but wrapped, it
+     doubled the height of every row on the page and turned a scannable list
+     into a wall. */
+  .vd-why {
+    grid-column: 1 / -1; color: var(--muted); font-size: .72rem;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .vd-pill {
+    font-size: .65rem; text-transform: uppercase; letter-spacing: .04em; font-weight: 600;
+    padding: .05rem .3rem; border-radius: .25rem; white-space: nowrap;
+  }
+  .vd-pill.fold { color: var(--accent); background: var(--bar); }
+  .vd-pill.keep { color: var(--muted); border: 1px solid var(--line); }
+  /* QUIET, and that is the point. "Not folded" is the resting state of a url
+     the fold has not reached yet — on a store mid-pass it is most rows on the
+     page, and drawn in the warn colour it made every ordinary host look like a
+     fault. The warn colour is kept for the one state that IS one: a verdict
+     that has aged out and is no longer being acted on. */
+  .vd-pill.none { color: var(--muted); opacity: .75; }
+  .vd-pill.expired { color: var(--warn); border: 1px solid currentColor; }
   .vd-stale { color: var(--warn); }
-  .vd-tag { font-size: .72rem; text-transform: uppercase; letter-spacing: .03em; font-weight: 600; }
-  .vd-host { margin-top: .9rem; }
-  .vd-host:first-of-type { margin-top: 0; }
+  /* The summary strip over the list: the counts as their own row of numbers
+     rather than a run-on sentence in the status line. */
+  .vd-sum { display: flex; flex-wrap: wrap; gap: .15rem 1.1rem; margin: .1rem 0 .7rem; }
+  .vd-sum div { font-size: .78rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+  .vd-sum b { display: block; font-size: 1.05rem; font-weight: 600; color: var(--text); }
   table { border-collapse: collapse; width: 100%; min-width: 30rem; }
   th, td { text-align: left; padding: .45rem .6rem; border-bottom: 1px solid var(--line); }
   th { font-weight: 600; font-size: .78rem; text-transform: uppercase; letter-spacing: .03em; color: var(--muted); }
@@ -2091,6 +2140,9 @@ function verdictsCard() {
   bar.append(load, status);
   card.appendChild(bar);
 
+  const sumBox = el("div");
+  card.appendChild(sumBox);
+
   const filter = el("input");
   filter.type = "search";
   // Named like the others so render()'s restore loop cannot carry one search
@@ -2108,15 +2160,26 @@ function verdictsCard() {
   none.hidden = true;
   card.appendChild(none);
 
-  let rows = [];
+  let groups = [];
 
   const applyFilter = () => {
     const q = filter.value.trim().toLowerCase();
     let live = 0;
-    for (const r of rows) {
-      const hit = !q || r.needle.includes(q);
-      r.node.hidden = !hit;
-      if (hit) live++;
+    for (const g of groups) {
+      // A hit on the HOST keeps the whole group — that is what someone typing a
+      // hostname means, and hiding the non-matching urls of the very host they
+      // asked for would take away the comparison the panel exists to give.
+      const wholeHost = !q || g.host.includes(q);
+      let kept = 0;
+      for (const r of g.rows) {
+        const hit = wholeHost || r.needle.includes(q);
+        r.node.hidden = !hit;
+        if (hit) kept++;
+      }
+      // Heads and rows go together. Hiding only rows left a heading on screen
+      // for every host in the store, each with nothing beneath it.
+      g.box.hidden = !kept;
+      if (kept) live++;
     }
     const empty = !!q && !live;
     none.hidden = !empty;
@@ -2130,19 +2193,27 @@ function verdictsCard() {
     try {
       const events = await readVerdicts((n) => { status.textContent = `${fmt(n)} record(s)…`; });
       const nowSec = Math.floor(Date.now() / 1000);
-      const groups = groupByHost(events, nowSec);
-      const sum = summarise(groups, nowSec);
-      rows = drawVerdicts(scroll, groups, nowSec);
-      // Every number a reader needs before reading a row. `silent` is the one
-      // that separates two very different diagnoses: records with no verdict
-      // tag are quartz's passive monitor writing reachability, so a store full
-      // of those beside zero folds says the monitor is running and the FOLD is
-      // not — where no records at all says neither is.
-      status.textContent =
-        `${fmt(sum.urls)} url(s) over ${fmt(sum.hosts)} host(s) · ${fmt(sum.folded)} folded · ` +
-        `${fmt(sum.cleared)} kept · ${fmt(sum.silent)} with no verdict` +
-        (sum.expired ? ` · ${fmt(sum.expired)} expired` : "") +
-        (sum.unstable ? ` · ${fmt(sum.unstable)} refused as inconsistent` : "");
+      const byHost = groupByHost(events, nowSec);
+      const sum = summarise(byHost, nowSec);
+      groups = drawVerdicts(scroll, byHost, nowSec);
+      // The numbers as NUMBERS, over the list rather than as a run-on sentence
+      // beside the button. `not folded` is the one that separates two very
+      // different diagnoses: a record with no verdict tag is quartz's passive
+      // monitor writing reachability, so a store full of those beside zero
+      // folds says the monitor is running and the FOLD is not — where no
+      // records at all says neither is.
+      fill(sumBox, [tally([
+        ["urls", sum.urls],
+        ["hosts", sum.hosts],
+        ["folded away", sum.folded],
+        ["measured, kept", sum.cleared],
+        ["not folded", sum.silent],
+        ...(sum.expired ? [["verdict expired", sum.expired]] : []),
+        ...(sum.unstable ? [["refused as inconsistent", sum.unstable]] : []),
+      ])]);
+      status.textContent = sum.inferred
+        ? `${fmt(sum.inferred)} survivor(s) inferred from the folds that point at them`
+        : "";
       filter.hidden = false;
       scroll.hidden = false;
       applyFilter();
@@ -2159,6 +2230,18 @@ function verdictsCard() {
     }
   });
   return card;
+}
+
+/** A row of labelled numbers — the panel's own small tiles. */
+function tally(pairs) {
+  const box = el("div", "vd-sum");
+  for (const [label, n] of pairs) {
+    const cell = el("div");
+    cell.appendChild(el("b", null, fmt(n)));
+    cell.append(label);
+    box.appendChild(cell);
+  }
+  return box;
 }
 
 /**
@@ -2211,25 +2294,43 @@ async function readVerdicts(onProgress, cap = 20000) {
   return [...seen.values()];
 }
 
-/** Draw the host groups into [box]; returns the filterable rows. */
+/**
+ * Draw the host groups into [box]; returns the filterable groups.
+ *
+ * A url is drawn as its PATH, not its whole url. The host is already the box's
+ * heading, so repeating `wss://articles.layer3.news/` on all 23 rows spent the
+ * width that tells them apart on the part they share — and these lists are
+ * nothing but minted paths on one host, so the path is the entire signal.
+ */
 function drawVerdicts(box, groups, nowSec) {
   box.replaceChildren();
-  const rows = [];
+  const out = [];
   for (const group of groups) {
-    const head = el("div", "vd-host");
-    const name = el("div", "grp-name", group.host);
-    const stat = el("span", "grp-stat",
-      `${fmt(group.urls.length)} url(s) · ${fmt(group.survivors)} dialled` +
-      (group.folded ? ` · ${fmt(group.folded)} folded` : "") +
-      (group.expired ? ` · ${fmt(group.expired)} expired` : ""));
-    const line = el("div", "grp-head");
-    line.append(name, stat);
-    head.appendChild(line);
-    box.appendChild(head);
+    const wrap = el("div", "vd-group");
+    const head = el("div", "vd-ghead");
+    const folded = group.folded;
+    const meter = el("div", "vd-meter");
+    const fill = el("i");
+    fill.style.width = `${group.urls.length ? Math.round((folded / group.urls.length) * 100) : 0}%`;
+    meter.appendChild(fill);
+    meter.title = `${fmt(folded)} of ${fmt(group.urls.length)} url(s) fold away`;
+    head.append(
+      el("div", "vd-name", group.host),
+      el("span", "vd-count",
+        `${fmt(group.urls.length)} url(s) → ${fmt(group.survivors)} dialled` +
+        (group.expired ? ` · ${fmt(group.expired)} expired` : "")),
+      meter,
+    );
+    wrap.appendChild(head);
+    const rows = [];
     for (const u of group.urls) {
       const row = el("div", "vd-row");
-      const left = el("div", "vd-url", u.url);
+      const left = el("div", "vd-path");
       const right = el("div", "vd-when");
+      // The path alone, with the bare url named rather than drawn as an empty
+      // cell — "/" is a row that looks like a rendering failure.
+      const path = u.url.replace(/^wss?:\/\/[^/]+/i, "") || "/";
+      left.append(el("span", null, path === "/" ? "(no path)" : path));
       // The VERDICT's age, not the record's. Kind 30166 is addressable and
       // shared — quartz's monitor rewrites it on every connection — so
       // `created_at` tracks the last time we TALKED to the relay, not the last
@@ -2243,12 +2344,21 @@ function drawVerdicts(box, groups, nowSec) {
       // now says only what the fold decided.
       let tag;
       if (u.fold) {
-        tag = el("span", "vd-tag vd-fold", u.foldCurrent ? "FOLD" : "FOLD (expired)");
-        left.append(" → ", el("span", "vd-fold", u.fold));
+        tag = el("span", u.foldCurrent ? "vd-pill fold" : "vd-pill expired", u.foldCurrent ? "fold" : "expired");
+        // The survivor is at the top of this same box, so the arrow names the
+        // path it points at rather than repeating the whole url.
+        left.append(el("span", "vd-into", ` → ${u.fold.replace(/^wss?:\/\/[^/]+/i, "") || "/"}`));
       } else if (u.cleared) {
-        tag = el("span", "vd-tag", "KEEP");
+        tag = el("span", "vd-pill keep", "keep");
+        row.classList.add("vd-keep");
+      } else if (u.synthetic) {
+        // Inferred from what the folds point at, not stated by the monitor —
+        // and said so, because the two are different claims.
+        tag = el("span", "vd-pill keep", "survivor");
+        row.classList.add("vd-keep");
+        left.append(el("span", "vd-into", " · no record of its own"));
       } else {
-        tag = el("span", "vd-tag vd-stale", "no fold verdict");
+        tag = el("span", "vd-pill none", "not folded");
       }
       right.append(tag);
       const at = u.fold || u.cleared ? u.foldMeasuredAt : null;
@@ -2263,19 +2373,33 @@ function drawVerdicts(box, groups, nowSec) {
       }
       if (u.stable === false) left.append(" ", el("span", "badge bad", "inconsistent"));
       row.append(left, right);
-      // Each evidence line NAMED, because the two answer different questions
-      // about the same url and an unlabelled sentence is read as belonging to
-      // whatever word is nearest.
-      if (u.foldEvidence) row.appendChild(el("div", "vd-why", `fold: ${u.foldEvidence}`));
-      if (u.stableEvidence) {
+      // ONE evidence line, and NAMED — the two verdicts answer different
+      // questions about the same url, and an unlabelled sentence is read as
+      // belonging to whatever word is nearest. The fold's is the one that
+      // explains the row, so it wins when both exist; the stability sentence is
+      // still on the title of its own line.
+      if (u.foldEvidence) {
+        const why = el("div", "vd-why", `fold: ${u.foldEvidence}`);
+        why.title = u.foldEvidence;
+        row.appendChild(why);
+      } else if (u.stableEvidence) {
         const s = u.stable === false ? "inconsistent" : u.stable === true ? "consistent" : "measured";
-        row.appendChild(el("div", "vd-why", `stability (${s}, ${ago(u.stableMeasuredAt)}): ${u.stableEvidence}`));
+        const text = `stability (${s}, ${ago(u.stableMeasuredAt)}): ${u.stableEvidence}`;
+        const why = el("div", "vd-why", text);
+        why.title = text;
+        row.appendChild(why);
       }
-      box.appendChild(row);
-      rows.push({ node: row, needle: (u.url + " " + (u.fold || "") + " " + group.host).toLowerCase() });
+      wrap.appendChild(row);
+      rows.push({ node: row, needle: (u.url + " " + (u.fold || "")).toLowerCase() });
     }
+    box.appendChild(wrap);
+    // The GROUP is what the filter hides, and the rows within it. Hiding only
+    // rows left every host's heading on screen — a search for one host drew a
+    // column of a thousand headings with nothing under them, which read as a
+    // thousand matches.
+    out.push({ box: wrap, host: group.host.toLowerCase(), rows });
   }
-  return rows;
+  return out;
 }
 
 function relaysCard(section) {

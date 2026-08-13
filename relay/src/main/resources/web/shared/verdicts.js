@@ -195,10 +195,47 @@ export function groupByHost(events, nowSec) {
     if (rec.stable === false) group.unstable++;
   }
   for (const group of hosts.values()) {
-    // Survivors last in the fold's own preference order is not knowable here —
-    // that is the router's opinion — so the urls are drawn shortest first,
-    // which puts the pathless url at the top where it usually belongs.
-    group.urls.sort((a, b) => a.url.length - b.url.length || a.url.localeCompare(b.url));
+    // THE SURVIVOR USUALLY HAS NO RECORD OF ITS OWN, and leaving it off the
+    // list drew the host as having nothing left to dial.
+    //
+    // A url everything folded ONTO is a canonical, and `RelayAliases.learn`
+    // clears — i.e. publishes a verdict about — only a leader that nothing
+    // folded onto. So the very url the group collapsed to is the one url with
+    // no `same-as` to find, and a group read purely from records showed
+    // "23 urls · 0 dialled" for a host that is dialled exactly once. Synthesised
+    // from what the folds point AT, and flagged, because "we inferred this from
+    // the other records" and "the monitor said this" are different claims.
+    //
+    // Only when the target really is on this host: a hand-edited or malformed
+    // record could point anywhere, and inventing a row for it here would put
+    // one host's url inside another host's group.
+    const known = new Set(group.urls.map((u) => u.url));
+    for (const u of [...group.urls]) {
+      if (!u.fold || !u.foldCurrent) continue;
+      if (known.has(u.fold) || hostOf(u.fold) !== group.host) continue;
+      known.add(u.fold);
+      group.urls.push({
+        url: u.fold,
+        host: group.host,
+        synthetic: true,
+        fold: null,
+        cleared: false,
+        stable: null,
+        foldCurrent: false,
+        foldEvidence: null,
+        foldMeasuredAt: null,
+        stableEvidence: null,
+        stableMeasuredAt: null,
+      });
+      group.inferred = (group.inferred || 0) + 1;
+    }
+    // Survivors first, then shortest — the fold's own preference order is the
+    // router's opinion and not knowable here, but the url everything points at
+    // is, and it belongs at the top of its own group.
+    group.urls.sort((a, b) => {
+      const survivor = (u) => (!u.fold || !u.foldCurrent ? 0 : 1);
+      return survivor(a) - survivor(b) || a.url.length - b.url.length || a.url.localeCompare(b.url);
+    });
     group.survivors = group.urls.filter((u) => !u.fold || !u.foldCurrent).length;
   }
   return [...hosts.values()].sort((a, b) => b.urls.length - a.urls.length || a.host.localeCompare(b.host));
@@ -222,16 +259,22 @@ export function summarise(groups, nowSec) {
   let silent = 0;
   let unstable = 0;
   let stable = 0;
+  let inferred = 0;
   for (const group of groups) {
     urls += group.urls.length;
     folded += group.folded;
     cleared += group.cleared;
     expired += group.expired;
     unstable += group.unstable;
+    inferred += group.inferred || 0;
     for (const u of group.urls) {
+      // A synthesised survivor carries no verdict BY CONSTRUCTION — it is the
+      // url the others point at. Counting it as silent would inflate the one
+      // number that is supposed to mean "the monitor has not looked at this".
+      if (u.synthetic) continue;
       if (!u.fold && !u.cleared && u.stable == null) silent++;
       if (u.stable === true) stable++;
     }
   }
-  return { hosts: groups.length, urls, folded, cleared, expired, silent, stable, unstable };
+  return { hosts: groups.length, urls, folded, cleared, expired, silent, stable, unstable, inferred };
 }
