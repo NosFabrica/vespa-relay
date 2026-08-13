@@ -121,6 +121,44 @@ data class TorSettings(
 }
 
 /**
+ * How long the alias fold's fingerprint may sit silent on this url before it
+ * gives up — the clearnet budget for a clearnet relay, and the Tor one on top
+ * for anything dialled through the proxy.
+ *
+ * **Quartz's `idleTimeoutMs` is measured from the START of the fetch**, not
+ * from the connection: `IdleClock` is constructed with the walk and nothing has
+ * bumped it yet, so the window covers the connect as well as the answer. The
+ * value [AliasProbe] was given is `connectionTimeout` — the number that sizes a
+ * clearnet TCP handshake, 20s by default — and a hidden service is allowed
+ * [TorSettings.connectTimeoutSec] (90s) for the circuit and the rendezvous
+ * ALONE, precisely because 20s is the wrong size for that. The two disagreeing
+ * is not a slow probe, it is a probe that cannot finish: [fetchAll] returns
+ * whatever it collected when the window lapses, and what it collected is
+ * nothing — which arrives at [RelayAliases] as an EMPTY window, indistinguishable
+ * from a relay that holds no events. An empty window folds nothing and clears
+ * nothing, so every url on that host stays unmeasured and the fan-out goes on
+ * dialling all of them, pass after pass, forever.
+ *
+ * Summed rather than maxed, because the two budgets buy different things: the
+ * Tor one gets us connected, and the clearnet one is the silence every other
+ * relay is allowed while ANSWERING. Under `SYNC_TOR_ALL` clearnet urls route
+ * through the proxy too and get the same window, for the same reason.
+ *
+ * What it costs is paid only by hosts that do not answer: a leader that never
+ * speaks is asked four times a pass (bare filter then [AliasProbe.FALLBACK_KINDS],
+ * each retrying once at the smaller page), so a dead onion group now occupies one
+ * of the fold's 16 permits for minutes rather than seconds. That is background
+ * work on a 6h clock against the handful of relays Tor reaches — see
+ * [TorSettings.DEFAULT_MAX_SOCKETS] — and the alternative is what it replaces:
+ * never folding a hidden service at all.
+ */
+internal fun probeIdleMs(
+    url: NormalizedRelayUrl,
+    tor: TorTransport?,
+    clearnetIdleMs: Long,
+): Long = if (tor?.routes(url) == true) tor.settings.connectTimeoutSec * 1000L + clearnetIdleMs else clearnetIdleMs
+
+/**
  * The second websocket client: the one whose connections go through Tor.
  *
  * The mechanism is OkHttp's, not ours. Given a SOCKS proxy, `RouteSelector`

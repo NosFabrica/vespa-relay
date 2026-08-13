@@ -22,7 +22,7 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
-import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllWithHooks
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 
@@ -264,18 +264,90 @@ class AliasProbe(
         /** Consecutive pages that add nothing before the walk gives up. */
         private const val MAX_STALLS = 2
 
-        /** The live wiring: one paged REQ per ask, over the router's own client. */
+        /**
+         * The live wiring: one paged REQ per ask, over the router's own client.
+         *
+         * [idleMs] is asked PER URL rather than fixed for the process, because
+         * the router dials over two transports and their budgets are not the
+         * same number. Quartz's window is measured from the start of the fetch,
+         * so it covers the connect: a hidden service given the clearnet
+         * handshake budget comes back empty while its circuit is still being
+         * built, and an empty window is a url that can never fold. See
+         * `probeIdleMs`, which is what the engine passes here.
+         *
+         * **`fetchAllWithHooks` rather than `fetchAll`, for the one thing this
+         * class is built on that the plain call cannot express.**
+         *
+         * **NIP-42 is no longer one of them.** This used to pass
+         * `pendingOnAuthRequired = true` here, with an A/B against
+         * `auth.nostr1.com` arguing it was worth ~19s per auth-gated leader.
+         * Quartz reworked the whole path (amethyst #3905/#3906) and both halves
+         * of that argument are gone:
+         *
+         *  - **The flag's correct value is computable, so it is derived.** The
+         *    default is now `hasAuthResponder()` — true exactly when something
+         *    will answer a challenge. With no responder, `true` and `false`
+         *    produce identical outcomes (`awaitAuthOutcome` returns
+         *    `NO_RESPONDER` without waiting); with one, waiting is the entire
+         *    point. This router always attaches a `RelayAuthenticator` when it
+         *    has a signer, and it only builds a probe when it has one, so the
+         *    derived answer is the answer we were hardcoding. Passing it
+         *    explicitly now only creates a way to be wrong later.
+         *  - **The wait is bounded by the AUTH, not by the idle window.** A
+         *    short grace for a responder to pick the challenge up
+         *    (`DEFAULT_AUTH_GRACE_MS`, 1s), then for it to settle, capped by our
+         *    own `idleTimeoutMs`. The guarantee upstream ships with it is that
+         *    an auth-gated relay costs at most what a silent one already cost —
+         *    which is what retires the 19s figure rather than merely improving
+         *    it.
+         *
+         * The same rework plumbed this into `fetchAllPages` and `fetchAll`,
+         * where it matters far more than it ever did here: those are the
+         * router's actual sync paths, and an auth-gated relay used to read as an
+         * EMPTY one on both. See AGENTS.md.
+         *
+         * `doneOut`, because NULL AND EMPTY ARE DIFFERENT ANSWERS and the plain
+         * call flattens them: it returns a list, so a relay that never spoke
+         * arrives here as one that holds nothing. That is the distinction
+         * [fingerprint] is written around, and losing it cost a second window on
+         * every dead url — the empty-page retry at [RelayAliases.FALLBACK_PROBE_PAGE]
+         * fired for hosts that had not answered at all. A relay that reached
+         * EOSE *or refused with a CLOSED* did speak: its empty list is an
+         * answer, and the smaller-page retry that a `blocked: limit too high`
+         * needs still happens. Only `cannot:` and a window that lapsed in
+         * silence are null.
+         */
         fun over(
             client: NostrClient,
             target: Int,
-            timeoutMs: Long,
+            idleMs: (NormalizedRelayUrl) -> Long,
         ): AliasProbe =
             AliasProbe(
                 fetch = { url, size, until, kinds ->
-                    client.fetchAll(url, Filter(limit = size, until = until, kinds = kinds), timeoutMs)
+                    val result =
+                        client.fetchAllWithHooks(
+                            filters = mapOf(url to listOf(Filter(limit = size, until = until, kinds = kinds))),
+                            idleTimeoutMs = idleMs(url),
+                        ) { _, _ -> true }
+                    // "Spoke" is any terminal state that came from the relay.
+                    // `cannot:` is our own transport failing and is exactly the
+                    // case null exists for.
+                    //
+                    // NOT `result.anyRelayServed`, which is the obvious-looking
+                    // swap and is narrower: it is EOSE alone, while this has to
+                    // count a relay that answered with a CLOSED as having
+                    // spoken. `blocked: limit too high` is an ANSWER — it is
+                    // what the fallback-page retry in [fingerprint] exists to
+                    // react to — and reading it as silence would return null,
+                    // skip the retry, and take every relay capping under
+                    // [RelayAliases.DEFAULT_PROBE_PAGE] out of the fold.
+                    if (result.doneReasons.values.any { !it.startsWith(CANNOT_CONNECT) }) result.events.map { it.second } else null
                 },
                 target = target,
             )
+
+        /** Quartz's prefix for a terminal reason that is our connect failing, not the relay answering. */
+        private const val CANNOT_CONNECT = "cannot:"
 
         /**
          * What to ask a relay that will not take a bare filter. Kind 1 because

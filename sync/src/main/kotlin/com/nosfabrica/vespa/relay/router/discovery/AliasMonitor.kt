@@ -54,14 +54,29 @@ import java.util.concurrent.atomic.AtomicLong
  * works from the current shape of the network, and a stream that has stopped
  * discovering a url stops paying for it.
  *
- * Work is kept per stream and not merged into one set because the two callbacks
+ * Work is kept per stream and not merged into one set because the callbacks
  * belong to the stream: [Work.canDial] is its transport guard (a stream without
- * Tor must not probe a `.onion`) and [Work.onEvent] is its ingest, filtered by
- * its own window. Merging them would mean guessing which stream a downloaded
- * event belongs to.
+ * Tor must not probe a `.onion`), [Work.onEvent] is its ingest, filtered by
+ * its own window, and [Work.sockets] is its connection refcount — the one thing
+ * that can close a probe's websocket without closing it under another stream's
+ * transfer. Merging them would mean guessing which stream a downloaded event
+ * belongs to.
  */
 class AliasMonitor(
-    private val pass: Pass,
+    /**
+     * The passes to run over each stream's urls, IN THIS ORDER and never
+     * concurrently.
+     *
+     * Sequential because they share a destination: both [AliasFolding] and
+     * [ConsistencyPass] write tags onto the same addressable kind-30166 record
+     * for a url, and [RelayAliasRecord.edit] is a read-modify-write with no
+     * compare-and-set. Two of them writing one url at once would drop whichever
+     * tag was written between the other's read and its store — silently, since
+     * the result is still a valid signed record that simply says less. Running
+     * them one after another inside this loop is what makes that impossible
+     * within this process.
+     */
+    private val passes: List<Pass>,
     private val scope: CoroutineScope,
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
     private val startupDelayMs: Long = DEFAULT_STARTUP_DELAY_MS,
@@ -82,6 +97,7 @@ class AliasMonitor(
             candidates: List<NormalizedRelayUrl>,
             canDial: suspend (NormalizedRelayUrl) -> Boolean,
             onEvent: suspend (Event) -> Unit,
+            sockets: AliasFolding.Sockets,
         ): Int
     }
 
@@ -90,6 +106,7 @@ class AliasMonitor(
         val candidates: List<NormalizedRelayUrl>,
         val canDial: suspend (NormalizedRelayUrl) -> Boolean,
         val onEvent: suspend (Event) -> Unit,
+        val sockets: AliasFolding.Sockets,
     )
 
     private val pending = ConcurrentHashMap<String, Work>()
@@ -97,8 +114,14 @@ class AliasMonitor(
     private val learnedTotal = AtomicLong()
 
     /**
-     * How many aliases this monitor has learned since the process started —
-     * used as a VERSION for the fold, not as a statistic.
+     * How many verdicts this monitor has learned since the process started —
+     * folds and stability answers together — used as a VERSION for the cached
+     * relay list, not as a statistic.
+     *
+     * Both belong here because both change what a cached list should contain: a
+     * fold removes a duplicate url, a stability verdict removes a url that
+     * cannot be synced against. A list built before either was published goes on
+     * dialling it.
      *
      * A stream that holds its discovered relay list in memory across cycles
      * ([RelayDiscoveryConfig.recycleSeconds]) is holding a list the fold has
@@ -131,9 +154,10 @@ class AliasMonitor(
         candidates: List<NormalizedRelayUrl>,
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
         onEvent: suspend (Event) -> Unit = {},
+        sockets: AliasFolding.Sockets = AliasFolding.Sockets.NONE,
     ) {
         if (candidates.size < 2) return
-        pending[label] = Work(candidates, canDial, onEvent)
+        pending[label] = Work(candidates, canDial, onEvent, sockets)
     }
 
     /**
@@ -182,18 +206,23 @@ class AliasMonitor(
     suspend fun runPass(): Int {
         var learned = 0
         for ((label, work) in pending.entries.map { it.key to it.value }) {
-            try {
-                val n = pass.measure(label, work.candidates, work.canDial, work.onEvent)
-                learned += n
-                // Per stream, not once at the end: a pass over many streams can
-                // run for a quarter of an hour, and a stream whose fan-out
-                // starts in the middle of it should see the verdicts already
-                // published rather than wait out the whole pass.
-                if (n > 0) learnedTotal.addAndGet(n.toLong())
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                System.err.println("router: $label alias pass failed: ${e.javaClass.simpleName}: ${e.message}")
+            // Each pass guarded on its own, so one failing does not cost the
+            // stream the others: they measure different things and a relay that
+            // breaks a fingerprint has no bearing on a stability walk.
+            for (pass in passes) {
+                try {
+                    val n = pass.measure(label, work.candidates, work.canDial, work.onEvent, work.sockets)
+                    learned += n
+                    // Per stream, not once at the end: a pass over many streams can
+                    // run for a quarter of an hour, and a stream whose fan-out
+                    // starts in the middle of it should see the verdicts already
+                    // published rather than wait out the whole pass.
+                    if (n > 0) learnedTotal.addAndGet(n.toLong())
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    System.err.println("router: $label alias pass failed: ${e.javaClass.simpleName}: ${e.message}")
+                }
             }
         }
         return learned

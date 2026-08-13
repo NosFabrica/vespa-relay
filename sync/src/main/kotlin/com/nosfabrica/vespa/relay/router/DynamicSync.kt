@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.CachedRelayList
+import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
@@ -121,7 +122,12 @@ internal class DynamicSync(
     // Split in two on purpose: this one only READS verdicts, on the cycle's
     // critical path, and the monitor below EARNS them somewhere else.
     private val folding: AliasFolding?,
-    // Where the dialling half of that fold lives. Null exactly when [folding]
+    // The stability gate, reading only: which discovered urls answered one
+    // filter two different ways and therefore cannot be synced against at all.
+    // Null on the same terms as [folding], and READ-ONLY here for the same
+    // reason — the dialling half belongs to [aliasMonitor].
+    private val stability: ConsistencyPass?,
+    // Where the dialling half of both lives. Null exactly when [folding]
     // is: same identity, same reason.
     private val aliasMonitor: AliasMonitor?,
     // The Tor transport, when configured: what makes discovered .onion urls
@@ -602,8 +608,29 @@ internal class DynamicSync(
         // is not the number of urls the fold removed and the identity
         // `discovered = folded + excluded + taken` did not hold.
         val foldedList = cleaned?.let { RelayAliases.foldOnto(discovered, it.aliases) } ?: discovered
+        // THE STABILITY GATE, after the fold and before the exclude list.
+        //
+        // After the fold, because folding is the cheaper answer where both
+        // apply: an unstable url that is also a duplicate should leave as a
+        // duplicate, keeping its authors bound to the survivor rather than
+        // dropping them. Before `exclude`, so the two counts below stay
+        // different facts — one is a measurement, the other an instruction.
+        //
+        // A refused url is not a dead one. It answered, it is reachable, and
+        // HostStrikes must not be told otherwise; what it cannot do is hold a
+        // cursor still, so every cycle it re-serves what the last one took.
+        // Measured on this mirror as millions of duplicated events and cycles
+        // stretched from two hours to five.
+        val unstable = stability?.let { runCatching { it.apply(foldedList.map { r -> r.url }) }.getOrNull() }.orEmpty().toSet()
+        val stable = foldedList.filter { it.url !in unstable }
+        if (unstable.isNotEmpty()) {
+            System.err.println(
+                "router: ${stream.name} refused ${unstable.size} url(s) that answered one filter two different ways " +
+                    "(e.g. ${unstable.take(3).joinToString { it.url }})",
+            )
+        }
         val relays =
-            foldedList
+            stable
                 // A verdict's canonical is whatever the probe measured,
                 // which is NOT necessarily a url discovery would hand
                 // out today: `exclude` and our own url are applied when
@@ -626,13 +653,27 @@ internal class DynamicSync(
             candidates = candidates,
             canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
             onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
+            // A fingerprint is a websocket, and quartz closes none of its own:
+            // the pass has to hand its connections back through the same
+            // refcount the fan-out uses, or it leaves up to `probesPerCycle` of
+            // them open against a 1024-socket dispatcher — worst on exactly the
+            // hosts it probes first, where the per-host budget is 20.
+            sockets =
+                object : AliasFolding.Sockets {
+                    override fun claim(url: NormalizedRelayUrl) {
+                        inFlight.merge(url, 1, Int::plus)
+                    }
+
+                    override fun release(url: NormalizedRelayUrl) = releaseSocket(url)
+                },
         )
         // Each member is a difference between two lists this code
         // holds, so the identity closes for every case including a
         // synthesised survivor:
         //   discovered      = candidates
         //   foldedOntoAnother = candidates - foldedList
-        //   excluded        = foldedList - relays   (the `exclude` list
+        //   refusedUnstable = foldedList - stable   (measured, not instructed)
+        //   excluded        = stable - relays       (the `exclude` list
         //                     and our own url being obeyed)
         //   taken           = relays                (what is dialled)
         // It was `candidates.size - relays.size` for the fold and a
@@ -644,7 +685,8 @@ internal class DynamicSync(
             relays = relays,
             discovered = candidates.size,
             foldedOntoAnother = (candidates.size - foldedList.size).coerceAtLeast(0),
-            excluded = (foldedList.size - relays.size).coerceAtLeast(0),
+            refusedUnstable = (foldedList.size - stable.size).coerceAtLeast(0),
+            excluded = (stable.size - relays.size).coerceAtLeast(0),
             // By AUTHORITY, so the count says how many servers this
             // is, not how many strings. Arithmetic over urls, not
             // the fold's verdict — see [CycleTally].
@@ -1177,11 +1219,73 @@ internal class DynamicSync(
     ): Int {
         inFlight.merge(url, 1, Int::plus)
         transferring.incrementAndGet()
+        // WHEN THIS LEG ACTUALLY STARTED TALKING, which is not when the rotation
+        // claimed the url. The claim comes first, then the strike check, the Tor
+        // probe, the TCP pre-probe and a queue for a transfer slot that a
+        // saturated pool can hold for many minutes — and `LegProgress`'s quiet
+        // clock runs from the CLAIM, deliberately, because that is the honest
+        // answer for the in-flight report. Measuring silence from it here is not:
+        // a worker that waited six minutes for a slot would arrive already past
+        // the give-up window and abandon a perfectly healthy relay on its second
+        // ask. `askIndex > 0` alone does not cover that, since ask 0 legitimately
+        // returns nothing for most author chunks.
+        val transferStartedMs = System.currentTimeMillis()
         return try {
             var downloaded = 0
             val asks = splitByAuthors(window, stream.dynamic?.authorsPerLeg)
-            for (ask in asks) {
+            var abandoned = 0
+            for ((n, ask) in asks.withIndex()) {
+                // STOP ASKING A RELAY THAT HAS STOPPED ANSWERING.
+                //
+                // `NEG_IDLE_MS` bounds ONE ask. A narrowed stream makes
+                // `authorsPerLeg` of them per relay, in sequence, and nothing
+                // bounded the sequence — so a relay that answers every chunk
+                // with a full idle window costs `asks.size * 30s` of a transfer
+                // slot, a socket and a rotation claim. Measured in production:
+                // `wss://fiatjaf.com/xenon-lima` held for 5h00m having delivered
+                // 85 events, quiet for the last 4h56m of it — 18,007s, which is
+                // 600 empty asks at the idle window apiece. The url is skipped by
+                // every pass in the meantime, because the claim is still ours.
+                //
+                // NOT the wall-clock deadline this file used to have, and the
+                // difference is the whole reason this is safe: that one fired on
+                // elapsed time and so could only ever cut a leg that was
+                // WORKING — it truncated four healthy upstreams at its 4h mark,
+                // which is why `NEG_IDLE_MS` is documented as an idle window and
+                // not a deadline. This fires on SILENCE. Every event resets the
+                // clock ([LegProgress.received]), so a relay with a real backlog
+                // — directory.yabu.me's 1.2M events below one band floor — is
+                // never touched however long it takes.
+                //
+                // Nothing is lost by stopping: the bands for the chunks already
+                // walked are recorded, and the chunks not reached simply have no
+                // band, so the next pass asks them again. This defers work, it
+                // does not drop it.
+                val nowMs = System.currentTimeMillis()
+                // Silence as THIS LEG has experienced it: never longer than the
+                // leg has been running, whatever the claim's clock says.
+                val silentMs = legProgress?.quietForMs(nowMs)?.coerceAtMost(nowMs - transferStartedMs)
+                if (givesUp(n, silentMs)) {
+                    abandoned = asks.size - n
+                    onFailure("gave up: silent for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)} with $abandoned ask(s) left")
+                    break
+                }
                 downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress)
+            }
+            // ABANDONED IS NOT "NOTHING NEW". A leg that gave up with no
+            // downloads would otherwise fall through to the `else` branch in
+            // [syncOne] and be tallied `nothingNew` — which the card renders as
+            // "reached, and it had nothing we did not already hold", a claim
+            // about the RELAY made about a walk WE cut short. `transferFailed`
+            // is the honest member of the partition for it: reached, the
+            // transfer did not complete, no strike published and no statement
+            // signed about their server. The `reasons` map carries the real
+            // sentence beside the count.
+            if (abandoned > 0) {
+                System.err.println(
+                    "router: ${stream.name} ${url.url} — stopped after ${asks.size - abandoned} of ${asks.size} ask(s): " +
+                        "nothing has arrived for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)}, $downloaded event(s) this leg",
+                )
             }
             // DIAGNOSTIC: what this relay was asked and what came back. Enabled
             // by SYNC_DIAGNOSE, which names one stream — the fan-out is 16k
@@ -1193,7 +1297,20 @@ internal class DynamicSync(
                         "downloaded=$downloaded",
                 )
             }
-            downloaded
+            // ABANDONED IS NOT "NOTHING NEW". A leg that gave up having
+            // downloaded nothing would otherwise return 0 and be tallied
+            // `nothingNew` by [syncOne] — which the card renders as "reached,
+            // and it had nothing we did not already hold", a claim about the
+            // RELAY made about a walk WE cut short. `TRANSFER_FAILED` is the
+            // honest member of the partition for it: reached, the transfer did
+            // not complete, nothing struck and nothing signed about their
+            // server. The `reasons` map carries the sentence beside the count.
+            //
+            // Only when it delivered NOTHING: a leg that downloaded events and
+            // then went quiet did real work, and calling that a failed transfer
+            // would lose the events in the reporting as surely as the other way
+            // round loses the truth.
+            if (abandoned > 0 && downloaded == 0) TRANSFER_FAILED else downloaded
         } catch (e: CancellationException) {
             // Shutdown, not a dead relay: neither a tally nor a strike.
             throw e
@@ -1566,6 +1683,33 @@ internal class DynamicSync(
          * job as the general rule at the smallest size instead of a special case.
          */
         internal fun poolHeadroom(concurrency: Int): Int = ((concurrency + 1) / 2).coerceAtLeast(1)
+
+        /**
+         * Should the rest of this relay's asks be left for the next pass?
+         *
+         * [askIndex] is which ask is about to be made and [quietForMs] is how
+         * long since anything arrived from this relay, or null when nothing is
+         * reporting on the leg.
+         *
+         * Three properties this has to hold, each of them a way the wall-clock
+         * deadline that used to live here got it wrong:
+         *
+         *  - **never before the first ask.** The quiet clock runs from the CLAIM
+         *    ([LegProgress]), and the claim is taken before the guards and the
+         *    queue for a transfer slot — so a leg that waited out a saturated
+         *    pool arrives here already "quiet" for minutes and would be given up
+         *    on without being asked anything at all.
+         *  - **never on elapsed time.** Every event resets the clock, so a relay
+         *    still delivering cannot trip this however long its backlog takes.
+         *    That is the whole difference from a deadline, which can only fire
+         *    on the healthy case.
+         *  - **never without a leg to measure.** No reporter, no evidence of
+         *    silence, and a guess is not evidence.
+         */
+        internal fun givesUp(
+            askIndex: Int,
+            quietForMs: Long?,
+        ): Boolean = askIndex > 0 && quietForMs != null && quietForMs >= LEG_QUIET_GIVE_UP_MS
 
         /**
          * How often the gate re-reads the pool.

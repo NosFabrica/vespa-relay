@@ -1525,6 +1525,11 @@ function progressPanel(progress) {
     acct.append(
       `${fmt(u.discovered || 0)} url(s) discovered · ` +
       `${fmt(u.foldedOntoAnother || 0)} folded onto another url · ` +
+      // Drawn only when non-zero, like `excluded`: a mirror refusing nothing
+      // should not carry a line about refusals. Worded as the measurement
+      // rather than the verdict — the relay answered, it just answered twice
+      // differently, and "dropped" alone would read as unreachable.
+      (u.refusedUnstable ? `${fmt(u.refusedUnstable)} refused (answered inconsistently) · ` : "") +
       (u.excluded ? `${fmt(u.excluded)} excluded by config · ` : "") +
       `${fmt(total)} taken on` +
       (c.hosts != null ? ` across ${fmt(c.hosts)} host(s)` : "") +

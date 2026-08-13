@@ -93,6 +93,10 @@ class RelayAliasRecord(
         val aliases: Map<NormalizedRelayUrl, NormalizedRelayUrl> = emptyMap(),
         /** Urls proven to be their own relay. Never a key in [aliases]. */
         val distinct: Set<NormalizedRelayUrl> = emptySet(),
+        /** Urls measured as answering one filter the same way twice. */
+        val stable: Set<NormalizedRelayUrl> = emptySet(),
+        /** Urls measured as NOT doing so — the ones the fan-out refuses. */
+        val unstable: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /**
@@ -107,6 +111,16 @@ class RelayAliasRecord(
      * own `d`: pointing elsewhere is a fold, pointing at itself is the cleared
      * verdict. Normalising both sides first, so `wss://nos.lol` and
      * `wss://nos.lol/` cannot read as a fold of a url onto itself.
+     *
+     * **THROWS when the store cannot answer, and must go on doing so.** A
+     * fan-out of 16,000 urls is 30-odd chunks and this used to swallow a failed
+     * one into an empty result — while [AliasFolding.adopt] forgets every
+     * verdict it holds before adopting what comes back, precisely on the promise
+     * that a failed read arrives as a failure. One unlucky query therefore
+     * unfolded up to [QUERY_CHUNK] urls for that cycle: they were dialled as
+     * their own relays, re-probed for a verdict already published, and nothing
+     * anywhere said so. A partial answer is not "no verdict", and the only
+     * reading that keeps the fold honest is to let the caller keep what it has.
      */
     suspend fun load(candidates: Collection<NormalizedRelayUrl>): Verdicts {
         val self = signer?.pubKey ?: return Verdicts()
@@ -114,22 +128,88 @@ class RelayAliasRecord(
         val floor = nowSeconds() - ttlSeconds
         val aliases = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val distinct = HashSet<NormalizedRelayUrl>()
+        val stable = HashSet<NormalizedRelayUrl>()
+        val unstable = HashSet<NormalizedRelayUrl>()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
             val held: List<Event> =
-                runCatching {
-                    store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
-                }.getOrNull() ?: continue
+                store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
             for (event in held) {
-                if (event.createdAt < floor) continue
                 val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
-                val sameAs = event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.get(1) ?: continue
                 val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
-                val to = RelayUrlNormalizer.normalizeOrNull(sameAs) ?: continue
-                if (from == to) distinct += from else aliases[from] = to
+                // Two independent verdicts on one record, read independently: a
+                // url may carry a fold, a stability answer, both or neither, and
+                // an early `continue` for a missing `same-as` used to drop the
+                // whole event — which would make every stability verdict on a
+                // url that was never folded invisible.
+                event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, event, floor) }?.get(1)?.let { sameAs ->
+                    RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
+                        if (from == to) distinct += from else aliases[from] = to
+                    }
+                }
+                event.tags
+                    .firstOrNull { it.size > 1 && it[0] == SELF_CONSISTENT_TAG }
+                    ?.takeIf { current(it, event, floor) }
+                    ?.get(1)
+                    ?.let { answer ->
+                        when (answer) {
+                            CONSISTENT_YES -> stable += from
+
+                            CONSISTENT_NO -> unstable += from
+
+                            // An answer this writer does not recognise is not a
+                            // verdict. Ignored rather than guessed at: guessing
+                            // "unstable" would drop a relay on a tag we cannot read.
+                            else -> Unit
+                        }
+                    }
             }
         }
-        return Verdicts(aliases, distinct)
+        return Verdicts(aliases, distinct, stable, unstable)
     }
+
+    /**
+     * Sign and store what a stability pass measured: did this url answer one
+     * filter, at one week-old anchor, the same way twice?
+     *
+     * ```json
+     * ["self-consistent", "true",  "500 + 500 events at a 7d anchor, 500 shared -> 1.000"]
+     * ["self-consistent", "false", "203 + 179 events at a 7d anchor, 128 shared -> 0.715"]
+     * ```
+     *
+     * A separate tag from `same-as` and never inferred from it: they answer
+     * different questions about the same url, and a relay may be perfectly
+     * stable while wearing six aliases, or a unique endpoint that cannot be
+     * measured twice. [edit] owns each tag independently, so writing one leaves
+     * the other — and everyone else's — exactly where it was.
+     *
+     * "false" is the one verdict here that costs a relay its place in the
+     * fan-out, which is why nothing writes it from silence: an unmeasurable url
+     * gets NO tag at all rather than a negative one. See [RelayConsistency].
+     */
+    suspend fun publishConsistency(
+        url: NormalizedRelayUrl,
+        consistent: Boolean,
+        first: Int,
+        second: Int,
+        shared: Int,
+        score: Double,
+    ): Event? =
+        edit(
+            url,
+            owned = setOf(SELF_CONSISTENT_TAG),
+            add =
+                listOf(
+                    arrayOf(
+                        SELF_CONSISTENT_TAG,
+                        if (consistent) CONSISTENT_YES else CONSISTENT_NO,
+                        "$first + $second events at a ${ANCHOR_DAYS}d anchor, $shared shared -> %.3f".format(score),
+                        // See [current]: the record's own createdAt is bumped by
+                        // quartz's monitor on every connection, so a verdict has
+                        // to carry the moment it was MEASURED or it never ages.
+                        nowSeconds().toString(),
+                    ),
+                ),
+        )
 
     /**
      * Sign and store one verdict. Returns the event so a caller can push it
@@ -182,7 +262,14 @@ class RelayAliasRecord(
         subject: NormalizedRelayUrl,
         sameAs: NormalizedRelayUrl,
         evidence: String,
-    ): Event? = edit(subject, owned = setOf(SAME_AS_TAG), add = listOf(arrayOf(SAME_AS_TAG, sameAs.url, evidence)))
+    ): Event? =
+        edit(
+            subject,
+            owned = setOf(SAME_AS_TAG),
+            // The measurement's own clock in the last element — see [current]
+            // for why the event's cannot be used.
+            add = listOf(arrayOf(SAME_AS_TAG, sameAs.url, evidence, nowSeconds().toString())),
+        )
 
     /**
      * Edit a replaceable record: read what is there, keep everything this
@@ -230,6 +317,38 @@ class RelayAliasRecord(
         }.getOrNull()
     }
 
+    /**
+     * Is this VERDICT still within its TTL — as opposed to the record it rides
+     * on?
+     *
+     * **The two are not the same clock, and reading the record's was a bug that
+     * made half these verdicts immortal.** Kind 30166 is addressable and shared:
+     * quartz's own `RelayMonitor` rewrites the record for every relay this
+     * client connects to, on a 5-minute flush, carrying our tags forward
+     * untouched. So `event.createdAt` tracks the last time we TALKED to the
+     * relay, not the last time we MEASURED it — and for any relay still in the
+     * fan-out that is always minutes ago.
+     *
+     * The effect was exactly backwards from what the TTL is for. A relay we
+     * REFUSED is never dialled again, so nothing refreshes its record, so it
+     * ages out and is re-measured on schedule — that half worked. A relay we
+     * KEPT is dialled constantly, so its record never aged, so its verdict was
+     * never re-taken: measure once, trust forever. A relay that degrades after
+     * passing would never have been caught, which is the whole case the monthly
+     * re-measure exists for. The same applied to a fold's `same-as`: a folded
+     * url expires, the canonical it folded onto does not.
+     *
+     * So the measurement stamps its OWN time into the tag, and that is what is
+     * aged. A tag without one is a record written before this shipped: it falls
+     * back to the event's clock, which is the old behaviour and the only honest
+     * reading available for it.
+     */
+    private fun current(
+        tag: Array<String>,
+        event: Event,
+        floor: Long,
+    ): Boolean = (tag.getOrNull(MEASURED_AT_INDEX)?.toLongOrNull() ?: event.createdAt) >= floor
+
     /** This url's current record, or null when nothing holds one yet. */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
         val self = signer?.pubKey ?: return null
@@ -255,6 +374,33 @@ class RelayAliasRecord(
          * which member of the class to dial.
          */
         const val SAME_AS_TAG = "same-as"
+
+        /**
+         * The tag carrying the stability verdict — also this monitor's own, also
+         * skipped as unknown by every other NIP-66 consumer.
+         *
+         * Its value is a plain "true"/"false" rather than the score, because the
+         * score is evidence and the verdict is a decision: a reader applying a
+         * different bar to our number would be making a claim we did not make.
+         * The number is in the third element where the rest of the evidence goes.
+         */
+        const val SELF_CONSISTENT_TAG = "self-consistent"
+
+        /** The two values [SELF_CONSISTENT_TAG] is ever written with. */
+        const val CONSISTENT_YES = "true"
+
+        const val CONSISTENT_NO = "false"
+
+        /**
+         * Where a verdict tag carries the unix second it was MEASURED.
+         *
+         * Last element of both tag forms. Absent on records written before this
+         * existed, which [current] falls back for.
+         */
+        private const val MEASURED_AT_INDEX = 3
+
+        /** How old the stability anchor is, for the evidence string. */
+        private const val ANCHOR_DAYS = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60)
 
         /**
          * Thirty days. Long enough that the probe is a one-off per url rather

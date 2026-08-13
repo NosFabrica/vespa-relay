@@ -38,6 +38,42 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # dryRun, but it downloads a provider's whole score set (~150k events, ~3 min).
 ./gradlew :sync:test --tests '*DeleteMissingBandProbe*' -DdeleteMissingBandProbe=true --rerun -i
 
+# Asks a hidden service whether the fold could ever measure it: fingerprints
+# every url of one onion host through the operator's own Tor, at the old
+# clearnet window AND at the Tor one, and prints what `RelayAliases.learn` would
+# decide from each. Answers the three ways a `.onion` fails to fold — window too
+# short, relay will not answer a fingerprint, paths genuinely distinct — which
+# are the same silence from the outside. Asserts nothing.
+./gradlew :sync:test --tests '*AliasFoldOnionProbe*' -DonionFoldProbe=true \
+  -DonionFoldSocks=127.0.0.1:9050 --rerun -i
+
+# Runs a REAL pass of the fold against REAL relays and prints the numbers the
+# verdict rests on: the leader's window, its containment against ITSELF on a
+# second walk (the reproducibility bar), each sibling's containment, what was
+# published, and whether every socket the pass claimed came back. This is the
+# one that tells our reading of a relay apart from the relay — three claims in
+# the sections below were corrected by running it. Asserts nothing.
+./gradlew :sync:test --tests '*AliasFoldLiveProbe*' -DliveFoldProbe=true --rerun -i
+#   …or a group of your own, `;` between groups and `,` within one:
+#   -DliveFoldGroups='wss://relay.example,wss://relay.example/alpha'
+
+# Walks each url TWICE from one anchor and prints the containment, at anchors of
+# 1min / 1hour / 1day / 7days. Answers whether a relay that fails the
+# reproducibility bar is failing because its window is still moving (an older
+# anchor fixes it) or because it does not answer the same question twice (an
+# older anchor does not). Those are different facts and want different responses
+# — see the self-consistency section below. Asserts nothing.
+./gradlew :sync:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
+#   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
+
+# Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
+# true, explicit false, and the derived default — and prints hasAuthResponder()
+# beside them. Pins that this router's client really does have a NIP-42
+# responder, which is what makes quartz's derived default the value AliasProbe
+# used to hardcode. Asserts nothing.
+./gradlew :sync:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i
+#   …or a relay of your own: -DauthGatedUrl='wss://relay.example'
+
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
 # 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
 # and after.json in $D; the :relay half charts both through SyncCoverageReport,
@@ -75,7 +111,8 @@ git checkout <the pinned commit>          # test what the relay actually resolve
 TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
 ```
 
-Six ITs, ~7 min total, each standing up a real Vespa. Fetching that repo works
+Eight ITs, ~9 min total, each standing up a real Vespa (six until the
+near-column work added NearMergeSizingTest and ObserverGateIT). Fetching that repo works
 here; pushing to it does not (the git proxy only holds a credential for repos in
 the session's sources).
 
@@ -513,7 +550,8 @@ unanswerable from the serving side:
   tick whatever the streams are doing, so the relay can publish `staleForSec`,
   and a mirror that stopped an hour ago stops looking like one between cycles.
 - **`urls` and `taken` are a PARTITION.** `discovered = foldedOntoAnother +
-  excluded + taken`, and the ten outcomes under `taken` sum to it exactly, with
+  refusedUnstable + excluded + taken`, and the ten outcomes under `taken` sum to
+  it exactly, with
   `pending` DERIVED from the other eight so the identity closes mid-fan-out. A production
   document reported 16,752 discovered against 5,323 band-bearing and published
   no account whatever of the ~11,400 in between; every one of them had a
@@ -907,7 +945,103 @@ decorative. Below it sits `espelho.girino.org`, which is not measurable at all:
 the same url walked twice from the same anchor self-scores **0.435** (nos.lol
 scores 0.998, nostr.oxtr.dev 1.000). Its 17 urls can never fold, and the fold
 reports that identically to "this is a different relay" — safe, but only one of
-those is a correct conclusion. 1 host in 513; left uncoded deliberately.
+those is a correct conclusion. 1 host in 513 by count — but see the cost below, which is not proportional to
+the count.
+
+**A host that cannot be decided must not be re-probed at the front of every
+pass.** The three exits that end a group with no verdict — leader silent, leader
+window under `minSample`, leader not reproducible — all write NOTHING down, on
+purpose: each is a case where publishing would claim more than was measured. But
+nothing written down means `RelayAliases.unresolved` hands the group straight
+back next pass, and groups are probed WIDEST FIRST, which is exactly the shape
+these hosts have. So an undecidable host was re-dialled first, every pass,
+forever, spending a `probesPerCycle` budget that foldable hosts then never got.
+Reported live as `relay.lightning.pub` wearing six unfolded paths while folding,
+when finally measured, in **two seconds at containment 1.000** across all of
+them. `AliasFolding.undecidable` is the fix: a 24h in-memory cooldown per host,
+in memory and never signed, because "our pass could not measure this" is a fact
+about us and not a claim about their server.
+
+**The reproducibility bar gates the NEGATIVE claim only, and that asymmetry is
+deliberate.** Noise in the yardstick is not symmetric between the fold's two
+conclusions. A relay handing back a shuffled subset drives every containment
+DOWN, so a sibling that still clears `minOverlap` did it in spite of the noise —
+folding is the conservative read. The same noise pushes urls over the bar in the
+other direction for free, which is how two paths of one server get signed as
+separate relays for a month. Measured: `fiatjaf.com` self-scores 0.638 while its
+two minted paths score 0.787 and 0.730 against it, and the pass publishes both
+folds; `multiplexer.huszonegy.world` is self 0.594, siblings 0.622–0.870, four
+folds. So a group that folds cleanly never pays for the second walk, and only a
+group about to claim "these are different relays" does.
+
+**A relay that cannot answer one filter the same way twice is removed from the
+fan-out** — `RelayConsistency`, `ConsistencyPass`, published as a
+`self-consistent` tag on the url's own NIP-66 30166 record and re-measured
+monthly. Each url walked twice from one anchor, `RelaySelfConsistencyProbe`, and
+**run twice**, which is where the actual finding came from:
+
+| url | | 1min | 1hour | 1day | 7days |
+|---|---|---|---|---|---|
+| `nos.lol` | #1 / #2 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| `nostr.oxtr.dev` | #1 / #2 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| `relay.lightning.pub` | #1 / #2 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| `multiplexer.huszonegy.world` | #1 / #2 | 0.446 / 0.782 | 0.712 / 0.908 | 0.770 / 0.916 | **0.964 / 0.654** |
+| `fiatjaf.com` | #1 / #2 | 0.803 / 0.719 | 0.664 / 0.720 | 0.694 / 0.618 | 0.715 / 0.826 |
+
+**A stable relay is 1.000 at every depth in every run.** That is the whole
+safety argument: the good actors are nowhere near the 0.9 bar, so the gate
+cannot cost them their place.
+
+**One run would have shipped the wrong conclusion.** Run #1 alone read as
+"huszonegy is a sharded backend that just needs time" — 0.446 climbing to 0.964
+at a week. Run #2 scored the same relay at the same depth **0.654**. Its
+disagreement with itself is not reproducible either, so there is nothing to wait
+for. Re-run this probe more than once before moving the bar or the depth.
+
+The seven-day anchor is not there to let a relay converge — it is there to
+remove OUR anchor from the list of explanations, so a failure cannot be blamed
+on new events, indexing lag, or replication.
+
+**Why removal rather than a downgrade**, which is what an earlier draft of this
+section argued for: a relay whose window is a different slice each time holds no
+stable cursor, so its band never closes and every cycle re-downloads what the
+last one already took. Measured on this mirror as millions of duplicated events
+and cycles stretched from two hours to five. The claim being made is narrow and
+is worded that way in the record — the relay cannot be synced against, which is
+a property of the server, not of the operator — and it expires in a month, so a
+server that is fixed rejoins on its own with nobody intervening.
+
+**When a relay is tested again, and the trap that made half of them immortal.**
+The verdict ages out after `RelayAliasRecord.DEFAULT_TTL_SECONDS` (30 days) and
+the monitor picks the lapse up on its next pass, so a re-measure lands within
+`AliasMonitor.DEFAULT_INTERVAL_MS` (6h) of the month mark. Expiry is per url and
+staggered by whenever each was first measured, so there is no day-30 herd.
+
+What it must NOT be aged on is the RECORD's `created_at`, which is what it was
+doing at first. Kind 30166 is addressable and shared: quartz's `RelayMonitor`
+rewrites the record for every relay this client connects to on a 5-minute flush,
+carrying our tags forward. So `created_at` tracks the last time we TALKED to a
+relay, not the last time we MEASURED it — and the effect was exactly backwards.
+A REFUSED relay is never dialled, so nothing refreshed its record and it expired
+on schedule; a KEPT relay is dialled constantly, so its record never aged and
+its verdict was never re-taken. **Measure once, trust forever — for precisely
+the population where "was fine, now degraded" is the case worth catching.** The
+fold's `same-as` had the identical hole: a folded url expires, the canonical it
+folded onto did not.
+
+So both verdict tags carry the unix second they were measured as their last
+element, and `RelayAliasRecord.current` ages on that, falling back to the
+event's clock for records written before this existed.
+`RelayConsistencyTest` pins it by rewriting the record NOW over a month-old
+verdict — the shape that flush produces — and asserting it still reads stale.
+
+Three things it does NOT do. It never removes a relay on silence, on a window
+under `minSample`, or on a failed store read — only a positive measurement
+counts, because a wrong exclusion is invisible while a wrong inclusion costs one
+relay's duplicates until the next re-measure. And it does not detect the "feed
+us events forever" attack at all: a relay returning a consistent 500 passes.
+That one is novelty and drain (`PagedFetchResult.drained`, `LegProgress`,
+`LEG_QUIET_GIVE_UP_MS`), not identity.
 
 **A replaceable event has one address and more than one writer, so writing it
 is always an EDIT.** NIP-66's relay record is addressed by `d` = the relay url,
@@ -1317,6 +1451,150 @@ known` — so the probe really is a one-off per url, not a recurring cost. Both
 figures were measured while the fold still ran inline; the same work is now a
 monitor pass, which is why the 20s is no longer time a fan-out waits.
 
+**The fingerprint's clock is an IDLE window that starts before the connect, so a
+`.onion` was never foldable.** Quartz's `idleTimeoutMs` runs from the start of
+the fetch — `IdleClock` is constructed with the walk and nothing has bumped it
+yet — and the probe was handed `connectionTimeout`, the 20s that sizes a
+clearnet TCP handshake. A hidden service is allowed
+`SYNC_TOR_CONNECT_TIMEOUT_SECONDS` (90s) for the circuit and the rendezvous
+ALONE, for exactly the reason that 20s is the wrong size for them. The two
+disagreeing is not a slow probe, it is one that cannot finish: `fetchAll` returns
+what it collected when the window lapses, and what it collected is nothing, which
+reaches `RelayAliases` as an EMPTY window — not "measured and distinct" but **no
+verdict at all**, so nothing folds, nothing is cleared, and every url on that
+host is dialled again on every cycle for as long as the router runs. Symptom, off
+a live coverage card: three urls of one onion host in *Running now* at once.
+`probeIdleMs` gives a Tor-routed url the proxy's budget on top of the clearnet
+window (summed, not maxed — one buys the connect, the other is the silence every
+relay is allowed while answering) and `SYNC_TOR_ALL` carries it to clearnet urls
+with everything else. What it costs is paid by hosts that never answer: a silent
+leader is asked four times a pass (bare filter, then the kinds fallback, each
+retrying once at the smaller page), so a dead onion group holds one of the fold's
+16 permits for minutes rather than seconds — background work on a 6h clock
+against the handful of relays Tor reaches.
+
+**A relay that cannot reproduce its own answers made the fold a coin flip, and
+signed the result for a month.** `fiatjaf.com` was the second host found in the
+state `espelho.girino.org` is described in above, and measuring it settled that
+the case is not rare enough to leave uncoded. What it does, asked directly:
+
+| ask | answer |
+|---|---|
+| `{"limit":500,"until":anchor}` | **10** events, not newest-first, `created_at` spanning 2024–2026 in one page |
+| the same ask again, same anchor, seconds later | 10 events again, **0 of them shared with the first** |
+| `{"kinds":[1]}` / `[0]` / `[1,10002]` | 0 events, promptly EOSE'd |
+| four bare asks, pooled | 40 events, **all kind 30023, all one pubkey** (fiatjaf's own) |
+
+So it is a personal long-form relay serving an arbitrary ten of its own articles
+per REQ whatever limit is asked, and `until` cursoring means nothing against it —
+a paged walk ends on the stall heuristic at a different depth every time (120,
+157, 168, 182, 190, 202 ids across six walks). The consequence for the fold is
+the dangerous one: over a paged walk the url self-scores **0.694–0.720** while
+its sibling paths score **0.592 and 0.775 against each other**, so the cross-url
+number sits INSIDE the band the url scores against itself. Which side of
+`minOverlap` a pass lands on is chance — and landing low publishes two urls of
+one relay as separate relays for `DEFAULT_TTL_SECONDS`, during which `measured()`
+answers true and nothing re-probes them. A duplicate pinned in the fan-out for
+thirty days on evidence a re-run contradicts.
+
+**What `AliasFoldLiveProbe` then said, running the REAL walk rather than a
+reimplementation of it — and it corrects the paragraph above.** The numbers, one
+line per comparison:
+
+```
+nos.lol      leader 500 ids   vs ITSELF 1.000    vs /cipher-zulu 0.998
+fiatjaf.com  leader 196 ids   vs ITSELF 0.792    vs /ember 0.664   vs /xenon-lima 0.746
+```
+
+Two things follow. The self-overlap bar separates the two hosts cleanly with the
+real walk — 1.000 against 0.792 — which is what it is for. But `fiatjaf.com`
+FOLDS, and folds every time: five runs, five identical results, 2 aliases in ~11
+seconds. The coin-flip framing came from a Python reimplementation whose stall
+heuristic ended walks shallower than the real one; the real probe's margin over
+`minOverlap` is 0.664 against 0.500, not a knife edge. The guard below therefore
+never fires on this host — `result.distinct` is empty on every run — and it is
+insurance against the pass that lands the other way, not the reason these two
+urls fold. **Do not cite it as the fix for a host you have not run the probe
+against.**
+
+`RelayAliases.reproducible` is the guard: before a group publishes any NEGATIVE
+verdict, the leader is walked a SECOND time from the same anchor through the same
+filter, and unless it hands back `DEFAULT_MIN_SELF_OVERLAP` of its own window the
+group is forgotten and nothing is published. Three things about it:
+
+- **Paid only on the negative path.** A group that folded cleanly is making the
+  safe claim and costs nothing extra; the second walk is one dial on groups that
+  were about to call something a separate relay.
+- **0.9 sits in an empty gap, not at a round number.** Stable relays self-score
+  0.998 (nos.lol) and 1.000 (nostr.oxtr.dev); the two unmeasurable ones score
+  0.435 and 0.694–0.720. Nothing has been measured in between.
+- **It is not `minOverlap` and must not be merged with it.** That bar compares
+  two DIFFERENT urls and is deliberately generous, because two dials seconds
+  apart on a live relay legitimately disagree at the edges. One url against
+  itself has no such excuse.
+
+The host stays in the fan-out, unmeasured and re-probed. Dropping such a host
+from the fan-out entirely is a separate policy question — note that
+`router.conf.example` DOES ask for kind 30023, so this one is not pure cost, it
+is a relay we cannot walk coherently whose events are carried elsewhere.
+
+**Three more ways a url was permanently unmeasurable, all found auditing the
+above and all the same silence from outside:**
+
+- **AUTH — and read the A/B before repeating the claim this started as.** A relay
+  gating reads behind NIP-42 answers the fingerprint's REQ with `CLOSED
+  auth-required`, which `fetchAll` treats as terminal and returns EMPTY on while
+  `RelayAuthenticator` — attached to the very same client — is still signing the
+  challenge on that socket. `AliasProbe.over` now asks through
+  `fetchAllWithHooks` with `pendingOnAuthRequired = true`. **But the claim that
+  auth-gated relays were therefore unfoldable is false, and `AliasFoldLiveProbe`
+  disproved it**: against `auth.nostr1.com` the leader comes back with a full
+  500-id window either way — `true` in 0:21, `false` in 0:02, twice each. With
+  the flag off the CLOSED ends page one at once and the empty-page retry at
+  `FALLBACK_PROBE_PAGE` re-asks on a socket that has since authenticated, so a
+  fallback meant for page-size refusals recovers an auth refusal by accident.
+  The flag is kept as insurance rather than as the fix: that accident only covers
+  the FIRST page of a walk, so an auth refusal on any later page truncates the
+  window silently. Note the fold is built only when there is a signer, and so is
+  the authenticator — a pass is never unauthenticated by configuration.
+- **NULL AND EMPTY collapsed in the live wiring.** `AliasProbe` is written around
+  "returns null when the url could not be asked at all — which is NOT the same as
+  an empty page", and `over()` used `fetchAll`, which returns a list whatever
+  happened. So a relay that never spoke arrived as one holding nothing, and the
+  empty-page retry at `FALLBACK_PROBE_PAGE` was paid on every dead url — two idle
+  windows instead of one, and at the Tor budget that is minutes. `doneOut` tells
+  them apart now: EOSE *or* a CLOSED means the relay spoke (so the smaller-page
+  retry a `blocked: limit too high` needs still happens), and only `cannot:` or a
+  window that lapsed in silence is null.
+- **A failed store read unfolded the fan-out, silently.** `AliasFolding.adopt`
+  forgets every verdict before adopting what comes back — that is what makes the
+  store authoritative and the 30-day TTL mean anything — on the documented
+  promise that a failure arrives AS a failure. `RelayAliasRecord.load` swallowed
+  a failed chunk into an empty result instead, so one unlucky query silently
+  unfolded up to 500 urls for that cycle. `load` throws now, and
+  `AliasFoldingTest` pins it against a store that refuses every read.
+
+**A fingerprint is a websocket, and quartz closes none of its own.** `fetchAll`
+unsubscribes and leaves the connection in the pool; the client's keep-alive only
+ever RECONNECTS. `DynamicSync.releaseSocket` is the only thing in this repo that
+closes a dynamic relay's socket, and the fold never called it — so a pass left
+one socket per url it measured, up to `probesPerCycle`, against a dispatcher
+budget of 1024 for the whole process and **20 per host**. The fold probes widest
+group first, which is precisely the host wearing 55 urls. `AliasFolding.Sockets`
+is the stream's own refcount handed to the pass: claim before the dial, release
+in a `finally`. It has to be the stream's, because that refcount is what stops a
+probe closing a socket a fan-out leg is transferring on — the failure
+`DynamicSync.inFlight` was added for in the first place.
+
+**The other half of that question needs no probe, and answer it FIRST.** The
+verdict is a signed kind-30166 addressed by the url, served by this relay:
+`["REQ","v",{"kinds":[30166],"authors":["<this relay's pubkey>"],"#d":[<the urls>]}]`.
+A `same-as` pointing elsewhere means the fold DID remove the url and what the
+card showed was a leg outliving the pass that dialled it — `inFlight` spans
+passes by design and nothing cancels a running leg when its url folds. A
+`same-as` pointing at itself means measured and kept. No record means never
+measured, which is when `AliasFoldOnionProbe` earns its run.
+
 `maxRelaysPerList` (config, per stream) drops an event naming more relays than a
 relay list plausibly holds — measured, 148 pubkeys published a kind 10002 of
 100–10,591 entries. **Setting it gives up the tag projection for that source**: a
@@ -1550,6 +1828,45 @@ statement about someone else's server.
   146 asks: a 15s deadline scored 55 answered and 91 "timed out" with a median
   answer of 75ms — and **zero** of those 91 were ever refused. Size an idle
   window by the slowest SINGLE answer, not by the queue.
+- **…but an idle window bounds ONE ask, and a leg is a sequence of them.** A
+  stream with `authorsPerLeg` set asks a relay once per author chunk, in
+  sequence, and nothing bounded the sequence — so a relay answering every chunk
+  with a full `NEG_IDLE_MS` window costs `chunks × 30s` of a transfer slot, a
+  socket and a rotation claim, and the url is skipped by every pass meanwhile.
+  Measured in production: `wss://fiatjaf.com/xenon-lima` held **5h00m** having
+  delivered 85 events, quiet for the last 4h56m — 600 empty asks. The fix is
+  `LEG_QUIET_GIVE_UP_MS`, and note what it is NOT: it fires on SILENCE, not on
+  elapsed time, so it cannot cut a leg that is working (every event resets the
+  clock). A wall-clock deadline here was tried and removed for exactly that —
+  it truncated four healthy upstreams at its 4h mark. `DynamicSync.givesUp` is
+  the predicate; it also never fires before the first ask, because the quiet
+  clock starts at the CLAIM and a leg that queued behind a saturated pool
+  arrives already "quiet".
+- **An auth-gated relay used to read as an EMPTY one, on every sync path.** A
+  relay gating reads answers the REQ with `CLOSED auth-required:` before sending
+  anything, and every fetch accessory took that as terminal — so the fetch
+  returned empty while our own `RelayAuthenticator` was still signing the
+  challenge on that same socket, and the events landed milliseconds after the
+  caller gave up. Upstream measured `fetchAll` returning 0 events in 18ms for a
+  relay holding 5, and `fetchAllPages` reporting `End.CLOSED` in 20ms.
+  `fetchAllWithHooks` had a `pendingOnAuthRequired` flag that fixed it and was
+  plumbed into nothing else, so only `AliasProbe` — which drops to the
+  option-rich form for its own reasons — was ever getting it right. Fixed in
+  amethyst #3905/#3906, on the `1ff1077d58` pin: every read accessory now does
+  it, the value is DERIVED from whether the client has a responder rather than
+  passed, and the wait is bounded by the auth outcome (a 1s grace, then settle,
+  capped by the caller's `idleTimeoutMs`) so an auth-gated relay costs at most
+  what a silent one already cost. Do not pass the flag by hand — it was removed
+  from every accessory but `fetchAllWithHooks`, and hardcoding it there is how
+  you get it wrong when the client changes.
+- **A TTL on a tag is not a TTL on the event carrying it.** Kind 30166 has more
+  than one writer: quartz's `RelayMonitor` rewrites the record for every relay
+  the client connects to, every 5 minutes, preserving our tags. Ageing a verdict
+  on `event.createdAt` therefore measures how recently we TALKED to the relay,
+  and any relay still in the fan-out is always minutes old — so its verdict
+  never expires while the ones we stopped dialling expire on time, which is the
+  wrong way round. Stamp the measurement's own time into the tag and age on
+  that. Applies to anything sharing an addressable event with another writer.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

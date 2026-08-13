@@ -66,6 +66,11 @@ class RelayAliases(
      * `default_limit` — a truncated window is still the same window.
      */
     private val minOverlap: Double = DEFAULT_MIN_OVERLAP,
+    /**
+     * How much of its own window a relay must hand back on a second walk before
+     * anything it says is treated as evidence. See [reproducible].
+     */
+    private val minSelfOverlap: Double = DEFAULT_MIN_SELF_OVERLAP,
 ) {
     /** alias url -> the url we actually dial for it. Only ever holds folded urls. */
     private val folded = ConcurrentHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
@@ -139,6 +144,56 @@ class RelayAliases(
 
     /** Is this window big enough to be measured against at all? */
     fun usableWindow(print: Set<String>?): Boolean = print != null && print.size >= minSample
+
+    /**
+     * Does this relay give the same answer twice — the question that has to be
+     * settled before ANY verdict is published about the host it leads.
+     *
+     * Two walks of the SAME url from the SAME anchor, and the answer gates ONE
+     * of the fold's two conclusions rather than both.
+     *
+     * **It gates "these are different relays" and deliberately not "these are
+     * one relay",** which this used to claim it gated in either direction. Noise
+     * in the yardstick is not symmetric between them. A relay handing back a
+     * shuffled subset of its own window drives every containment DOWN — so a
+     * sibling that still clears [minOverlap] against it did so in spite of the
+     * noise, and folding is the conservative reading. The same noise pushes urls
+     * over the bar in the other direction for free, which is how two paths of
+     * one server get signed as separate relays for a month.
+     *
+     * Measured, and this is what corrected the claim: `fiatjaf.com` self-scores
+     * 0.638 — far under the bar — while its two minted paths score 0.787 and
+     * 0.730 against it, and [AliasFolding.measure] publishes both folds. That is
+     * the right answer for a host serving one pool of events on three urls, and
+     * demanding reproducibility first would have kept all three in the fan-out.
+     * `multiplexer.huszonegy.world` is the same shape: self 0.594, siblings
+     * 0.622-0.870, four folds.
+     *
+     * So the guard is paid only where a NEGATIVE claim is about to be made —
+     * see the call site — and a group that folds cleanly never pays for it.
+     *
+     * The bar sits in an empty gap in the measurements rather than at a round
+     * number. Stable relays self-score at the top of the range — nos.lol 0.998,
+     * nostr.oxtr.dev 1.000 — while the two hosts found in this state score far
+     * below it: `espelho.girino.org` at 0.435, and `fiatjaf.com` at 0.694-0.720
+     * over a paged walk and **0.000** on a single page, where the same url asked
+     * twice seconds apart shared none of its ten events. Nothing has been
+     * measured between 0.8 and 0.99, which is why 0.9 costs nothing to demand.
+     *
+     * Note what this is NOT: [minOverlap] is about two DIFFERENT urls and is
+     * deliberately generous, because two dials seconds apart on a live relay
+     * legitimately disagree at the edges. One url against itself has no such
+     * excuse.
+     */
+    fun reproducible(
+        first: Set<String>,
+        second: Set<String>,
+    ): Boolean {
+        val smaller = minOf(first.size, second.size)
+        if (smaller < minSample) return false
+        val shared = if (first.size <= second.size) first.count { it in second } else second.count { it in first }
+        return shared.toDouble() / smaller >= minSelfOverlap
+    }
 
     /**
      * Has anything been decided about this url — folded, or probed and cleared?
@@ -382,6 +437,12 @@ class RelayAliases(
          * duplication costs the most.
          */
         const val DEFAULT_MIN_OVERLAP = 0.5
+
+        /**
+         * What a url must score against ITSELF for its host to be measurable at
+         * all — see [reproducible] for the two clusters this sits between.
+         */
+        const val DEFAULT_MIN_SELF_OVERLAP = 0.9
 
         /**
          * Apply an alias map to a discovered set — the one line a caller of

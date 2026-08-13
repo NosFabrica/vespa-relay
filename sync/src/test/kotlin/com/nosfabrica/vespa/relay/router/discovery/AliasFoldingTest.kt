@@ -24,15 +24,18 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import kotlinx.coroutines.CompletableDeferred
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withTimeout
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -85,14 +88,26 @@ class AliasFoldingTest {
         }
     }
 
+    /**
+     * A store that refuses every read, for the one case the fold has to survive
+     * without acting on: a query that FAILED is not a store saying "no verdict".
+     */
+    private class Unreadable(
+        private val inner: IEventStore,
+    ) : IEventStore by inner {
+        override suspend fun <T : Event> query(filter: Filter): List<T> = throw IllegalStateException("the store cannot answer")
+    }
+
     private fun folding(
         store: NostrSemanticsStore,
         upstreams: Upstreams,
         aliases: RelayAliases = RelayAliases(),
+        undecidableCooldownMs: Long = AliasFolding.DEFAULT_UNDECIDABLE_COOLDOWN_MS,
     ) = AliasFolding(
         aliases = aliases,
         record = RelayAliasRecord(store, signer),
         probe = AliasProbe(fetch = upstreams::fetch, target = 40, page = 40, fallbackPage = 40),
+        undecidableCooldownMs = undecidableCooldownMs,
     )
 
     /** Every url serves the same 40 events, so any two of them fold. */
@@ -160,6 +175,39 @@ class AliasFoldingTest {
             assertEquals(0, reader.dials.get(), "the reader re-probed what the store already knew")
         }
 
+    /**
+     * A read that FAILED is not a store saying "no verdict", and the difference
+     * is a whole fan-out.
+     *
+     * `adopt` forgets every verdict it holds before adopting what the store
+     * hands back, so the store stays authoritative and the 30-day TTL means
+     * something. That is only safe while a failure arrives AS a failure —
+     * `load` used to swallow a failed chunk into an empty result, which turned
+     * one unlucky query into up to 500 urls silently unfolded for that cycle:
+     * dialled as their own relays, re-probed for verdicts already published,
+     * with nothing anywhere saying so.
+     */
+    @Test
+    fun `a store that cannot be read leaves the verdicts already held alone`() =
+        runBlocking {
+            val store = newStore()
+            val aliases = RelayAliases()
+            val fold = folding(store, upstreams(), aliases)
+            assertEquals(1, fold.measure("t", listOf(canonical, alias), canDial = { true }))
+            assertEquals(listOf(canonical), fold.apply(listOf(canonical, alias)).dial)
+
+            // The same verdicts in memory, in front of a store that has stopped
+            // answering. The fold must go on folding.
+            val blind =
+                AliasFolding(
+                    aliases = aliases,
+                    record = RelayAliasRecord(Unreadable(store), signer),
+                    probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
+                )
+
+            assertEquals(listOf(canonical), blind.apply(listOf(canonical, alias)).dial, "a failed read unfolded the fan-out")
+        }
+
     @Test
     fun `measure honours the caller's transport guard`() =
         runBlocking {
@@ -170,6 +218,112 @@ class AliasFoldingTest {
 
             assertEquals(0, learned)
             assertEquals(0, up.dials.get())
+        }
+
+    /**
+     * A fingerprint is a websocket and quartz closes none of its own, so the
+     * pass has to hand every connection back to the stream that lent it.
+     *
+     * Unreleased, a pass leaves one socket per url it measured — up to
+     * `probesPerCycle` of them — against a router whose dispatcher budget is
+     * 1024 for the whole process and 20 per HOST. The fold probes widest group
+     * first, so the 55-url host is exactly where it bites: the fan-out queues
+     * behind connections nothing will ever close.
+     *
+     * Balance, not order: the claims and the releases are per url and the
+     * whole point is that none is left outstanding when the pass returns.
+     */
+    @Test
+    fun `every url the pass dials is handed back to the stream's refcount`() =
+        runBlocking {
+            val held = ConcurrentHashMap<NormalizedRelayUrl, Int>()
+            val claims = AtomicInteger()
+            val sockets =
+                object : AliasFolding.Sockets {
+                    override fun claim(url: NormalizedRelayUrl) {
+                        claims.incrementAndGet()
+                        held.merge(url, 1, Int::plus)
+                    }
+
+                    override fun release(url: NormalizedRelayUrl) {
+                        held.compute(url) { _, n -> ((n ?: 1) - 1).takeIf { it > 0 } }
+                    }
+                }
+            val up = upstreams()
+            folding(newStore(), up).measure("t", listOf(canonical, alias), canDial = { true }, sockets = sockets)
+
+            assertEquals(2, claims.get(), "the leader and its member are each one dial, each one claim")
+            assertTrue(held.isEmpty(), "the pass returned holding ${held.keys}, so those sockets can never be closed")
+        }
+
+    /**
+     * The guard runs BEFORE the claim: a url the stream refuses to dial must not
+     * be counted as holding a connection it never opened, or the refcount never
+     * reaches zero and the fan-out's own release stops closing anything.
+     */
+    @Test
+    fun `a url the transport guard refuses is never claimed`() =
+        runBlocking {
+            val held = ConcurrentHashMap<NormalizedRelayUrl, Int>()
+            val sockets =
+                object : AliasFolding.Sockets {
+                    override fun claim(url: NormalizedRelayUrl) {
+                        held.merge(url, 1, Int::plus)
+                    }
+
+                    override fun release(url: NormalizedRelayUrl) {
+                        held.compute(url) { _, n -> ((n ?: 1) - 1).takeIf { it > 0 } }
+                    }
+                }
+            folding(newStore(), upstreams()).measure("t", listOf(canonical, alias), canDial = { false }, sockets = sockets)
+
+            assertTrue(held.isEmpty(), "a refused url left a claim behind")
+        }
+
+    /**
+     * A relay that cannot repeat itself must produce NO verdict — not a fold,
+     * and above all not a signed "these are different relays".
+     *
+     * Measured on `fiatjaf.com`, which serves an arbitrary ten events per REQ
+     * whatever limit is asked: one url walked twice from a single anchor,
+     * seconds apart, shared NONE of its ten ids, and over a paged walk it
+     * self-scored 0.694-0.720 while its two sibling paths scored 0.592 and 0.775
+     * against EACH OTHER. The cross-url number sits inside the band the url
+     * scores against itself, so which side of the 0.5 fold threshold a pass
+     * lands on is chance — and the losing side publishes two urls of one relay
+     * as separate relays for thirty days, during which `measured()` answers true
+     * and nothing re-probes them. The duplicate stays in the fan-out for the
+     * whole TTL on evidence that contradicts itself.
+     *
+     * The corpus here rotates per dial the way that relay's does, so the second
+     * leader walk cannot match the first.
+     */
+    @Test
+    fun `a relay that cannot reproduce its own window publishes nothing`() =
+        runBlocking {
+            val store = newStore()
+            val a = RelayUrlNormalizer.normalize("wss://shuffling.example")
+            val b = RelayUrlNormalizer.normalize("wss://shuffling.example/ember")
+            // Every dial hands back a fresh, disjoint 40 events — the extreme of
+            // what that relay does, so no walk can ever agree with another.
+            val served = AtomicInteger()
+            val shuffling =
+                Upstreams {
+                    val n = served.getAndIncrement()
+                    (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "dial$n-e$it") }
+                }
+            val fold = folding(store, shuffling, RelayAliases())
+
+            assertEquals(0, fold.measure("t", listOf(a, b), canDial = { true }), "nothing may be folded on this evidence")
+
+            // The negative claim is the one that used to be published here: two
+            // urls of one host, cleared as separate relays, for 30 days.
+            val held = RelayAliasRecord(store, signer).load(listOf(a, b))
+            assertTrue(held.aliases.isEmpty(), "a fold was published against a yardstick that cannot repeat itself")
+            assertTrue(held.distinct.isEmpty(), "published ${held.distinct.size} url(s) as their own relay on unreproducible evidence")
+            // And nothing is held in memory either, so the next pass re-measures
+            // rather than resuming from half a verdict.
+            assertEquals(listOf(a, b), fold.apply(listOf(a, b)).dial)
         }
 
     @Test
@@ -335,6 +489,76 @@ class AliasFoldingTest {
 
             assertEquals(0, fold.measure("t", listOf(canonical, elsewhere), canDial = { true }))
             assertEquals(listOf(canonical, elsewhere), fold.apply(listOf(canonical, elsewhere)).dial)
+        }
+
+    /**
+     * A host that answers every fingerprint with nothing. It can never be
+     * decided — no yardstick, so [RelayAliases.learn] has nothing to compare —
+     * and, critically, a pass writes NOTHING down about it.
+     */
+    private fun silentUpstreams(): Upstreams = Upstreams { emptyList() }
+
+    @Test
+    fun `a host that cannot be decided is not re-dialled by the very next pass`() =
+        runBlocking {
+            // The starvation this fixes: nothing is published for an undecidable
+            // group, so `unresolved` hands it back every pass — widest first,
+            // and a host wearing many minted paths is exactly that shape. It was
+            // re-dialled at the front of every pass forever, learning nothing
+            // each time and spending budget a foldable host never got.
+            val store = newStore()
+            val up = silentUpstreams()
+            val fold = folding(store, up)
+            val urls = listOf(canonical, alias)
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            val firstPass = up.dials.get()
+            assertTrue(firstPass > 0, "the first pass has to actually dial it — that is how we learn it is silent")
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(firstPass, up.dials.get(), "the second pass re-dialled a host the first one already proved silent")
+        }
+
+    @Test
+    fun `the cooldown lapses, so a host that recovers comes back`() =
+        runBlocking {
+            // The other half: this is a note about OUR pass, not a verdict about
+            // their server, so it must expire on its own. A relay that was
+            // mid-restart has to be measurable again without waiting out a
+            // signed record's TTL.
+            val store = newStore()
+            val up = silentUpstreams()
+            val fold = folding(store, up, undecidableCooldownMs = 0L)
+            val urls = listOf(canonical, alias)
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            val firstPass = up.dials.get()
+            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+
+            assertTrue(up.dials.get() > firstPass, "a lapsed cooldown still held the host back")
+        }
+
+    @Test
+    fun `a silent host does not stop a foldable one being measured`() =
+        runBlocking {
+            // The symptom as reported: `relay.lightning.pub` folds four urls in
+            // two seconds at containment 1.000, and was not folding in
+            // production. Both hosts are in one candidate set here, the silent
+            // one first — which is where the widest-first ordering puts it.
+            val store = newStore()
+            val quietHost = RelayUrlNormalizer.normalize("wss://silent.example")
+            val quietAlias = RelayUrlNormalizer.normalize("wss://silent.example/umbra")
+            // One corpus shared by every url that answers at all, so the
+            // foldable host folds; the silent one answers nothing, ever.
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val up = Upstreams { at -> if (RelayAliases.hostOf(at.url) == "silent.example") emptyList() else corpus }
+            val fold = folding(store, up)
+            val urls = listOf(quietHost, quietAlias, canonical, alias)
+
+            assertEquals(1, fold.measure("t", urls, canDial = { true }), "the foldable host was not measured")
+            // …and on the pass after, the silent host costs nothing at all while
+            // the fold that was already earned still stands.
+            assertEquals(listOf(quietHost, quietAlias, canonical), fold.apply(urls).dial)
         }
 
     @Test

@@ -168,6 +168,7 @@ class SyncVocabularyTest {
                     "rows",
                     "discovered",
                     "foldedOntoAnother",
+                    "refusedUnstable",
                     "taken",
                     "delivered",
                     "nothingNew",

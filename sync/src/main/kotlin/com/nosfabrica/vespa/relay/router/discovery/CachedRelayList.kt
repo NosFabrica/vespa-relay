@@ -65,6 +65,8 @@ internal class CachedRelayList(
     /** Urls discovery handed over, before the fold or the exclude list. */
     private val discovered: Int,
     private val foldedOntoAnother: Int,
+    /** Urls a stability pass measured as unusable — see [CycleTally.refusedUnstable]. */
+    private val refusedUnstable: Int = 0,
     private val excluded: Int,
     private val hosts: Int,
     private val folded: Map<String, String>,
@@ -105,6 +107,7 @@ internal class CachedRelayList(
         CycleTally(
             discovered = discovered,
             foldedOntoAnother = foldedOntoAnother,
+            refusedUnstable = refusedUnstable,
             excluded = excluded,
             hosts = hosts,
             folded = folded,

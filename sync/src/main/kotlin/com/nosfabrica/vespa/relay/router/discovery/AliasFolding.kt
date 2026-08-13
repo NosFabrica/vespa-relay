@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
@@ -71,7 +72,46 @@ class AliasFolding(
     private val probe: AliasProbe,
     private val probesPerCycle: Int = DEFAULT_PROBES_PER_CYCLE,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
+    /** How long a host that could not be decided is left alone — see [undecidable]. */
+    private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
 ) {
+    /**
+     * Hosts a pass DIALLED and could not decide anything about, and the moment
+     * each becomes worth trying again.
+     *
+     * **This is what stops the widest groups eating the budget forever.** FOUR
+     * exits below leave a group with no verdict at all — the leader would not
+     * answer, its window was too short to be a yardstick, it could not reproduce
+     * itself and the group was forgotten, or it was a fine yardstick and every
+     * member of its group was silent or too thin to compare, so nothing was held
+     * up against it. None of them write anything down, by design: they are all
+     * cases where publishing would be a claim the measurement does not support.
+     * The fourth is the one the first cut of this cooldown missed, and it fails
+     * exactly like the others.
+     *
+     * Nothing written down means [RelayAliases.unresolved] hands the same group
+     * back on the next pass. Groups are probed WIDEST FIRST, and a host wearing
+     * dozens of minted paths is exactly the shape that fails these tests, so an
+     * undecidable host is re-dialled at the FRONT of every pass, learns nothing,
+     * and does it again six hours later — permanently.
+     *
+     * Measured against the four hosts this was reported on: `relay.lightning.pub`
+     * folds four urls in TWO SECONDS at containment 1.000, and
+     * `multiplexer.huszonegy.world` folds four more in fourteen. Neither is hard;
+     * they were simply queued behind hosts that can never be decided and can
+     * never stop being asked. [probesPerCycle] is a per-pass ceiling, so budget
+     * spent re-proving that `groups.satsdisco.com` still says nothing is budget a
+     * foldable host does not get.
+     *
+     * In memory rather than signed, and that is the point. "I could not measure
+     * this" is a fact about OUR pass, not about somebody's server — the
+     * distinction the reproducibility guard exists to protect — so it must not
+     * become a NIP-66 record. The cost of holding it here is that a restart pays
+     * one pass to rediscover it, which is the correct price for never publishing
+     * a claim we cannot support.
+     */
+    private val undecidable = ConcurrentHashMap<String, Long>()
+
     /**
      * What a set of urls collapses to.
      *
@@ -116,6 +156,47 @@ class AliasFolding(
     }
 
     /**
+     * The stream's socket bookkeeping, because a fingerprint opens a websocket
+     * and NOTHING in quartz ever closes one.
+     *
+     * `fetchAll` unsubscribes when it returns — it sends a CLOSE — and leaves
+     * the connection in the pool; the client's own keep-alive only ever
+     * RECONNECTS. So a pass that fingerprints up to [DEFAULT_PROBES_PER_CYCLE]
+     * urls used to leave up to that many sockets open behind it, against a
+     * router whose whole dispatcher budget is 1024 and whose per-HOST budget is
+     * 20 — and the fold probes widest group first, i.e. the hosts wearing 55
+     * urls. Every one of those sockets is a slot the fan-out cannot have.
+     *
+     * It is the STREAM's, not this component's, for the reason
+     * `DynamicSync.releaseSocket` exists at all: two streams routinely land on
+     * one relay, so closing a socket is only safe behind a refcount, and this
+     * pass runs alongside a fan-out that may be holding the same url. Claiming
+     * before the dial is what puts the probe INTO that count instead of
+     * decrementing somebody else's.
+     */
+    interface Sockets {
+        /** Take a share of this url's socket before dialling it. */
+        fun claim(url: NormalizedRelayUrl)
+
+        /** Give it back — and close the socket if nothing else holds one. */
+        fun release(url: NormalizedRelayUrl)
+
+        companion object {
+            /**
+             * Leaves every socket where it is. The honest default for a caller
+             * with no refcount to offer: leaking a connection is recoverable,
+             * closing one out from under a live transfer is not.
+             */
+            val NONE =
+                object : Sockets {
+                    override fun claim(url: NormalizedRelayUrl) = Unit
+
+                    override fun release(url: NormalizedRelayUrl) = Unit
+                }
+        }
+    }
+
+    /**
      * Fingerprint what [apply] could not answer, and publish what that proves.
      *
      * The dialling half, and the reason the two are separate: this walks up to
@@ -131,13 +212,16 @@ class AliasFolding(
      * applies — so a probe never dials what the caller would refuse to.
      * [onEvent] receives everything the probes downloaded; hand it an ingest and
      * a fingerprint stops being wasted bandwidth. Discard it and the probe is
-     * pure overhead, which is a choice a caller is allowed to make.
+     * pure overhead, which is a choice a caller is allowed to make. [sockets] is
+     * the caller's connection refcount: without one every fingerprint leaves a
+     * websocket behind — see [Sockets].
      */
     suspend fun measure(
         label: String,
         candidates: List<NormalizedRelayUrl>,
         canDial: suspend (NormalizedRelayUrl) -> Boolean,
         onEvent: suspend (Event) -> Unit = {},
+        sockets: Sockets = Sockets.NONE,
     ): Int {
         if (candidates.size < 2) return 0
         val startedMs = System.currentTimeMillis()
@@ -145,14 +229,28 @@ class AliasFolding(
         // What a previous pass — this boot or another — already measured.
         adopt(candidates)
 
-        val groups = aliases.unresolved(candidates)
+        // Everything unresolved, minus the hosts a recent pass already dialled
+        // and could not decide. Held back rather than dropped: the cooldown
+        // lapses and they are tried again, just not at the front of every pass
+        // between now and then. See [undecidable].
+        val startedAtMs = System.currentTimeMillis()
+        val all = aliases.unresolved(candidates)
+        val groups = all.filter { group -> !onCooldown(group, startedAtMs) }
+        val heldBack = all.size - groups.size
+        if (heldBack > 0) {
+            System.err.println(
+                "router: $label alias pass skipped $heldBack host(s) an earlier pass dialled and could not decide — " +
+                    "each retried after ${fmtDuration(undecidableCooldownMs)}",
+            )
+        }
         var learned = 0
         var probed = 0
         if (groups.isNotEmpty()) {
             val budget = AtomicInteger(probesPerCycle)
             val gate = Semaphore(concurrency)
+            // The pass-wide count of folds, and nothing else: a second map of
+            // the cleared urls was accumulated here and never read.
             val newVerdicts = ConcurrentHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
-            val newCleared = ConcurrentHashMap<NormalizedRelayUrl, Cleared>()
             val taken = AtomicInteger()
             coroutineScope {
                 // Widest group first: a host wearing 55 urls is 54 dials a
@@ -212,17 +310,35 @@ class AliasFolding(
                         // nothing, and did it again every pass, forever. The
                         // leader alone still costs one dial per pass, which is
                         // the right price for noticing it has recovered.
+                        var dialled = false
                         val lead =
                             gate.withPermit {
                                 if (!canDial(leader)) return@withPermit null
+                                dialled = true
                                 taken.incrementAndGet()
-                                probe.leaderPrint(leader, anchor, onEvent)
+                                sockets.claim(leader)
+                                try {
+                                    probe.leaderPrint(leader, anchor, onEvent)
+                                } finally {
+                                    sockets.release(leader)
+                                }
                             }
                         if (lead == null || !aliases.usableWindow(lead.ids)) {
+                            // Only when the leader was actually ASKED. A url the
+                            // transport guard declined was never measured — our
+                            // Tor being down is not evidence about their server
+                            // — and cooling it down would hold a foldable host
+                            // back for a day on our own outage.
+                            if (dialled) markUndecidable(leader, startedAtMs)
                             // Hand back what this group reserved and did not
                             // spend, or the budget is consumed by intentions and
-                            // a later group goes unprobed for it.
-                            budget.addAndGet(wanted.size - 1)
+                            // a later group goes unprobed for it. A leader the
+                            // transport guard DECLINED cost nothing at all, so
+                            // the whole reservation goes back — refunding
+                            // `size - 1` there paid a fingerprint that was never
+                            // taken, out of the budget of a group that would
+                            // have used it.
+                            budget.addAndGet(if (dialled) wanted.size - 1 else wanted.size)
                             return@launch
                         }
                         prints[leader] = lead.ids
@@ -233,16 +349,79 @@ class AliasFolding(
                                     gate.withPermit {
                                         if (!canDial(url)) return@withPermit
                                         taken.incrementAndGet()
-                                        probe.fingerprint(url, anchor, lead.kinds, onEvent)?.let { prints[url] = it }
+                                        sockets.claim(url)
+                                        try {
+                                            probe.fingerprint(url, anchor, lead.kinds, onEvent)?.let { prints[url] = it }
+                                        } finally {
+                                            sockets.release(url)
+                                        }
                                     }
                                 }
                             }
                         }
                         val leaderPrint = lead.ids
                         val result = aliases.learn(group, leader, prints)
+                        // PROVE THE YARDSTICK BEFORE MAKING A NEGATIVE CLAIM.
+                        //
+                        // Some relays do not answer the same question the same
+                        // way twice, and against one of those every containment
+                        // in this group is noise — including the ones that
+                        // cleared the 0.5 bar and the ones that missed it.
+                        // Measured on `fiatjaf.com`: one url asked twice from
+                        // ONE anchor, seconds apart, shared NONE of its ten
+                        // events; over a paged walk it self-scored 0.694-0.720
+                        // while its two sibling paths scored 0.592 and 0.775
+                        // against each other — a cross-url score sitting inside
+                        // the band the url scores against itself. Whichever side
+                        // of 0.5 a pass happens to land on, it signs the answer
+                        // for a month: land low and two urls of one relay are
+                        // published as separate relays and never re-probed until
+                        // the TTL lapses, which is a duplicate pinned in the
+                        // fan-out for thirty days on evidence a re-run
+                        // contradicts.
+                        //
+                        // So: a second walk of the leader, from the SAME anchor
+                        // through the SAME filter, and nothing is published
+                        // unless it comes back. Paid only where a negative claim
+                        // is about to be made — a group that folded cleanly is
+                        // making the safe claim and pays nothing — and the
+                        // group is forgotten rather than half-kept, so the next
+                        // pass starts from the store exactly as if this one had
+                        // never run.
+                        if (result.distinct.isNotEmpty()) {
+                            budget.decrementAndGet()
+                            val again =
+                                gate.withPermit {
+                                    if (!canDial(leader)) return@withPermit null
+                                    taken.incrementAndGet()
+                                    sockets.claim(leader)
+                                    try {
+                                        probe.fingerprint(leader, anchor, lead.kinds, onEvent)
+                                    } finally {
+                                        sockets.release(leader)
+                                    }
+                                }
+                            if (again == null || !aliases.reproducible(leaderPrint, again)) {
+                                val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
+                                aliases.forget(group)
+                                // Forgotten means nothing was written down, which
+                                // means this group comes back on the next pass —
+                                // widest first — and fails the same way. A host
+                                // that cannot reproduce its own window today is
+                                // very unlikely to manage it in six hours.
+                                markUndecidable(leader, startedAtMs)
+                                System.err.println(
+                                    "router: $label ${RelayAliases.hostOf(leader.url)} cannot reproduce its own window " +
+                                        "($self of ${leaderPrint.size} id(s) on a second walk from the same anchor) — " +
+                                        "${group.size} url(s) left unmeasured rather than published as ${result.distinct.size} " +
+                                        "separate relay(s)",
+                                )
+                                return@launch
+                            }
+                        }
                         // This group's share of the pass, kept separately so it
                         // can be written the moment the group is decided. The
-                        // pass-wide maps are only counters for the summary line.
+                        // pass-wide map is only a counter for the summary line.
                         val verdicts = LinkedHashMap<NormalizedRelayUrl, Pair<NormalizedRelayUrl, Pair<Int, Int>>>()
                         val cleared = LinkedHashMap<NormalizedRelayUrl, Cleared>()
                         for ((alias, canonical) in result.folded) {
@@ -274,7 +453,6 @@ class AliasFolding(
                                         ?: 0
                                 cleared[url] = Cleared(print.size, "$compared compared peer(s)", best)
                             }
-                            newCleared[url] = cleared.getValue(url)
                         }
 
                         // WRITTEN AS THIS GROUP FINISHES, not when the pass
@@ -291,6 +469,22 @@ class AliasFolding(
                         // One at a time and each guarded: these are signed public
                         // statements about other people's servers, and a failure
                         // to write one must not take the pass down with it.
+                        // Something was decided here, so an older "could not
+                        // measure this host" no longer describes it — and when
+                        // NOTHING was decided, this is the fourth way a group
+                        // ends with no verdict and the one the first cut of the
+                        // cooldown missed. A leader that answered fine while
+                        // every member of its group was silent or under
+                        // `minSample` compares nothing, so `learn` returns two
+                        // empty halves, nothing is published, and the group comes
+                        // back widest-first on the very next pass — the exact
+                        // starvation this cooldown exists to stop, arriving
+                        // through the one door it was not watching.
+                        if (verdicts.isNotEmpty() || cleared.isNotEmpty()) {
+                            clearUndecidable(leader)
+                        } else {
+                            markUndecidable(leader, startedAtMs)
+                        }
                         for ((alias, v) in verdicts) {
                             runCatching { record.publish(alias, v.first, v.second.first, v.second.second) }
                         }
@@ -316,6 +510,46 @@ class AliasFolding(
         return learned
     }
 
+    /**
+     * Is this group's host still inside the window a failed pass bought it?
+     *
+     * Keyed by host, because that is what a group IS — [RelayAliases.unresolved]
+     * groups by hostname — and because the thing that could not be measured is
+     * the server, not the individual url that happened to lead this time.
+     */
+    private fun onCooldown(
+        group: List<NormalizedRelayUrl>,
+        nowMs: Long,
+    ): Boolean {
+        val host = RelayAliases.hostOf(group.first().url)
+        val until = undecidable[host] ?: return false
+        // Lapsed: drop it so the map cannot grow without bound over a long run,
+        // and let the group through.
+        if (nowMs >= until) {
+            undecidable.remove(host)
+            return false
+        }
+        return true
+    }
+
+    /** This host was dialled and proved nothing. Leave it alone for a while. */
+    private fun markUndecidable(
+        leader: NormalizedRelayUrl,
+        nowMs: Long,
+    ) {
+        undecidable[RelayAliases.hostOf(leader.url)] = nowMs + undecidableCooldownMs
+    }
+
+    /**
+     * This host decided something, so whatever an earlier pass could not measure
+     * about it no longer applies. Cheap to call on every decided group and it
+     * keeps a recovered host from serving out a cooldown it has already
+     * disproved.
+     */
+    private fun clearUndecidable(leader: NormalizedRelayUrl) {
+        undecidable.remove(RelayAliases.hostOf(leader.url))
+    }
+
     /** The evidence behind one cleared url, held until the group is decided. */
     private data class Cleared(
         val sampled: Int,
@@ -332,7 +566,18 @@ class AliasFolding(
      * empty result rather than take a fan-out down with it.
      */
     private suspend fun adopt(candidates: List<NormalizedRelayUrl>) {
-        val held = runCatching { record.load(candidates) }.getOrNull() ?: return
+        val held =
+            try {
+                record.load(candidates)
+            } catch (e: CancellationException) {
+                // Not a store failure — the scope is shutting down, and
+                // swallowing it here would let a cancelled cycle carry on
+                // rewriting the verdict cache. `runCatching` catches it, which
+                // is why this is spelled out.
+                throw e
+            } catch (e: Exception) {
+                return
+            }
         // FORGET FIRST, so the store is authoritative on every pass and its TTL
         // means something. `load` already refuses a record past its TTL, but a
         // verdict adopted while it was still fresh used to live in memory for
@@ -370,5 +615,22 @@ class AliasFolding(
 
         /** Probes in flight. Below the fan-out's own concurrency: this is a side quest. */
         const val DEFAULT_CONCURRENCY = 16
+
+        /**
+         * How long a host that was dialled and could not be decided is left
+         * alone — a day, i.e. four passes at [AliasMonitor.DEFAULT_INTERVAL_MS].
+         *
+         * Long enough that such a host stops crowding out the ones that fold in
+         * seconds, short enough that a relay which was merely having a bad
+         * afternoon — mid-restart, briefly serving a shuffled window — is back
+         * in the fold within a day rather than waiting out
+         * [RelayAliasRecord.DEFAULT_TTL_SECONDS].
+         *
+         * Deliberately far shorter than that TTL: this is the weakest thing the
+         * fold records, so it gets the shortest memory. A verdict is a
+         * measurement of somebody's server; this is only a note that ours could
+         * not take one.
+         */
+        const val DEFAULT_UNDECIDABLE_COOLDOWN_MS = 24L * 60 * 60 * 1000
     }
 }

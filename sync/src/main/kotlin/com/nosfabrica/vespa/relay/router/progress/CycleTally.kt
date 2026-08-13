@@ -39,7 +39,7 @@ import java.util.concurrent.atomic.AtomicLong
  * thing that publishes them:
  *
  * ```
- * discovered = foldedOntoAnother + excluded + taken
+ * discovered = foldedOntoAnother + refusedUnstable + excluded + taken
  * taken      = delivered + nothingNew + unreachable + transferFailed
  *            + noRoute + hostStruckOut + knownDead + torUnavailable + busy + pending
  * ```
@@ -89,6 +89,24 @@ class CycleTally(
      * obeyed.
      */
     val excluded: Int = 0,
+    /**
+     * …and the ones a stability pass MEASURED as unusable: a url that answered
+     * one filter, at one week-old anchor, two different ways.
+     *
+     * Its own member for exactly the reason [excluded] is: these are three
+     * different facts with three different fixes. A fold is a duplicate the
+     * router worked out; an exclusion is an operator's instruction; this is a
+     * signed measurement of a server that cannot be synced against, and the fix
+     * for it is on the far end. Absorbing it into either of the others would
+     * hide the one number that says how much of a fan-out is being refused on
+     * our own evidence.
+     *
+     * Costly enough to deserve the seat: a relay whose window is a fresh random
+     * slice holds no stable cursor, so every cycle re-downloads what the last
+     * one already took — measured here as millions of duplicated events and
+     * cycles stretched from two hours to five.
+     */
+    val refusedUnstable: Int = 0,
     /** Distinct authorities among the urls taken — see the class header. */
     val hosts: Int,
     /**
@@ -110,7 +128,7 @@ class CycleTally(
     val listAgeSec: Long = 0,
 ) {
     /** The urls this cycle is actually responsible for. */
-    val taken: Int get() = (discovered - foldedOntoAnother - excluded).coerceAtLeast(0)
+    val taken: Int get() = (discovered - foldedOntoAnother - refusedUnstable - excluded).coerceAtLeast(0)
 
     /** Reached it, and it had something we did not. */
     val delivered = AtomicLong()
@@ -199,7 +217,7 @@ class CycleTally(
      * simply holds the ones that never got a verdict. `outcome` is what
      * separates those two, and it is what the page reads `pending` against.
      */
-    fun balanced(): Boolean = settled() <= taken && foldedOntoAnother + excluded <= discovered
+    fun balanced(): Boolean = settled() <= taken && foldedOntoAnother + refusedUnstable + excluded <= discovered
 
     /**
      * WHICH urls were folded away, grouped by the survivor that absorbed them.

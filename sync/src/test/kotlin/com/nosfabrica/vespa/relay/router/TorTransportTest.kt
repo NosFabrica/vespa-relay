@@ -327,6 +327,32 @@ class TorTransportTest {
     }
 
     /**
+     * The fold's fingerprint gets the budget of the transport it will be
+     * dialled over, and this is the assertion that a refactor cannot take back
+     * to one number.
+     *
+     * Quartz's `idleTimeoutMs` runs from the START of the fetch, so it pays for
+     * the connect too — and a hidden service is allowed
+     * [TorSettings.connectTimeoutSec] for the circuit and the rendezvous alone,
+     * while `connectionTimeout` sizes a clearnet TCP handshake. Given only the
+     * clearnet window, an onion fingerprint lapses before the relay has said
+     * anything and comes back EMPTY, which is not "measured and distinct" — it
+     * is no verdict at all, so every url on that host is dialled again on every
+     * cycle for as long as the router runs.
+     */
+    @Test
+    fun `an onion fingerprint gets the Tor budget on top of the clearnet window`() {
+        val tor = TorTransport(settings(port = 9050), OkHttpClient())
+        // settings() builds a 5s Tor connect budget; the clearnet window here
+        // is the router's own `connectionTimeout` default, in millis.
+        assertEquals(25_000L, probeIdleMs(onion, tor, 20_000L))
+        assertEquals(20_000L, probeIdleMs(clearnet, tor, 20_000L))
+        // No transport at all: nothing routes through a proxy, so nothing pays
+        // for one. A `.onion` cannot be discovered in this deployment anyway.
+        assertEquals(20_000L, probeIdleMs(onion, null, 20_000L))
+    }
+
+    /**
      * `SYNC_TOR_ALL` puts CLEARNET relays behind the same circuit, and every
      * rule that protects a hidden service has to follow them there.
      *
@@ -342,6 +368,10 @@ class TorTransportTest {
         assertFalse(shouldPreProbe(clearnet, all), "SYNC_TOR_ALL must not leave a direct probe of every relay running")
         assertFalse(shouldPreProbe(onion, all))
         assertTrue(all.routes(clearnet), "the strike and UNREACHABLE guards key on this")
+        // …including the fold's window: under this setting a clearnet relay is
+        // reached through a circuit like any other, and the fingerprint that
+        // decides whether to keep dialling it has to be given time to build one.
+        assertEquals(25_000L, probeIdleMs(clearnet, all, 20_000L))
     }
 
     /**
