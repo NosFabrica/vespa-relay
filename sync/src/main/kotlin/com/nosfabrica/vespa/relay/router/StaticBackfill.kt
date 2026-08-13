@@ -189,7 +189,9 @@ internal class StaticBackfill(
                         .size,
             ).also {
                 tallies[name] = it
-                phases.beginCycle(name, StreamPhases.STATIC, it)
+                // Always pass 1: a static backfill runs once per process and
+                // then live-tails, so there is no second walk to number.
+                phases.beginCycle(name, StreamPhases.STATIC, 1, it)
             }
         // Our own count, taken once for the stream — the cheap half of the
         // reconcile-or-page decision.

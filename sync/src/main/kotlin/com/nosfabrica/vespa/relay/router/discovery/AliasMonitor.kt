@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
@@ -75,6 +76,11 @@ class AliasMonitor(
      * the result is still a valid signed record that simply says less. Running
      * them one after another inside this loop is what makes that impossible
      * within this process.
+     *
+     * The loop runs one PASS over every stream before starting the next pass —
+     * see [runPass] — which strengthens the same property: the fold finishes on
+     * every stream before any stability walk begins, so none of them is spent on
+     * a url another stream's fold was about to remove.
      */
     private val passes: List<Pass>,
     private val scope: CoroutineScope,
@@ -99,6 +105,18 @@ class AliasMonitor(
             onEvent: suspend (Event) -> Unit,
             sockets: AliasFolding.Sockets,
         ): Int
+
+        /**
+         * Where this pass says what it is doing, or null for one that says
+         * nothing.
+         *
+         * The monitor owns the CLOCK — when a pass ran, how long it took, when
+         * the next one is due — and the pass itself owns the WORK, so both write
+         * to the same handle from opposite sides. Null by default so a test or a
+         * caller with nothing to report is still one lambda, which is what keeps
+         * this a `fun interface`.
+         */
+        val progress: Processors.Handle? get() = null
     }
 
     /** One stream's standing offer of work: what it sees, and how to reach it. */
@@ -178,16 +196,40 @@ class AliasMonitor(
      * one is worth retrying for.
      */
     fun start(): AliasMonitor {
+        // Registered before the first sleep, so a reader sees the passes exist
+        // and when they are due rather than an absence for the first two
+        // minutes — the same rule `StreamPhases.register` follows, and for the
+        // same reason: silence must never read as "not configured".
+        dueAtMs = System.currentTimeMillis() + startupDelayMs
+        for (pass in passes) {
+            pass.progress?.nextPassAt { dueAtMs }
+            pass.progress?.phase(Processors.IDLE)
+        }
         scope.launch {
             delay(startupDelayMs)
             while (scope.isActive) {
                 val hadWork = pending.isNotEmpty()
                 runPass()
-                delay(if (hadWork) intervalMs else emptyRetryMs)
+                val wait = if (hadWork) intervalMs else emptyRetryMs
+                dueAtMs = System.currentTimeMillis() + wait
+                delay(wait)
             }
         }
         return this
     }
+
+    /**
+     * When the next pass is due, in epoch millis, asked live by whatever is
+     * reporting — see [Processors.Handle.nextPassAt].
+     *
+     * Written by the loop rather than derived from the interval, because the two
+     * are not the same number: a pass with nothing submitted sleeps
+     * [emptyRetryMs] instead of [intervalMs], and a pass that ran for a quarter
+     * of an hour pushes the next one that much later. A countdown computed from
+     * the constant would be wrong in both cases.
+     */
+    @Volatile
+    private var dueAtMs: Long? = null
 
     /**
      * One pass over every stream's standing work, streams in sequence.
@@ -205,24 +247,46 @@ class AliasMonitor(
      */
     suspend fun runPass(): Int {
         var learned = 0
-        for ((label, work) in pending.entries.map { it.key to it.value }) {
-            // Each pass guarded on its own, so one failing does not cost the
-            // stream the others: they measure different things and a relay that
-            // breaks a fingerprint has no bearing on a stability walk.
-            for (pass in passes) {
-                try {
-                    val n = pass.measure(label, work.candidates, work.canDial, work.onEvent, work.sockets)
-                    learned += n
-                    // Per stream, not once at the end: a pass over many streams can
-                    // run for a quarter of an hour, and a stream whose fan-out
-                    // starts in the middle of it should see the verdicts already
-                    // published rather than wait out the whole pass.
-                    if (n > 0) learnedTotal.addAndGet(n.toLong())
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    System.err.println("router: $label alias pass failed: ${e.javaClass.simpleName}: ${e.message}")
+        val work = pending.entries.map { it.key to it.value }
+        // ONE PASS AT A TIME, over every stream — rather than one stream at a
+        // time over every pass, which is how this used to read.
+        //
+        // The ordering property is the same one [passes] documents and it is
+        // strengthened rather than weakened: the fold now finishes on EVERY
+        // stream before the stability gate measures anything, so no stability
+        // walk can be spent on a url another stream's fold was about to remove.
+        // What it buys is that a pass is a clocked unit: `lastPassAt`,
+        // `lastPassSec` and the `measuring` phase describe the whole pass rather
+        // than whichever stream happened to be last, which is what a reader
+        // waiting on the fold is actually asking about.
+        for (pass in passes) {
+            pass.progress?.begin()
+            try {
+                for ((label, w) in work) {
+                    // Each stream guarded on its own, so one failing does not
+                    // cost the others: a probe pass talks to arbitrary
+                    // third-party relays and any of them can fail in ways this
+                    // cannot enumerate.
+                    try {
+                        val n = pass.measure(label, w.candidates, w.canDial, w.onEvent, w.sockets)
+                        learned += n
+                        // Per stream, not once at the end: a pass over many streams can
+                        // run for a quarter of an hour, and a stream whose fan-out
+                        // starts in the middle of it should see the verdicts already
+                        // published rather than wait out the whole pass.
+                        if (n > 0) learnedTotal.addAndGet(n.toLong())
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        System.err.println("router: $label alias pass failed: ${e.javaClass.simpleName}: ${e.message}")
+                    }
                 }
+            } finally {
+                // From a `finally`, so a cancelled or thrown pass still stamps
+                // its clock: a pass whose `lastPassAt` stopped moving and one
+                // that is failing every time are different faults, and only the
+                // timestamp separates them.
+                pass.progress?.finish()
             }
         }
         return learned

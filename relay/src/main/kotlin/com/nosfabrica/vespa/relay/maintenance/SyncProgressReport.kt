@@ -132,6 +132,17 @@ internal object SyncProgressReport {
             putJsonArray("streams") {
                 for (s in streams) stream(s)?.let { add(it) }
             }
+            // THE WORK THAT IS NOT A STREAM — the alias fold, the stability
+            // gate, the NIP-66 monitor, ingest, the healer, the push. Absent
+            // rather than empty when the file carries none: a router built
+            // before this existed makes no claim about them, and an empty array
+            // would be the claim that it runs none.
+            (doc["processors"] as? JsonArray)
+                ?.filterIsInstance<JsonObject>()
+                ?.take(MAX_PROCESSORS)
+                ?.mapNotNull { processor(it) }
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { rows -> putJsonArray("processors") { for (r in rows) add(r) } }
         }
     }
 
@@ -148,6 +159,106 @@ internal object SyncProgressReport {
             // why this is not simply "the pending urls".
             inFlight(o["inFlight"] as? JsonObject)?.let { put("inFlight", it) }
             (o["cycle"] as? JsonObject)?.let { c -> cycle(c)?.let { put("cycle", it) } }
+            // EVERY PASS STILL RUNNING, not just the newest.
+            //
+            // A walk ends when its last url is handed out and its slowest legs
+            // run on past it, so the ordinary state of a rotation is one pass
+            // walking while the one before it finishes. With a single `cycle`
+            // the older pass stopped being published the moment the new one
+            // opened — its events went on arriving against a partition nothing
+            // was showing, and its still-running legs appeared only as the new
+            // pass's `busy`. Each row is rebuilt by the same [cycle] reader, so
+            // the arithmetic is checked per pass rather than per stream.
+            (o["passes"] as? JsonArray)
+                ?.filterIsInstance<JsonObject>()
+                ?.take(MAX_PASSES)
+                ?.mapNotNull { cycle(it) }
+                ?.takeIf { it.size > 1 }
+                ?.let { rows -> putJsonArray("passes") { for (r in rows) add(r) } }
+        }
+    }
+
+    /**
+     * One processor, rebuilt member by member like everything else here.
+     *
+     * The counters are an ALLOWLIST rather than whatever the file happens to
+     * carry, which is the same rule the ten `taken` outcomes follow and for a
+     * stronger reason: these become members of a document served under this
+     * relay's name, every one of them has an entry in the published glossary,
+     * and a hand-edited file must not be able to put a new name into either.
+     */
+    private fun processor(o: JsonObject): JsonObject? {
+        val name = text(o["name"]) ?: return null
+        return buildJsonObject {
+            put("name", name)
+            text(o["phase"])?.let { put("phase", it) }
+            num(o["phaseForSec"])?.let { put("phaseForSec", it) }
+            num(o["passes"])?.let { put("passes", it) }
+            num(o["lastPassAt"])?.let { put("lastPassAt", it) }
+            num(o["lastPassSec"])?.let { put("lastPassSec", it) }
+            num(o["nextInSec"])?.let { put("nextInSec", it) }
+            for (counter in COUNTERS) num(o[counter])?.let { put(counter, it) }
+            (o["streams"] as? JsonArray)
+                ?.filterIsInstance<JsonObject>()
+                ?.take(MAX_PROCESSOR_STREAMS)
+                ?.mapNotNull { processorWork(it) }
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { rows -> putJsonArray("streams") { for (r in rows) add(r) } }
+        }
+    }
+
+    /** How far one processor's pass got over one stream's candidates. */
+    private fun processorWork(o: JsonObject): JsonObject? {
+        val name = text(o["name"]) ?: return null
+        return buildJsonObject {
+            put("name", name)
+            put("subjects", num(o["subjects"]) ?: 0)
+            // The progress number: what still has no verdict. Defaulted to
+            // `subjects` rather than to 0 when a file does not say — "nothing
+            // left to measure" is a strong claim and an unreadable row must not
+            // make it.
+            put("outstanding", num(o["outstanding"]) ?: num(o["subjects"]) ?: 0)
+            put("measured", num(o["measured"]) ?: 0)
+            put("decided", num(o["decided"]) ?: 0)
+            undecided(o["undecided"] as? JsonObject)?.let { put("undecided", it) }
+        }
+    }
+
+    /**
+     * Why a pass left hosts undecided, bounded again on this side.
+     *
+     * Same contract as [foldedOnto] and [inFlight]: the router bounds its list,
+     * this bounds it a second time rather than trusting that it did, and
+     * `omitted` carries through whatever either side dropped.
+     */
+    private fun undecided(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        val rows = (o["reasons"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        val kept = rows.take(MAX_UNDECIDED_ROWS)
+        var unreadable = 0
+        return buildJsonObject {
+            putJsonArray("reasons") {
+                for (row in kept) {
+                    val reason =
+                        text(row["reason"]) ?: run {
+                            unreadable++
+                            null
+                        } ?: continue
+                    add(
+                        buildJsonObject {
+                            put("reason", reason)
+                            put("hosts", num(row["hosts"]) ?: 0)
+                            putJsonArray("examples") {
+                                for (h in (row["examples"] as? JsonArray).orEmpty().take(MAX_UNDECIDED_EXAMPLES)) {
+                                    text(h)?.let { add(it) }
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
         }
     }
 
@@ -222,6 +333,11 @@ internal object SyncProgressReport {
         val byOutcome = OUTCOMES.associateWith { num(outcomes[it]) ?: 0L }
         val settled = byOutcome.values.sum()
         return buildJsonObject {
+            // Which pass this is, and which half of the router opened it. Absent
+            // on a file written before passes were published, where the single
+            // cycle needed no name to be told from the others.
+            num(o["number"])?.let { put("number", it) }
+            text(o["owner"])?.let { put("owner", it) }
             num(o["startedAt"])?.let { put("startedAt", it) }
             num(o["endedAt"])?.let { put("endedAt", it) }
             text(o["outcome"])?.let { put("outcome", it) }
@@ -304,10 +420,44 @@ internal object SyncProgressReport {
         }
     }
 
+    /**
+     * The gauges a processor may publish, and the whole of them.
+     *
+     * Not "whatever numbers the file carries": these are members of a document
+     * served under this relay's name and each one is defined in
+     * [SyncVocabulary], so a name that is not here is a name no reader could
+     * look up. Adding one is a two-file change on purpose.
+     */
+    internal val COUNTERS =
+        listOf(
+            // ingest
+            "queued",
+            "capacity",
+            "accepted",
+            "rejected",
+            // the healer and the upstream push
+            "pushed",
+            // the NIP-66 monitor
+            "observed",
+            "knownDead",
+        )
+
     /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
     private const val MAX_FOLD_ROWS = 20
     private const val MAX_FOLD_EXAMPLES = 2
     private const val MAX_IN_FLIGHT_ROWS = 20
+
+    /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
+    private const val MAX_PASSES = 4
+
+    /** Six today (fold, stability, reachability, ingest, heal, push), with room to grow. */
+    private const val MAX_PROCESSORS = 12
+
+    /** A processor reports per stream, and a router runs a handful of them. */
+    private const val MAX_PROCESSOR_STREAMS = 12
+
+    private const val MAX_UNDECIDED_ROWS = 6
+    private const val MAX_UNDECIDED_EXAMPLES = 3
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 

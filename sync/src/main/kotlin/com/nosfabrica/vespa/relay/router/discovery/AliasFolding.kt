@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -80,6 +81,16 @@ class AliasFolding(
     private val concurrency: Int = DEFAULT_CONCURRENCY,
     /** How long a host that could not be decided is left alone — see [undecidable]. */
     private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
+    /**
+     * Where each pass reports how far it got, or null to say nothing — which is
+     * every test and every caller that is not the router.
+     *
+     * The pass writes the WORK here and [AliasMonitor] writes the CLOCK to the
+     * same handle, which is why it is handed in rather than created here: the
+     * two halves of "how is the fold doing" are measured by two objects and have
+     * to land in one row.
+     */
+    val progress: Processors.Handle? = null,
 ) {
     /**
      * Hosts a pass DIALLED and could not decide anything about, and the moment
@@ -651,8 +662,10 @@ class AliasFolding(
             learned = newVerdicts.size
         }
 
-        if (probed > 0 || learned > 0) {
-            val cleaned = collapse(candidates)
+        // Collapsed once, for the log line and the report both. It is a walk of
+        // an in-memory map, and taking it twice would let the two disagree.
+        val cleaned = if (probed > 0 || learned > 0 || progress != null) collapse(candidates) else null
+        if (cleaned != null && (probed > 0 || learned > 0)) {
             System.err.println(
                 "router: $label measured $probed fingerprint(s) ? $learned new alias(es), " +
                     "${candidates.size} url(s) now fold onto ${cleaned.dial.size} relay(s) " +
@@ -660,6 +673,23 @@ class AliasFolding(
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
+        // THE SAME FACTS, WHERE THEY OUTLIVE THE LOG. Everything above reaches
+        // stderr, which rotates inside the hour on this deployment — and "how
+        // much of the fan-out has the fold not got to yet" is a question asked
+        // days later, about a card showing forty urls of one server still being
+        // dialled. `unmeasured` is the answer and it is the only number here
+        // that says whether the fold is making progress at all.
+        progress?.record(
+            Processors.Work(
+                stream = label,
+                subjects = candidates.size,
+                outstanding = cleaned?.unmeasured?.size ?: candidates.size,
+                measured = probed,
+                decided = learned,
+                undecided = undecidedRows(undecided),
+                undecidedOmitted = (undecided.values.distinct().size - Processors.MAX_UNDECIDED_REASONS).coerceAtLeast(0),
+            ),
+        )
         // WHICH HOSTS THIS PASS LEFT UNFOLDED, AND WHY.
         //
         // Everything above counts what the pass DID. Nothing counted what it
@@ -687,6 +717,32 @@ class AliasFolding(
             )
         }
         return learned
+    }
+
+    /**
+     * The undecided map as publishable rows: one per reason, biggest first, a
+     * few hosts named.
+     *
+     * In [Undecided]'s own declaration order rather than by size, deliberately —
+     * that order runs from "waiting its turn" to "can never be decided", so a
+     * reader scanning the rows meets the recoverable causes before the permanent
+     * one. The same order the stderr line uses, so the two read alike.
+     */
+    private fun undecidedRows(undecided: Map<String, Undecided>): List<Processors.Undecided> {
+        if (undecided.isEmpty()) return emptyList()
+        val byReason = undecided.entries.groupBy({ it.value }, { it.key })
+        return Undecided.entries
+            .filter { byReason.containsKey(it) }
+            .take(Processors.MAX_UNDECIDED_REASONS)
+            .map { reason ->
+                val hosts = byReason.getValue(reason)
+                Processors.Undecided(
+                    reason = reason.reason,
+                    hosts = hosts.size,
+                    // Sorted, so two rollups of one pass publish the same rows.
+                    examples = hosts.sorted().take(Processors.MAX_UNDECIDED_EXAMPLES),
+                )
+            }
     }
 
     /**

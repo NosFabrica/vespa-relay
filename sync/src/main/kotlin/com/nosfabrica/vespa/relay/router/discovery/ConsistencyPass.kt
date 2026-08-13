@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.nosfabrica.vespa.relay.util.fmtDuration
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -31,6 +32,7 @@ import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -80,6 +82,11 @@ class ConsistencyPass(
     private val probe: AliasProbe,
     private val probesPerCycle: Int = DEFAULT_PROBES_PER_CYCLE,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
+    /**
+     * Where each pass reports how far it got — see [AliasFolding.progress] for
+     * the argument. Null says nothing, which is every caller but the router.
+     */
+    val progress: Processors.Handle? = null,
 ) {
     /** Urls the last [adopt] saw a fold verdict for — never worth measuring. */
     @Volatile
@@ -125,12 +132,25 @@ class ConsistencyPass(
         adopt(candidates)
 
         val wanted = consistency.toProbe(candidates).filter { it !in folded }.take(probesPerCycle)
-        if (wanted.isEmpty()) return 0
+        if (wanted.isEmpty()) {
+            // NOT SILENT, because "nothing left to measure" is the state this
+            // gate is trying to reach and the one an operator most wants to
+            // see. Returning without a word left it indistinguishable from a
+            // pass that never ran, which is what a monthly TTL looks like for
+            // twenty-nine days out of thirty.
+            report(label, candidates, measured = 0, decided = 0, unmeasurable = emptySet())
+            return 0
+        }
 
         val gate = Semaphore(concurrency)
         val decided = AtomicInteger()
         val refused = AtomicInteger()
         val unmeasurable = AtomicInteger()
+        // The urls that proved nothing, kept rather than only counted: grouped
+        // by host they become the one `undecided` row this pass can publish, and
+        // "which server would not answer twice" is what an operator chases.
+        // Bounded by `probesPerCycle`, since that is what `wanted` is capped at.
+        val silent = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
         // ONE anchor for the whole pass, a week behind the clock. Shared for the
         // same reason the fold shares one per group — two urls measured from
         // different anchors are not comparable — though here it matters less,
@@ -181,6 +201,7 @@ class ConsistencyPass(
                         val answer = consistency.decide(verdict?.first, verdict?.second)
                         if (answer == RelayConsistency.Verdict.UNMEASURABLE) {
                             unmeasurable.incrementAndGet()
+                            silent += url
                             return@withPermit
                         }
                         val first = verdict!!.first!!
@@ -218,7 +239,57 @@ class ConsistencyPass(
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
+        report(label, candidates, measured = wanted.size, decided = decided.get(), unmeasurable = silent)
         return decided.get()
+    }
+
+    /**
+     * What this pass reached, where it outlives the log line above.
+     *
+     * `outstanding` is re-derived AFTER the walk rather than taken as
+     * `wanted.size - decided`: a url that was decided is gone from
+     * [RelayConsistency.toProbe] and one that proved nothing is still in it, so
+     * asking again is the only reading that counts a silent relay as still
+     * outstanding — which it is. It is also what makes the number fall to zero
+     * when every url carries a current verdict, which is the state the whole
+     * gate is working towards and the one nothing could previously show.
+     */
+    private fun report(
+        label: String,
+        candidates: List<NormalizedRelayUrl>,
+        measured: Int,
+        decided: Int,
+        unmeasurable: Set<NormalizedRelayUrl>,
+    ) {
+        val handle = progress ?: return
+        // By HOST, like the fold's rows: the urls are what was asked, but the
+        // thing that would not answer twice is a server, and one row per url
+        // would be a list of paths that says the same thing forty times.
+        val hosts = unmeasurable.map { RelayAliases.hostOf(it.url) }.distinct().sorted()
+        handle.record(
+            Processors.Work(
+                stream = label,
+                subjects = candidates.size,
+                outstanding = consistency.toProbe(candidates).count { it !in folded },
+                measured = measured,
+                decided = decided,
+                undecided =
+                    if (hosts.isEmpty()) {
+                        emptyList()
+                    } else {
+                        listOf(
+                            Processors.Undecided(
+                                // The words the log line uses, so a reader
+                                // meeting both does not have to work out that
+                                // they are the same finding.
+                                reason = "said too little to judge",
+                                hosts = hosts.size,
+                                examples = hosts.take(Processors.MAX_UNDECIDED_EXAMPLES),
+                            ),
+                        )
+                    },
+            ),
+        )
     }
 
     /**

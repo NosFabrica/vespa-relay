@@ -57,6 +57,9 @@ class SyncVocabularyTest {
             "kinds",
             "narrowedBy",
             "cycle",
+            // A pass's own number within its owner. An identifier, like `name`
+            // — what it MEANS is `passes`, which has a term of its own.
+            "number",
             "streams",
             "rows",
             "from",
@@ -84,6 +87,10 @@ class SyncVocabularyTest {
             // The fold's per-survivor sample urls: strings, and `urls` beside
             // them is the count a reader looks up.
             "examples",
+            // The container `undecided` holds its rows in. `reason`, `hosts`
+            // and `examples` inside it are what a reader looks up; the plural
+            // is the shape, exactly as `relays` is inside `inFlight`.
+            "reasons",
         )
 
     @Test
@@ -104,11 +111,25 @@ class SyncVocabularyTest {
                  "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
                                           "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
                               "omitted": 118},
-                 "cycle": {"startedAt": 800, "outcome": "completed",
+                 "cycle": {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "completed",
                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3},
                    "hosts": 2, "relayListAgeSec": 120, "taken": {"delivered": 3, "busy": 1}, "balanced": true, "received": 9,
                    "foldedOnto": {"relays": [{"relay": "wss://a.example/", "urls": 1, "examples": ["wss://a.example/x"]}],
-                                  "omitted": 0}}}]}
+                                  "omitted": 0}},
+                 "passes": [{"number": 11, "owner": "dynamic", "startedAt": 700, "endedAt": 780, "outcome": "completed",
+                    "urls": {"discovered": 4, "taken": 4}, "taken": {"delivered": 2}, "received": 4},
+                   {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "running",
+                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3}, "taken": {"delivered": 3}, "received": 9}]}],
+                 "processors": [
+                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passes": 3,
+                    "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
+                    "streams": [{"name": "content", "subjects": 40, "outstanding": 12, "measured": 20, "decided": 4,
+                      "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
+                                                 "examples": ["a.example"]}], "omitted": 0}}]},
+                   {"name": "ingest", "phase": "running", "phaseForSec": 900,
+                    "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12},
+                   {"name": "reachability", "phase": "watching", "phaseForSec": 900, "observed": 40, "knownDead": 8},
+                   {"name": "upstreamPush", "phase": "running", "phaseForSec": 900, "pushed": 5}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
             )!!
@@ -189,6 +210,29 @@ class SyncVocabularyTest {
                     "events",
                     "quietForSec",
                     "omitted",
+                    "owner",
+                ) +
+                // The passes beside a stream's current cycle, and the work that
+                // is not a stream at all — the two probe passes, the NIP-66
+                // monitor, ingest, the healer, the push.
+                setOf(
+                    "passes",
+                    "processors",
+                    "subjects",
+                    "outstanding",
+                    "measured",
+                    "decided",
+                    "undecided",
+                    "reason",
+                    "lastPassAt",
+                    "lastPassSec",
+                    "nextInSec",
+                    "queued",
+                    "capacity",
+                    "accepted",
+                    "rejected",
+                    "pushed",
+                    "observed",
                 )
 
         assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")

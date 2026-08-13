@@ -139,7 +139,9 @@ internal object SyncVocabulary {
                 "hosts",
                 "Distinct authorities behind those urls. Most relay software answers on every path, so one server can wear " +
                     "dozens of urls and every url-keyed count is inflated until the alias fold decides them. Arithmetic over " +
-                    "strings, not the fold's verdict — available immediately, and honest about being that.",
+                    "strings, not the fold's verdict — available immediately, and honest about being that. Inside " +
+                    "`undecided` it is the same unit for the same reason: what a probe pass decides is a SERVER, and one " +
+                    "row per url would say the same thing forty times.",
             )
             put(
                 "legs",
@@ -303,7 +305,9 @@ internal object SyncVocabulary {
                     "within its TTL (24h by quartz's default), so this cycle skipped it without asking. It comes back when " +
                     "the record ages out — or immediately, if anything else on its host delivers. These two — knownDead and " +
                     "hostStruckOut — were one number called \"skipped as dead\", which answered \"will it try again, and " +
-                    "when\" in two opposite ways under one label.",
+                    "when\" in two opposite ways under one label. On the `reachability` processor the same name is the " +
+                    "SET rather than one cycle\'s count: how many urls currently carry such a record, which is what " +
+                    "makes this outcome explicable instead of mysterious.",
             )
             put(
                 "torUnavailable",
@@ -336,6 +340,12 @@ internal object SyncVocabulary {
                     "is a stream whose pool never frees up, and `inFlight` names the leg holding it.",
             )
             put(
+                "owner",
+                "Which half of the router opened a pass: `static` (a configured `urls` backfill) or `dynamic` (a " +
+                    "`relaySource` fan-out). ONE stream name can carry both and they run at once — so without this a " +
+                    "reader has two partitions under one name and no way to tell which is which.",
+            )
+            put(
                 "outcome",
                 "`running`, `completed` or `failed` for the cycle. Published because a cycle that aborted at 80% and one " +
                     "that finished left the identical trace: both simply stopped saying anything.",
@@ -346,6 +356,119 @@ internal object SyncVocabulary {
                     "refusedUnstable + excluded + taken`, and the ten outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
                     "having, and this is what stops a reader treating a broken partition as a whole one. `balanced` beside " +
                     "it is the router's own check, kept separate so a disagreement localises the fault.",
+            )
+            put(
+                "passes",
+                "TWO THINGS, and the context separates them. On a stream it is the list of WALKS still worth " +
+                    "reporting: a walk ends when its last url is handed out, not when its last worker returns, so a " +
+                    "rotation normally has the previous pass finishing while the new one hands out — two rows, each " +
+                    "with its own partition, and the older one's `pending` is exactly the legs still going. Absent " +
+                    "when there is only one, which `cycle` already carries. On a processor it is a COUNT: how many " +
+                    "passes it has run since this process started.",
+            )
+            put(
+                "processors",
+                "The router's work that is NOT a stream, and the answer to \"what else is running\". Six of them: the " +
+                    "alias fold and the stability gate (both on the alias monitor's own six-hour clock, both writing " +
+                    "tags onto the same NIP-66 kind-30166 records), the NIP-66 reachability monitor (quartz's, which " +
+                    "watches every socket this client opens rather than dialling on a schedule), ingest, the healer " +
+                    "and the upstream push. A processor that is not registered is one this router does not run — a " +
+                    "deployment with no signer has no fold and no monitor at all — so an absent row is a fact rather " +
+                    "than missing data.",
+            )
+            put(
+                "subjects",
+                "Urls a stream handed a processor's pass, before anything was decided. The denominator " +
+                    "`outstanding` is measured against, and NOT the number that was dialled: most of a candidate set " +
+                    "already carries a current verdict and is never asked again until it ages out.",
+            )
+            put(
+                "outstanding",
+                "THE PROGRESS NUMBER for a processor: how many of its `subjects` still have no verdict after the pass " +
+                    "that just ran. Falling pass over pass is the fold getting somewhere; standing still while " +
+                    "`measured` climbs is a set of hosts that cannot be decided, and `undecided` says which and why. " +
+                    "Zero is the state both probe passes are working towards — every url measured, nothing left to " +
+                    "ask — and it is reached and held for most of a monthly TTL.",
+            )
+            put(
+                "measured",
+                "Dials that pass spent: fingerprints for the alias fold, paired walks for the stability gate. Capped " +
+                    "per pass, which is why `outstanding` falls in steps rather than to zero — the cap is what keeps a " +
+                    "first pass over a polluted store from becoming one enormous probe run.",
+            )
+            put(
+                "decided",
+                "New verdicts that pass reached AND published. High `measured` with `decided` at zero is a pass that " +
+                    "dialled and learned nothing, which is a real and recoverable state — see `undecided`.",
+            )
+            put(
+                "undecided",
+                "WHICH HOSTS a probe pass left with nothing written down, grouped by why. Five causes end a group " +
+                    "that way — out of probe budget, cooling down from an earlier failed pass, declined by our own " +
+                    "transport, no url that could be a yardstick, nothing to hold up against one — plus a host that " +
+                    "cannot repeat itself, and only that last one never recovers on its own. From outside the process " +
+                    "all of them are the same silence: a url still being dialled beside eleven siblings that folded. " +
+                    "`hosts` counts them and `examples` names a few, bounded with its own `omitted`.",
+            )
+            put(
+                "reason",
+                "One cause a pass left hosts undecided, in the same words the router's own log uses, so a reader " +
+                    "meeting both does not have to work out that they are the same finding.",
+            )
+            put(
+                "lastPassAt",
+                "When a processor's last pass ENDED, whatever it achieved and whether or not it threw. Beside " +
+                    "`nextInSec` it is what separates a pass that is failing every time from one that stopped running " +
+                    "at all: the first keeps this moving, the second freezes it while the phase stays `measuring`.",
+            )
+            put(
+                "lastPassSec",
+                "How long that pass took. Published beside the timestamp because these are not quick: a first fold " +
+                    "over a polluted store dials thousands of relays and runs for a quarter of an hour, and a pass " +
+                    "still running is the ordinary reason the fold has said nothing about a host yet.",
+            )
+            put(
+                "nextInSec",
+                "Seconds until the processor's next pass. The alias monitor's clock is six hours by default, so " +
+                    "\"the fold has decided nothing about this host\" reads as broken until you know the next turn is " +
+                    "four of them away. Measured from when the last pass finished, not from a constant — a pass with " +
+                    "nothing submitted retries in a minute, and a long pass pushes the next one back by its own length.",
+            )
+            put(
+                "queued",
+                "Items waiting in a processor's queue right now. For ingest, read it against `capacity`: full means " +
+                    "ingest is the limit and every download is backpressured behind it, empty means the limit is " +
+                    "upstream of ingest. Those are opposite findings and the depth alone tells them apart only " +
+                    "against the ceiling. For the healer it is repairs enqueued since boot rather than a depth — that " +
+                    "queue drops rather than backpressures, because a dropped heal is a retry and a stalled sweep is " +
+                    "not.",
+            )
+            put(
+                "capacity",
+                "How deep the ingest queue can go before submitting blocks. Derived from the configured batch size, " +
+                    "and the denominator `queued` only means something against.",
+            )
+            put(
+                "accepted",
+                "Events ingest wrote to the store since this router started. ALWAYS smaller than the streams' " +
+                    "`received`, and not by a fault: a mirror is offered the same event once per relay holding it, " +
+                    "and dropping the copies before verifying them is the point of the pipeline.",
+            )
+            put(
+                "rejected",
+                "Events ingest refused since boot — duplicates, superseded versions, bad signatures, events the " +
+                    "store would not take. A large number here is the ordinary shape of a wide fan-out, not damage.",
+            )
+            put(
+                "pushed",
+                "Events this router SENT to somebody else's relay: repairs for the healer, and whatever an upstream " +
+                    "configured `dir = up` was missing for the push. The only two paths that write outward.",
+            )
+            put(
+                "observed",
+                "Relays the NIP-66 monitor holds an observation for — every url this client has opened a socket to, " +
+                    "whatever came of it. The set it could publish a record about, and the denominator `knownDead` is " +
+                    "a part of.",
             )
             put(
                 "staleForSec",

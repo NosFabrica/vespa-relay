@@ -247,6 +247,143 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `every pass still running is republished, each with its own partition`() {
+        // The state a single `cycle` could not describe: a walk ends when its
+        // last url is handed out and its slowest legs run on past it, so the
+        // previous pass is normally still finishing while the new one walks.
+        // Published as one cycle, the old pass's counters stopped being served
+        // the moment the new one opened.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [{"name": "content",
+                 "cycle": {"number": 12, "owner": "dynamic", "outcome": "running",
+                   "urls": {"discovered": 10, "taken": 10}, "taken": {"delivered": 2}},
+                 "passes": [
+                   {"number": 11, "owner": "dynamic", "outcome": "completed", "endedAt": 880,
+                    "urls": {"discovered": 10, "taken": 10}, "taken": {"delivered": 6, "pending": 4}, "received": 400},
+                   {"number": 12, "owner": "dynamic", "outcome": "running",
+                    "urls": {"discovered": 10, "taken": 10}, "taken": {"delivered": 2, "pending": 8}, "received": 40}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val passes = (out["streams"] as JsonArray)[0].jsonObject["passes"] as JsonArray
+
+        assertEquals(2, passes.size)
+        assertEquals(11L, passes[0].jsonObject["number"]!!.jsonPrimitive.long)
+        // Each pass's partition is closed on ITS OWN numbers, so a straggler's
+        // urls are never counted against the walk that did not hand them out —
+        // and the four still in flight belong to the pass that HANDED THEM OUT,
+        // not to the one walking now.
+        assertEquals(
+            4L,
+            passes[0]
+                .jsonObject["taken"]!!
+                .jsonObject["pending"]!!
+                .jsonPrimitive.long,
+        )
+        assertEquals(
+            8L,
+            passes[1]
+                .jsonObject["taken"]!!
+                .jsonObject["pending"]!!
+                .jsonPrimitive.long,
+        )
+        assertTrue(
+            passes[0]
+                .jsonObject["accountedFor"]!!
+                .jsonPrimitive.content
+                .toBoolean(),
+        )
+    }
+
+    @Test
+    fun `a router that publishes one pass publishes no passes array`() {
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [{"name": "content",
+                 "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}},
+                 "passes": [{"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+
+        assertNull((out["streams"] as JsonArray)[0].jsonObject["passes"], "one pass is what `cycle` already says")
+    }
+
+    @Test
+    fun `the processors are republished, and only the counters this side names`() {
+        // Rebuilt member by member like everything else here: the file is
+        // another process's, and a hand-edited one must not be able to put a new
+        // member — one no glossary defines — into a document served under this
+        // relay's name.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [],
+                 "processors": [
+                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passes": 3, "nextInSec": 20800,
+                    "somethingInvented": 7,
+                    "streams": [{"name": "content", "subjects": 40, "outstanding": 12, "measured": 20, "decided": 4,
+                      "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
+                                                 "examples": ["a.example", "b.example", "c.example", "d.example"]}],
+                                    "omitted": 1}}]},
+                   {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val rows = out["processors"] as JsonArray
+        val fold = rows[0].jsonObject
+
+        assertEquals(20_800L, fold["nextInSec"]!!.jsonPrimitive.long)
+        assertNull(fold["somethingInvented"], "a member this side does not name is not passed through")
+        val work = (fold["streams"] as JsonArray)[0].jsonObject
+        assertEquals(12L, work["outstanding"]!!.jsonPrimitive.long)
+        val reason = (work["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject
+        assertEquals(3, (reason["examples"] as JsonArray).size, "the examples are capped again on this side")
+        assertEquals(1L, work["undecided"]!!.jsonObject["omitted"]!!.jsonPrimitive.long, "and the cap discloses itself")
+        assertEquals(12L, rows[1].jsonObject["queued"]!!.jsonPrimitive.long)
+    }
+
+    @Test
+    fun `a processor with no name says nothing, rather than an anonymous row`() {
+        val out =
+            SyncProgressReport.build(
+                """{"writtenAt": 900, "streams": [], "processors": [{"phase": "idle", "queued": 3}]}""",
+                nowSeconds = 1_000,
+            )!!
+
+        assertNull(out["processors"], "a row that names no processor cannot be looked up or acted on")
+    }
+
+    @Test
+    fun `every processor and counter this object publishes can be drawn by the card`() {
+        // The same pin as the disposition one below, for the same failure: the
+        // publisher is Kotlin and the reader is inline JS in a resource, so a
+        // name added on one side and not the other does not fail — the number
+        // simply stops being drawn, on a card that looks complete.
+        val card = card()
+
+        val undrawn = SyncProgressReport.COUNTERS.filterNot { card.contains("has(\"$it\")") }
+        assertEquals(emptyList(), undrawn, "published as a gauge, drawn by no line: $undrawn")
+
+        // The names come from `SyncEngine`'s own constants, which live in the
+        // other module and cannot be read from here. Restated rather than
+        // imported, and the pin is still worth having: it is the page half that
+        // silently stops describing a processor.
+        val processors = listOf("aliasFold", "stability", "reachability", "ingest", "heal", "upstreamPush")
+        val unnamed = processors.filterNot { card.contains("[\"$it\", ") }
+        assertEquals(emptyList(), unnamed, "the router registers these and the card names none of them: $unnamed")
+    }
+
+    private fun card(): String =
+        SyncProgressReportTest::class.java
+            .getResourceAsStream("/stats.html")!!
+            .readBytes()
+            .decodeToString()
+
+    @Test
     fun `every outcome this object publishes can be drawn by the card`() {
         // The drift that produced the bug: `busy` was added to the partition,
         // summed into `accountedFor`, and never added to the card's

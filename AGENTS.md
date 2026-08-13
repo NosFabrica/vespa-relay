@@ -249,6 +249,12 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                             those counts never said; bounded to the longest-held
       LegProgress.kt        one running leg's event clock — the thing that tells
                             a real backlog from a walk that cannot end
+      Processors.kt         the work that is NOT a stream: the alias fold, the
+                            stability gate, the NIP-66 monitor, ingest, the
+                            healer, the push. Same shape as a stream — a phase
+                            and a clock — plus either a pass schedule and an
+                            `outstanding` count, or live gauges read through a
+                            supplier
       SyncProgress.kt       SYNC_PROGRESS_FILE: what each stream is doing, and
                             the heartbeat that tells a quiet router from a
                             stopped one
@@ -399,6 +405,22 @@ relay/src/main/resources/
                         protocol feature to test, and thirty days of
                         distinct-pubkey counts is not a question to ask over a
                         websocket, so every chart here is a rollup read.
+                        The Sync coverage card is three things stacked, in the
+                        order the questions are asked: what the router is doing
+                        NOW (one disposition bar per RUNNING PASS, so the walk
+                        that is finishing and the one that is walking are two
+                        rows rather than one blended total), then *Also running*
+                        — the six processors that are not streams, each with the
+                        same phase-and-clock header a stream gets and a meter for
+                        the two that have a denominator — and only then the
+                        coverage bars, which are where it has WALKED rather than
+                        what it is doing. Two pins keep the JS honest against the
+                        Kotlin that feeds it, and both are in
+                        `SyncProgressReportTest`: every `taken` outcome must have
+                        a `DISPOSITION` row and every published gauge a line in
+                        `processorCounts`, because a name added on one side only
+                        does not fail — the number silently stops being drawn on
+                        a card that still looks complete.
                         ONE panel is not. Monitor verdicts (kind 30166) have no
                         rollup at all — `/stats.json` says how many urls folded
                         and onto how many relays, and nothing could answer "what
@@ -655,6 +677,70 @@ unanswerable from the serving side:
   coverage card cannot draw it, the `SYNC_DIAGNOSE` line fires only for the one
   stream it names, and container stderr rotates inside the hour. `RelayRotation`
   was holding both the whole time and published only their number.
+- **`passes` publishes EVERY WALK still running, not only the newest.** A walk
+  ends when its last url is handed out and its slowest legs run on past it, so
+  the ordinary state of a rotation is the previous pass finishing while the new
+  one hands out. `StreamPhases` held ONE cycle slot, so the moment a pass opened
+  the previous one stopped being published: its counters went on moving against
+  a partition nobody served, and its live legs surfaced only as the new pass's
+  `busy`. The slot is a bounded list now — a pass retires itself when its
+  `pending` reaches 0 (`Cycle.retired`), capped at `MAX_TRACKED_CYCLES` for the
+  pass whose legs never return — and each row carries its own `number`, `owner`
+  and partition, checked on its own. `cycle` is still the newest of them, so
+  nothing that reads this document had to learn about `passes` to keep working.
+  The same change ended the static/dynamic ARBITRATION: one stream name can
+  carry both `urls` and `relaySource`, and where the loser used to publish
+  nothing at all, both halves now get a row and `owner` says which is which.
+
+**…and a FIFTH member says what is running that is not a stream at all.**
+`processors` (`Processors`, published under `sync.progress.processors` and drawn
+as *Also running* on the coverage card) is the other half of "what is this
+router doing". A stream is the part an operator CONFIGURED; these six run beside
+them with nothing configured about them, and until they were published the only
+trace any of them left was a stderr line on a container whose logs rotate inside
+the hour:
+
+| processor | what it is | how far along it is |
+|---|---|---|
+| `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
+| `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
+| `reachability` | quartz's `RelayMonitor` — watches every socket the client opens | `observed`, and the `knownDead` set every fan-out skips |
+| `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
+| `heal` | `HealQueue` + `Healer` | `queued`, `pushed` — registered only where a stream opted in |
+| `upstreamPush` | `UpstreamPush` | `pushed` |
+
+**Are the fold and NIP-66 the same thing? The RECORDS are; the processors are
+not.** All three of the first group write tags onto the same addressable kind
+30166 record per url — `same-as` from the fold, `self-consistent` from the
+stability gate, quartz's `n`/`rtt-*`/`R` from the monitor — which is why
+`RelayAliasRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
+passes SEQUENTIALLY (two writers on one record drop whichever tag was written
+between the other's read and its store, silently, since the result is still a
+valid signed record that simply says less). But they are three different jobs on
+three different clocks: the fold and the gate DIAL, on the monitor's six-hour
+schedule; the reachability monitor never dials on a schedule at all, it rides
+the sockets the fan-out is already opening. The verdicts panel on `/stats.html`
+is where one url's whole record is read back, and it exists because that merge
+is only pinnable in isolation by `RelayAliasRecordTest`.
+
+Two rules the processor rows follow, both the same ones the rest of this
+document does. **A processor that is not registered is one this router does not
+run** — a deployment with no signer has no fold and no monitor at all — so an
+absent row is a fact rather than missing data, and a zeroed one would say the
+opposite. And **the gauges are read through a supplier at snapshot time**, never
+pushed: they are live atomics owned by the component, and a copy kept in step by
+hand is the shape that produces a report disagreeing with the thing it reports
+on. The relay side re-derives nothing but bounds everything: `COUNTERS` in
+`SyncProgressReport` is an ALLOWLIST, so a name that is not in it (and therefore
+in `SyncVocabulary`) cannot reach a document served under this relay's name.
+
+`AliasMonitor.runPass` runs ONE PASS over every stream rather than one stream
+over every pass, which is what makes a pass a clocked unit — `lastPassAt`,
+`lastPassSec` and the `measuring` phase describe the whole pass instead of
+whichever stream was last. It strengthens the ordering the passes already
+depended on: the fold now finishes on every stream before the stability gate
+measures anything, so no stability walk is spent on a url another stream's fold
+was about to remove.
 
 **Three words, and they are not synonyms.** "Done" covered all three, and the
 least meaningful of them was the one being read as progress:

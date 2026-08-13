@@ -194,28 +194,60 @@ class StreamPhases {
         ) : Phase
     }
 
+    /**
+     * ONE PASS over a stream's relay list, and what became of the urls it took
+     * on.
+     *
+     * Kept as a list rather than a slot because passes OVERLAP: a walk ends when
+     * its last url is handed out, not when its last worker returns, so the next
+     * pass is routinely walking while the previous one's stragglers are still
+     * downloading. Published as a single `cycle` that was replaced on every
+     * `beginCycle`, that is exactly the state nothing could show — the moment
+     * the new pass opened, the old one's counters stopped being published and
+     * its live legs were absorbed into the new pass's `busy`, so "the old walk
+     * is still finishing" was a sentence the document could not say.
+     *
+     * ONE stream name can also carry both `urls` and `relaySource`, so a static
+     * backfill and a dynamic fan-out can each own a live pass under it at the
+     * same time. That used to be arbitrated — first writer wins, the loser
+     * publishes nothing — and with a list it does not have to be: [owner] says
+     * which half of the router opened each one.
+     */
+    class Cycle(
+        /** The pass number within its owner, starting at 1. */
+        val number: Long,
+        /** [STATIC] or [DYNAMIC] — which half of the router opened it. */
+        val owner: String,
+        val tally: CycleTally,
+        val startedSec: Long,
+        /** When the WALK ended; null while it is still handing out. The workers outlive it. */
+        @Volatile var endedSec: Long? = null,
+        /** `running` / `completed` / `failed` — see [Stream.outcome]. */
+        @Volatile var outcome: String = "running",
+    ) {
+        /**
+         * Is this pass finished with, i.e. may it be dropped from the report?
+         *
+         * BOTH halves are required and that is the whole point: a pass whose
+         * walk `completed` an hour ago but which still has urls unaccounted for
+         * has legs in the pool right now, and dropping it is how its events
+         * stopped being attributed to anything. `pending` reaching zero is what
+         * says its last worker returned.
+         */
+        fun retired(): Boolean = outcome != "running" && tally.pending() == 0L
+    }
+
     private class Entry(
         @Volatile var phase: Phase,
         @Volatile var sinceMs: Long,
-        /** The cycle in progress, or the last one that ran. Null before the first. */
-        @Volatile var tally: CycleTally? = null,
-        /** When that cycle started, in epoch seconds. */
-        @Volatile var cycleStartedSec: Long? = null,
-        /** When it ended; null while it is running. */
-        @Volatile var cycleEndedSec: Long? = null,
-        /** `running` / `completed` / `failed` — see [Stream.outcome]. */
-        @Volatile var outcome: String? = null,
         /**
-         * Which half of the router owns the cycle in this slot.
+         * The passes still worth reporting, oldest first — see [Cycle].
          *
-         * ONE stream name can carry both `urls` and `relaySource`, so
-         * `StaticBackfill` and `DynamicSync` both open a cycle under it, at boot,
-         * at the same time. Without an owner the second `beginCycle` overwrote
-         * the first's tally and the first `endCycle` stamped `completed` on the
-         * other's still-running fan-out. Publishing one of the two is
-         * incomplete; publishing a blend of them is wrong.
+         * Bounded by [MAX_TRACKED_CYCLES] on top of the retirement rule, because
+         * a pass whose legs never return never retires and a rotation that keeps
+         * passing would otherwise grow this without limit.
          */
-        @Volatile var owner: String? = null,
+        val cycles: MutableList<Cycle> = mutableListOf(),
         /**
          * WHICH relays this stream has workers on, asked live rather than
          * pushed.
@@ -243,23 +275,32 @@ class StreamPhases {
         val phase: String,
         /** How long it has been in that phase, in seconds. */
         val phaseForSec: Long,
-        val tally: CycleTally?,
-        val cycleStartedSec: Long?,
-        val cycleEndedSec: Long?,
         /**
-         * What became of the cycle: `running` while it is, `completed` when it
-         * reached its end, `failed` when it threw. Published because a static
-         * backfill that finished and a stream whose cycle aborted at 80% left
-         * the identical trace — both simply stopped saying anything.
+         * Every pass still worth reporting, oldest first — see [Cycle].
+         *
+         * Usually one. Two or more is a rotation whose stragglers outlived their
+         * walk, which is the ordinary way a wide fan-out behaves and was
+         * previously indistinguishable from a single cycle with a large `busy`.
          */
-        val outcome: String?,
+        val cycles: List<Cycle>,
         /**
          * The relays this stream has workers on right now, longest-held first —
          * the names behind `running`, `pending` and `busy`, which were counts
          * and nothing else. Null for a stream that has no rotation to ask.
          */
         val inFlight: InFlight? = null,
-    )
+    ) {
+        /**
+         * The pass that started most recently, which is what a reader asking
+         * "what is it doing now" means — and what the single `cycle` member of
+         * the progress document still carries, so a page that has not learned
+         * about [cycles] keeps working.
+         */
+        val newest: Cycle? get() = cycles.lastOrNull()
+
+        /** Passes that have not finished handing out. Two of them is the overlap, visible. */
+        fun running(): Int = cycles.count { it.outcome == "running" }
+    }
 
     private val phases = ConcurrentHashMap<String, Entry>()
 
@@ -274,39 +315,46 @@ class StreamPhases {
     }
 
     /**
-     * A cycle has started; [tally] is what it will fill in as urls settle.
+     * A pass has started; [tally] is what it will fill in as urls settle.
      *
-     * Replaces the previous cycle's outright. Keeping a history here would be a
-     * second, unbounded thing to reason about on a router that already writes
-     * its durable state to two files; the last cycle plus the one running is
-     * what an operator asks about.
+     * APPENDED, not substituted. The previous pass keeps its counters and keeps
+     * being published until its own workers have all returned ([Cycle.retired]),
+     * because that is the state a rotation is in most of the time and the one
+     * this report existed to hide: the new walk's `busy` counted the old walk's
+     * legs and nothing said what they were still doing there.
+     *
+     * Retired passes are dropped here rather than on a timer — this is the only
+     * moment the list is known to be growing — and the whole list is capped at
+     * [MAX_TRACKED_CYCLES] on top of that, since a pass with a leg that never
+     * returns never retires. The cap drops the OLDEST, which is the one whose
+     * events are furthest in the past.
      */
     @Synchronized
     fun beginCycle(
         name: String,
         owner: String,
+        number: Long,
         tally: CycleTally,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
         register(name)
-        phases[name]?.let {
-            // First writer wins while a cycle is live. The loser keeps counting
-            // into its own tally and simply does not publish this round — which
-            // is the honest outcome for a stream whose work has two sources and
-            // one slot to describe it in.
-            if (it.outcome == "running" && it.owner != null && it.owner != owner) return
-            it.owner = owner
-            it.tally = tally
-            it.cycleStartedSec = nowSeconds
-            it.cycleEndedSec = null
-            it.outcome = "running"
+        phases[name]?.let { entry ->
+            entry.cycles.removeAll { it.retired() }
+            entry.cycles += Cycle(number = number, owner = owner, tally = tally, startedSec = nowSeconds)
+            while (entry.cycles.size > MAX_TRACKED_CYCLES) entry.cycles.removeAt(0)
         }
     }
 
     /**
-     * The cycle ended. [outcome] is `completed` or `failed` — the caller knows
+     * The pass ended. [outcome] is `completed` or `failed` — the caller knows
      * which, and guessing from the counters would report a cycle that legitimately
      * reached nothing as a failure.
+     *
+     * Stamps the newest RUNNING pass of that owner and nothing else. A stream
+     * that fails during DISCOVERY has opened no pass, and stamping the previous
+     * one would age a finished run every time the next one threw; a static
+     * backfill finishing must not stamp `completed` on a dynamic fan-out running
+     * under the same name.
      */
     @Synchronized
     fun endCycle(
@@ -315,18 +363,13 @@ class StreamPhases {
         outcome: String,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ) {
-        phases[name]?.let {
-            // Only for a cycle that actually started, and only by whoever
-            // started it. A stream that fails during DISCOVERY has no tally, and
-            // stamping an end on the previous cycle's would age a finished run
-            // every time the next one threw; a static backfill finishing must
-            // not stamp `completed` on a dynamic fan-out still running under the
-            // same name.
-            if (it.outcome == "running" && it.owner == owner) {
-                it.cycleEndedSec = nowSeconds
+        phases[name]
+            ?.cycles
+            ?.lastOrNull { it.outcome == "running" && it.owner == owner }
+            ?.let {
+                it.endedSec = nowSeconds
                 it.outcome = outcome
             }
-        }
     }
 
     /**
@@ -362,6 +405,18 @@ class StreamPhases {
          * supposed to, which is how a warning stops being read.
          */
         const val STUCK_LEG_SECONDS = 600L
+
+        /**
+         * How many passes one stream reports at once.
+         *
+         * Four, and it is a backstop rather than a policy: passes retire
+         * themselves the moment their last worker returns, so the ordinary
+         * steady state is one or two. What this bounds is the pathological case
+         * — a leg that never returns keeps its pass alive forever, and a stream
+         * on a short `recycleSeconds` would then accumulate one row per pass for
+         * the life of the process.
+         */
+        const val MAX_TRACKED_CYCLES = 4
     }
 
     /** Every registered stream, in registration order, as of now. */
@@ -373,10 +428,10 @@ class StreamPhases {
                 name = name,
                 phase = word(e.phase),
                 phaseForSec = (System.currentTimeMillis() - e.sinceMs) / 1000,
-                tally = e.tally,
-                cycleStartedSec = e.cycleStartedSec,
-                cycleEndedSec = e.cycleEndedSec,
-                outcome = e.outcome,
+                // Copied, not handed out: the list is mutated by the fan-out
+                // under this lock and a reader iterating the live one would be
+                // serialising a document while it changed underneath.
+                cycles = e.cycles.toList(),
                 // Asked at the moment the snapshot is taken, like everything
                 // else here — the whole class is a view flattened for a reader
                 // outside this process, and a member read a tick earlier would

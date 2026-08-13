@@ -71,7 +71,7 @@ import java.nio.file.StandardCopyOption
  *                                "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
  *                    "omitted": 118},
  *       "cycle": {
- *         "startedAt": 1769999000, "outcome": "running",
+ *         "number": 12, "owner": "dynamic", "startedAt": 1769999000, "outcome": "running",
  *         "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "refusedUnstable": 12, "excluded": 0, "taken": 5311},
  *         "hosts": 850,
  *         "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
@@ -82,11 +82,32 @@ import java.nio.file.StandardCopyOption
  *                        "omitted": 480},
  *         "balanced": true,
  *         "received": 481203
- *       }
+ *       },
+ *       "passes": [{"number": 11, "outcome": "completed", "…": "the walk before it, still finishing"},
+ *                  {"number": 12, "outcome": "running",   "…": "the one `cycle` carries"}]
  *     }
+ *   ],
+ *   "processors": [
+ *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passes": 3,
+ *      "lastPassAt": 1769998000, "lastPassSec": 812, "nextInSec": 20800,
+ *      "streams": [{"name": "content", "subjects": 16752, "outstanding": 4021,
+ *                   "measured": 2000, "decided": 118,
+ *                   "undecided": {"reasons": [{"reason": "out of probe budget",
+ *                                              "hosts": 214, "examples": ["relay.example"]}],
+ *                                 "omitted": 0}}]},
+ *     {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000,
+ *      "accepted": 3910233, "rejected": 41002}
  *   ]
  * }
  * ```
+ *
+ * `passes` is the half `cycle` could not say. A walk ends when its last url is
+ * handed out, not when its last worker returns, so a rotation normally has the
+ * previous pass finishing while the new one walks — and with one slot to
+ * describe them in, the old pass simply stopped being published the moment the
+ * new one opened. `processors` is the work that is not a stream at all: the
+ * alias fold, the stability gate, the NIP-66 monitor, ingest, the healer, the
+ * push. See [Processors].
  *
  * `writtenAt` is the HEARTBEAT and is the most load-bearing member here: it is
  * rewritten on every tick whatever the streams are doing, so a reader can tell a
@@ -118,13 +139,14 @@ class SyncProgress(
      */
     fun write(
         streams: List<StreamPhases.Stream>,
+        processors: List<Processors.Snapshot> = emptyList(),
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
         val f = file ?: return false
         return runCatching {
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, nowSeconds)))
+            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, processors, nowSeconds)))
             // Temp file plus an atomic move, for the same reason every other
             // file here is written that way: the relay reads this on its own
             // schedule and a half-written document parses as nothing.
@@ -145,6 +167,7 @@ class SyncProgress(
         /** The document, pure, so it can be asserted without a filesystem. */
         fun document(
             streams: List<StreamPhases.Stream>,
+            processors: List<Processors.Snapshot> = emptyList(),
             nowSeconds: Long,
         ): JsonObject =
             buildJsonObject {
@@ -194,105 +217,187 @@ class SyncProgress(
                                         },
                                     )
                                 }
-                                s.tally?.let { t ->
-                                    put(
-                                        "cycle",
-                                        buildJsonObject {
-                                            s.cycleStartedSec?.let { put("startedAt", it) }
-                                            s.cycleEndedSec?.let { put("endedAt", it) }
-                                            s.outcome?.let { put("outcome", it) }
-                                            put(
-                                                "urls",
-                                                buildJsonObject {
-                                                    put("discovered", t.discovered)
-                                                    put("foldedOntoAnother", t.foldedOntoAnother)
-                                                    put("refusedUnstable", t.refusedUnstable)
-                                                    put("excluded", t.excluded)
-                                                    put("taken", t.taken)
-                                                },
-                                            )
-                                            // Beside the url counts, never
-                                            // instead of them: the gap between
-                                            // the two IS the disclosure — 3,272
-                                            // urls on 850 hosts, in the run that
-                                            // motivated this.
-                                            put("hosts", t.hosts)
-                                            // How old the list those urls came
-                                            // from was when this cycle started.
-                                            // Without it `discovered` changes
-                                            // meaning silently on a stream that
-                                            // recycles its relay list: the count
-                                            // can describe a store walk from
-                                            // hours ago, and two identical
-                                            // documents cannot be told from a
-                                            // mirror that stopped looking.
-                                            put("relayListAgeSec", t.listAgeSec)
-                                            put(
-                                                "taken",
-                                                buildJsonObject {
-                                                    put("delivered", t.delivered.get())
-                                                    put("nothingNew", t.nothingNew.get())
-                                                    put("unreachable", t.unreachable.get())
-                                                    put("transferFailed", t.transferFailed.get())
-                                                    put("noRoute", t.noRoute.get())
-                                                    put("hostStruckOut", t.hostStruckOut.get())
-                                                    put("knownDead", t.knownDead.get())
-                                                    put("torUnavailable", t.torUnavailable.get())
-                                                    // Not dialled because a
-                                                    // worker from an earlier
-                                                    // pass still had it. Its
-                                                    // own member because
-                                                    // "the rotation is
-                                                    // overlapping" and "the
-                                                    // relay is dead" are
-                                                    // opposite findings.
-                                                    put("busy", t.busy.get())
-                                                    // Derived, and it is what
-                                                    // makes the eight members
-                                                    // sum to `urls.taken` while
-                                                    // the cycle is still running.
-                                                    put("pending", t.pending())
-                                                },
-                                            )
-                                            put("balanced", t.balanced())
-                                            put("received", t.received.get())
-                                            // WHICH urls were folded, not only
-                                            // how many. The count answers
-                                            // "how much of the fan-out was
-                                            // duplication"; this answers "which
-                                            // server is wearing forty urls",
-                                            // which is the one an operator can
-                                            // act on. Bounded, and it says what
-                                            // it left out — see
-                                            // [CycleTally.foldedOnto].
-                                            t.foldedOnto().takeIf { it.onto.isNotEmpty() }?.let { fold ->
-                                                put(
-                                                    "foldedOnto",
-                                                    buildJsonObject {
-                                                        putJsonArray("relays") {
-                                                            for (row in fold.onto) {
-                                                                add(
-                                                                    buildJsonObject {
-                                                                        put("relay", row.relay)
-                                                                        put("urls", row.urls)
-                                                                        putJsonArray("examples") { for (u in row.examples) add(u) }
-                                                                    },
-                                                                )
-                                                            }
-                                                        }
-                                                        // Never silent: a
-                                                        // truncated list that
-                                                        // does not say so reads
-                                                        // as the whole answer.
-                                                        put("omitted", fold.omitted)
-                                                    },
-                                                )
-                                            }
-                                        },
-                                    )
+                                // THE NEWEST PASS, under the name it has always
+                                // had. Every reader of this document reads
+                                // `cycle`, and the passes beside it are an
+                                // addition rather than a replacement: a rollup
+                                // or a page that knows nothing about `passes`
+                                // goes on describing the current walk exactly
+                                // as it did.
+                                s.newest?.let { put("cycle", cycle(it)) }
+                                // …AND EVERY PASS STILL RUNNING, oldest first.
+                                // A walk ends when its last url is handed out,
+                                // not when its last worker returns, so the
+                                // ordinary state of a rotation is one pass
+                                // walking while the previous one's legs finish.
+                                // Published only when there is more than one:
+                                // a single-pass stream would otherwise carry a
+                                // verbatim copy of `cycle` on every tick, for
+                                // nothing.
+                                s.cycles.takeIf { it.size > 1 }?.let { cycles ->
+                                    putJsonArray("passes") { for (c in cycles) add(cycle(c)) }
                                 }
                             },
                         )
+                    }
+                }
+                // THE WORK THAT IS NOT A STREAM — see [Processors]. Omitted
+                // entirely when nothing registered, rather than published as an
+                // empty array: an empty list is a claim that this router runs
+                // none of them, and a router built before this existed makes no
+                // such claim.
+                processors.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("processors") { for (p in rows) add(processor(p)) }
+                }
+            }
+
+        /** One pass, as the document carries it — both under `cycle` and inside `passes`. */
+        private fun cycle(c: StreamPhases.Cycle): JsonObject =
+            c.tally.let { t ->
+                buildJsonObject {
+                    // The pass number and who opened it. Without them two rows
+                    // of `passes` are two anonymous partitions, and the question
+                    // they exist to answer — is the old walk still finishing —
+                    // needs to know which is which.
+                    put("number", c.number)
+                    put("owner", c.owner)
+                    put("startedAt", c.startedSec)
+                    c.endedSec?.let { put("endedAt", it) }
+                    put("outcome", c.outcome)
+                    put(
+                        "urls",
+                        buildJsonObject {
+                            put("discovered", t.discovered)
+                            put("foldedOntoAnother", t.foldedOntoAnother)
+                            put("refusedUnstable", t.refusedUnstable)
+                            put("excluded", t.excluded)
+                            put("taken", t.taken)
+                        },
+                    )
+                    // Beside the url counts, never instead of them: the gap
+                    // between the two IS the disclosure — 3,272 urls on 850
+                    // hosts, in the run that motivated this.
+                    put("hosts", t.hosts)
+                    // How old the list those urls came from was when this cycle
+                    // started. Without it `discovered` changes meaning silently
+                    // on a stream that recycles its relay list: the count can
+                    // describe a store walk from hours ago, and two identical
+                    // documents cannot be told from a mirror that stopped
+                    // looking.
+                    put("relayListAgeSec", t.listAgeSec)
+                    put(
+                        "taken",
+                        buildJsonObject {
+                            put("delivered", t.delivered.get())
+                            put("nothingNew", t.nothingNew.get())
+                            put("unreachable", t.unreachable.get())
+                            put("transferFailed", t.transferFailed.get())
+                            put("noRoute", t.noRoute.get())
+                            put("hostStruckOut", t.hostStruckOut.get())
+                            put("knownDead", t.knownDead.get())
+                            put("torUnavailable", t.torUnavailable.get())
+                            // Not dialled because a worker from an earlier pass
+                            // still had it. Its own member because "the rotation
+                            // is overlapping" and "the relay is dead" are
+                            // opposite findings.
+                            put("busy", t.busy.get())
+                            // Derived, and it is what makes the eight members
+                            // sum to `urls.taken` while the cycle is still
+                            // running.
+                            put("pending", t.pending())
+                        },
+                    )
+                    put("balanced", t.balanced())
+                    put("received", t.received.get())
+                    // WHICH urls were folded, not only how many. The count
+                    // answers "how much of the fan-out was duplication"; this
+                    // answers "which server is wearing forty urls", which is the
+                    // one an operator can act on. Bounded, and it says what it
+                    // left out — see [CycleTally.foldedOnto].
+                    t.foldedOnto().takeIf { it.onto.isNotEmpty() }?.let { fold ->
+                        put(
+                            "foldedOnto",
+                            buildJsonObject {
+                                putJsonArray("relays") {
+                                    for (row in fold.onto) {
+                                        add(
+                                            buildJsonObject {
+                                                put("relay", row.relay)
+                                                put("urls", row.urls)
+                                                putJsonArray("examples") { for (u in row.examples) add(u) }
+                                            },
+                                        )
+                                    }
+                                }
+                                // Never silent: a truncated list that does not
+                                // say so reads as the whole answer.
+                                put("omitted", fold.omitted)
+                            },
+                        )
+                    }
+                }
+            }
+
+        /**
+         * One processor, as the document carries it — see [Processors].
+         *
+         * The counters are put as MEMBERS rather than as a `{name, value}` list,
+         * because that is how a reader of this document reads every other number
+         * in it and because each of them has an entry in the relay's published
+         * glossary. The set is fixed by the wiring in `SyncEngine`, not open to
+         * whatever a caller passes: `SyncVocabularyTest` fails the build for a
+         * published count with no term.
+         */
+        private fun processor(p: Processors.Snapshot): JsonObject =
+            buildJsonObject {
+                put("name", p.name)
+                put("phase", p.phase)
+                put("phaseForSec", p.phaseForSec)
+                p.passes?.let { put("passes", it) }
+                p.lastPassAt?.let { put("lastPassAt", it) }
+                p.lastPassSec?.let { put("lastPassSec", it) }
+                // The countdown, and the reason a processor needs one at all:
+                // "the fold has decided nothing about this host" reads as broken
+                // until you know its clock is six hours long and the next turn
+                // is four of them away.
+                p.nextInSec?.let { put("nextInSec", it) }
+                for (c in p.counts) put(c.name, c.value)
+                p.work.takeIf { it.isNotEmpty() }?.let { rows ->
+                    putJsonArray("streams") {
+                        for (w in rows) {
+                            add(
+                                buildJsonObject {
+                                    put("name", w.stream)
+                                    put("subjects", w.subjects)
+                                    // The one that says whether it is getting
+                                    // anywhere. See [Processors.Work].
+                                    put("outstanding", w.outstanding)
+                                    put("measured", w.measured)
+                                    put("decided", w.decided)
+                                    w.undecided.takeIf { it.isNotEmpty() }?.let { reasons ->
+                                        put(
+                                            "undecided",
+                                            buildJsonObject {
+                                                putJsonArray("reasons") {
+                                                    for (u in reasons) {
+                                                        add(
+                                                            buildJsonObject {
+                                                                put("reason", u.reason)
+                                                                put("hosts", u.hosts)
+                                                                putJsonArray("examples") { for (h in u.examples) add(h) }
+                                                            },
+                                                        )
+                                                    }
+                                                }
+                                                // Bounded like every other list
+                                                // here, and never silently.
+                                                put("omitted", w.undecidedOmitted)
+                                            },
+                                        )
+                                    }
+                                },
+                            )
+                        }
                     }
                 }
             }

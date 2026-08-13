@@ -772,7 +772,10 @@ internal class DynamicSync(
         progress.tally.busy.addAndGet(work.busy.toLong())
         progress.done.addAndGet(work.busy.toLong())
         progress.skipped.addAndGet(work.busy.toLong())
-        phases.beginCycle(stream.name, StreamPhases.DYNAMIC, progress.tally)
+        // Numbered with the rotation's own pass counter, so two rows of
+        // `passes` in the progress file can be told apart — and so the number in
+        // the log line and the number in the document are the same number.
+        phases.beginCycle(stream.name, StreamPhases.DYNAMIC, progress.number, progress.tally)
         // The walks of the PREVIOUS pass, which are this pass's noise. They are
         // retained past their own end on purpose — that is what stops the
         // percentage running backwards as relays finish — so the pass boundary

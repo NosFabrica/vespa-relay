@@ -35,6 +35,7 @@ import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.router.progress.SyncProgress
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
@@ -242,6 +243,14 @@ class SyncEngine(
     private val phases = StreamPhases()
     private val paging = PagingProgress()
 
+    /**
+     * The work that is NOT a stream — the two probe passes, the NIP-66 monitor,
+     * ingest, the healer, the push. See [Processors] for why they needed a
+     * report of their own; [registerProcessors] is where each one is wired to
+     * the counters it already keeps.
+     */
+    private val processors = Processors()
+
     // Repairs discovered by ingest, drained per relay at the end of its own
     // sync. Bounded and coalescing: it drops rather than backpressure the
     // sweep, because a dropped heal is a retry and a stalled sweep is not.
@@ -300,6 +309,7 @@ class SyncEngine(
                     AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
                         probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
                     },
+                progress = processors.of(FOLD_PROCESSOR),
             )
         }
 
@@ -323,6 +333,7 @@ class SyncEngine(
                     AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
                         probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
                     },
+                progress = processors.of(STABILITY_PROCESSOR),
             )
         }
 
@@ -337,8 +348,36 @@ class SyncEngine(
      */
     private val aliasMonitor =
         listOfNotNull<AliasMonitor.Pass>(
-            folding?.let { f -> AliasMonitor.Pass { l, c, d, e, s -> f.measure(l, c, d, e, s) } },
-            stability?.let { g -> AliasMonitor.Pass { l, c, d, e, s -> g.measure(l, c, d, e, s) } },
+            // Each wrapper carries the same handle its pass writes into, so the
+            // monitor's clock — when the pass ran, how long it took, when the
+            // next one is due — lands on the row the pass is filling in. See
+            // [AliasMonitor.Pass.progress].
+            folding?.let { f ->
+                object : AliasMonitor.Pass {
+                    override val progress = f.progress
+
+                    override suspend fun measure(
+                        label: String,
+                        candidates: List<NormalizedRelayUrl>,
+                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
+                        onEvent: suspend (Event) -> Unit,
+                        sockets: AliasFolding.Sockets,
+                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
+                }
+            },
+            stability?.let { g ->
+                object : AliasMonitor.Pass {
+                    override val progress = g.progress
+
+                    override suspend fun measure(
+                        label: String,
+                        candidates: List<NormalizedRelayUrl>,
+                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
+                        onEvent: suspend (Event) -> Unit,
+                        sockets: AliasFolding.Sockets,
+                    ): Int = g.measure(label, candidates, canDial, onEvent, sockets)
+                }
+            },
         ).takeIf { it.isNotEmpty() }
             ?.let { AliasMonitor(it, scope) }
     private val dynamic =
@@ -371,6 +410,7 @@ class SyncEngine(
         }
 
         ingest.start()
+        registerProcessors()
 
         // Said at boot, both ways: a transport that is configured but not
         // answering must not be discovered later, one silent onion relay at a
@@ -444,7 +484,7 @@ class SyncEngine(
         scope.launch {
             while (scope.isActive) {
                 delay(PROGRESS_INTERVAL_MS)
-                progressFile.write(phases.snapshot())
+                progressFile.write(phases.snapshot(), processors.snapshot())
             }
         }
         if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
@@ -472,6 +512,101 @@ class SyncEngine(
                 ),
         )
         return this
+    }
+
+    /**
+     * THE JOBS THAT ARE NOT STREAMS, wired to the counters they already keep.
+     *
+     * Each one is a supplier over live atomics rather than a copy pushed on a
+     * tick — see [Processors] — so nothing here can drift from the thing it
+     * describes, and a processor that is not running at all is simply never
+     * registered. That absence is the honest report: a router with no signer
+     * publishes no fold and no NIP-66 monitor because it HAS none, and a zeroed
+     * row would claim the opposite.
+     *
+     * The two probe passes are registered elsewhere — they are constructed with
+     * their handles, because the pass writes its own work numbers and only
+     * [AliasMonitor] knows its clock.
+     */
+    private fun registerProcessors() {
+        // The two probe passes exist whenever there is a signer, and RUN only
+        // where there is something to fold: a static config names its upstreams
+        // by hand and has no duplicate urls to find, so `aliasMonitor.start()`
+        // is never called. Said out loud, because a row left at `starting` for
+        // the life of the process reads as a pass that is about to run.
+        if (dynamicStreams.isEmpty()) {
+            folding?.progress?.phase(Processors.OFF)
+            stability?.progress?.phase(Processors.OFF)
+        }
+        // WHERE EVERY MIRRORED EVENT ACTUALLY LANDS, and the first thing to look
+        // at when the streams read busy and the store is not growing. The queue
+        // depth against its capacity is the whole diagnosis: full means ingest
+        // is the limit and the downloads are backpressured behind it, empty
+        // means the limit is upstream of here. That pair was in a stderr line
+        // once a minute and nowhere else.
+        processors.of(INGEST_PROCESSOR).let { p ->
+            p.phase(Processors.RUNNING)
+            p.counts {
+                listOf(
+                    Processors.Count("queued", ingest.queued.get().toLong()),
+                    Processors.Count("capacity", ingest.capacity.toLong()),
+                    Processors.Count("accepted", ingest.accepted.get()),
+                    Processors.Count("rejected", ingest.rejected.get()),
+                )
+            }
+        }
+        // NIP-66, and the answer to "is that the same thing as the alias fold":
+        // the records are, the processors are not. This one watches every socket
+        // the client opens and signs what it learns about REACHABILITY; the fold
+        // and the stability gate dial deliberately and write IDENTITY and
+        // USABILITY tags. All three land on the same addressable kind-30166
+        // record per url, which is why a verdict panel shows them together and
+        // why they must not write one at the same moment.
+        monitor?.let { m ->
+            processors.of(REACHABILITY_PROCESSOR).let { p ->
+                p.phase(Processors.WATCHING)
+                p.counts {
+                    listOf(
+                        // Relays it has an observation for at all — the set it
+                        // could publish about.
+                        Processors.Count(
+                            "observed",
+                            m.observer
+                                .all()
+                                .size
+                                .toLong(),
+                        ),
+                        // …and the ones a current unreachability record takes
+                        // out of every fan-out until the TTL lapses. This is the
+                        // number that makes a stream's `knownDead` outcome
+                        // explicable rather than mysterious.
+                        Processors.Count("knownDead", m.deadSet().size.toLong()),
+                    )
+                }
+            }
+        }
+        // Repairs discovered by ingest and handed back to the relays serving
+        // them. Registered only where a stream opted in: with neither switch on,
+        // the queue refuses everything and a row of zeros would look like a
+        // healer that is failing rather than one nobody asked for.
+        if (healingPossible) {
+            processors.of(HEAL_PROCESSOR).let { p ->
+                p.phase(Processors.RUNNING)
+                p.counts {
+                    listOf(
+                        Processors.Count("queued", healQueue.enqueued.get()),
+                        Processors.Count("pushed", healer.pushed.get()),
+                    )
+                }
+            }
+        }
+        // The only half of the router that WRITES to other people's relays.
+        if (upUpstreams.isNotEmpty()) {
+            processors.of(PUSH_PROCESSOR).let { p ->
+                p.phase(Processors.RUNNING)
+                p.counts { listOf(Processors.Count("pushed", upPush.pushed.get())) }
+            }
+        }
     }
 
     private fun downListener(up: SyncUpstream): SubscriptionListener =
@@ -634,6 +769,20 @@ class SyncEngine(
     }
 
     companion object {
+        /**
+         * The names the progress document calls this router's non-stream jobs.
+         *
+         * Spelled out as constants for the reason `StreamPhases.word` gives:
+         * they are PUBLISHED, and a reader charting them must not have a row
+         * renamed by a Kotlin refactor.
+         */
+        const val FOLD_PROCESSOR = "aliasFold"
+        const val STABILITY_PROCESSOR = "stability"
+        const val REACHABILITY_PROCESSOR = "reachability"
+        const val INGEST_PROCESSOR = "ingest"
+        const val HEAL_PROCESSOR = "heal"
+        const val PUSH_PROCESSOR = "upstreamPush"
+
         private const val MAX_CONCURRENT_SOCKETS = 1024
         private const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
 

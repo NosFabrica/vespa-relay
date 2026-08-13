@@ -356,6 +356,15 @@
      undifferentiated slab with 0px between them. Same muted register, its own
      spacing. */
   .cyc-line { color: var(--muted); font-size: .85rem; margin: .45rem 0 0; }
+  /* The label above one pass's bar. Smaller and quieter than `.cyc-head`: a
+     stream is the subject and its passes are rows of it, and giving the two the
+     same weight made a rotation look like two streams. */
+  .pass-head { color: var(--muted); font-size: .72rem; margin: .55rem 0 0; font-variant-numeric: tabular-nums; }
+  /* How far a probe pass has got over one stream's urls. The SAME 12px height
+     as `.disp` and a coverage `.track`, for the reason the disposition bar
+     gives: they are all "a proportion of a whole" and should look it. */
+  .proc-meter { height: 12px; border-radius: 2px; overflow: hidden; background: var(--grid); margin: .5rem 0 .1rem; }
+  .proc-meter i { display: block; height: 100%; background: var(--accent); }
   .cyc { margin: 0 0 .9rem; }
   .cyc-head { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
   .cyc-head .nm { font-weight: 600; }
@@ -1582,6 +1591,85 @@ function heldCount(inFlight) {
   return ((inFlight.relays || []).length) + (inFlight.omitted || 0);
 }
 
+/**
+ * One pass's stacked disposition — what became of every url it took on.
+ *
+ * Split out of [progressPanel] because a stream now draws one of these per
+ * RUNNING PASS rather than one per stream, and a bar whose segments are built
+ * inline cannot be drawn twice.
+ */
+function dispositionBar(taken, total, outcome, held) {
+  const bar = el("div", "disp");
+  for (const [key] of DISPOSITION) {
+    const n = taken[key] || 0;
+    if (!n) continue;
+    const seg = el("i", key);
+    seg.style.width = (n / total) * 100 + "%";
+    const meaning = key === "pending" ? pendingLabel(outcome, held) : DISPOSITION.find((d) => d[0] === key)[1];
+    seg.title = `${fmt(n)} of ${fmt(total)} — ${meaning}`;
+    bar.appendChild(seg);
+  }
+  return bar;
+}
+
+/** …and the key to it, drawn once per stream however many bars there are. */
+function dispositionKey(taken, outcome, held) {
+  const key = el("div", "disp-key");
+  for (const [k, label] of DISPOSITION) {
+    const n = taken[k] || 0;
+    if (!n) continue;
+    const item = el("span");
+    // The SAME class the bar segment carries, so one CSS rule paints both
+    // and the key cannot drift from the bar. Never read back a computed
+    // style here: this card is still detached from the document, so
+    // `getComputedStyle` resolves nothing.
+    const b = el("b", k);
+    const meaning = k === "pending" ? pendingLabel(outcome, held) : label;
+    item.appendChild(b);
+    item.append(`${fmt(n)} ${meaning.split(" — ")[0]}`);
+    item.title = meaning;
+    key.appendChild(item);
+  }
+  return key;
+}
+
+/** A pass's own `pending` — its urls with no verdict yet, which on a finished walk is its tail. */
+function passHeld(pass) {
+  return (pass.taken || {}).pending || 0;
+}
+
+/**
+ * The label above one pass's bar: which walk this is, and whether it is still
+ * handing out or only finishing.
+ *
+ * The distinction is the whole reason these are drawn separately. "Pass 11,
+ * finished handing out, 41 relays still finishing" and "pass 12, walking" are
+ * two different jobs running at once, and a reader who sees one bar concludes
+ * either that the old walk stopped or that the new one has not started.
+ */
+function passHead(pass, current) {
+  const line = el("p", "pass-head");
+  line.append(`pass ${fmt(pass.number != null ? pass.number : "?")}`);
+  // The owner only when it is the static half, which is the surprising one: a
+  // stream carrying both `urls` and `relaySource` runs two walks under one name.
+  if (pass.owner && pass.owner !== "dynamic") line.append(` · ${pass.owner}`);
+  const outstanding = passHeld(pass);
+  if (pass.outcome === "running") {
+    line.append(current ? " · walking now" : " · walking");
+  } else if (outstanding > 0) {
+    // The state that had no way to be shown: the walk is over and its slowest
+    // legs are not.
+    line.append(` · handed out, ${fmt(outstanding)} relay(s) still finishing`);
+  } else {
+    line.append(` · ${pass.outcome || "ended"}`);
+  }
+  if (pass.received) line.append(` · ${fmt(pass.received)} event(s)`);
+  line.title =
+    "A pass ends when its last url is handed out, not when its last worker returns — so a finished walk with relays" +
+    " still finishing is the rotation working, and the next pass simply has fewer urls to hand out.";
+  return line;
+}
+
 function progressPanel(progress) {
   if (!progress) return null;
   const wrap = el("div");
@@ -1632,40 +1720,27 @@ function progressPanel(progress) {
     }
 
     const u = c.urls || {};
-    const taken = c.taken || {};
     const total = u.taken || 0;
     // What `pending` is read against — see `pendingLabel`.
     const held = heldCount(s.inFlight);
-    if (total > 0) {
-      const bar = el("div", "disp");
-      for (const [key] of DISPOSITION) {
-        const n = taken[key] || 0;
-        if (!n) continue;
-        const seg = el("i", key);
-        seg.style.width = (n / total) * 100 + "%";
-        const meaning = key === "pending" ? pendingLabel(outcome, held) : DISPOSITION.find((d) => d[0] === key)[1];
-        seg.title = `${fmt(n)} of ${fmt(total)} — ${meaning}`;
-        bar.appendChild(seg);
-      }
-      box.appendChild(bar);
-      const key = el("div", "disp-key");
-      for (const [k, label] of DISPOSITION) {
-        const n = taken[k] || 0;
-        if (!n) continue;
-        const item = el("span");
-        // The SAME class the bar segment carries, so one CSS rule paints both
-        // and the key cannot drift from the bar. Never read back a computed
-        // style here: this card is still detached from the document, so
-        // `getComputedStyle` resolves nothing.
-        const b = el("b", k);
-        const meaning = k === "pending" ? pendingLabel(outcome, held) : label;
-        item.appendChild(b);
-        item.append(`${fmt(n)} ${meaning.split(" — ")[0]}`);
-        item.title = meaning;
-        key.appendChild(item);
-      }
-      box.appendChild(key);
-    }
+    // EVERY WALK STILL RUNNING, not just the newest — `passes` when the router
+    // published more than one, and the single cycle otherwise. A walk ends when
+    // its last url is handed out and its slowest legs run on past it, so the
+    // ordinary state of a rotation is the previous pass finishing while the new
+    // one hands out. One bar for both of them showed the old walk's live legs
+    // as the new walk's `busy` and its counters not at all.
+    const passes = Array.isArray(s.passes) && s.passes.length > 1 ? s.passes : [c];
+    passes.forEach((p, i) => {
+      const last = i === passes.length - 1;
+      if (passes.length > 1) box.appendChild(passHead(p, last));
+      const pTotal = (p.urls || {}).taken || 0;
+      if (!pTotal) return;
+      box.appendChild(dispositionBar(p.taken || {}, pTotal, p.outcome, last ? held : passHeld(p)));
+      // The key is drawn ONCE, under the newest pass. Repeating it per bar
+      // would triple the tallest block on the card to restate a legend that
+      // has not changed between two rows drawn 12px apart.
+      if (last) box.appendChild(dispositionKey(p.taken || {}, p.outcome, held));
+    });
 
     // The line that accounts for the OTHER gap — the one between what discovery
     // found and what was dialled. On a real fan-out this is most of it, and it
@@ -1700,6 +1775,178 @@ function progressPanel(progress) {
     if (running) box.appendChild(running);
     wrap.appendChild(box);
   }
+  return wrap;
+}
+
+/**
+ * WHAT ELSE IS RUNNING — the router's jobs that are not streams.
+ *
+ * Everything above this describes work an operator CONFIGURED. Several
+ * long-running jobs sit beside those streams with nothing configured about
+ * them, and until they were published the only trace any of them left was a
+ * stderr line on a container whose logs rotate inside the hour:
+ *
+ *  - the **alias fold** and the **stability gate**, on the alias monitor's own
+ *    six-hour clock, deciding which discovered urls the fan-out may stop
+ *    dialling. "This server is still wearing forty urls" is a question about
+ *    the fold's progress and nothing on this page could answer it;
+ *  - the **NIP-66 reachability monitor**, which is NOT the same processor as
+ *    those two even though all three write onto the same kind-30166 records —
+ *    it watches every socket the client opens rather than dialling on a
+ *    schedule, and its `knownDead` set is what a stream's `knownDead` outcome
+ *    is counting against;
+ *  - **ingest**, where every mirrored event actually lands, and the first thing
+ *    to look at when the streams read busy and the store is not growing;
+ *  - the **healer** and the **upstream push**, the two paths that write out.
+ *
+ * A processor that is absent is one this router does not run — a deployment
+ * with no signer has no fold and no monitor at all — so nothing is drawn for a
+ * name the document does not carry. That is a fact rather than missing data,
+ * and inventing a zeroed row would say the opposite.
+ */
+const PROCESSORS = [
+  ["aliasFold", "Alias fold",
+    "Fingerprints the urls of one host against each other and signs a `same-as` verdict when they are the same server," +
+    " so the fan-out stops dialling forty urls of one relay. Runs on the alias monitor's clock, not a stream's."],
+  ["stability", "Stability gate",
+    "Asks each relay one filter twice, at a week-old anchor, and refuses the ones that answer differently: a server" +
+    " whose window is a fresh slice each time holds no stable cursor, so every cycle re-downloads what the last took."],
+  ["reachability", "NIP-66 reachability",
+    "Quartz's monitor. It watches every socket this client opens, measures the round trips and signs what it learns" +
+    " into the same kind-30166 records the two passes above write their tags onto — one document per url, three writers."],
+  ["ingest", "Ingest",
+    "The bounded queue every mirrored event passes through: dedup, supersede, verify, batch insert. Read `queued`" +
+    " against `capacity` — full means the downloads are backpressured behind it, empty means the limit is upstream."],
+  ["heal", "Healer",
+    "Repairs discovered by ingest and handed back to the relays serving them. Only where a stream opted in."],
+  ["upstreamPush", "Upstream push",
+    "Reconciles the store against an upstream configured `dir = up` and publishes what it is missing."],
+];
+
+/** How a counter-shaped processor's gauges read as a sentence. Members absent from the document are simply not said. */
+function processorCounts(p) {
+  const has = (k) => p[k] != null;
+  const parts = [];
+  if (has("queued") && has("capacity")) {
+    // The pair, never one of them: a depth means nothing without its ceiling,
+    // and full and empty are opposite diagnoses.
+    parts.push(`queue ${fmt(p.queued)} of ${fmt(p.capacity)}` + (p.queued >= p.capacity ? " — FULL, downloads are backpressured behind it" : ""));
+  } else if (has("queued")) {
+    parts.push(`${fmt(p.queued)} queued`);
+  }
+  if (has("accepted")) parts.push(`${fmt(p.accepted)} accepted`);
+  if (has("rejected")) parts.push(`${fmt(p.rejected)} rejected as duplicate, superseded or bad`);
+  if (has("pushed")) parts.push(`${fmt(p.pushed)} pushed out`);
+  if (has("observed")) parts.push(`${fmt(p.observed)} relay(s) observed`);
+  if (has("knownDead")) parts.push(`${fmt(p.knownDead)} currently known dead — skipped by every fan-out until the record ages out`);
+  return parts;
+}
+
+/**
+ * One processor's line: what it is doing, and how far along it is.
+ *
+ * The meter is the point, and it is deliberately the same idea as a stream's
+ * disposition bar: a pass-shaped processor has a denominator (the urls a stream
+ * submitted) and something still outstanding against it, so "how far along" is
+ * a proportion rather than a log line. `outstanding` falling pass over pass is
+ * the fold getting somewhere; standing still while `measured` climbs is a set
+ * of hosts that cannot be decided, which is what `undecided` then names.
+ */
+function processorBlock(p) {
+  const known = PROCESSORS.find((row) => row[0] === p.name);
+  const box = el("div", "cyc");
+  const head = el("div", "cyc-head");
+  const nm = el("span", "nm", known ? known[1] : p.name);
+  if (known) nm.title = known[2];
+  head.appendChild(nm);
+  // `off` is the one phase whose elapsed clock says nothing: it means this
+  // deployment gives the processor no work at all — the probe passes on a router
+  // whose upstreams are every one of them named by hand — and "off for 24h" reads
+  // as an outage rather than as a configuration.
+  const phase = el("span", "ph",
+    p.phase === "off"
+      ? "off — this router discovers no relays, so there is nothing to measure"
+      : `${p.phase || "unknown"}${p.phaseForSec != null ? ` for ${fmtDur(p.phaseForSec)}` : ""}` +
+        // The countdown is what makes a pass that has said nothing legible: the
+        // fold's clock is six hours, so "it has decided nothing about this host"
+        // reads as broken until you know the next turn is four of them away.
+        (p.nextInSec != null ? ` · next pass in ${fmtDur(p.nextInSec)}` : "") +
+        (p.passes != null ? ` · ${fmt(p.passes)} pass(es) so far` : ""));
+  if (p.lastPassSec != null) phase.title = `the last pass took ${fmtDur(p.lastPassSec)}`;
+  head.appendChild(phase);
+  box.appendChild(head);
+
+  const counts = processorCounts(p);
+  if (counts.length) box.appendChild(el("p", "cyc-line", counts.join(" · ") + "."));
+
+  for (const w of p.streams || []) {
+    const subjects = w.subjects || 0;
+    const done = Math.max(0, subjects - (w.outstanding || 0));
+    const line = el("p", "cyc-line");
+    if (subjects > 0) {
+      const meter = el("div", "proc-meter");
+      const fill = el("i");
+      fill.style.width = (done / subjects) * 100 + "%";
+      meter.appendChild(fill);
+      meter.title = `${fmt(done)} of ${fmt(subjects)} url(s) carry a verdict; ${fmt(w.outstanding || 0)} still to measure`;
+      box.appendChild(meter);
+    }
+    line.append(
+      `${w.name}: ${fmt(done)} of ${fmt(subjects)} url(s) decided` +
+      (w.outstanding ? `, ${fmt(w.outstanding)} still to measure` : " — nothing left to measure") +
+      (w.measured ? `. Last pass dialled ${fmt(w.measured)} and learned ${fmt(w.decided || 0)}` : ". Nothing was dialled last pass") +
+      ".");
+    box.appendChild(line);
+    // WHY the rest were left, which is the half a count cannot give: four of
+    // these causes recover on their own and one never will, and from outside
+    // the router they are the same silence.
+    const reasons = (w.undecided && w.undecided.reasons) || [];
+    if (reasons.length) {
+      const why = el("p", "cyc-line");
+      why.append("Left undecided: ");
+      // The REASON first and the count after it, because the reasons are
+      // phrases rather than adjectives — "9 host(s) a host that cannot repeat
+      // itself" is the same words in the order that does not read.
+      reasons.forEach((r, i) => {
+        if (i) why.append("; ");
+        why.append(`${r.reason} — ${fmt(r.hosts || 0)} host(s)`);
+        if ((r.examples || []).length) why.append(` (e.g. ${r.examples.join(", ")})`);
+      });
+      if (w.undecided.omitted) why.append(`; ${fmt(w.undecided.omitted)} more reason(s) not shown`);
+      why.append(".");
+      box.appendChild(why);
+    }
+  }
+  return box;
+}
+
+/** The processors, in the order [PROCESSORS] names them, with anything unrecognised kept at the end. */
+function processorsPanel(progress) {
+  const rows = (progress && progress.processors) || [];
+  if (!rows.length) return null;
+  const order = PROCESSORS.map((r) => r[0]);
+  // Unknown names sort last rather than being dropped: a row this page has not
+  // been taught about is still the router saying something is running.
+  const sorted = rows.slice().sort((a, b) => {
+    const ai = order.indexOf(a.name), bi = order.indexOf(b.name);
+    return (ai < 0 ? order.length : ai) - (bi < 0 ? order.length : bi);
+  });
+  const wrap = el("div");
+  // The boundary between the streams and the jobs beside them, for the reason
+  // `cyc-end` exists at all: every gap in this card is 12-14px, so without a
+  // rule the first processor reads as one more stream.
+  wrap.appendChild(el("hr", "cyc-end"));
+  const head = el("p", "card-sub");
+  // Bolded, because this is the one place on the card a reader SCANS for: the
+  // question "what else is running" is asked from outside, not while reading
+  // down a stream's disposition.
+  head.appendChild(el("b", null, "Also running, beside the streams: "));
+  head.append(
+    "the two probe passes that decide which discovered urls are worth dialling, the NIP-66 monitor that watches every" +
+    " socket, and the pipelines events pass through. All three of the first group write onto the same kind-30166" +
+    " record per url — the Monitor verdicts panel below is where one url's whole record is read.");
+  wrap.appendChild(head);
+  for (const p of sorted) wrap.appendChild(processorBlock(p));
   return wrap;
 }
 
@@ -1761,6 +2008,12 @@ function syncCard(section) {
   // three minutes into its first cycle used to render as an empty card.
   const progress = progressPanel(d.progress);
   if (progress) card.appendChild(progress);
+  // …and the work that is not a stream at all. Under the streams because a
+  // reader asks "is the mirror running" before "has the fold got to this host
+  // yet", and above the coverage bars because both halves are about what the
+  // router is doing NOW rather than where it has walked.
+  const others = processorsPanel(d.progress);
+  if (others) card.appendChild(others);
   // The boundary between the card's two subjects — what the router is doing
   // now, and how far it has walked. Every gap in here was 12-14px, including
   // the one between those two, so they never separated; the rule plus the space
@@ -1770,7 +2023,7 @@ function syncCard(section) {
   // Appended only when BOTH sides exist. A router mid-first-cycle has progress
   // and no coverage, and an unconditional rule would end that card with a line
   // ruling off nothing.
-  if (progress && streams.length) card.appendChild(el("hr", "cyc-end"));
+  if ((progress || others) && streams.length) card.appendChild(el("hr", "cyc-end"));
   if (!streams.length) return card;
 
   const from = d.from, to = d.to;

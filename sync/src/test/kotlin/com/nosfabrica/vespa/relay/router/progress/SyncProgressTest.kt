@@ -128,8 +128,8 @@ class SyncProgressTest {
 
     @Test
     fun `a stream with no cycle yet publishes its phase and no cycle`() {
-        val s = StreamPhases.Stream("content", "discovering", 12, null, null, null, null)
-        val stream = (SyncProgress.document(listOf(s), 1_000)["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
+        val s = StreamPhases.Stream("content", "discovering", 12, emptyList())
+        val stream = (SyncProgress.document(listOf(s), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
 
         assertEquals("discovering", stream["phase"]!!.jsonPrimitive.content)
         assertEquals(12L, stream["phaseForSec"]!!.jsonPrimitive.long)
@@ -221,17 +221,155 @@ class SyncProgressTest {
         assertNull(stream["inFlight"])
     }
 
+    @Test
+    fun `every pass still running is published, not just the newest`() {
+        // The question this answers: is the OLD walk still finishing while the
+        // new one works? With one `cycle` slot the answer was unavailable —
+        // the previous pass stopped being published the instant the next one
+        // opened, and its live legs reappeared only as the new pass's `busy`.
+        val older = CycleTally(discovered = 10, foldedOntoAnother = 0, hosts = 10)
+        older.delivered.set(6)
+        val current = CycleTally(discovered = 10, foldedOntoAnother = 0, hosts = 10)
+        current.delivered.set(1)
+
+        val stream =
+            (
+                SyncProgress.document(listOf(streamWith(current, null, older)), nowSeconds = 1_000)["streams"]
+                    as kotlinx.serialization.json.JsonArray
+            )[0].jsonObject
+        val passes = stream["passes"] as kotlinx.serialization.json.JsonArray
+
+        assertEquals(2, passes.size)
+        assertEquals("completed", passes[0].jsonObject["outcome"]!!.jsonPrimitive.content)
+        assertEquals(
+            4L,
+            passes[0]
+                .jsonObject["taken"]!!
+                .jsonObject["pending"]!!
+                .jsonPrimitive.long,
+            "the old walk's legs",
+        )
+        assertEquals("running", passes[1].jsonObject["outcome"]!!.jsonPrimitive.content)
+        // …and `cycle` still carries the current one, so nothing that reads this
+        // document has to learn about `passes` to keep working.
+        assertEquals(2L, stream["cycle"]!!.jsonObject["number"]!!.jsonPrimitive.long)
+        // Each pass is its own partition, checked on its own: the old walk's ten
+        // urls do not become part of the new walk's ten.
+        assertEquals(10L, sumOfTaken(passes[0].jsonObject))
+        assertEquals(10L, sumOfTaken(passes[1].jsonObject))
+    }
+
+    @Test
+    fun `one pass publishes no passes array, because it would be a copy of the cycle`() {
+        val stream =
+            (
+                SyncProgress.document(
+                    listOf(streamWith(CycleTally(discovered = 2, foldedOntoAnother = 0, hosts = 2))),
+                    nowSeconds = 1_000,
+                )["streams"] as kotlinx.serialization.json.JsonArray
+            )[0].jsonObject
+
+        assertNull(stream["passes"])
+        assertEquals("running", stream["cycle"]!!.jsonObject["outcome"]!!.jsonPrimitive.content)
+    }
+
+    @Test
+    fun `the work that is not a stream is published beside the streams`() {
+        // The alias fold, the stability gate, the NIP-66 monitor, ingest, the
+        // healer, the push — every one of them reachable only from a stderr line
+        // that rotates inside the hour, and the fold's progress is what "why is
+        // this server still wearing forty urls" turns into.
+        val processors =
+            listOf(
+                Processors.Snapshot(
+                    name = "aliasFold",
+                    phase = "idle",
+                    phaseForSec = 400,
+                    passes = 3,
+                    lastPassAt = 900,
+                    lastPassSec = 42,
+                    nextInSec = 20_800,
+                    work =
+                        listOf(
+                            Processors.Work(
+                                stream = "content",
+                                subjects = 16_752,
+                                outstanding = 4_021,
+                                measured = 2_000,
+                                decided = 118,
+                                undecided = listOf(Processors.Undecided("out of probe budget", 214, listOf("relay.example"))),
+                            ),
+                        ),
+                    counts = emptyList(),
+                ),
+                Processors.Snapshot(
+                    name = "ingest",
+                    phase = "running",
+                    phaseForSec = 900,
+                    passes = null,
+                    lastPassAt = null,
+                    lastPassSec = null,
+                    nextInSec = null,
+                    work = emptyList(),
+                    counts = listOf(Processors.Count("queued", 12), Processors.Count("capacity", 20_000)),
+                ),
+            )
+
+        val rows = SyncProgress.document(emptyList(), processors, nowSeconds = 1_000)["processors"] as kotlinx.serialization.json.JsonArray
+        val fold = rows[0].jsonObject
+        val ingest = rows[1].jsonObject
+
+        assertEquals(20_800L, fold["nextInSec"]!!.jsonPrimitive.long, "a six-hour clock explains a fold that has said nothing")
+        val work = (fold["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
+        assertEquals(4_021, work["outstanding"]!!.jsonPrimitive.int, "the progress number")
+        assertEquals(
+            "out of probe budget",
+            (work["undecided"]!!.jsonObject["reasons"] as kotlinx.serialization.json.JsonArray)[0]
+                .jsonObject["reason"]!!
+                .jsonPrimitive.content,
+        )
+        // A counter-shaped processor answers only what it can: no passes, no
+        // clock, and its gauges as members.
+        assertNull(ingest["passes"])
+        assertNull(ingest["nextInSec"])
+        assertEquals(12L, ingest["queued"]!!.jsonPrimitive.long)
+    }
+
+    @Test
+    fun `a router that registered no processors publishes none, rather than an empty list`() {
+        // An empty array is a claim that this router runs none of them; a router
+        // with no signer genuinely has no fold and no NIP-66 monitor, and one
+        // built before this existed made no claim either way.
+        assertNull(SyncProgress.document(emptyList(), nowSeconds = 1_000)["processors"])
+    }
+
     private fun streamWith(
         tally: CycleTally,
         inFlight: InFlight? = null,
+        vararg older: CycleTally,
     ) = StreamPhases.Stream(
         name = "content",
         phase = "fetching",
         phaseForSec = 412,
-        tally = tally,
-        cycleStartedSec = 900,
-        cycleEndedSec = null,
-        outcome = "running",
+        // Oldest first, like the router's own list: the passes that came before
+        // this one, then the one `cycle` carries.
+        cycles =
+            older.mapIndexed { i, t -> cycle(number = i + 1L, tally = t, outcome = "completed", endedSec = 890) } +
+                cycle(number = older.size + 1L, tally = tally, outcome = "running"),
         inFlight = inFlight,
+    )
+
+    private fun cycle(
+        number: Long,
+        tally: CycleTally,
+        outcome: String,
+        endedSec: Long? = null,
+    ) = StreamPhases.Cycle(
+        number = number,
+        owner = StreamPhases.DYNAMIC,
+        tally = tally,
+        startedSec = 900,
+        endedSec = endedSec,
+        outcome = outcome,
     )
 }
