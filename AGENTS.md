@@ -167,6 +167,33 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     TrustReconcile.kt   the startup trust-projection repair
     FtsReindex.kt       REINDEX_FTS_ON_START
     OrphanScoreSweep.kt SWEEP_ORPHAN_SCORES_ON_START
+    RelayProfile.kt     the relay's OWN kind 0 and kind 10002, signed with
+                        RELAY_NSEC at boot: the NIP-11 name/description as a
+                        profile, and this relay as its own NIP-65 inbox and
+                        outbox. NIP-11 only reaches whoever asks this host —
+                        a reader meeting the key on a 22242 or a 30166 has no
+                        name and no way back, and events travel. Both kinds are
+                        replaceable and EDITED rather than rebuilt (the NIP-66
+                        rule, for the same reason): the five fields this writer
+                        owns come from the env, everything else in a stored
+                        kind 0 and every other relay in a stored 10002 survive.
+                        Skipped when the store already says it, so a restart
+                        loop cannot walk the profile forward one created_at at
+                        a time — and a store that THROWS is never read as an
+                        empty one, which is the only path that could replace a
+                        richer profile with a freshly built one. The doc is an
+                        ARGUMENT to publish(), not state: NIP-86's
+                        changerelayname/description/icon rewrite the served
+                        document while the relay runs, so serveRelay's
+                        onInfoChanged republishes and the profile follows the
+                        doc rather than the environment it booted with. Two
+                        traps worth knowing: quartz's updateFromPast REBUILDS
+                        the NIP-39 `i` tags through a parse that drops a
+                        proof-less claim and truncates `matrix:@a:b.org` at the
+                        second colon, so the held event's own `i` tags are put
+                        back verbatim in the initializer; and RELAY_NAME is the
+                        one owned field with a default, so unset publishes
+                        "vespa-relay" — which is what the doc serves
 
 sync/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON

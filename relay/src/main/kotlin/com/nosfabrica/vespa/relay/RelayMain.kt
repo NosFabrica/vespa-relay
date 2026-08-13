@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
+import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
 import com.nosfabrica.vespa.relay.maintenance.StatsTier
@@ -42,6 +43,7 @@ import com.nosfabrica.vespa.relay.maintenance.applyQuartzLogLevel
 import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.launchFtsReindex
 import com.nosfabrica.vespa.relay.maintenance.launchOrphanScoreSweep
+import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
@@ -148,6 +150,28 @@ fun main() {
     val negentropy = negentropySettingsFromEnv(env)
     val rejectFutureSeconds = rejectFutureSecondsFromEnv(env)
 
+    // How this relay presents itself. Built here rather than at the serveRelay
+    // call it used to sit in, because the relay's own kind 0 is these same
+    // fields — one description of this relay, served as NIP-11 and published
+    // as an event, and no second place for it to drift.
+    val nip11 =
+        Nip11Info(
+            name = env["RELAY_NAME"] ?: "vespa-relay",
+            description = env["RELAY_DESCRIPTION"],
+            icon = env["RELAY_ICON"],
+            banner = env["RELAY_BANNER"],
+            contactPubkey = PubKeys.decodeOrNull(env["RELAY_CONTACT_PUBKEY"], "RELAY_CONTACT_PUBKEY"),
+            // Derived, never declared: a typed-in pubkey is an assertion
+            // no reader can check, while this one is provable against
+            // every 22242 and 30166 the relay signs.
+            selfPubkey = identity?.pubKey,
+            contact = env["RELAY_CONTACT"],
+            version = env["RELAY_VERSION"],
+            postingPolicy = env["RELAY_POSTING_POLICY"],
+            privacyPolicy = env["RELAY_PRIVACY_POLICY"],
+            termsOfService = env["RELAY_TERMS_OF_SERVICE"],
+        )
+
     // NIP-86 is enabled only when at least one valid admin key is configured;
     // its ban lists persist to RELAY_STATE_FILE when set.
     val adminPubkeys = adminPubkeysFromEnv(env)
@@ -238,6 +262,17 @@ fun main() {
         // fills and looking for the bug in the rollup.
         println("stats: both stats intervals are off — no rollup; /stats.json serves the state file, or 503 if there is none")
     }
+    // Say who this relay is, in the two kinds every client already reads: a
+    // kind 0 carrying the NIP-11 name and description, and a kind 10002 naming
+    // this relay as its own inbox and outbox. Only with a key to sign them —
+    // an anonymous relay has nothing to be discovered AS.
+    //
+    // One instance, held past the boot publish: a NIP-86 rename republishes
+    // through the same object below, and it is the object that serializes them.
+    val profile = identity?.let { RelayProfile(store, it, relayUrl) }
+    if (profile != null) {
+        launchRelayProfile(maintenanceScope, profile, nip11)
+    }
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
         maintenanceScope.launch {
             println("trust: reconciling in the background — ranked search may return less until this finishes")
@@ -308,26 +343,24 @@ fun main() {
     serveRelay(
         relay = relay,
         port = port,
-        nip11 =
-            Nip11Info(
-                name = env["RELAY_NAME"] ?: "vespa-relay",
-                description = env["RELAY_DESCRIPTION"],
-                icon = env["RELAY_ICON"],
-                banner = env["RELAY_BANNER"],
-                contactPubkey = PubKeys.decodeOrNull(env["RELAY_CONTACT_PUBKEY"], "RELAY_CONTACT_PUBKEY"),
-                // Derived, never declared: a typed-in pubkey is an assertion
-                // no reader can check, while this one is provable against
-                // every 22242 and 30166 the relay signs.
-                selfPubkey = identity?.pubKey,
-                contact = env["RELAY_CONTACT"],
-                version = env["RELAY_VERSION"],
-                postingPolicy = env["RELAY_POSTING_POLICY"],
-                privacyPolicy = env["RELAY_PRIVACY_POLICY"],
-                termsOfService = env["RELAY_TERMS_OF_SERVICE"],
-            ),
+        nip11 = nip11,
         limits = limits,
         admin = admin,
         pressure = servingPressure,
+        // A NIP-86 admin RPC can rename this relay, re-describe it or change
+        // its icon while it runs. The doc is the profile's source, so the
+        // profile follows it here rather than freezing what the environment
+        // said at boot — the fields the doc no longer carries are cleared from
+        // the kind 0 for the same reason an unset RELAY_DESCRIPTION is.
+        onInfoChanged = { doc ->
+            profile?.let {
+                launchRelayProfile(
+                    maintenanceScope,
+                    it,
+                    nip11.copy(name = doc.name ?: nip11.name, description = doc.description, icon = doc.icon, banner = doc.banner),
+                )
+            }
+        },
         // "This relay is also a hidden service" — read by Tor Browser and by
         // clients that move the connection inside the network when Tor is on.
         onionLocation = addresses::onionLocation,
