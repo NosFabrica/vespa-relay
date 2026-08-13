@@ -168,6 +168,12 @@ class RelayAliases(
      * The url at the end of a chain of verdicts, or null when there is no end —
      * a loop, or a hand-edited file. Read from [known] alone, so the answer does
      * not depend on what any other stream has adopted.
+     *
+     * **Not the same question as [resolve], and the two must not be merged.**
+     * This one is asked while ADOPTING what the store returned, where the live
+     * map is mid-update and reading it would make the result depend on the order
+     * verdicts arrived in. [resolve] is asked while LEARNING, where the live map
+     * is the only place this pass's own folds exist yet.
      */
     private fun endOf(
         known: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
@@ -180,6 +186,23 @@ class RelayAliases(
             at = next
         }
         return null
+    }
+
+    /**
+     * Follow a chain of verdicts through the LIVE map to the url at the end of
+     * it — what [learn] needs when it folds a `ws://` twin onto a secure url
+     * that this very call may already have folded somewhere else.
+     *
+     * Bounded rather than `while`: a verdict edited by hand, or two runs that
+     * disagreed, must not spin here. See [endOf] for the sibling that reads the
+     * store's answer instead, and why they stay separate.
+     */
+    private fun resolve(url: NormalizedRelayUrl): NormalizedRelayUrl {
+        var at = url
+        repeat(MAX_CHAIN) {
+            at = folded[at] ?: return at
+        }
+        return at
     }
 
     /**

@@ -242,8 +242,12 @@ class RelayAliasRecord(
      * answered — see [RelayAliases.schemeTwins].
      *
      * ```json
-     * ["same-as", "wss://nos.lol/", "same endpoint as wss://nos.lol/ over TLS, both answered; 9 newest events here"]
+     * ["same-as", "wss://nos.lol/", "same endpoint as wss://nos.lol/ over TLS, both answered; 9 newest events here", "1776038400", "2"]
      * ```
+     *
+     * It goes out through [write] like every other fold, so it carries the same
+     * clock and the same rules version and expires on the same terms — a fold
+     * whose evidence is different is still a fold.
      *
      * A separate call rather than [publish] with the numbers filled in, because
      * the numbers would be a lie by implication. These pairs are folded

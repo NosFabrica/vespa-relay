@@ -337,7 +337,10 @@ class RelayAliasesTest {
         // "both answered" to be had, and the plain url would be measured against
         // the group's leader — a genuinely different endpoint — disagree with it
         // correctly, and be published as a relay in its own right.
-        aliases.adoptDistinct(setOf(host, secureInbox))
+        // Seeded the way it really arrives — a store read with two cleared
+        // verdicts in it. `adoptDistinct` was the bulk half of the old
+        // forget-then-adopt pair and went with it; see [RelayAliases.replace].
+        aliases.replace(listOf(host, secureInbox), known = emptyMap(), cleared = setOf(host, secureInbox))
 
         // In preference order, not appended: that order is what the yardstick
         // search walks down, and a re-dialled twin is a `wss://` url — the best
