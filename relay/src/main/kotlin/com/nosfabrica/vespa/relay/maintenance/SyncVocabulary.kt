@@ -160,7 +160,7 @@ internal object SyncVocabulary {
             put(
                 "discovered",
                 "Urls a cycle was handed by discovery, before anything was dropped. The whole of `urls`, and " +
-                    "`discovered = foldedOntoAnother + excluded + taken` exactly.",
+                    "`discovered = foldedOntoAnother + refusedUnstable + excluded + taken` exactly.",
             )
             put(
                 "relayListAgeSec",
@@ -171,6 +171,16 @@ internal object SyncVocabulary {
                     "url counts are a mirror whose network has not been re-read, not necessarily one whose network has " +
                     "not changed. Says nothing about the dial decisions — the NIP-66 known-dead set and the host strikes " +
                     "are re-read every cycle whatever the list's age.",
+            )
+            put(
+                "refusedUnstable",
+                "Urls a stability pass MEASURED as unusable and removed from the fan-out: asked one filter twice, at a " +
+                    "seven-day-old anchor, the relay gave two different answers. Not a claim about the operator and not " +
+                    "an unreachable relay — it answers fine — but a server whose window is a different slice each time " +
+                    "holds no stable cursor, so every cycle re-downloads what the last one already took. Distinct from " +
+                    "`excluded`, which is an operator's instruction, and from `foldedOntoAnother`, which is a duplicate " +
+                    "url: this one is our own signed measurement, carried as a `self-consistent` tag on the url's NIP-66 " +
+                    "record and re-taken monthly, so a relay that is fixed rejoins on its own.",
             )
             put(
                 "foldedOntoAnother",
@@ -332,8 +342,8 @@ internal object SyncVocabulary {
             )
             put(
                 "accountedFor",
-                "Whether the partition actually holds in THIS document — `discovered = foldedOntoAnother + excluded + " +
-                    "taken`, and the ten outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
+                "Whether the partition actually holds in THIS document — `discovered = foldedOntoAnother + " +
+                    "refusedUnstable + excluded + taken`, and the ten outcomes summing to `taken`. False is published rather than hidden: the counts are still worth " +
                     "having, and this is what stops a reader treating a broken partition as a whole one. `balanced` beside " +
                     "it is the router's own check, kept separate so a disagreement localises the fault.",
             )

@@ -67,7 +67,7 @@ class AliasMonitorTest {
         }
     }
 
-    private fun monitor(pass: AliasMonitor.Pass) = AliasMonitor(pass, CoroutineScope(Dispatchers.Unconfined))
+    private fun monitor(pass: AliasMonitor.Pass) = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined))
 
     @Test
     fun `a stream's later submission replaces its earlier one`() =
@@ -146,7 +146,7 @@ class AliasMonitorTest {
             val scope = CoroutineScope(Dispatchers.Default)
             val m =
                 AliasMonitor(
-                    pass,
+                    listOf(pass),
                     scope,
                     intervalMs = 60_000,
                     startupDelayMs = 0,

@@ -926,37 +926,50 @@ folds; `multiplexer.huszonegy.world` is self 0.594, siblings 0.622–0.870, four
 folds. So a group that folds cleanly never pays for the second walk, and only a
 group about to claim "these are different relays" does.
 
-**Self-consistency measures whether a relay is MEASURABLE, not whether it is
-honest, and an older anchor separates two failure modes that look identical at
-one minute.** Each url walked twice from one anchor, `RelaySelfConsistencyProbe`:
+**A relay that cannot answer one filter the same way twice is removed from the
+fan-out** — `RelayConsistency`, `ConsistencyPass`, published as a
+`self-consistent` tag on the url's own NIP-66 30166 record and re-measured
+monthly. Each url walked twice from one anchor, `RelaySelfConsistencyProbe`, and
+**run twice**, which is where the actual finding came from:
 
-| url | 1min | 1hour | 1day | 7days |
-|---|---|---|---|---|
-| `nos.lol` | 1.000 | 1.000 | 1.000 | 1.000 |
-| `nostr.oxtr.dev` | 1.000 | 1.000 | 1.000 | 1.000 |
-| `relay.lightning.pub` | 1.000 | 1.000 | 1.000 | 1.000 |
-| `multiplexer.huszonegy.world` | 0.446 | 0.712 | 0.770 | **0.964** |
-| `fiatjaf.com` | 0.803 | 0.664 | 0.694 | 0.715 |
+| url | | 1min | 1hour | 1day | 7days |
+|---|---|---|---|---|---|
+| `nos.lol` | #1 / #2 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| `nostr.oxtr.dev` | #1 / #2 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| `relay.lightning.pub` | #1 / #2 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 | 1.000 / 1.000 |
+| `multiplexer.huszonegy.world` | #1 / #2 | 0.446 / 0.782 | 0.712 / 0.908 | 0.770 / 0.916 | **0.964 / 0.654** |
+| `fiatjaf.com` | #1 / #2 | 0.803 / 0.719 | 0.664 / 0.720 | 0.694 / 0.618 | 0.715 / 0.826 |
 
-Three things follow. **A stable relay is 1.000 at every depth** — the check has
-essentially no false-positive rate on good actors, at any anchor. **A sharded
-backend converges as the anchor ages**: huszonegy's window is still replicating
-across shards for hours, and by 7 days it passes the 0.9 bar outright, so most
-of what reads as misbehaviour at one minute is our own anchor being too shallow.
-**A relay serving an arbitrary slice per REQ never converges**: fiatjaf.com
-returns a *different number of events* for the identical filter (152, 146, 111,
-203 against 212, 181, 181, 179) and age does not help.
+**A stable relay is 1.000 at every depth in every run.** That is the whole
+safety argument: the good actors are nowhere near the 0.9 bar, so the gate
+cannot cost them their place.
 
-So do NOT drop on this signal. Both hosts that fail it are legitimate —
-`fiatjaf.com` is the spec author's own relay, and huszonegy serves a coherent
-pool (its paths fold onto each other at 0.62–0.87). What the signal supports is
-refusing to sign verdicts measured against such a relay, and distrusting a band
-it claims to have covered; it does not support removing it from the fan-out,
-which would drop real events on evidence of nothing worse than an unusual REQ
-implementation. It also does not detect the "feed us events forever" attack at
-all — a relay returning a consistent 500 passes. That one is novelty and drain
-(`PagedFetchResult.drained`, `LegProgress`, `LEG_QUIET_GIVE_UP_MS`), not
-identity.
+**One run would have shipped the wrong conclusion.** Run #1 alone read as
+"huszonegy is a sharded backend that just needs time" — 0.446 climbing to 0.964
+at a week. Run #2 scored the same relay at the same depth **0.654**. Its
+disagreement with itself is not reproducible either, so there is nothing to wait
+for. Re-run this probe more than once before moving the bar or the depth.
+
+The seven-day anchor is not there to let a relay converge — it is there to
+remove OUR anchor from the list of explanations, so a failure cannot be blamed
+on new events, indexing lag, or replication.
+
+**Why removal rather than a downgrade**, which is what an earlier draft of this
+section argued for: a relay whose window is a different slice each time holds no
+stable cursor, so its band never closes and every cycle re-downloads what the
+last one already took. Measured on this mirror as millions of duplicated events
+and cycles stretched from two hours to five. The claim being made is narrow and
+is worded that way in the record — the relay cannot be synced against, which is
+a property of the server, not of the operator — and it expires in a month, so a
+server that is fixed rejoins on its own with nobody intervening.
+
+Three things it does NOT do. It never removes a relay on silence, on a window
+under `minSample`, or on a failed store read — only a positive measurement
+counts, because a wrong exclusion is invisible while a wrong inclusion costs one
+relay's duplicates until the next re-measure. And it does not detect the "feed
+us events forever" attack at all: a relay returning a consistent 500 passes.
+That one is novelty and drain (`PagedFetchResult.drained`, `LegProgress`,
+`LEG_QUIET_GIVE_UP_MS`), not identity.
 
 **A replaceable event has one address and more than one writer, so writing it
 is always an EDIT.** NIP-66's relay record is addressed by `d` = the relay url,

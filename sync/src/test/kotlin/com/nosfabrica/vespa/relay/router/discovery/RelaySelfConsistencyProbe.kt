@@ -20,6 +20,8 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
+import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
+import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
 import com.vitorpamplona.quartz.nip01Core.relay.client.auth.RelayAuthenticator
@@ -113,6 +115,28 @@ class RelaySelfConsistencyProbe {
                     val asked = first.kinds?.let { "kinds=$it" } ?: "bare"
                     println("    %-8s %s  (%s)".format(label, containment(first.ids, second.orEmpty()), asked))
                 }
+                // …and what the REAL pass decides at the anchor it actually
+                // uses, which is the only line that says whether this relay
+                // keeps its place in the fan-out.
+                val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
+                val consistency = RelayConsistency()
+                val pass =
+                    ConsistencyPass(
+                        consistency = consistency,
+                        record = RelayAliasRecord(store, signer),
+                        probe = probe,
+                    )
+                val decided = runBlocking { withTimeoutOrNull(PER_WALK_MS * 3) { pass.measure("live", listOf(url), canDial = { true }) } }
+                val refused = runBlocking { pass.apply(listOf(url)) }
+                println(
+                    "    VERDICT  " +
+                        when {
+                            decided == null -> "still going — no verdict"
+                            decided == 0 -> "unmeasurable, so NOT refused (it stays in the fan-out)"
+                            refused.isNotEmpty() -> "REFUSED — removed from the fan-out"
+                            else -> "consistent — kept"
+                        },
+                )
             }
         } finally {
             runCatching { authenticator.destroy() }

@@ -212,7 +212,12 @@ internal object SyncProgressReport {
         val discovered = num(urls["discovered"]) ?: return null
         val folded = num(urls["foldedOntoAnother"]) ?: 0
         val excluded = num(urls["excluded"]) ?: 0
-        val taken = num(urls["taken"]) ?: (discovered - folded - excluded)
+        // Defaulted to 0 rather than required: a router that predates the
+        // stability gate wrote no such member, and reading its absence as
+        // anything but "none were refused" would break the partition on every
+        // document written before this shipped.
+        val refusedUnstable = num(urls["refusedUnstable"]) ?: 0
+        val taken = num(urls["taken"]) ?: (discovered - folded - refusedUnstable - excluded)
         val outcomes = o["taken"] as? JsonObject ?: JsonObject(emptyMap())
         val byOutcome = OUTCOMES.associateWith { num(outcomes[it]) ?: 0L }
         val settled = byOutcome.values.sum()
@@ -225,6 +230,7 @@ internal object SyncProgressReport {
                 buildJsonObject {
                     put("discovered", discovered)
                     put("foldedOntoAnother", folded)
+                    put("refusedUnstable", refusedUnstable)
                     put("excluded", excluded)
                     put("taken", taken)
                 },
@@ -247,7 +253,7 @@ internal object SyncProgressReport {
             // be able to put arbitrary JSON, or an unbounded array, into a
             // document served under this relay's name.
             foldedOnto(o["foldedOnto"] as? JsonObject)?.let { put("foldedOnto", it) }
-            put("accountedFor", folded + excluded + taken == discovered && settled == taken)
+            put("accountedFor", folded + refusedUnstable + excluded + taken == discovered && settled == taken)
             // What the WRITER thought, kept separately. The two disagreeing
             // localises the fault to the read or to the router, which one
             // merged flag could never do.

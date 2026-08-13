@@ -72,7 +72,7 @@ import java.nio.file.StandardCopyOption
  *                    "omitted": 118},
  *       "cycle": {
  *         "startedAt": 1769999000, "outcome": "running",
- *         "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "excluded": 0, "taken": 5323},
+ *         "urls":  {"discovered": 16752, "foldedOntoAnother": 11429, "refusedUnstable": 12, "excluded": 0, "taken": 5311},
  *         "hosts": 850,
  *         "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
  *                   "transferFailed": 100, "noRoute": 1100, "hostStruckOut": 200,
@@ -206,6 +206,7 @@ class SyncProgress(
                                                 buildJsonObject {
                                                     put("discovered", t.discovered)
                                                     put("foldedOntoAnother", t.foldedOntoAnother)
+                                                    put("refusedUnstable", t.refusedUnstable)
                                                     put("excluded", t.excluded)
                                                     put("taken", t.taken)
                                                 },

@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.CachedRelayList
+import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
@@ -121,7 +122,12 @@ internal class DynamicSync(
     // Split in two on purpose: this one only READS verdicts, on the cycle's
     // critical path, and the monitor below EARNS them somewhere else.
     private val folding: AliasFolding?,
-    // Where the dialling half of that fold lives. Null exactly when [folding]
+    // The stability gate, reading only: which discovered urls answered one
+    // filter two different ways and therefore cannot be synced against at all.
+    // Null on the same terms as [folding], and READ-ONLY here for the same
+    // reason — the dialling half belongs to [aliasMonitor].
+    private val stability: ConsistencyPass?,
+    // Where the dialling half of both lives. Null exactly when [folding]
     // is: same identity, same reason.
     private val aliasMonitor: AliasMonitor?,
     // The Tor transport, when configured: what makes discovered .onion urls
@@ -602,8 +608,29 @@ internal class DynamicSync(
         // is not the number of urls the fold removed and the identity
         // `discovered = folded + excluded + taken` did not hold.
         val foldedList = cleaned?.let { RelayAliases.foldOnto(discovered, it.aliases) } ?: discovered
+        // THE STABILITY GATE, after the fold and before the exclude list.
+        //
+        // After the fold, because folding is the cheaper answer where both
+        // apply: an unstable url that is also a duplicate should leave as a
+        // duplicate, keeping its authors bound to the survivor rather than
+        // dropping them. Before `exclude`, so the two counts below stay
+        // different facts — one is a measurement, the other an instruction.
+        //
+        // A refused url is not a dead one. It answered, it is reachable, and
+        // HostStrikes must not be told otherwise; what it cannot do is hold a
+        // cursor still, so every cycle it re-serves what the last one took.
+        // Measured on this mirror as millions of duplicated events and cycles
+        // stretched from two hours to five.
+        val unstable = stability?.let { runCatching { it.apply(foldedList.map { r -> r.url }) }.getOrNull() }.orEmpty().toSet()
+        val stable = foldedList.filter { it.url !in unstable }
+        if (unstable.isNotEmpty()) {
+            System.err.println(
+                "router: ${stream.name} refused ${unstable.size} url(s) that answered one filter two different ways " +
+                    "(e.g. ${unstable.take(3).joinToString { it.url }})",
+            )
+        }
         val relays =
-            foldedList
+            stable
                 // A verdict's canonical is whatever the probe measured,
                 // which is NOT necessarily a url discovery would hand
                 // out today: `exclude` and our own url are applied when
@@ -645,7 +672,8 @@ internal class DynamicSync(
         // synthesised survivor:
         //   discovered      = candidates
         //   foldedOntoAnother = candidates - foldedList
-        //   excluded        = foldedList - relays   (the `exclude` list
+        //   refusedUnstable = foldedList - stable   (measured, not instructed)
+        //   excluded        = stable - relays       (the `exclude` list
         //                     and our own url being obeyed)
         //   taken           = relays                (what is dialled)
         // It was `candidates.size - relays.size` for the fold and a
@@ -657,7 +685,8 @@ internal class DynamicSync(
             relays = relays,
             discovered = candidates.size,
             foldedOntoAnother = (candidates.size - foldedList.size).coerceAtLeast(0),
-            excluded = (foldedList.size - relays.size).coerceAtLeast(0),
+            refusedUnstable = (foldedList.size - stable.size).coerceAtLeast(0),
+            excluded = (stable.size - relays.size).coerceAtLeast(0),
             // By AUTHORITY, so the count says how many servers this
             // is, not how many strings. Arithmetic over urls, not
             // the fold's verdict — see [CycleTally].

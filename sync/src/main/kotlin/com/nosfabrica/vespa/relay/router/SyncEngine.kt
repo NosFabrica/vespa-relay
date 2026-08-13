@@ -27,8 +27,10 @@ import com.nosfabrica.vespa.relay.router.config.SyncUpstream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
+import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
+import com.nosfabrica.vespa.relay.router.discovery.RelayConsistency
 import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
@@ -302,10 +304,43 @@ class SyncEngine(
         }
 
     /**
-     * The dialling half of that fold, on its own schedule so a probe pass never
-     * stands between a stream finishing discovery and starting its download.
+     * The stability gate: does a relay answer one filter the same way twice?
+     *
+     * Built on the same terms as the fold — signer or nothing, since the verdict
+     * is a signed NIP-66 record — and sharing its [RelayConsistency] between the
+     * reader and the prober for the same reason [RelayAliases] is shared.
+     *
+     * A separate probe instance from the fold's, because they walk to different
+     * depths for different reasons and one is not a cache of the other.
      */
-    private val aliasMonitor = folding?.let { AliasMonitor(it::measure, scope) }
+    private val consistency = RelayConsistency()
+    private val stability =
+        signer?.let {
+            ConsistencyPass(
+                consistency = consistency,
+                record = RelayAliasRecord(store, it),
+                probe =
+                    AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
+                        probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
+                    },
+            )
+        }
+
+    /**
+     * The dialling half of both, on their own schedule so a probe pass never
+     * stands between a stream finishing discovery and starting its download.
+     *
+     * Order matters and is not alphabetical: the fold runs first so that a
+     * stability pass measures survivors rather than urls about to be folded away
+     * — measuring a duplicate twice and then deleting it is the one ordering
+     * that pays for work it throws away.
+     */
+    private val aliasMonitor =
+        listOfNotNull<AliasMonitor.Pass>(
+            folding?.let { f -> AliasMonitor.Pass { l, c, d, e, s -> f.measure(l, c, d, e, s) } },
+            stability?.let { g -> AliasMonitor.Pass { l, c, d, e, s -> g.measure(l, c, d, e, s) } },
+        ).takeIf { it.isNotEmpty() }
+            ?.let { AliasMonitor(it, scope) }
     private val dynamic =
         DynamicSync(
             client,
@@ -319,6 +354,7 @@ class SyncEngine(
             monitor,
             pinnedUrls,
             folding,
+            stability,
             aliasMonitor,
             tor,
             scope,
