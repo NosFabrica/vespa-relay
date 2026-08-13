@@ -736,18 +736,22 @@ class AliasFolding(
             } catch (e: Exception) {
                 return
             }
-        // FORGET FIRST, so the store is authoritative on every pass and its TTL
-        // means something. `load` already refuses a record past its TTL, but a
-        // verdict adopted while it was still fresh used to live in memory for
-        // the rest of the process: `measured` kept answering true, so the url
-        // was never re-probed and the expired verdict was never republished,
-        // and the fan-out went on folding on evidence that had ceased to exist
-        // anywhere. Skipped entirely when the query FAILS — a store that cannot
-        // answer is not a store saying "no verdict", and dropping what we hold
-        // on the strength of a failed read would unfold the whole fan-out.
-        aliases.forget(candidates)
-        aliases.adopt(held.aliases)
-        aliases.adoptDistinct(held.distinct)
+        // THE STORE IS AUTHORITATIVE ON EVERY PASS, which is what gives its TTL
+        // — and the rules epoch — their teeth. `load` already refuses a record
+        // past either, but a verdict adopted while it was still current used to
+        // live in memory for the rest of the process: `measured` kept answering
+        // true, so the url was never re-probed and the retired verdict was never
+        // republished, and the fan-out went on folding on evidence that had
+        // ceased to exist anywhere. Skipped entirely when the query FAILS — a
+        // store that cannot answer is not a store saying "no verdict", and
+        // dropping what we hold on the strength of a failed read would unfold
+        // the whole fan-out.
+        //
+        // ONE PASS, not a bulk forget followed by a bulk adopt: this map is
+        // shared by every stream and by the monitor, and the gap between those
+        // two walks was a window in which every fold in the store was missing.
+        // See [RelayAliases.replace].
+        aliases.replace(candidates, held.aliases, held.distinct)
     }
 
     /**

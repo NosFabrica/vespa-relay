@@ -100,26 +100,86 @@ class RelayAliases(
     fun verdicts(): Map<NormalizedRelayUrl, NormalizedRelayUrl> = folded.toMap()
 
     /**
-     * Adopt verdicts a previous run published. [RelayAliasRecord] drops the
-     * stale ones before they get here, so anything in [known] is still within
-     * its TTL.
+     * Set this candidate set's verdicts to exactly what the store holds, in ONE
+     * pass per url rather than a bulk [forget] followed by a bulk [adopt].
+     *
+     * **The two-step version had a window in which a fold did not exist.**
+     * `forget` walks the whole candidate set removing verdicts and `adopt` walks
+     * it putting them back; between those two walks — five figures of urls on a
+     * real fan-out — every url reads as its own relay. This object is SHARED by
+     * every stream and the monitor's pass, all of which run concurrently, so
+     * another stream landing inside that window sees a store's worth of folds
+     * missing and dials the duplicates for a whole cycle: a socket, a band and a
+     * cursor each, for events the survivor is already delivering. Nothing
+     * anywhere reports it, because by the time anyone looks the map is correct
+     * again. [RelayConsistency.replace] is the same fix for the same reason on
+     * the sibling verdict; this is the half that did not get it.
+     *
+     * Each url moves straight from its old verdict to its new one and is never
+     * transiently absent. A url the store no longer has a verdict for is
+     * cleared, which is what gives the record's TTL — and the rules epoch — their
+     * teeth.
+     *
+     * Chains are resolved against [known] rather than against the live map, so
+     * the result does not depend on the order the store happened to return
+     * verdicts in, and a cycle (A says B, B says A) resolves to nothing rather
+     * than to whichever edge was read first.
      */
-    fun adopt(known: Map<NormalizedRelayUrl, NormalizedRelayUrl>) {
+    fun replace(
+        candidates: Collection<NormalizedRelayUrl>,
+        known: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        cleared: Set<NormalizedRelayUrl>,
+    ) {
+        // Every fold this candidate set implies, resolved to the url the events
+        // are actually at, BEFORE anything is written. A verdict pointing at a
+        // url that is itself folded would otherwise leave the fan-out dialling
+        // a duplicate through two hops.
+        val ends = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>(known.size)
         for ((alias, canonical) in known) {
-            // A verdict pointing at a url that is ITSELF folded would leave the
-            // fan-out dialling a duplicate through two hops. Resolve to the end
-            // of the chain, which is where the events are.
             if (alias == canonical) continue
-            val end = resolve(canonical)
-            // Checked AFTER resolving as well as before: two verdicts that
-            // disagree — A says B, B says A — resolve each other back to the
-            // start and would write `folded[A] = A`. That is not a fold, it is
-            // a url pinned as its own duplicate: `measured` starts answering
-            // true, `unresolved` drops the group, and nothing ever revisits it.
+            val end = endOf(known, canonical) ?: continue
+            // A url pinned as its own duplicate is not a fold: `measured` would
+            // start answering true, `unresolved` would drop the group, and
+            // nothing would ever revisit it.
             if (end == alias) continue
-            folded[alias] = end
-            canonicals += end
+            ends[alias] = end
         }
+        val heads = ends.values.toHashSet()
+        for (url in candidates) {
+            val end = ends[url]
+            if (end != null) {
+                folded[url] = end
+                distinct -= url
+            } else {
+                folded.remove(url)
+                // A fold is the stronger statement, so it wins over a cleared
+                // verdict for the same url — which is why this is the `else`.
+                if (url in cleared) distinct += url else distinct -= url
+            }
+            // Decided by the incoming map and never by the order of this walk:
+            // a canonical usually has no record of its own, so it is only ever
+            // a canonical because something else points AT it.
+            if (url !in heads) canonicals -= url
+        }
+        canonicals += heads
+    }
+
+    /**
+     * The url at the end of a chain of verdicts, or null when there is no end —
+     * a loop, or a hand-edited file. Read from [known] alone, so the answer does
+     * not depend on what any other stream has adopted.
+     */
+    private fun endOf(
+        known: Map<NormalizedRelayUrl, NormalizedRelayUrl>,
+        from: NormalizedRelayUrl,
+    ): NormalizedRelayUrl? {
+        var at = from
+        repeat(MAX_CHAIN) {
+            val next = known[at] ?: return at
+            if (next == at) return at
+            at = next
+        }
+        return null
     }
 
     /**
@@ -208,18 +268,6 @@ class RelayAliases(
     /** This url was probed and is nobody's duplicate. Never fingerprint it again. */
     fun markDistinct(url: NormalizedRelayUrl) {
         distinct += url
-    }
-
-    /**
-     * Adopt cleared verdicts a previous run published, the negative half of
-     * [adopt]. A url this run has since folded wins — a fold is the stronger
-     * statement, and re-clearing it would put a duplicate back in the fan-out.
-     */
-    fun adoptDistinct(known: Set<NormalizedRelayUrl>) {
-        for (url in known) {
-            if (folded.containsKey(url)) continue
-            distinct += url
-        }
     }
 
     /**
@@ -398,17 +446,6 @@ class RelayAliases(
         if (smaller < minSample) return false
         val shared = if (a.size <= b.size) a.count { it in b } else b.count { it in a }
         return shared.toDouble() / smaller >= minOverlap
-    }
-
-    /** Follow a chain of verdicts to the url at the end of it. */
-    private fun resolve(url: NormalizedRelayUrl): NormalizedRelayUrl {
-        var at = url
-        // Bounded rather than `while`: a verdict file edited by hand, or two
-        // runs that disagreed, must not spin here.
-        repeat(MAX_CHAIN) {
-            at = folded[at] ?: return at
-        }
-        return at
     }
 
     /**

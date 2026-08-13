@@ -277,9 +277,17 @@ export function groupByHost(events, nowSec) {
     // Counted on what the router would ACT on. A fold whose verdict has aged
     // out is not folding anything today, and counting it would draw a host as
     // collapsed while every url of it is back in the fan-out.
+    //
+    // **`expired` counts BOTH forms, which it did not.** It tested `fold` only,
+    // so a CLEARED verdict past its TTL fell out of every counter on this page
+    // — not folded, not cleared, not expired, and not silent either, since the
+    // row does carry a verdict tag. That was survivable while the only way to
+    // expire was to wait a month. It stopped being survivable with the rules
+    // epoch: bumping it retires every verdict in the store at once, and the
+    // cleared half is the majority of them.
     if (rec.fold && current) group.folded++;
     else if (rec.cleared && current) group.cleared++;
-    if (rec.fold && !current) group.expired++;
+    else if (rec.fold || rec.cleared) group.expired++;
     if (rec.stable === false) group.unstable++;
   }
   for (const group of hosts.values()) {

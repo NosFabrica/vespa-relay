@@ -119,10 +119,13 @@ class RelayAliasesTest {
         // writing that would make `folded[B] = B`: not a fold, but a url marked
         // as its own duplicate, which `measured` then answers true for forever
         // while `unresolved` drops the group and nothing revisits it.
-        aliases.adopt(mapOf(nosAlpha to nos, nos to nosAlpha))
+        aliases.replace(listOf(nos, nosAlpha), mapOf(nosAlpha to nos, nos to nosAlpha), cleared = emptySet())
 
         assertFalse(aliases.measured(nos) && aliases.canonicalOf(nos) == nos && nos in aliases.verdicts().keys)
         assertTrue(nos !in aliases.verdicts().keys, "a url was folded onto itself: ${aliases.verdicts()}")
+        // Neither edge, rather than whichever one the map iterated first: a
+        // loop is two passes contradicting each other and no evidence at all.
+        assertTrue(aliases.verdicts().isEmpty(), "a loop was folded anyway: ${aliases.verdicts()}")
     }
 
     @Test
@@ -298,10 +301,57 @@ class RelayAliasesTest {
     @Test
     fun `a verdict pointing at a folded url resolves to the end of the chain`() {
         val aliases = RelayAliases()
-        aliases.adopt(mapOf(nosAlpha to nos))
-        aliases.adopt(mapOf(nosBeacon to nosAlpha))
+        // Both edges arrive together, as one store read, and the answer must
+        // not depend on which order they were returned in.
+        aliases.replace(listOf(nos, nosAlpha, nosBeacon), mapOf(nosBeacon to nosAlpha, nosAlpha to nos), cleared = emptySet())
 
         assertEquals(nos, aliases.canonicalOf(nosBeacon))
+    }
+
+    @Test
+    fun `re-reading the store never leaves a url transiently unfolded`() {
+        // What `AliasFolding.adopt` does every pass, and what it must not do on
+        // the way. The bulk forget it used to start with left every fold in the
+        // candidate set missing until the adopt that followed put them back —
+        // and this object is shared by every stream and the monitor's pass, so
+        // another stream reading inside that window dialled the duplicates for
+        // a whole cycle. `replace` moves each url straight from its old verdict
+        // to its new one.
+        //
+        // The window itself is a race and not directly assertable; what is
+        // assertable — and is the invariant the race broke — is that a re-read
+        // of the SAME verdicts is a complete no-op on every url in the set.
+        val aliases = RelayAliases()
+        val urls = listOf(nos, nosAlpha, nosBeacon)
+        val known = mapOf(nosAlpha to nos, nosBeacon to nos)
+
+        aliases.replace(urls, known, cleared = setOf(nos))
+        val before = urls.associateWith { aliases.canonicalOf(it) }
+        aliases.replace(urls, known, cleared = setOf(nos))
+
+        assertEquals(before, urls.associateWith { aliases.canonicalOf(it) })
+        assertEquals(nos, aliases.canonicalOf(nosAlpha))
+        assertTrue(urls.all { aliases.measured(it) }, "a re-read dropped a verdict it had just re-adopted")
+        assertTrue(aliases.unresolved(urls).isEmpty(), "a fully decided group came back as unfinished")
+    }
+
+    @Test
+    fun `replace clears the urls the store no longer has a verdict for`() {
+        // The other half, and the reason this is not simply an adopt: the TTL
+        // and the rules epoch expire verdicts inside `RelayAliasRecord.load`,
+        // so a url dropping OUT of what the store returns is how a re-measure
+        // is scheduled. Left in memory it would answer `measured` forever.
+        val aliases = RelayAliases()
+        val urls = listOf(nos, nosAlpha)
+        aliases.replace(urls, mapOf(nosAlpha to nos), cleared = setOf(nos))
+        assertTrue(aliases.measured(nosAlpha))
+
+        aliases.replace(urls, emptyMap(), cleared = emptySet())
+
+        assertFalse(aliases.measured(nosAlpha), "an expired fold outlived the store that dropped it")
+        assertFalse(aliases.measured(nos), "an expired cleared verdict outlived the store that dropped it")
+        assertEquals(nosAlpha, aliases.canonicalOf(nosAlpha))
+        assertEquals(1, aliases.unresolved(urls).size, "the group must be probeable again")
     }
 
     @Test

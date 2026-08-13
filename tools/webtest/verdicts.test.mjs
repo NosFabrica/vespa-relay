@@ -140,6 +140,25 @@ const consistent = (v, evidence, at, epoch = CONSISTENCY_EPOCH) => ["self-consis
   ok("a verdict from superseded rules reads as expired, whatever its age");
 }
 
+{
+  // THE CLEARED HALF EXPIRES TOO, and it used to fall out of every counter on
+  // the page: not folded (it is not a fold), not cleared (that is gated on
+  // current), not expired (which tested `fold` alone), and not silent (the row
+  // does carry a verdict). It was invisible while a month of waiting was the
+  // only way to expire; the rules epoch retires every verdict at once, and this
+  // form is the majority of them.
+  const self = (url, at, epoch) => rec(url, [sameAs(url, "500 newest events, best 2 shared", at, epoch)]);
+  const [aged] = groupByHost([self("wss://a.example/x", NOW - TTL_SECONDS - 1)], NOW);
+  assert.equal(aged.cleared, 0, "a cleared verdict past its TTL is not a verdict the router acts on");
+  assert.equal(aged.expired, 1);
+
+  const [superseded] = groupByHost([self("wss://b.example/x", NOW, "1")], NOW);
+  assert.equal(superseded.cleared, 0);
+  assert.equal(superseded.expired, 1);
+  assert.equal(summarise([aged, superseded], NOW).silent, 0, "a retired verdict is not the same as never having looked");
+  ok("a cleared verdict is counted as expired when the router has retired it");
+}
+
 // ---- grouping, which is the whole point ------------------------------------
 {
   const events = [

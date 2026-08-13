@@ -2477,8 +2477,14 @@ function drawVerdicts(box, groups, nowSec) {
         // path it points at rather than repeating the whole url.
         left.append(el("span", "vd-into", ` → ${u.fold.replace(/^wss?:\/\/[^/]+/i, "") || "/"}`));
       } else if (u.cleared) {
-        tag = el("span", "vd-pill keep", "keep");
-        row.classList.add("vd-keep");
+        // THE SAME TEST THE FOLD ROW MAKES, and it was missing here. A cleared
+        // verdict the router has retired — aged out, or measured under rules it
+        // no longer applies — was still drawn as "keep", i.e. measured and
+        // settled, while the url was in fact back in the queue to be
+        // re-measured. Half the verdicts in a store are this form, so after a
+        // rules bump that is most of the page saying the opposite of the truth.
+        tag = el("span", u.foldCurrent ? "vd-pill keep" : "vd-pill expired", u.foldCurrent ? "keep" : "expired");
+        if (u.foldCurrent) row.classList.add("vd-keep");
       } else if (u.synthetic) {
         // Inferred from what the folds point at, not stated by the monitor —
         // and said so, because the two are different claims.
@@ -2489,11 +2495,16 @@ function drawVerdicts(box, groups, nowSec) {
         tag = el("span", "vd-pill none", "not folded");
       }
       right.append(tag);
-      const at = u.fold || u.cleared ? u.foldMeasuredAt : null;
-      if (at) {
+      if (u.fold || u.cleared) {
         // `ago` takes the INSTANT, not the elapsed time — it does the
         // subtraction itself. Handing it a duration drew every verdict as
         // "20679d ago", which is `now` minus five minutes read as an epoch.
+        //
+        // Drawn even when the record does not say when it was measured — `ago`
+        // renders that as an em dash. Skipping the whole span instead left a
+        // pre-stamp verdict with no date at all beside its pill, which reads as
+        // "just measured" rather than as the undatable record it is.
+        const at = u.foldMeasuredAt;
         const when = el("span", null, ` ${ago(at)}`);
         when.title = isoOf(at);
         // The verdict's own answer, computed once per row when the host was

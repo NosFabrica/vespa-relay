@@ -416,6 +416,12 @@ relay/src/main/resources/
                         nothing else is what a CLOBBERED record looks like, so
                         the panel is the production-side check on the tag merge
                         that `RelayAliasRecordTest` can only pin in isolation.
+                        Every verdict it draws is tested for BOTH expiry rules —
+                        age and rules epoch — and both forms are tested, which
+                        the cleared half was not: it drew `keep` off the tag's
+                        presence alone, so a retired cleared verdict read as
+                        settled while the url was queued to be re-measured, and
+                        it fell out of every counter on the page at once.
                         Its Kinds table REPLACED kind_stats.html, whose url now
                         301s here. That page asked one NIP-45 COUNT per kind it
                         already knew to name — shared/kinds.js plus whatever an
@@ -1187,6 +1193,25 @@ re-fingerprint of the store, spread over `probesPerCycle` per pass, during which
 every un-re-measured url is dialled unfolded. Nothing has to be deleted and no
 operator has to intervene — `edit` overwrites the old tag with the new answer as
 each group is decided.
+
+Both expiry rules live in the tag's tail, so every other writer on that shared
+address has to carry five elements forward, not just the tag's name.
+`RelayAliasRecordTest` asserts what `load` DECIDES after quartz's passive monitor
+and our own stability pass have each rewritten the record — a writer that kept
+the name and dropped the tail would leave a verdict that reads as stale forever,
+re-fingerprinting the url every pass while the record on screen looked healthy.
+
+**Reading the store back is `RelayAliases.replace`, not forget-then-adopt.** The
+two-step version left a window — the length of a walk over five figures of urls
+— in which every fold in the candidate set was missing, and this map is shared
+by every stream and by the monitor's pass, all running concurrently. A stream
+reading inside that window dials the duplicates for a whole cycle and nothing
+ever says so, because the map is correct again by the time anyone looks.
+`RelayConsistency.replace` is the same fix on the sibling verdict, made first;
+the fold kept the racy shape until the audit that found this. Chains resolve
+against the incoming map rather than the live one, so the result does not depend
+on the order the store returned verdicts in, and a loop (A says B, B says A)
+folds neither edge instead of whichever was read first.
 
 Three things it does NOT do. It never removes a relay on silence, on a window
 under `minSample`, or on a failed store read — only a positive measurement

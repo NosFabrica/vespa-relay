@@ -243,6 +243,39 @@ class RelayAliasRecordTest {
         }
 
     @Test
+    fun `a verdict still reads as CURRENT after the other writers have edited the record`() =
+        runBlocking {
+            // The tag-name check two tests up is not enough, and the gap it
+            // leaves is the one that would hurt most. Expiry now lives in the
+            // tag's 4th and 5th elements, and every other writer on this
+            // address — quartz's passive monitor, our own stability pass —
+            // carries our tag forward by copying it. If any of them rebuilt it
+            // at a fixed arity, the tag would survive with its NAME and lose its
+            // clock and its rules version, which reads as a stale verdict: the
+            // url would be re-fingerprinted every pass, forever, while the
+            // record on screen looked perfectly healthy.
+            //
+            // So this asserts what `load` DECIDES, not what the tags are called.
+            val store = newStore()
+            val record = RelayAliasRecord(store, signer)
+            val monitor = RelayReachabilityStore(store, signer)
+
+            record.publish(alias, canonical, sampled = 500, shared = 498)
+            monitor.recordProbed(mapOf(alias to 120L), emptySet(), nowSeconds() + 1)
+            // And an edit of ours that owns the OTHER tag, which carries this
+            // one forward the same way.
+            record.publishConsistency(alias, consistent = true, first = 500, second = 500, shared = 500, score = 1.0)
+
+            val held = record.load(listOf(alias))
+            assertEquals(
+                mapOf(alias to canonical),
+                held.aliases,
+                "the verdict survived as a tag but stopped reading as current — its clock or its rules version was dropped",
+            )
+            assertEquals(setOf(alias), held.stable, "the stability verdict did not survive its own round trip")
+        }
+
+    @Test
     fun `a verdict measured under superseded rules is no verdict at all`() =
         runBlocking {
             // The forcing lever, and the only one that works on records already
