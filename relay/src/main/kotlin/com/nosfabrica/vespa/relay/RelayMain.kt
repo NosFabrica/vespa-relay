@@ -54,6 +54,7 @@ import com.nosfabrica.vespa.relay.server.NostrRelayServer
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.server.StatsSnapshot
 import com.nosfabrica.vespa.relay.server.openBanStore
+import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
@@ -150,6 +151,17 @@ fun main() {
     val negentropy = negentropySettingsFromEnv(env)
     val rejectFutureSeconds = rejectFutureSecondsFromEnv(env)
 
+    // The icon this relay serves on its own tab, as an absolute url a stranger
+    // can fetch — the value `RELAY_ICON` defaults to, and the one the server
+    // compares against to tell "no override" from an operator's own icon.
+    //
+    // From `RELAY_HTTP_URL` when it is set, because that is already this
+    // deployment's answer to "what http origin am I reachable at" (NIP-98 binds
+    // its tokens to it), and a relay behind a proxy on another name would
+    // otherwise advertise an icon at the websocket's host. Null when neither
+    // address is one a stranger can reach.
+    val ownIconUrl = selfIconUrl(env["RELAY_HTTP_URL"] ?: relayUrl.url)
+
     // How this relay presents itself. Built here rather than at the serveRelay
     // call it used to sit in, because the relay's own kind 0 is these same
     // fields — one description of this relay, served as NIP-11 and published
@@ -158,7 +170,14 @@ fun main() {
         Nip11Info(
             name = env["RELAY_NAME"] ?: "vespa-relay",
             description = env["RELAY_DESCRIPTION"],
-            icon = env["RELAY_ICON"],
+            // One icon, both places. Unset publishes the one this relay already
+            // serves on its own tab, so a stock deployment stops advertising
+            // nothing to the clients that draw a relay beside its picture;
+            // set, it is also what the pages link and what /favicon.ico
+            // redirects to. Null for an address a stranger cannot reach — see
+            // selfIconUrl, which refuses to sign `http://localhost:7777/…` into
+            // a public kind 0 on every development boot.
+            icon = env["RELAY_ICON"] ?: ownIconUrl,
             banner = env["RELAY_BANNER"],
             contactPubkey = PubKeys.decodeOrNull(env["RELAY_CONTACT_PUBKEY"], "RELAY_CONTACT_PUBKEY"),
             // Derived, never declared: a typed-in pubkey is an assertion
@@ -369,6 +388,11 @@ fun main() {
         observerStatsPage = resourceText("/observer_stats.html"),
         statsPage = resourceText("/stats.html"),
         statsJson = statsSnapshot,
+        // What "no override" looks like. The server compares the doc's icon
+        // against this to decide whether /favicon.ico redirects — it cannot
+        // read that off the doc, where our own url and an operator's are the
+        // same field.
+        selfIconUrl = ownIconUrl,
     )
 }
 

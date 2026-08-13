@@ -377,7 +377,18 @@ relay/src/main/resources/
                         All three pages link both formats (SVG first, .ico as
                         the fallback — Safari takes no SVG icon — which also
                         answers the guessed /favicon.ico for everything that
-                        never read our markup: see `favicon()` in HttpServer)
+                        never read our markup: see `favicon()` in HttpServer.
+                        `RELAY_ICON` overrides all of it, and the override runs
+                        BOTH ways: set, it is the tab icon as well as the NIP-11
+                        one, replacing those two links (not joining them — the
+                        SVG would outrank it everywhere but Safari) and turning
+                        /favicon.ico into a 302; unset, NIP-11 publishes THIS
+                        relay's /favicon.ico, so the doc always names the icon
+                        the tab shows. The trap that pairs with that: once unset
+                        publishes our own url, "the doc has an icon" no longer
+                        means "the operator set one", and redirecting to it
+                        blindly points /favicon.ico at itself — `iconOverride`
+                        is the comparison that keeps that loop shut
   observer_stats.html   an operator diagnostic carrying its own tiny relay
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS

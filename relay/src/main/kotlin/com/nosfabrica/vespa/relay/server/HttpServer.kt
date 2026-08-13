@@ -122,16 +122,34 @@ fun serveRelay(
     // doc says something else. Not called for the initial document: that one is
     // this call's own argument.
     onInfoChanged: (Nip11RelayInformation) -> Unit = {},
+    // The url of the icon THIS relay serves at /favicon.ico — `selfIconUrl` of
+    // RELAY_URL, computed by the caller because only it knows that address.
+    // Passed in to be compared against, not to be published: [nip11] already
+    // carries it as the `icon` when the operator set none, and the doc's icon
+    // being ours is precisely what must NOT make /favicon.ico redirect.
+    selfIconUrl: String? = null,
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     // NIP-86 advertises itself in supported_nips only when an admin is wired.
     val effectiveNips = if (admin != null) supportedNips + 86 else supportedNips
-    val info = MutableRelayInfo(buildRelayInfo(nip11, limits, effectiveNips), onInfoChanged)
+
     // Hashed once at boot rather than per request: these strings are read off
-    // the classpath at startup and never change while the process lives.
-    val landing = landingPage?.let(::CachedPage)
-    val observerStats = observerStatsPage?.let(::CachedPage)
-    val stats = statsPage?.let(::CachedPage)
+    // the classpath at startup, and re-themed only when the icon changes under
+    // a NIP-86 rpc — see IconedPage.
+    val landing = landingPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
+    val observerStats = observerStatsPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
+    val stats = statsPage?.let { IconedPage(it, iconOverride(nip11.icon, selfIconUrl)) }
+    val pages = listOfNotNull(landing, observerStats, stats)
+
+    // Built after the pages so the change hook can reach them: an admin rpc that
+    // rewrites the icon has to repaint the markup that links it, or the tab
+    // keeps the old icon until someone restarts the relay — the same staleness
+    // `onInfoChanged` exists to keep out of the relay's kind 0.
+    val info =
+        MutableRelayInfo(buildRelayInfo(nip11, limits, effectiveNips)) { doc ->
+            pages.forEach { it.icon(iconOverride(doc.icon, selfIconUrl)) }
+            onInfoChanged(doc)
+        }
 
     return embeddedServer(Netty, port = port) {
         // The pages are ~117KB of text — html, ES modules, css — and none of it
@@ -195,12 +213,15 @@ fun serveRelay(
                 if (accept.contains("application/nostr+json")) {
                     call.respondText(info.nip11Json(), NOSTR_JSON)
                 } else {
-                    landing?.let { call.respondPage(it) }
+                    landing?.let { call.respondPage(it.page) }
                         ?: call.respondText("${nip11.name} - a NIP-50 search relay; connect a WebSocket here.")
                 }
             }
             webModules()
-            favicon()
+            // The doc's icon, unless the doc's icon is the one we serve — see
+            // iconOverride. Asked per request rather than captured: a NIP-86
+            // rpc can change it while the server runs.
+            favicon { iconOverride(info.get().icon, selfIconUrl) }
             // Any NIP-19 identifier is a page. The server validates only the
             // SHAPE and serves the landing page; decoding — checksum, TLV,
             // what the identifier names — belongs to the page, which already
@@ -210,7 +231,7 @@ fun serveRelay(
             landing?.let { page ->
                 get("/{nip19}") {
                     if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
-                        call.respondPage(page)
+                        call.respondPage(page.page)
                     } else {
                         call.respond(HttpStatusCode.NotFound)
                     }
@@ -233,7 +254,7 @@ fun serveRelay(
                 }
             }
             observerStats?.let { page ->
-                get("/observer_stats.html") { call.respondPage(page) }
+                get("/observer_stats.html") { call.respondPage(page.page) }
             }
             corpusStats(stats, statsJson)
             admin?.let { nip86Admin(it, info) }
@@ -307,11 +328,71 @@ internal fun Route.webModules() {
  * Its own function so a test can mount it alone, the same reason [webModules]
  * is one.
  */
-internal fun Route.favicon() {
+internal fun Route.favicon(icon: () -> String? = { null }) {
     get("/favicon.ico") {
-        // Absent only if someone deleted the resource — a 404 is then the
-        // honest answer, and it is the answer this route replaced.
-        WebAssets.get("favicon.ico")?.let { call.respondAsset(it) } ?: call.respond(HttpStatusCode.NotFound)
+        val override = icon()
+        if (override != null) {
+            // Temporary, not permanent: `RELAY_ICON` is an operator setting and
+            // a NIP-86 rpc can change it mid-run, and a 301 is the one redirect
+            // a browser is entitled to cache forever — an icon changed once
+            // would keep resolving to the old host on every client that saw it.
+            call.respondRedirect(override, permanent = false)
+        } else {
+            // Absent only if someone deleted the resource — a 404 is then the
+            // honest answer, and it is the answer this route replaced.
+            WebAssets.get("favicon.ico")?.let { call.respondAsset(it) } ?: call.respond(HttpStatusCode.NotFound)
+        }
+    }
+}
+
+/**
+ * The icon an operator set, or null when the icon in the doc is the one this
+ * relay serves anyway.
+ *
+ * The whole point is the null. With `RELAY_ICON` unset the NIP-11 doc now
+ * publishes [selfIconUrl] — this relay's own `/favicon.ico` — so "the doc has an
+ * icon" stopped meaning "the operator overrode the icon". Treating it as an
+ * override would rewrite every page's `<link rel="icon">` to a url identical to
+ * the built-in one it replaced (harmless, but a needless absolute url and a
+ * second name for one file), and, worse, point `/favicon.ico` at itself: a
+ * browser following that redirect arrives at the route that issued it and loops
+ * until it gives up with no icon at all.
+ */
+internal fun iconOverride(
+    icon: String?,
+    selfIconUrl: String?,
+): String? = icon?.takeIf { it.isNotBlank() && it != selfIconUrl }
+
+/**
+ * A page whose icon links follow the relay document.
+ *
+ * Two states, and the common one costs nothing: with no override the html is
+ * the classpath's own bytes and the [CachedPage] is built once, exactly as
+ * before. With one, the markup is re-rendered — and re-rendered AGAIN whenever a
+ * NIP-86 `changerelayicon` moves the doc, because a cached page is otherwise
+ * frozen at boot and would keep serving a link to an icon the relay no longer
+ * claims.
+ *
+ * Rebuilt on change rather than rendered per request: the substitution and the
+ * etag hash together walk 25KB of markup, a page load asks for that markup all
+ * the time, and an admin rpc arrives approximately never.
+ */
+internal class IconedPage(
+    private val template: String,
+    icon: String?,
+) {
+    @Volatile
+    private var current: String? = icon
+
+    @Volatile
+    var page: CachedPage = CachedPage(pageWithIcon(template, icon))
+        private set
+
+    /** Re-theme, unless this is the icon already drawn — most rpcs change something else. */
+    fun icon(icon: String?) {
+        if (icon == current) return
+        current = icon
+        page = CachedPage(pageWithIcon(template, icon))
     }
 }
 
@@ -343,11 +424,11 @@ internal fun Route.favicon() {
  * same reason [webModules] is one.
  */
 internal fun Route.corpusStats(
-    page: CachedPage?,
+    page: IconedPage?,
     snapshot: StatsSnapshot?,
 ) {
     page?.let {
-        get("/stats.html") { call.respondPage(it) }
+        get("/stats.html") { call.respondPage(it.page) }
         // `/kind_stats.html` was the per-kind COUNT page this one's Kinds table
         // replaced. A 301 rather than a 404 because the old url is what is
         // bookmarked, linked from operator runbooks, and printed in this repo's

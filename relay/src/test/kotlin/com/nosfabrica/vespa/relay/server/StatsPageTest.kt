@@ -90,7 +90,7 @@ class StatsPageTest {
     fun `the page is served and reads the document it charts`() =
         testApplication {
             val html = assertNotNull(javaClass.getResource("/stats.html")?.readText(), "the page is on the classpath")
-            application { routing { corpusStats(CachedPage(html), StatsSnapshot().also { it.publish(doc) }) } }
+            application { routing { corpusStats(IconedPage(html, null), StatsSnapshot().also { it.publish(doc) }) } }
 
             val res = client.get("/stats.html")
             assertEquals(HttpStatusCode.OK, res.status)
@@ -122,7 +122,7 @@ class StatsPageTest {
     fun `the old kind_stats url redirects to the page that replaced it`() =
         testApplication {
             val html = assertNotNull(javaClass.getResource("/stats.html")?.readText())
-            application { routing { corpusStats(CachedPage(html), null) } }
+            application { routing { corpusStats(IconedPage(html, null), null) } }
 
             // Not followed, so the status and target are both assertable.
             val res = createClient { followRedirects = false }.get("/kind_stats.html")
