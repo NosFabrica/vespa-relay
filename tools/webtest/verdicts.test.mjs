@@ -10,6 +10,7 @@
 import assert from "node:assert/strict";
 import {
   MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
+  FOLD_EPOCH, CONSISTENCY_EPOCH,
 } from "../../relay/src/main/resources/web/shared/verdicts.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -23,8 +24,11 @@ const rec = (url, tags, at = NOW) => ({
   created_at: at,
   tags: [["d", url], ...tags],
 });
-const sameAs = (target, evidence, at) => ["same-as", target, evidence, String(at)];
-const consistent = (v, evidence, at) => ["self-consistent", v, evidence, String(at)];
+// The epoch goes in every fixture that is meant to READ as a verdict, because
+// that is what the router writes — a fixture without one is a record from an
+// older build, which is a case of its own and asserted as such below.
+const sameAs = (target, evidence, at, epoch = FOLD_EPOCH) => ["same-as", target, evidence, String(at), epoch];
+const consistent = (v, evidence, at, epoch = CONSISTENCY_EPOCH) => ["self-consistent", v, evidence, String(at), epoch];
 
 // ---- the host, which is what decides a GROUP -------------------------------
 {
@@ -97,17 +101,62 @@ const consistent = (v, evidence, at) => ["self-consistent", v, evidence, String(
   const stale = NOW - TTL_SECONDS - 1;
   const r = readRecord(rec("wss://busy.example/a", [sameAs("wss://busy.example/", "e", stale)], NOW));
   assert.equal(r.foldMeasuredAt, stale, "the record was rewritten a second ago; the measurement was not");
-  assert.equal(isCurrent(r.foldMeasuredAt, NOW), false);
-  assert.equal(isCurrent(NOW - TTL_SECONDS + 60, NOW), true);
+  assert.equal(isCurrent(r.foldMeasuredAt, NOW, r.foldEpoch, FOLD_EPOCH), false);
+  assert.equal(isCurrent(NOW - TTL_SECONDS + 60, NOW, FOLD_EPOCH, FOLD_EPOCH), true);
   ok("a verdict ages on when it was MEASURED, not on the record it rides on");
 }
 
 {
-  // Records written before the measured-at element existed fall back to the
-  // event's clock, which is the only honest reading available for them.
+  // A record from before the measured-at element existed. It must NOT fall back
+  // to the event's clock, which is what this reader used to do: that clock is
+  // rewritten every time the router connects, so the fallback dated every such
+  // verdict as minutes old and drew it as current forever — on precisely the
+  // relays still being dialled. No stamp is now no verdict, which is also what
+  // the router does with it.
   const r = readRecord(rec("wss://old.example/a", [["same-as", "wss://old.example/", "e"]], NOW - 10));
-  assert.equal(r.foldMeasuredAt, NOW - 10);
-  ok("a tag with no measured-at falls back to the record's clock");
+  assert.equal(r.foldMeasuredAt, null, "an unstamped verdict must not borrow the record's clock");
+  assert.equal(isCurrent(r.foldMeasuredAt, NOW, r.foldEpoch, FOLD_EPOCH), false);
+  assert.equal(r.foldEvidence, "e", "…and it is still READ — the panel shows what the record says, expired or not");
+  ok("a tag with no measured-at is stale, not dated from the record");
+}
+
+// ---- the rules a verdict was measured under --------------------------------
+{
+  // The forcing lever. A verdict measured under superseded rules is not a stale
+  // reading of today's rule, it is a reading of a different one — so the router
+  // discards it and re-measures, and this panel has to agree or it would draw a
+  // url as folded while the fan-out dials it.
+  const old = readRecord(rec("wss://x.example/a", [sameAs("wss://x.example/", "e", NOW, "1")]));
+  assert.equal(old.fold, "wss://x.example/", "the record still SAYS this — being superseded is not being unreadable");
+  assert.equal(old.foldEpoch, "1");
+  assert.equal(isCurrent(old.foldMeasuredAt, NOW, old.foldEpoch, FOLD_EPOCH), false,
+    "a verdict measured seconds ago under old rules is inside the TTL and still not acted on");
+
+  // …and the host it belongs to counts it as expired rather than folded, which
+  // is the number an operator reads to know a re-measure is outstanding.
+  const [group] = groupByHost([rec("wss://x.example/a", [sameAs("wss://x.example/", "e", NOW, "1")])], NOW);
+  assert.equal(group.folded, 0);
+  assert.equal(group.expired, 1);
+  ok("a verdict from superseded rules reads as expired, whatever its age");
+}
+
+{
+  // THE CLEARED HALF EXPIRES TOO, and it used to fall out of every counter on
+  // the page: not folded (it is not a fold), not cleared (that is gated on
+  // current), not expired (which tested `fold` alone), and not silent (the row
+  // does carry a verdict). It was invisible while a month of waiting was the
+  // only way to expire; the rules epoch retires every verdict at once, and this
+  // form is the majority of them.
+  const self = (url, at, epoch) => rec(url, [sameAs(url, "500 newest events, best 2 shared", at, epoch)]);
+  const [aged] = groupByHost([self("wss://a.example/x", NOW - TTL_SECONDS - 1)], NOW);
+  assert.equal(aged.cleared, 0, "a cleared verdict past its TTL is not a verdict the router acts on");
+  assert.equal(aged.expired, 1);
+
+  const [superseded] = groupByHost([self("wss://b.example/x", NOW, "1")], NOW);
+  assert.equal(superseded.cleared, 0);
+  assert.equal(superseded.expired, 1);
+  assert.equal(summarise([aged, superseded], NOW).silent, 0, "a retired verdict is not the same as never having looked");
+  ok("a cleared verdict is counted as expired when the router has retired it");
 }
 
 // ---- grouping, which is the whole point ------------------------------------

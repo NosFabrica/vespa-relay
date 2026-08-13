@@ -319,6 +319,10 @@ class RelayConsistencyTest {
                                 RelayAliasRecord.CONSISTENT_YES,
                                 "500 + 500 events at a 7d anchor, 500 shared -> 1.000",
                                 (nowSeconds() - month - 1).toString(),
+                                // Current rules, so age is the only thing left
+                                // that can make this stale — which is what the
+                                // test is about.
+                                RelayAliasRecord.CONSISTENCY_EPOCH,
                             ),
                         )
                     },
@@ -333,11 +337,17 @@ class RelayConsistencyTest {
         }
 
     @Test
-    fun `a record written before measured-at existed still ages on the event clock`() =
+    fun `a record written before measured-at existed is re-measured, not believed forever`() =
         runBlocking {
-            // Backwards compatibility, and the only honest reading available for
-            // such a record: it carries no measurement time, so the event's is
-            // all there is. A fresh one must still be believed.
+            // This used to fall back to the event's clock, on the reasoning that
+            // it is the only reading available for such a record. It is also the
+            // clock quartz's monitor rewrites every time we connect — so the
+            // fallback dated the verdict as minutes old for as long as the relay
+            // stayed in the fan-out, and no TTL could ever expire it. The
+            // fallback WAS the bug it was written around.
+            //
+            // Refusing it costs one re-measure per url, once. Keeping it cost
+            // every pre-stamp verdict, permanently.
             val store = newStore()
             store.insert(
                 signer.sign(
@@ -354,7 +364,7 @@ class RelayConsistencyTest {
             )
 
             val held = RelayAliasRecord(store, signer).load(listOf(shuffler))
-            assertEquals(setOf(shuffler), held.unstable, "a pre-existing verdict stopped being read")
+            assertTrue(held.unstable.isEmpty(), "a verdict with no measurement time read as current off the record's clock")
         }
 
     @Test

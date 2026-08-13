@@ -683,7 +683,7 @@
 <script type="module">
 import { kindLabel } from "/web/shared/kinds.js";
 import { Relay } from "/web/shared/relay.js";
-import { MONITOR_KIND, groupByHost, summarise, isCurrent, walkRecords } from "/web/shared/verdicts.js";
+import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/verdicts.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -2477,8 +2477,14 @@ function drawVerdicts(box, groups, nowSec) {
         // path it points at rather than repeating the whole url.
         left.append(el("span", "vd-into", ` → ${u.fold.replace(/^wss?:\/\/[^/]+/i, "") || "/"}`));
       } else if (u.cleared) {
-        tag = el("span", "vd-pill keep", "keep");
-        row.classList.add("vd-keep");
+        // THE SAME TEST THE FOLD ROW MAKES, and it was missing here. A cleared
+        // verdict the router has retired — aged out, or measured under rules it
+        // no longer applies — was still drawn as "keep", i.e. measured and
+        // settled, while the url was in fact back in the queue to be
+        // re-measured. Half the verdicts in a store are this form, so after a
+        // rules bump that is most of the page saying the opposite of the truth.
+        tag = el("span", u.foldCurrent ? "vd-pill keep" : "vd-pill expired", u.foldCurrent ? "keep" : "expired");
+        if (u.foldCurrent) row.classList.add("vd-keep");
       } else if (u.synthetic) {
         // Inferred from what the folds point at, not stated by the monitor —
         // and said so, because the two are different claims.
@@ -2489,14 +2495,24 @@ function drawVerdicts(box, groups, nowSec) {
         tag = el("span", "vd-pill none", "not folded");
       }
       right.append(tag);
-      const at = u.fold || u.cleared ? u.foldMeasuredAt : null;
-      if (at) {
+      if (u.fold || u.cleared) {
         // `ago` takes the INSTANT, not the elapsed time — it does the
         // subtraction itself. Handing it a duration drew every verdict as
         // "20679d ago", which is `now` minus five minutes read as an epoch.
+        //
+        // Drawn even when the record does not say when it was measured — `ago`
+        // renders that as an em dash. Skipping the whole span instead left a
+        // pre-stamp verdict with no date at all beside its pill, which reads as
+        // "just measured" rather than as the undatable record it is.
+        const at = u.foldMeasuredAt;
         const when = el("span", null, ` ${ago(at)}`);
         when.title = isoOf(at);
-        if (!isCurrent(at, nowSec)) when.className = "vd-stale";
+        // The verdict's own answer, computed once per row when the host was
+        // grouped. Asking `isCurrent` again here would ask it a narrower
+        // question — a verdict measured yesterday under SUPERSEDED RULES is
+        // inside the TTL and still not acted on — and the date would then read
+        // fresh beside a pill saying expired.
+        if (!u.foldCurrent) when.className = "vd-stale";
         right.append(when);
       }
       if (u.stable === false) left.append(" ", el("span", "badge bad", "inconsistent"));
@@ -2523,6 +2539,20 @@ function drawVerdicts(box, groups, nowSec) {
       // finding — a row showing `same-as` and nothing else is what a clobbered
       // record looks like.
       const meta = [];
+      // THE RECORD'S OWN CLOCK, which is not the verdict's and is labelled so.
+      //
+      // It is written every time this router CONNECTS to the relay — quartz's
+      // passive monitor rewrites the same address on a 5-minute flush — so it
+      // answers a different question from the age beside the pill: that one is
+      // when we last MEASURED, this one is when we last TALKED. Reading the
+      // second as the first is the bug that made half these verdicts immortal,
+      // which is exactly why both belong on screen with their own names rather
+      // than one standing in for the other.
+      //
+      // It also puts a date back on the rows that lost one: a verdict written
+      // before the measured-at element existed shows `—` above, and this line
+      // is the only remaining evidence of when the record was last touched.
+      if (u.recordAt) meta.push(["record", ago(u.recordAt), isoOf(u.recordAt)]);
       if (u.network) meta.push(["", u.network]);
       for (const r of u.requirements) meta.push(["req", r]);
       if (u.rttOpen) meta.push(["open", `${u.rttOpen}ms`]);
@@ -2538,8 +2568,11 @@ function drawVerdicts(box, groups, nowSec) {
       if (u.extra) meta.push(["", `+${u.extra} other tag(s)`]);
       if (meta.length) {
         const line = el("div", "vd-meta");
-        for (const [k, v] of meta) {
+        for (const [k, v, title] of meta) {
           const cell = el("span", k === "req" ? "vd-req" : null);
+          // An exact timestamp behind the relative one, the same way the
+          // verdict's own age carries its instant on the title.
+          if (title) cell.title = title;
           if (k && k !== "req") cell.append(el("span", "k", k + " "));
           cell.append(v);
           line.appendChild(cell);

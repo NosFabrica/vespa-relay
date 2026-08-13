@@ -241,4 +241,114 @@ class RelayAliasRecordTest {
 
             assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
         }
+
+    @Test
+    fun `a verdict still reads as CURRENT after the other writers have edited the record`() =
+        runBlocking {
+            // The tag-name check two tests up is not enough, and the gap it
+            // leaves is the one that would hurt most. Expiry now lives in the
+            // tag's 4th and 5th elements, and every other writer on this
+            // address — quartz's passive monitor, our own stability pass —
+            // carries our tag forward by copying it. If any of them rebuilt it
+            // at a fixed arity, the tag would survive with its NAME and lose its
+            // clock and its rules version, which reads as a stale verdict: the
+            // url would be re-fingerprinted every pass, forever, while the
+            // record on screen looked perfectly healthy.
+            //
+            // So this asserts what `load` DECIDES, not what the tags are called.
+            val store = newStore()
+            val record = RelayAliasRecord(store, signer)
+            val monitor = RelayReachabilityStore(store, signer)
+
+            record.publish(alias, canonical, sampled = 500, shared = 498)
+            monitor.recordProbed(mapOf(alias to 120L), emptySet(), nowSeconds() + 1)
+            // And an edit of ours that owns the OTHER tag, which carries this
+            // one forward the same way.
+            record.publishConsistency(alias, consistent = true, first = 500, second = 500, shared = 500, score = 1.0)
+
+            val held = record.load(listOf(alias))
+            assertEquals(
+                mapOf(alias to canonical),
+                held.aliases,
+                "the verdict survived as a tag but stopped reading as current — its clock or its rules version was dropped",
+            )
+            assertEquals(setOf(alias), held.stable, "the stability verdict did not survive its own round trip")
+        }
+
+    @Test
+    fun `a verdict measured under superseded rules is no verdict at all`() =
+        runBlocking {
+            // The forcing lever, and the only one that works on records already
+            // signed. The fold's rules have changed repeatedly — comparing a
+            // host's urls to each other rather than only to whichever one led is
+            // the largest of them — and a record from before such a change is
+            // not an old reading of today's rule, it is a reading of a different
+            // rule. Waiting out the TTL does not make it agree; it only means a
+            // month of applying conclusions we would no longer draw.
+            //
+            // Written HERE with a fresh measured-at, so nothing but the epoch can
+            // be what makes it stale.
+            val store = newStore()
+            store.insert(
+                signer.sign(
+                    RelayDiscoveryEvent.build(alias, "", nowSeconds()) {
+                        add(
+                            arrayOf(
+                                RelayAliasRecord.SAME_AS_TAG,
+                                canonical.url,
+                                "500 newest events, 498 shared with ${canonical.url}",
+                                nowSeconds().toString(),
+                                "1",
+                            ),
+                        )
+                    },
+                ),
+            )
+
+            val held = RelayAliasRecord(store, signer).load(listOf(alias))
+            assertTrue(
+                held.aliases.isEmpty() && held.distinct.isEmpty(),
+                "a verdict from superseded rules was still being acted on: ${held.aliases}${held.distinct}",
+            )
+        }
+
+    @Test
+    fun `a verdict written before the epoch existed is re-measured, not trusted forever`() =
+        runBlocking {
+            // Every record signed before this element existed, which on a live
+            // store is all of them. They carry no measured-at either, and THAT is
+            // the trap: the reader used to fall back to the event's clock, which
+            // quartz's monitor rewrites every time we connect — so a verdict on
+            // any relay still in the fan-out could never age out under any TTL.
+            // Measure once, trust forever, with no way to force otherwise short
+            // of deleting records.
+            val store = newStore()
+            store.insert(
+                signer.sign(
+                    RelayDiscoveryEvent.build(alias, "", nowSeconds()) {
+                        add(arrayOf(RelayAliasRecord.SAME_AS_TAG, canonical.url, "old-style, no timestamp"))
+                    },
+                ),
+            )
+
+            val held = RelayAliasRecord(store, signer).load(listOf(alias))
+            assertTrue(held.aliases.isEmpty(), "a pre-epoch verdict on a freshly rewritten record read as current")
+        }
+
+    @Test
+    fun `what this build publishes reads back as current`() =
+        runBlocking {
+            // The other half of the two above: the epoch check must reject the
+            // past and nothing else. A constant that disagreed with the writer —
+            // bumped on one side of the file only — would silently re-probe the
+            // entire fan-out every pass and never converge, and every test here
+            // that goes through `publish` would still pass.
+            val store = newStore()
+            val record = RelayAliasRecord(store, signer)
+            record.publish(alias, canonical, sampled = 500, shared = 498)
+            record.publishConsistency(canonical, consistent = true, first = 500, second = 500, shared = 500, score = 1.0)
+
+            assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
+            assertEquals(setOf(canonical), record.load(listOf(canonical)).stable)
+        }
 }
