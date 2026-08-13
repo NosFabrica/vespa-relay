@@ -2257,7 +2257,7 @@ function verdictsCard() {
     load.disabled = true;
     status.textContent = "asking…";
     try {
-      const { events, complete } = await readVerdicts((n) => { status.textContent = `${fmt(n)} record(s)…`; });
+      const { events, complete, self, others } = await readVerdicts((n) => { status.textContent = `${fmt(n)} record(s)…`; });
       const nowSec = Math.floor(Date.now() / 1000);
       const byHost = groupByHost(events, nowSec);
       const sum = summarise(byHost, nowSec);
@@ -2283,10 +2283,21 @@ function verdictsCard() {
       // What the read did NOT cover comes first: every number above is over the
       // records we actually got, and one taken from a partial read means
       // something different from one taken from a whole store.
+      // WHOSE RECORDS THESE ARE comes before what they say. Every number below
+      // is over one monitor's observations, and a reader who assumes otherwise
+      // reads the panel as a census of the store.
+      const whose = self
+        ? (others === null
+            ? `this relay's own monitor (${self.slice(0, 8)}…)`
+            : others > 0
+              ? `this relay's own monitor (${self.slice(0, 8)}…) — ${fmt(others)} more 30166 record(s) here belong to other monitors and are not counted`
+              : `this relay's own monitor (${self.slice(0, 8)}…), the only one with records here`)
+        : "EVERY monitor in this store — this relay advertises no key of its own, so these are not necessarily its verdicts";
       status.textContent =
         (complete ? "" : `partial read — stopped at ${fmt(events.length)} record(s); the store holds more. `) +
-        (sum.inferred ? `${fmt(sum.inferred)} survivor(s) inferred from the folds that point at them` : "");
-      status.className = complete ? "status" : "status vd-stale";
+        whose +
+        (sum.inferred ? `. ${fmt(sum.inferred)} survivor(s) inferred from the folds that point at them` : "");
+      status.className = complete && self ? "status" : "status vd-stale";
       filter.hidden = false;
       scroll.hidden = false;
       applyFilter();
@@ -2334,22 +2345,44 @@ function tally(pairs) {
  */
 async function readVerdicts(onProgress) {
   const relay = new Relay(location.origin.replace(/^http/, "ws"));
-  // What this relay says it will serve in one ask. The walk grows its page when
-  // a whole page falls in one second, and asking OVER a relay's cap risks an
-  // outright refusal rather than a truncation — which arrives as silence. Same
-  // origin, so this is the relay describing itself.
-  const maxPage = await servedLimit();
+  // What this relay says it will serve in one ask, and WHO IT IS. Same origin,
+  // so this is the relay describing itself rather than us guessing at it.
+  const { maxPage, self } = await relayIdentity();
   try {
-    return await walkRecords({
+    // SCOPED TO THIS RELAY'S OWN MONITOR, and that scoping is load-bearing on a
+    // real store rather than tidiness.
+    //
+    // A router discovers relays from other monitors' reports — the documented
+    // outbox source reads `kinds: [10002, 10050, 30002, 30166]` — so a mirror
+    // holds strangers' 30166s by design, and public monitors publish them by
+    // the tens of thousands. Unscoped, every count on this panel would be our
+    // verdicts plus an unknown quantity of somebody else's observations, which
+    // is worse than no number: "1,621 folded away" would silently include
+    // relays this router never probed.
+    //
+    // `self` is the relay's OWN key, which `RELAY_NSEC` also gives the sync
+    // process precisely so its monitor records speak as the relay it feeds.
+    // Absent — an anonymous relay, or one whose sync was given a different key
+    // — there is nothing to scope to, and the panel says so rather than
+    // guessing an author and hiding every verdict signed under another.
+    const scope = self ? { authors: [self] } : {};
+    const walk = await walkRecords({
       // Longer than the class's 10s default: a page of signed records off a
       // loaded relay is a bigger answer than the search box ever asks for, and
       // a timeout here is indistinguishable from an empty store to the reader.
       ask: (limit, until) =>
-        relay.req(until == null ? { kinds: [MONITOR_KIND], limit } : { kinds: [MONITOR_KIND], limit, until }, 25000),
+        relay.req({ kinds: [MONITOR_KIND], limit, ...scope, ...(until == null ? {} : { until }) }, 25000),
       pageSize: Math.min(500, maxPage),
       maxPage,
       onProgress,
     });
+    // …and then count what we DIDN'T read, so the scoping never hides anything.
+    // A COUNT is one round trip against an index; walking every monitor's
+    // records to arrive at the same number is not worth a debugging panel's
+    // bandwidth. A relay that will not answer it leaves this null, which the
+    // caller renders as "unknown" rather than as zero.
+    const total = self ? await relay.count({ kinds: [MONITOR_KIND] }) : walk.events.length;
+    return { ...walk, self, others: typeof total === "number" ? Math.max(0, total - walk.events.length) : null };
   } finally {
     // Always, and through the socket rather than a method: [Relay] has no
     // close() — the pages that use it keep one connection for their lifetime.
@@ -2360,22 +2393,28 @@ async function readVerdicts(onProgress) {
 }
 
 /**
- * The biggest single ask this relay says it will answer — its own NIP-11
- * `limitation.max_limit`.
+ * What this relay says about itself, out of its own NIP-11 document: the
+ * biggest single ask it will answer, and its own key.
  *
- * Defaults to 500, which is the conservative reading and not a guess at
- * generosity: with no stated ceiling the walk simply cannot grow its page, and
- * a run of records longer than that is reported as an incomplete read rather
- * than stepped over. A relay that publishes a real ceiling gets a walk that can
- * actually finish.
+ * `maxPage` defaults to 500, which is the conservative reading rather than a
+ * guess at generosity: with no stated ceiling the walk cannot grow its page,
+ * and a run of records longer than that is reported as an incomplete read
+ * instead of stepped over.
+ *
+ * `self` is the relay's OWN key and NOT `pubkey`, which is the admin contact —
+ * two different fields that a reader coming from NIP-11 will expect to be one.
+ * Scoping the panel to the contact key would return nothing at all.
  */
-async function servedLimit() {
+async function relayIdentity() {
   try {
     const doc = await fetch("/", { headers: { Accept: "application/nostr+json" } }).then((r) => r.json());
     const stated = doc && doc.limitation && Number(doc.limitation.max_limit);
-    return stated > 0 ? Math.min(stated, 5000) : 500;
+    return {
+      maxPage: stated > 0 ? Math.min(stated, 5000) : 500,
+      self: (doc && typeof doc.self === "string" && /^[0-9a-f]{64}$/i.test(doc.self) && doc.self) || null,
+    };
   } catch (e) {
-    return 500;
+    return { maxPage: 500, self: null };
   }
 }
 
