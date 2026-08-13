@@ -7,12 +7,16 @@
 <meta name="description" content="Nostr search, ranked by your web of trust." />
 <title>SearchOverTrust</title>
 <!--
-  The tab icon: the brand mark below, on an accent tile, generated into both
-  formats by tools/favicon/build.mjs — see that file for why a favicon cannot
-  just be the mark (`currentColor` has nothing to inherit on a tab strip, and
-  1.7-unit strokes are 0.9 device pixels at 16px).
+  The tab icon: the brand mark below, in white on an accent tile.
 
-  Both, in this order, on purpose. A browser that understands `type` takes the
+  It is deliberately not that mark verbatim, for two reasons that are only
+  visible at 16 pixels. The mark is drawn in `currentColor`, and a tab strip has
+  no `currentColor` to inherit — nor one background, so no single ink survives
+  both themes on a transparent icon; the tile fixes the ground and the ink is
+  white in either. And the mark's 1.7-unit stroke is 0.9 device pixels at 16px,
+  which antialiases into a smudge, so the icon's is 2.6 with less margin.
+
+  Both formats, in this order, on purpose. A browser that understands `type` takes the
   SVG and scales it to whatever the tab strip, the bookmark bar and the history
   list each want; one that does not falls back to the .ico, which carries 16, 32
   and 48 rendered separately. The .ico ALSO answers /favicon.ico — the path a

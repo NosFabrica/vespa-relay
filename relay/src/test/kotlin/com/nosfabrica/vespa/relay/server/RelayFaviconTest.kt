@@ -35,10 +35,19 @@ import kotlin.test.assertTrue
  * The tab icon: that it is still the page's own brand mark, that the .ico is a
  * real .ico, and that a browser guessing `/favicon.ico` gets it.
  *
- * The icon is GENERATED (`tools/favicon/build.mjs`) and committed, which is
- * what makes the first test the important one — a generated copy of a drawing
- * is a copy that silently stops being the drawing. Nothing else in the build
- * runs node, so the generator cannot be the check.
+ * The icon is a COPY of the header mark, kept by hand, which is what makes the
+ * first test the important one: a copy of a drawing is a copy that silently
+ * stops being the drawing.
+ *
+ * It only holds half of that, and the half it cannot hold is worth knowing.
+ * `favicon.svg` is markup, so it can be compared to the mark element by
+ * element. `favicon.ico` is a raster of the same drawing at three sizes, and
+ * nothing here can tell whether it is still that drawing — the tests below
+ * check that it is a well-formed .ico carrying the sizes the markup advertises,
+ * and nothing about what it depicts. So an edit to the mark fails the first
+ * test, gets fixed in the SVG, and leaves the .ico stale with every test
+ * passing. Redraw both, and see the note at the top of favicon.svg for the
+ * numbers a redraw needs.
  */
 class RelayFaviconTest {
     private val index = assertNotNull(javaClass.getResource("/index.html")?.readText())
