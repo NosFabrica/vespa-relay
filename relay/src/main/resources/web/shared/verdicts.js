@@ -89,6 +89,25 @@ export const TTL_SECONDS = 30 * 24 * 60 * 60;
 /** Where a verdict tag carries the unix second it was MEASURED. */
 const MEASURED_AT_INDEX = 3;
 
+/** Where it carries the version of the rules that measured it. */
+const EPOCH_INDEX = 4;
+
+/**
+ * The rule versions the router currently acts on — `RelayAliasRecord.FOLD_EPOCH`
+ * and `CONSISTENCY_EPOCH`.
+ *
+ * A verdict measured under an older set of rules is not a stale reading of
+ * today's rule, it is a reading of a different one, so the router discards it
+ * and re-measures. This panel has to agree, or it would draw a url as folded
+ * that the fan-out is dialling — the one thing it exists to make impossible.
+ * Duplicated from the Kotlin for the same reason `TTL_SECONDS` is, and the same
+ * mitigation: an out-of-epoch verdict is drawn as expired WITH its evidence and
+ * age, never hidden.
+ */
+export const FOLD_EPOCH = "2";
+
+export const CONSISTENCY_EPOCH = "1";
+
 /** Everything after `ws://` or `wss://`, or the string unchanged. */
 function afterScheme(url) {
   const lower = url.toLowerCase();
@@ -161,8 +180,10 @@ export function readRecord(event) {
     stable: null,
     foldEvidence: null,
     foldMeasuredAt: null,
+    foldEpoch: null,
     stableEvidence: null,
     stableMeasuredAt: null,
+    stableEpoch: null,
     // Everything the OTHER writers put on this record. `requirements` is a list
     // because a relay can be both auth-gated and paid, and `extra` is a count
     // of tag names this reader does not know — reported rather than dropped, so
@@ -183,17 +204,22 @@ export function readRecord(event) {
   const sameAs = tag(SAME_AS);
   if (sameAs) {
     out.foldEvidence = sameAs[2] || null;
-    // The verdict's OWN clock. Absent on records written before it existed, and
-    // then the event's is the only honest reading available — the same fallback
-    // the Kotlin reader makes.
-    out.foldMeasuredAt = Number(sameAs[MEASURED_AT_INDEX]) || event.created_at;
+    // The verdict's OWN clock, and NOT the event's when it is missing. The
+    // record's clock is bumped every time we connect, so falling back to it
+    // dated a pre-stamp verdict as measured minutes ago and drew it as current
+    // forever — the same trap the Kotlin reader had, removed on both sides
+    // together. Null here means "this record does not say", which is what
+    // `isCurrent` refuses.
+    out.foldMeasuredAt = Number(sameAs[MEASURED_AT_INDEX]) || null;
+    out.foldEpoch = sameAs[EPOCH_INDEX] || null;
     if (sameUrl(sameAs[1], url)) out.cleared = true;
     else out.fold = sameAs[1];
   }
   const consistent = tag(SELF_CONSISTENT);
   if (consistent) {
     out.stableEvidence = consistent[2] || null;
-    out.stableMeasuredAt = Number(consistent[MEASURED_AT_INDEX]) || event.created_at;
+    out.stableMeasuredAt = Number(consistent[MEASURED_AT_INDEX]) || null;
+    out.stableEpoch = consistent[EPOCH_INDEX] || null;
     // Anything this reader does not recognise is NOT a verdict. Ignored rather
     // than guessed at — guessing "unstable" would draw a relay as refused on a
     // tag we cannot read.
@@ -203,9 +229,18 @@ export function readRecord(event) {
   return out;
 }
 
-/** Is a verdict measured at [at] still one the router would act on? */
-export function isCurrent(at, nowSec) {
-  return at != null && at >= nowSec - TTL_SECONDS;
+/**
+ * Is a verdict still one the router would act on: measured under the rules it
+ * applies TODAY ([want]), and inside the TTL?
+ *
+ * Both halves, because they fail differently and the panel is where the
+ * difference is read. An aged-out verdict will be re-taken when the url's turn
+ * comes round; an out-of-epoch one was re-taken the moment the new build's
+ * first pass reached it, and if it is still here that pass has not got to this
+ * host yet.
+ */
+export function isCurrent(at, nowSec, epoch, want) {
+  return at != null && at >= nowSec - TTL_SECONDS && epoch === want;
 }
 
 /**
@@ -237,7 +272,7 @@ export function groupByHost(events, nowSec) {
   for (const rec of newest.values()) {
     if (!hosts.has(rec.host)) hosts.set(rec.host, { host: rec.host, urls: [], folded: 0, cleared: 0, unstable: 0, expired: 0 });
     const group = hosts.get(rec.host);
-    const current = isCurrent(rec.foldMeasuredAt, nowSec);
+    const current = isCurrent(rec.foldMeasuredAt, nowSec, rec.foldEpoch, FOLD_EPOCH);
     group.urls.push({ ...rec, foldCurrent: current });
     // Counted on what the router would ACT on. A fold whose verdict has aged
     // out is not folding anything today, and counting it would draw a host as
@@ -282,8 +317,10 @@ export function groupByHost(events, nowSec) {
         foldCurrent: false,
         foldEvidence: null,
         foldMeasuredAt: null,
+        foldEpoch: null,
         stableEvidence: null,
         stableMeasuredAt: null,
+        stableEpoch: null,
         // The same SHAPE a read record has, every field of it. A synthesised
         // row that omits the collection fields is one `for…of` away from
         // throwing inside the renderer, which is how a panel that had drawn

@@ -683,7 +683,7 @@
 <script type="module">
 import { kindLabel } from "/web/shared/kinds.js";
 import { Relay } from "/web/shared/relay.js";
-import { MONITOR_KIND, groupByHost, summarise, isCurrent, walkRecords } from "/web/shared/verdicts.js";
+import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/verdicts.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -2496,7 +2496,12 @@ function drawVerdicts(box, groups, nowSec) {
         // "20679d ago", which is `now` minus five minutes read as an epoch.
         const when = el("span", null, ` ${ago(at)}`);
         when.title = isoOf(at);
-        if (!isCurrent(at, nowSec)) when.className = "vd-stale";
+        // The verdict's own answer, computed once per row when the host was
+        // grouped. Asking `isCurrent` again here would ask it a narrower
+        // question — a verdict measured yesterday under SUPERSEDED RULES is
+        // inside the TTL and still not acted on — and the date would then read
+        // fresh beside a pill saying expired.
+        if (!u.foldCurrent) when.className = "vd-stale";
         right.append(when);
       }
       if (u.stable === false) left.append(" ", el("span", "badge bad", "inconsistent"));

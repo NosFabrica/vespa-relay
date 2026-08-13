@@ -1158,11 +1158,35 @@ the population where "was fine, now degraded" is the case worth catching.** The
 fold's `same-as` had the identical hole: a folded url expires, the canonical it
 folded onto did not.
 
-So both verdict tags carry the unix second they were measured as their last
-element, and `RelayAliasRecord.current` ages on that, falling back to the
-event's clock for records written before this existed.
-`RelayConsistencyTest` pins it by rewriting the record NOW over a month-old
-verdict — the shape that flush produces — and asserting it still reads stale.
+So both verdict tags carry the unix second they were measured, and
+`RelayAliasRecord.current` ages on that. A tag with NO stamp is stale, and the
+fallback to the event's clock that used to cover those records is gone: it was
+the same trap in a smaller costume, since the clock it fell back to is the one
+the flush rewrites, so a pre-stamp verdict on any relay still being dialled
+could never expire under any TTL. Refusing it costs one re-measure per url,
+once. `RelayConsistencyTest` pins both directions by rewriting the record NOW
+over a month-old verdict — the shape that flush produces — and over an unstamped
+one, asserting each reads stale.
+
+**Forcing a re-measure when the RULES change, not the relay: `FOLD_EPOCH`.** A
+verdict means what the procedure that took it meant, and the fold's procedure
+has changed repeatedly — comparing a host's urls to each other rather than only
+to whichever one led, refusing to call a url distinct on a window too thin, the
+reproducibility guard. A record signed before one of those is not a stale
+reading of today's rule, it is a reading of a different rule, and waiting out
+the TTL does not make it agree: it means a month of applying conclusions we
+would no longer draw, with nothing in the store distinguishing them. So the last
+element of both tags is the rules version, and `current` rejects anything that
+is not the current one — which is exactly the "no verdict" state that makes
+`unresolved` hand the group back and `measure` re-take it.
+
+Bump `FOLD_EPOCH` (or `CONSISTENCY_EPOCH`, versioned separately because it is a
+separate dial) **in the same commit as any change to what a fingerprint
+concludes**, and never for logging, budget or ordering: the cost is a full
+re-fingerprint of the store, spread over `probesPerCycle` per pass, during which
+every un-re-measured url is dialled unfolded. Nothing has to be deleted and no
+operator has to intervene — `edit` overwrites the old tag with the new answer as
+each group is decided.
 
 Three things it does NOT do. It never removes a relay on silence, on a window
 under `minSample`, or on a failed store read — only a positive measurement
@@ -1227,9 +1251,13 @@ The verdict is a signed **NIP-66 kind 30166** carrying one tag in two forms
 this relay" saying the other thing a dial can prove:
 
 ```json
-["same-as", "wss://nos.lol/",    "500 newest events, 498 shared with wss://nos.lol/"]
-["same-as", "wss://nostr.ac/v1", "500 newest events, best 2 shared of 19 peer(s) on this host"]
+["same-as", "wss://nos.lol/",    "500 newest events, 498 shared with wss://nos.lol/",          "1776038400", "2"]
+["same-as", "wss://nostr.ac/v1", "500 newest events, best 2 shared of 19 peer(s) on this host", "1776038400", "2"]
 ```
+
+The last two elements are when it was MEASURED and which rules measured it. Both
+exist to expire the verdict; see the re-measure section below for why neither is
+optional.
 
 Pointing elsewhere is a fold. Pointing at the record's OWN url is the cleared
 verdict — measured, and equivalent to nothing but itself. The two are told apart
@@ -1740,7 +1768,12 @@ A `same-as` pointing elsewhere means the fold DID remove the url and what the
 card showed was a leg outliving the pass that dialled it — `inFlight` spans
 passes by design and nothing cancels a running leg when its url folds. A
 `same-as` pointing at itself means measured and kept. No record means never
-measured, which is when `AliasFoldOnionProbe` earns its run.
+measured, which is when `AliasFoldOnionProbe` earns its run. Read the tag's last
+two elements before concluding anything from it: a verdict whose rules version
+is not the current `FOLD_EPOCH`, or whose measured-at is over a month old, is
+one the router has already stopped acting on and is queued to re-take — the url
+is being dialled BECAUSE the record is there to be replaced. The verdicts panel
+on `/stats.html` draws exactly that as `expired`.
 
 `maxRelaysPerList` (config, per stream) drops an event naming more relays than a
 relay list plausibly holds — measured, 148 pubkeys published a kind 10002 of

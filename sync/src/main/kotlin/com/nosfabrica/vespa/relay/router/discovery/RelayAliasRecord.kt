@@ -39,9 +39,12 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
  * forms:
  *
  * ```json
- * ["same-as", "wss://nos.lol/",             "500 newest events, 498 shared with wss://nos.lol/"]
- * ["same-as", "wss://nostr.ac/v1",          "500 newest events, best 2 shared of 19 peer(s) on this host"]
+ * ["same-as", "wss://nos.lol/",             "500 newest events, 498 shared with wss://nos.lol/",              "1776038400", "2"]
+ * ["same-as", "wss://nostr.ac/v1",          "500 newest events, best 2 shared of 19 peer(s) on this host",     "1776038400", "2"]
  * ```
+ *
+ * The last two elements are the verdict's own clock (see [current]) and the
+ * version of the rules that produced it (see [FOLD_EPOCH]).
  *
  * The first says this url and that url are the same relay. The second — where
  * the value IS the record's own url — says it was measured and found equivalent
@@ -72,7 +75,9 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
  *
  * Read back with [load], which drops anything older than [ttlSeconds]: a url
  * that is a duplicate today may be a distinct relay in a month, and a verdict
- * nobody re-measures is a relay silently missing from the fan-out.
+ * nobody re-measures is a relay silently missing from the fan-out. It drops
+ * anything measured by SUPERSEDED RULES too — see [FOLD_EPOCH], which is the
+ * lever for forcing exactly that.
  */
 class RelayAliasRecord(
     private val store: IEventStore,
@@ -141,14 +146,14 @@ class RelayAliasRecord(
                 // an early `continue` for a missing `same-as` used to drop the
                 // whole event — which would make every stability verdict on a
                 // url that was never folded invisible.
-                event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, event, floor) }?.get(1)?.let { sameAs ->
+                event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, FOLD_EPOCH, floor) }?.get(1)?.let { sameAs ->
                     RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
                         if (from == to) distinct += from else aliases[from] = to
                     }
                 }
                 event.tags
                     .firstOrNull { it.size > 1 && it[0] == SELF_CONSISTENT_TAG }
-                    ?.takeIf { current(it, event, floor) }
+                    ?.takeIf { current(it, CONSISTENCY_EPOCH, floor) }
                     ?.get(1)
                     ?.let { answer ->
                         when (answer) {
@@ -172,8 +177,8 @@ class RelayAliasRecord(
      * filter, at one week-old anchor, the same way twice?
      *
      * ```json
-     * ["self-consistent", "true",  "500 + 500 events at a 7d anchor, 500 shared -> 1.000"]
-     * ["self-consistent", "false", "203 + 179 events at a 7d anchor, 128 shared -> 0.715"]
+     * ["self-consistent", "true",  "500 + 500 events at a 7d anchor, 500 shared -> 1.000", "1776038400", "1"]
+     * ["self-consistent", "false", "203 + 179 events at a 7d anchor, 128 shared -> 0.715", "1776038400", "1"]
      * ```
      *
      * A separate tag from `same-as` and never inferred from it: they answer
@@ -207,6 +212,8 @@ class RelayAliasRecord(
                         // quartz's monitor on every connection, so a verdict has
                         // to carry the moment it was MEASURED or it never ages.
                         nowSeconds().toString(),
+                        // And which rules measured it — see [CONSISTENCY_EPOCH].
+                        CONSISTENCY_EPOCH,
                     ),
                 ),
         )
@@ -266,9 +273,10 @@ class RelayAliasRecord(
         edit(
             subject,
             owned = setOf(SAME_AS_TAG),
-            // The measurement's own clock in the last element — see [current]
-            // for why the event's cannot be used.
-            add = listOf(arrayOf(SAME_AS_TAG, sameAs.url, evidence, nowSeconds().toString())),
+            // The measurement's own clock — see [current] for why the event's
+            // cannot be used — and the rules it was taken under, see
+            // [FOLD_EPOCH].
+            add = listOf(arrayOf(SAME_AS_TAG, sameAs.url, evidence, nowSeconds().toString(), FOLD_EPOCH)),
         )
 
     /**
@@ -318,8 +326,34 @@ class RelayAliasRecord(
     }
 
     /**
-     * Is this VERDICT still within its TTL — as opposed to the record it rides
-     * on?
+     * Is this VERDICT one we would still act on: taken under the rules we
+     * currently apply, and within its TTL?
+     *
+     * ## The rules half
+     *
+     * A verdict is a measurement, and a measurement means what the procedure
+     * that took it meant. The fold's procedure has changed repeatedly —
+     * comparing a host's urls to each other rather than only to whichever one
+     * led, refusing to call a url distinct on a window too thin to say so,
+     * proving the yardstick before making a negative claim — and each of those
+     * changed what the SAME dials would have concluded. A record signed before
+     * one of them is not a stale reading of the current rule; it is a reading of
+     * a different rule, and no amount of waiting makes it agree.
+     *
+     * Left to the TTL alone, those verdicts stand for a month, and the fold
+     * spends that month faithfully applying conclusions it would no longer draw
+     * — with no way to tell from outside which url is folded on today's evidence
+     * and which on last week's. [FOLD_EPOCH] is the lever: bump it in the same
+     * commit as the rule change, and every verdict from before it reads as no
+     * verdict at all, which is precisely the state that makes
+     * [RelayAliases.unresolved] hand the group back and [AliasFolding.measure]
+     * re-take it.
+     *
+     * A tag carrying no epoch is such a record by definition — nothing has ever
+     * written one but an older build — so it reads stale rather than being
+     * guessed at.
+     *
+     * ## The clock half
      *
      * **The two are not the same clock, and reading the record's was a bug that
      * made half these verdicts immortal.** Kind 30166 is addressable and shared:
@@ -339,15 +373,29 @@ class RelayAliasRecord(
      * url expires, the canonical it folded onto does not.
      *
      * So the measurement stamps its OWN time into the tag, and that is what is
-     * aged. A tag without one is a record written before this shipped: it falls
-     * back to the event's clock, which is the old behaviour and the only honest
-     * reading available for it.
+     * aged.
+     *
+     * **A tag without one used to fall back to the event's clock, and that
+     * fallback was the same trap wearing a different hat.** It was written for
+     * the records that predate the stamp, on the reasoning that the event's
+     * clock is the only reading available for them — but the event's clock is
+     * exactly the one that is bumped every time we connect, so the fallback made
+     * those records IMMORTAL for the whole population it matters for: a relay
+     * still in the fan-out is dialled constantly, its record is rewritten
+     * constantly, and its pre-stamp verdict could therefore never age out under
+     * any TTL. Nothing would ever have re-measured them. An unstamped verdict is
+     * now simply stale, which costs one re-measure per url and is the only
+     * reading that terminates.
      */
     private fun current(
         tag: Array<String>,
-        event: Event,
+        epoch: String,
         floor: Long,
-    ): Boolean = (tag.getOrNull(MEASURED_AT_INDEX)?.toLongOrNull() ?: event.createdAt) >= floor
+    ): Boolean {
+        if (tag.getOrNull(EPOCH_INDEX) != epoch) return false
+        val measuredAt = tag.getOrNull(MEASURED_AT_INDEX)?.toLongOrNull() ?: return false
+        return measuredAt >= floor
+    }
 
     /** This url's current record, or null when nothing holds one yet. */
     private suspend fun currentRecord(url: NormalizedRelayUrl): Event? {
@@ -394,10 +442,59 @@ class RelayAliasRecord(
         /**
          * Where a verdict tag carries the unix second it was MEASURED.
          *
-         * Last element of both tag forms. Absent on records written before this
-         * existed, which [current] falls back for.
+         * Absent on records written before this existed, which [current] reads
+         * as stale — see there for why the fallback it replaced could not work.
          */
         private const val MEASURED_AT_INDEX = 3
+
+        /** Where a verdict tag carries the rules it was measured under. */
+        private const val EPOCH_INDEX = 4
+
+        /**
+         * The version of the FOLD's decision rules — the whole content of
+         * "force a re-measure", in one character.
+         *
+         * **Bump it in the same commit as any change to what a fingerprint
+         * concludes**, and every `same-as` written before that commit reads as
+         * no verdict at all on the next pass: [RelayAliases.unresolved] hands
+         * the group back, [AliasFolding.measure] re-dials it under the new
+         * rules, and [edit] replaces the old tag with the new answer. Nothing
+         * has to be deleted, no operator has to intervene, and a second router
+         * signing with the same key converges the moment it runs the same build.
+         *
+         * Do NOT bump it for a change that leaves the conclusion alone —
+         * logging, budget, ordering, the socket refcount. The cost is a full
+         * re-fingerprint of the store, spread over
+         * [AliasFolding.DEFAULT_PROBES_PER_CYCLE] per pass, and while it runs
+         * every un-re-measured url is dialled unfolded. That is the correct
+         * price for a rule change and pure waste for anything else.
+         *
+         * **2** — everything published to date was measured under rules since
+         * corrected in three ways that change verdicts: a host's urls are now
+         * compared to each other and not only to whichever one led (which had
+         * been signing genuine duplicates as distinct relays, six at a time on
+         * `haven.calva.dev` alone), any url on the host may hold the ruler
+         * rather than only the preferred one (which abandoned whole foldable
+         * hosts), and a yardstick must reproduce its own window before a
+         * negative claim is signed. Epoch 1 is every record written before this
+         * element existed; it is not spelled anywhere, because nothing needs to
+         * name it to reject it.
+         */
+        const val FOLD_EPOCH = "2"
+
+        /**
+         * The same lever for the STABILITY verdict, versioned separately
+         * because it is a separate measurement with a separate cost — bumping
+         * the fold must not re-dial every relay for a consistency answer that
+         * has not changed.
+         *
+         * **1** — [ConsistencyPass]'s rules have not changed since they shipped.
+         * The records already in a store still have to be re-taken once, since
+         * they carry no epoch, and the ones older than the measured-at stamp
+         * were never going to expire on their own anyway — see [current]. From
+         * here they age normally.
+         */
+        const val CONSISTENCY_EPOCH = "1"
 
         /** How old the stability anchor is, for the evidence string. */
         private const val ANCHOR_DAYS = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60)
