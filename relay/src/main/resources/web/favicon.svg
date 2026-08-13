@@ -1,0 +1,26 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" role="img" aria-label="SearchOverTrust">
+  <!-- index.html's brand mark, in white on an accent tile. Hand-maintained, and
+       RelayFaviconTest holds this half to the mark shape for shape.
+
+       favicon.ico beside this file is the SAME drawing at 16, 32 and 48, and
+       NOTHING derives it from this one — it is a raster, so no test can compare
+       them either. Editing this file alone leaves the .ico stale and silently
+       wrong, and the failing test will point here rather than at it. Redraw
+       both, or neither.
+
+       The numbers that are not the mark's, so a redraw can reproduce them: the
+       tile is full-bleed with rx 5.2 (21.7%, what a launcher grid rounds an app
+       icon to); the glyph is scaled 0.8 about the centre; the stroke is 2.6
+       rather than the mark's 1.7. Those last two are 16px decisions — 1.7 units
+       is 0.9 device pixels there, which antialiases into a smudge, and at 0.72
+       scale the nodes' ring holes close. -->
+  <rect width="24" height="24" rx="5.2" fill="#2563eb" />
+  <g transform="translate(12 12) scale(0.8) translate(-12 -12)"
+     fill="none" stroke="#fff" stroke-width="2.6">
+    <circle cx="12" cy="12" r="3.2" fill="#fff" stroke="none" />
+    <circle cx="4.2" cy="6.4" r="2.1" />
+    <circle cx="4.2" cy="17.6" r="2.1" />
+    <circle cx="19.8" cy="12" r="2.1" />
+    <path d="M6.1 7.5 9.4 10.2M6.1 16.5 9.4 13.8M14.9 12 17.7 12" stroke-linecap="round" />
+  </g>
+</svg>

@@ -86,6 +86,7 @@ automatically. The essentials:
 | `VESPA_URL` | the Vespa query endpoint | `http://localhost:8080` |
 | `RELAY_PORT` | port to listen on | `7777` |
 | `RELAY_NAME` / `RELAY_DESCRIPTION` / … | NIP-11 identity — and, with `RELAY_NSEC` set, the relay's own kind 0 | — |
+| `RELAY_ICON` | one icon everywhere: NIP-11, the relay's kind 0 picture, and the browser tab. Unset ⇒ the bundled mark, published as this relay's own `/favicon.ico` | — |
 | `ALLOW_PUBKEYS` / `DENY_PUBKEYS` / `ALLOW_KINDS` / `DENY_KINDS` | write authorization | everyone / all |
 | `RELAY_ADMIN_PUBKEYS` | enables the NIP-86 management API | unset ⇒ off |
 | `SYNC_CONFIG` / `SYNC_CONFIG_FILE` | the router's stream config, read by the **sync process** — see below | — |

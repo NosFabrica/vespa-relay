@@ -359,6 +359,36 @@ relay/src/main/resources/
                         same kinds, but the denominator is a stranger's NIP-45
                         COUNT, and on one author kind 1 alone came back as
                         126,426 against 89,485 for every kind at once.
+  web/favicon.{svg,ico}
+                        the tab icon: index.html's own brand mark, in white on
+                        an accent tile, kept BY HAND in both formats. Not the
+                        mark verbatim, and the divergence is deliberate — the
+                        mark is `currentColor` at 1.7-unit strokes, a tab strip
+                        has no `currentColor` to inherit and comes in both
+                        themes, and 1.7 units is 0.9 device pixels at 16px. So:
+                        white ink, fixed ground, heavier stroke, less margin.
+                        `RelayFaviconTest` holds the SVG to the mark circle by
+                        circle and fails if either moves alone — but the .ico is
+                        a raster and NOTHING checks that it still depicts the
+                        same drawing, so an edit to the mark that is followed
+                        through into the SVG alone leaves it stale with every
+                        test green. Redraw both; favicon.svg's header carries
+                        the tile radius, glyph scale and stroke a redraw needs.
+                        All three pages link both formats (SVG first, .ico as
+                        the fallback — Safari takes no SVG icon — which also
+                        answers the guessed /favicon.ico for everything that
+                        never read our markup: see `favicon()` in HttpServer.
+                        `RELAY_ICON` overrides all of it, and the override runs
+                        BOTH ways: set, it is the tab icon as well as the NIP-11
+                        one, replacing those two links (not joining them — the
+                        SVG would outrank it everywhere but Safari) and turning
+                        /favicon.ico into a 302; unset, NIP-11 publishes THIS
+                        relay's /favicon.ico, so the doc always names the icon
+                        the tab shows. The trap that pairs with that: once unset
+                        publishes our own url, "the doc has an icon" no longer
+                        means "the operator set one", and redirecting to it
+                        blindly points /favicon.ico at itself — `iconOverride`
+                        is the comparison that keeps that loop shut
   observer_stats.html   an operator diagnostic carrying its own tiny relay
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
