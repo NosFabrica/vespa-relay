@@ -275,39 +275,36 @@ class AliasProbe(
          * built, and an empty window is a url that can never fold. See
          * `probeIdleMs`, which is what the engine passes here.
          *
-         * **`fetchAllWithHooks` rather than `fetchAll`, for the two things this
-         * class is built on and the plain call cannot express.**
+         * **`fetchAllWithHooks` rather than `fetchAll`, for the one thing this
+         * class is built on that the plain call cannot express.**
          *
-         * `pendingOnAuthRequired`, because a relay that gates reads behind
-         * NIP-42 answers a REQ with `CLOSED auth-required`, which `fetchAll`
-         * takes as terminal and returns EMPTY on while the router's
-         * `RelayAuthenticator` is still signing the challenge on that same
-         * socket. Kept pending, the fetch waits for its own AUTH and collects
-         * the re-fired answer instead of the empty page.
+         * **NIP-42 is no longer one of them.** This used to pass
+         * `pendingOnAuthRequired = true` here, with an A/B against
+         * `auth.nostr1.com` arguing it was worth ~19s per auth-gated leader.
+         * Quartz reworked the whole path (amethyst #3905/#3906) and both halves
+         * of that argument are gone:
          *
-         * **It is insurance, not the thing that makes such a relay work, and the
-         * A/B says so.** Against `auth.nostr1.com` — which challenges and then
-         * refuses with `auth-required: you must auth` — the leader comes back
-         * with a full 500-id window either way, twice each:
+         *  - **The flag's correct value is computable, so it is derived.** The
+         *    default is now `hasAuthResponder()` — true exactly when something
+         *    will answer a challenge. With no responder, `true` and `false`
+         *    produce identical outcomes (`awaitAuthOutcome` returns
+         *    `NO_RESPONDER` without waiting); with one, waiting is the entire
+         *    point. This router always attaches a `RelayAuthenticator` when it
+         *    has a signer, and it only builds a probe when it has one, so the
+         *    derived answer is the answer we were hardcoding. Passing it
+         *    explicitly now only creates a way to be wrong later.
+         *  - **The wait is bounded by the AUTH, not by the idle window.** A
+         *    short grace for a responder to pick the challenge up
+         *    (`DEFAULT_AUTH_GRACE_MS`, 1s), then for it to settle, capped by our
+         *    own `idleTimeoutMs`. The guarantee upstream ships with it is that
+         *    an auth-gated relay costs at most what a silent one already cost —
+         *    which is what retires the 19s figure rather than merely improving
+         *    it.
          *
-         * ```
-         * pendingOnAuthRequired = true   500 id(s)   0:21
-         * pendingOnAuthRequired = false  500 id(s)   0:02
-         * ```
-         *
-         * Off, the CLOSED ends page one at once and the empty-page retry at
-         * [RelayAliases.FALLBACK_PROBE_PAGE] re-asks on a socket that has since
-         * authenticated — a fallback meant for page-size refusals recovering an
-         * auth refusal by accident. On, the re-fire is waited for and costs most
-         * of an idle window. So the claim that auth-gated relays were
-         * unfoldable is FALSE, and was corrected here rather than left standing.
-         *
-         * Kept anyway, at ~19s per auth-gated leader on a pass that runs every
-         * six hours: the accident only covers the FIRST page of a walk (the
-         * retry fires on `ids.isEmpty()`), so an auth refusal on any later page
-         * truncates the window silently, and depending on a fallback aimed at a
-         * different failure is how the next relay behaves slightly differently
-         * and nobody finds out.
+         * The same rework plumbed this into `fetchAllPages` and `fetchAll`,
+         * where it matters far more than it ever did here: those are the
+         * router's actual sync paths, and an auth-gated relay used to read as an
+         * EMPTY one on both. See AGENTS.md.
          *
          * `doneOut`, because NULL AND EMPTY ARE DIFFERENT ANSWERS and the plain
          * call flattens them: it returns a list, so a relay that never spoke
@@ -332,7 +329,6 @@ class AliasProbe(
                         client.fetchAllWithHooks(
                             filters = mapOf(url to listOf(Filter(limit = size, until = until, kinds = kinds))),
                             idleTimeoutMs = idleMs(url),
-                            pendingOnAuthRequired = true,
                             doneOut = done,
                         ) { _, _ -> true }
                     // "Spoke" is any terminal state that came from the relay.

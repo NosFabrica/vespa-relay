@@ -67,4 +67,6 @@ tasks.test {
     System.getProperty("onionFoldUrls")?.let { systemProperty("onionFoldUrls", it) }
     System.getProperty("selfConsistency")?.let { systemProperty("selfConsistency", it) }
     System.getProperty("selfConsistencyUrls")?.let { systemProperty("selfConsistencyUrls", it) }
+    System.getProperty("authGatedProbe")?.let { systemProperty("authGatedProbe", it) }
+    System.getProperty("authGatedUrl")?.let { systemProperty("authGatedUrl", it) }
 }

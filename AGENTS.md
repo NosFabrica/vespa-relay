@@ -66,6 +66,14 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 ./gradlew :sync:test --tests '*RelaySelfConsistencyProbe*' -DselfConsistency=true --rerun -i
 #   …or hosts of your own: -DselfConsistencyUrls='wss://a.example,wss://b.example'
 
+# Asks ONE relay the same filter three ways — pendingOnAuthRequired explicit
+# true, explicit false, and the derived default — and prints hasAuthResponder()
+# beside them. Pins that this router's client really does have a NIP-42
+# responder, which is what makes quartz's derived default the value AliasProbe
+# used to hardcode. Asserts nothing.
+./gradlew :sync:test --tests '*AuthGatedFetchProbe*' -DauthGatedProbe=true --rerun -i
+#   …or a relay of your own: -DauthGatedUrl='wss://relay.example'
+
 # The band file at the size it actually reaches: ~12MB, 2,628 top-level keys,
 # 9,689 bands. The :sync half loads/prunes/rewrites it and leaves before.json
 # and after.json in $D; the :relay half charts both through SyncCoverageReport,
@@ -103,7 +111,8 @@ git checkout <the pinned commit>          # test what the relay actually resolve
 TESTCONTAINERS_RYUK_DISABLED=true ./gradlew :benchmark:test -Pintegration --no-daemon
 ```
 
-Six ITs, ~7 min total, each standing up a real Vespa. Fetching that repo works
+Eight ITs, ~9 min total, each standing up a real Vespa (six until the
+near-column work added NearMergeSizingTest and ObserverGateIT). Fetching that repo works
 here; pushing to it does not (the git proxy only holds a credential for repos in
 the session's sources).
 
@@ -1794,6 +1803,23 @@ statement about someone else's server.
   the predicate; it also never fires before the first ask, because the quiet
   clock starts at the CLAIM and a leg that queued behind a saturated pool
   arrives already "quiet".
+- **An auth-gated relay used to read as an EMPTY one, on every sync path.** A
+  relay gating reads answers the REQ with `CLOSED auth-required:` before sending
+  anything, and every fetch accessory took that as terminal — so the fetch
+  returned empty while our own `RelayAuthenticator` was still signing the
+  challenge on that same socket, and the events landed milliseconds after the
+  caller gave up. Upstream measured `fetchAll` returning 0 events in 18ms for a
+  relay holding 5, and `fetchAllPages` reporting `End.CLOSED` in 20ms.
+  `fetchAllWithHooks` had a `pendingOnAuthRequired` flag that fixed it and was
+  plumbed into nothing else, so only `AliasProbe` — which drops to the
+  option-rich form for its own reasons — was ever getting it right. Fixed in
+  amethyst #3905/#3906, on the `1ff1077d58` pin: every read accessory now does
+  it, the value is DERIVED from whether the client has a responder rather than
+  passed, and the wait is bounded by the auth outcome (a 1s grace, then settle,
+  capped by the caller's `idleTimeoutMs`) so an auth-gated relay costs at most
+  what a silent one already cost. Do not pass the flag by hand — it was removed
+  from every accessory but `fetchAllWithHooks`, and hardcoding it there is how
+  you get it wrong when the client changes.
 - **A TTL on a tag is not a TTL on the event carrying it.** Kind 30166 has more
   than one writer: quartz's `RelayMonitor` rewrites the record for every relay
   the client connects to, every 5 minutes, preserving our tags. Ageing a verdict
