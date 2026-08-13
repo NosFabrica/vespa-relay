@@ -1037,6 +1037,43 @@ further buys three thin windows instead of one. Silence is about that url alone.
 pins the first half; `a host whose preferred survivor will not answer still folds
 onto one that will` pins the second.
 
+**`ws://x` and `wss://x` are the one pair the urls themselves settle.** Every
+other fold refuses to read anything off a url, and rightly — a path is routinely
+a *different* endpoint, which is why `/inbox` must never fold on its spelling. A
+scheme is not an endpoint; it is how we reach one. So `RelayAliases.schemeTwins`
+folds a `ws://` url onto the `wss://` url of the same host and path when **both
+answered this pass**, and it is not merely a shortcut for a fold containment
+would have reached anyway — it decides the pairs containment *cannot*:
+
+- **windows too thin.** A relay holding nine events hands both twins the same
+  nine, and nine is under `minSample`, so nothing folded, nothing was cleared,
+  and the group came back on every pass forever. Worse, such a host never even
+  reached `learn`: a yardstick under `minSample` abandons its group by design.
+  It still does — for the *group* — but its own scheme twin is now dialled and
+  decided, one extra fingerprint, in the exit that used to write nothing at all.
+- **only one twin has a verdict.** `toProbe` re-dials the secure twin of an
+  unmeasured plain url even when that twin was cleared last month, precisely so
+  there is a "both answered" to be had. Without it the plain url is compared to
+  the group's *leader* — a genuinely different endpoint — disagrees with it
+  correctly, and gets published as a relay in its own right.
+
+Two guards keep it honest, and both are about not losing a relay. Silence is not
+"it works": a url missing from the pass's prints was refused, silent, or never
+asked (our own transport can decline it), so a `ws://` whose twin said nothing
+stays exactly where it is. And the windows keep a veto **in the one direction
+that can lose data** — everything the plain url served must already be on the
+secure one, at `minOverlap`. Not `sameRelay`: no `minSample` floor (the pairing
+is the argument; nine events are plenty to show they do not contradict it) and
+not symmetric (a `ws://` serving 500 events beside a `wss://` serving nine is
+refused, whatever the two urls are called).
+
+The verdict is published through `RelayAliasRecord.publishSecureTwin` rather
+than `publish`, because the evidence is different in kind — *"same endpoint as
+wss://x over TLS, both answered; 9 newest events here"*, not a containment. These
+folds happen where the containment could not decide, so quoting one would offer
+as the reason a number the verdict was never based on, in a signed month-long
+claim about somebody else's server.
+
 What the sweep says about the thresholds, over 4,551 folds: containment min
 0.500, p1 0.855, p10 0.987, median 1.000. Overwhelmingly bimodal — but there is
 a real tail of relays whose answers are not stable ACROSS CONNECTIONS
