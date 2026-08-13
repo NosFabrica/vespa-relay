@@ -476,9 +476,11 @@ internal object SyncVocabulary {
             )
             put(
                 "observed",
-                "Relays the NIP-66 monitor holds an observation for — every url this client has opened a socket to, " +
-                    "whatever came of it. The set it could publish a record about, and the denominator `knownDead` is " +
-                    "a part of.",
+                "Urls this PROCESS has opened a socket to since it started, whatever came of it — quartz's observer " +
+                    "holds them in memory and they are gone on a restart. NOT a denominator for `knownDead`: that set " +
+                    "is read from the STORE and carries records written by earlier runs and by any router signing with " +
+                    "the same key, so a freshly restarted mirror routinely publishes 1,609 known dead against 5 " +
+                    "observed. Two populations, both true, and dividing one by the other says nothing.",
             )
             put(
                 "reached",

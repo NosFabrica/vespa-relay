@@ -1868,8 +1868,12 @@ function processorCounts(p) {
   }
   if (has("dropped")) parts.push(`${fmt(p.dropped)} dropped rather than backpressure the sweep`);
   if (has("pushed")) parts.push(`${fmt(p.pushed)} pushed out`);
-  if (has("observed")) parts.push(`${fmt(p.observed)} relay(s) observed`);
-  if (has("knownDead")) parts.push(`${fmt(p.knownDead)} currently known dead — skipped by every fan-out until the record ages out`);
+  // TWO POPULATIONS, never a ratio: `observed` is this process's sockets since
+  // boot and `knownDead` is what the STORE holds, including records earlier runs
+  // wrote. A restarted mirror reports 1,609 known dead against 5 observed, and
+  // any framing that divides them is arithmetic on unrelated sets.
+  if (has("observed")) parts.push(`${fmt(p.observed)} url(s) watched since this router started`);
+  if (has("knownDead")) parts.push(`${fmt(p.knownDead)} url(s) carry an unreachability record in the store — skipped by every fan-out until it ages out`);
   return parts;
 }
 
