@@ -7,6 +7,21 @@
 <meta name="description" content="Nostr search, ranked by your web of trust." />
 <title>SearchOverTrust</title>
 <!--
+  The tab icon: the brand mark below, on an accent tile, generated into both
+  formats by tools/favicon/build.mjs — see that file for why a favicon cannot
+  just be the mark (`currentColor` has nothing to inherit on a tab strip, and
+  1.7-unit strokes are 0.9 device pixels at 16px).
+
+  Both, in this order, on purpose. A browser that understands `type` takes the
+  SVG and scales it to whatever the tab strip, the bookmark bar and the history
+  list each want; one that does not falls back to the .ico, which carries 16, 32
+  and 48 rendered separately. The .ico ALSO answers /favicon.ico — the path a
+  browser guesses when it is showing something that is not this markup, which
+  here is every JSON endpoint and every 404.
+-->
+<link rel="icon" href="/web/favicon.svg" type="image/svg+xml" />
+<link rel="icon" href="/web/favicon.ico" sizes="16x16 32x32 48x48" />
+<!--
   The SearchOverTrust UI: no build step, no third-party code, and NO http API —
   this page is a tiny Nostr client. It opens a WebSocket to the very server that
   serves it, searches with NIP-50 REQs (so the filter chips are literal `kinds`
@@ -1473,7 +1488,12 @@
         <circle cx="4.2" cy="6.4" r="2.1" />
         <circle cx="4.2" cy="17.6" r="2.1" />
         <circle cx="19.8" cy="12" r="2.1" />
-        <path d="M6.1 7.5 9.4 10.2M6.1 16.5 9.4 13.8M14.9 12h2.8" stroke-linecap="round" />
+        <!-- The third link was `M14.9 12h2.8`, which draws the identical line.
+             Spelled as an endpoint like the other two so favicon.svg can carry
+             this `d` VERBATIM and RelayFaviconTest can compare the two by
+             string — the mark and the tab icon drifting apart is exactly the
+             thing a generated icon invites. -->
+        <path d="M6.1 7.5 9.4 10.2M6.1 16.5 9.4 13.8M14.9 12 17.7 12" stroke-linecap="round" />
       </svg>
       <span>Search<em>Over</em>Trust</span>
     </a>

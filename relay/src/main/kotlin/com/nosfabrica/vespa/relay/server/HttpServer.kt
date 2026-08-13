@@ -79,6 +79,7 @@ data class Nip11Info(
  *   WS   /  -> the NIP-50 relay ([nostrRelay])
  *   GET  /  -> the NIP-11 doc on Accept: application/nostr+json, else [landingPage]
  *   GET  /web/… -> the landing page's ES modules, straight off the classpath
+ *   GET  /favicon.ico -> the tab icon, for anything that never read our markup
  *   GET  /npub1…, /nprofile1…, /note1…, /nevent1…, /naddr1… -> [landingPage],
  *        which decodes the identifier and renders the entity itself
  *   GET  /observer_stats.html -> [observerStatsPage]
@@ -199,12 +200,13 @@ fun serveRelay(
                 }
             }
             webModules()
+            favicon()
             // Any NIP-19 identifier is a page. The server validates only the
             // SHAPE and serves the landing page; decoding — checksum, TLV,
             // what the identifier names — belongs to the page, which already
-            // speaks bech32. Deliberately not a catch-all: /favicon.ico and
-            // typos should stay 404s, not empty search pages. Ktor prefers
-            // literal routes, so /stats.html and /web/… are unaffected.
+            // speaks bech32. Deliberately not a catch-all: a typo stays a 404
+            // rather than becoming an empty search page. Ktor prefers literal
+            // routes, so /stats.html, /favicon.ico and /web/… are unaffected.
             landing?.let { page ->
                 get("/{nip19}") {
                     if (NIP19_PATH.matches(call.parameters["nip19"] ?: "")) {
@@ -284,6 +286,32 @@ internal fun Route.webModules() {
         } else {
             call.respondAsset(asset)
         }
+    }
+}
+
+/**
+ * `GET /favicon.ico` — the tab icon at the path a browser guesses.
+ *
+ * The pages all carry `<link rel="icon">` hints, so this route is for
+ * everything that is NOT one of them: `/stats.json` opened in a tab, a 404, a
+ * bookmark to the websocket url, and the crawlers and feed readers that only
+ * ever ask the well-known path. Before this the relay served no icon at all and
+ * a tab showed the browser's blank sheet.
+ *
+ * The same bytes [webModules] serves at `/web/favicon.ico`, from the same cache
+ * — two urls for one resource on purpose. The markup points at `/web/…` because
+ * that is where the page's assets live and where the validator and the
+ * `max-age` already work; this path exists because a browser asking for it has
+ * not read our markup.
+ *
+ * Its own function so a test can mount it alone, the same reason [webModules]
+ * is one.
+ */
+internal fun Route.favicon() {
+    get("/favicon.ico") {
+        // Absent only if someone deleted the resource — a 404 is then the
+        // honest answer, and it is the answer this route replaced.
+        WebAssets.get("favicon.ico")?.let { call.respondAsset(it) } ?: call.respond(HttpStatusCode.NotFound)
     }
 }
 
