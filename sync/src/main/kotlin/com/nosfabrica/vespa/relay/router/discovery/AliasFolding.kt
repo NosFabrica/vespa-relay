@@ -79,12 +79,15 @@ class AliasFolding(
      * Hosts a pass DIALLED and could not decide anything about, and the moment
      * each becomes worth trying again.
      *
-     * **This is what stops the widest groups eating the budget forever.** Three
+     * **This is what stops the widest groups eating the budget forever.** FOUR
      * exits below leave a group with no verdict at all — the leader would not
-     * answer, its window was too short to be a yardstick, or it could not
-     * reproduce itself and the group was forgotten — and NONE of them write
-     * anything down, by design: they are all cases where publishing would be a
-     * claim the measurement does not support.
+     * answer, its window was too short to be a yardstick, it could not reproduce
+     * itself and the group was forgotten, or it was a fine yardstick and every
+     * member of its group was silent or too thin to compare, so nothing was held
+     * up against it. None of them write anything down, by design: they are all
+     * cases where publishing would be a claim the measurement does not support.
+     * The fourth is the one the first cut of this cooldown missed, and it fails
+     * exactly like the others.
      *
      * Nothing written down means [RelayAliases.unresolved] hands the same group
      * back on the next pass. Groups are probed WIDEST FIRST, and a host wearing
@@ -467,8 +470,21 @@ class AliasFolding(
                         // statements about other people's servers, and a failure
                         // to write one must not take the pass down with it.
                         // Something was decided here, so an older "could not
-                        // measure this host" no longer describes it.
-                        if (verdicts.isNotEmpty() || cleared.isNotEmpty()) clearUndecidable(leader)
+                        // measure this host" no longer describes it — and when
+                        // NOTHING was decided, this is the fourth way a group
+                        // ends with no verdict and the one the first cut of the
+                        // cooldown missed. A leader that answered fine while
+                        // every member of its group was silent or under
+                        // `minSample` compares nothing, so `learn` returns two
+                        // empty halves, nothing is published, and the group comes
+                        // back widest-first on the very next pass — the exact
+                        // starvation this cooldown exists to stop, arriving
+                        // through the one door it was not watching.
+                        if (verdicts.isNotEmpty() || cleared.isNotEmpty()) {
+                            clearUndecidable(leader)
+                        } else {
+                            markUndecidable(leader, startedAtMs)
+                        }
                         for ((alias, v) in verdicts) {
                             runCatching { record.publish(alias, v.first, v.second.first, v.second.second) }
                         }

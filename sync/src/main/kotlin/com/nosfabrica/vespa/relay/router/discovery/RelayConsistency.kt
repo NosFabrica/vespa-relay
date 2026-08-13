@@ -209,6 +209,45 @@ class RelayConsistency(
     }
 
     /**
+     * Set this candidate set's verdicts to exactly what the store holds, in ONE
+     * pass per url rather than a bulk forget followed by a bulk adopt.
+     *
+     * The two-step version had a window — multi-second, on a fan-out of
+     * thousands — in which every refusal had been dropped and none re-adopted.
+     * This object is shared by every stream, so another stream's [unusable] call
+     * landing inside that window saw an empty refusal set and put every
+     * inconsistent relay back into its cycle, which is the precise thing the
+     * gate exists to prevent. Each url now moves straight from its old verdict
+     * to its new one and is never transiently absent.
+     */
+    fun replace(
+        candidates: Collection<NormalizedRelayUrl>,
+        stable: Set<NormalizedRelayUrl>,
+        unstable: Set<NormalizedRelayUrl>,
+    ) {
+        for (url in candidates) {
+            when (url) {
+                in unstable -> {
+                    inconsistent += url
+                    consistent -= url
+                }
+
+                in stable -> {
+                    consistent += url
+                    inconsistent -= url
+                }
+
+                // No verdict in the store — expired, or never taken. Forgetting
+                // it here is what gives the record's TTL its teeth.
+                else -> {
+                    consistent -= url
+                    inconsistent -= url
+                }
+            }
+        }
+    }
+
+    /**
      * Drop every verdict held about these urls.
      *
      * Called before each adopt so the store stays authoritative and the record's

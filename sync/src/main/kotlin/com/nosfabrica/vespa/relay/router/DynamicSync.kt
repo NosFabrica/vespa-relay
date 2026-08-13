@@ -1219,6 +1219,17 @@ internal class DynamicSync(
     ): Int {
         inFlight.merge(url, 1, Int::plus)
         transferring.incrementAndGet()
+        // WHEN THIS LEG ACTUALLY STARTED TALKING, which is not when the rotation
+        // claimed the url. The claim comes first, then the strike check, the Tor
+        // probe, the TCP pre-probe and a queue for a transfer slot that a
+        // saturated pool can hold for many minutes — and `LegProgress`'s quiet
+        // clock runs from the CLAIM, deliberately, because that is the honest
+        // answer for the in-flight report. Measuring silence from it here is not:
+        // a worker that waited six minutes for a slot would arrive already past
+        // the give-up window and abandon a perfectly healthy relay on its second
+        // ask. `askIndex > 0` alone does not cover that, since ask 0 legitimately
+        // returns nothing for most author chunks.
+        val transferStartedMs = System.currentTimeMillis()
         return try {
             var downloaded = 0
             val asks = splitByAuthors(window, stream.dynamic?.authorsPerLeg)
@@ -1250,13 +1261,26 @@ internal class DynamicSync(
                 // walked are recorded, and the chunks not reached simply have no
                 // band, so the next pass asks them again. This defers work, it
                 // does not drop it.
-                if (givesUp(n, legProgress?.quietForMs(System.currentTimeMillis()))) {
+                val nowMs = System.currentTimeMillis()
+                // Silence as THIS LEG has experienced it: never longer than the
+                // leg has been running, whatever the claim's clock says.
+                val silentMs = legProgress?.quietForMs(nowMs)?.coerceAtMost(nowMs - transferStartedMs)
+                if (givesUp(n, silentMs)) {
                     abandoned = asks.size - n
                     onFailure("gave up: silent for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)} with $abandoned ask(s) left")
                     break
                 }
                 downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress)
             }
+            // ABANDONED IS NOT "NOTHING NEW". A leg that gave up with no
+            // downloads would otherwise fall through to the `else` branch in
+            // [syncOne] and be tallied `nothingNew` — which the card renders as
+            // "reached, and it had nothing we did not already hold", a claim
+            // about the RELAY made about a walk WE cut short. `transferFailed`
+            // is the honest member of the partition for it: reached, the
+            // transfer did not complete, no strike published and no statement
+            // signed about their server. The `reasons` map carries the real
+            // sentence beside the count.
             if (abandoned > 0) {
                 System.err.println(
                     "router: ${stream.name} ${url.url} — stopped after ${asks.size - abandoned} of ${asks.size} ask(s): " +
@@ -1273,7 +1297,20 @@ internal class DynamicSync(
                         "downloaded=$downloaded",
                 )
             }
-            downloaded
+            // ABANDONED IS NOT "NOTHING NEW". A leg that gave up having
+            // downloaded nothing would otherwise return 0 and be tallied
+            // `nothingNew` by [syncOne] — which the card renders as "reached,
+            // and it had nothing we did not already hold", a claim about the
+            // RELAY made about a walk WE cut short. `TRANSFER_FAILED` is the
+            // honest member of the partition for it: reached, the transfer did
+            // not complete, nothing struck and nothing signed about their
+            // server. The `reasons` map carries the sentence beside the count.
+            //
+            // Only when it delivered NOTHING: a leg that downloaded events and
+            // then went quiet did real work, and calling that a failed transfer
+            // would lose the events in the reporting as surely as the other way
+            // round loses the truth.
+            if (abandoned > 0 && downloaded == 0) TRANSFER_FAILED else downloaded
         } catch (e: CancellationException) {
             // Shutdown, not a dead relay: neither a tally nor a strike.
             throw e

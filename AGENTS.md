@@ -512,7 +512,8 @@ unanswerable from the serving side:
   tick whatever the streams are doing, so the relay can publish `staleForSec`,
   and a mirror that stopped an hour ago stops looking like one between cycles.
 - **`urls` and `taken` are a PARTITION.** `discovered = foldedOntoAnother +
-  excluded + taken`, and the ten outcomes under `taken` sum to it exactly, with
+  refusedUnstable + excluded + taken`, and the ten outcomes under `taken` sum to
+  it exactly, with
   `pending` DERIVED from the other eight so the identity closes mid-fan-out. A production
   document reported 16,752 discovered against 5,323 band-bearing and published
   no account whatever of the ~11,400 in between; every one of them had a

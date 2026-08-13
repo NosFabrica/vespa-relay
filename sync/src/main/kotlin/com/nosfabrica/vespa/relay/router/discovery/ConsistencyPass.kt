@@ -44,12 +44,17 @@ import java.util.concurrent.atomic.AtomicInteger
  * there is — a relay does not need a sibling to be unusable. The two share the
  * probe, the record and the monitor's clock, and nothing else.
  *
- * The pair is asked CONCURRENTLY, over one connection, which is both cheaper and
- * strictly better evidence: a relay that shuffles per REQ shows it immediately,
- * and a relay whose two answers differ only because time passed between them
- * cannot — there is no between. The anchor is a week old on top of that
+ * The pair is asked CONCURRENTLY, over one connection — two REQs in flight at
+ * the same instant, so a relay that shuffles per REQ shows it immediately and
+ * one whose answers differ only because time passed between them cannot: there
+ * is no between. The anchor is a week old on top of that
  * ([RelayConsistency.ANCHOR_LAG_SECONDS]), so neither answer can contain an
  * event the other could not have seen.
+ *
+ * Both walks ask the SAME filter, which is what the two-stage shape in
+ * [walkPair] is for: the bare filter is tried as a pair first, and only a host
+ * that refuses it pays a second pair through `kinds=[1]`. Two windows taken
+ * through different filters are not evidence of anything.
  *
  * ## What is written down
  *
@@ -76,6 +81,10 @@ class ConsistencyPass(
     private val probesPerCycle: Int = DEFAULT_PROBES_PER_CYCLE,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
 ) {
+    /** Urls the last [adopt] saw a fold verdict for — never worth measuring. */
+    @Volatile
+    private var folded: Set<NormalizedRelayUrl> = emptySet()
+
     /**
      * Read back what is already known about these urls, WITHOUT dialling.
      *
@@ -115,7 +124,7 @@ class ConsistencyPass(
         val startedMs = System.currentTimeMillis()
         adopt(candidates)
 
-        val wanted = consistency.toProbe(candidates).take(probesPerCycle)
+        val wanted = consistency.toProbe(candidates).filter { it !in folded }.take(probesPerCycle)
         if (wanted.isEmpty()) return 0
 
         val gate = Semaphore(concurrency)
@@ -136,33 +145,29 @@ class ConsistencyPass(
                         sockets.claim(url)
                         val verdict =
                             try {
-                                // The pair, CONCURRENTLY, over one connection.
-                                // Two asks separated by a round trip would let a
-                                // relay differ for a reason that is about time
-                                // rather than about the relay; asked together
-                                // there is no elapsed time to blame.
+                                // THE PAIR, GENUINELY CONCURRENT, over one
+                                // connection — two REQs in flight at the same
+                                // instant, which is what makes "the answer
+                                // changed" impossible to blame on elapsed time.
                                 //
-                                // The first ask also decides the FILTER — a bare
-                                // one where the relay takes it, kinds=[1] where
-                                // it does not — and the second is given the same
-                                // one, because two answers to different questions
-                                // are not evidence of anything. That costs the
-                                // pair being staged rather than truly
-                                // simultaneous for the minority of hosts that
-                                // refuse a bare filter, which is the right trade:
-                                // a comparable pair a moment apart beats an
-                                // incomparable pair at once.
-                                val lead = probe.leaderPrint(url, anchor, onEvent)
-                                if (lead == null) {
-                                    null
-                                } else {
-                                    val pair =
-                                        listOf(
-                                            async { lead.ids },
-                                            async { probe.fingerprint(url, anchor, lead.kinds, onEvent) },
-                                        ).awaitAll()
-                                    pair[0] to pair[1]
-                                }
+                                // This was staged before, and the comment here
+                                // claimed concurrency it did not have: the first
+                                // walk ran to completion to discover the filter
+                                // and only the second was wrapped in `async`, so
+                                // the pair was sequential and one of the two
+                                // `async`s was returning an already-computed set.
+                                //
+                                // The filter still has to be agreed on — two
+                                // answers to different questions are not evidence
+                                // — so the bare filter is tried as a concurrent
+                                // PAIR first, and only if it comes back unusable
+                                // is the kinds fallback tried, also as a pair.
+                                // The common case is two REQs and no extra walk;
+                                // the minority of hosts refusing a bare filter
+                                // pay a second pair. Neither case compares two
+                                // windows taken through different filters.
+                                walkPair(url, anchor, null, onEvent)
+                                    ?: walkPair(url, anchor, AliasProbe.FALLBACK_KINDS, onEvent)
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
@@ -217,6 +222,41 @@ class ConsistencyPass(
     }
 
     /**
+     * Two walks of [url] through the SAME filter, in flight at the same time.
+     *
+     * Null when the pair proves nothing — either walk unanswered, or a window
+     * too short for [RelayConsistency] to judge — so the caller can fall through
+     * to the kinds filter without treating a refused bare filter as a verdict.
+     *
+     * **Neither walk may throw out of here, and that is structural rather than
+     * defensive.** `async` reports a failure by cancelling its parent, so an
+     * exception from one walk would cancel the sibling, the enclosing `launch`
+     * and the `coroutineScope` around the whole pass — one unlucky relay taking
+     * down every other url's measurement, with the caller's `catch` running far
+     * too late to stop it. Catching inside each child keeps the failure a value.
+     */
+    private suspend fun walkPair(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        kinds: List<Int>?,
+        onEvent: suspend (Event) -> Unit,
+    ): Pair<Set<String>?, Set<String>?>? =
+        coroutineScope {
+            val walks =
+                List(2) {
+                    async {
+                        runCatching { probe.fingerprint(url, anchor, kinds, onEvent) }
+                            .getOrNull()
+                    }
+                }.awaitAll()
+            val pair = walks[0] to walks[1]
+            // "Proves nothing" is the pass's own bar, asked here so a bare filter
+            // the relay refused (empty, or a handful of events) falls through to
+            // the fallback instead of being published as a verdict.
+            if (consistency.decide(pair.first, pair.second) == RelayConsistency.Verdict.UNMEASURABLE) null else pair
+        }
+
+    /**
      * Pull the stored verdicts into memory, forgetting first so the record's TTL
      * means something.
      *
@@ -236,8 +276,15 @@ class ConsistencyPass(
                 // is the failure this whole pass exists to prevent.
                 return
             }
-        consistency.forget(candidates)
-        consistency.adopt(held.stable, held.unstable)
+        consistency.replace(candidates, held.stable, held.unstable)
+        // Urls a FOLD has already taken out of the fan-out. They will never be
+        // dialled, so measuring their stability is budget spent on a question
+        // nobody asks: on a polluted store two thirds of a candidate set folds
+        // away, and letting them through delayed the survivors' verdicts by
+        // several six-hour passes. The monitor hands both passes the same raw
+        // pre-fold list — it must, since the fold needs the duplicates to fold
+        // them — so the filtering belongs here.
+        folded = held.aliases.keys
     }
 
     companion object {

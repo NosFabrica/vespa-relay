@@ -56,6 +56,29 @@ class DynamicSyncGatesTest {
     }
 
     @Test
+    fun `silence is measured from the transfer, not from the rotation claim`() {
+        // The bug the audit found in the first cut. The quiet clock starts at
+        // the CLAIM, which is taken before the strike check, the Tor probe, the
+        // TCP pre-probe and the queue for a transfer slot — and a saturated pool
+        // holds that queue for minutes. So a worker could reach ask 1 with the
+        // clock already past the window and abandon a perfectly healthy relay,
+        // every pass, having asked it once. `askIndex > 0` does not cover it,
+        // because ask 0 legitimately returns nothing for most author chunks.
+        //
+        // syncRelay now caps the reading at how long the leg itself has been
+        // running, so a leg that just started is never "silent for 5 minutes"
+        // however long its claim waited. This is that arithmetic.
+        val quietSinceClaim = 20 * 60 * 1000L
+        val legJustStarted = 1_000L
+        assertFalse(
+            DynamicSync.givesUp(askIndex = 1, quietForMs = minOf(quietSinceClaim, legJustStarted)),
+            "a leg that queued 20min for a slot was cut off on its second ask",
+        )
+        // …and once the leg itself has been silent that long, it still fires.
+        assertTrue(DynamicSync.givesUp(askIndex = 1, quietForMs = minOf(quietSinceClaim, LEG_QUIET_GIVE_UP_MS)))
+    }
+
+    @Test
     fun `the first ask is always made, however long the claim waited`() {
         // The quiet clock runs from the CLAIM, which is taken before the guards
         // and before the queue for a transfer slot. A leg that waited out a
