@@ -158,7 +158,7 @@ reason.
 
 | var | meaning | default |
 |---|---|---|
-| `RELAY_NAME` / `RELAY_DESCRIPTION` / `RELAY_ICON` / `RELAY_BANNER` | how the relay presents itself. Also **published as the relay's own kind 0** when `RELAY_NSEC` is set — `name` and `display_name` from the name, `about` from the description, `picture`/`banner` from the two urls — so a reader who meets this key anywhere else than on this host still gets a name. Mirrored, not copied once: change one and the next boot rewrites the profile, unset one and the field is removed from it. Anything else in that kind 0 (a `nip05`, a `lud16` an operator published by hand) is carried across untouched | — |
+| `RELAY_NAME` / `RELAY_DESCRIPTION` / `RELAY_ICON` / `RELAY_BANNER` | how the relay presents itself. Also **published as the relay's own kind 0** when `RELAY_NSEC` is set — `name` and `display_name` from the name, `about` from the description, `picture`/`banner` from the two urls — so a reader who meets this key anywhere else than on this host still gets a name. Mirrored, not copied once: change one and the next boot rewrites the profile, unset one and the field is removed from it — except `RELAY_NAME`, which has a default, so unset publishes the `vespa-relay` the doc itself serves. A NIP-86 `changerelayname` / `changerelaydescription` / `changerelayicon` rewrites the profile without waiting for a restart. Anything else in that kind 0 (a `nip05`, a `lud16`, a NIP-39 identity claim an operator published by hand) is carried across untouched | — |
 | `RELAY_CONTACT` | a human contact | — |
 | `RELAY_CONTACT_PUBKEY` | the human operator's pubkey, for NIP-11 contact. The relay's own `self` is derived from `RELAY_NSEC`, not set here | — |
 | `RELAY_VERSION` | overrides the build version | — |

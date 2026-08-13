@@ -66,6 +66,33 @@ class RelayInfoTest {
         assertEquals("9.9-test", doc.getValue("version").jsonPrimitive.content)
     }
 
+    /**
+     * A NIP-86 rewrite is not only the served document: the relay's own kind 0
+     * is derived from it, so the holder has to SAY when it changes or the
+     * profile keeps publishing what the environment said at boot while the doc
+     * says something else. Asserted here because the alternative failure is
+     * closed — nothing looks wrong, the two just quietly disagree.
+     */
+    @Test
+    fun `an admin rewrite tells whoever derives from the document`() {
+        val seen = mutableListOf<String?>()
+        val holder = MutableRelayInfo(buildRelayInfo(Nip11Info(name = "before"), defaultRelayLimits()), onChange = { seen += it.name })
+        assertTrue(seen.isEmpty(), "the initial document is the constructor's argument, not a change")
+
+        holder.set(buildRelayInfo(Nip11Info(name = "after"), defaultRelayLimits()))
+        assertEquals(listOf<String?>("after"), seen)
+        // …and the served json follows in the same step, so a reader of either
+        // side sees one document.
+        assertEquals(
+            "after",
+            Json
+                .parseToJsonElement(holder.nip11Json())
+                .jsonObject
+                .getValue("name")
+                .jsonPrimitive.content,
+        )
+    }
+
     @Test
     fun `advertises NIP-86 only when it is wired`() {
         val withAdmin =

@@ -34,6 +34,7 @@ import com.nosfabrica.vespa.relay.config.rejectFutureSecondsFromEnv
 import com.nosfabrica.vespa.relay.config.relayAddressesFromEnv
 import com.nosfabrica.vespa.relay.config.relayLimitsFromEnv
 import com.nosfabrica.vespa.relay.maintenance.ExpirationSweeper
+import com.nosfabrica.vespa.relay.maintenance.RelayProfile
 import com.nosfabrica.vespa.relay.maintenance.STORE_WRITERS
 import com.nosfabrica.vespa.relay.maintenance.StatsRollup
 import com.nosfabrica.vespa.relay.maintenance.StatsTier
@@ -265,8 +266,12 @@ fun main() {
     // kind 0 carrying the NIP-11 name and description, and a kind 10002 naming
     // this relay as its own inbox and outbox. Only with a key to sign them —
     // an anonymous relay has nothing to be discovered AS.
-    if (identity != null) {
-        launchRelayProfile(maintenanceScope, store, identity, relayUrl, nip11)
+    //
+    // One instance, held past the boot publish: a NIP-86 rename republishes
+    // through the same object below, and it is the object that serializes them.
+    val profile = identity?.let { RelayProfile(store, it, relayUrl) }
+    if (profile != null) {
+        launchRelayProfile(maintenanceScope, profile, nip11)
     }
     if (env["TRUST_RECONCILE_ON_START"]?.toBooleanStrictOrNull() != false) {
         maintenanceScope.launch {
@@ -342,6 +347,20 @@ fun main() {
         limits = limits,
         admin = admin,
         pressure = servingPressure,
+        // A NIP-86 admin RPC can rename this relay, re-describe it or change
+        // its icon while it runs. The doc is the profile's source, so the
+        // profile follows it here rather than freezing what the environment
+        // said at boot — the fields the doc no longer carries are cleared from
+        // the kind 0 for the same reason an unset RELAY_DESCRIPTION is.
+        onInfoChanged = { doc ->
+            profile?.let {
+                launchRelayProfile(
+                    maintenanceScope,
+                    it,
+                    nip11.copy(name = doc.name ?: nip11.name, description = doc.description, icon = doc.icon, banner = doc.banner),
+                )
+            }
+        },
         // "This relay is also a hidden service" — read by Tor Browser and by
         // clients that move the connection inside the network when Tor is on.
         onionLocation = addresses::onionLocation,

@@ -114,11 +114,18 @@ fun serveRelay(
     // clearnet response. Asked per response rather than captured once: the
     // hidden service can come up after this server did.
     onionLocation: () -> String? = { null },
+    // Called whenever a NIP-86 admin RPC rewrites the served document
+    // (`changerelayname`, `changerelaydescription`, `changerelayicon`), so
+    // anything DERIVED from it can follow — today the relay's own kind 0, which
+    // would otherwise keep saying what the environment said at boot while the
+    // doc says something else. Not called for the initial document: that one is
+    // this call's own argument.
+    onInfoChanged: (Nip11RelayInformation) -> Unit = {},
     wait: Boolean = true,
 ): EmbeddedServer<NettyApplicationEngine, NettyApplicationEngine.Configuration> {
     // NIP-86 advertises itself in supported_nips only when an admin is wired.
     val effectiveNips = if (admin != null) supportedNips + 86 else supportedNips
-    val info = MutableRelayInfo(buildRelayInfo(nip11, limits, effectiveNips))
+    val info = MutableRelayInfo(buildRelayInfo(nip11, limits, effectiveNips), onInfoChanged)
     // Hashed once at boot rather than per request: these strings are read off
     // the classpath at startup and never change while the process lives.
     val landing = landingPage?.let(::CachedPage)
@@ -476,6 +483,11 @@ private val NIP19_PATH = Regex("^(npub|nprofile|note|nevent|naddr)1[02-9ac-hj-np
 /** A mutable holder for the live NIP-11 document, updated by NIP-86 admin RPCs. */
 internal class MutableRelayInfo(
     initial: Nip11RelayInformation,
+    // Fired on every admin rewrite, so what the relay says about itself
+    // elsewhere — its own kind 0 — tracks the document rather than the boot
+    // environment. Runs on the RPC's thread; the one listener launches its work
+    // into a background scope rather than publishing inline.
+    private val onChange: (Nip11RelayInformation) -> Unit = {},
 ) : com.vitorpamplona.quartz.nip86RelayManagement.server.Nip86Server.InfoHolder {
     @Volatile private var current: Nip11RelayInformation = initial
 
@@ -491,5 +503,6 @@ internal class MutableRelayInfo(
     override fun set(value: Nip11RelayInformation) {
         current = value
         currentJson = value.toJson()
+        onChange(value)
     }
 }

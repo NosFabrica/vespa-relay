@@ -181,7 +181,19 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         loop cannot walk the profile forward one created_at at
                         a time — and a store that THROWS is never read as an
                         empty one, which is the only path that could replace a
-                        richer profile with a freshly built one
+                        richer profile with a freshly built one. The doc is an
+                        ARGUMENT to publish(), not state: NIP-86's
+                        changerelayname/description/icon rewrite the served
+                        document while the relay runs, so serveRelay's
+                        onInfoChanged republishes and the profile follows the
+                        doc rather than the environment it booted with. Two
+                        traps worth knowing: quartz's updateFromPast REBUILDS
+                        the NIP-39 `i` tags through a parse that drops a
+                        proof-less claim and truncates `matrix:@a:b.org` at the
+                        second colon, so the held event's own `i` tags are put
+                        back verbatim in the initializer; and RELAY_NAME is the
+                        one owned field with a default, so unset publishes
+                        "vespa-relay" — which is what the doc serves
 
 sync/src/main/kotlin/com/nosfabrica/vespa/relay/
   maintenance/ParseAudit.kt   what quartz could not parse, grouped to a JSON

@@ -67,9 +67,8 @@ class RelayProfileTest {
 
     private fun profile(
         store: IEventStore,
-        info: Nip11Info = this.info,
         at: Long = 1_800_000_000L,
-    ) = RelayProfile(store, signer, relayUrl, info, nowSeconds = { at })
+    ) = RelayProfile(store, signer, relayUrl, nowSeconds = { at })
 
     private suspend fun stored(
         store: IEventStore,
@@ -85,7 +84,7 @@ class RelayProfileTest {
     fun `publishes both kinds against an empty store`() =
         runBlocking {
             val store = newStore()
-            val report = profile(store).publish()
+            val report = profile(store).publish(info)
             assertEquals(listOf(0, 10002), report.published())
 
             val metadata = stored(store, MetadataEvent.KIND) ?: error("no kind 0 was published")
@@ -111,12 +110,12 @@ class RelayProfileTest {
     fun `a second pass publishes nothing`() =
         runBlocking {
             val store = newStore()
-            profile(store).publish()
+            profile(store).publish(info)
             val first = stored(store, MetadataEvent.KIND)?.id to stored(store, AdvertisedRelayListEvent.KIND)?.id
 
             // A later boot, with the clock moved on: the events already say
             // this, so nothing is written and neither `created_at` creeps.
-            val report = profile(store, at = 1_800_009_999L).publish()
+            val report = profile(store, at = 1_800_009_999L).publish(info)
             assertEquals(emptyList(), report.published())
             assertEquals(first, stored(store, MetadataEvent.KIND)?.id to stored(store, AdvertisedRelayListEvent.KIND)?.id)
         }
@@ -125,10 +124,10 @@ class RelayProfileTest {
     fun `a changed description republishes the kind 0 and leaves the relay list alone`() =
         runBlocking {
             val store = newStore()
-            profile(store).publish()
+            profile(store).publish(info)
             val listBefore = stored(store, AdvertisedRelayListEvent.KIND)?.id
 
-            val renamed = profile(store, info = info.copy(description = "Now with NIP-50 search"), at = 1_800_000_100L).publish()
+            val renamed = profile(store, at = 1_800_000_100L).publish(info.copy(description = "Now with NIP-50 search"))
             assertEquals(listOf(0), renamed.published())
             assertEquals("Now with NIP-50 search", contentOf(stored(store, MetadataEvent.KIND)!!)["about"])
             assertEquals(listBefore, stored(store, AdvertisedRelayListEvent.KIND)?.id, "the relay list said nothing about the description")
@@ -154,7 +153,7 @@ class RelayProfileTest {
             )
 
             // …and a NIP-11 doc carrying no description at all.
-            profile(store, info = Nip11Info(name = "Example Relay")).publish()
+            profile(store).publish(Nip11Info(name = "Example Relay"))
 
             val content = contentOf(stored(store, MetadataEvent.KIND)!!)
             assertEquals("relay@example.com", content["lud16"], "a field this writer does not own survives the edit")
@@ -164,6 +163,41 @@ class RelayProfileTest {
             // that has been removed is exactly the drift this mirrors away.
             assertNull(content["about"])
             assertNull(content["picture"])
+        }
+
+    /**
+     * NIP-39 claims are somebody else's tags, and quartz's `updateFromPast`
+     * rebuilds them from `IdentityClaimTag.parse` — which drops a claim with no
+     * proof and truncates an identity at its second colon. Both damages are
+     * silent, signed, and permanent, since the damaged tag is what the next
+     * edit reads. This asserts the `i` tags come out of an edit byte for byte.
+     */
+    @Test
+    fun `carries identity claims across the edit exactly as it found them`() =
+        runBlocking {
+            val store = newStore()
+            val claims =
+                arrayOf(
+                    arrayOf("i", "github:alice", "https://gist.github.com/alice/1"),
+                    // No proof — parses to nothing, so quartz's rewrite drops it.
+                    arrayOf("i", "telegram:alice"),
+                    // A second colon — quartz splits on the first and reassembles
+                    // the identity without the rest.
+                    arrayOf("i", "matrix:@alice:example.org", "https://example.org/proof"),
+                )
+            store.insert(
+                signer.sign<MetadataEvent>(
+                    MetadataEvent.createNew(name = "before", createdAt = 1_700_000_000L, initializer = { claims.forEach { add(it) } }),
+                ),
+            )
+
+            profile(store).publish(info)
+
+            val after = stored(store, MetadataEvent.KIND)!!.tags.filter { it.firstOrNull() == "i" }
+            assertEquals(claims.map { it.toList() }, after.map { it.toList() })
+            // And it settles: putting the tags back must not itself be a change
+            // the next pass sees, or every boot rewrites the profile forever.
+            assertEquals(emptyList(), profile(store, at = 1_800_000_500L).publish(info).published())
         }
 
     @Test
@@ -184,7 +218,7 @@ class RelayProfileTest {
 
             // The kind 0 rides along — this store holds none — and the kind
             // 10002 is the one under test.
-            assertEquals(listOf(0, 10002), profile(store).publish().published())
+            assertEquals(listOf(0, 10002), profile(store).publish(info).published())
 
             val relays = relaysOf(stored(store, AdvertisedRelayListEvent.KIND)!!)
             assertEquals(
@@ -207,7 +241,7 @@ class RelayProfileTest {
                     override suspend fun <T : Event> query(filter: Filter): List<T> = throw IllegalStateException("Backend communication error")
                 }
 
-            assertFailsWith<IllegalStateException> { profile(store).publish() }
+            assertFailsWith<IllegalStateException> { profile(store).publish(info) }
             assertNull(stored(inner, MetadataEvent.KIND))
             assertNull(stored(inner, AdvertisedRelayListEvent.KIND))
         }
