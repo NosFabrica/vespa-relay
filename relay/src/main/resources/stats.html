@@ -2539,6 +2539,20 @@ function drawVerdicts(box, groups, nowSec) {
       // finding — a row showing `same-as` and nothing else is what a clobbered
       // record looks like.
       const meta = [];
+      // THE RECORD'S OWN CLOCK, which is not the verdict's and is labelled so.
+      //
+      // It is written every time this router CONNECTS to the relay — quartz's
+      // passive monitor rewrites the same address on a 5-minute flush — so it
+      // answers a different question from the age beside the pill: that one is
+      // when we last MEASURED, this one is when we last TALKED. Reading the
+      // second as the first is the bug that made half these verdicts immortal,
+      // which is exactly why both belong on screen with their own names rather
+      // than one standing in for the other.
+      //
+      // It also puts a date back on the rows that lost one: a verdict written
+      // before the measured-at element existed shows `—` above, and this line
+      // is the only remaining evidence of when the record was last touched.
+      if (u.recordAt) meta.push(["record", ago(u.recordAt), isoOf(u.recordAt)]);
       if (u.network) meta.push(["", u.network]);
       for (const r of u.requirements) meta.push(["req", r]);
       if (u.rttOpen) meta.push(["open", `${u.rttOpen}ms`]);
@@ -2554,8 +2568,11 @@ function drawVerdicts(box, groups, nowSec) {
       if (u.extra) meta.push(["", `+${u.extra} other tag(s)`]);
       if (meta.length) {
         const line = el("div", "vd-meta");
-        for (const [k, v] of meta) {
+        for (const [k, v, title] of meta) {
           const cell = el("span", k === "req" ? "vd-req" : null);
+          // An exact timestamp behind the relative one, the same way the
+          // verdict's own age carries its instant on the title.
+          if (title) cell.title = title;
           if (k && k !== "req") cell.append(el("span", "k", k + " "));
           cell.append(v);
           line.appendChild(cell);
