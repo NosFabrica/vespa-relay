@@ -963,6 +963,30 @@ is worded that way in the record — the relay cannot be synced against, which i
 a property of the server, not of the operator — and it expires in a month, so a
 server that is fixed rejoins on its own with nobody intervening.
 
+**When a relay is tested again, and the trap that made half of them immortal.**
+The verdict ages out after `RelayAliasRecord.DEFAULT_TTL_SECONDS` (30 days) and
+the monitor picks the lapse up on its next pass, so a re-measure lands within
+`AliasMonitor.DEFAULT_INTERVAL_MS` (6h) of the month mark. Expiry is per url and
+staggered by whenever each was first measured, so there is no day-30 herd.
+
+What it must NOT be aged on is the RECORD's `created_at`, which is what it was
+doing at first. Kind 30166 is addressable and shared: quartz's `RelayMonitor`
+rewrites the record for every relay this client connects to on a 5-minute flush,
+carrying our tags forward. So `created_at` tracks the last time we TALKED to a
+relay, not the last time we MEASURED it — and the effect was exactly backwards.
+A REFUSED relay is never dialled, so nothing refreshed its record and it expired
+on schedule; a KEPT relay is dialled constantly, so its record never aged and
+its verdict was never re-taken. **Measure once, trust forever — for precisely
+the population where "was fine, now degraded" is the case worth catching.** The
+fold's `same-as` had the identical hole: a folded url expires, the canonical it
+folded onto did not.
+
+So both verdict tags carry the unix second they were measured as their last
+element, and `RelayAliasRecord.current` ages on that, falling back to the
+event's clock for records written before this existed.
+`RelayConsistencyTest` pins it by rewriting the record NOW over a month-old
+verdict — the shape that flush produces — and asserting it still reads stale.
+
 Three things it does NOT do. It never removes a relay on silence, on a window
 under `minSample`, or on a failed store read — only a positive measurement
 counts, because a wrong exclusion is invisible while a wrong inclusion costs one
@@ -1770,6 +1794,14 @@ statement about someone else's server.
   the predicate; it also never fires before the first ask, because the quiet
   clock starts at the CLAIM and a leg that queued behind a saturated pool
   arrives already "quiet".
+- **A TTL on a tag is not a TTL on the event carrying it.** Kind 30166 has more
+  than one writer: quartz's `RelayMonitor` rewrites the record for every relay
+  the client connects to, every 5 minutes, preserving our tags. Ageing a verdict
+  on `event.createdAt` therefore measures how recently we TALKED to the relay,
+  and any relay still in the fan-out is always minutes old — so its verdict
+  never expires while the ones we stopped dialling expire on time, which is the
+  wrong way round. Stamp the measurement's own time into the tag and age on
+  that. Applies to anything sharing an addressable event with another writer.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

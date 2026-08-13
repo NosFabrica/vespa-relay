@@ -22,11 +22,13 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.runBlocking
 import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
@@ -289,6 +291,70 @@ class RelayConsistencyTest {
 
             assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
             assertEquals(emptyList(), pass.apply(listOf(steady, shuffler)))
+        }
+
+    @Test
+    fun `a verdict ages on when it was MEASURED, not on the record it rides on`() =
+        runBlocking {
+            // The re-measure schedule, and the bug it used to have. Kind 30166 is
+            // shared: quartz's RelayMonitor rewrites the record for every relay
+            // this client connects to, on a 5-minute flush, carrying our tags
+            // forward. So the event's createdAt tracks the last time we TALKED to
+            // the relay — which for a relay still in the fan-out is always
+            // minutes ago — and ageing the verdict on it meant a KEPT relay was
+            // measured once and trusted forever, while only a REFUSED one (never
+            // dialled, so never refreshed) actually expired.
+            //
+            // Here the record is written NOW, exactly as that flush leaves it,
+            // over a verdict measured a month and a day ago. It must read stale.
+            val store = newStore()
+            val month = 30L * 24 * 60 * 60
+            val record = RelayAliasRecord(store, signer, ttlSeconds = month)
+            store.insert(
+                signer.sign(
+                    RelayDiscoveryEvent.build(steady, "", nowSeconds()) {
+                        add(
+                            arrayOf(
+                                RelayAliasRecord.SELF_CONSISTENT_TAG,
+                                RelayAliasRecord.CONSISTENT_YES,
+                                "500 + 500 events at a 7d anchor, 500 shared -> 1.000",
+                                (nowSeconds() - month - 1).toString(),
+                            ),
+                        )
+                    },
+                ),
+            )
+
+            val held = record.load(listOf(steady))
+            assertTrue(
+                held.stable.isEmpty(),
+                "a verdict measured over a month ago read as current because the record had just been rewritten",
+            )
+        }
+
+    @Test
+    fun `a record written before measured-at existed still ages on the event clock`() =
+        runBlocking {
+            // Backwards compatibility, and the only honest reading available for
+            // such a record: it carries no measurement time, so the event's is
+            // all there is. A fresh one must still be believed.
+            val store = newStore()
+            store.insert(
+                signer.sign(
+                    RelayDiscoveryEvent.build(shuffler, "", nowSeconds()) {
+                        add(
+                            arrayOf(
+                                RelayAliasRecord.SELF_CONSISTENT_TAG,
+                                RelayAliasRecord.CONSISTENT_NO,
+                                "old-style, no timestamp",
+                            ),
+                        )
+                    },
+                ),
+            )
+
+            val held = RelayAliasRecord(store, signer).load(listOf(shuffler))
+            assertEquals(setOf(shuffler), held.unstable, "a pre-existing verdict stopped being read")
         }
 
     @Test
