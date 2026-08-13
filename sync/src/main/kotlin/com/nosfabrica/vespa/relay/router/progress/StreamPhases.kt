@@ -263,6 +263,62 @@ class StreamPhases {
     )
 
     /**
+     * THE PHASE'S OWN NUMBERS, which used to reach a log line and nothing else.
+     *
+     * `phase` published the WORD — `fetching`, `holding` — while the object
+     * behind it carried how far the walk had got, how deep it had reached, when
+     * it expected to finish, and how much of each pool was committed. The card
+     * said "fetching for 19m" beside a log line reading "2385/7927 returned …
+     * back to 2023-07-12, 33.8% of the window walked, ETA ~1:01".
+     *
+     * Every member is nullable and only the ones its phase can answer are set.
+     * Two were deliberately left OUT after checking what they are:
+     *
+     *  - the walk's `total`, because `PassProgress.total` is the cleaned relay
+     *    list and `CycleTally.taken` is the same set by construction — it is
+     *    already published, once, as `urls.taken`;
+     *  - the phase's `events`, because `Fetching.events` and `cycle.received`
+     *    are incremented from the same line with the same value.
+     */
+    class Detail(
+        /**
+         * Fan-out legs that STARTED AND CAME BACK — including unreachable,
+         * capped, out of budget. Not progress; see the glossary's `returned`.
+         */
+        val returned: Int? = null,
+        /** Relays with a worker at all, across every pass — the admission gate's commitment. */
+        val running: Int? = null,
+        /** …and of those, how many hold a TRANSFER SLOT. The two are far apart by design. */
+        val transferring: Int? = null,
+        /** How much of the time window the paged walks have covered, 0..1. */
+        val fraction: Double? = null,
+        /** …and what that rate implies for finishing, in milliseconds. */
+        val etaMs: Long? = null,
+        /**
+         * The oldest `created_at` the walk has reached.
+         *
+         * The one number that shows a DEEP walk moving: on an unbounded walk the
+         * percentage rounds to zero for hours while this date moves every page.
+         * It is the live counterpart of a band's floor, on the same axis.
+         */
+        val reachedSeconds: Long? = null,
+        /** Local ids collected so far while building the reconcile snapshot. */
+        val collected: Int? = null,
+        /** …of how many, when the store could be counted. */
+        val collectedTotal: Int? = null,
+        /** Transfer slots free right now, while a pass is being HELD BACK. */
+        val free: Int? = null,
+        /** …and how many this stream will not start a pass without. */
+        val needed: Int? = null,
+        /** Seconds until the next pass, when the stream is idle and there is one. */
+        val nextInSec: Long? = null,
+        /** Seconds until a failed or waiting stream tries again. */
+        val retrySec: Long? = null,
+        /** What the last attempt threw, when it threw. A stream that FAILED said only "failed". */
+        val reason: String? = null,
+    )
+
+    /**
      * One stream's state, flattened for a reader outside this process.
      *
      * A snapshot, not a view: [SyncProgress] serialises it on a timer while the
@@ -283,6 +339,8 @@ class StreamPhases {
          * previously indistinguishable from a single cycle with a large `busy`.
          */
         val cycles: List<Cycle>,
+        /** The current phase's own numbers — see [Detail]. */
+        val detail: Detail,
         /**
          * The relays this stream has workers on right now, longest-held first —
          * the names behind `running`, `pending` and `busy`, which were counts
@@ -432,12 +490,64 @@ class StreamPhases {
                 // under this lock and a reader iterating the live one would be
                 // serialising a document while it changed underneath.
                 cycles = e.cycles.toList(),
+                detail = detail(e.phase),
                 // Asked at the moment the snapshot is taken, like everything
                 // else here — the whole class is a view flattened for a reader
                 // outside this process, and a member read a tick earlier would
                 // date a stuck leg's clock from the wrong instant.
                 inFlight = e.inFlight?.invoke(),
             )
+        }
+
+    /**
+     * What this phase can answer, and nothing it cannot.
+     *
+     * Read at snapshot time from the phase object itself, so the numbers and the
+     * word can never describe two different instants.
+     */
+    private fun detail(phase: Phase): Detail =
+        when (phase) {
+            is Phase.Fetching -> {
+                Detail(
+                    returned = phase.done,
+                    running = phase.running,
+                    transferring = phase.transferring,
+                    fraction = phase.fraction,
+                    etaMs = phase.etaMs,
+                    reachedSeconds = phase.reachedSeconds,
+                )
+            }
+
+            is Phase.Syncing -> {
+                // No `skipped`/`unreachable` here: they are per-url dispositions
+                // and the cycle's partition already publishes them by name, where
+                // they sum to something.
+                Detail(returned = phase.done, running = phase.running, transferring = phase.transferring)
+            }
+
+            is Phase.Snapshotting -> {
+                Detail(collected = phase.collected, collectedTotal = phase.total)
+            }
+
+            is Phase.Holding -> {
+                Detail(free = phase.free, needed = phase.needed, running = phase.running)
+            }
+
+            is Phase.Idle -> {
+                Detail(nextInSec = phase.nextInSec, running = phase.running, transferring = phase.transferring)
+            }
+
+            is Phase.Waiting -> {
+                Detail(retrySec = phase.retrySec)
+            }
+
+            is Phase.Failed -> {
+                Detail(retrySec = phase.retrySec, reason = phase.reason)
+            }
+
+            is Phase.Queued, is Phase.Discovering, is Phase.Starting -> {
+                Detail()
+            }
         }
 
     /**

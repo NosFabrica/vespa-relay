@@ -135,6 +135,18 @@ class Processors {
         val examples: List<String>,
     )
 
+    /**
+     * One reason a total breaks down by, counted in EVENTS.
+     *
+     * Its own class rather than [Undecided] with a different meaning poured into
+     * it: that one counts HOSTS, because what a probe pass decides is a server.
+     * Ingest decides events. One word per unit, including here.
+     */
+    class Breakdown(
+        val reason: String,
+        val events: Long,
+    )
+
     /** One gauge a counter-shaped processor publishes, read live at snapshot time. */
     class Count(
         val name: String,
@@ -159,6 +171,13 @@ class Processors {
         val nextInSec: Long?,
         val work: List<Work>,
         val counts: List<Count>,
+        /**
+         * Reasons a counter-shaped processor can break its own total down by —
+         * ingest's rejections, today. The same shape [Work.undecided] uses, for
+         * the same reason: a total nobody can decompose is a total nobody can
+         * act on.
+         */
+        val reasons: List<Breakdown> = emptyList(),
     )
 
     // Internal rather than private only because [Handle] holds one: a private
@@ -186,6 +205,10 @@ class Processors {
 
         @Volatile
         var counts: (() -> List<Count>)? = null
+
+        /** Live reasons for a counter-shaped processor — see [Handle.reasons]. */
+        @Volatile
+        var reasons: (() -> List<Breakdown>)? = null
 
         /** Latest result per stream, replacing rather than appending. */
         val work = ConcurrentHashMap<String, Work>()
@@ -230,6 +253,7 @@ class Processors {
                 // rollups of one state must produce the same document.
                 work = e.work.values.sortedBy { it.stream },
                 counts = e.counts?.invoke().orEmpty(),
+                reasons = e.reasons?.invoke().orEmpty(),
             )
         }
 
@@ -286,6 +310,11 @@ class Processors {
         /** Where to read this processor's live counters — see the class header on why it is a supplier. */
         fun counts(supplier: () -> List<Count>) {
             entry.counts = supplier
+        }
+
+        /** …and where to read the breakdown of whatever total those counters carry. */
+        fun reasons(supplier: () -> List<Breakdown>) {
+            entry.reasons = supplier
         }
 
         /** What the last pass over [Work.stream]'s candidates achieved, replacing that stream's previous row. */

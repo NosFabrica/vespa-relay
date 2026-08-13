@@ -140,13 +140,20 @@ class SyncProgress(
     fun write(
         streams: List<StreamPhases.Stream>,
         processors: List<Processors.Snapshot> = emptyList(),
+        /**
+         * VirtualMachineErrors this process has survived — an OutOfMemoryError
+         * kills whichever thread allocates next and is caught by nobody, so the
+         * router carries on looking merely quiet. Four of them once passed
+         * unnoticed. It reached a stderr line and stopped there.
+         */
+        fatals: Long = 0,
         nowSeconds: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
         val f = file ?: return false
         return runCatching {
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, processors, nowSeconds)))
+            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, processors, fatals, nowSeconds)))
             // Temp file plus an atomic move, for the same reason every other
             // file here is written that way: the relay reads this on its own
             // schedule and a half-written document parses as nothing.
@@ -168,10 +175,15 @@ class SyncProgress(
         fun document(
             streams: List<StreamPhases.Stream>,
             processors: List<Processors.Snapshot> = emptyList(),
+            fatals: Long = 0,
             nowSeconds: Long,
         ): JsonObject =
             buildJsonObject {
                 put("writtenAt", nowSeconds)
+                // Always, including zero: "no thread has been killed" is the
+                // claim worth publishing, and a member that appears only on
+                // damage cannot be distinguished from a router too old to say.
+                put("fatals", fatals)
                 putJsonArray("streams") {
                     for (s in streams) {
                         add(
@@ -179,6 +191,32 @@ class SyncProgress(
                                 put("name", s.name)
                                 put("phase", s.phase)
                                 put("phaseForSec", s.phaseForSec)
+                                // WHAT THE PHASE KNOWS, flat beside the word it
+                                // qualifies rather than in a container of its
+                                // own: every member here is about the phase and
+                                // nothing else, and a wrapper would be a name to
+                                // look up for no gain. Only what this phase can
+                                // answer is written — see [StreamPhases.Detail],
+                                // including the two members deliberately left
+                                // out because the document already has them.
+                                s.detail.let { d ->
+                                    d.returned?.let { put("returned", it) }
+                                    d.running?.let { put("running", it) }
+                                    d.transferring?.let { put("transferring", it) }
+                                    // Two decimals: this is a percentage a human
+                                    // reads, and a full double publishes sixteen
+                                    // digits of noise on every tick.
+                                    d.fraction?.let { put("fraction", Math.round(it * 10_000) / 10_000.0) }
+                                    d.etaMs?.let { put("etaSec", it / 1000) }
+                                    d.reachedSeconds?.let { put("reached", it) }
+                                    d.collected?.let { put("collected", it) }
+                                    d.collectedTotal?.let { put("collectedTotal", it) }
+                                    d.free?.let { put("slotsFree", it) }
+                                    d.needed?.let { put("slotsNeeded", it) }
+                                    d.nextInSec?.let { put("nextInSec", it) }
+                                    d.retrySec?.let { put("retryInSec", it) }
+                                    d.reason?.let { put("reason", it) }
+                                }
                                 // WHICH relays are running, beside the cycle
                                 // rather than inside it: a worker outlives the
                                 // pass that handed it out, so this set spans
@@ -197,6 +235,13 @@ class SyncProgress(
                                                     add(
                                                         buildJsonObject {
                                                             put("relay", r.relay)
+                                                            // WHICH WALK handed
+                                                            // this url out. With
+                                                            // two passes live the
+                                                            // table could not say,
+                                                            // and the rotation
+                                                            // knew all along.
+                                                            r.pass?.let { put("pass", it) }
                                                             put("heldForSec", r.heldForSec)
                                                             // Absent when the worker has no transfer
                                                             // slot — in the guards, or queued behind
@@ -365,6 +410,28 @@ class SyncProgress(
                 // is four of them away.
                 p.nextInSec?.let { put("nextInSec", it) }
                 for (c in p.counts) put(c.name, c.value)
+                // WHAT A TOTAL IS MADE OF. `rejected` is the largest number this
+                // router publishes and the least readable one: a mirror is
+                // offered the same event once per relay holding it, so rejecting
+                // most of what arrives is the pipeline working. The split is
+                // what says so.
+                p.reasons.takeIf { it.isNotEmpty() }?.let { rows ->
+                    put(
+                        "rejections",
+                        buildJsonObject {
+                            putJsonArray("reasons") {
+                                for (r in rows) {
+                                    add(
+                                        buildJsonObject {
+                                            put("reason", r.reason)
+                                            put("events", r.events)
+                                        },
+                                    )
+                                }
+                            }
+                        },
+                    )
+                }
                 p.work.takeIf { it.isNotEmpty() }?.let { rows ->
                     putJsonArray("streams") {
                         for (w in rows) {

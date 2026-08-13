@@ -82,7 +82,8 @@ internal object SyncVocabulary {
                 "returned",
                 "APPROACH ONLY. A fan-out leg that started and came back — including one that came back unreachable, " +
                     "capped, or out of budget. It is not progress, not coverage, and not success; it is the cheapest " +
-                    "thing to count and the most often misread. What became of each leg is in progress.streams[].cycle.taken.",
+                    "thing to count and the most often misread. What became of each leg is in progress.streams[].cycle.taken. " +
+                    "Published per stream as `returned`, whose denominator is `urls.taken` — the same set by construction.",
             )
             put(
                 "settled",
@@ -231,7 +232,8 @@ internal object SyncVocabulary {
                 "events",
                 "Events that leg has received at the socket so far — its own count, where `received` is every leg of " +
                     "the cycle added together. Counted as they ARRIVE rather than when the leg ends, because the leg " +
-                    "worth watching is the one that has not ended.",
+                    "worth watching is the one that has not ended. Inside `rejections` the same name counts the " +
+                    "events refused for one reason, which is the only other place this document counts events.",
             )
             put(
                 "quietForSec",
@@ -419,11 +421,6 @@ internal object SyncVocabulary {
                     "`hosts` counts them and `examples` names a few, bounded with its own `omitted`.",
             )
             put(
-                "reason",
-                "One cause a pass left hosts undecided, in the same words the router's own log uses, so a reader " +
-                    "meeting both does not have to work out that they are the same finding.",
-            )
-            put(
                 "lastPassAt",
                 "When a processor's last pass ENDED, whatever it achieved and whether or not it threw. Beside " +
                     "`nextInSec` it is what separates a pass that is failing every time from one that stopped running " +
@@ -482,6 +479,103 @@ internal object SyncVocabulary {
                 "Relays the NIP-66 monitor holds an observation for — every url this client has opened a socket to, " +
                     "whatever came of it. The set it could publish a record about, and the denominator `knownDead` is " +
                     "a part of.",
+            )
+            put(
+                "reached",
+                "THE ONE THAT SHOWS A DEEP WALK MOVING. The oldest created_at a stream's paged walks have reached so " +
+                    "far, as a timestamp. On an unbounded walk `fraction` rounds to zero for hours while this date " +
+                    "moves every page, so it is the only live evidence that a leg going back through years is going " +
+                    "anywhere. It is the running counterpart of a band's floor and sits on the same axis: where the " +
+                    "row under Walked ends is where this walk currently is.",
+            )
+            put(
+                "fraction",
+                "APPROXIMATE, and of the WINDOW rather than of the work. How much of the time span its paged relays " +
+                    "are walking has been covered, 0 to 1, averaged over the walks still running. A finished walk " +
+                    "stays in the denominator on purpose — removing it made the percentage run backwards as fast " +
+                    "relays drained.",
+            )
+            put(
+                "etaSec",
+                "An estimate, from the rate the walks have averaged so far, of how long the paged half of this pass " +
+                    "has left. It says nothing about the relays that reconcile rather than page, and nothing about " +
+                    "how long the stragglers of the last pass will take.",
+            )
+            put(
+                "running",
+                "Relays this stream has a WORKER on right now — probing, in the guards, queued for a transfer slot " +
+                    "or transferring — across every pass, including legs handed out by a pass that has ended. It is " +
+                    "how much of the admission gate is committed, and it is much wider than `transferring`: a stream " +
+                    "with 8 transfer slots routinely shows 128 workers, of which 120 are deciding whether a dead host " +
+                    "is worth dialling. Reporting one as the other overstated the work five-fold.",
+            )
+            put(
+                "transferring",
+                "…and of those, how many hold a TRANSFER SLOT. The slot, not the socket: the websocket connect happens " +
+                    "inside it, so a url that never connects at all counts here while it tries. The gap between this " +
+                    "and `running` is where a fan-out's time actually goes.",
+            )
+            put(
+                "slotsFree",
+                "Transfer slots free while a stream is `holding` — the phase that most looks like a stall and could " +
+                    "not say what it was waiting for. Read it against `slotsNeeded`: the next pass will not start " +
+                    "until half the pool is free, because a pass started against a committed pool cannot download, " +
+                    "it can only walk the relay list and queue.",
+            )
+            put(
+                "slotsNeeded",
+                "How many free slots this stream will not start a pass without — half its configured concurrency, " +
+                    "rounded up.",
+            )
+            put(
+                "collected",
+                "Local ids walked so far while building the set a negentropy reconcile compares against, out of " +
+                    "`collectedTotal` where the store could be counted. The most expensive thing this router builds " +
+                    "and, for the minutes it takes, the phase that used to report nothing at all.",
+            )
+            put(
+                "collectedTotal",
+                "How many ids that snapshot expects, or absent when the store could not be counted — an unknown " +
+                    "denominator is better than a wrong one.",
+            )
+            put(
+                "retryInSec",
+                "Seconds until a stream that is waiting or has FAILED tries again. On a failure it is a backoff that " +
+                    "doubles up to the stream's refresh interval; on a wait it is fixed.",
+            )
+            put(
+                "reason",
+                "One cause, in the words the router's own log uses, so a reader meeting both does not have to work " +
+                    "out that they are the same finding. On a stream it is what the last attempt threw — a `failed` " +
+                    "stream published the word and nothing else. Inside `undecided` it is why a probe pass left hosts " +
+                    "alone; inside `rejections` it is why ingest refused events.",
+            )
+            put(
+                "pass",
+                "Which walk handed a held url out. Passes overlap by design, so a stream routinely holds legs from " +
+                    "two of them at once, and every clock on an in-flight row described the leg without ever saying " +
+                    "which walk it belonged to. Absent from a router that predates the stamp.",
+            )
+            put(
+                "fatals",
+                "VirtualMachineErrors this router process has survived, almost always an OutOfMemoryError. It kills " +
+                    "whichever thread allocates next and is caught by nobody, so the process carries on looking merely " +
+                    "quiet — four of them once passed unnoticed while the phase lines still read healthy. Anything " +
+                    "above zero means the router is DEGRADED and should be restarted; zero is published too, because " +
+                    "a member that appears only on damage cannot be told from a router too old to say.",
+            )
+            put(
+                "rejections",
+                "What `rejected` is made of, biggest first. The largest number this document carries and the least " +
+                    "readable without the split: a mirror is offered the same event once per relay holding it, so " +
+                    "\"already have this\" dominating a 7.9M rejection count is the pipeline working exactly as " +
+                    "designed. A bad-signature share that is not near zero is not.",
+            )
+            put(
+                "lostToStore",
+                "THE ONLY COUNTER HERE THAT MEANS DATA LOSS. Events that passed every check — new, verified, wanted — " +
+                    "and could not be written: good events, gone. Anything above zero is a store problem to chase " +
+                    "(most often a schema the events no longer fit), not a mirror one.",
             )
             put(
                 "staleForSec",

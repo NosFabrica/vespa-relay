@@ -1537,7 +1537,7 @@ const IN_FLIGHT_SHOWN = 3;
  * genuine backlog and one whose walk cannot terminate are both "held for
  * hours". Whether events are still ARRIVING is what separates them.
  */
-function inFlightLine(inFlight) {
+function inFlightLine(inFlight, s) {
   const rows = (inFlight && inFlight.relays) || [];
   if (!rows.length) return null;
   const line = el("p", "cyc-line");
@@ -1548,7 +1548,11 @@ function inFlightLine(inFlight) {
     // The url first and unabbreviated: it is the thing being looked up, and a
     // truncated relay url is not a relay url.
     const span = el("span", held >= STUCK_LEG_SEC ? "err" : "");
-    span.append(`${r.relay} — held ${fmtDur(held)}, ${fmt(r.events || 0)} event(s)`);
+    // WHICH WALK handed it out, when the stream is running more than one. A leg
+    // outlives its pass, so with two live walks this row was previously unable
+    // to say which one it belonged to.
+    const from = r.pass != null && (s.passes || []).length > 1 ? ` (pass ${r.pass})` : "";
+    span.append(`${r.relay}${from} — held ${fmtDur(held)}, ${fmt(r.events || 0)} event(s)`);
     // Absent means "not on a socket", which is a different fault from a slow
     // download and must not render as one.
     span.append(r.transferringForSec == null
@@ -1686,6 +1690,16 @@ function progressPanel(progress) {
   // this document has been cached and report a working router as dead every
   // time a rollup ran late — and the footer already says how old the document
   // is, which is the reader-side half of the same question.
+  // ABOVE the heartbeat, because a router that is alive and DAMAGED is worse
+  // than one that stopped: an OutOfMemoryError kills whichever thread allocates
+  // next and is caught by nobody, so the phases carry on looking healthy.
+  if (progress.fatals) {
+    const dead = el("p", "card-sub");
+    dead.appendChild(el("span", "err",
+      `${fmt(progress.fatals)} fatal error(s) killed threads in this router — it is DEGRADED and should be restarted. ` +
+      `Everything below may be a partial account of what it is doing.`));
+    wrap.appendChild(dead);
+  }
   if (progress.staleForSec == null) {
     beat.append("The router published no heartbeat, so nothing here can be dated.");
   } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
@@ -1715,10 +1729,12 @@ function progressPanel(progress) {
     if (outcome === "failed") phase.className = "ph err";
     head.appendChild(phase);
     box.appendChild(head);
+    const phaseFacts = phaseLine(s);
+    if (phaseFacts) box.appendChild(phaseFacts);
     // Drawn even when no cycle has run — the workers of the LAST one outlive it
     // and are exactly what a stream stuck between passes is holding, so this is
     // the case where naming them matters most.
-    const running = inFlightLine(s.inFlight);
+    const running = inFlightLine(s.inFlight, s);
     if (!c) {
       box.appendChild(el("p", "cyc-line", "No cycle has run yet on this stream."));
       if (running) box.appendChild(running);
@@ -1842,8 +1858,14 @@ function processorCounts(p) {
   } else if (has("queued")) {
     parts.push(`${fmt(p.queued)} queued`);
   }
-  if (has("accepted")) parts.push(`${fmt(p.accepted)} accepted`);
-  if (has("rejected")) parts.push(`${fmt(p.rejected)} rejected as duplicate, superseded or bad`);
+  if (has("accepted")) parts.push(`${fmt(p.accepted)} stored`);
+  if (has("rejected")) {
+    // The split, not the total. A mirror is offered the same event once per
+    // relay holding it, so rejecting most of what arrives is the pipeline
+    // working — and the total alone cannot say that.
+    const why = ((p.rejections || {}).reasons || []).slice(0, 2).map((r) => `${fmt(r.events)} ${r.reason}`);
+    parts.push(`${fmt(p.rejected)} rejected` + (why.length ? ` (${why.join(", ")})` : ""));
+  }
   if (has("dropped")) parts.push(`${fmt(p.dropped)} dropped rather than backpressure the sweep`);
   if (has("pushed")) parts.push(`${fmt(p.pushed)} pushed out`);
   if (has("observed")) parts.push(`${fmt(p.observed)} relay(s) observed`);
@@ -1861,6 +1883,21 @@ function processorCounts(p) {
  * the fold getting somewhere; standing still while `measured` climbs is a set
  * of hosts that cannot be decided, which is what `undecided` then names.
  */
+/**
+ * The one number here that means DATA LOSS: events that passed every check and
+ * then could not be written. Drawn only when it is non-zero, and never folded
+ * into the counts line, because a loss counter reading 0 belongs in the JSON and
+ * a loss counter above 0 belongs in front of an operator.
+ */
+function lossLine(p) {
+  if (!p.lostToStore) return null;
+  const line = el("p", "cyc-line");
+  line.appendChild(el("span", "err",
+    `${fmt(p.lostToStore)} event(s) LOST to store errors — good events, accepted and then not written. ` +
+    `That is a store problem to chase, not a mirror one.`));
+  return line;
+}
+
 function processorBlock(p) {
   const known = PROCESSORS.find((row) => row[0] === p.name);
   const box = el("div", "cyc");
@@ -1891,6 +1928,8 @@ function processorBlock(p) {
 
   const counts = processorCounts(p);
   if (counts.length) box.appendChild(el("p", "cyc-line", counts.join(" · ") + "."));
+  const loss = lossLine(p);
+  if (loss) box.appendChild(loss);
 
   for (const w of p.streams || []) {
     const candidates = w.candidates || 0;
@@ -1961,6 +2000,57 @@ function processorsPanel(progress) {
   wrap.appendChild(head);
   for (const p of sorted) wrap.appendChild(processorBlock(p));
   return wrap;
+}
+
+/**
+ * WHAT THE PHASE KNOWS, which used to exist only in a log line on a container
+ * whose stderr rotates inside the hour.
+ *
+ * The card said "fetching for 19m" while the router's own line beside it read
+ * "2385/7927 returned … back to 2023-07-12, 33.8% of the window walked, ETA
+ * ~1:01, 512 in flight (100 transferring)". Every one of those is in the
+ * document now, and each answers a question the phase word cannot:
+ *
+ *  - `reached` is the only evidence a DEEP walk is moving. `fraction` rounds to
+ *    zero for hours on an unbounded one while this date moves every page.
+ *  - `running` against `transferring` is why `pending` is five thousand: the
+ *    admission gate is far wider than the transfer pool, by design.
+ *  - `slotsFree`/`slotsNeeded` is what `holding` is waiting for. That phase is
+ *    the one most easily read as a stall.
+ *  - `reason` is what a `failed` stream threw. It published the word and
+ *    nothing else.
+ */
+function phaseLine(s) {
+  const bits = [];
+  if (s.returned != null) {
+    const of = s.cycle?.urls?.taken;
+    // "returned", never "done": it counts legs that came back unreachable,
+    // capped or out of budget, and reading it as progress is the most misread
+    // number this router publishes.
+    bits.push(`${fmt(s.returned)}${of != null ? ` of ${fmt(of)}` : ""} leg(s) returned`);
+  }
+  if (s.reached != null) bits.push(`back to ${isoOf(s.reached).slice(0, 10)}`);
+  if (s.fraction != null) bits.push(`${(s.fraction * 100).toFixed(1)}% of the window walked`);
+  if (s.etaSec != null) bits.push(`ETA ~${fmtDur(s.etaSec)}`);
+  if (s.running != null) bits.push(`${fmt(s.running)} worker(s), ${fmt(s.transferring || 0)} on a transfer slot`);
+  if (s.collected != null) {
+    bits.push(`${fmt(s.collected)}${s.collectedTotal ? ` of ${fmt(s.collectedTotal)}` : ""} local id(s) collected`);
+  }
+  if (s.slotsFree != null) bits.push(`${fmt(s.slotsFree)} of ${fmt(s.slotsNeeded)} transfer slot(s) free — the next pass waits for half the pool`);
+  if (s.phase === "idle" && s.nextInSec != null) bits.push(`next pass in ${fmtDur(s.nextInSec)}`);
+  if (s.retryInSec != null) bits.push(`retry in ${fmtDur(s.retryInSec)}`);
+  if (!bits.length && !s.reason) return null;
+  const line = el("p", "cyc-line");
+  if (s.reason) {
+    // The one thing a failed stream never said: what it threw.
+    line.appendChild(el("span", "err", s.reason));
+    if (bits.length) line.append(" · ");
+  }
+  line.append(bits.join(" · ") + ".");
+  line.title =
+    "`returned` counts legs that CAME BACK, including unreachable and capped ones — not progress. " +
+    "`reached` is the oldest created_at the walk has got to, and it is the only number that moves on a deep walk.";
+  return line;
 }
 
 /** `4m` / `2h 10m` — a duration in seconds, for the phase clock. */

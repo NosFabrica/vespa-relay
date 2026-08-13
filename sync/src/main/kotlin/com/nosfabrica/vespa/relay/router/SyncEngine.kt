@@ -484,7 +484,7 @@ class SyncEngine(
         scope.launch {
             while (scope.isActive) {
                 delay(PROGRESS_INTERVAL_MS)
-                progressFile.write(phases.snapshot(), processors.snapshot())
+                progressFile.write(phases.snapshot(), processors.snapshot(), fatals.get())
             }
         }
         if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
@@ -546,12 +546,21 @@ class SyncEngine(
         // once a minute and nowhere else.
         processors.of(INGEST_PROCESSOR).let { p ->
             p.phase(Processors.RUNNING)
+            // Why the rejections were rejected. Reported as `undecided` rows are
+            // — a reason, a count — because a mirror rejecting most of what it
+            // is offered is the pipeline working, and the total alone cannot
+            // say that.
+            p.reasons { ingest.rejectionReasons().map { (reason, n) -> Processors.Breakdown(reason, n) } }
             p.counts {
                 listOf(
                     Processors.Count("queued", ingest.queued.get().toLong()),
                     Processors.Count("capacity", ingest.capacity.toLong()),
                     Processors.Count("accepted", ingest.accepted.get()),
                     Processors.Count("rejected", ingest.rejected.get()),
+                    // THE ONLY COUNTER HERE THAT MEANS DATA LOSS: events that
+                    // passed every check and then could not be written. Good
+                    // events, gone. It reached a stderr line and nothing else.
+                    Processors.Count("lostToStore", ingest.lostToStore.get()),
                 )
             }
         }

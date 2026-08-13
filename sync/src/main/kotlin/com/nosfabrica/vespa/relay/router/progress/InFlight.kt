@@ -81,6 +81,15 @@ class InFlight(
     class Relay(
         val relay: String,
         /**
+         * The walk that handed this url out, or null where nothing numbers its
+         * passes.
+         *
+         * A leg outlives the pass that started it, so a stream with two live
+         * walks holds legs from both — and every clock on this row described the
+         * leg without ever saying which walk it belonged to.
+         */
+        val pass: Long? = null,
+        /**
          * Since the rotation CLAIMED it — which is before the guards, the TCP
          * pre-probe and the wait for a transfer slot, not just the transfer.
          * A relay held for hours with this the only clock running never got a

@@ -365,7 +365,13 @@ class SyncProgressReportTest {
         // simply stops being drawn, on a card that looks complete.
         val card = card()
 
-        val undrawn = SyncProgressReport.COUNTERS.filterNot { card.contains("has(\"$it\")") }
+        // The gauge's NAME anywhere in the page, not `has("x")` specifically:
+        // not every gauge belongs on the counts line. `lostToStore` is drawn on
+        // its own, loud and only when non-zero, because a loss counter reading
+        // zero belongs in the JSON and one above zero belongs in front of an
+        // operator. The pin is about "published and never drawn", not about
+        // which line does the drawing.
+        val undrawn = SyncProgressReport.COUNTERS.filterNot { card.contains(it) }
         assertEquals(emptyList(), undrawn, "published as a gauge, drawn by no line: $undrawn")
 
         // The names come from `SyncEngine`'s own constants, which live in the

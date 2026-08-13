@@ -29,6 +29,7 @@ import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -129,6 +130,10 @@ internal object SyncProgressReport {
                 // relay rather than as skew.
                 put("staleForSec", (nowSeconds - it).coerceAtLeast(0))
             }
+            // Zero included: "no thread has been killed" is the claim, and a
+            // member that appears only on damage cannot be told from a router
+            // too old to say either way.
+            num(doc["fatals"])?.let { put("fatals", it) }
             putJsonArray("streams") {
                 for (s in streams) stream(s)?.let { add(it) }
             }
@@ -153,6 +158,14 @@ internal object SyncProgressReport {
             put("name", name)
             text(o["phase"])?.let { put("phase", it) }
             (o["phaseForSec"] as? JsonPrimitive)?.longOrNull?.let { put("phaseForSec", it) }
+            // WHAT THE PHASE KNOWS. Only what a phase can answer is present, so
+            // each is copied when it is there and absent when it is not — an
+            // absent `reached` is a walk that has not reported a depth, and a
+            // zero would be a claim about 1970.
+            for (member in PHASE_DETAIL) num(o[member])?.let { put(member, it) }
+            // The one that is not an integer: a fraction of the window walked.
+            (o["fraction"] as? JsonPrimitive)?.doubleOrNull?.let { put("fraction", it) }
+            text(o["reason"])?.let { put("reason", it) }
             // WHICH relays this stream has workers on. Beside the cycle rather
             // than inside it because a worker outlives the pass that handed it
             // out — see the router's [InFlight] for the full account, and for
@@ -198,12 +211,38 @@ internal object SyncProgressReport {
             num(o["lastPassSec"])?.let { put("lastPassSec", it) }
             num(o["nextInSec"])?.let { put("nextInSec", it) }
             for (counter in COUNTERS) num(o[counter])?.let { put(counter, it) }
+            rejections(o["rejections"] as? JsonObject)?.let { put("rejections", it) }
             (o["streams"] as? JsonArray)
                 ?.filterIsInstance<JsonObject>()
                 ?.take(MAX_PROCESSOR_STREAMS)
                 ?.mapNotNull { processorWork(it) }
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { rows -> putJsonArray("streams") { for (r in rows) add(r) } }
+        }
+    }
+
+    /**
+     * What a total is made of, rebuilt row by row and bounded again here.
+     *
+     * Ingest's `rejected` is the largest number this document carries and the
+     * least readable: rejecting most of what arrives is a mirror working, and
+     * only the split says so.
+     */
+    private fun rejections(o: JsonObject?): JsonObject? {
+        val rows = (o?.get("reasons") as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        return buildJsonObject {
+            putJsonArray("reasons") {
+                for (row in rows.take(MAX_REJECTION_ROWS)) {
+                    val reason = text(row["reason"]) ?: continue
+                    add(
+                        buildJsonObject {
+                            put("reason", reason)
+                            put("events", num(row["events"]) ?: 0)
+                        },
+                    )
+                }
+            }
         }
     }
 
@@ -292,6 +331,10 @@ internal object SyncProgressReport {
                     add(
                         buildJsonObject {
                             put("relay", relay)
+                            // Which walk handed it out. Absent on a router that
+                            // predates the stamp, where the honest answer is
+                            // nothing rather than a guess.
+                            num(row["pass"])?.let { put("pass", it) }
                             put("heldForSec", num(row["heldForSec"]) ?: 0)
                             // Absent means "holds no transfer slot", which is a
                             // statement. Defaulting it to 0 would turn a worker
@@ -441,6 +484,31 @@ internal object SyncProgressReport {
             // the NIP-66 monitor
             "observed",
             "knownDead",
+            // ingest's one loss counter
+            "lostToStore",
+        )
+
+    /**
+     * The phase members a stream may publish beside its phase word.
+     *
+     * An allowlist for the reason every list here is one: these become members
+     * of a document served under this relay's name, and each has a glossary
+     * entry. `fraction` and `reason` are handled apart — one is not an integer
+     * and the other is not a number at all.
+     */
+    private val PHASE_DETAIL =
+        listOf(
+            "returned",
+            "running",
+            "transferring",
+            "etaSec",
+            "reached",
+            "collected",
+            "collectedTotal",
+            "slotsFree",
+            "slotsNeeded",
+            "nextInSec",
+            "retryInSec",
         )
 
     /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
@@ -458,6 +526,7 @@ internal object SyncProgressReport {
     private const val MAX_PROCESSOR_STREAMS = 12
 
     private const val MAX_UNDECIDED_ROWS = 6
+    private const val MAX_REJECTION_ROWS = 4
     private const val MAX_UNDECIDED_EXAMPLES = 3
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull

@@ -90,6 +90,14 @@ internal class RelayRotation {
      */
     private class Hold(
         val sinceMs: Long,
+        /**
+         * The pass that claimed this url.
+         *
+         * Passes overlap, so a stream routinely holds legs from two walks at
+         * once — and every report of them could say how long and how quiet but
+         * not WHICH WALK, which is the first thing asked when two are running.
+         */
+        val pass: Long,
     ) {
         /** Set while the worker holds a transfer slot — see [transferring]. */
         @Volatile
@@ -111,8 +119,9 @@ internal class RelayRotation {
      */
     fun take(
         url: NormalizedRelayUrl,
+        pass: Long = passes.get(),
         nowMs: Long = System.currentTimeMillis(),
-    ): Boolean = busy.putIfAbsent(url, Hold(nowMs)) == null
+    ): Boolean = busy.putIfAbsent(url, Hold(nowMs, pass)) == null
 
     /** Give it back. Always from a `finally` — see the class header. */
     fun release(url: NormalizedRelayUrl) {
@@ -170,6 +179,7 @@ internal class RelayRotation {
                 rows.take(limit).map { (url, hold) ->
                     InFlight.Relay(
                         relay = url,
+                        pass = hold.pass,
                         heldForSec = ((nowMs - hold.sinceMs) / 1000).coerceAtLeast(0),
                         transferringForSec = hold.transferringSinceMs?.let { ((nowMs - it) / 1000).coerceAtLeast(0) },
                         events = hold.leg.events(),

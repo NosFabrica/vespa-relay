@@ -107,8 +107,11 @@ class SyncVocabularyTest {
         val progress =
             SyncProgressReport.build(
                 """
-                {"writtenAt": 900, "streams": [{"name": "content", "phase": "idle", "phaseForSec": 5,
-                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
+                {"writtenAt": 900, "fatals": 0, "streams": [{"name": "content", "phase": "fetching", "phaseForSec": 5,
+                 "returned": 12, "running": 128, "transferring": 8, "fraction": 0.33, "etaSec": 3600,
+                 "reached": 1700000000, "collected": 10, "collectedTotal": 20, "slotsFree": 0, "slotsNeeded": 20,
+                 "nextInSec": 30, "retryInSec": 60, "reason": "connection reset",
+                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "pass": 11, "heldForSec": 41400,
                                           "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
                               "omitted": 118},
                  "cycle": {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "completed",
@@ -127,7 +130,8 @@ class SyncVocabularyTest {
                       "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
-                    "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12},
+                    "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
+                    "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
                    {"name": "reachability", "phase": "watching", "phaseForSec": 900, "observed": 40, "knownDead": 8},
                    {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
                 """.trimIndent(),
@@ -235,6 +239,25 @@ class SyncVocabularyTest {
                     "pushed",
                     "dropped",
                     "observed",
+                ) +
+                // What the phase itself knows, which used to reach a log line
+                // and stop there — plus the two facts about the process rather
+                // than about a stream.
+                setOf(
+                    "running",
+                    "transferring",
+                    "fraction",
+                    "etaSec",
+                    "reached",
+                    "collected",
+                    "collectedTotal",
+                    "slotsFree",
+                    "slotsNeeded",
+                    "retryInSec",
+                    "pass",
+                    "fatals",
+                    "rejections",
+                    "lostToStore",
                 )
 
         assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")

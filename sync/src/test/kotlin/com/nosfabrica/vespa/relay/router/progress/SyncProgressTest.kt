@@ -128,7 +128,7 @@ class SyncProgressTest {
 
     @Test
     fun `a stream with no cycle yet publishes its phase and no cycle`() {
-        val s = StreamPhases.Stream("content", "discovering", 12, emptyList())
+        val s = StreamPhases.Stream("content", "discovering", 12, emptyList(), StreamPhases.Detail())
         val stream = (SyncProgress.document(listOf(s), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
 
         assertEquals("discovering", stream["phase"]!!.jsonPrimitive.content)
@@ -351,6 +351,10 @@ class SyncProgressTest {
         name = "content",
         phase = "fetching",
         phaseForSec = 412,
+        // What the phase itself knows — a walk that has returned a third of its
+        // legs and reached back to a date, which is the pair the log line had
+        // and the document did not.
+        detail = StreamPhases.Detail(returned = 1, running = 3, transferring = 1, fraction = 0.33, reachedSeconds = 1_700_000_000),
         // Oldest first, like the router's own list: the passes that came before
         // this one, then the one `cycle` carries.
         cycles =
