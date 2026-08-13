@@ -38,6 +38,11 @@
 //                   read off /stats.json, and REFUSED rather than guessed,
 //                   since an unscoped count is the "35% mirroring" a complete
 //                   mirror was drawing
+// verdicts.test.mjs what a signed kind-30166 record claims — fold vs cleared
+//                   told apart AFTER normalising, a verdict aged on its own
+//                   clock rather than the record's, and the two verdicts read
+//                   independently. Every case here is one the Kotlin reader got
+//                   wrong first, asserted in the direction it failed
 // readiness.test.mjs which link of the trust chain a signed-in reader is
 //                  missing — the ordering (first unmet link wins, everything
 //                  below it waits) and the three rules the panel must not
@@ -53,7 +58,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

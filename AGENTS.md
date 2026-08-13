@@ -336,14 +336,21 @@ relay/src/main/resources/
                         client on purpose: it must work when the app does not,
                         and asking the way a client would means it also TESTS
                         what it asks
-  stats.html            the corpus dashboard, and the ONE page here with no
-                        relay client: it charts GET /stats.json and nothing
-                        else. Neither reason observer_stats carries one applies
-                        — no aggregation on it is a protocol feature to test,
-                        and thirty days of distinct-pubkey counts is not a
-                        question to ask over a websocket. THE JSON IS THE
-                        ARTIFACT; the page is one reader of it (see
-                        maintenance/StatsRollup).
+  stats.html            the corpus dashboard: it charts GET /stats.json, and
+                        THE JSON IS THE ARTIFACT — the page is one reader of it
+                        (see maintenance/StatsRollup). No aggregation on it is a
+                        protocol feature to test, and thirty days of
+                        distinct-pubkey counts is not a question to ask over a
+                        websocket, so every chart here is a rollup read.
+                        ONE panel is not. Monitor verdicts (kind 30166) have no
+                        rollup at all — `/stats.json` says how many urls folded
+                        and onto how many relays, and nothing could answer "what
+                        does this store say about THIS url, and when was it
+                        measured", which is where every investigation of a
+                        still-duplicated relay starts. That panel pages the
+                        records off this relay's own websocket (shared/verdicts.js
+                        parses; verdicts.test.mjs holds the tag semantics) and is
+                        drawn on a BUTTON, not on the minute poll.
                         Its Kinds table REPLACED kind_stats.html, whose url now
                         301s here. That page asked one NIP-45 COUNT per kind it
                         already knew to name — shared/kinds.js plus whatever an
