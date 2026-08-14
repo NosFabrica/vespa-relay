@@ -627,6 +627,30 @@ internal object SyncVocabulary {
                     "this is the only number that tells them apart. Absent where no pressure feed is configured.",
             )
             put(
+                "at",
+                "The clock each sample in `series` was taken at, in epoch seconds. Published beside the values rather " +
+                    "than an interval being assumed: the rollup cadence is an operator's env var, a restart leaves a " +
+                    "hole, and a reader spacing points evenly over an uneven series draws a smooth line through a gap.",
+            )
+            put(
+                "heapPct",
+                "`heapUsedMb` as a percentage of `heapMaxMb`, sampled once per rollup into `series`. Derived here " +
+                    "rather than left to the reader because a percentage is what compares across samples, and " +
+                    "publishing both halves sixty times over to let a page divide them would cost the document " +
+                    "three times as much for the same line.",
+            )
+            put(
+                "series",
+                "THE LAST HOUR of the four process gauges, one sample per rollup, so the levels above can be read as " +
+                    "trends. Every gauge here is an instant and no question asked of one is answerable from a single " +
+                    "reading: `heapUsedMb` alone says nothing, and climbing three points a minute says everything; a " +
+                    "full `queued` is the constraint if it has been full for ten minutes and noise if it filled this " +
+                    "second. A gap is a null, never a zero and never the previous value — \"the router said nothing\" " +
+                    "and \"the router said none\" are different facts. Per-stream and per-processor series are " +
+                    "deliberately absent: the alias fold runs on a six-hour clock, so an hour of samples would not " +
+                    "contain one of its passes.",
+            )
+            put(
                 "staleForSec",
                 "How long ago the router last wrote its progress file, measured against THIS rollup's clock. The router " +
                     "rewrites it every tick whatever its streams are doing, so this is a heartbeat: a quiet mirror and a " +

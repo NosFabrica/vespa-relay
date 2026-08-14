@@ -317,3 +317,70 @@ export function meterOf(p) {
   }
   return null;
 }
+
+/**
+ * HOW A GAUGE GOT HERE — the last hour of it, as points on a unit square.
+ *
+ * ## Why the card needed this at all
+ *
+ * Every gauge on the NOW line is a level, and not one operator question about a
+ * level is answerable from one reading. `heap 45%` says nothing; heap 45% and
+ * climbing three points a minute says everything. A queue at 4,101 of 4,096 is
+ * the constraint if it has been there ten minutes and noise if it filled this
+ * second. "Is it stuck" is a derivative, and the card was answering it with
+ * thresholds — which is the wrong instrument, and is why every threshold on it
+ * has felt arbitrary.
+ *
+ * ## The geometry, and the two things it refuses to do
+ *
+ * `x` comes from the sample's OWN timestamp, not from its index. The rollup
+ * cadence is an operator's env var and a restart leaves a hole, so evenly
+ * spacing the points would draw a smooth line straight through a gap.
+ *
+ * `y` is scaled to the series' own range, never to the axis a bar would use,
+ * because the question here is shape rather than level — the chip beside it
+ * already carries the level. A flat series sits in the MIDDLE rather than on
+ * the floor: a queue that has been 4,000 deep for an hour and one that has been
+ * empty for an hour are both flat, and drawing either along the bottom edge
+ * says "nothing" about one and "zero" about the other.
+ *
+ * Nulls are holes, not zeroes. They come back as `null` points so the caller
+ * can break the line rather than dive through the floor and back.
+ */
+export function sparkOf(series, member) {
+  const at = series?.at;
+  const values = series?.[member];
+  if (!Array.isArray(at) || !Array.isArray(values) || at.length < 2) return null;
+  const known = values.filter((v) => v != null);
+  // One reading is a level, not a trend, and a single dot on an empty track
+  // invites reading its position as a value.
+  if (known.length < 2) return null;
+  const t0 = at[0];
+  const span = Math.max(1, at[at.length - 1] - t0);
+  const lo = Math.min(...known);
+  const hi = Math.max(...known);
+  const range = hi - lo;
+  const points = at.map((t, i) => {
+    const v = values[i];
+    if (v == null) return null;
+    return { x: (t - t0) / span, y: range === 0 ? 0.5 : (v - lo) / range, v, t };
+  });
+  return { points, lo, hi, first: known[0], last: known[known.length - 1], flat: range === 0, span };
+}
+
+/**
+ * WHICH WAY IT IS GOING, as a word the card can put on a title.
+ *
+ * Deliberately coarse. The reader has the shape in front of them; what a
+ * sentence adds is the direction and only where it is not noise, so a move
+ * inside [TREND_NOISE] of the series' own range is "steady" rather than a
+ * direction the eye cannot see anyway.
+ */
+export const TREND_NOISE = 0.1;
+
+export function trendOf(spark) {
+  if (!spark || spark.flat) return "steady";
+  const move = (spark.last - spark.first) / Math.max(1, spark.hi - spark.lo);
+  if (Math.abs(move) < TREND_NOISE) return "steady";
+  return move > 0 ? "climbing" : "falling";
+}

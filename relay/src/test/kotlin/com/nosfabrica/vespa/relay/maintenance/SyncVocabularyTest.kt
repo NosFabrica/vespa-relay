@@ -272,6 +272,9 @@ class SyncVocabularyTest {
                     "sockets",
                     "socketCeiling",
                     "servingMs",
+                    "series",
+                    "at",
+                    "heapPct",
                 )
 
         assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")

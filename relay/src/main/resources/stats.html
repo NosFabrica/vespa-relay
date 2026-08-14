@@ -386,6 +386,18 @@
   .chip.busy { background: var(--bar); color: var(--accent); }
   .chip.warn { background: var(--warn-soft); color: var(--warn); }
 
+  /* THE LAST HOUR of a gauge, inside the chip that carries its level.
+     A level and its trend are one fact and belong on one mark: `heap 45%` says
+     nothing, `heap 45%` over a line climbing out of the left edge says
+     everything. `currentColor` on purpose — the trace inherits the chip's tone,
+     so a gauge at its ceiling draws a warm line without a second rule. */
+  .spark { vertical-align: -.15em; margin-left: .32rem; overflow: visible; }
+  .spark path { fill: none; stroke: currentColor; stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; opacity: .75; }
+  /* A sample with a gap on either side. Without this a lone reading between two
+     outages draws nothing at all, which is the one case where the series has
+     something to say and the line cannot say it. */
+  .spark circle { fill: currentColor; opacity: .75; }
+
   /* The NOW line: what the router is, in chips, above the streams. */
   .now { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; margin: 0 0 .9rem; }
   .now .fact { font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
@@ -455,6 +467,12 @@
      already spends on `pending` and `busy` — facts about OUR OWN pool rather
      than verdicts about anything — going warm only at the ceiling, where it
      stops being a level and becomes a fault. */
+  /* The meter cell: the bar, and beside it the line that says how it got here.
+     A wrapper rather than putting the line inside the bar — `.frac` is a flex
+     container clipped to its own height, so an svg child would be squeezed into
+     the track and cut off. */
+  .meter { display: flex; align-items: center; gap: .4rem; }
+  .meter .frac { flex: 1; min-width: 0; }
   .frac { height: 10px; border-radius: 2px; background: var(--grid); overflow: hidden; display: flex; }
   .frac i { display: block; height: 100%; background: var(--accent); }
   .frac i.level { background: var(--bar); }
@@ -798,7 +816,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 import {
   DISCOVERY, DISPOSITION, STUCK_LEG_SEC,
   constraintOf, dividesOn, gaugesOf, heldCount, isLive, legsOf, meterOf, partitionOf, passHeld, passLabelOf,
-  pendingMeaning,
+  pendingMeaning, sparkOf, trendOf,
 } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
@@ -1668,6 +1686,71 @@ function chip(text, tone, title) {
   return c;
 }
 
+/** How wide a spark is drawn, and how tall. Small enough to sit inside a chip without changing its height. */
+const SPARK_W = 46, SPARK_H = 11, SPARK_PAD = 1;
+
+/**
+ * One gauge's last hour, as a line — see `sparkOf` for the geometry and for why
+ * `x` comes from each sample's own clock rather than from its index.
+ *
+ * Drawn as one path PER UNBROKEN RUN. A gap is a gap: joining across it would
+ * draw a straight line through an outage, which is the one shape a reader would
+ * take as evidence that nothing happened.
+ */
+function spark(series, member) {
+  const s = sparkOf(series, member);
+  if (!s) return null;
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("class", "spark");
+  svg.setAttribute("viewBox", `0 0 ${SPARK_W} ${SPARK_H}`);
+  svg.setAttribute("width", SPARK_W);
+  svg.setAttribute("height", SPARK_H);
+  const at = (pt) => [
+    SPARK_PAD + pt.x * (SPARK_W - 2 * SPARK_PAD),
+    SPARK_H - SPARK_PAD - pt.y * (SPARK_H - 2 * SPARK_PAD),
+  ];
+  let run = [];
+  const flush = () => {
+    if (run.length > 1) {
+      const path = document.createElementNS(SVG, "path");
+      path.setAttribute("d", run.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(2)} ${y.toFixed(2)}`).join(" "));
+      svg.appendChild(path);
+    } else if (run.length === 1) {
+      const dot = document.createElementNS(SVG, "circle");
+      dot.setAttribute("cx", run[0][0].toFixed(2));
+      dot.setAttribute("cy", run[0][1].toFixed(2));
+      dot.setAttribute("r", "1");
+      svg.appendChild(dot);
+    }
+    run = [];
+  };
+  for (const pt of s.points) {
+    if (!pt) flush();
+    else run.push(at(pt));
+  }
+  flush();
+  return { svg, note: sparkNote(s, member) };
+}
+
+/** What the line says, for the title beside it — the direction, the range, and the window. */
+function sparkNote(s, member) {
+  const range = s.flat ? `flat at ${fmt(s.lo)}` : `${fmt(s.lo)}–${fmt(s.hi)}`;
+  return `${trendOf(s)} over the last ${fmtDur(s.span)} · ${range}` +
+    `\n\nThe line is scaled to its OWN range, not to the chip's — the chip carries the level, the line carries the shape.` +
+    `\n\n${term("series")}`;
+}
+
+/** …and the same, folded onto a chip that already carries the level. */
+function gaugeChip(text, tone, title, series, member) {
+  const c = chip(text, tone, title);
+  const s = spark(series, member);
+  if (s) {
+    c.appendChild(s.svg);
+    c.title = `${title}\n\n${s.note}`;
+  }
+  return c;
+}
+
 /**
  * A bar and its key, over one partition — see `partitionOf` for what counts as
  * a segment and what the shares are taken against.
@@ -1970,14 +2053,23 @@ function nowLine(progress, data) {
   if (constraint) {
     row.appendChild(chip(constraint.text, constraint.tone, `${term("bottleneck")}\n\n${constraint.why}`));
   }
+  // Each level with its own last hour beside it. Three of the four have a
+  // series; `servingMs` is not sampled, so its chip is a bare level and says so
+  // by simply not carrying a line.
+  const series = progress.series;
   for (const g of gaugesOf(progress.health)) {
-    if (g.id === "eventsPerSec") row.appendChild(chip(`${fmt(g.value)} ev/s`, g.tone, term("eventsPerSec")));
+    if (g.id === "eventsPerSec") {
+      row.appendChild(gaugeChip(`${fmt(g.value)} ev/s`, g.tone, term("eventsPerSec"), series, "eventsPerSec"));
+    }
     if (g.id === "heap") {
-      row.appendChild(chip(`heap ${g.pct}%`, g.tone, `${fmt(g.value)} of ${fmt(g.of)}MB\n\n${term("heapUsedMb")}` +
-        (g.tone ? "\n\nAt the ceiling the collector runs continuously and throughput collapses without anything failing." : "")));
+      row.appendChild(gaugeChip(`heap ${g.pct}%`, g.tone,
+        `${fmt(g.value)} of ${fmt(g.of)}MB\n\n${term("heapUsedMb")}` +
+        (g.tone ? "\n\nAt the ceiling the collector runs continuously and throughput collapses without anything failing." : ""),
+        series, "heapPct"));
     }
     if (g.id === "sockets") {
-      row.appendChild(chip(`${fmt(g.value)}/${fmt(g.of)} sockets`, g.tone, `${term("sockets")}\n\n${term("socketCeiling")}`));
+      row.appendChild(gaugeChip(`${fmt(g.value)}/${fmt(g.of)} sockets`, g.tone,
+        `${term("sockets")}\n\n${term("socketCeiling")}`, series, "sockets"));
     }
     if (g.id === "servingMs") row.appendChild(chip(`${fmt(g.value)}ms reads`, g.tone, term("servingMs")));
   }
@@ -2086,7 +2178,7 @@ function breakdown(p) {
  * and see `meterOf` for why the two kinds of meter in that column are drawn
  * differently rather than identically.
  */
-function processorRow(p) {
+function processorRow(p, series) {
   const known = PROCESSORS.find((row) => row[0] === p.name);
   const row = el("div", "dec");
   const nm = el("span", "nm", known ? known[1] : p.name);
@@ -2114,6 +2206,7 @@ function processorRow(p) {
   const bar = el("span", "frac");
   const meter = meterOf(p);
   let right = "";
+  let meterSpark = null;
   if (meter && meter.kind === "progress") {
     const i = el("i");
     i.style.width = meter.share * 100 + "%";
@@ -2137,6 +2230,13 @@ function processorRow(p) {
     right = `${short(p.accepted || 0)} stored`;
     bar.title += `\n\n${fmt(p.rejected || 0)} rejected` +
       (p.dropped != null ? `, ${fmt(p.dropped)} dropped rather than backpressure the sweep` : "");
+    // THE ONE METER WHOSE HISTORY DECIDES ANYTHING. A queue at its ceiling is
+    // the constraint if it has been there ten minutes and noise if it filled
+    // this second, and the level alone cannot say which. Drawn as a LINE beside
+    // the filled bar rather than as a second bar — the last thing under this
+    // meter was a second bar, and the only question it produced was why there
+    // were two of them.
+    meterSpark = p.name === "ingest" ? spark(series, "queued") : null;
   } else if (p.observed != null) {
     // NO METER. `knownDead` is read from the STORE and `observed` is this
     // process's sockets since boot — different populations, so there is no
@@ -2157,7 +2257,13 @@ function processorRow(p) {
     bar.style.visibility = "hidden";
     right = p.phase === "off" ? "nothing to measure" : "no pass yet";
   }
-  row.appendChild(bar);
+  const cell = el("div", "meter");
+  cell.appendChild(bar);
+  if (meterSpark) {
+    cell.appendChild(meterSpark.svg);
+    bar.title += `\n\n${meterSpark.note}`;
+  }
+  row.appendChild(cell);
   row.appendChild(el("span", "r", right));
 
   const stack = breakdown(p);
@@ -2199,7 +2305,7 @@ function processorsPanel(progress) {
     " socket, and the pipelines events pass through. All three of the first group write onto the same kind-30166" +
     " record per url — the Monitor verdicts panel below is where one url's whole record is read.");
   wrap.appendChild(head);
-  for (const p of sorted) wrap.appendChild(processorRow(p));
+  for (const p of sorted) wrap.appendChild(processorRow(p, progress.series));
   return wrap;
 }
 

@@ -13,7 +13,7 @@ import assert from "node:assert/strict";
 import {
   DISCOVERY, DISPOSITION, HEAP_TIGHT, HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, STUCK_LEG_SEC,
   constraintOf, dividesOn, gaugesOf, heldCount, isLive, legsOf, meterOf, partitionOf, passHeld, passLabelOf,
-  pendingMeaning,
+  pendingMeaning, sparkOf, trendOf, TREND_NOISE,
 } from "../../relay/src/main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -245,4 +245,68 @@ const leg = (n, quiet, over = {}) => ({
     assert.ok(label && label.length < 20, `${member}'s key label is short enough to sit on one line`);
   }
   ok("every outcome has a segment, and every label is short enough for the key");
+}
+
+// ── the last hour of a gauge ────────────────────────────────────────────────
+{
+  // `x` comes from each sample's OWN clock, not from its index. The rollup
+  // cadence is an operator's env var and a restart leaves a hole, so evenly
+  // spacing the points would draw a smooth line straight through a gap.
+  const uneven = sparkOf({ at: [0, 10, 600], v: [1, 2, 3] }, "v");
+  assert.deepEqual(uneven.points.map((p) => Number(p.x.toFixed(3))), [0, 0.017, 1],
+    "ten seconds and ten minutes are not the same distance");
+  assert.equal(uneven.span, 600);
+
+  const rising = sparkOf({ at: [0, 60, 120, 180], v: [10, 20, 30, 40] }, "v");
+  assert.deepEqual(rising.points.map((p) => Number(p.y.toFixed(2))), [0, 0.33, 0.67, 1]);
+  assert.equal(rising.lo, 10);
+  assert.equal(rising.hi, 40);
+  ok("a sample sits where its clock puts it, scaled to the series' own range");
+}
+
+{
+  // A queue 4,000 deep for an hour and one empty for an hour are both flat.
+  // Drawing either along the floor says "nothing" about one and "zero" about
+  // the other, so a flat series sits in the middle.
+  const flat = sparkOf({ at: [0, 60, 120], v: [4000, 4000, 4000] }, "v");
+  assert.deepEqual(flat.points.map((p) => p.y), [0.5, 0.5, 0.5]);
+  assert.equal(flat.flat, true);
+  assert.equal(trendOf(flat), "steady");
+  assert.deepEqual(sparkOf({ at: [0, 60, 120], v: [0, 0, 0] }, "v").points.map((p) => p.y), [0.5, 0.5, 0.5]);
+  ok("a flat series rides the middle, so empty and full do not both read as zero");
+}
+
+{
+  // A gap is a HOLE. Joining across it draws a straight line through an outage,
+  // which is the one shape a reader takes as evidence that nothing happened.
+  const gap = sparkOf({ at: [0, 60, 120, 180], v: [10, null, 30, 40] }, "v");
+  assert.equal(gap.points[1], null, "the router said nothing, which is not a value");
+  assert.equal(gap.points[0].y, 0);
+  assert.equal(gap.lo, 10, "the missing sample is not a zero pulling the floor down");
+  ok("a missing sample is a hole in the line, not a dive to the floor");
+}
+
+{
+  // One reading is a level, not a trend, and a lone dot on an empty track
+  // invites reading its position as a value.
+  assert.equal(sparkOf({ at: [0, 60], v: [5, null] }, "v"), null);
+  assert.equal(sparkOf({ at: [0], v: [5] }, "v"), null, "one sample is where every series starts");
+  assert.equal(sparkOf(null, "v"), null);
+  assert.equal(sparkOf({ at: [0, 60] }, "v"), null, "a member the series does not carry");
+  assert.equal(sparkOf({ at: [0, 60], v: [1, 2, 3] }, "v").points.length, 2, "values are read against the clocks");
+  ok("nothing is drawn where there is no shape to draw");
+}
+
+{
+  // Deliberately coarse: the reader has the shape in front of them, so a
+  // sentence only earns its place for a move the eye would not already see.
+  // A spike in the middle sets the range at 100; ending five above where it
+  // started is a 5% move, inside the noise floor.
+  const noisy = sparkOf({ at: [0, 60, 120], v: [100, 200, 105] }, "v");
+  assert.ok((noisy.last - noisy.first) / (noisy.hi - noisy.lo) < TREND_NOISE);
+  assert.equal(trendOf(noisy), "steady", "a wobble inside the noise floor is not a direction");
+  assert.equal(trendOf(sparkOf({ at: [0, 60], v: [10, 90] }, "v")), "climbing");
+  assert.equal(trendOf(sparkOf({ at: [0, 60], v: [90, 10] }, "v")), "falling");
+  assert.equal(trendOf(null), "steady");
+  ok("the trend word is only spent on a move worth a word");
 }

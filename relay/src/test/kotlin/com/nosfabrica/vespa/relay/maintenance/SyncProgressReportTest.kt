@@ -27,6 +27,7 @@ import kotlinx.serialization.json.int
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.jsonPrimitive
 import kotlinx.serialization.json.long
+import kotlinx.serialization.json.longOrNull
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -310,6 +311,107 @@ class SyncProgressReportTest {
             )!!
 
         assertNull((out["streams"] as JsonArray)[0].jsonObject["passes"], "one pass is what `cycle` already says")
+    }
+
+    /** A document with everything the gauge series is sampled from. */
+    private fun sampled(
+        rate: Int,
+        queued: Int,
+    ) = """
+        {"writtenAt": 900,
+         "health": {"bottleneck": "ingest", "eventsPerSec": $rate, "heapUsedMb": 900, "heapMaxMb": 2048,
+                    "sockets": 41, "socketCeiling": 1024},
+         "processors": [{"name": "ingest", "phase": "running", "queued": $queued, "capacity": 4096}],
+         "streams": [{"name": "c",
+          "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}}]}
+        """.trimIndent()
+
+    private fun series(doc: JsonObject) = doc["series"]!!.jsonObject
+
+    private fun at(doc: JsonObject) = (series(doc)["at"] as JsonArray).map { it.jsonPrimitive.long }
+
+    @Test
+    fun `the gauge series appends to what the previous document carried`() {
+        // The whole design: nothing new holds this. `StatsSnapshot` already
+        // merges each tier into the document it is serving and already persists
+        // that document, so a series that lives in the document is carried
+        // across rollups by the merge and across restarts by the file — no ring
+        // buffer, no scheduler, no second lifetime to reason about.
+        val first = SyncProgressReport.build(sampled(rate = 10, queued = 100), nowSeconds = 1_000)!!
+        val second = SyncProgressReport.build(sampled(rate = 20, queued = 200), nowSeconds = 1_060, previous = first)!!
+
+        assertEquals(listOf(1_000L, 1_060L), at(second))
+        assertEquals(listOf(10L, 20L), (series(second)["eventsPerSec"] as JsonArray).map { it.jsonPrimitive.long })
+        // `queued` is not on `health` — it is ingest's, read off the processor
+        // row, because the queue depth is the one gauge the constraint verdict
+        // is actually made from.
+        assertEquals(listOf(100L, 200L), (series(second)["queued"] as JsonArray).map { it.jsonPrimitive.long })
+        // Derived, not copied: a percentage is what compares across samples.
+        assertEquals(listOf(43L, 43L), (series(second)["heapPct"] as JsonArray).map { it.jsonPrimitive.long })
+    }
+
+    @Test
+    fun `a document republished on the same clock does not sample twice`() {
+        // The failure this guards: a sample per REQUEST rather than per rollup.
+        // `build` runs once per counters tick, but anything that rebuilt the
+        // document without a new reading would lay down a run of samples all
+        // claiming the same instant — and a rate drawn against them reads as a
+        // spike that never happened.
+        val first = SyncProgressReport.build(sampled(rate = 10, queued = 100), nowSeconds = 1_000)!!
+        val again = SyncProgressReport.build(sampled(rate = 99, queued = 999), nowSeconds = 1_000, previous = first)!!
+
+        assertEquals(listOf(1_000L), at(again))
+        assertEquals(listOf(10L), (series(again)["eventsPerSec"] as JsonArray).map { it.jsonPrimitive.long })
+    }
+
+    @Test
+    fun `a router that says nothing leaves a null in the series, not a zero`() {
+        // "The router said nothing" and "the router said none" are different
+        // facts and a chart cannot tell them apart once one is written as the
+        // other. A carried-forward value would be worse still: it draws a flat
+        // line through an outage.
+        val first = SyncProgressReport.build(sampled(rate = 10, queued = 100), nowSeconds = 1_000)!!
+        val quiet =
+            SyncProgressReport.build(
+                """{"writtenAt": 900, "streams": [{"name": "c"}]}""",
+                nowSeconds = 1_060,
+                previous = first,
+            )!!
+
+        assertEquals(listOf(1_000L, 1_060L), at(quiet))
+        assertEquals(listOf(10L, null), (series(quiet)["eventsPerSec"] as JsonArray).map { it.jsonPrimitive.longOrNull })
+    }
+
+    @Test
+    fun `nothing to sample and nothing carried publishes no series at all`() {
+        // An hour of flat zeroes reads as a dead mirror. A router too old to
+        // publish health, or one whose first health tick has not fired, has to
+        // be absent rather than flat.
+        val out =
+            SyncProgressReport.build(
+                """{"writtenAt": 900, "streams": [{"name": "c"}]}""",
+                nowSeconds = 1_000,
+            )!!
+
+        assertNull(out["series"])
+    }
+
+    @Test
+    fun `the ring is bounded by count, whatever the operator set the cadence to`() {
+        // Bounded by COUNT rather than by age on purpose: the bound has to hold
+        // whatever `STATS_COUNTERS_INTERVAL_SECONDS` is, and this costs the
+        // document the same either way.
+        var doc = SyncProgressReport.build(sampled(rate = 1, queued = 1), nowSeconds = 1_000)!!
+        for (i in 1..SyncProgressReport.MAX_SAMPLES + 20) {
+            doc = SyncProgressReport.build(sampled(rate = i, queued = i), nowSeconds = 1_000L + i * 60, previous = doc)!!
+        }
+
+        assertEquals(SyncProgressReport.MAX_SAMPLES, at(doc).size)
+        for (member in SyncProgressReport.SERIES) {
+            assertEquals(SyncProgressReport.MAX_SAMPLES, (series(doc)[member] as JsonArray).size, "$member must ride the same ring")
+        }
+        // The OLDEST is what falls off, so the newest sample is always the last.
+        assertEquals(1_000L + (SyncProgressReport.MAX_SAMPLES + 20) * 60, at(doc).last())
     }
 
     @Test

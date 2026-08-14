@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.maintenance
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
@@ -111,6 +112,7 @@ internal object SyncProgressReport {
     fun build(
         progressJson: String?,
         nowSeconds: Long,
+        previous: JsonObject? = null,
     ): JsonObject? {
         val doc = parse(progressJson) ?: return null
         val writtenAt = (doc["writtenAt"] as? JsonPrimitive)?.longOrNull
@@ -137,7 +139,11 @@ internal object SyncProgressReport {
             // WHERE THE CONSTRAINT IS. The router decides this itself, from the
             // pair that separates a full ingest queue from an empty one, and it
             // is the first thing an operator asks of a mirror that feels slow.
-            health(doc["health"] as? JsonObject)?.let { put("health", it) }
+            val health = health(doc["health"] as? JsonObject)
+            health?.let { put("health", it) }
+            // …AND HOW IT GOT HERE. Every gauge above is an instant, and every
+            // question asked of them is differential — see [series].
+            series(previous, health, doc, nowSeconds)?.let { put("series", it) }
             putJsonArray("streams") {
                 for (s in streams) stream(s)?.let { add(it) }
             }
@@ -176,6 +182,107 @@ internal object SyncProgressReport {
             for (member in HEALTH_NUMBERS) num(o[member])?.let { put(member, it) }
         }.takeIf { it.isNotEmpty() }
     }
+
+    /**
+     * HOW IT GOT HERE — the last hour of the four process gauges, appended one
+     * sample per rollup.
+     *
+     * ## Why an instant was not enough
+     *
+     * Every gauge on this card is a level, and not one operator question about
+     * a level is answerable from one reading. `heap 45%` says nothing; heap 45%
+     * and climbing three points a minute says everything. A queue at 4,101 of
+     * 4,096 is the constraint if it has been there for ten minutes and is noise
+     * if it filled this second. "Is it stuck" is a derivative, and the card was
+     * answering it with thresholds — which is the wrong instrument, and is why
+     * the thresholds always felt arbitrary.
+     *
+     * ## Where it is kept
+     *
+     * In the DOCUMENT, appended to whatever the previously served one carried.
+     * Nothing new holds it: `StatsSnapshot` already merges each tier into the
+     * document it is serving and already persists that document to `STATS_FILE`,
+     * so a series that lives there is carried across rollups by the merge and
+     * across restarts by the file, with no ring buffer, no scheduler and no
+     * second lifetime to reason about. A relay that has just started serves the
+     * history its last run wrote.
+     *
+     * ## What is in it, and what is deliberately not
+     *
+     * The four PROCESS gauges, because they are the ones that decide whether
+     * there is a problem at all, and because they are four scalars rather than
+     * a shape that changes with the deployment. Per-stream and per-processor
+     * series are not here and are not an oversight: the alias fold runs on a
+     * six-hour clock, so at this cadence an hour of samples would not contain
+     * one of its passes. That needs a different window and is a different
+     * feature.
+     *
+     * `at` is published beside the values rather than an interval being
+     * assumed. The rollup cadence is an operator's env var, a restart leaves a
+     * hole, and a reader drawing evenly spaced points over an uneven series
+     * would draw a smooth line through a gap.
+     */
+    private fun series(
+        previous: JsonObject?,
+        health: JsonObject?,
+        doc: JsonObject,
+        nowSeconds: Long,
+    ): JsonObject? {
+        val prior = previous?.get("series") as? JsonObject
+        // The one thing that must not happen: a sample per REQUEST rather than
+        // per rollup. `build` is called once per counters tick, but a document
+        // republished without a new reading would still append — so a sample
+        // whose clock has not moved past the last one is the same instant and
+        // is dropped.
+        val lastAt = (prior?.get("at") as? JsonArray)?.lastOrNull()?.let { num(it) }
+        if (lastAt != null && nowSeconds <= lastAt) return prior
+        val sample =
+            SERIES.associateWith { member ->
+                when (member) {
+                    "heapPct" -> {
+                        val used = num(health?.get("heapUsedMb"))
+                        val max = num(health?.get("heapMaxMb"))
+                        if (used != null && max != null && max > 0) used * 100 / max else null
+                    }
+
+                    "queued" -> {
+                        num(
+                            (doc["processors"] as? JsonArray)
+                                ?.filterIsInstance<JsonObject>()
+                                ?.firstOrNull { text(it["name"]) == "ingest" }
+                                ?.get("queued"),
+                        )
+                    }
+
+                    else -> {
+                        num(health?.get(member))
+                    }
+                }
+            }
+        // Nothing to sample is not a zero sample. A router too old to publish
+        // health, or one whose first health tick has not fired, would otherwise
+        // lay down an hour of flat zeroes that read as a dead mirror.
+        if (sample.values.all { it == null } && prior == null) return null
+        return buildJsonObject {
+            putJsonArray("at") {
+                for (t in tail((prior?.get("at") as? JsonArray).orEmpty().mapNotNull { num(it) } + nowSeconds)) add(t)
+            }
+            for (member in SERIES) {
+                putJsonArray(member) {
+                    // A gap is published as a NULL, never as a zero or a
+                    // carried-forward value: the reader has to be able to tell
+                    // "the router said nothing" from "the router said none".
+                    val kept = (prior?.get(member) as? JsonArray).orEmpty().map { num(it) }
+                    for (v in tail(kept + sample[member])) {
+                        if (v == null) add(JsonNull) else add(v)
+                    }
+                }
+            }
+        }
+    }
+
+    /** The last [MAX_SAMPLES] of a series, so the ring is bounded by the document rather than by a clock. */
+    private fun <T> tail(values: List<T>): List<T> = if (values.size <= MAX_SAMPLES) values else values.takeLast(MAX_SAMPLES)
 
     /** One stream's line, or null when it carries no name — without which it says nothing. */
     private fun stream(o: JsonObject): JsonObject? {
@@ -513,6 +620,26 @@ internal object SyncProgressReport {
             // ingest's one loss counter
             "lostToStore",
         )
+
+    /**
+     * The gauges kept as a series, in draw order — see [series].
+     *
+     * `heapPct` is derived rather than copied: a percentage is what a reader
+     * compares across samples, and publishing both halves of the pair sixty
+     * times over to let the page divide them would triple the cost of the
+     * feature for nothing.
+     */
+    internal val SERIES = listOf("eventsPerSec", "queued", "heapPct", "sockets")
+
+    /**
+     * How many samples the ring holds — an hour at the stock 60s counters
+     * cadence, and however long that many ticks is at any other.
+     *
+     * Bounded by COUNT rather than by age on purpose: the bound has to hold
+     * whatever an operator sets `STATS_COUNTERS_INTERVAL_SECONDS` to, and this
+     * one costs the document about 1.2KB whatever that is.
+     */
+    internal const val MAX_SAMPLES = 60
 
     /** The four words `SyncEngine.bottleneckOf` can produce, and no others. */
     private val BOTTLENECKS = setOf("ingest", "downloads", "upstream", "mixed")
