@@ -186,22 +186,22 @@ const listTitle = (ev) => ev.kind === 30007
  * public here" is the true statement; "0 people" reads as a list its author
  * left empty, which is a different thing.
  */
-const countsLine = (ev) => {
-  const sections = sectionsOf(ev);
-  return sections.length
-    ? sections.map((s) => countOf(s, s.values.length)).join(" · ")
-    : `nothing public here${ev.content ? " — this list keeps its items encrypted" : ""}`;
-};
+const countsLine = (ev, sections = sectionsOf(ev)) => sections.length
+  ? sections.map((s) => countOf(s, s.values.length)).join(" · ")
+  : `nothing public here${ev.content ? " — this list keeps its items encrypted" : ""}`;
 
 function listCard(ev, opts) {
   const full = opts && opts.full;
+  // Read once and passed down: valuesOf dedupes every tag on the event, and a
+  // follow list is thousands of them — a second walk to write the same line
+  // twice is a Set of eight thousand keys built for nothing.
   const sections = sectionsOf(ev);
   const body = sections.length
     ? (full
         ? sections.map((s) => `<div class="list-section"><div class="section-head">${esc(countOf(s, s.values.length))}</div>${s.show(s.values, opts)}</div>`).join("")
-        : `<div class="result-body">${esc(countsLine(ev))}</div>` +
+        : `<div class="result-body">${esc(countsLine(ev, sections))}</div>` +
           sections[0].show(sections[0].values, opts))
-    : `<div class="result-body muted">${esc(countsLine(ev))}</div>`;
+    : `<div class="result-body muted">${esc(countsLine(ev, sections))}</div>`;
 
   const inner = titleHtml(opts, listTitle(ev), 120) + bodyHtml(opts, summaryOf(ev), 300, true) + body;
   return shell(ev, opts, inner);

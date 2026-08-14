@@ -103,5 +103,8 @@ registerRow([30023, 30024, 30818, 30041], (ev) => ({
   name: titleOf(ev),
   sub: summaryOf(ev) || mdExcerpt(ev.content, titleOf(ev)),
 }));
-registerRow([30004], (ev) => ({ name: titleOf(ev), sub: `${plural(picksOf(ev), "item")} curated` }));
+registerRow([30004], (ev) => ({
+  name: titleOf(ev),
+  sub: [`${plural(picksOf(ev), "item")} curated`, summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
+}));
 registerRow([30040], (ev) => ({ name: titleOf(ev), sub: summaryOf(ev) || plural(sectionAddrs(ev).length, "section") }));

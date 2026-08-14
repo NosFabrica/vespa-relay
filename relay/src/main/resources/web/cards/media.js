@@ -226,10 +226,11 @@ function audioCard(ev, opts) {
 /** How many videos a set names, by address and by id alike. */
 const setSize = (ev) => tagsOf(ev, "a").length + tagsOf(ev, "e").length;
 
-/** 30005 — a video set: title + how many it holds. */
+/** 30005 — a video set: title, whatever it says it is, and how many it holds. */
 function videoSetCard(ev, opts) {
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
+    bodyHtml(opts, summaryOf(ev), 300, true) +
     `<div class="result-body">${esc(plural(setSize(ev), "video"))}</div>`;
   return shell(ev, opts, inner);
 }
@@ -242,6 +243,7 @@ function emojiPackCard(ev, opts) {
   const emoji = emojiOf(ev);
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
+    bodyHtml(opts, summaryOf(ev), 300, true) +
     `<div class="result-body">${esc(plural(emoji.length, "emoji", "emoji"))}</div>` +
     emojiGrid(emoji, opts);
   return shell(ev, opts, inner);
@@ -258,22 +260,24 @@ register([30030], emojiPackCard);
 
 /**
  * The row for a file that has something to say: its title, else the words the
- * author wrote about it — and never both, since the caption a titled post
- * repeats verbatim is what the card drops for the same reason.
+ * author wrote about it.
  *
- * A media event carries no prose at all often enough that the fallback matters:
- * the row is then the author, and the second line is what the file IS.
+ * A caption that merely repeats the title falls away, exactly as it does on the
+ * card — though here cards.js drops it, since a second line that is the first
+ * one is a rule every family needs and none of them should each keep.
  */
 const captionRow = (ev) => {
   const title = titleOf(ev);
   const caption = captionOf(ev, fileOf(ev));
-  return { name: title || caption, sub: title && caption !== title ? caption : "" };
+  return { name: title || caption, sub: title ? caption : "" };
 };
 registerRow([20], captionRow);
-registerRow([21, 22, 34235, 34236], (ev) => ({
-  ...captionRow(ev),
-  sub: captionRow(ev).sub || fmtDuration(fieldOf(fileOf(ev), ev, "duration")),
-}));
+// A video says how long it is when it has nothing else to say for its second
+// line, which is the one fact a caption-less clip carries.
+registerRow([21, 22, 34235, 34236], (ev) => {
+  const row = captionRow(ev);
+  return { ...row, sub: row.sub || fmtDuration(fieldOf(fileOf(ev), ev, "duration")) };
+});
 registerRow([1063], (ev) => ({
   name: ev.content || titleOf(ev),
   sub: [tagOf(ev, "m"), fmtBytes(tagOf(ev, "size"))].filter(Boolean).join(" · "),

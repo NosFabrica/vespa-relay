@@ -8,8 +8,8 @@ import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote, shortNpub, shortAddr } from "../shared/nip19.js";
 import { displayName, profiles } from "../shared/profiles.js";
 import {
-  register, registerRow, registerPeopleGrid, shell, peopleGrid, peopleOf, personLink, noteHref, addrHref,
-  relayRows, tagsOf, tagsWhere, tagOf, clipIf, plural,
+  register, registerRow, registerPeopleGrid, shell, bodyHtml, peopleGrid, peopleOf, personLink, noteHref,
+  addrHref, relayRows, tagsOf, tagsWhere, tagOf, clipIf, plural,
 } from "./base.js";
 
 /** 3 — the follow list: a count and the first faces and names, not 800 rows. */
@@ -21,13 +21,22 @@ function followsCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 30000 — a named follow set: the d/title plus the same grid. */
+/**
+ * 30000 — a named follow set: the d/title plus the same grid.
+ *
+ * The DESCRIPTION was the one thing on these events that reached the type-ahead
+ * row and not the card — a starter pack called "Test Group" and described as
+ * "Test Group for Amethyst" said the second half only in the popup, and lost it
+ * on the way to the page the popup opens. Muted, as every other summary line on
+ * this page is: it stands in for the set, it is not the set.
+ */
 function followSetCard(ev, opts) {
   const pks = peopleOf(ev);
   const title = titleOf(ev);
   const inner =
     (title ? `<h2 class="result-title">${esc(clipIf(opts, title, 120))}</h2>` : "") +
-    `<div class="result-body">${pks.length.toLocaleString()} ${pks.length === 1 ? "member" : "members"}</div>` +
+    bodyHtml(opts, summaryOf(ev), 300, true) +
+    `<div class="result-body">${esc(plural(pks.length, "member"))}</div>` +
     peopleGrid(pks, opts);
   return shell(ev, opts, inner);
 }
@@ -35,17 +44,18 @@ function followSetCard(ev, opts) {
 /** 10002 — NIP-65: r tags, each optionally marked read or write. */
 function relayListCard(ev, opts) {
   const rows = tagsOf(ev, "r").map((t) => ({ url: t[1] || "", note: t[2] || "read + write" }));
-  const inner = `<div class="result-body">${rows.length} relay${rows.length === 1 ? "" : "s"}</div>` + relayRows(rows, opts);
+  const inner = `<div class="result-body">${esc(plural(rows.length, "relay"))}</div>` + relayRows(rows, opts);
   return shell(ev, opts, inner);
 }
 
-/** 30002 — a named relay set. */
+/** 30002 — a named relay set, and whatever it says it is for. */
 function relaySetCard(ev, opts) {
-  const rows = tagsOf(ev, "relay").map((t) => ({ url: t[1] || "", note: "" }));
+  const urls = tagsOf(ev, "relay").map((t) => ({ url: t[1] || "", note: "" }));
   const title = titleOf(ev);
   const inner =
     (title ? `<h2 class="result-title">${esc(clipIf(opts, title, 120))}</h2>` : "") +
-    relayRows(rows, opts);
+    bodyHtml(opts, summaryOf(ev), 300, true) +
+    relayRows(urls, opts);
   return shell(ev, opts, inner);
 }
 
@@ -58,7 +68,7 @@ function observerCard(ev, opts) {
   const rows = dims.map((t) =>
     `<li><span class="mono">${esc(t[0])}</span> → ${personLink(t[1])}${t[2] ? ` <span class="muted-note">${esc(t[2].replace(/^wss?:\/\//, ""))}</span>` : ""}</li>`);
   const inner =
-    `<div class="result-body">trusts ${dims.length} score dimension${dims.length === 1 ? "" : "s"}</div>` +
+    `<div class="result-body">trusts ${esc(plural(dims.length, "score dimension"))}</div>` +
     (rows.length ? `<ul class="relay-list">${rows.join("")}</ul>` : "");
   return shell(ev, opts, inner);
 }
@@ -125,10 +135,10 @@ register([30382, 30383, 30384], scoreCard);
 // author's name and then said it again underneath. The count is the card's
 // first line and it is the row's too; the author's name is the second, which
 // cards.js fills in when a row leaves it empty.
-// A NAMED set carries its description on the same line, after the count: a
-// starter pack called "Test Group" and described as "Test Group for Amethyst"
-// is two facts, and the row has room for both once the count stops being the
-// author's name repeated.
+//
+// A NAMED set carries its description after the count: a starter pack called
+// "Test Group" and described as "Test Group for Amethyst" is two facts, and the
+// row has room for both now that neither line is the author twice.
 registerRow([3], (ev) => ({ sub: `follows ${plural(peopleOf(ev).length, "person", "people")}` }));
 registerRow([30000, 39089, 39092], (ev) => ({
   name: titleOf(ev),

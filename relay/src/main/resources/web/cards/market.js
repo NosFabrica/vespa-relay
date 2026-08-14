@@ -15,7 +15,11 @@ import { register, registerRow, shell, bodyHtml, tagsOf, tagOf, jsonContent, cli
  */
 const priceText = (amount, currency, period) => {
   const a = oneLine(amount);
-  return a ? `${a} ${oneLine(currency)}${period ? ` / ${oneLine(period)}` : ""}`.trim() : "";
+  // Each part is tested AFTER oneLine, not before: a period that is not text
+  // passes a bare `period ?` and then renders as "250 USD / ", a rate with no
+  // unit — the same class of mistake as the price itself being an object.
+  const per = oneLine(period);
+  return a ? `${a} ${oneLine(currency)}${per ? ` / ${per}` : ""}`.trim() : "";
 };
 
 const priceLine = (amount, currency, period) => {

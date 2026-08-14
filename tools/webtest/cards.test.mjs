@@ -291,6 +291,40 @@ assert.deepStrictEqual(rowOf(ev(0, [], JSON.stringify({ name: "carol" }))), { na
 // whole row on whitespace and rendered blank.
 assert.strictEqual(rowOf(ev(1, [], "\n\n\n  the first line\n\nand the next")).name, "the first line and the next",
   "a row is ONE line, whatever the text did with its newlines");
+// A relation is to what the event POINTS AT, and an `a` tag names an article
+// or a live stream as readily as a note — "liked a note" over a reaction to an
+// article is the row inventing a kind. With no target at all the noun goes,
+// which is what the card does there too.
+assert.strictEqual(rowOf(ev(7, [["a", `30023:${pk}:art`]], "+")).name, "liked an entry");
+assert.strictEqual(rowOf(ev(7, [["e", eid]], "+")).name, "liked a note");
+assert.strictEqual(rowOf(ev(7, [], "+")).name, "liked", "with nothing to point at, the row says only what it knows");
+assert.strictEqual(rowOf(ev(6, [["a", `30023:${pk}:art`]])).name, "reposted an entry");
+
+// Whatever a row says, the card it opens must say too. A named set's
+// DESCRIPTION was the one thing that reached the popup and not the page: four
+// set renderers drew a title and a count and dropped it.
+for (const [kind, tags] of [
+  [30000, [["p", pk2]]], [30002, [["relay", "wss://r.example"]]],
+  [30005, [["a", "34235:x:y"]]], [30030, [["emoji", "wave", "https://x/w.png"]]],
+]) {
+  const set = ev(kind, [["d", "s"], ["title", "T"], ["description", "what the set is for"], ...tags]);
+  assert(rowOf(set).sub.includes("what the set is for"), `kind ${kind}: its row drops the set's description`);
+  assert(card(set, { full: true }).includes("what the set is for"), `kind ${kind}: its card drops the description its row shows`);
+}
+
+// A second line that repeats the first is not a second line, and half these
+// families draw their two from slots one author can fill with the same words.
+// The families that can see it coming guard it themselves (a media caption
+// that IS the title); this holds for the ones that cannot.
+const echoed = ev(40, [], JSON.stringify({ name: "Bitcoin India", about: "Bitcoin India" }));
+assert.strictEqual(rowOf(echoed).name, "Bitcoin India");
+assert.strictEqual(rowOf(echoed).sub, shortNpub(pk), "a description that is the name gives way to who posted it");
+// The generic floor keeps the content on BOTH lines: for a kind nothing
+// renders it is all anybody knows, so the row must not answer with less than
+// the ladder it replaced did.
+assert.deepStrictEqual(rowOf(ev(12345, [["title", "Mystery"]], "the only thing known about it")),
+  { name: "Mystery", sub: "the only thing known about it", pic: "" },
+  "an unregistered kind still says what it carries");
 // A JSON field can be any type at all, and `${}` on an object is the words
 // "[object Object]" in a row where a name belongs.
 assert.strictEqual(rowOf(ev(40, [], JSON.stringify({ name: { evil: 1 }, about: "x" }))).name, shortNpub(pk),

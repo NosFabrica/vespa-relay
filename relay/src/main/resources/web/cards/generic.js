@@ -31,11 +31,17 @@ export function genericCard(ev, opts) {
 }
 
 /**
- * The floor's type-ahead row: the same three fields the card above shows, in
- * the same order, minus the markup.
+ * The floor's type-ahead row: the same fields the card above shows, in the
+ * same order, minus the markup.
  *
  * Not registered either, for the same reason — and the content fallback that
  * every registered kind now avoids is honest HERE: an unknown kind's content
- * is all anybody knows about it, JSON or not.
+ * is all anybody knows about it, JSON or not. It stays on BOTH lines for that
+ * reason: with a title and no summary the content is still the only thing this
+ * page can say about the event, and dropping it to the author's name would
+ * make the floor answer with less than it used to.
  */
-export const genericRow = (ev) => ({ name: titleOf(ev) || ev.content, sub: summaryOf(ev) });
+export const genericRow = (ev) => {
+  const title = titleOf(ev);
+  return { name: title || ev.content, sub: summaryOf(ev) || (title ? ev.content : "") };
+};

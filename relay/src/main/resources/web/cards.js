@@ -108,15 +108,23 @@ const NAMES_P_TAGS = new Set([9734, 9735, 1984]);
  * The SUB then carries that person, unless the row already used them (a kind 3
  * says "follows 2,431 people" UNDER the author's name, never beside it) or the
  * event simply IS them: base.js's `self`.
+ *
+ * And a second line that repeats the first is not a second line. Half the
+ * families draw their two from slots an author is free to fill with the same
+ * words — a channel named "Bitcoin India" described as "Bitcoin India", an
+ * article whose summary is its title — and the families that can see it coming
+ * already guard it (media.js drops a caption that is the title). Here it holds
+ * for every kind, on events no fixture anticipated.
  */
 export function rowOf(ev) {
   const a = authorOf(ev);
   const r = (rows.get(ev.kind) || genericRow)(ev) || {};
   const name = oneLine(r.name) || a.name;
+  const sub = oneLine(r.sub);
   return {
     pic: oneLine(r.pic) || a.picture,
     name,
-    sub: oneLine(r.sub) || (r.self || name === a.name ? "" : a.name),
+    sub: sub && sub !== name ? sub : (r.self || name === a.name ? "" : a.name),
   };
 }
 

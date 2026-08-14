@@ -26,6 +26,21 @@ function targetLink(ev) {
   return href ? `<a href="${href}">${esc(shortAddr(a))}</a>` : esc(shortAddr(a));
 }
 
+/**
+ * The same target as a NOUN — " a note", " an entry", or nothing at all —
+ * since a row has the words a link would have carried and nowhere to put one.
+ *
+ * The precedence is targetLink's, and so is the distinction: an `a` names
+ * something addressable, which is as often an article or a live stream as a
+ * note, and "liked a note" under a reaction to an article is the row inventing
+ * a kind. With no target the noun goes entirely: the card renders a bare
+ * "liked" there too, because that is all the event says.
+ */
+const targetNoun = (ev) => {
+  if (tagsOf(ev, "e").some((t) => /^[0-9a-f]{64}$/.test(t[1]))) return " a note";
+  return tagOf(ev, "a") ? " an entry" : "";
+};
+
 const relationLine = (verb, target) =>
   `<div class="result-body">${verb}${target ? ` ${target}` : ""}</div>`;
 
@@ -314,9 +329,9 @@ registerRow([7, 17], (ev) => {
   // A custom reaction IS its glyph, and a `:shortcode:`'s image cannot ride in
   // a line of text — so the row shows what the event wrote, which is at worst
   // the code itself.
-  return { name: isGlyph(c) ? `reacted ${clip(c, 24)}` : `${reactionVerb(c)} a note` };
+  return { name: isGlyph(c) ? `reacted ${clip(c, 24)}` : `${reactionVerb(c)}${targetNoun(ev)}` };
 });
-registerRow([6, 16], (ev) => ({ name: quotedText(ev) || "reposted a note" }));
+registerRow([6, 16], (ev) => ({ name: quotedText(ev) || `reposted${targetNoun(ev)}` }));
 registerRow([9735], (ev) => {
   const req = zapRequest(ev);
   const sats = zapSats(ev, req);
@@ -329,14 +344,14 @@ registerRow([9734], (ev) => {
 registerRow([1111], (ev) => ({ name: ev.content }));
 registerRow([1068], (ev) => ({ name: ev.content, sub: plural(pollOptions(ev).length, "choice") }));
 registerRow([1018], () => ({ name: "voted on a poll" }));
-registerRow([1984], (ev) => ({
-  name: reportCategory(ev) ? `reports as ${reportCategory(ev)}` : "reports an event",
-  sub: ev.content,
-}));
-registerRow([1985], (ev) => ({
-  name: labelsOf(ev).length ? `labels ${labelsOf(ev).join(", ")}` : "labels an event",
-  sub: ev.content,
-}));
+registerRow([1984], (ev) => {
+  const category = reportCategory(ev);
+  return { name: category ? `reports as ${category}` : "reports an event", sub: ev.content };
+});
+registerRow([1985], (ev) => {
+  const labels = labelsOf(ev);
+  return { name: labels.length ? `labels ${labels.join(", ")}` : "labels an event", sub: ev.content };
+});
 registerRow([5], (ev) => ({ name: `asks to delete ${plural(deletionCount(ev), "event")}`, sub: ev.content }));
 registerRow([8], (ev) => ({ name: `awards a badge to ${plural(winnersOf(ev).length, "recipient")}` }));
 registerRow([4550], (ev) => ({ name: "approved a post", sub: quotedText(ev) }));
