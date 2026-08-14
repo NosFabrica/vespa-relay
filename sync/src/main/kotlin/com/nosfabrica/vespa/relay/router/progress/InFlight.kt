@@ -151,22 +151,17 @@ class InFlight(
          */
         val doing: String? = null,
         /**
-         * WHERE IN TIME a paging leg has got to: the `created_at` second its
-         * cursor is reading now, or null when it is not paging.
+         * WHERE IN TIME its paged walk has got to — the `created_at` second the
+         * cursor is reading now.
          *
-         * [doing] says a leg is `paging` and [quietForSec] says nothing has
-         * arrived, and between them they still cannot separate the two walks
-         * that look identical from here — one deep in a real backlog, working
-         * its way down, and one whose cursor is not moving. This is the number
-         * that does: read twice, it either advanced or it did not.
+         * [doing] `paging` beside a large [quietForSec] is two legs that look
+         * identical here: one deep in a real backlog and one whose cursor has
+         * stopped. Read twice, this separates them. The stream's `reached` cannot
+         * — it is the MINIMUM over every live walk, one date describing the
+         * deepest, while a row is drawn because it is the exception.
          *
-         * The stream already publishes `reached`, but that is the MINIMUM over
-         * its live walks — one date for a hundred legs, describing the deepest.
-         * A row is drawn because it is the exception, so it carries its own.
-         *
-         * Null on every non-paging leg and on a router that predates the member,
-         * which is a state rather than a gap: reconciling legs have no cursor,
-         * and neither has one still in the guards.
+         * Null when no walk of this url is running: in the guards, queued, or
+         * reconciling without the delete pass, which pages under the same key.
          */
         val pagingUntil: Long? = null,
     )

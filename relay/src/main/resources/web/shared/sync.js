@@ -60,6 +60,10 @@ export const IN_FLIGHT_SHOWN = Infinity;
  * different fixes, so each names what to look at next.
  */
 export const BOTTLENECK = {
+  // The key is a word off the wire, and the relay allowlists it but the card is
+  // served to whoever asks. Without this, `bottleneck: "constructor"` reaches
+  // Object.prototype, and destructuring a function below throws out the render.
+  __proto__: null,
   ingest: ["ingest is the limit", "Ingest's queue is full, so every download is backpressured behind it. Look at ingest and the store behind it, not at the relays."],
   downloads: ["relays are the limit", "Ingest drains as fast as it fills. The mirror is going as fast as the upstreams will serve it."],
   upstream: ["nothing arriving", "The queue is empty and no events are reaching it — look at discovery, the guards and the transport, not at ingest."],
@@ -97,50 +101,21 @@ export function constraintOf(health, live) {
   return { word, text: live ? text : `${text}, when it stopped`, why, tone: word === "ingest" ? "warn" : null };
 }
 
-/**
- * The word a processor's phase carries while one of its passes is dialling —
- * `Processors.MEASURING`.
- *
- * Named rather than inlined because [probeProgress] turns on it: the clock a
- * finished pass leaves behind is the PREVIOUS pass's while the next one runs,
- * and drawing it beside a running pass reads as its elapsed time.
- */
+/** The phase word a processor carries while a pass is dialling — `Processors.MEASURING`. */
 export const MEASURING = "measuring";
 
 /**
- * HOW FAR A PROBE PASS HAS GOT over the urls it was handed — the fold's row and
- * the stability gate's, which publish the same shape.
+ * HOW FAR A PROBE PASS HAS GOT — the fold's row and the stability gate's, which
+ * publish the same shape.
  *
- * ## Checked, not unmeasured
+ * The document's number is `unmeasured`, what still has NO verdict; this returns
+ * its COMPLEMENT, which rises as the pass gets somewhere. The two read in
+ * opposite directions, so the subtraction lives here rather than in the page.
  *
- * The document's number is `unmeasured`: what still has NO verdict. The card
- * draws its COMPLEMENT, because the two read in opposite directions and the
- * rising one is the one an operator wants — `7,546 of 11,693` climbing is a
- * fold falling behind, and it was the same fold getting steadily further along.
- * The subtraction is here, once, rather than in the page: it is exactly the
- * wrong-direction arithmetic this module exists to hold still.
- *
- * Clamped at zero, and that is not defensive noise. `SyncProgressReport`
- * defaults `unmeasured` to `candidates` when a row is unreadable — deliberately,
- * since "nothing left to measure" is a strong claim to make on a bad read — so
- * an old or truncated document lands on `checked = 0`, which is the honest end
- * of the range rather than a negative count.
- *
- * ## Summed across the streams, still
- *
- * `AliasMonitor.runPass` now merges every stream into one `all streams` work
- * item, so the array is a single row in practice. Summed anyway: reading
- * `streams[0]` made a fold that had never seen the two 17,000-url streams
- * report the 16-url one's residue as the whole picture, and that bug does not
- * come back just because today's router happens to publish one row.
- *
- * ## The clock, only when a pass is not running
- *
- * `lastPassSec` is the duration of the last pass that FINISHED. While the next
- * one is dialling, that number describes neither the pass on screen nor the one
- * being waited for, so it is withheld — a fold measuring for two hours must not
- * show the previous pass's `12m` beside it. Null before the first pass lands,
- * which is the whole of a cold boot.
+ * Clamped at zero because `SyncProgressReport` defaults `unmeasured` to
+ * `candidates` on an unreadable row. Summed rather than `streams[0]`, which once
+ * reported a 16-url stream's residue as the whole picture. `lastPassSec` is
+ * withheld while a pass runs: it belongs to the previous one.
  */
 export function probeProgress(p) {
   const streams = p?.streams || [];
@@ -198,11 +173,8 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
       // glossary. Null on a router that predates the member, which reads as
       // "not known" and never as a stage.
       doing: r.doing || null,
-      // WHERE IN TIME a paging leg has got to. Null on every leg that is not
-      // paging — and `|| null` would be wrong here in a way it is not for
-      // `doing`: `created_at = 0` is a real second relays genuinely serve, and
-      // a walk that has reached it is the deepest a walk can get, not a leg
-      // with no cursor.
+      // `??`, not `||`: `created_at = 0` is a real second relays serve and the
+      // deepest a walk can reach, not a leg with no cursor.
       pagingUntil: r.pagingUntil ?? null,
     };
   });

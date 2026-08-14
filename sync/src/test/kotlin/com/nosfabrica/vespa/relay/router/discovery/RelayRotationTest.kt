@@ -204,11 +204,9 @@ class RelayRotationTest {
 
     @Test
     fun `a paging leg carries where its cursor is, asked of whoever knows`() {
-        // `doing: paging` and a long quiet clock are the same row for two legs
-        // that want opposite responses — one deep in a real backlog working its
-        // way down, one whose cursor has stopped — and nothing on the row could
-        // separate them. The rotation does not know where a cursor is and must
-        // not learn: it asks, per url, and publishes the answer.
+        // `paging` beside a long quiet clock is two legs that want opposite
+        // responses — a real backlog, and a cursor that has stopped. The
+        // rotation does not know which; it asks, per url, and publishes it.
         val rotation = RelayRotation()
         rotation.take(a.url, nowMs = 1_000_000)
         rotation.take(b.url, nowMs = 1_000_000)
@@ -220,13 +218,27 @@ class RelayRotationTest {
                 .associateBy { it.relay }
 
         assertEquals(1_689_857_148L, held[a.url.url]!!.pagingUntil)
-        assertNull(
-            held[b.url.url]!!.pagingUntil,
-            "no cursor is NOT paging — the ordinary answer for a leg in the guards or reconciling",
-        )
-        // The default is the honest one, so the pool gate and every caller with
-        // no paging in scope asks only what it can answer.
+        assertNull(held[b.url.url]!!.pagingUntil, "no walk running is no cursor")
+        // The default answers only what a caller with no paging in scope can.
         assertNull(rotation.held(nowMs = 1_100_000).relays[0].pagingUntil)
+    }
+
+    @Test
+    fun `the cursor is asked for only once per row PUBLISHED`() {
+        // Every other clock is read off the map for all of `busy`, because the
+        // sort needs them. This one costs a key build and a map lookup and the
+        // sort never reads it, so a saturated fan-out must not pay it 512 times
+        // to publish 20 — the ticker runs this every 15 seconds, per stream.
+        val rotation = RelayRotation()
+        listOf(a, b, c).forEachIndexed { i, r -> rotation.take(r.url, nowMs = 1_000L + i) }
+        var asked = 0
+
+        rotation.held(nowMs = 2_000, limit = 1) {
+            asked++
+            null
+        }
+
+        assertEquals(1, asked, "asked for the row kept, not for the two the cap dropped")
     }
 
     @Test

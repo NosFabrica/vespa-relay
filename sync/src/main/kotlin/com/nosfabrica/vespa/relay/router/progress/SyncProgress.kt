@@ -315,12 +315,8 @@ class SyncProgress(
                                                             // state and not a
                                                             // gap.
                                                             r.doing?.let { put("doing", it) }
-                                                            // WHERE IN TIME a
-                                                            // paging leg is.
-                                                            // Absent on every
-                                                            // leg that is not
-                                                            // paging, which is
-                                                            // most of them.
+                                                            // Absent when no
+                                                            // walk is running.
                                                             r.pagingUntil?.let { put("pagingUntil", it) }
                                                         },
                                                     )

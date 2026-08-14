@@ -206,13 +206,9 @@ internal class DynamicSync(
         // it is what the progress report asks. Registered once, live thereafter
         // — see [StreamPhases.namesInFlight] for why it is a supplier and not a
         // copy.
-        // …and the paged cursor is joined on HERE rather than inside the
-        // rotation, because this is the only place that holds both halves: the
-        // rotation knows which urls have a worker, `paging` knows where each
-        // walk has got to, and the `"stream|url"` key that ties them together is
-        // this file's — the same one `fetchAllPages` reports pages against
-        // below. Teaching `RelayRotation` that key would give it a second thing
-        // to be wrong about.
+        // The paged cursor is joined on HERE because this is the only place
+        // holding both halves — the rotation's claims and `paging`'s walks —
+        // and the `"stream|url"` key that ties them is this file's.
         phases.namesInFlight(stream.name) {
             rotation.held(System.currentTimeMillis()) { url -> paging.cursorOf("${stream.name}|$url") }
         }

@@ -836,10 +836,8 @@
   table.sy-legs tr:last-child td { border-bottom: 0; }
   table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
   table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
-  /* The paged cursor, muted beside the stage it qualifies: the STAGE is what is
-     scanned down the column, and the date is what is read once a row has been
-     picked out. `inherit` on a hot row, so the warning colour still owns the
-     whole row rather than leaving one span behind at its resting colour. */
+  /* The paged cursor, muted beside the stage it qualifies. `inherit` on a hot
+     row, so the warning colour owns the whole row. */
   table.sy-legs .sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }
   table.sy-legs tr.hot .sy-at { color: inherit; }
   /* Quiet past the stuck threshold. The row is the finding, so the row is what
@@ -1783,12 +1781,9 @@ function legsPanel(s) {
     url.title = r.relay;
     tr.appendChild(url);
     // A leg with no slot says so here rather than leaving the column blank: the
-    // stage IS the answer for most of a fan-out's workers.
-    //
-    // …and a PAGING leg carries where its cursor is, in the same cell rather
-    // than a sixth column that would be empty on every other row. `paging` and
-    // `quiet 24m` together cannot separate a walk deep in a real backlog from
-    // one whose cursor has stopped; read twice, this date can.
+    // stage IS the answer for most of a fan-out's workers. A walking leg adds
+    // its cursor in the same cell — a sixth column would be empty on every row
+    // that is not paging.
     const stage = el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—"));
     if (r.pagingUntil != null) {
       const at = el("span", "sy-at", ` back to ${dayOf(r.pagingUntil)}`);
@@ -1907,15 +1902,14 @@ function backgroundPanel(progress) {
 }
 
 /**
- * What each probe pass is checking FOR, in its own terms.
+ * What each probe pass is checking FOR. Both publish the same `streams` shape,
+ * so one generic sentence made the stability gate report the fold's question.
  *
- * Both of them publish the same `streams` shape and were drawn with one generic
- * sentence about verdicts, which made two rows that fail for unrelated reasons
- * and are read for unrelated purposes look like the same row twice. A name this
- * table does not carry falls back to the bare verb rather than claiming the
- * fold's question about a pass that is not the fold.
+ * `__proto__: null`, because the key is a name off the wire: a router
+ * publishing `constructor` would otherwise draw a function into the cell.
  */
 const PROBE_FOR = {
+  __proto__: null,
   aliasFold: "checked for aliases",
   consistency: "checked for consistency",
 };
@@ -1952,11 +1946,8 @@ function processorFact(p) {
   }
   const probe = probeProgress(p);
   if (probe) {
-    // The RISING half of the pair, and the pass's own clock beside it. The
-    // document publishes `unmeasured`; `probeProgress` owns the subtraction and
-    // the argument for drawing its complement instead. The tooltip still hangs
-    // on `unmeasured`, which is the member this number is derived from and the
-    // one the glossary can be checked against.
+    // The tooltip hangs on `unmeasured`: the member this is derived from, and
+    // the one the glossary can be checked against.
     add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} relay(s) ${PROBE_FOR[p.name] || "checked"}` +
         `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
     return cell;

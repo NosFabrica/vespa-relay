@@ -481,11 +481,8 @@ internal object SyncProgressReport {
                             // nothing, which reads as "not known" rather than
                             // as a wrong stage.
                             text(row["doing"])?.let { put("doing", it) }
-                            // Where a paging leg's cursor is. Copied only when
-                            // the router said so: absent means "not paging",
-                            // and defaulting it to anything — the stream's
-                            // `reached`, the epoch, zero — would date a leg
-                            // from a walk it is not on.
+                            // Never defaulted: the stream's `reached` or a zero
+                            // would date a leg from a walk it is not on.
                             num(row["pagingUntil"])?.let { put("pagingUntil", it) }
                         },
                     )

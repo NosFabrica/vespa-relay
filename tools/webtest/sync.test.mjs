@@ -114,57 +114,46 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── how far a probe pass got ────────────────────────────────────────────────
 {
-  // THE DIRECTION, which is the whole of this function. The document publishes
-  // `unmeasured` — what still has NO verdict — and the card draws its
-  // complement. Getting this backwards renders a fold that has decided almost
-  // nothing as one that has nearly finished, and both numbers are plausible.
+  // THE DIRECTION. The document publishes `unmeasured` — what still has NO
+  // verdict — and this returns its complement. Backwards, a fold that decided
+  // almost nothing renders as one that nearly finished, and both are plausible.
   const fold = (over = {}) => ({
     name: "aliasFold", phase: "idle", lastPassSec: 6354,
     streams: [{ name: "all streams", candidates: 11693, unmeasured: 7546 }], ...over,
   });
   assert.equal(probeProgress(fold()).checked, 4147, "checked is candidates MINUS unmeasured");
   assert.equal(probeProgress(fold()).candidates, 11693, "the denominator is the candidate set");
-
-  // A pass that decided everything and one that decided nothing are the two
-  // ends, and each must read as itself rather than as the other.
   assert.equal(probeProgress(fold({ streams: [{ candidates: 40, unmeasured: 0 }] })).checked, 40);
   assert.equal(probeProgress(fold({ streams: [{ candidates: 40, unmeasured: 40 }] })).checked, 0);
 
   // `SyncProgressReport` defaults `unmeasured` to `candidates` on an unreadable
-  // row, so a bad read lands on zero checked. It must never land BELOW it: a
-  // negative count is not a smaller number, it is a broken one.
+  // row, so a bad read lands on zero checked and must never land below it.
   assert.equal(probeProgress(fold({ streams: [{ candidates: 10, unmeasured: 99 }] })).checked, 0);
 
-  // Summed, not `streams[0]`. The monitor merges into one `all streams` row
-  // today; the bug this pins predates that and would come straight back with it.
+  // Summed, not `streams[0]` — the bug predates today's single merged row.
   const two = probeProgress(fold({ streams: [{ candidates: 17000, unmeasured: 9000 }, { candidates: 16, unmeasured: 4 }] }));
   assert.equal(two.candidates, 17016);
   assert.equal(two.checked, 8012, "both rows counted, not the first one");
-
-  // A missing member is a zero on that row and not a NaN across the total —
-  // the fold's row predates `candidates` on a router old enough.
-  assert.equal(probeProgress(fold({ streams: [{ candidates: 10 }, {}] })).checked, 10);
+  assert.equal(probeProgress(fold({ streams: [{ candidates: 10 }, {}] })).checked, 10,
+    "a missing member is a zero on its row, not a NaN across the total");
   ok("the pass draws what HAS a verdict, summed across rows and never negative");
 }
 
 {
-  // THE CLOCK IS THE LAST FINISHED PASS, so it is withheld while the next one
-  // is dialling: a fold two hours into a pass must not show the previous one's
-  // duration beside it as though that were its elapsed time.
+  // The clock belongs to the last pass that FINISHED, so a fold two hours into
+  // the next one must not show the previous one's duration as its elapsed time.
   const row = (over) => ({ name: "aliasFold", streams: [{ candidates: 10, unmeasured: 2 }], ...over });
   assert.equal(probeProgress(row({ phase: "idle", lastPassSec: 6354 })).tookSec, 6354);
-  assert.equal(probeProgress(row({ phase: MEASURING, lastPassSec: 6354 })).tookSec, null,
-    "the previous pass's clock is not this one's");
+  assert.equal(probeProgress(row({ phase: MEASURING, lastPassSec: 6354 })).tookSec, null);
   assert.equal(MEASURING, "measuring", "the word `Processors.MEASURING` publishes");
 
-  // Before the first pass lands there is no duration at all — the whole of a
-  // cold boot — and that is an absence rather than a zero.
+  // Before the first pass lands there is no duration — the whole of a cold boot
+  // — and that is an absence rather than a zero.
   assert.equal(probeProgress(row({ phase: "idle" })).tookSec, null);
   assert.equal(probeProgress(row({ phase: "starting" })).tookSec, null);
-  assert.equal(probeProgress(row({ phase: "idle", lastPassSec: 0 })).tookSec, 0, "a pass that took under a second still ran");
+  assert.equal(probeProgress(row({ phase: "idle", lastPassSec: 0 })).tookSec, 0, "a pass under a second still ran");
 
-  // A processor with no probe rows is not a probe pass: ingest and the healer
-  // come through the same renderer and must fall past this branch.
+  // Ingest and the healer come through the same renderer and must fall past it.
   assert.equal(probeProgress({ name: "ingest", queued: 8304, capacity: 8192 }), null);
   assert.equal(probeProgress({ name: "aliasFold", streams: [] }), null);
   assert.equal(probeProgress(null), null);
@@ -173,16 +162,26 @@ const leg = (n, quiet, over = {}) => ({
 
 // ── where a paging leg's cursor is ──────────────────────────────────────────
 {
-  // Absent means NOT PAGING, and it is the ordinary answer: a leg in the
-  // guards, queued for a slot, or reconciling has no cursor at all.
-  assert.equal(legsOf({ relays: [leg(1, 30)] }).rows[0].pagingUntil, null);
+  assert.equal(legsOf({ relays: [leg(1, 30)] }).rows[0].pagingUntil, null, "no walk running is no cursor");
   assert.equal(legsOf({ relays: [leg(1, 30, { pagingUntil: 1689857148 })] }).rows[0].pagingUntil, 1689857148);
 
   // `created_at = 0` IS A REAL SECOND — purplepag.es holds twelve events
-  // stamped with it — and it is the deepest a walk can reach. Falsy-coalescing
-  // it to null the way `doing` is coalesced would erase the one cursor position
-  // that proves a walk got all the way down.
+  // stamped with it — and the deepest a walk can reach. Falsy-coalescing it
+  // erases the one position that proves a walk got all the way down.
   assert.equal(legsOf({ relays: [leg(1, 30, { pagingUntil: 0 })] }).rows[0].pagingUntil, 0,
     "the epoch is a position, not a missing cursor");
   ok("a paged cursor is carried per leg, and second zero is a position rather than an absence");
+}
+
+// ── names off the wire are not property lookups ─────────────────────────────
+{
+  // `bottleneck` is free text the card is served for whoever asks. Reaching
+  // Object.prototype hands back a function, and destructuring one throws the
+  // whole render away — a worse outcome than the unknown word it came from.
+  for (const hostile of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    const c = constraintOf({ bottleneck: hostile }, true);
+    assert.equal(c.text, hostile, `${hostile} is an unknown word, not a prototype member`);
+    assert.equal(c.why, "");
+  }
+  ok("a bottleneck word this page has not been taught cannot reach Object.prototype");
 }
