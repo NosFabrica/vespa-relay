@@ -183,7 +183,15 @@ class SyncProgressTest {
                             InFlight(
                                 relays =
                                     listOf(
-                                        InFlight.Relay("wss://slow.example/", heldForSec = 41_400, transferringForSec = 41_390, events = 2, quietForSec = 41_000),
+                                        InFlight.Relay(
+                                            "wss://slow.example/",
+                                            heldForSec = 41_400,
+                                            transferringForSec = 41_390,
+                                            events = 2,
+                                            quietForSec = 41_000,
+                                            doing = "paging",
+                                            pagingUntil = 1_689_857_148L,
+                                        ),
                                         InFlight.Relay("wss://probing.example/", heldForSec = 4, transferringForSec = null, events = 0, quietForSec = 4),
                                     ),
                                 omitted = 118,
@@ -201,6 +209,15 @@ class SyncProgressTest {
         assertNull(
             rows[1].jsonObject["transferringForSec"],
             "absent means NOT on a socket — a 0 would read as a transfer that just started",
+        )
+        assertEquals(
+            1_689_857_148L,
+            rows[0].jsonObject["pagingUntil"]!!.jsonPrimitive.long,
+            "where the paged cursor is, so a backlog and a stalled walk stop being the same row",
+        )
+        assertNull(
+            rows[1].jsonObject["pagingUntil"],
+            "absent means NOT paging — a leg still in the guards has no cursor to report",
         )
         assertEquals(118, stream["inFlight"]!!.jsonObject["omitted"]!!.jsonPrimitive.int, "the cap discloses itself")
     }

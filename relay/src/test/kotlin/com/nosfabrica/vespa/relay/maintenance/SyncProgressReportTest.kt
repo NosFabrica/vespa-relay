@@ -227,7 +227,8 @@ class SyncProgressReportTest {
             SyncProgressReport.build(
                 """
                 {"writtenAt": 900, "streams": [{"name": "content",
-                 "inFlight": {"relays": [{"relay": "wss://good.example/", "heldForSec": 5, "events": 1, "quietForSec": 0},
+                 "inFlight": {"relays": [{"relay": "wss://good.example/", "heldForSec": 5, "events": 1, "quietForSec": 0,
+                                          "doing": "paging", "pagingUntil": 1689857148},
                                          {"relay": {}, "heldForSec": 9},
                                          {"heldForSec": 9}],
                               "omitted": 7}}]}
@@ -240,6 +241,14 @@ class SyncProgressReportTest {
                 .jsonObject["inFlight"]!!
                 .jsonObject
         assertEquals(1, (f["relays"] as JsonArray).size, "only the readable row is published")
+        // Carried across, and never defaulted: the stream's own `reached` or a
+        // zero would date a leg from a walk it is not on.
+        assertEquals(
+            1_689_857_148L,
+            (f["relays"] as JsonArray)[0]
+                .jsonObject["pagingUntil"]!!
+                .jsonPrimitive.long,
+        )
         assertEquals(
             9,
             f["omitted"]!!.jsonPrimitive.int,

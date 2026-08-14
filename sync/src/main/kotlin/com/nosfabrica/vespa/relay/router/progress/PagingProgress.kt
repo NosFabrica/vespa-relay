@@ -198,6 +198,15 @@ class PagingProgress {
      */
     fun reached(stream: String? = null): Long? = all(stream).filter { !it.done }.minOfOrNull { it.current }
 
+    /**
+     * The second ONE walk is reading, for the leg walking it — [reached] per key
+     * rather than minimised over a stream, which describes only its deepest leg.
+     *
+     * Live walks only, on [reached]'s reasoning: a finished walk's cursor is
+     * where it stopped, and dating a row from it would describe work that ended.
+     */
+    fun cursorOf(key: String): Long? = walks[key]?.takeIf { !it.done }?.current
+
     /** Milliseconds left at the rate achieved so far, or null before it means anything. */
     fun etaMs(stream: String? = null): Long? {
         val f = fraction(stream) ?: return null

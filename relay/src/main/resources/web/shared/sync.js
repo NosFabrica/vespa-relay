@@ -60,6 +60,10 @@ export const IN_FLIGHT_SHOWN = Infinity;
  * different fixes, so each names what to look at next.
  */
 export const BOTTLENECK = {
+  // The key is a word off the wire, and the relay allowlists it but the card is
+  // served to whoever asks. Without this, `bottleneck: "constructor"` reaches
+  // Object.prototype, and destructuring a function below throws out the render.
+  __proto__: null,
   ingest: ["ingest is the limit", "Ingest's queue is full, so every download is backpressured behind it. Look at ingest and the store behind it, not at the relays."],
   downloads: ["relays are the limit", "Ingest drains as fast as it fills. The mirror is going as fast as the upstreams will serve it."],
   upstream: ["nothing arriving", "The queue is empty and no events are reaching it — look at discovery, the guards and the transport, not at ingest."],
@@ -95,6 +99,34 @@ export function constraintOf(health, live) {
   if (!word) return null;
   const [text, why] = BOTTLENECK[word] || [word, ""];
   return { word, text: live ? text : `${text}, when it stopped`, why, tone: word === "ingest" ? "warn" : null };
+}
+
+/** The phase word a processor carries while a pass is dialling — `Processors.MEASURING`. */
+export const MEASURING = "measuring";
+
+/**
+ * HOW FAR A PROBE PASS HAS GOT — the fold's row and the stability gate's, which
+ * publish the same shape.
+ *
+ * The document's number is `unmeasured`, what still has NO verdict; this returns
+ * its COMPLEMENT, which rises as the pass gets somewhere. The two read in
+ * opposite directions, so the subtraction lives here rather than in the page.
+ *
+ * Clamped at zero because `SyncProgressReport` defaults `unmeasured` to
+ * `candidates` on an unreadable row. Summed rather than `streams[0]`, which once
+ * reported a 16-url stream's residue as the whole picture. `lastPassSec` is
+ * withheld while a pass runs: it belongs to the previous one.
+ */
+export function probeProgress(p) {
+  const streams = p?.streams || [];
+  if (!streams.length) return null;
+  const candidates = streams.reduce((a, w) => a + (w.candidates || 0), 0);
+  const unmeasured = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
+  return {
+    candidates,
+    checked: Math.max(0, candidates - unmeasured),
+    tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
+  };
 }
 
 /**
@@ -141,6 +173,9 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
       // glossary. Null on a router that predates the member, which reads as
       // "not known" and never as a stage.
       doing: r.doing || null,
+      // `??`, not `||`: `created_at = 0` is a real second relays serve and the
+      // deepest a walk can reach, not a leg with no cursor.
+      pagingUntil: r.pagingUntil ?? null,
     };
   });
   return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };

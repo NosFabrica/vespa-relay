@@ -68,7 +68,8 @@ import java.nio.file.StandardCopyOption
  *       "phase": "fetching",
  *       "phaseForSec": 412,
  *       "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
- *                                "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
+ *                                "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
+ *                                "doing": "paging", "pagingUntil": 1689857148}],
  *                    "omitted": 118},
  *       "cycle": {
  *         "number": 12, "owner": "dynamic", "startedAt": 1769999000, "outcome": "running",
@@ -314,6 +315,9 @@ class SyncProgress(
                                                             // state and not a
                                                             // gap.
                                                             r.doing?.let { put("doing", it) }
+                                                            // Absent when no
+                                                            // walk is running.
+                                                            r.pagingUntil?.let { put("pagingUntil", it) }
                                                         },
                                                     )
                                                 }

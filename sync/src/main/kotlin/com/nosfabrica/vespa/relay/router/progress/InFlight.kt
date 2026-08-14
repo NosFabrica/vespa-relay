@@ -150,6 +150,20 @@ class InFlight(
          * stage worth the word.
          */
         val doing: String? = null,
+        /**
+         * WHERE IN TIME its paged walk has got to — the `created_at` second the
+         * cursor is reading now.
+         *
+         * [doing] `paging` beside a large [quietForSec] is two legs that look
+         * identical here: one deep in a real backlog and one whose cursor has
+         * stopped. Read twice, this separates them. The stream's `reached` cannot
+         * — it is the MINIMUM over every live walk, one date describing the
+         * deepest, while a row is drawn because it is the exception.
+         *
+         * Null when no walk of this url is running: in the guards, queued, or
+         * reconciling without the delete pass, which pages under the same key.
+         */
+        val pagingUntil: Long? = null,
     )
 
     companion object {

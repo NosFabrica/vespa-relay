@@ -187,6 +187,13 @@ internal class RelayRotation {
     fun held(
         nowMs: Long,
         limit: Int = DEFAULT_IN_FLIGHT_ROWS,
+        /**
+         * Where this url's paged walk has got to — see
+         * [InFlight.Relay.pagingUntil]. A function, so the rotation never learns
+         * the `"stream|url"` key it does not own; the caller holding both halves
+         * joins them.
+         */
+        pagingUntil: (String) -> Long? = { null },
     ): InFlight {
         // Every clock read ONCE, into a plain row, before anything sorts. The
         // map is live and `quietForMs` reads a leg that is still being written
@@ -219,6 +226,12 @@ internal class RelayRotation {
                         events = it.events,
                         quietForSec = it.quietForSec,
                         doing = it.doing,
+                        // AFTER the cap, not with the other clocks: this one
+                        // costs a key build and a map lookup, and a saturated
+                        // fan-out sorts 512 rows to publish 20 of them. The sort
+                        // does not read it, so resolving it late changes nothing
+                        // but the 492 lookups.
+                        pagingUntil = pagingUntil(it.relay),
                     )
                 },
             omitted = (rows.size - limit).coerceAtLeast(0),

@@ -836,6 +836,10 @@
   table.sy-legs tr:last-child td { border-bottom: 0; }
   table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
   table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  /* The paged cursor, muted beside the stage it qualifies. `inherit` on a hot
+     row, so the warning colour owns the whole row. */
+  table.sy-legs .sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }
+  table.sy-legs tr.hot .sy-at { color: inherit; }
   /* Quiet past the stuck threshold. The row is the finding, so the row is what
      is marked — a coloured cell would put the emphasis on the clock rather than
      on the relay it belongs to. */
@@ -862,7 +866,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import { STUCK_LEG_SEC, constraintOf, isLive, legsOf } from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, isLive, legsOf, probeProgress } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1777,8 +1781,16 @@ function legsPanel(s) {
     url.title = r.relay;
     tr.appendChild(url);
     // A leg with no slot says so here rather than leaving the column blank: the
-    // stage IS the answer for most of a fan-out's workers.
-    tr.appendChild(el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—")));
+    // stage IS the answer for most of a fan-out's workers. A walking leg adds
+    // its cursor in the same cell — a sixth column would be empty on every row
+    // that is not paging.
+    const stage = el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—"));
+    if (r.pagingUntil != null) {
+      const at = el("span", "sy-at", ` back to ${dayOf(r.pagingUntil)}`);
+      at.title = term("pagingUntil");
+      stage.appendChild(at);
+    }
+    tr.appendChild(stage);
     tr.appendChild(el("td", "n", fmtDur(r.heldForSec)));
     tr.appendChild(el("td", "n", fmt(r.events)));
     tr.appendChild(el("td", "n", fmtDur(r.quietForSec)));
@@ -1859,9 +1871,10 @@ function streamBlock(s) {
  * not a side quest — an unfolded list downloads the same relay once per url,
  * which is a sync fault that shows up nowhere else on this card.
  *
- * The probe passes' number is summed ACROSS STREAMS. Reading `streams[0]` made
- * a fold that had never seen the two 17,000-url streams report the 16-url one's
- * residue as the whole picture.
+ * The probe passes' number is `probeProgress`, in `/web/shared/sync.js` — it
+ * sums across streams, draws the RISING half of the pair, and withholds the
+ * clock while a pass is dialling. All three are decisions that can be wrong
+ * silently, which is why none of them is made here.
  */
 const BACKGROUND = [
   ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
@@ -1887,6 +1900,19 @@ function backgroundPanel(progress) {
   }
   return box;
 }
+
+/**
+ * What each probe pass is checking FOR. Both publish the same `streams` shape,
+ * so one generic sentence made the stability gate report the fold's question.
+ *
+ * `__proto__: null`, because the key is a name off the wire: a router
+ * publishing `constructor` would otherwise draw a function into the cell.
+ */
+const PROBE_FOR = {
+  __proto__: null,
+  aliasFold: "checked for aliases",
+  consistency: "checked for consistency",
+};
 
 /**
  * WHAT ONE BACKGROUND PASS HAS TO SHOW FOR ITSELF.
@@ -1918,14 +1944,12 @@ function processorFact(p) {
     if (p.lostToStore) add(`${fmt(p.lostToStore)} LOST TO THE STORE`, "lostToStore", true);
     return cell;
   }
-  const streams = p.streams || [];
-  if (streams.length) {
-    // Summed, and the stream count said out loud: a total with no denominator
-    // was how a fold that never received two streams looked identical to one
-    // that had measured them.
-    const left = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
-    const of = streams.reduce((a, w) => a + (w.candidates || 0), 0);
-    add(`${fmt(left)} of ${fmt(of)} url(s) still with no verdict, across ${fmt(streams.length)} stream(s)`, "unmeasured");
+  const probe = probeProgress(p);
+  if (probe) {
+    // The tooltip hangs on `unmeasured`: the member this is derived from, and
+    // the one the glossary can be checked against.
+    add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} relay(s) ${PROBE_FOR[p.name] || "checked"}` +
+        `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
     return cell;
   }
   if (p.knownDead != null) {

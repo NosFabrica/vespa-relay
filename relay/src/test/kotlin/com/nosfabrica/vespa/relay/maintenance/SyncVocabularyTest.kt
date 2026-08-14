@@ -119,7 +119,7 @@ class SyncVocabularyTest {
                  "nextInSec": 30, "retryInSec": 60, "reason": "connection reset",
                  "inFlight": {"relays": [{"relay": "wss://slow.example/", "pass": 11, "heldForSec": 41400,
                                           "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
-                                           "doing": "paging"}],
+                                           "doing": "paging", "pagingUntil": 1689857148}],
                               "omitted": 118},
                  "cycle": {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "completed",
                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3},
@@ -221,6 +221,7 @@ class SyncVocabularyTest {
                     "events",
                     "quietForSec",
                     "doing",
+                    "pagingUntil",
                     "omitted",
                     "owner",
                 ) +

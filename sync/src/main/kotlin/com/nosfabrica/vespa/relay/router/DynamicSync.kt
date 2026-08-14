@@ -206,7 +206,12 @@ internal class DynamicSync(
         // it is what the progress report asks. Registered once, live thereafter
         // — see [StreamPhases.namesInFlight] for why it is a supplier and not a
         // copy.
-        phases.namesInFlight(stream.name) { rotation.held(System.currentTimeMillis()) }
+        // The paged cursor is joined on HERE because this is the only place
+        // holding both halves — the rotation's claims and `paging`'s walks —
+        // and the `"stream|url"` key that ties them is this file's.
+        phases.namesInFlight(stream.name) {
+            rotation.held(System.currentTimeMillis()) { url -> paging.cursorOf("${stream.name}|$url") }
+        }
         val idSet = SharedIdSet()
         // What the ticker reports. The ticker belongs to the stream too: between
         // two passes there are still relays syncing, and a stream that went
