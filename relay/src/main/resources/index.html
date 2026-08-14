@@ -186,6 +186,30 @@
   relay minted (`chachi`, a hex blob), so it is precisely what nobody can type
   from memory. The rows offer the NAME and a pick writes the id; `group:` with
   nothing after it opens on the reader's own groups, read off their kind 10009.
+
+  Half of that list can be locked, and this is the one place the page asks the
+  signer for something other than a signature. A 10009 is a NIP-51 private-tag
+  event: items may sit NIP-44-encrypted in `.content`, self-encrypted to the
+  author's own key. So when a reader with an encrypted payload uses `group:`,
+  the page asks their extension to decrypt it — at that moment and not on page
+  load, where a permission dialog would arrive with no question attached to it.
+  Three rules keep that dialog from becoming noise: no payload means no ask;
+  one prompt per reader however many keystrokes (the in-flight promise is
+  shared); and a refusal is final until the reader clicks "Unlock your private
+  groups" themselves, because reopening a dialog somebody just dismissed is
+  what a page should never do on its own. The ask is fired and NOT awaited —
+  their public groups are already in hand and a human answers a dialog on their
+  own schedule — so the rows draw immediately with a note about what is still
+  pending, and the list re-asks when the answer lands.
+
+  Two facts about that payload are worth knowing before reading the code. An
+  EMPTY private list encrypts the empty STRING rather than `[]`, so a payload
+  is not evidence there is anything in it — a reader who deleted their last
+  private group still carries a valid ciphertext, and the only way to learn it
+  is empty is to ask. And nothing records which SCHEME was used, so `isNip04`
+  ports quartz's shape test byte for byte (`?iv=` exactly 28 from the end, after
+  a `-null` strip that exists for a client bug that shipped): guessing wrong
+  does not corrupt anything, it just spends a permission prompt for nothing.
   The filter is two questions: `#h` for what was posted in the group — one
   letter, so the store indexes it exactly as it indexes `t`, and it KEEPS the
   tab's kinds because a group post is an ordinary event that happens to carry
@@ -920,7 +944,9 @@
   /* Three things a group row can say that a person row cannot, all of them
      about provenance rather than decoration. */
   /* Yours: it came out of your own kind 10009, which is also the only source
-     that knows a relay url. */
+     that knows a relay url. Reads "private" for the rows that were behind the
+     encrypted half of that list — same chip, because both are equally yours,
+     and the word is the only part that differs. */
   .group-mine {
     margin-left: .5em; padding: .05em .45em;
     border-radius: 999px; background: var(--accent-soft); color: var(--accent);
@@ -939,6 +965,17 @@
     border: 1px solid var(--border-strong); border-radius: 999px;
     color: var(--muted); font-size: 10.5px; white-space: nowrap;
   }
+  /* The footer about the ENCRYPTED half of a group list. Under the rows, never
+     among them: what the arrows walk is `.popup-item`, and a notice that could
+     be arrowed onto and picked would splice a group that does not exist. */
+  .group-lock { border-top: 1px solid var(--border); }
+  .group-unlock {
+    border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg);
+    border-radius: 8px; padding: 5px 11px;
+    font: inherit; font-size: 12.5px; cursor: pointer;
+  }
+  .group-unlock:hover { border-color: var(--accent); color: var(--accent); }
+  .group-unlock:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
 
   /* ---- the calendar `since:` and `until:` open ----------------------------
      Inside the same popup box the people picker uses — they are never open

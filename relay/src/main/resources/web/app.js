@@ -10,7 +10,7 @@ import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor } from "./shared/query.js";
-import { ownGroups, metaGroup, rank as rankGroups } from "./shared/groups.js";
+import { ownGroups, metaGroup, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
@@ -1030,12 +1030,27 @@ async function lookupAuthors(partial) {
 // both state at length: a dropped read cached as "you have no groups" would
 // leave `group:` opening on an empty list for the rest of the session, with
 // nothing on screen to say the list was missing rather than empty.
-let ownGroupList = null;   // the parsed candidates
+let ownGroupList = null;   // the parsed candidates, from the PUBLIC tags
 let ownGroupsFor = null;   // whose they are, so signing out drops them
+let ownGroupLock = null;   // sealed(): the encrypted half, or null if there is none
+let ownGroupSecret = null; // the rows behind that lock, once it has been opened
+let unlockAsk = null;      // the in-flight decrypt, so N keystrokes are ONE prompt
+let unlockDenied = false;  // the extension said no; do not ask again unasked
+
+/** Every cached thing about the reader's own list, dropped when the reader changes. */
+function forgetOwnGroups() {
+  ownGroupList = null;
+  ownGroupsFor = null;
+  ownGroupLock = null;
+  ownGroupSecret = null;
+  unlockAsk = null;
+  unlockDenied = false;
+}
 
 async function ownGroupCandidates() {
   const who = me;
-  if (!who) { ownGroupList = null; ownGroupsFor = null; return []; }
+  if (!who) { forgetOwnGroups(); return []; }
+  if (ownGroupsFor !== who) forgetOwnGroups();
   if (ownGroupsFor === who && ownGroupList) return ownGroupList;
   let evs = [];
   try {
@@ -1044,8 +1059,119 @@ async function ownGroupCandidates() {
   if (evs.complete !== true) return [];
   const rows = ownGroups(evs[0]);
   ownGroupList = rows;
+  ownGroupLock = sealedGroups(evs[0]);
   ownGroupsFor = who;
   return rows;
+}
+
+/**
+ * Whether the extension in front of us can open a payload of this scheme.
+ *
+ * Both halves of NIP-07's encryption API are OPTIONAL, and the two are
+ * advertised separately — an extension may implement `nip04` and not `nip44`,
+ * which for a 10009 is the difference between an openable list and one that
+ * simply cannot be read here. Asked before the call rather than discovered
+ * from the exception, because "your extension does not do this" and "you said
+ * no" want different words and a different offer.
+ */
+const canDecrypt = (scheme) => {
+  const api = window.nostr && window.nostr[scheme];
+  return !!(api && typeof api.decrypt === "function");
+};
+
+/**
+ * Open the private half of the reader's own group list — ONE prompt, ever.
+ *
+ * This is the only place on the page that asks the signer for anything beyond
+ * a signature, so what it costs is worth being explicit about: a NIP-07
+ * extension answers a decrypt request by putting a permission dialog in front
+ * of the reader. Three rules follow, and all three exist to keep that dialog
+ * from becoming noise:
+ *
+ *  - **Only when there is a payload.** No `.content`, no ask. `sealed()` is
+ *    that test, and its doc explains why a payload is not proof there is
+ *    anything IN it — an empty private list encrypts the empty string, so a
+ *    reader who removed their last private group still carries a ciphertext.
+ *    Asking is the only way to find out, and finding out that the answer is
+ *    "nothing" is a fine outcome: it is cached like any other.
+ *  - **Once per reader.** `unlockAsk` holds the in-flight promise, so the eight
+ *    keystrokes of `group:chachi` produce one dialog and not eight. It is
+ *    cleared only when the answer is known or when a retry is asked for by
+ *    hand.
+ *  - **A refusal is final until the reader changes their mind.** A denied
+ *    prompt sets `unlockDenied` and NOTHING re-asks on its own — not the next
+ *    keystroke, not the next search. The picker offers a row to try again, and
+ *    a click on it is the reader asking, which is the only thing that should
+ *    reopen a dialog they just dismissed.
+ *
+ * The peer key is the reader's OWN pubkey. NIP-51 private items are
+ * self-encrypted (quartz's `PrivateTagsInContent`), which reads oddly the
+ * first time — you are the sender and the recipient — and is what makes the
+ * list readable on a new device with nothing but the key.
+ */
+async function unlockOwnGroups() {
+  if (ownGroupSecret) return ownGroupSecret;
+  if (!ownGroupLock || !me) return [];
+  if (unlockAsk) return unlockAsk;
+  const lock = ownGroupLock;
+  const who = me;
+  unlockAsk = (async () => {
+    const plain = await window.nostr[lock.scheme].decrypt(who, lock.content);
+    return privateGroups(plain);
+  })()
+    .then((rows) => {
+      // Cached even when it is EMPTY, which is the case worth naming: the
+      // payload decrypted to nothing, so there was never anything to unlock,
+      // and re-prompting a reader to be told that again would be the exact
+      // noise the rules above exist to prevent.
+      ownGroupSecret = rows;
+      ownGroupLock = null;
+      unlockDenied = false;
+      return rows;
+    })
+    .catch(() => {
+      // Refused, dismissed, or the extension failed. All three are "not
+      // opened", and none of them is evidence about what is inside — so the
+      // lock STAYS, and only a click asks again.
+      unlockDenied = true;
+      return [];
+    })
+    .finally(() => {
+      unlockAsk = null;
+      // The answer arrived after the picker had already drawn what it had, so
+      // the picker is told to ask again. Guarded on the token still being
+      // there, inside the field: an extension dialog takes focus out of the
+      // page, and the reader may be somewhere else entirely by now. The catch
+      // is for `field` itself — it is declared below this function and only
+      // reachable through it, so it is always initialised by the time this
+      // runs, and a bare reference would be a TDZ throw rather than a null
+      // check if that ever stopped being true.
+      try { field.refreshGroups(); } catch (e) { /* nothing mounted, so nothing is showing */ }
+    });
+  return unlockAsk;
+}
+
+/** The picker's "unlock" row, clicked: the reader asking for the dialog back. */
+async function retryUnlockGroups() {
+  unlockDenied = false;
+  unlockAsk = null;
+  await unlockOwnGroups();
+}
+
+/**
+ * What the picker should SAY about the locked half, or null when there is
+ * nothing to say — which is the common case and has to stay silent.
+ *
+ * `unsupported` and `denied` are deliberately different states rather than one
+ * "could not unlock": one of them is a thing the reader can fix by clicking,
+ * and the other is a thing they can only fix by changing extensions. Offering
+ * a retry for the second would be a button that cannot work.
+ */
+function groupLockState() {
+  if (!ownGroupLock || !me) return null;
+  if (!canDecrypt(ownGroupLock.scheme)) return { state: "unsupported", scheme: ownGroupLock.scheme };
+  if (unlockDenied) return { state: "denied" };
+  return { state: "asking" };
 }
 
 /**
@@ -1071,10 +1197,34 @@ async function ownGroupCandidates() {
  * A failed 39000 read leaves the reader's own groups standing rather than
  * throwing the lot away: half an answer is the honest amount here, and the
  * half that survives is the one they are most likely to have meant.
+ *
+ * THE PERMISSION PROMPT LIVES HERE, and its trigger is the whole feature: a
+ * reader whose 10009 carries an encrypted payload is asked to open it the
+ * first time they use `group:` at all — not on page load, where the dialog
+ * would arrive with no question attached to it, and not never, which is what
+ * shipping the public half alone amounted to. See [unlockOwnGroups] for the
+ * three rules that keep one prompt from becoming eight.
+ *
+ * The private rows are folded in as `own`, not kept beside it. rank() dedupes
+ * a reader's rows on (id, host), so a group that is in BOTH halves collapses
+ * to one — and to the public one, which is correct: it is not a secret if the
+ * tag is in the clear.
  */
 async function lookupGroups(partial) {
   await ensureLogin().catch(() => {});
   const own = await ownGroupCandidates().catch(() => []);
+  // Started, NOT awaited, and that is the difference between a picker and a
+  // hostage. A permission dialog is answered by a human on their own schedule
+  // — or ignored entirely, with the tab still sitting there — so awaiting it
+  // would leave the list on "Finding groups…" for as long as the reader
+  // wanted to think about it, with their PUBLIC groups already in hand and
+  // not being shown. So the ask is fired, the rows we have are returned with
+  // a notice saying what is still pending, and `onUnlocked` re-asks when the
+  // answer lands. The prompt is not raised again while one is open, nor after
+  // a refusal — unlockOwnGroups()'s rules, which this call site deliberately
+  // does not repeat.
+  if (ownGroupLock && canDecrypt(ownGroupLock.scheme) && !unlockDenied) unlockOwnGroups();
+  const secret = ownGroupSecret || [];
   let found = [];
   try {
     // Empty partial asks nothing of the relay: `group:` alone is "show me my
@@ -1085,7 +1235,7 @@ async function lookupGroups(partial) {
   const meta = found.map(metaGroup).filter(Boolean);
   const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];
   if (hosts.length) await enrichProfiles(hosts).catch(() => {});
-  return rankGroups(partial, { own, meta });
+  return { rows: rankGroups(partial, { own: [...own, ...secret], meta }), lock: groupLockState() };
 }
 
 /** Every human edit of the field, whatever made it — typing, paste, a pick. */
@@ -1104,7 +1254,10 @@ function onQueryEdit() {
 // paintScores goes in for the same reason the entity page takes it: the faces
 // the field and its picker draw carry the same score chip a card's does, and
 // which lens fills it in is app state.
-const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, lookupGroup: lookupGroups, onEdit: onQueryEdit, onSubmit: submitField, paintScores });
+const field = mountSearchField($q, $mentions, {
+  lookup: lookupAuthors, lookupGroup: lookupGroups, unlockGroups: retryUnlockGroups,
+  onEdit: onQueryEdit, onSubmit: submitField, paintScores,
+});
 
 // `hitsFor` is the text `hits` actually answers. They outlive each other:
 // results stay on screen while the box is edited, and a debounce can be

@@ -17,6 +17,11 @@
 //   tags are `["group", <id>, <relay url>, <name?>]`. That is the only place in
 //   the protocol where an id, its host relay and a name arrive together, which
 //   makes it both the best-known answer and the ONLY one that can print a url.
+//   Half of it can be LOCKED: a 10009 is a private-tag event, so items may sit
+//   NIP-44-encrypted in `.content` (self-encrypted, to the author's own key)
+//   instead of in the tags. [sealed] spots that, [privateGroups] reads it back
+//   once somebody with a signer has decrypted it, and the asking lives in the
+//   page because it costs a permission prompt and this module holds no state.
 //
 // THE TWO ARE NEVER MERGED, and that is the whole design rather than a gap in
 // it. A group's identity is the pair (id, host relay) — quartz's `GroupId`
@@ -79,6 +84,71 @@ export function ownGroups(ev) {
     out.push({ id, relayUrl, host: null, name: at(tag, 3), about: "", picture: "", mine: true });
   }
   return out;
+}
+
+/**
+ * Is this ciphertext NIP-04 rather than NIP-44?
+ *
+ * quartz's `EncryptedInfo.isNIP04`, ported rule for rule, because the two
+ * schemes are told apart by SHAPE and nothing else — a 10009 records which
+ * scheme it used nowhere. NIP-04 appends `?iv=<24 base64 chars>`, so the
+ * marker sits exactly 28 characters from the end; a NIP-44 payload is one
+ * base64 blob with no such tail. The `-null` strip is quartz's too, and it is
+ * there for a client bug that shipped: without it those events read as NIP-44
+ * and fail to decrypt with an error about the wrong scheme entirely.
+ *
+ * Getting this backwards is not a silent failure — the extension refuses —
+ * but it IS a wasted permission prompt, which is the one cost this whole
+ * feature is trying not to pay twice.
+ */
+export function isNip04(encoded) {
+  const s = String(encoded || "").replace(/-null$/, "");
+  return s.length >= 28 && s.slice(-28, -24) === "?iv=";
+}
+
+/**
+ * The locked half of a kind-10009, or null when there is nothing locked.
+ *
+ *   { content, scheme: "nip04" | "nip44" }
+ *
+ * NON-EMPTY CONTENT IS NOT PROOF THERE IS ANYTHING IN THERE, and that is worth
+ * stating because it is the one thing this cannot decide before asking. An
+ * EMPTY private list encrypts the empty STRING rather than `[]` (quartz's
+ * `PrivateTagsInContent.encryptNip44`), so a reader who once had a private
+ * group and removed it carries a perfectly valid ciphertext whose plaintext is
+ * nothing at all. The only way to know is to decrypt, and decrypting is what
+ * costs a permission prompt — so the honest reading of "has something
+ * encrypted" is "has an encrypted payload", and [privateGroups] handles the
+ * empty case by returning no rows rather than by pretending it never asked.
+ */
+export function sealed(ev) {
+  const content = String((ev && ev.content) || "").trim();
+  if (!content) return null;
+  return { content, scheme: isNip04(content) ? "nip04" : "nip44" };
+}
+
+/**
+ * The groups inside a DECRYPTED 10009 payload.
+ *
+ * The plaintext is a JSON array of tag arrays — the same shape as the event's
+ * public `tags` — so this is [ownGroups] over it, and every rule that function
+ * states (both halves of the pair required, deduped on the pair, name
+ * cosmetic) applies unchanged. `secret` marks where the row came from, because
+ * a reader who unlocked their list should be able to see which of these the
+ * network could already read.
+ *
+ * Three shapes come back as no groups rather than as an error, and they are
+ * ordinary rather than corrupt: the empty string an empty private list
+ * encrypts to, a payload that is not JSON at all (an nip04/nip44 mix-up
+ * decrypting to gibberish), and JSON that is not an array of tags.
+ */
+export function privateGroups(plaintext) {
+  const t = String(plaintext || "").trim();
+  if (!t) return [];
+  let tags;
+  try { tags = JSON.parse(t); } catch (e) { return []; }
+  if (!Array.isArray(tags)) return [];
+  return ownGroups({ tags }).map((g) => ({ ...g, secret: true }));
 }
 
 /** One kind-39000 as a candidate: its `d` is the id, its AUTHOR is the host. */

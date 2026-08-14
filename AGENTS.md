@@ -301,7 +301,29 @@ relay/src/main/resources/
                         bare id and picking either row searches for both. That
                         last part is the honest limit: the picker fixes the
                         human's half (remembering the id) and cannot fix the
-                        filter's;
+                        filter's. HALF A GROUP LIST CAN BE LOCKED — a 10009 is
+                        a NIP-51 private-tag event, so items may sit
+                        NIP-44-encrypted in `.content`, self-encrypted to the
+                        author's own key — and this is the ONLY place the page
+                        asks a signer for anything but a signature. The prompt
+                        fires when a reader with a payload uses `group:`, not on
+                        load, and three rules keep it from becoming noise: no
+                        payload no ask, one prompt per reader however many
+                        keystrokes (`unlockAsk` is the shared in-flight
+                        promise), and a refusal is FINAL until the reader
+                        clicks the unlock row — nothing re-asks on its own.
+                        It is fired and not awaited, or an unanswered dialog
+                        would hold the picker hostage over public groups it
+                        already had; `field.refreshGroups()` is what draws the
+                        answer whenever it lands. Two traps in the payload
+                        itself: an EMPTY private list encrypts the empty STRING
+                        rather than `[]`, so a payload is not evidence there is
+                        anything in it and "we asked and it was empty" is a real
+                        cached answer; and nothing records which scheme was
+                        used, so `isNip04` ports quartz's shape test verbatim
+                        (`?iv=` exactly 28 from the end, after the `-null`
+                        strip) — a wrong guess costs a permission prompt, which
+                        is the one thing this is all trying not to spend twice;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;

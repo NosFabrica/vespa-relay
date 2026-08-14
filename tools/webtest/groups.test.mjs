@@ -9,7 +9,7 @@
 // relays' groups into one row.
 import assert from "assert";
 
-const { ownGroups, metaGroup, rank, where, relayLabel } =
+const { ownGroups, metaGroup, rank, where, relayLabel, isNip04, sealed, privateGroups } =
   await import(new URL("../../relay/src/main/resources/web/shared/groups.js", import.meta.url));
 
 const HOST_A = "a".repeat(64);
@@ -46,6 +46,69 @@ assert(own.every((g) => g.mine), "everything here is the reader's own");
 
 assert.deepStrictEqual(ownGroups(null), [], "no event is no groups");
 assert.deepStrictEqual(ownGroups({ tags: [] }), [], "…and neither is an empty one");
+
+// ---- the LOCKED half of a group list --------------------------------------
+//
+// A 10009 is a NIP-51 private-tag event: items may sit encrypted in `.content`
+// instead of in the tags. Opening it costs a permission prompt from the
+// reader's extension, so the two questions this has to get right are which
+// scheme the payload uses (a wrong guess is a wasted prompt) and when there is
+// anything to ask about at all.
+
+// The scheme is told apart by SHAPE. NIP-04 appends `?iv=` plus 24 base64
+// characters, so the marker sits exactly 28 from the end; NIP-44 is one blob.
+const IV = "?iv=" + "a".repeat(24);
+assert.strictEqual(isNip04("ciphertextbase64" + IV), true, "the `?iv=` tail is NIP-04");
+assert.strictEqual(isNip04("AglkjhasdlkjhasdlkjhasdlkjhasdIkjh"), false, "a bare base64 blob is NIP-44");
+assert.strictEqual(isNip04("ciphertextbase64" + IV + "-null"), true, "…and quartz's `-null` bug is stripped first");
+assert.strictEqual(isNip04("short"), false, "something too short to carry the marker is not NIP-04");
+// The marker has to be AT that offset, not merely present — otherwise a NIP-44
+// payload whose base64 happens to contain the sequence would be misrouted.
+assert.strictEqual(isNip04(IV + "trailingtrailingtrailingtrailing"), false, "the offset is the test, not the substring");
+
+assert.strictEqual(sealed({ content: "" }), null, "no payload, nothing to unlock, nothing to ask");
+assert.strictEqual(sealed({ content: "   " }), null, "…and whitespace is no payload");
+assert.strictEqual(sealed({}), null, "…nor is a missing content");
+assert.deepStrictEqual(
+  sealed({ content: "AgSomeNip44Payload" }),
+  { content: "AgSomeNip44Payload", scheme: "nip44" },
+  "a payload says which scheme to ask the extension for",
+);
+assert.strictEqual(sealed({ content: "abc" + IV }).scheme, "nip04", "…including the older one");
+
+// What comes back once the reader has unlocked it: the same tag array shape as
+// the public half, so every rule ownGroups states applies unchanged.
+let secret = privateGroups(JSON.stringify([
+  ["group", "hidden", "wss://groups.example", "Hidden"],
+  ["group", "nohost"],
+  ["p", "not a group"],
+]));
+assert.strictEqual(secret.length, 1, "the private half is parsed by the same rules as the public one");
+assert.deepStrictEqual(
+  [secret[0].id, secret[0].relayUrl, secret[0].name, secret[0].mine, secret[0].secret],
+  ["hidden", "wss://groups.example", "Hidden", true, true],
+  "…and marks where it came from, so a reader can see which of theirs the network can read",
+);
+
+// THE CASE THAT COSTS A PROMPT FOR NOTHING, and is ordinary rather than
+// corrupt: an EMPTY private list encrypts the empty STRING, not `[]`. So a
+// reader who removed their last private group still carries a valid payload,
+// and the only way to learn it is empty is to ask. That is a real answer and
+// gets cached like one — what must not happen is an error.
+assert.deepStrictEqual(privateGroups(""), [], "the empty string an empty private list encrypts to");
+assert.deepStrictEqual(privateGroups("[]"), [], "…and an explicitly empty array");
+assert.deepStrictEqual(privateGroups("not json at all"), [], "a wrong-scheme decrypt is gibberish, not a crash");
+assert.deepStrictEqual(privateGroups('{"tags":[]}'), [], "…and JSON that is not a tag array is no groups");
+assert.deepStrictEqual(privateGroups(null), [], "…nor is nothing");
+
+// Unlocked rows join the reader's own: rank() dedupes them on (id, host), so a
+// group in BOTH halves collapses to one row — the PUBLIC one, which is right.
+// It is not a secret if the tag is in the clear.
+const bothHalves = { kind: 10009, tags: [["group", "hidden", "wss://groups.example", "Hidden"]] };
+let merged = rank("hidden", { own: [...ownGroups(bothHalves), ...secret], meta: [] });
+assert.strictEqual(merged.length, 1, "a group listed publicly AND privately is one row");
+assert(!merged[0].secret, "…and it is the public one: a tag in the clear is not a secret");
+assert.strictEqual(merged[0].ambiguous, false, "…so it is not ambiguous either");
 
 // ---- metaGroup: what the corpus knows -------------------------------------
 

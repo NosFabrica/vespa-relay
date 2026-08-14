@@ -124,7 +124,7 @@ export const softKeyboard = () => window.matchMedia("(pointer: coarse)").matches
 const NEWLINE = /[\r\n]/;
 const NEWLINES = /[\r\n]+/g;
 
-export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubmit, paintScores }) {
+export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, onEdit, onSubmit, paintScores }) {
   let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
   let active = -1;      // which one is highlighted
@@ -135,6 +135,8 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
   let cursor = null;    // the day the KEYBOARD is on, or null while the mouse leads
   let group = null;     // the group: token being built, from groupAt()
   let groups = [];      // the candidates currently offered, from lookupGroup()
+  let groupLock = null; // what lookupGroup() says about the reader's LOCKED groups
+  let regroup = false;  // re-ask the group lookup even though the token is unchanged
 
   // Which list the arrows and Enter are walking. The two network pickers share
   // `active` rather than each keeping their own index: one caret is inside one
@@ -426,6 +428,7 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
     cursor = null;
     group = null;
     groups = [];
+    groupLock = null;
     list.classList.remove("open");
     list.innerHTML = "";
     // Back to the shape the markup declares, so a calendar's dialog role does
@@ -651,11 +654,31 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
     return `
       <div class="popup-item" id="${GROUP_ROW_ID(i)}" data-g="${i}" role="option" aria-selected="false">
         <div class="row-main">
-          <div class="row-name">${esc(clip(name, 80))}${cand.mine ? `<span class="group-mine">yours</span>` : ""}</div>
+          <div class="row-name">${esc(clip(name, 80))}${cand.mine ? `<span class="group-mine">${cand.secret ? "private" : "yours"}</span>` : ""}</div>
           <div class="row-about">${sub ? `${esc(sub)} · ` : ""}<span class="${place.exact ? "mono" : "group-host"}">${esc(place.text)}</span></div>
         </div>
         ${cand.ambiguous ? `<span class="group-warn" title="More than one group here carries the id “${esc(cand.id)}”, and a search filters on the id alone — so the results include all of them.">shared id</span>` : ""}
       </div>`;
+  }
+
+  /**
+   * What the list says about the reader's LOCKED groups, under the rows.
+   *
+   * A footer and never a row: `.popup-item` is what the arrows walk and what
+   * Enter picks, and a notice that could be picked as a group would splice
+   * `group:undefined` into the box. `unlock` is the only clickable one of the
+   * three, and it is clickable precisely because a refused permission dialog
+   * must be reopened by the reader rather than by the page.
+   */
+  function lockHtml() {
+    if (!groupLock) return "";
+    if (groupLock.state === "asking") {
+      return `<div class="popup-note group-lock">Waiting for your extension to unlock your private groups…</div>`;
+    }
+    if (groupLock.state === "unsupported") {
+      return `<div class="popup-note group-lock">Some of your groups are encrypted (${esc(groupLock.scheme)}), and this extension cannot decrypt them.</div>`;
+    }
+    return `<div class="popup-note group-lock"><button type="button" tabindex="-1" class="group-unlock" data-unlock="1">Unlock your private groups</button></div>`;
   }
 
   /** `rows` null means "still asking" — an empty array means "asked, none". */
@@ -668,10 +691,13 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
     // The empty states are two different facts and say so. With nothing typed
     // the reader has not asked anything yet and the list is their own groups —
     // so an empty one means we could not find their kind 10009, which is worth
-    // saying rather than answering a question nobody asked.
+    // saying rather than answering a question nobody asked. A LOCKED list is a
+    // third fact and the footer carries it, because "no groups of yours" over
+    // an unopened payload is not true, it is unknown.
+    else if (groupLock) body = "";
     else if (!group.partial) body = `<div class="popup-note">No groups of yours here yet — type a name, or paste a group id</div>`;
     else body = `<div class="popup-note">No group matches “${esc(clip(group.partial, 40))}”</div>`;
-    list.innerHTML = head + body;
+    list.innerHTML = head + body + lockHtml();
     openList("listbox", "Groups");
     markActive();
   }
@@ -692,9 +718,15 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
     const next = pendingGroup();
     if (!next) { if (group) closeList(); return; }
     const sameToken = !!group && group.start === next.start;
-    if (sameToken && group.partial === next.partial) return;
+    // `regroup` is the one thing that gets past the unchanged-token guard: an
+    // unlock changes what the SAME token answers, which is a case nothing else
+    // here has. Clearing it before the early returns below, so a token that
+    // went away does not leave the flag armed for the next one.
+    const forced = regroup;
+    regroup = false;
+    if (!forced && sameToken && group.partial === next.partial) return;
     group = next;
-    if (!sameToken) { groups = []; active = -1; }
+    if (!sameToken) { groups = []; groupLock = null; active = -1; }
     renderGroupList(groups.length ? groups : null);
     clearTimeout(timer);
     const id = ++reqId;
@@ -711,10 +743,34 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
       // what it returned may not, and a throw in here belongs in the console
       // rather than swallowed into a picker that sits on "Finding groups…".
       if (id !== reqId || !group) return;
-      groups = Array.isArray(found) ? found.slice(0, PICKER_LIMIT) : [];
+      const rows = (found && found.rows) || [];
+      groupLock = (found && found.lock) || null;
+      groups = rows.slice(0, PICKER_LIMIT);
       active = groups.length ? 0 : -1;
       renderGroupList(groups);
     }, DEBOUNCE_MS);
+  }
+
+  /**
+   * The reader asking for a dismissed permission dialog back.
+   *
+   * The ONLY thing that reopens one. A refused prompt is remembered as refused
+   * and nothing re-asks on its own — not the next keystroke, not the next
+   * search — so this click is the reader changing their mind, which is the
+   * only event that should put an extension dialog back on their screen.
+   *
+   * The notice flips to `asking` here rather than waiting for the lookup to
+   * say so: the dialog is up from this moment, and a button that still read
+   * "Unlock" under an open prompt invites a second click that would do nothing.
+   */
+  async function unlock() {
+    if (!group || !unlockGroups) return;
+    groupLock = { state: "asking" };
+    renderGroupList(groups);
+    // Not awaited for the reason app.js's lookup does not await it either: the
+    // answer is a human's, on their own schedule. refreshGroups() is what puts
+    // it on screen whenever it lands.
+    try { unlockGroups(); } catch (e) { /* refreshGroups reports whatever state resulted */ }
   }
 
   function pickGroup(cand) {
@@ -1078,6 +1134,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
     if (step) { e.preventDefault(); stepMonth(Number(step.dataset.step)); return; }
     const cell = e.target.closest(".cal-day, .cal-pick");
     if (cell) { e.preventDefault(); pickDay(cell.dataset.day); return; }
+    // Not a pick at all — like the month arrows above, and it needs the same
+    // preventDefault for the same reason: losing focus to this button would
+    // close the picker it is trying to refill.
+    if (e.target.closest("[data-unlock]")) { e.preventDefault(); unlock(); return; }
     const row = e.target.closest(".popup-item");
     if (!row) return;
     e.preventDefault();
@@ -1247,6 +1307,20 @@ export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubm
         return true;
       }
       return false;
+    },
+    /**
+     * Ask the group lookup again — for when an unlock lands after the draw.
+     *
+     * The one thing that gets past updateGroups()'s unchanged-token guard, and
+     * the only caller is the permission dialog resolving: what changed is what
+     * the SAME token answers, which nothing else here does. A no-op unless a
+     * `group:` token is still under the caret, since a dialog takes focus out
+     * of the page and the reader may have moved on.
+     */
+    refreshGroups() {
+      if (!group) return;
+      regroup = true;
+      updateGroups();
     },
     /** Re-label the chips — for when profiles land after a render. */
     repaint,
