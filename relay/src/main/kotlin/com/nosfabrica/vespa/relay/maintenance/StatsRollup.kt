@@ -260,7 +260,7 @@ internal class StatsRollup(
                 // Absent, not empty, when there is no router: a serve-only relay
                 // has no sync to report and a card saying "0 relays" would read
                 // as a broken mirror rather than as no mirror.
-                syncSection()?.let { sections["sync"] = it }
+                syncSection(previous)?.let { sections["sync"] = it }
             }
 
             StatsTier.CHARTS -> {
@@ -332,7 +332,7 @@ internal class StatsRollup(
      * reported as a failed section beside working ones, which is the same
      * contract every queried section has.
      */
-    private suspend fun syncSection(): JsonObject? {
+    private suspend fun syncSection(previous: JsonObject?): JsonObject? {
         if (syncBandsFile == null && syncSweepsFile == null && syncManifestFile == null && syncProgressFile == null) return null
         var data: JsonObject? = null
         val section =
@@ -346,7 +346,13 @@ internal class StatsRollup(
                 // coverage it had already computed thrown away.
                 val coverage = attempt(attempts, "sync") { SyncCoverageReport.build(readOrNull(syncBandsFile), readOrNull(syncSweepsFile), nowSeconds()) }
                 val mirrors = attempt(attempts, "mirrors") { MirrorReport.build(readOrNull(syncManifestFile)) }
-                val progress = attempt(attempts, "progress") { SyncProgressReport.build(readOrNull(syncProgressFile), nowSeconds()) }
+                // The previously served progress, so the gauge series can be
+                // appended to rather than restarted — see [SyncProgressReport.series].
+                // Same `previous` the corpus section reads, and for the same
+                // reason: the document is where state that outlives one rollup
+                // is kept.
+                val carried = ((previous?.get("sync") as? JsonObject)?.get("data") as? JsonObject)?.get("progress") as? JsonObject
+                val progress = attempt(attempts, "progress") { SyncProgressReport.build(readOrNull(syncProgressFile), nowSeconds(), carried) }
                 data =
                     if (coverage == null && mirrors == null && progress == null) {
                         null

@@ -51,6 +51,12 @@
 // avatar.test.mjs  the one face renderer — and every size it names has a row
 //                  in index.html's --av table, since a missing row draws a
 //                  face at no size at all and throws nothing
+// sync.test.mjs   what the sync card DECIDES over the router's progress
+//                  document — which legs are worth naming, what each bar is a
+//                  proportion of, whether a health object is drawable. The
+//                  only pins that code ever had were string greps for member
+//                  names in stats.html, and a grep cannot see a wrong
+//                  denominator: five bugs shipped behind one
 // source.test.mjs  every file the page ships is TEXT — one NUL byte made git
 //                  call searchfield.js binary, and four undiffable commits
 //                  later one of them had deleted a function still being called
@@ -58,7 +64,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

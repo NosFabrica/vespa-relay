@@ -23,12 +23,14 @@ package com.nosfabrica.vespa.relay.maintenance
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
 import kotlinx.serialization.json.JsonElement
+import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
 import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
+import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -110,6 +112,7 @@ internal object SyncProgressReport {
     fun build(
         progressJson: String?,
         nowSeconds: Long,
+        previous: JsonObject? = null,
     ): JsonObject? {
         val doc = parse(progressJson) ?: return null
         val writtenAt = (doc["writtenAt"] as? JsonPrimitive)?.longOrNull
@@ -129,11 +132,157 @@ internal object SyncProgressReport {
                 // relay rather than as skew.
                 put("staleForSec", (nowSeconds - it).coerceAtLeast(0))
             }
+            // Zero included: "no thread has been killed" is the claim, and a
+            // member that appears only on damage cannot be told from a router
+            // too old to say either way.
+            num(doc["fatals"])?.let { put("fatals", it) }
+            // WHERE THE CONSTRAINT IS. The router decides this itself, from the
+            // pair that separates a full ingest queue from an empty one, and it
+            // is the first thing an operator asks of a mirror that feels slow.
+            val health = health(doc["health"] as? JsonObject)
+            health?.let { put("health", it) }
+            // …AND HOW IT GOT HERE. Every gauge above is an instant, and every
+            // question asked of them is differential — see [series].
+            series(previous, health, doc, nowSeconds)?.let { put("series", it) }
             putJsonArray("streams") {
                 for (s in streams) stream(s)?.let { add(it) }
             }
+            // THE WORK THAT IS NOT A STREAM — the alias fold, the stability
+            // gate, the NIP-66 monitor, ingest, the healer, the push. Absent
+            // rather than empty when the file carries none: a router built
+            // before this existed makes no claim about them, and an empty array
+            // would be the claim that it runs none.
+            (doc["processors"] as? JsonArray)
+                ?.filterIsInstance<JsonObject>()
+                ?.take(MAX_PROCESSORS)
+                ?.mapNotNull { processor(it) }
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { rows -> putJsonArray("processors") { for (r in rows) add(r) } }
         }
     }
+
+    /**
+     * The router's own account of why it is going at the speed it is.
+     *
+     * Rebuilt member by member like everything else, and `bottleneck` is checked
+     * against the words the router can actually emit — a value this side does
+     * not recognise is dropped rather than served, because the card colours a
+     * state from it.
+     */
+    private fun health(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        // …and EMPTY is not a health object. Every member here is allowlisted,
+        // so a `health` this side recognises nothing in — a word `bottleneckOf`
+        // cannot emit, a router older than these gauges — rebuilt to `{}` and
+        // was published anyway. `{}` is a claim that the router reported its
+        // constraint, and the card believed it: it drew a chip with no text in
+        // it, beside the live one. Absent is the honest answer.
+        return buildJsonObject {
+            text(o["bottleneck"])?.takeIf { it in BOTTLENECKS }?.let { put("bottleneck", it) }
+            for (member in HEALTH_NUMBERS) num(o[member])?.let { put(member, it) }
+        }.takeIf { it.isNotEmpty() }
+    }
+
+    /**
+     * HOW IT GOT HERE — the last hour of the four process gauges, appended one
+     * sample per rollup.
+     *
+     * ## Why an instant was not enough
+     *
+     * Every gauge on this card is a level, and not one operator question about
+     * a level is answerable from one reading. `heap 45%` says nothing; heap 45%
+     * and climbing three points a minute says everything. A queue at 4,101 of
+     * 4,096 is the constraint if it has been there for ten minutes and is noise
+     * if it filled this second. "Is it stuck" is a derivative, and the card was
+     * answering it with thresholds — which is the wrong instrument, and is why
+     * the thresholds always felt arbitrary.
+     *
+     * ## Where it is kept
+     *
+     * In the DOCUMENT, appended to whatever the previously served one carried.
+     * Nothing new holds it: `StatsSnapshot` already merges each tier into the
+     * document it is serving and already persists that document to `STATS_FILE`,
+     * so a series that lives there is carried across rollups by the merge and
+     * across restarts by the file, with no ring buffer, no scheduler and no
+     * second lifetime to reason about. A relay that has just started serves the
+     * history its last run wrote.
+     *
+     * ## What is in it, and what is deliberately not
+     *
+     * The four PROCESS gauges, because they are the ones that decide whether
+     * there is a problem at all, and because they are four scalars rather than
+     * a shape that changes with the deployment. Per-stream and per-processor
+     * series are not here and are not an oversight: the alias fold runs on a
+     * six-hour clock, so at this cadence an hour of samples would not contain
+     * one of its passes. That needs a different window and is a different
+     * feature.
+     *
+     * `at` is published beside the values rather than an interval being
+     * assumed. The rollup cadence is an operator's env var, a restart leaves a
+     * hole, and a reader drawing evenly spaced points over an uneven series
+     * would draw a smooth line through a gap.
+     */
+    private fun series(
+        previous: JsonObject?,
+        health: JsonObject?,
+        doc: JsonObject,
+        nowSeconds: Long,
+    ): JsonObject? {
+        val prior = previous?.get("series") as? JsonObject
+        // The one thing that must not happen: a sample per REQUEST rather than
+        // per rollup. `build` is called once per counters tick, but a document
+        // republished without a new reading would still append — so a sample
+        // whose clock has not moved past the last one is the same instant and
+        // is dropped.
+        val lastAt = (prior?.get("at") as? JsonArray)?.lastOrNull()?.let { num(it) }
+        if (lastAt != null && nowSeconds <= lastAt) return prior
+        val sample =
+            SERIES.associateWith { member ->
+                when (member) {
+                    "heapPct" -> {
+                        val used = num(health?.get("heapUsedMb"))
+                        val max = num(health?.get("heapMaxMb"))
+                        if (used != null && max != null && max > 0) used * 100 / max else null
+                    }
+
+                    "queued" -> {
+                        num(
+                            (doc["processors"] as? JsonArray)
+                                ?.filterIsInstance<JsonObject>()
+                                ?.firstOrNull { text(it["name"]) == "ingest" }
+                                ?.get("queued"),
+                        )
+                    }
+
+                    else -> {
+                        num(health?.get(member))
+                    }
+                }
+            }
+        // Nothing to sample is not a zero sample. A router too old to publish
+        // health, or one whose first health tick has not fired, would otherwise
+        // lay down an hour of flat zeroes that read as a dead mirror.
+        if (sample.values.all { it == null } && prior == null) return null
+        return buildJsonObject {
+            putJsonArray("at") {
+                for (t in tail((prior?.get("at") as? JsonArray).orEmpty().mapNotNull { num(it) } + nowSeconds)) add(t)
+            }
+            for (member in SERIES) {
+                putJsonArray(member) {
+                    // A gap is published as a NULL, never as a zero or a
+                    // carried-forward value: the reader has to be able to tell
+                    // "the router said nothing" from "the router said none".
+                    val kept = (prior?.get(member) as? JsonArray).orEmpty().map { num(it) }
+                    for (v in tail(kept + sample[member])) {
+                        if (v == null) add(JsonNull) else add(v)
+                    }
+                }
+            }
+        }
+    }
+
+    /** The last [MAX_SAMPLES] of a series, so the ring is bounded by the document rather than by a clock. */
+    private fun <T> tail(values: List<T>): List<T> = if (values.size <= MAX_SAMPLES) values else values.takeLast(MAX_SAMPLES)
 
     /** One stream's line, or null when it carries no name — without which it says nothing. */
     private fun stream(o: JsonObject): JsonObject? {
@@ -142,17 +291,151 @@ internal object SyncProgressReport {
             put("name", name)
             text(o["phase"])?.let { put("phase", it) }
             (o["phaseForSec"] as? JsonPrimitive)?.longOrNull?.let { put("phaseForSec", it) }
+            // WHAT THE PHASE KNOWS. Only what a phase can answer is present, so
+            // each is copied when it is there and absent when it is not — an
+            // absent `reached` is a walk that has not reported a depth, and a
+            // zero would be a claim about 1970.
+            for (member in PHASE_DETAIL) num(o[member])?.let { put(member, it) }
+            // The one that is not an integer: a fraction of the window walked.
+            (o["fraction"] as? JsonPrimitive)?.doubleOrNull?.let { put("fraction", it) }
+            text(o["reason"])?.let { put("reason", it) }
             // WHICH relays this stream has workers on. Beside the cycle rather
             // than inside it because a worker outlives the pass that handed it
             // out — see the router's [InFlight] for the full account, and for
             // why this is not simply "the pending urls".
             inFlight(o["inFlight"] as? JsonObject)?.let { put("inFlight", it) }
             (o["cycle"] as? JsonObject)?.let { c -> cycle(c)?.let { put("cycle", it) } }
+            // EVERY PASS STILL RUNNING, not just the newest.
+            //
+            // A walk ends when its last url is handed out and its slowest legs
+            // run on past it, so the ordinary state of a rotation is one pass
+            // walking while the one before it finishes. With a single `cycle`
+            // the older pass stopped being published the moment the new one
+            // opened — its events went on arriving against a partition nothing
+            // was showing, and its still-running legs appeared only as the new
+            // pass's `busy`. Each row is rebuilt by the same [cycle] reader, so
+            // the arithmetic is checked per pass rather than per stream.
+            (o["passes"] as? JsonArray)
+                ?.filterIsInstance<JsonObject>()
+                ?.take(MAX_PASSES)
+                ?.mapNotNull { cycle(it) }
+                ?.takeIf { it.size > 1 }
+                ?.let { rows -> putJsonArray("passes") { for (r in rows) add(r) } }
         }
     }
 
     /**
-     * The longest-held legs, rebuilt row by row and capped again on this side.
+     * One processor, rebuilt member by member like everything else here.
+     *
+     * The counters are an ALLOWLIST rather than whatever the file happens to
+     * carry, which is the same rule the ten `taken` outcomes follow and for a
+     * stronger reason: these become members of a document served under this
+     * relay's name, every one of them has an entry in the published glossary,
+     * and a hand-edited file must not be able to put a new name into either.
+     */
+    private fun processor(o: JsonObject): JsonObject? {
+        val name = text(o["name"]) ?: return null
+        return buildJsonObject {
+            put("name", name)
+            text(o["phase"])?.let { put("phase", it) }
+            num(o["phaseForSec"])?.let { put("phaseForSec", it) }
+            num(o["passesRun"])?.let { put("passesRun", it) }
+            num(o["lastPassAt"])?.let { put("lastPassAt", it) }
+            num(o["lastPassSec"])?.let { put("lastPassSec", it) }
+            num(o["nextInSec"])?.let { put("nextInSec", it) }
+            for (counter in COUNTERS) num(o[counter])?.let { put(counter, it) }
+            rejections(o["rejections"] as? JsonObject)?.let { put("rejections", it) }
+            (o["streams"] as? JsonArray)
+                ?.filterIsInstance<JsonObject>()
+                ?.take(MAX_PROCESSOR_STREAMS)
+                ?.mapNotNull { processorWork(it) }
+                ?.takeIf { it.isNotEmpty() }
+                ?.let { rows -> putJsonArray("streams") { for (r in rows) add(r) } }
+        }
+    }
+
+    /**
+     * What a total is made of, rebuilt row by row and bounded again here.
+     *
+     * Ingest's `rejected` is the largest number this document carries and the
+     * least readable: rejecting most of what arrives is a mirror working, and
+     * only the split says so.
+     */
+    private fun rejections(o: JsonObject?): JsonObject? {
+        val rows = (o?.get("reasons") as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        return buildJsonObject {
+            putJsonArray("reasons") {
+                for (row in rows.take(MAX_REJECTION_ROWS)) {
+                    val reason = text(row["reason"]) ?: continue
+                    add(
+                        buildJsonObject {
+                            put("reason", reason)
+                            put("events", num(row["events"]) ?: 0)
+                        },
+                    )
+                }
+            }
+        }
+    }
+
+    /** How far one processor's pass got over one stream's candidates. */
+    private fun processorWork(o: JsonObject): JsonObject? {
+        val name = text(o["name"]) ?: return null
+        return buildJsonObject {
+            put("name", name)
+            put("candidates", num(o["candidates"]) ?: 0)
+            // The progress number: what still has no verdict. Defaulted to
+            // `candidates` rather than to 0 when a file does not say — "nothing
+            // left to measure" is a strong claim and an unreadable row must not
+            // make it.
+            put("unmeasured", num(o["unmeasured"]) ?: num(o["candidates"]) ?: 0)
+            put("dialled", num(o["dialled"]) ?: 0)
+            put("decided", num(o["decided"]) ?: 0)
+            undecided(o["undecided"] as? JsonObject)?.let { put("undecided", it) }
+        }
+    }
+
+    /**
+     * Why a pass left hosts undecided, bounded again on this side.
+     *
+     * Same contract as [foldedOnto] and [inFlight]: the router bounds its list,
+     * this bounds it a second time rather than trusting that it did, and
+     * `omitted` carries through whatever either side dropped.
+     */
+    private fun undecided(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        val rows = (o["reasons"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (rows.isEmpty()) return null
+        val kept = rows.take(MAX_UNDECIDED_ROWS)
+        var unreadable = 0
+        return buildJsonObject {
+            putJsonArray("reasons") {
+                for (row in kept) {
+                    val reason =
+                        text(row["reason"]) ?: run {
+                            unreadable++
+                            null
+                        } ?: continue
+                    add(
+                        buildJsonObject {
+                            put("reason", reason)
+                            put("hosts", num(row["hosts"]) ?: 0)
+                            putJsonArray("examples") {
+                                for (h in (row["examples"] as? JsonArray).orEmpty().take(MAX_UNDECIDED_EXAMPLES)) {
+                                    text(h)?.let { add(it) }
+                                }
+                            }
+                        },
+                    )
+                }
+            }
+            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
+        }
+    }
+
+    /**
+     * The quietest legs, rebuilt row by row and capped again on this side.
      *
      * Same terms as [foldedOnto]: the router already bounds its list, and this
      * bounds it a second time rather than trusting that it did. `omitted` is
@@ -181,6 +464,10 @@ internal object SyncProgressReport {
                     add(
                         buildJsonObject {
                             put("relay", relay)
+                            // Which walk handed it out. Absent on a router that
+                            // predates the stamp, where the honest answer is
+                            // nothing rather than a guess.
+                            num(row["pass"])?.let { put("pass", it) }
                             put("heldForSec", num(row["heldForSec"]) ?: 0)
                             // Absent means "holds no transfer slot", which is a
                             // statement. Defaulting it to 0 would turn a worker
@@ -222,6 +509,11 @@ internal object SyncProgressReport {
         val byOutcome = OUTCOMES.associateWith { num(outcomes[it]) ?: 0L }
         val settled = byOutcome.values.sum()
         return buildJsonObject {
+            // Which pass this is, and which half of the router opened it. Absent
+            // on a file written before passes were published, where the single
+            // cycle needed no name to be told from the others.
+            num(o["number"])?.let { put("number", it) }
+            text(o["owner"])?.let { put("owner", it) }
             num(o["startedAt"])?.let { put("startedAt", it) }
             num(o["endedAt"])?.let { put("endedAt", it) }
             text(o["outcome"])?.let { put("outcome", it) }
@@ -304,10 +596,97 @@ internal object SyncProgressReport {
         }
     }
 
+    /**
+     * The gauges a processor may publish, and the whole of them.
+     *
+     * Not "whatever numbers the file carries": these are members of a document
+     * served under this relay's name and each one is defined in
+     * [SyncVocabulary], so a name that is not here is a name no reader could
+     * look up. Adding one is a two-file change on purpose.
+     */
+    internal val COUNTERS =
+        listOf(
+            // ingest
+            "queued",
+            "capacity",
+            "accepted",
+            "rejected",
+            // the healer and the upstream push
+            "pushed",
+            "dropped",
+            // the NIP-66 monitor
+            "observed",
+            "knownDead",
+            // ingest's one loss counter
+            "lostToStore",
+        )
+
+    /**
+     * The gauges kept as a series, in draw order — see [series].
+     *
+     * `heapPct` is derived rather than copied: a percentage is what a reader
+     * compares across samples, and publishing both halves of the pair sixty
+     * times over to let the page divide them would triple the cost of the
+     * feature for nothing.
+     */
+    internal val SERIES = listOf("eventsPerSec", "queued", "heapPct", "sockets")
+
+    /**
+     * How many samples the ring holds — an hour at the stock 60s counters
+     * cadence, and however long that many ticks is at any other.
+     *
+     * Bounded by COUNT rather than by age on purpose: the bound has to hold
+     * whatever an operator sets `STATS_COUNTERS_INTERVAL_SECONDS` to, and this
+     * one costs the document about 1.2KB whatever that is.
+     */
+    internal const val MAX_SAMPLES = 60
+
+    /** The four words `SyncEngine.bottleneckOf` can produce, and no others. */
+    private val BOTTLENECKS = setOf("ingest", "downloads", "upstream", "mixed")
+
+    private val HEALTH_NUMBERS =
+        listOf("eventsPerSec", "heapUsedMb", "heapMaxMb", "sockets", "socketCeiling", "servingMs")
+
+    /**
+     * The phase members a stream may publish beside its phase word.
+     *
+     * An allowlist for the reason every list here is one: these become members
+     * of a document served under this relay's name, and each has a glossary
+     * entry. `fraction` and `reason` are handled apart — one is not an integer
+     * and the other is not a number at all.
+     */
+    private val PHASE_DETAIL =
+        listOf(
+            "returned",
+            "running",
+            "transferring",
+            "etaSec",
+            "reached",
+            "collected",
+            "collectedTotal",
+            "slotsFree",
+            "slotsNeeded",
+            "nextInSec",
+            "retryInSec",
+        )
+
     /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
     private const val MAX_FOLD_ROWS = 20
     private const val MAX_FOLD_EXAMPLES = 2
     private const val MAX_IN_FLIGHT_ROWS = 20
+
+    /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
+    private const val MAX_PASSES = 4
+
+    /** Six today (fold, stability, reachability, ingest, heal, push), with room to grow. */
+    private const val MAX_PROCESSORS = 12
+
+    /** A processor reports per stream, and a router runs a handful of them. */
+    private const val MAX_PROCESSOR_STREAMS = 12
+
+    private const val MAX_UNDECIDED_ROWS = 6
+    private const val MAX_REJECTION_ROWS = 4
+    private const val MAX_UNDECIDED_EXAMPLES = 3
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 

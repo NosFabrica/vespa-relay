@@ -57,6 +57,9 @@ class SyncVocabularyTest {
             "kinds",
             "narrowedBy",
             "cycle",
+            // A pass's own number within its owner. An identifier, like `name`
+            // — what it MEANS is `passes`, which has a term of its own.
+            "number",
             "streams",
             "rows",
             "from",
@@ -84,6 +87,13 @@ class SyncVocabularyTest {
             // The fold's per-survivor sample urls: strings, and `urls` beside
             // them is the count a reader looks up.
             "examples",
+            // The container the constraint's numbers sit in; `bottleneck` and
+            // each gauge inside it is what a reader looks up.
+            "health",
+            // The container `undecided` holds its rows in. `reason`, `hosts`
+            // and `examples` inside it are what a reader looks up; the plural
+            // is the shape, exactly as `relays` is inside `inFlight`.
+            "reasons",
         )
 
     @Test
@@ -100,15 +110,36 @@ class SyncVocabularyTest {
         val progress =
             SyncProgressReport.build(
                 """
-                {"writtenAt": 900, "streams": [{"name": "content", "phase": "idle", "phaseForSec": 5,
-                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
+                {"writtenAt": 900, "fatals": 0,
+                 "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
+                            "sockets": 412, "socketCeiling": 1024, "servingMs": 18},
+                 "streams": [{"name": "content", "phase": "fetching", "phaseForSec": 5,
+                 "returned": 12, "running": 128, "transferring": 8, "fraction": 0.33, "etaSec": 3600,
+                 "reached": 1700000000, "collected": 10, "collectedTotal": 20, "slotsFree": 0, "slotsNeeded": 20,
+                 "nextInSec": 30, "retryInSec": 60, "reason": "connection reset",
+                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "pass": 11, "heldForSec": 41400,
                                           "transferringForSec": 41390, "events": 2, "quietForSec": 41000}],
                               "omitted": 118},
-                 "cycle": {"startedAt": 800, "outcome": "completed",
+                 "cycle": {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "completed",
                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3},
                    "hosts": 2, "relayListAgeSec": 120, "taken": {"delivered": 3, "busy": 1}, "balanced": true, "received": 9,
                    "foldedOnto": {"relays": [{"relay": "wss://a.example/", "urls": 1, "examples": ["wss://a.example/x"]}],
-                                  "omitted": 0}}}]}
+                                  "omitted": 0}},
+                 "passes": [{"number": 11, "owner": "dynamic", "startedAt": 700, "endedAt": 780, "outcome": "completed",
+                    "urls": {"discovered": 4, "taken": 4}, "taken": {"delivered": 2}, "received": 4},
+                   {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "running",
+                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3}, "taken": {"delivered": 3}, "received": 9}]}],
+                 "processors": [
+                   {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
+                    "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
+                    "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
+                      "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
+                                                 "examples": ["a.example"]}], "omitted": 0}}]},
+                   {"name": "ingest", "phase": "running", "phaseForSec": 900,
+                    "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
+                    "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
+                   {"name": "reachability", "phase": "watching", "phaseForSec": 900, "observed": 40, "knownDead": 8},
+                   {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
             )!!
@@ -189,6 +220,61 @@ class SyncVocabularyTest {
                     "events",
                     "quietForSec",
                     "omitted",
+                    "owner",
+                ) +
+                // The passes beside a stream's current cycle, and the work that
+                // is not a stream at all — the two probe passes, the NIP-66
+                // monitor, ingest, the healer, the push.
+                setOf(
+                    "passes",
+                    "passesRun",
+                    "processors",
+                    "candidates",
+                    "unmeasured",
+                    "dialled",
+                    "decided",
+                    "undecided",
+                    "reason",
+                    "lastPassAt",
+                    "lastPassSec",
+                    "nextInSec",
+                    "queued",
+                    "capacity",
+                    "accepted",
+                    "rejected",
+                    "pushed",
+                    "dropped",
+                    "observed",
+                ) +
+                // What the phase itself knows, which used to reach a log line
+                // and stop there — plus the two facts about the process rather
+                // than about a stream.
+                setOf(
+                    "running",
+                    "transferring",
+                    "fraction",
+                    "etaSec",
+                    "reached",
+                    "collected",
+                    "collectedTotal",
+                    "slotsFree",
+                    "slotsNeeded",
+                    "retryInSec",
+                    "pass",
+                    "fatals",
+                    "rejections",
+                    "lostToStore",
+                    "health",
+                    "bottleneck",
+                    "eventsPerSec",
+                    "heapUsedMb",
+                    "heapMaxMb",
+                    "sockets",
+                    "socketCeiling",
+                    "servingMs",
+                    "series",
+                    "at",
+                    "heapPct",
                 )
 
         assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")

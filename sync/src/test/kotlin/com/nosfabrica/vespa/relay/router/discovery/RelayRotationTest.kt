@@ -113,14 +113,50 @@ class RelayRotationTest {
 
         val held = rotation.held(nowMs = 1_100_000)
 
-        assertEquals(
-            listOf(a.url.url, b.url.url),
-            held.relays.map { it.relay },
-            "longest-held first, because that is the one worth looking at",
-        )
+        // Neither has received anything, so both quiet clocks run from the
+        // claim and the longer-held leg is also the quieter one. The tie-break
+        // is what orders them, and it is `heldForSec` descending.
+        assertEquals(listOf(a.url.url, b.url.url), held.relays.map { it.relay })
         assertEquals(100L, held.relays[0].heldForSec)
         assertEquals(70L, held.relays[1].heldForSec)
         assertEquals(0, held.omitted)
+    }
+
+    @Test
+    fun `the rows kept are the QUIET ones, not the old ones`() {
+        // The selection bug, in the direction it failed. Held is not risk: the
+        // healthiest thing this router does is hold one relay for an hour while
+        // it streams events, and under the old ordering those long-haulers took
+        // every row while the leg that had stopped receiving fell off the end
+        // of the cap into `omitted` — a list truncated on the wrong key, which
+        // does not look truncated.
+        val rotation = RelayRotation()
+        // Two legs held far longer, both still delivering right now…
+        rotation.take(a.url, nowMs = 1_000_000)
+        rotation.take(b.url, nowMs = 1_000_000)
+        rotation.leg(a.url)!!.received(nowMs = 1_099_000)
+        rotation.leg(b.url)!!.received(nowMs = 1_099_000)
+        // …and one claimed recently that has never received anything.
+        rotation.take(c.url, nowMs = 1_050_000)
+
+        val kept = rotation.held(nowMs = 1_100_000, limit = 1)
+
+        assertEquals(listOf(c.url.url), kept.relays.map { it.relay }, "the wedged leg, not the oldest")
+        assertEquals(50L, kept.relays[0].quietForSec, "quiet runs from the claim when nothing ever arrived")
+        assertEquals(2, kept.omitted, "and the two healthy long-haulers are counted, not hidden")
+    }
+
+    @Test
+    fun `a leg still receiving sorts below a wedged one however long it has been held`() {
+        val rotation = RelayRotation()
+        rotation.take(a.url, nowMs = 1)
+        rotation.leg(a.url)!!.received(nowMs = 1_099_500)
+        rotation.take(b.url, nowMs = 1_090_000)
+
+        val order = rotation.held(nowMs = 1_100_000).relays
+
+        assertEquals(b.url.url, order[0].relay, "quiet 10s beats held 1,100,000ms with events still arriving")
+        assertEquals(a.url.url, order[1].relay)
     }
 
     @Test

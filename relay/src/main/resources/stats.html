@@ -89,16 +89,20 @@
     pubkey count has to be asked of the engine at weekly granularity.
 -->
 <style>
+  /* `--good` and the two soft tones are for CHIPS only — a chip is a filled
+     label, so it needs a background its own text stays legible on, and
+     `--warn` at 15% is not that. Nothing else on the page paints a fill behind
+     text, which is why the palette went this long without them. */
   :root {
     --bg: #f6f7f9; --surface: #fff; --text: #14171a; --muted: #6b7580;
     --line: #e3e6ea; --accent: #4a5fd9; --warn: #a8611a; --bar: #d9def7;
-    --grid: #eceef1;
+    --grid: #eceef1; --good: #2f7d55; --good-soft: #dcefe4; --warn-soft: #f7ead9;
   }
   @media (prefers-color-scheme: dark) {
     :root {
       --bg: #14161a; --surface: #1c1f24; --text: #e8eaed; --muted: #9aa3ad;
       --line: #2b3038; --accent: #8b9cf0; --warn: #d99b56; --bar: #2c3350;
-      --grid: #242830;
+      --grid: #242830; --good: #6cc294; --good-soft: #1e3529; --warn-soft: #3a2c1b;
     }
   }
   * { box-sizing: border-box; }
@@ -325,45 +329,162 @@
      swatch rendered fully transparent (measured: `rgba(0, 0, 0, 0)`). It also
      forced a style recalc per bucket per render, on a page that re-renders every
      poll. */
-  .disp > i.delivered, .disp-key b.delivered { background: var(--accent); }
-  .disp > i.nothingNew, .disp-key b.nothingNew { background: var(--accent); opacity: .45; }
+  .disp > i.delivered, .keys b.delivered { background: var(--accent); }
+  .disp > i.nothingNew, .keys b.nothingNew { background: var(--accent); opacity: .45; }
   /* Not reached. Warm, not red: a dead url in an old relay list is the ordinary
      case on a fan-out this wide, not an incident. */
   .disp > i.unreachable, .disp > i.noRoute, .disp > i.hostStruckOut,
-  .disp-key b.unreachable, .disp-key b.noRoute, .disp-key b.hostStruckOut { background: var(--warn); opacity: .6; }
+  .keys b.unreachable, .keys b.noRoute, .keys b.hostStruckOut { background: var(--warn); opacity: .6; }
   /* Skipped on a DURABLE verdict rather than on anything measured this cycle —
      the one segment whose relays were never dialled at all, and the one whose
      retry is a TTL rather than the next cycle. */
-  .disp > i.knownDead, .disp-key b.knownDead { background: var(--warn); opacity: .35; }
+  .disp > i.knownDead, .keys b.knownDead { background: var(--warn); opacity: .35; }
   /* Our own fault, or at least our own side: the transfer broke after a
      handshake, or our proxy was down. */
   .disp > i.transferFailed, .disp > i.torUnavailable,
-  .disp-key b.transferFailed, .disp-key b.torUnavailable { background: var(--warn); }
-  .disp > i.pending, .disp-key b.pending { background: var(--bar); }
+  .keys b.transferFailed, .keys b.torUnavailable { background: var(--warn); }
+  .disp > i.pending, .keys b.pending { background: var(--bar); }
   /* OUR pool, not their relay — the same family as `pending` and deliberately
      not the warm "not reached" one, because a busy url is a url this rotation
      declined to redial while a worker still had it. Lighter, so the two read as
      a pair without the bar claiming two segments of the same thing. */
-  .disp > i.busy, .disp-key b.busy { background: var(--bar); opacity: .5; }
-  /* `row-gap` under `column-gap`: the key runs to nine buckets and wraps to two
-     or three rows at any real width, and an equal gap on both axes made the
-     wrapped rows read as separate paragraphs rather than as more of the key. */
-  .disp-key { display: flex; gap: .35rem .8rem; flex-wrap: wrap; font-size: .72rem; color: var(--muted); }
-  .disp-key b { display: inline-block; width: .55rem; height: .55rem; border-radius: 2px; vertical-align: -.02em; margin-right: .25rem; }
-  /* The prose under a cycle's bar — the accounting line.
-     NOT `.why`, which is deliberately margin-free because it ENDS a card; used
-     three times mid-block it collapsed a legend, a list and a sentence into one
-     undifferentiated slab with 0px between them. Same muted register, its own
-     spacing. */
-  .cyc-line { color: var(--muted); font-size: .85rem; margin: .45rem 0 0; }
-  .cyc { margin: 0 0 .9rem; }
-  .cyc-head { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
-  .cyc-head .nm { font-weight: 600; }
-  .cyc-head .ph { color: var(--muted); font-variant-numeric: tabular-nums; }
-  /* A failed cycle is the one thing on this line worth looking at, and `.err`
-     alone loses to `.cyc-head .ph` on specificity — which drew it in the same
-     muted grey as a stream that finished cleanly. */
-  .cyc-head .ph.err { color: var(--warn); margin: 0; font-size: inherit; }
+  .disp > i.busy, .keys b.busy { background: var(--bar); opacity: .5; }
+  .keys b { display: inline-block; width: .5rem; height: .5rem; border-radius: 2px; vertical-align: -.01em; margin-right: .28rem; }
+
+  /* The URL partition, which divides a DIFFERENT whole: `discovered`, not
+     `taken`. Same bar element, deliberately different family of tones — the
+     part that got dialled in the accent, and the three that did not in our own
+     neutral, because none of them is a verdict about a relay. `foldedOntoAnother`
+     especially: that url's server IS being dialled, under another name. */
+  .disp > i.taken, .keys b.taken { background: var(--accent); }
+  .disp > i.foldedOntoAnother, .keys b.foldedOntoAnother { background: var(--bar); }
+  /* The one that IS a measurement: the relay answered, it just answered the
+     same question two different ways. */
+  .disp > i.refusedUnstable, .keys b.refusedUnstable { background: var(--warn); opacity: .6; }
+  .disp > i.excluded, .keys b.excluded { background: var(--muted); opacity: .35; }
+
+  /* ---- the router's state, as marks --------------------------------------
+     Everything in this block exists to keep the live half of the card OFF
+     prose. The measured version of the sentence-based card ran 520 words for
+     two streams; the same facts as chips, bars and one table run 66. Words are
+     not free here — they are read serially, they do not compare, and a number
+     inside a sentence cannot be scanned down a column.
+
+     The rule the whole block follows: a mark carries the QUANTITY, and the
+     glossary the router already ships carries the meaning, on the mark's
+     `title`. See `term()` — the words are the document's, not this page's. */
+  .chip {
+    display: inline-block; font-size: .68rem; font-weight: 650; padding: .08rem .4rem;
+    border-radius: .3rem; background: var(--grid); color: var(--muted); white-space: nowrap;
+  }
+  /* Three states worth a tone, and only three. `live` is the one green thing
+     on the page and it answers the question asked first; `busy` is work in
+     progress; `warn` is a phase that will not move on its own. Everything else
+     is a neutral chip, because a page where every chip is coloured has no
+     colour. */
+  .chip.live { background: var(--good-soft); color: var(--good); }
+  .chip.busy { background: var(--bar); color: var(--accent); }
+  .chip.warn { background: var(--warn-soft); color: var(--warn); }
+
+  /* THE LAST HOUR of a gauge, inside the chip that carries its level.
+     A level and its trend are one fact and belong on one mark: `heap 45%` says
+     nothing, `heap 45%` over a line climbing out of the left edge says
+     everything. `currentColor` on purpose — the trace inherits the chip's tone,
+     so a gauge at its ceiling draws a warm line without a second rule. */
+  /* `.trend`, NOT `.spark` — the kind-activity card has carried `chart spark`
+     sparklines since long before this, and the three rules below were quietly
+     restyling them and nudging every one of them .32rem to the right. */
+  .trend { vertical-align: -.15em; margin-left: .32rem; overflow: visible; }
+  .trend path { fill: none; stroke: currentColor; stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; opacity: .75; }
+  /* A sample with a gap on either side. Without this a lone reading between two
+     outages draws nothing at all, which is the one case where the series has
+     something to say and the line cannot say it. */
+  .trend circle { fill: currentColor; opacity: .75; }
+
+  /* The NOW line: what the router is, in chips, above the streams. */
+  .now { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; margin: 0 0 .9rem; }
+  .now .fact { font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* One stream. The rule above it is what separates two streams' stacks of
+     bars — without it, a rotation running two passes reads as four streams. */
+  .stream { padding: .65rem 0; border-top: 1px solid var(--line); }
+  .stream:first-of-type { border-top: 0; padding-top: 0; }
+  .sh { display: flex; align-items: center; gap: .35rem; margin-bottom: .4rem; }
+  .sh .nm { font-weight: 650; font-size: .92rem; }
+  .sh .grow { flex: 1; }
+  .sh .r { font-size: .75rem; color: var(--muted); font-variant-numeric: tabular-nums; }
+
+  /* The key under a bar. The NUMBER is the reading and the word is the label,
+     so the number is inked and the word is muted — the old key put them in one
+     weight and the eye had to parse ten phrases to find the big one. */
+  .keys { display: flex; flex-wrap: wrap; gap: .1rem .7rem; font-size: .72rem; color: var(--muted); margin-top: .25rem; }
+  .keys span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .keys em { font-style: normal; color: var(--text); font-weight: 620; }
+
+  /* Two pools, nested: the workers a stream is running, and the few of them
+     holding a transfer slot. Nested rather than side by side because one is a
+     subset of the other — that containment is the whole reason `pending` runs
+     to five thousand while `transferring` sits at eight. */
+  .pools { display: flex; align-items: center; gap: .4rem; margin-top: .35rem; font-size: .72rem; color: var(--muted); }
+  .pools .bar { position: relative; height: 8px; flex: 0 0 7rem; background: var(--grid); border-radius: 2px; overflow: hidden; }
+  .pools .bar i { position: absolute; left: 0; top: 0; height: 100%; }
+  .pools .bar i.w { background: var(--bar); }
+  .pools .bar i.t { background: var(--accent); }
+
+  /* The held legs, as a TABLE. Five relays × four clocks is a matrix, and it
+     was being read out as a sentence per relay — which is the one shape that
+     makes "which of these is the worst" un-scannable. */
+  table.legs { width: 100%; border-collapse: collapse; margin-top: .5rem; font-size: .76rem; }
+  table.legs th {
+    text-align: left; font-size: .64rem; text-transform: uppercase; letter-spacing: .07em;
+    color: var(--muted); font-weight: 700; padding: .15rem .45rem .15rem 0; border-bottom: 1px solid var(--line);
+  }
+  table.legs td { padding: .18rem .45rem .18rem 0; border-bottom: 1px solid var(--line); vertical-align: middle; }
+  table.legs td.u { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: .71rem; word-break: break-all; }
+  table.legs td.r { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; color: var(--muted); }
+  /* QUIET is a bar, not a duration, because "is anything still arriving" is
+     the question that separates a relay with a real backlog from one whose
+     walk cannot terminate — and both are "held for hours". */
+  .qbar { position: relative; height: 7px; background: var(--grid); border-radius: 2px; min-width: 3rem; }
+  .qbar i { position: absolute; left: 0; top: 0; height: 100%; border-radius: 2px; background: var(--accent); }
+  .qbar i.hot { background: var(--warn); }
+
+  /* A processor, as one row: name, state, how far along, and the one number
+     that matters for it. A grid rather than a paragraph so the meters line up
+     down the column — which is what makes "the fold is stuck and ingest is
+     not" a glance instead of a read. */
+  .dec {
+    display: grid; grid-template-columns: 9.5rem 7.5rem 1fr 7rem; gap: .5rem;
+    align-items: center; padding: .42rem 0; border-top: 1px solid var(--line); font-size: .82rem;
+  }
+  .dec:first-of-type { border-top: 0; }
+  .dec .nm { font-weight: 620; }
+  .dec .r { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: .76rem; }
+  /* TWO KINDS OF METER, and they must never be read as one.
+     A progress meter is a fraction COMPLETED — monotonic, full means done. An
+     occupancy meter is a LEVEL — full means backpressured. Drawn identically
+     they were: a fold at 50% and an ingest queue at 50% were the same picture
+     in the same column meaning unrelated things, and a full bar meant "finished"
+     on one row and "the store is the limit" on the next.
+     So progress keeps the accent, and occupancy takes the neutral this card
+     already spends on `pending` and `busy` — facts about OUR OWN pool rather
+     than verdicts about anything — going warm only at the ceiling, where it
+     stops being a level and becomes a fault. */
+  /* The meter cell: the bar, and beside it the line that says how it got here.
+     A wrapper rather than putting the line inside the bar — `.frac` is a flex
+     container clipped to its own height, so an svg child would be squeezed into
+     the track and cut off. */
+  .meter { display: flex; align-items: center; gap: .4rem; }
+  .meter .frac { flex: 1; min-width: 0; }
+  .frac { height: 10px; border-radius: 2px; background: var(--grid); overflow: hidden; display: flex; }
+  .frac i { display: block; height: 100%; background: var(--accent); }
+  .frac i.level { background: var(--bar); }
+  .frac i.warn { background: var(--warn); }
+  /* The one register left for words, and it is spent only on damage: a fatal
+     error, a partition that does not hold, events lost to the store. */
+  .alarm { color: var(--warn); font-weight: 620; font-size: .8rem; margin: .45rem 0 0; }
+  .foot { color: var(--muted); font-size: .74rem; margin: .35rem 0 0; font-variant-numeric: tabular-nums; }
+  [title] { cursor: help; }
 
   .axis-track { position: relative; height: 1.15rem; margin-left: calc(var(--lab) + .6rem); }
   .axis-track span {
@@ -587,8 +708,15 @@
      outspecifying — that is why the pending card kept the 2.4px gap the rest of
      the page had already lost. */
   .why { color: var(--muted); font-size: .85rem; margin: 0; }
-  .pending { border-style: dashed; }
-  .pending h2 { color: var(--muted); }
+  /* SCOPED TO THE CARD, and the scope is the whole point: `.pending` on its own
+     also matches the disposition bar's `pending` segment and the swatch in its
+     key, both of which carry that class so one rule can paint bar and key
+     alike. `border-style` with no width resolves to `medium`, so the segment
+     for "still in flight" — the largest one on a live fan-out — drew as a 3px
+     dashed black box over its own colour. Caught on a running mirror, not in
+     review. */
+  .card.pending { border-style: dashed; }
+  .card.pending h2 { color: var(--muted); }
   .badge {
     display: inline-block; font-size: .7rem; text-transform: uppercase; letter-spacing: .05em;
     padding: .1rem .4rem; border-radius: .25rem; background: var(--bar); color: var(--muted);
@@ -684,6 +812,15 @@
 import { kindLabel } from "/web/shared/kinds.js";
 import { Relay } from "/web/shared/relay.js";
 import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/verdicts.js";
+// The sync card's judgements — which legs are worth naming, what each bar is a
+// proportion of, whether a partition divides. Extracted so `tools/webtest` can
+// assert them: the only pins over this code were string greps for member names,
+// and a grep cannot see a wrong denominator.
+import {
+  DISCOVERY, DISPOSITION, STUCK_LEG_SEC,
+  constraintOf, dividesOn, gaugesOf, heldCount, isLive, legsOf, meterOf, partitionOf, passHeld, passLabelOf,
+  pendingMeaning, sparkOf, trendOf,
+} from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1448,258 +1585,730 @@ function mirrorLine(mirrors) {
 }
 
 /**
- * WHAT THE ROUTER IS DOING, and what became of everything the current cycle
- * took on.
+ * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
  *
  * This sits above the coverage bars because it answers the questions asked
  * first and because the coverage card cannot answer any of them. Coverage is
- * accumulated across every run this router has ever made; this is one cycle,
- * live, with an outcome.
+ * accumulated across every run this router has ever made; this is one cycle.
  *
- * Three readings the card is arranged to make impossible:
+ * ## Marks, not sentences
  *
- *  - **"16,747/16,752" as progress.** That number is legs that RETURNED, and it
- *    counts every leg that came back unreachable or capped. The stacked bar is
- *    what actually became of them, and it is drawn from members that sum to the
- *    total by construction — a stack cannot be drawn from counts that do not.
- *  - **"discovered" as "dialled".** `foldedOntoAnother` is stated on its own
- *    line, beside the host count, because most of the gap between a fan-out's
- *    two big numbers is duplicate urls rather than lost relays.
- *  - **A stopped router as a quiet one.** `staleForSec` is a heartbeat and is
- *    rendered loudly past a couple of minutes, whatever the streams claim to be
- *    doing — a phase line frozen mid-`fetching` is exactly what a dead process
- *    leaves behind.
+ * The half of this card that describes the live state used to be prose: a
+ * paragraph of clauses per stream, a second for the accounting, a third naming
+ * the held relays, and a fourth per processor. Measured on a two-stream
+ * deployment it came to 520 words, and it had the failure modes prose always
+ * has against a table of numbers — it is read serially, two streams cannot be
+ * compared without holding both paragraphs in your head, and a number inside a
+ * clause cannot be scanned down a column. The same facts as chips, bars and
+ * one table come to 66.
+ *
+ * So: every quantity is a mark, and the MEANING lives on the mark's `title`,
+ * taken from the glossary the document already ships (see [term]). The card
+ * spends words on exactly one thing — damage — through `.alarm`.
+ *
+ * ## Three readings the arrangement is meant to make impossible
+ *
+ *  - **"16,747/16,752" as progress.** That number counts legs that RETURNED,
+ *    including every one that came back unreachable or capped. The stacked bar
+ *    is what actually became of them, and it is drawn from members that sum to
+ *    the total by construction — a stack cannot be drawn from counts that do
+ *    not.
+ *  - **"discovered" as "dialled".** Most of the gap between a fan-out's two big
+ *    numbers is duplicate urls rather than lost relays, so the url partition is
+ *    its own bar above the disposition rather than a clause beside it.
+ *  - **A stopped router as a quiet one.** `staleForSec` is a heartbeat, and the
+ *    `live` chip is the first mark on the card — a phase frozen mid-`fetching`
+ *    is exactly what a dead process leaves behind.
  */
-const DISPOSITION = [
-  ["delivered", "delivered — reached, and it had events we did not"],
-  ["nothingNew", "in sync — reached, nothing new to give"],
-  // The one label that depends on the cycle's outcome — see `pendingLabel`.
-  ["pending", "still in flight"],
-  // Beside `pending` because both are facts about OUR pool rather than verdicts
-  // about a relay. It was missing entirely: the router publishes it, the relay
-  // sums it into `accountedFor`, and the bar drew nothing — so a stream with a
-  // large `busy` (which is every stream with `recycleSeconds` set) rendered a
-  // stack that silently failed to fill its own total.
-  ["busy", "still syncing from an earlier pass — the rotation passed over it, not a verdict about the relay"],
-  ["noRoute", "no route — TCP refused or the name does not resolve"],
-  ["unreachable", "unreachable — never answered"],
-  ["hostStruckOut", "host struck out by a sibling url this cycle — dialled again next cycle"],
-  ["knownDead", "known dead — an earlier run's unreachability record is still current; retried when it ages out"],
-  ["transferFailed", "answered, then the transfer broke"],
-  ["torUnavailable", "our Tor proxy was down — nothing is claimed about these"],
-];
-
-/** Past this, a router that has not written its heartbeat is not running. */
-const HEARTBEAT_STALE_SEC = 150;
 
 /**
- * Past this, a leg is not slow, it is stuck — and the card says so in the loud
- * style rather than the quiet one.
+ * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
  *
- * Ten minutes, the same floor the router's own log line uses, and for the same
- * reason: the slowest HEALTHY leg measured on this deployment is the full
- * purplepag.es `indexers` walk at ~10.8 minutes for 1.49M events. Anything
- * lower marks legs doing exactly what they should.
+ * This sits above the coverage bars because it answers the questions asked
+ * first and because the coverage card cannot answer any of them. Coverage is
+ * accumulated across every run this router has ever made; this is one cycle.
+ *
+ * ## Marks, not sentences
+ *
+ * The half of this card that describes the live state used to be prose: a
+ * paragraph of clauses per stream, a second for the accounting, a third naming
+ * the held relays, and a fourth per processor. Measured on a two-stream
+ * deployment it came to 520 words, and it had the failure modes prose always
+ * has against a table of numbers — it is read serially, two streams cannot be
+ * compared without holding both paragraphs in your head, and a number inside a
+ * clause cannot be scanned down a column. The same facts as chips, bars and one
+ * table come to 66.
+ *
+ * So: every quantity is a mark, and the MEANING lives on the mark's `title`,
+ * taken from the glossary the document already ships (see [term]). The card
+ * spends words on exactly one thing — damage — through `.alarm`.
+ *
+ * ## Where the decisions live
+ *
+ * Not here. Which legs are worth naming, what a bar is a proportion OF, whether
+ * a partition divides, whether a health object is drawable — all of that is
+ * `/web/shared/sync.js`, because it is the half that can be wrong silently and
+ * the half nothing could reach while it was inline. What is left below is DOM
+ * and the document's own words. See that module's head for the five bugs that
+ * shipped behind a string grep.
+ *
+ * ## Three readings the arrangement is meant to make impossible
+ *
+ *  - **"16,747/16,752" as progress.** That number counts legs that RETURNED,
+ *    including every one that came back unreachable or capped. The stacked bar
+ *    is what actually became of them, and it is drawn from members that sum to
+ *    the total by construction — a stack cannot be drawn from counts that do
+ *    not.
+ *  - **"discovered" as "dialled".** Most of the gap between a fan-out's two big
+ *    numbers is duplicate urls rather than lost relays, so the url partition is
+ *    its own bar above the disposition rather than a clause beside it.
+ *  - **A stopped router as a quiet one.** `staleForSec` is a heartbeat, and the
+ *    `live` chip is the first mark on the card — a phase frozen mid-`fetching`
+ *    is exactly what a dead process leaves behind.
  */
-const STUCK_LEG_SEC = 600;
-
-/** How many held relays the card names before deferring to the JSON. */
-const IN_FLIGHT_SHOWN = 3;
 
 /**
- * WHICH relays are running right now, which is the half the disposition bar
- * cannot draw.
+ * The glossary the document ships, for the current card's `title` attributes.
+ *
+ * Set by [syncCard] before anything below draws. The words are the ROUTER's —
+ * `SyncVocabulary` publishes them and `SyncVocabularyTest` pins the two
+ * directions, no published count without a term and no term without a count —
+ * so a mark that explains itself here cannot drift from the member it explains.
+ */
+let TERMS = {};
+
+/** What the document says a member means, or nothing at all. */
+function term(key) {
+  return TERMS[key] || "";
+}
+
+/** One labelled pill. `tone` is `live`, `busy`, `warn`, or nothing. */
+function chip(text, tone, title) {
+  const c = el("span", tone ? `chip ${tone}` : "chip", text);
+  if (title) c.title = title;
+  return c;
+}
+
+/** How wide a spark is drawn, and how tall. Small enough to sit inside a chip without changing its height. */
+const SPARK_W = 46, SPARK_H = 11, SPARK_PAD = 1;
+
+/**
+ * One gauge's last hour, as a line — see `sparkOf` for the geometry and for why
+ * `x` comes from each sample's own clock rather than from its index.
+ *
+ * Drawn as one path PER UNBROKEN RUN. A gap is a gap: joining across it would
+ * draw a straight line through an outage, which is the one shape a reader would
+ * take as evidence that nothing happened.
+ */
+function spark(series, member) {
+  const s = sparkOf(series, member);
+  if (!s) return null;
+  const svg = document.createElementNS(SVG, "svg");
+  svg.setAttribute("class", "trend");
+  svg.setAttribute("viewBox", `0 0 ${SPARK_W} ${SPARK_H}`);
+  svg.setAttribute("width", SPARK_W);
+  svg.setAttribute("height", SPARK_H);
+  const at = (pt) => [
+    SPARK_PAD + pt.x * (SPARK_W - 2 * SPARK_PAD),
+    SPARK_H - SPARK_PAD - pt.y * (SPARK_H - 2 * SPARK_PAD),
+  ];
+  let run = [];
+  const flush = () => {
+    if (run.length > 1) {
+      const path = document.createElementNS(SVG, "path");
+      path.setAttribute("d", run.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(2)} ${y.toFixed(2)}`).join(" "));
+      svg.appendChild(path);
+    } else if (run.length === 1) {
+      const dot = document.createElementNS(SVG, "circle");
+      dot.setAttribute("cx", run[0][0].toFixed(2));
+      dot.setAttribute("cy", run[0][1].toFixed(2));
+      dot.setAttribute("r", "1");
+      svg.appendChild(dot);
+    }
+    run = [];
+  };
+  for (const pt of s.points) {
+    if (!pt) flush();
+    else run.push(at(pt));
+  }
+  flush();
+  return { svg, note: sparkNote(s, member) };
+}
+
+/** What the line says, for the title beside it — the direction, the range, and the window. */
+function sparkNote(s, member) {
+  const range = s.flat ? `flat at ${fmt(s.lo)}` : `${fmt(s.lo)}–${fmt(s.hi)}`;
+  return `${trendOf(s)} over the last ${fmtDur(s.span)} · ${range}` +
+    `\n\nThe line is scaled to its OWN range, not to the chip's — the chip carries the level, the line carries the shape.` +
+    `\n\n${term("series")}`;
+}
+
+/** …and the same, folded onto a chip that already carries the level. */
+function gaugeChip(text, tone, title, series, member) {
+  const c = chip(text, tone, title);
+  const s = spark(series, member);
+  if (s) {
+    c.appendChild(s.svg);
+    c.title = `${title}\n\n${s.note}`;
+  }
+  return c;
+}
+
+/**
+ * A bar and its key, over one partition — see `partitionOf` for what counts as
+ * a segment and what the shares are taken against.
+ */
+function partitionBar(rows, counts, total, meaning) {
+  const wrap = el("div");
+  const bar = el("div", "disp");
+  const keys = el("div", "keys");
+  for (const seg of partitionOf(rows, counts, total)) {
+    const i = el("i", seg.member);
+    i.style.width = seg.share * 100 + "%";
+    const why = (meaning && meaning(seg.member)) || term(seg.member);
+    i.title = `${fmt(seg.n)} of ${fmt(total)} ${seg.label}\n\n${why}`;
+    bar.appendChild(i);
+    const k = el("span");
+    // The SAME class the segment carries, so one CSS rule paints both and the
+    // key cannot drift from the bar. Never read back a computed style here:
+    // the card is still detached from the document, so nothing resolves.
+    k.appendChild(el("b", seg.member));
+    k.appendChild(el("em", null, fmt(seg.n)));
+    // EVERY segment named, however small. Hiding the name under a share
+    // threshold was tried and it hides the wrong ones: `delivered` and
+    // `nothingNew` are the two outcomes that mean the relay WORKED, and on a
+    // fan-out mostly made of dead urls they are the small slivers — so the
+    // rule left the reader a bare "38" beside a labelled "8,569 pending".
+    // What made the old key long was the labels being sentences; they are one
+    // or two words now, and six of them fit on a line.
+    k.append(" " + seg.label);
+    k.title = i.title;
+    keys.appendChild(k);
+  }
+  wrap.appendChild(bar);
+  wrap.appendChild(keys);
+  return wrap;
+}
+
+/**
+ * One pass: what it is, what became of its urls, and what it pulled.
+ *
+ * A stream draws one of these per RUNNING PASS. The distinction is the whole
+ * reason they are drawn separately — "pass 11, handed out, 41 relays still
+ * finishing" and "pass 12, walking" are two jobs running at once, and a reader
+ * who sees one bar concludes either that the old walk stopped or that the new
+ * one has not started.
+ */
+function passBlock(p, held, alone) {
+  const wrap = el("div");
+  const total = (p.urls || {}).taken || 0;
+  if (!total) return wrap;
+  // The label is skipped when a stream has only one pass: "pass 3 · walking"
+  // above a stream head that already says `fetching 20m` is the same fact
+  // twice, and the head carries the pass number as a chip.
+  if (!alone) {
+    const label = passLabelOf(p);
+    const head = el("p", "foot");
+    head.append(`pass ${label.number}`);
+    if (label.owner) head.append(` · ${label.owner}`);
+    head.append(label.state === "finishing"
+      ? ` · handed out, ${fmt(label.outstanding)} still finishing`
+      : ` · ${label.state}`);
+    head.title =
+      "A pass ends when its last url is handed out, not when its last worker returns — so a finished walk with" +
+      " relays still finishing is the rotation working, and the next pass simply has fewer urls to hand out.";
+    wrap.appendChild(head);
+  }
+  wrap.appendChild(partitionBar(DISPOSITION, p.taken || {}, total, (m) =>
+    m === "pending" ? pendingMeaning(p.outcome, held) : null));
+  const foot = el("p", "foot");
+  foot.append(`${fmt(p.received || 0)} event(s) at the socket`);
+  if (p.hosts != null) foot.append(` · ${fmt(total)} url(s) on ${fmt(p.hosts)} host(s)`);
+  foot.title =
+    "Events as they arrived on the wire. Ingest drops the copies other relays already sent, so the store gains" +
+    " fewer than this — see the Ingest row below for what was actually stored.";
+  wrap.appendChild(foot);
+  if (p.accountedFor === false) {
+    const bad = el("p", "alarm", "these counts do not add up to their own total — read them as approximate");
+    bad.title = term("accountedFor");
+    wrap.appendChild(bad);
+  }
+  return wrap;
+}
+
+/**
+ * The two pools, nested: every worker this stream is running, and the few of
+ * them holding a transfer slot.
+ *
+ * Nested rather than side by side because one is a subset of the other, and
+ * that containment is the answer to why `pending` runs to five thousand while
+ * `transferring` sits at eight — the admission gate is far wider than the
+ * transfer pool, by design.
+ */
+function poolsRow(s) {
+  if (s.running == null && s.slotsFree == null && s.returned == null) return null;
+  const row = el("div", "pools");
+  // Drawn only where there ARE workers. An idle stream between passes has
+  // none, and "0/0 on a slot" beside an empty bar is filler in the one place
+  // this card is trying to keep marks meaningful.
+  if (s.running) {
+    const bar = el("div", "bar");
+    const w = el("i", "w");
+    w.style.width = "100%";
+    const t = el("i", "t");
+    t.style.width = ((s.transferring || 0) / s.running) * 100 + "%";
+    bar.appendChild(w);
+    bar.appendChild(t);
+    bar.title = `${fmt(s.transferring || 0)} of ${fmt(s.running)} workers hold a transfer slot\n\n${term("transferring")}`;
+    row.appendChild(bar);
+    const lab = el("span", null, `${fmt(s.transferring || 0)}/${fmt(s.running)} on a slot`);
+    lab.title = term("running");
+    row.appendChild(lab);
+  }
+  // What `holding` is waiting for — the phase most easily read as a stall.
+  if (s.slotsFree != null) {
+    const gate = el("span", null, `· gate ${fmt(s.slotsFree)}/${fmt(s.slotsNeeded)}`);
+    gate.title = `${term("slotsFree")} The next pass waits for half the pool.`;
+    row.appendChild(gate);
+  }
+  if (s.returned != null) {
+    const ret = el("span", null, `· ${fmt(s.returned)} returned`);
+    // The most misread number this router publishes, so the correction rides
+    // on the mark itself.
+    ret.title = `${term("returned")} It counts legs that CAME BACK, including unreachable and capped ones — not progress.`;
+    row.appendChild(ret);
+  }
+  if (s.collected != null) {
+    const col = el("span", null, `· ${short(s.collected)}${s.collectedTotal ? `/${short(s.collectedTotal)}` : ""} ids`);
+    col.title = term("collected");
+    row.appendChild(col);
+  }
+  return row;
+}
+
+/**
+ * WHICH relays are running right now — the half the disposition bar cannot
+ * draw, as a table.
  *
  * A stacked segment says `pending: 2`; it cannot say *which two*, and that is
  * the question an operator has when a stream has received two events in eleven
  * hours. Nothing else on this page can answer it either — the coverage card
  * only draws relays that have EARNED a band, and a relay stuck mid-leg never
- * does — so a wedged url was reachable only from container logs that rotate
- * inside the hour.
+ * does.
  *
- * Three facts per row, because the duration alone is ambiguous: a relay with a
- * genuine backlog and one whose walk cannot terminate are both "held for
- * hours". Whether events are still ARRIVING is what separates them.
+ * Four clocks per relay across five relays is a MATRIX, and it was being read
+ * out as a sentence per row — the one shape that makes "which of these is the
+ * worst" un-scannable. See `legsOf` for what the quiet bar is a proportion of,
+ * and `RelayRotation.held` for why these five are the five.
  */
-function inFlightLine(inFlight) {
-  const rows = (inFlight && inFlight.relays) || [];
+function legsTable(s) {
+  const { rows, more } = legsOf(s.inFlight);
   if (!rows.length) return null;
-  const line = el("p", "cyc-line");
-  line.append("Running now: ");
-  rows.slice(0, IN_FLIGHT_SHOWN).forEach((r, i) => {
-    if (i) line.append("; ");
-    const held = r.heldForSec || 0;
-    // The url first and unabbreviated: it is the thing being looked up, and a
-    // truncated relay url is not a relay url.
-    const span = el("span", held >= STUCK_LEG_SEC ? "err" : "");
-    span.append(`${r.relay} — held ${fmtDur(held)}, ${fmt(r.events || 0)} event(s)`);
-    // Absent means "not on a socket", which is a different fault from a slow
-    // download and must not render as one.
-    span.append(r.transferringForSec == null
-      ? ", waiting for a transfer slot"
-      : `, quiet ${fmtDur(r.quietForSec || 0)}`);
-    span.title = r.transferringForSec == null
-      ? "not admitted to the transfer pool yet — in the guards (an earlier strike, our Tor proxy, the TCP pre-probe)" +
-        " or queued behind other legs. With a long hold this says our own pool is saturated, not that the relay is slow."
-      : `holding a transfer slot for ${fmtDur(r.transferringForSec)}; last event ${fmtDur(r.quietForSec || 0)} ago` +
-        ` (or never — the quiet clock runs from the claim when nothing has arrived).` +
-        ` The connect happens inside the slot, so this covers a handshake that never completes.`;
-    line.appendChild(span);
-  });
+  // WHICH WALK handed each leg out, when the stream is running more than one.
+  // A leg outlives its pass, so with two live walks a row cannot otherwise say
+  // which one it belongs to.
+  const many = (s.passes || []).length > 1;
+  const wrap = el("div");
+  const table = el("table", "legs");
+  const head = el("tr");
+  for (const [label, key, right] of [["relay", "inFlight", false], ["pass", "pass", false],
+                                     ["held", "heldForSec", true], ["events", "events", true],
+                                     ["quiet", "quietForSec", false]]) {
+    if (key === "pass" && !many) continue;
+    const th = el("th", null, label);
+    th.title = term(key);
+    if (right) th.style.textAlign = "right";
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const r of rows) {
+    const tr = el("tr");
+    tr.appendChild(el("td", "u", r.short));
+    if (many) tr.appendChild(el("td", "r", r.pass ?? "—"));
+    const held = el("td", "r", fmtDur(r.heldForSec));
+    held.title = term("heldForSec");
+    tr.appendChild(held);
+    tr.appendChild(el("td", "r", fmt(r.events)));
+    const q = el("td");
+    const bar = el("div", "qbar");
+    const fill = el("i", r.hot ? "hot" : "");
+    fill.style.width = r.quietShare * 100 + "%";
+    bar.appendChild(fill);
+    bar.title = `quiet ${fmtDur(r.quietForSec)} of the ${fmtDur(STUCK_LEG_SEC)} that counts as stuck` +
+      (r.slotless
+        ? " · NO TRANSFER SLOT — in the guards or queued behind other legs, so this is our pool rather than their relay"
+        : ` · holding a slot for ${fmtDur(r.transferringForSec)}`) +
+      `\n\n${term("quietForSec")}`;
+    q.appendChild(bar);
+    tr.appendChild(q);
+    table.appendChild(tr);
+  }
+  wrap.appendChild(table);
   // Never silent about the tail: most of a fan-out's workers are connect
   // timeouts to dead hosts, and a list that hides them reads as the whole set.
-  const more = (inFlight.omitted || 0) + Math.max(0, rows.length - IN_FLIGHT_SHOWN);
-  if (more) line.append(`. ${fmt(more)} more relay(s) held and not shown`);
-  line.append(".");
-  return line;
+  if (more) {
+    const p = el("p", "foot", `+${fmt(more)} more held, quietest shown first`);
+    p.title = term("omitted");
+    wrap.appendChild(p);
+  }
+  return wrap;
+}
+
+/** One stream: its head, its two partitions, its pools and its legs. */
+function streamLane(s) {
+  const box = el("div", "stream");
+  const c = s.cycle;
+  const head = el("div", "sh");
+  head.appendChild(el("span", "nm", s.name));
+  // The phase, toned by what it means for movement: `holding` and `failed`
+  // will not move on their own, everything else is work in progress.
+  const stalled = s.phase === "holding" || s.phase === "failed";
+  head.appendChild(chip(
+    `${s.phase || "unknown"}${s.phaseForSec != null ? ` ${fmtDur(s.phaseForSec)}` : ""}`,
+    stalled ? "warn" : "busy", term(s.phase)));
+  if (c && c.number != null) head.appendChild(chip(`pass ${passLabelOf(c).number}`, null, term("passes")));
+  if (c && c.owner && c.owner !== "dynamic") head.appendChild(chip(c.owner, null, term("owner")));
+  // `reached` is the only evidence a DEEP walk is moving — `fraction` rounds
+  // to zero for hours on an unbounded one while this date moves every page.
+  if (s.reached != null) head.appendChild(chip(`back to ${isoOf(s.reached).slice(0, 10)}`, null, term("reached")));
+  if (s.fraction != null) head.appendChild(chip(`${(s.fraction * 100).toFixed(1)}%`, null, term("fraction")));
+  if (s.etaSec != null) head.appendChild(chip(`ETA ${fmtDur(s.etaSec)}`, null, term("etaSec")));
+  if (s.phase === "idle" && s.nextInSec != null) head.appendChild(chip(`next ${fmtDur(s.nextInSec)}`, null, term("nextInSec")));
+  if (s.retryInSec != null) head.appendChild(chip(`retry ${fmtDur(s.retryInSec)}`, "warn", term("retryInSec")));
+  head.appendChild(el("span", "grow"));
+  if (c && c.received != null) {
+    const r = el("span", "r", `${short(c.received)} ev`);
+    r.title = term("received");
+    head.appendChild(r);
+  }
+  box.appendChild(head);
+
+  // The one thing a failed stream never said: what it threw. It is a message
+  // rather than a quantity, so it is one of the two places words are spent.
+  if (s.reason) {
+    const why = el("p", "alarm", s.reason);
+    why.title = term("reason");
+    box.appendChild(why);
+  }
+  if (!c) {
+    if (!s.reason) box.appendChild(el("p", "foot", "no cycle has run yet on this stream"));
+    // Drawn even with no cycle — the workers of the LAST one outlive it and
+    // are exactly what a stream stuck between passes is holding.
+    const only = legsTable(s);
+    if (only) box.appendChild(only);
+    return box;
+  }
+
+  const u = c.urls || {};
+  if (dividesOn(u)) box.appendChild(partitionBar(DISCOVERY, u, u.discovered, () => null));
+  const pools = poolsRow(s);
+  if (pools) box.appendChild(pools);
+
+  // EVERY WALK STILL RUNNING, not just the newest. A walk ends when its last
+  // url is handed out and its slowest legs run on past it, so the ordinary
+  // state of a rotation is the previous pass finishing while the new one hands
+  // out. One bar for both showed the old walk's live legs as the new walk's
+  // `busy` and its counters not at all.
+  const passes = Array.isArray(s.passes) && s.passes.length > 1 ? s.passes : [c];
+  const held = heldCount(s.inFlight);
+  passes.forEach((p, i) => {
+    const last = i === passes.length - 1;
+    box.appendChild(passBlock(p, last ? held : passHeld(p), passes.length === 1));
+  });
+
+  const legs = legsTable(s);
+  if (legs) box.appendChild(legs);
+  return box;
 }
 
 /**
- * What `pending` means for THIS cycle.
+ * The NOW line: is it running, and what is holding it back, in chips.
  *
- * It is `taken` minus the eight terminal outcomes, so it always closes the
- * partition — but the same number means different things depending on whether
- * anything is still RUNNING, and the cycle's outcome alone cannot say.
- *
- * This used to key off `outcome` and nothing else, and a live run showed it
- * lying: a `completed` pass drew "285 never got a verdict" directly above a line
- * naming three of those 285 downloading at 20,000 events each. A pass ends when
- * its last url is HANDED OUT, not when its last worker returns, so a completed
- * pass routinely leaves real legs in flight — that is the rotation working. The
- * old reading is still right for the other case, a cycle that was killed with
- * nothing left running, and `inFlight` is what separates them.
+ * Everything here was already on the card as prose. The heartbeat was a
+ * sentence, the constraint another, and the gauges did not exist outside the
+ * router's log — and a reader wanting "is it up and why is it slow" had to
+ * read both sentences to the end to find out.
  */
-function pendingLabel(outcome, held) {
-  if (outcome === "running" || outcome == null) return "still in flight";
-  return held > 0
-    ? "still in flight — the pass finished handing out, these legs are still running"
-    : "never got a verdict — the cycle ended first; dialled again next cycle";
+function nowLine(progress, data) {
+  const row = el("div", "now");
+  const live = isLive(progress);
+  row.appendChild(chip(live ? "live" : progress.staleForSec == null ? "no heartbeat" : "not running",
+    live ? "live" : "warn",
+    (live
+      ? `the router wrote its progress file ${fmtDur(progress.staleForSec)} before this rollup`
+      : "a phase frozen mid-fetching is exactly what a dead process leaves behind — everything below is what it" +
+        " was doing then, not what is happening now") +
+    `\n\nlast written ${isoOf(progress.writtenAt)}`));
+
+  const facts = [];
+  const streams = (progress.streams || []).length;
+  if (streams) facts.push(`${fmt(streams)} stream(s)`);
+  if (data.relays != null) facts.push(`${fmt(data.relays)} relay(s) on ${fmt(data.hosts || 0)} host(s) touched`);
+  if (live) facts.push(`heard ${fmtDur(progress.staleForSec)} ago`);
+  else if (progress.staleForSec != null) facts.push(`silent ${fmtDur(progress.staleForSec)}`);
+  if (facts.length) {
+    const f = el("span", "fact", facts.join(" · "));
+    f.title = term("relays");
+    row.appendChild(f);
+  }
+
+  const constraint = constraintOf(progress.health, live);
+  if (constraint) {
+    row.appendChild(chip(constraint.text, constraint.tone, `${term("bottleneck")}\n\n${constraint.why}`));
+  }
+  // Each level with its own last hour beside it. Three of the four have a
+  // series; `servingMs` is not sampled, so its chip is a bare level and says so
+  // by simply not carrying a line.
+  const series = progress.series;
+  for (const g of gaugesOf(progress.health)) {
+    if (g.id === "eventsPerSec") {
+      row.appendChild(gaugeChip(`${fmt(g.value)} ev/s`, g.tone, term("eventsPerSec"), series, "eventsPerSec"));
+    }
+    if (g.id === "heap") {
+      row.appendChild(gaugeChip(`heap ${g.pct}%`, g.tone,
+        `${fmt(g.value)} of ${fmt(g.of)}MB\n\n${term("heapUsedMb")}` +
+        (g.tone ? "\n\nAt the ceiling the collector runs continuously and throughput collapses without anything failing." : ""),
+        series, "heapPct"));
+    }
+    if (g.id === "sockets") {
+      row.appendChild(gaugeChip(`${fmt(g.value)}/${fmt(g.of)} sockets`, g.tone,
+        `${term("sockets")}\n\n${term("socketCeiling")}`, series, "sockets"));
+    }
+    if (g.id === "servingMs") row.appendChild(chip(`${fmt(g.value)}ms reads`, g.tone, term("servingMs")));
+  }
+  return row;
 }
 
-/** How many relays a stream is holding, named or not. */
-function heldCount(inFlight) {
-  if (!inFlight) return 0;
-  return ((inFlight.relays || []).length) + (inFlight.omitted || 0);
-}
-
-function progressPanel(progress) {
+function progressPanel(progress, data) {
   if (!progress) return null;
   const wrap = el("div");
-  const beat = el("p", "card-sub");
-  // Phrased against the ROLLUP's clock, not the reader's, because that is the
-  // only clock that saw the file. `ago(writtenAt)` would fold in however long
-  // this document has been cached and report a working router as dead every
-  // time a rollup ran late — and the footer already says how old the document
-  // is, which is the reader-side half of the same question.
-  if (progress.staleForSec == null) {
-    beat.append("The router published no heartbeat, so nothing here can be dated.");
-  } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
-    // The loud case, and deliberately louder than the phase lines under it: a
-    // stream frozen mid-`fetching` looks busy, and looks exactly the same
-    // whether the process is working or gone.
-    beat.appendChild(el("span", "err",
-      `The router had said nothing for ${fmtDur(progress.staleForSec)} when this was computed — ` +
-      `the sync process is probably not running. Everything below is what it was doing then.`));
+  wrap.appendChild(nowLine(progress, data));
+  // ABOVE the streams, because a router that is alive and DAMAGED is worse
+  // than one that stopped: an uncaught error kills whichever thread it lands
+  // on, nothing restarts it, and every phase below carries on looking healthy.
+  if (progress.fatals) {
+    const dead = el("p", "alarm",
+      `${fmt(progress.fatals)} fatal error(s) killed threads in this router — it is DEGRADED and should be restarted`);
+    dead.title = term("fatals");
+    wrap.appendChild(dead);
+  }
+  for (const s of progress.streams || []) wrap.appendChild(streamLane(s));
+  return wrap;
+}
+
+/**
+ * WHAT ELSE IS RUNNING — the router's jobs that are not streams.
+ *
+ * Everything above describes work an operator CONFIGURED. Several long-running
+ * jobs sit beside those streams with nothing configured about them, and until
+ * they were published the only trace any of them left was a stderr line on a
+ * container whose logs rotate inside the hour:
+ *
+ *  - the **alias fold** and the **stability gate**, on the alias monitor's own
+ *    six-hour clock, deciding which discovered urls the fan-out may stop
+ *    dialling. "This server is still wearing forty urls" is a question about
+ *    the fold's progress and nothing on this page could answer it;
+ *  - the **NIP-66 reachability monitor**, which is NOT the same processor as
+ *    those two even though all three write onto the same kind-30166 records —
+ *    it watches every socket the client opens rather than dialling on a
+ *    schedule, and its `knownDead` set is what a stream's `knownDead` outcome
+ *    is counting against;
+ *  - **ingest**, where every mirrored event actually lands, and the first thing
+ *    to look at when the streams read busy and the store is not growing;
+ *  - the **healer** and the **upstream push**, the two paths that write out.
+ *
+ * A processor that is absent is one this router does not run — a deployment
+ * with no signer has no fold and no monitor at all — so nothing is drawn for a
+ * name the document does not carry. That is a fact rather than missing data,
+ * and inventing a zeroed row would say the opposite.
+ */
+const PROCESSORS = [
+  ["aliasFold", "Alias fold",
+    "Fingerprints the urls of one host against each other and signs a `same-as` verdict when they are the same server," +
+    " so the fan-out stops dialling forty urls of one relay. Runs on the alias monitor's clock, not a stream's."],
+  ["consistency", "Self-consistency",
+    "Asks each relay one filter twice, at a week-old anchor, and refuses the ones that answer differently: a server" +
+    " whose window is a fresh slice each time holds no stable cursor, so every cycle re-downloads what the last took." +
+    " The verdict it writes is the `self-consistent` tag, which is where the name comes from."],
+  ["reachability", "NIP-66 reachability",
+    "Quartz's monitor. It watches every socket this client opens, measures the round trips and signs what it learns" +
+    " into the same kind-30166 records the two passes above write their tags onto — one document per url, three writers."],
+  ["ingest", "Ingest",
+    "The bounded queue every mirrored event passes through: dedup, supersede, verify, batch insert. Read `queued`" +
+    " against `capacity` — full means the downloads are backpressured behind it, empty means the limit is upstream."],
+  ["heal", "Healer",
+    "Repairs discovered by ingest and handed back to the relays serving them. Only where a stream opted in."],
+  ["upstreamPush", "Upstream push",
+    "Reconciles the store against an upstream configured `dir = up` and publishes what it is missing."],
+];
+
+/**
+ * What a big number is MADE OF — in numbers, not a second bar.
+ *
+ * Ingest's rejections and a probe pass's undecided hosts are the same shape of
+ * fact: a total nobody can act on until it is split. A mirror is offered the
+ * same event once per relay holding it, so rejecting most of what arrives is
+ * the pipeline working — and the total alone cannot say that.
+ *
+ * This drew the split as a stacked bar under the row's meter, and it had to
+ * go. Two bars of identical form, stacked, dividing DIFFERENT wholes and
+ * neither of them labelled: the top one is the queue against its capacity, the
+ * bottom one is a share of `rejected`, a total that appears nowhere on the row.
+ * The first question it got was "why does ingest have two bars", which is the
+ * only question a mark like that can produce. The numbers are the split, and
+ * they say it in the space the bar was taking.
+ */
+function breakdown(p) {
+  const rows = ((p.rejections || {}).reasons || []).map((r) => [r.reason, r.events])
+    .concat((((p.streams || [])[0] || {}).undecided?.reasons || []).map((r) => [r.reason, r.hosts]));
+  if (!rows.length) return null;
+  // The two biggest named, the rest on the title. Four of the fold's five
+  // reasons recover on their own and one never will, and from outside the
+  // router they are the same silence — which is why the reasons are published
+  // at all.
+  const lab = el("p", "foot", rows.slice(0, 2).map(([reason, n]) => `${short(n)} ${reason}`).join(" · "));
+  lab.title = rows.map(([reason, n]) => `${fmt(n)} — ${reason}`).join("\n");
+  lab.style.gridColumn = "3 / -1";
+  return lab;
+}
+
+/**
+ * One processor as one row: name, state, how far along, and the one number that
+ * matters for it.
+ *
+ * A grid rather than a paragraph so the meters line up down a column, which is
+ * what makes "the fold is stuck and ingest is not" a glance instead of a read —
+ * and see `meterOf` for why the two kinds of meter in that column are drawn
+ * differently rather than identically.
+ */
+function processorRow(p, series) {
+  const known = PROCESSORS.find((row) => row[0] === p.name);
+  const row = el("div", "dec");
+  const nm = el("span", "nm", known ? known[1] : p.name);
+  if (known) nm.title = known[2];
+  row.appendChild(nm);
+
+  // `off` is the one phase whose elapsed clock says nothing: it means this
+  // deployment gives the processor no work at all — the probe passes on a
+  // router whose upstreams are every one of them named by hand — and "off for
+  // 24h" reads as an outage rather than as a configuration.
+  const state = el("span");
+  state.appendChild(chip(
+    p.phase === "off"
+      ? "off"
+      : `${p.phase || "unknown"}${p.nextInSec != null ? (p.nextInSec === 0 ? " · due" : ` · ${fmtDur(p.nextInSec)}`) : ""}`,
+    p.phase === "off" ? "warn" : p.phase === "measuring" || p.phase === "running" ? "busy" : null,
+    (p.phase === "off"
+      ? "this router discovers no relays, so there is nothing for this pass to measure"
+      : term(p.phase) || "") +
+    (p.nextInSec != null ? `\n\nnext pass: ${term("nextInSec")}` : "") +
+    (p.lastPassSec != null ? `\n\nthe last pass took ${fmtDur(p.lastPassSec)}` : "") +
+    (p.passesRun != null ? `\n\n${fmt(p.passesRun)} pass(es) so far` : "")));
+  row.appendChild(state);
+
+  const bar = el("span", "frac");
+  const meter = meterOf(p);
+  let right = "";
+  let meterSpark = null;
+  if (meter && meter.kind === "progress") {
+    const i = el("i");
+    i.style.width = meter.share * 100 + "%";
+    bar.appendChild(i);
+    bar.title = `progress: ${fmt(meter.decided)} of ${fmt(meter.candidates)} url(s) carry a verdict\n\n${term("unmeasured")}`;
+    right = `${fmt(meter.left)} left`;
+  } else if (meter && meter.kind === "level") {
+    // A LEVEL, not progress — see the `.frac i.level` rule. Nothing about a
+    // half-full queue is half-done, and drawing it in the same tone as the
+    // fold's progress said it was.
+    const q = el("i", meter.tone ? "level warn" : "level");
+    q.style.width = meter.share * 100 + "%";
+    bar.appendChild(q);
+    bar.title = `queue level: ${fmt(meter.queued)} of ${fmt(meter.capacity)}` +
+      (meter.full ? " — FULL, downloads are backpressured behind it" : " — a level, not progress; empty is healthy") +
+      `\n\n${term("queued")}`;
+    // The split, never the bare total: `rejected` is mostly the same event
+    // offered once per relay holding it, and `dropped` is the sweep declining
+    // to backpressure itself. Both are on the title; the numbers under the row
+    // are where `rejected` is broken out.
+    right = `${short(p.accepted || 0)} stored`;
+    bar.title += `\n\n${fmt(p.rejected || 0)} rejected` +
+      (p.dropped != null ? `, ${fmt(p.dropped)} dropped rather than backpressure the sweep` : "");
+    // THE ONE METER WHOSE HISTORY DECIDES ANYTHING. A queue at its ceiling is
+    // the constraint if it has been there ten minutes and noise if it filled
+    // this second, and the level alone cannot say which. Drawn as a LINE beside
+    // the filled bar rather than as a second bar — the last thing under this
+    // meter was a second bar, and the only question it produced was why there
+    // were two of them.
+    meterSpark = p.name === "ingest" ? spark(series, "queued") : null;
+  } else if (p.observed != null) {
+    // NO METER. `knownDead` is read from the STORE and `observed` is this
+    // process's sockets since boot — different populations, so there is no
+    // whole for either to be a part of. A restarted mirror reports 1,609
+    // known dead against 5 observed, and any bar dividing them is arithmetic
+    // on unrelated sets.
+    bar.style.visibility = "hidden";
+    right = `${short(p.knownDead || 0)} dead`;
+    row.title = `${fmt(p.knownDead || 0)} url(s) carry an unreachability record in the store — skipped by every` +
+      ` fan-out until it ages out\n\n${fmt(p.observed)} url(s) watched on a socket since this router started` +
+      `\n\n${term("knownDead")}`;
+  } else if (p.pushed != null) {
+    bar.style.visibility = "hidden";
+    right = `${fmt(p.pushed)} pushed`;
   } else {
-    beat.append(`Router heartbeat ${fmtDur(progress.staleForSec)} before this rollup.`);
+    // Built and never run. An empty meter is a claim of zero progress;
+    // absence is the honest mark.
+    bar.style.visibility = "hidden";
+    right = p.phase === "off" ? "nothing to measure" : "no pass yet";
   }
-  beat.title = `router last wrote at ${isoOf(progress.writtenAt)}`;
-  wrap.appendChild(beat);
-
-  for (const s of progress.streams || []) {
-    const box = el("div", "cyc");
-    const head = el("div", "cyc-head");
-    head.appendChild(el("span", "nm", s.name));
-    const c = s.cycle;
-    // The phase, its age, and the cycle's verdict — the three together are what
-    // separate "working", "finished" and "died here".
-    const outcome = c && c.outcome;
-    const phase = el("span", "ph",
-      `${s.phase || "unknown"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}` +
-      (outcome && outcome !== "running" ? ` · last cycle ${outcome}` : ""));
-    if (outcome === "failed") phase.className = "ph err";
-    head.appendChild(phase);
-    box.appendChild(head);
-    // Drawn even when no cycle has run — the workers of the LAST one outlive it
-    // and are exactly what a stream stuck between passes is holding, so this is
-    // the case where naming them matters most.
-    const running = inFlightLine(s.inFlight);
-    if (!c) {
-      box.appendChild(el("p", "cyc-line", "No cycle has run yet on this stream."));
-      if (running) box.appendChild(running);
-      wrap.appendChild(box);
-      continue;
-    }
-
-    const u = c.urls || {};
-    const taken = c.taken || {};
-    const total = u.taken || 0;
-    // What `pending` is read against — see `pendingLabel`.
-    const held = heldCount(s.inFlight);
-    if (total > 0) {
-      const bar = el("div", "disp");
-      for (const [key] of DISPOSITION) {
-        const n = taken[key] || 0;
-        if (!n) continue;
-        const seg = el("i", key);
-        seg.style.width = (n / total) * 100 + "%";
-        const meaning = key === "pending" ? pendingLabel(outcome, held) : DISPOSITION.find((d) => d[0] === key)[1];
-        seg.title = `${fmt(n)} of ${fmt(total)} — ${meaning}`;
-        bar.appendChild(seg);
-      }
-      box.appendChild(bar);
-      const key = el("div", "disp-key");
-      for (const [k, label] of DISPOSITION) {
-        const n = taken[k] || 0;
-        if (!n) continue;
-        const item = el("span");
-        // The SAME class the bar segment carries, so one CSS rule paints both
-        // and the key cannot drift from the bar. Never read back a computed
-        // style here: this card is still detached from the document, so
-        // `getComputedStyle` resolves nothing.
-        const b = el("b", k);
-        const meaning = k === "pending" ? pendingLabel(outcome, held) : label;
-        item.appendChild(b);
-        item.append(`${fmt(n)} ${meaning.split(" — ")[0]}`);
-        item.title = meaning;
-        key.appendChild(item);
-      }
-      box.appendChild(key);
-    }
-
-    // The line that accounts for the OTHER gap — the one between what discovery
-    // found and what was dialled. On a real fan-out this is most of it, and it
-    // is duplicate urls rather than relays that went missing.
-    const acct = el("p", "cyc-line");
-    acct.append(
-      `${fmt(u.discovered || 0)} url(s) discovered · ` +
-      `${fmt(u.foldedOntoAnother || 0)} folded onto another url · ` +
-      // Drawn only when non-zero, like `excluded`: a mirror refusing nothing
-      // should not carry a line about refusals. Worded as the measurement
-      // rather than the verdict — the relay answered, it just answered twice
-      // differently, and "dropped" alone would read as unreachable.
-      (u.refusedUnstable ? `${fmt(u.refusedUnstable)} refused (answered inconsistently) · ` : "") +
-      (u.excluded ? `${fmt(u.excluded)} excluded by config · ` : "") +
-      `${fmt(total)} taken on` +
-      (c.hosts != null ? ` across ${fmt(c.hosts)} host(s)` : "") +
-      `. ${fmt(c.received || 0)} event(s) received at the socket` +
-      ` (ingest drops the copies other relays already sent, so the store gains fewer).`);
-    // The per-relay breakdown of WHICH urls folded is deliberately not drawn:
-    // the count on the accounting line is what a reader acts on, and the list
-    // ran thousands of urls long for a question nobody was asking. The
-    // `foldedOnto` summary is still published in the JSON for anyone who wants
-    // it — see CycleTally.foldedOnto.
-    if (c.accountedFor === false) {
-      // Published rather than hidden: the counts are still worth having, and
-      // this is what stops a reader treating a broken partition as a whole one.
-      acct.appendChild(el("span", "err", " These counts do not add up to their own total — read them as approximate."));
-    }
-    box.appendChild(acct);
-    // After the accounting line, because it is what that line's `pending` and
-    // `busy` members are the counts OF.
-    if (running) box.appendChild(running);
-    wrap.appendChild(box);
+  const cell = el("div", "meter");
+  cell.appendChild(bar);
+  if (meterSpark) {
+    cell.appendChild(meterSpark.svg);
+    bar.title += `\n\n${meterSpark.note}`;
   }
+  row.appendChild(cell);
+  row.appendChild(el("span", "r", right));
+
+  const stack = breakdown(p);
+  if (stack) row.appendChild(stack);
+  // The one number here that means DATA LOSS: events that passed every check
+  // and then could not be written. Drawn only when non-zero and never folded
+  // into a count, because a loss counter at 0 belongs in the JSON and a loss
+  // counter above 0 belongs in front of an operator.
+  if (p.lostToStore) {
+    const a = el("p", "alarm",
+      `${fmt(p.lostToStore)} event(s) LOST to store errors — good events, accepted and then not written`);
+    a.title = `${term("lostToStore")}\n\nThat is a store problem to chase, not a mirror one.`;
+    a.style.gridColumn = "1 / -1";
+    row.appendChild(a);
+  }
+  return row;
+}
+
+/** The processors, in the order [PROCESSORS] names them, with anything unrecognised kept at the end. */
+function processorsPanel(progress) {
+  const rows = (progress && progress.processors) || [];
+  if (!rows.length) return null;
+  const order = PROCESSORS.map((r) => r[0]);
+  // Unknown names sort last rather than being dropped: a row this page has not
+  // been taught about is still the router saying something is running.
+  const sorted = rows.slice().sort((a, b) => {
+    const ai = order.indexOf(a.name), bi = order.indexOf(b.name);
+    return (ai < 0 ? order.length : ai) - (bi < 0 ? order.length : bi);
+  });
+  const wrap = el("div");
+  // The boundary between the streams and the jobs beside them, for the reason
+  // `cyc-end` exists at all: every gap in this card is 12-14px, so without a
+  // rule the first processor reads as one more stream.
+  wrap.appendChild(el("hr", "cyc-end"));
+  const head = el("p", "card-sub");
+  head.appendChild(el("b", null, "Also running: "));
+  head.append(
+    "the two probe passes that decide which discovered urls are worth dialling, the NIP-66 monitor that watches every" +
+    " socket, and the pipelines events pass through. All three of the first group write onto the same kind-30166" +
+    " record per url — the Monitor verdicts panel below is where one url's whole record is read.");
+  wrap.appendChild(head);
+  for (const p of sorted) wrap.appendChild(processorRow(p, progress.series));
   return wrap;
 }
 
@@ -1759,8 +2368,18 @@ function syncCard(section) {
   // now is the question asked first, and it is the one thing on this card that
   // still has an answer when the mirror has walked nothing at all. A router
   // three minutes into its first cycle used to render as an empty card.
-  const progress = progressPanel(d.progress);
+  // The glossary this card's marks explain themselves with, before anything
+  // below draws. It is the document's own, so a chip cannot describe a member
+  // in words the router would not use — see `term` and `SyncVocabularyTest`.
+  TERMS = d.terms || {};
+  const progress = progressPanel(d.progress, d);
   if (progress) card.appendChild(progress);
+  // …and the work that is not a stream at all. Under the streams because a
+  // reader asks "is the mirror running" before "has the fold got to this host
+  // yet", and above the coverage bars because both halves are about what the
+  // router is doing NOW rather than where it has walked.
+  const others = processorsPanel(d.progress);
+  if (others) card.appendChild(others);
   // The boundary between the card's two subjects — what the router is doing
   // now, and how far it has walked. Every gap in here was 12-14px, including
   // the one between those two, so they never separated; the rule plus the space
@@ -1770,7 +2389,7 @@ function syncCard(section) {
   // Appended only when BOTH sides exist. A router mid-first-cycle has progress
   // and no coverage, and an unconditional rule would end that card with a line
   // ruling off nothing.
-  if (progress && streams.length) card.appendChild(el("hr", "cyc-end"));
+  if ((progress || others) && streams.length) card.appendChild(el("hr", "cyc-end"));
   if (!streams.length) return card;
 
   const from = d.from, to = d.to;

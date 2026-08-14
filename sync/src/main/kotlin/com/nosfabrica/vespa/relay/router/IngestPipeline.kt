@@ -825,6 +825,25 @@ internal class IngestPipeline(
     }
 
     /**
+     * WHY events were rejected, as counts rather than as the log line's prose.
+     *
+     * A mirror is offered the same event once per relay holding it, so rejecting
+     * most of what arrives is the pipeline working — 7.9M against 524k accepted
+     * on the run this came from. The total alone cannot say that; the split
+     * between "already have this" and "a newer version exists" and a bad
+     * signature is what makes it readable, and it existed only inside a string.
+     *
+     * Biggest first, bounded, and the tail is not silently dropped: the map's
+     * own overflow bucket is one of the reasons it can return.
+     */
+    fun rejectionReasons(limit: Int = REJECTION_ROWS): List<Pair<String, Long>> =
+        (
+            rejectReasons.entries.map { it.key to it.value } +
+                listOfNotNull(unverified.get().takeIf { it > 0 }?.let { "bad signature" to it })
+        ).sortedByDescending { it.second }
+            .take(limit)
+
+    /**
      * What the rejections actually were, for the stats line — the bare total
      * hides whether you are looking at routine duplicates or a failing store.
      */
@@ -851,6 +870,9 @@ internal class IngestPipeline(
     }
 
     companion object {
+        /** How many rejection reasons the report publishes. Four covers every shape seen here. */
+        const val REJECTION_ROWS = 4
+
         /**
          * Ceiling on queued-but-not-yet-ingested events, independent of batch
          * size. 16k events is a few hundred MB at Nostr's event sizes — far

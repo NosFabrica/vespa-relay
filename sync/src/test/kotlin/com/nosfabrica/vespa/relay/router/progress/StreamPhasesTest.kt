@@ -174,62 +174,156 @@ class StreamPhasesTest {
     fun `a cycle's outcome survives its phase, so failed and finished stop reading alike`() {
         val p = StreamPhases()
         val tally = CycleTally(discovered = 10, foldedOntoAnother = 2, hosts = 5)
-        p.beginCycle("s", StreamPhases.DYNAMIC, tally, nowSeconds = 1_000)
+        p.beginCycle("s", StreamPhases.DYNAMIC, 1, tally, nowSeconds = 1_000)
 
-        assertEquals("running", p.snapshot().single().outcome)
-        assertNull(p.snapshot().single().cycleEndedSec, "a running cycle has not ended")
+        assertEquals(
+            "running",
+            p
+                .snapshot()
+                .single()
+                .newest
+                ?.outcome,
+        )
+        assertNull(
+            p
+                .snapshot()
+                .single()
+                .newest
+                ?.endedSec,
+            "a running cycle has not ended",
+        )
 
         p.endCycle("s", StreamPhases.DYNAMIC, "failed", nowSeconds = 1_100)
-        assertEquals("failed", p.snapshot().single().outcome)
-        assertEquals(1_100L, p.snapshot().single().cycleEndedSec)
+        assertEquals(
+            "failed",
+            p
+                .snapshot()
+                .single()
+                .newest
+                ?.outcome,
+        )
+        assertEquals(
+            1_100L,
+            p
+                .snapshot()
+                .single()
+                .newest
+                ?.endedSec,
+        )
 
         // A stream that fails during DISCOVERY has no cycle running, and
         // stamping an end on the finished one would re-date it every retry.
         p.endCycle("s", StreamPhases.DYNAMIC, "completed", nowSeconds = 1_200)
-        assertEquals("failed", p.snapshot().single().outcome)
-        assertEquals(1_100L, p.snapshot().single().cycleEndedSec)
+        assertEquals(
+            "failed",
+            p
+                .snapshot()
+                .single()
+                .newest
+                ?.outcome,
+        )
+        assertEquals(
+            1_100L,
+            p
+                .snapshot()
+                .single()
+                .newest
+                ?.endedSec,
+        )
     }
 
     @Test
-    fun `one stream name, two owners — the slot is never a blend of both`() {
+    fun `a pass that has finished handing out keeps being published while its legs run`() {
+        // THE STATE THE SINGLE SLOT COULD NOT SHOW. A walk ends when its last
+        // url is handed out, not when its last worker returns, so the next pass
+        // routinely opens while the previous one is still downloading — and the
+        // moment it did, the older pass stopped being published: its counters
+        // went on moving against a partition nobody could see, and its live legs
+        // surfaced only as the new pass's `busy`.
+        val p = StreamPhases()
+        val first = CycleTally(discovered = 10, foldedOntoAnother = 0, hosts = 10)
+        first.delivered.set(6)
+        p.beginCycle("s", StreamPhases.DYNAMIC, 11, first, nowSeconds = 1_000)
+        p.endCycle("s", StreamPhases.DYNAMIC, "completed", nowSeconds = 1_050)
+
+        val second = CycleTally(discovered = 10, foldedOntoAnother = 0, hosts = 10)
+        p.beginCycle("s", StreamPhases.DYNAMIC, 12, second, nowSeconds = 1_060)
+
+        val cycles = p.snapshot().single().cycles
+        assertEquals(listOf(11L, 12L), cycles.map { it.number }, "both walks, oldest first")
+        assertEquals(4L, cycles.first().tally.pending(), "the old walk's legs are still out")
+        assertEquals(
+            12L,
+            p
+                .snapshot()
+                .single()
+                .newest
+                ?.number,
+            "and `cycle` is still the current one",
+        )
+
+        // …and it retires itself the moment its last worker lands, rather than
+        // on a timer: the next `beginCycle` drops it.
+        first.nothingNew.set(4)
+        p.beginCycle("s", StreamPhases.DYNAMIC, 13, CycleTally(discovered = 1, foldedOntoAnother = 0, hosts = 1), nowSeconds = 1_120)
+        assertEquals(
+            listOf(12L, 13L),
+            p
+                .snapshot()
+                .single()
+                .cycles
+                .map { it.number },
+        )
+    }
+
+    @Test
+    fun `a pass whose legs never return cannot grow the list without limit`() {
+        // The retirement rule is not enough on its own: a leg that never comes
+        // back keeps `pending` above zero forever, so a stream on a short
+        // recycle would accumulate one row per pass for the life of the process.
+        val p = StreamPhases()
+        repeat(StreamPhases.MAX_TRACKED_CYCLES + 3) { i ->
+            p.beginCycle("s", StreamPhases.DYNAMIC, i + 1L, CycleTally(discovered = 5, foldedOntoAnother = 0, hosts = 5), nowSeconds = 1_000L + i)
+        }
+
+        val cycles = p.snapshot().single().cycles
+        assertEquals(StreamPhases.MAX_TRACKED_CYCLES, cycles.size)
+        assertEquals(7L, cycles.last().number, "the newest is kept")
+        assertEquals(4L, cycles.first().number, "and the oldest is what goes")
+    }
+
+    @Test
+    fun `one stream name, two owners — each half's pass is its own, and neither closes the other`() {
         // A stream can carry BOTH `urls` and `relaySource`, so StaticBackfill and
-        // DynamicSync open a cycle under the same name, at boot, at once. The
-        // second begin used to overwrite the first's tally and the first end used
-        // to stamp `completed` on the other's still-running fan-out.
+        // DynamicSync open a cycle under the same name, at boot, at once. With
+        // one slot that had to be arbitrated — first writer wins, the loser
+        // published nothing at all — and with a list it does not: they are two
+        // passes with two partitions, and `owner` says which is which.
         val p = StreamPhases()
         val dynamic = CycleTally(discovered = 300, foldedOntoAnother = 0, hosts = 300)
         val static = CycleTally(discovered = 2, foldedOntoAnother = 0, hosts = 2)
 
-        p.beginCycle("both", StreamPhases.DYNAMIC, dynamic, nowSeconds = 1_000)
-        p.beginCycle("both", StreamPhases.STATIC, static, nowSeconds = 1_010)
+        p.beginCycle("both", StreamPhases.DYNAMIC, 1, dynamic, nowSeconds = 1_000)
+        p.beginCycle("both", StreamPhases.STATIC, 1, static, nowSeconds = 1_010)
         assertEquals(
-            300,
+            listOf(300 to StreamPhases.DYNAMIC, 2 to StreamPhases.STATIC),
             p
                 .snapshot()
                 .single()
-                .tally
-                ?.discovered,
-            "the live cycle is not replaced by the other half's",
+                .cycles
+                .map { it.tally.discovered to it.owner },
+            "neither half's work is dropped for the other's",
         )
 
-        // …and the other half finishing does not close it.
+        // …and one half finishing does not close the other's.
         p.endCycle("both", StreamPhases.STATIC, "completed", nowSeconds = 1_020)
-        assertEquals("running", p.snapshot().single().outcome)
-        assertNull(p.snapshot().single().cycleEndedSec)
+        val afterStatic = p.snapshot().single().cycles
+        assertEquals("completed", afterStatic.single { it.owner == StreamPhases.STATIC }.outcome)
+        assertEquals("running", afterStatic.single { it.owner == StreamPhases.DYNAMIC }.outcome)
+        assertNull(afterStatic.single { it.owner == StreamPhases.DYNAMIC }.endedSec)
 
-        // The owner closes its own, and the slot is then free for either.
         p.endCycle("both", StreamPhases.DYNAMIC, "completed", nowSeconds = 1_030)
-        assertEquals("completed", p.snapshot().single().outcome)
-        p.beginCycle("both", StreamPhases.STATIC, static, nowSeconds = 1_040)
-        assertEquals(
-            2,
-            p
-                .snapshot()
-                .single()
-                .tally
-                ?.discovered,
-            "a finished slot takes whoever asks next",
-        )
+        assertEquals(0, p.snapshot().single().running(), "nothing is handing out now")
     }
 
     @Test

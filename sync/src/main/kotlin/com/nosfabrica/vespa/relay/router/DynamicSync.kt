@@ -411,10 +411,13 @@ internal class DynamicSync(
         while (scope.isActive) {
             val free = dynamic.concurrency - rotation.transferringCount()
             if (free >= needed) break
-            // The longest-held leg, and only it: the phase names one and so does
-            // the line, so asking for the default twenty rows would sort a
-            // 500-entry map every second to discard nineteen of them.
-            val oldest = rotation.held(System.currentTimeMillis(), limit = 1).relays.firstOrNull()
+            // The QUIETEST leg, and only it: the phase names one and so does the
+            // line, so asking for the default twenty rows would sort a
+            // 500-entry map every second to discard nineteen of them. It is the
+            // right one to name here for the same reason it leads the published
+            // list — the slot this pass is waiting on is being held by a leg
+            // that has stopped receiving, not merely by an old one.
+            val worst = rotation.held(System.currentTimeMillis(), limit = 1).relays.firstOrNull()
             // ONCE PER EPISODE, not once per poll. This condition is caused by
             // legs that run for hours, so an unguarded line is one every few
             // seconds for as long as it lasts — thousands of identical lines
@@ -424,8 +427,8 @@ internal class DynamicSync(
                     "router: ${stream.name} — holding the next pass: only $free of ${dynamic.concurrency} transfer" +
                         " slot(s) free, need $needed" +
                         (
-                            oldest?.let {
-                                " (longest ${it.relay} at ${fmtDuration(it.heldForSec * 1000)}," +
+                            worst?.let {
+                                " (quietest ${it.relay}, held ${fmtDuration(it.heldForSec * 1000)}," +
                                     " ${it.events} event(s), quiet ${fmtDuration(it.quietForSec * 1000)})"
                             } ?: ""
                         ),
@@ -437,7 +440,7 @@ internal class DynamicSync(
                     free = free,
                     needed = needed,
                     running = rotation.busyCount(),
-                    oldest = oldest,
+                    oldest = worst,
                 ),
             )
             delay(POOL_GATE_POLL_MS)
@@ -772,7 +775,10 @@ internal class DynamicSync(
         progress.tally.busy.addAndGet(work.busy.toLong())
         progress.done.addAndGet(work.busy.toLong())
         progress.skipped.addAndGet(work.busy.toLong())
-        phases.beginCycle(stream.name, StreamPhases.DYNAMIC, progress.tally)
+        // Numbered with the rotation's own pass counter, so two rows of
+        // `passes` in the progress file can be told apart — and so the number in
+        // the log line and the number in the document are the same number.
+        phases.beginCycle(stream.name, StreamPhases.DYNAMIC, progress.number, progress.tally)
         // The walks of the PREVIOUS pass, which are this pass's noise. They are
         // retained past their own end on purpose — that is what stops the
         // percentage running backwards as relays finish — so the pass boundary
