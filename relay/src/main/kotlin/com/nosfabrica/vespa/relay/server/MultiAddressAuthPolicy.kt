@@ -20,13 +20,17 @@
  */
 package com.nosfabrica.vespa.relay.server
 
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toRelay.AuthCmd
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.OptionalAuthPolicy
 import com.vitorpamplona.quartz.nip01Core.relay.server.policies.PolicyResult
 import com.vitorpamplona.quartz.nip40Expiration.isExpired
+import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import com.vitorpamplona.quartz.nip42RelayAuth.tags.RelayTag
 import com.vitorpamplona.quartz.utils.TimeUtils
+import kotlinx.coroutines.CancellationException
 
 /**
  * NIP-42 for a relay that answers at more than one address — the clearnet url
@@ -50,6 +54,10 @@ import com.vitorpamplona.quartz.utils.TimeUtils
  * quartz's messages — `RelayOnionAuthTest` pins each one, so this drifting from
  * the engine fails the build rather than the deployment.
  *
+ * It is also where "somebody just signed in" becomes an event this relay can
+ * act on: quartz's `authorize` hook is the only seam that sees a verified AUTH
+ * and this connection's `send` at once, which is what [onAuthenticated] needs.
+ *
  * Three deliberate widenings over the original:
  *  - any of [addresses] satisfies the relay tag, not one fixed url;
  *  - EVERY `relay` tag is considered, not just the first. Quartz's own
@@ -67,9 +75,58 @@ import com.vitorpamplona.quartz.utils.TimeUtils
 class MultiAddressAuthPolicy(
     primary: NormalizedRelayUrl,
     alsoAt: Set<NormalizedRelayUrl> = emptySet(),
+    /**
+     * Told who just signed in, and how to reach them — see [TrustNotice], the
+     * one thing wired here. Absent is a relay that says nothing on login, which
+     * is what every deployment did before this hook existed.
+     */
+    private val onAuthenticated: AuthNotifier? = null,
 ) : OptionalAuthPolicy(primary) {
     /** [primary] is always accepted; the set is never empty, whatever [alsoAt] holds. */
     private val addresses = (alsoAt + primary).mapTo(HashSet(), NormalizedRelayUrl::withoutDefaultPort)
+
+    /**
+     * This connection's channel to the client, captured from the only hook that
+     * is handed one. Safe to hold because a policy is built fresh per
+     * connection (quartz's `policyBuilder`), and `@Volatile` because the AUTH
+     * that reads it can land on a different transport coroutine than the
+     * connect that wrote it.
+     */
+    @Volatile
+    private var send: ((Message) -> Unit)? = null
+
+    override fun onConnect(
+        scope: RequestContext,
+        send: (Message) -> Unit,
+    ) {
+        // Super first: it is what sends the NIP-42 challenge, and a connection
+        // that never gets one can never reach [authorize] at all.
+        super.onConnect(scope, send)
+        this.send = send
+    }
+
+    /**
+     * Quartz's post-verification hook, run once the WHOLE policy chain has
+     * approved the AUTH and before the `OK` goes out.
+     *
+     * Two rules, both from where it sits. It must not BLOCK — an `OK` is what
+     * a client waits on before it starts reading, and no login should wait on
+     * this relay's store — so [onAuthenticated] starts its work and returns.
+     * And it must not THROW: quartz reads a throw here as a failed login and
+     * records no identity, which would trade the reader's ranking lens for a
+     * background check they never asked for.
+     */
+    override suspend fun authorize(event: RelayAuthEvent) {
+        val notify = onAuthenticated ?: return
+        val send = send ?: return
+        try {
+            notify(event.pubKey, send)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            println("auth: post-login notice failed for ${event.pubKey.take(8)}…: ${e.message}")
+        }
+    }
 
     override fun accept(cmd: AuthCmd): PolicyResult<AuthCmd> {
         val event = cmd.event

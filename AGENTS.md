@@ -155,7 +155,27 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
                         client signs the .onion it dialled, and quartz's
-                        OptionalAuthPolicy binds exactly one url
+                        OptionalAuthPolicy binds exactly one url. It also
+                        carries the LOGIN HOOK: quartz's `authorize` is the one
+                        seam that sees a verified AUTH and that connection's
+                        `send` at once
+    TrustNotice.kt      what a reader is told the moment they sign in — two
+                        reads fired together, and a NOTICE for each link of
+                        their chain this relay does not hold: their own kind
+                        10040 (nothing here knows whose scores rank for them,
+                        so ranked search comes back EMPTY) and a kind 30382
+                        with `d` = them (nobody has scored them, so their own
+                        events sit under everyone else's rank floor). Holding
+                        both is silence, and so is a store that THREW — a
+                        failed read must never be published as "you never
+                        posted one". Deliberately NOT readiness.js's third
+                        link ("is your provider's whole card set here"): that
+                        one cannot be asked until the 10040 has been read for
+                        its `30382:rank` tag, which makes it a second round
+                        trip depending on the first rather than one of two
+                        that run at once. Off the AUTH path entirely — an OK
+                        is what a client waits on before it reads, and quartz
+                        reads a throw from that hook as a FAILED LOGIN
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
@@ -348,7 +368,10 @@ relay/src/main/resources/
                         and republishes them here VERBATIM for the next cycle to
                         find. Signing in enrols you in nothing — the server's
                         `onObserver` hook is wired to nothing, whatever older
-                        comments claimed.
+                        comments claimed. What it DOES do now is answer: a
+                        verified AUTH starts `TrustNotice`, whose NOTICEs carry
+                        the first two of these links to every client on the
+                        protocol rather than only to this page.
                         Its quietest number is the one that needed a whole
                         mechanism: "your own posts, N% mirrored" compares OUR
                         count for you against your write relay's, and ours is

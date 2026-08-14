@@ -65,7 +65,8 @@ import kotlin.coroutines.CoroutineContext
  * NIP-42 runs through [MultiAddressAuthPolicy] rather than quartz's
  * OptionalAuthPolicy, so a client that dialled the relay's hidden service — and
  * therefore signs that address — authenticates as itself instead of quietly
- * losing its ranking lens.
+ * losing its ranking lens. That same policy is what carries [onAuthenticated],
+ * the login hook [TrustNotice] hangs off.
  *
  * [close] shuts down the connections and the ingest writer, but not the store —
  * the composition root owns that — and the sync process holds its own handle
@@ -96,6 +97,10 @@ class NostrRelayServer(
     rejectFutureSeconds: Int = 0,
     // Fires with each authenticated pubkey seen on a ranked read.
     onObserver: ((String) -> Unit)? = null,
+    // Fires once per successful NIP-42 AUTH, with the connection's send —
+    // TrustNotice::check is what the composition root puts here. Unset is a
+    // relay that stays silent on login.
+    onAuthenticated: AuthNotifier? = null,
     // Only recorded into here; the consumer is the sync process, which polls
     // the mean over GET /pressure and yields its ingest on it.
     private val servingPressure: ServingPressure? = null,
@@ -110,7 +115,7 @@ class NostrRelayServer(
                     if (kindAllow.isNotEmpty() || kindDeny.isNotEmpty()) KindAllowDenyPolicy(kindAllow, kindDeny) else null,
                     if (rejectFutureSeconds > 0) RejectFutureEventsPolicy(rejectFutureSeconds) else null,
                     VerifyAuthOnlyPolicy,
-                    MultiAddressAuthPolicy(relayUrl, alsoServedAt()),
+                    MultiAddressAuthPolicy(relayUrl, alsoServedAt(), onAuthenticated),
                 ).toTypedArray<IRelayPolicy>(),
             )
         },
