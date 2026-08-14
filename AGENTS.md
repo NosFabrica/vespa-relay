@@ -324,20 +324,30 @@ relay/src/main/resources/
                         (`?iv=` exactly 28 from the end, after the `-null`
                         strip) — a wrong guess costs a permission prompt, which
                         is the one thing this is all trying not to spend twice.
-                        WHICH CONNECTION each half asks on is load-bearing and
-                        was got wrong first time: the reader's own 10009 is read
-                        ANONYMOUSLY, because the store applies the observer as a
-                        FILTER and on the authenticated socket a reader whose
-                        trust chain is not mirrored here reads back nothing —
-                        not only for searches. Measured against a real Vespa,
-                        signed in on a fresh store, `{kinds:[10009],
-                        authors:[me]}` returned 0 of the reader's OWN event
-                        while the identical filter anonymously returned it, so
-                        the own-groups half was empty for exactly the readers it
-                        exists for. The 39000 name search stays authenticated:
-                        which groups to offer first IS a ranked question, as the
-                        people picker's is. `groups.test.mjs` pins both sides
-                        against app.js's source, since nothing else can see it;
+                        BOTH READS GO DOWN THE AUTHENTICATED SOCKET, and the
+                        own-list one is pinned by `groups.test.mjs` against
+                        app.js's source because there is a plausible-looking
+                        change that breaks it. The store applies the observer as
+                        a FILTER, so a reader with no scores and no 10040
+                        mirrored here reads back nothing at all — their own
+                        events included. Measured against a real Vespa, signed
+                        in on a store with no scores: `{kinds:[10009],
+                        authors:[me]}` returned 0, and returned 1 the moment a
+                        provider that reader trusts scored them. Moving the read
+                        to the anonymous connection makes it answer, which is
+                        exactly why it must not — the picker would become the
+                        one place on the page showing a reader content this
+                        relay has decided it cannot rank for them. No chain
+                        here, no personal groups, and no unlock prompt either
+                        (nothing found means nothing sealed); readiness.js is
+                        what explains that, rather than a special case in the
+                        search box. Whether an observer should be gated by their
+                        own trust at all is a separate question and the store's:
+                        the reputation tensor is derived only from 30382s about
+                        a subject, so there is no self-edge and you score 0 under
+                        your own lens. Nothing here anticipates that fix — when
+                        the store stops gating a reader out of their own events
+                        this read simply starts answering;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;

@@ -186,6 +186,11 @@
   relay minted (`chachi`, a hex blob), so it is precisely what nobody can type
   from memory. The rows offer the NAME and a pick writes the id; `group:` with
   nothing after it opens on the reader's own groups, read off their kind 10009.
+  That read is on the AUTHENTICATED socket like every other, so a reader whose
+  scores and 10040 have not been mirrored here sees no personal groups — which
+  looks like a fault and is the relay being consistent: it has already decided
+  it cannot rank for them, and the group picker is not the place to make an
+  exception. The readiness panel under the box is what says so.
 
   Half of that list can be locked, and this is the one place the page asks the
   signer for something other than a signature. A 10009 is a NIP-51 private-tag

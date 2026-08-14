@@ -197,29 +197,30 @@ assert.strictEqual(where({ relayUrl: null, host: null }).text, "unknown relay", 
 assert.strictEqual(relayLabel("wss://x.example/"), "x.example", "the label drops the scheme and the trailing slash");
 assert.strictEqual(relayLabel("wss://x.example/inbox"), "x.example/inbox", "…and keeps a real path");
 
-// ---- WHICH CONNECTION each half asks on ------------------------------------
+// ---- WHICH CONNECTION the picker asks on -----------------------------------
 //
 // A source assertion, because the rule lives in app.js and nothing else can
 // see it — the same shape cards.test.mjs uses to keep entity paths out of
-// app.js. It is here because it was a REAL BUG, found only by running the page
-// against a real Vespa: the store applies the observer as a FILTER, so on the
-// authenticated socket a reader whose trust chain is not mirrored here reads
-// back NOTHING — and not only for searches. Measured, signed in, on a fresh
-// store: `{kinds:[10009],authors:[me]}` returned 0 of the reader's OWN event,
-// while the identical filter anonymously returned it. So the picker's own-groups
-// half — the whole point of the feature — was empty for exactly the readers it
-// was built for, and no hermetic test could have said so.
+// app.js. Both reads go down the AUTHENTICATED socket, and the one worth
+// pinning is the reader's own list, because there is a plausible-looking
+// change that breaks it: the store applies the observer as a FILTER, so a
+// reader with no scores and no 10040 mirrored here reads back nothing at all —
+// their own events included. Measured against a real Vespa, signed in on a
+// store with no scores, `{kinds:[10009],authors:[me]}` returned 0, and
+// returned 1 the moment a provider that reader trusts scored them.
 //
-// The split it pins: what is in YOUR OWN list is a fact about you and is read
-// anonymously; which groups EXIST and rank first is a ranked question and stays
-// on the authenticated socket, like the people picker beside it.
+// Moving this read to the anonymous connection makes it answer, which is
+// exactly why it must not: the picker would become the one place on the page
+// showing a reader content the relay has otherwise decided it cannot rank for
+// them. No chain here, no personal groups — deliberately, with readiness.js
+// explaining it rather than a special case in the search box.
 const appSrc = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
 const ownRead = /(\w+)\.req\(\{ kinds: \[10009\]/.exec(appSrc);
 assert(ownRead, "app.js must read the reader's own kind 10009 somewhere");
-assert.strictEqual(ownRead[1], "anon",
-  "the reader's own group list is read ANONYMOUSLY — on the authenticated socket the observer filter " +
-  "hides their own event from them on any relay that has not mirrored their trust chain");
+assert.strictEqual(ownRead[1], "relay",
+  "the reader's own group list is read on the AUTHENTICATED socket, behind the observer gate like " +
+  "everything else served to them — an unmirrored reader is meant to see no personal groups");
 assert(/relay\.req\(\{ kinds: \[39000\], search:/.test(appSrc),
-  "…while the 39000 name search stays on the authenticated socket, because which groups to offer first IS ranked");
+  "…and so is the 39000 name search, because which groups to offer first IS a ranked question");
 
 console.log("groups: your list and the corpus stay two answers, and one id on two relays stays two rows");

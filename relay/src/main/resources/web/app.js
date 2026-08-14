@@ -1026,20 +1026,32 @@ async function lookupAuthors(partial) {
 // only place the protocol writes an id, its host relay and a name down
 // together — so it is worth a round trip and not worth a second one.
 //
-// READ ANONYMOUSLY, on the shared reference connection, for the reason the
-// score lookup gives two hundred lines up: the store applies the observer as a
-// FILTER, so on the authenticated socket a reader whose trust chain has not
-// been mirrored here reads back NOTHING — not a degraded list, and not only
-// for searches. Measured against a real Vespa: signed in, `{kinds:[10009],
-// authors:[me]}` returned 0 of the reader's OWN event, while the identical
-// filter anonymously returned it. That is the store behaving as designed and
-// it is the wrong question to ask it here. What is in your own list is a fact
-// about you, not an opinion your web of trust is entitled to rank — the same
-// distinction that already sends the score reads down this connection.
+// READ ON THE AUTHENTICATED SOCKET, so this list is behind the same lens as
+// everything else the relay serves a signed-in reader — and comes back EMPTY,
+// on purpose, for a reader with no scores and no 10040 mirrored here.
 //
-// The 39000 name search below stays on the AUTHENTICATED socket, and the split
-// is the point: which groups exist and are worth showing first IS a ranked
-// question, exactly as the people picker's is.
+// That is worth stating because it looks like a bug from the outside and is
+// not. The store applies the observer as a FILTER (its "observer gate"), so a
+// reader whose trust chain has not reached this relay reads back nothing at
+// all — including their own events. Measured against a real Vespa: signed in
+// on a store with no scores, `{kinds:[10009], authors:[me]}` returned 0 of the
+// reader's OWN event, and returned it the moment a provider they trust scored
+// them. Routing this one read around that — down the anonymous connection,
+// which does answer — would make the group picker the single place on the page
+// that shows a reader content this relay has otherwise decided it cannot rank
+// for them. So it does not: no chain here, no personal groups, and
+// readiness.js is the panel that explains why rather than a special case here.
+//
+// (Whether an observer should be gated by their own trust AT ALL is a separate
+// question, and one for the store: the reputation tensor is derived only from
+// 30382s about a subject, so there is no self-edge and you score 0 under your
+// own lens. That is being fixed where it lives. Nothing here should anticipate
+// it — when the store stops gating a reader out of their own events, this read
+// starts answering, with no change on this side.)
+//
+// The 39000 name search below is on the same socket for the ordinary reason:
+// which groups exist and are worth showing first IS a ranked question, exactly
+// as the people picker's is.
 //
 // Cached only when the relay ANSWERED, the rule rankServiceOf() and profiles.js
 // both state at length: a dropped read cached as "you have no groups" would
@@ -1069,8 +1081,7 @@ async function ownGroupCandidates() {
   if (ownGroupsFor === who && ownGroupList) return ownGroupList;
   let evs = [];
   try {
-    const anon = await refConn();
-    evs = await anon.req({ kinds: [10009], authors: [who], limit: 1 });
+    evs = await relay.req({ kinds: [10009], authors: [who], limit: 1 });
   } catch (e) { return ownGroupList && ownGroupsFor === who ? ownGroupList : []; }
   if (evs.complete !== true) return [];
   const rows = ownGroups(evs[0]);
