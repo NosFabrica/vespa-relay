@@ -1652,6 +1652,27 @@ internal class DynamicSync(
     fun aliasSource(streams: List<SyncStream>): AliasMonitor.Source =
         object : AliasMonitor.Source {
             override suspend fun candidates(): List<NormalizedRelayUrl> {
+                // URLS A SIGNED RECORD ALREADY CALLS DEAD, held out of the whole
+                // pass — the same set the fan-out obeys through
+                // [HostStrikes.whyDead], read once here.
+                //
+                // A url nothing can connect to cannot be fingerprinted, so it
+                // cannot be folded and cannot be shown to answer one filter two
+                // ways: dialling it is a connect timeout spent to re-learn what
+                // a current record already says. It was harmless while a pass
+                // was capped at 2,000 probes; with a pass measuring its whole
+                // set it is most of the pass. Measured on staging: 9,255 known
+                // dead against a ~17,500-url union.
+                //
+                // NOT a permanent exclusion, and that is why nothing else has to
+                // change. The record ages out on quartz's
+                // `RelayReachabilityStore.DEFAULT_TTL_SECONDS` (24h), or sooner
+                // if the host delivers something, and the url is simply back in
+                // the next derivation. Held out rather than declined in
+                // [canDial] on purpose: a url refused there is reported as
+                // `Undecided.TRANSPORT` — "declined by our own transport" — and
+                // our transport is fine, their server is gone.
+                val dead = monitor?.deadSet().orEmpty()
                 val all = LinkedHashSet<NormalizedRelayUrl>()
                 for (stream in streams) {
                     val dynamic = stream.dynamic ?: continue
@@ -1682,8 +1703,12 @@ internal class DynamicSync(
                     // told not to dial.
                     found.forEach { r -> if (r.url !in dynamic.exclude && r.url != store.relay) all += r.url }
                 }
-                System.err.println("router: alias source derived ${all.size} url(s) across ${streams.size} stream(s)")
-                return all.toList()
+                val live = all.filterNot { it in dead }
+                System.err.println(
+                    "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
+                        (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else ""),
+                )
+                return live
             }
 
             override suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url)
