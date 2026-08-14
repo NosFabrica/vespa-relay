@@ -22,16 +22,17 @@ package com.nosfabrica.vespa.relay.server
 
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.core.HexKey
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix.RESTRICTED
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.Message
 import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.NoticeMessage
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
 import com.vitorpamplona.quartz.nip85TrustedAssertions.list.TrustProviderListEvent
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.serviceProviders
+import com.vitorpamplona.quartz.nip85TrustedAssertions.list.tags.ProviderTypes
 import com.vitorpamplona.quartz.nip85TrustedAssertions.users.ContactCardEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.async
-import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
 
 /**
@@ -56,24 +57,25 @@ typealias AuthNotifier = (HexKey, (Message) -> Unit) -> Unit
  * relay for saying something about a connection that is not an answer to a
  * command, and a login is exactly the moment the answer changes.
  *
- * Two facts, asked TOGETHER because neither reads the other:
+ * Two links, and they are a CHAIN — the second ask is addressed to whatever the
+ * first one names, so they cannot be fired together and the first unmet link is
+ * the only thing said:
  *
- *  - **kind 10040, authored by them** — their NIP-85 trust provider list. It
- *    names the service whose scores rank for them, and without it the trust
- *    projection has no observer cells to key on their pubkey at all: ranked
- *    search comes back empty and nothing downstream can explain why.
- *  - **kind 30382 with `d` = them** — a score card ABOUT them, from whichever
- *    service signed it. Held or not, the reader's own reads are unaffected;
- *    what it decides is the other direction — an author no provider has scored
- *    sits below the default `min_rank` floor, so their events are the ones
- *    filtered out of everybody else's ranked search here.
+ *  - **kind 10040, authored by them** — their NIP-85 trust provider list, and
+ *    specifically its `30382:rank` entry. That entry is what
+ *    `TrustProjection`'s provider map resolves signer → observer through, so
+ *    without one this relay has no cells keyed on their pubkey at all: every
+ *    ranked search comes back empty, and nothing downstream can explain why.
+ *  - **kind 30382 signed by that service** — the cards themselves. The service
+ *    key comes out of the tag above rather than out of the reader's own
+ *    pubkey: a card is ABOUT its `d` tag but ranks for whoever NAMED its
+ *    signer, so "has anyone scored this reader" and "can this relay rank for
+ *    this reader" are different questions with different answers.
  *
- * That second check is deliberately NOT "does this relay hold the reader's
- * provider's whole card set" (`readiness.js`'s third link, the one whose bar
- * says *importing — 62%*). That question cannot be asked until the 10040 has
- * been read and parsed for its `30382:rank` tag, which makes it a second round
- * trip that depends on the first; these two are one round trip each and run
- * concurrently.
+ * This is `readiness.js`'s second and third links, in the existence form a
+ * relay can answer for itself: the page draws the same chain as a bar because
+ * it can also ask the provider's own relay for a denominator, which a NOTICE
+ * has no room for and no business doing on a login.
  *
  * **Silence is a state.** A reader holding both hears nothing — the failure
  * mode of a status channel is nagging people who are fine, the same rule
@@ -86,18 +88,18 @@ typealias AuthNotifier = (HexKey, (Message) -> Unit) -> Unit
 class TrustNotice(
     private val store: IEventStore,
     /**
-     * Where the two reads run. Owned by the composition root and cancelled at
+     * Where the reads run. Owned by the composition root and cancelled at
      * shutdown, so a check outliving its connection dies with the process
      * rather than holding a store call open past it.
      */
     private val scope: CoroutineScope,
 ) {
     /**
-     * The [AuthNotifier] shape: start the checks and return immediately.
+     * The [AuthNotifier] shape: start the walk and return immediately.
      *
      * [send] is the connection's own channel and stays valid after it closes —
      * quartz's session drops what it cannot deliver — so a reader who
-     * authenticated and left costs one wasted pair of reads and nothing else.
+     * authenticated and left costs a wasted read or two and nothing else.
      */
     fun check(
         pubkey: HexKey,
@@ -109,46 +111,68 @@ class TrustNotice(
     }
 
     /**
-     * The words this reader is owed, in chain order — empty when there is
-     * nothing to say. Both reads are issued before either is awaited: a
-     * signed-in reader missing both links should wait for one round trip, not
-     * two.
+     * The words this reader is owed — at most one, and empty when there is
+     * nothing to say.
+     *
+     * ONE notice because the links are a chain: with no 10040 there is no
+     * service to ask about, so "we hold none of your provider's scores" is not
+     * a second finding but the same one restated as a guess. That is
+     * `readiness.js`'s ordering rule — the first unmet link wins and the rest
+     * report `waiting` — for the reason a column of red crosses says four
+     * things are wrong when one is.
      */
-    internal suspend fun notices(pubkey: HexKey): List<String> =
-        coroutineScope {
-            val provider = async { holds(providerListFilter(pubkey)) }
-            val scored = async { holds(scoreCardFilter(pubkey)) }
-            buildList {
-                if (provider.await() == false) add(NO_PROVIDER)
-                if (scored.await() == false) add(NO_SCORES)
-            }
-        }
+    internal suspend fun notices(pubkey: HexKey): List<String> {
+        // Null and empty are the two answers that must not be collapsed here:
+        // one is a store that could not say, the other is a store saying they
+        // have published no list.
+        val lists = read(providerListFilter(pubkey)) ?: return emptyList()
+        // 10040 is replaceable, so the store holds at most one per author and
+        // `limit = 1` cannot hand back a superseded list.
+        val list = lists.firstOrNull() ?: return listOf(NO_PROVIDER)
+        val service = list.rankService() ?: return listOf(NO_RANK_SERVICE)
+        val cards = read(scoreCardFilter(service)) ?: return emptyList()
+        return if (cards.isEmpty()) listOf(noScores(service)) else emptyList()
+    }
 
     /**
-     * Whether the store holds anything matching [filter], or null when it could
-     * not say. Null is what keeps a failed read out of the notices: `false`
-     * claims the reader has not published something, and only an answer from
-     * the store may make that claim.
+     * Which service this list names for RANKING, or null when it names none
+     * this relay could act on.
+     *
+     * Both nulls are the same fact deliberately. A list carrying only
+     * `30382:followers` can order a set and cannot rank one; a `30382:rank`
+     * entry missing its relay hint does not parse (quartz's
+     * `ServiceProviderTag.parse` requires all three fields) and a NIP-44
+     * private list cannot be read here at all. In every one of those cases the
+     * store's own provider map — which reads exactly this, off the public tag
+     * array — resolves nothing either, so the notice is a statement about what
+     * this relay can use rather than a guess at what the reader meant.
      */
-    private suspend fun holds(filter: Filter): Boolean? =
+    private fun Event.rankService(): HexKey? = tags.serviceProviders().firstOrNull { it.service == ProviderTypes.rank }?.pubkey
+
+    /**
+     * What the store holds for [filter], or null when it could not say. Null is
+     * what keeps a failed read out of the notices: an empty list claims the
+     * reader has not published something, and only an answer from the store may
+     * make that claim.
+     */
+    private suspend fun read(filter: Filter): List<Event>? =
         try {
-            store.query<Event>(filter).isNotEmpty()
+            store.query(filter)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
             // Not a failed login and not the reader's problem — the check is
             // the only thing that did not happen. One line, because a store
             // that has stopped answering will produce one of these per AUTH.
-            println("trust-notice: check failed for ${filter.kinds?.firstOrNull()}: ${e.message}")
+            println("trust-notice: check failed for kind ${filter.kinds?.firstOrNull()}: ${e.message}")
             null
         }
 
     companion object {
         /**
-         * `limit = 1` because the question is existence. The store's own count
-         * would answer it too, but a count over a kind-and-tag match set is the
-         * shape `StatsRollup` keeps off the per-minute cadence — one row back
-         * is strictly less work than a total nobody reads.
+         * The whole list, not its existence: the `30382:rank` tag inside it is
+         * what the next ask is addressed to. `limit = 1` because a replaceable
+         * kind has one current version and nothing here reads history.
          */
         internal fun providerListFilter(pubkey: HexKey) =
             Filter(
@@ -158,31 +182,35 @@ class TrustNotice(
             )
 
         /**
-         * NIP-85 puts the scored pubkey in the card's `d` tag (quartz's
-         * `ContactCardEvent.aboutUser()`), so "scored anywhere by anyone" is a
-         * single-tag ask that needs no provider resolved first. The card's
-         * AUTHOR is the service; asking by author is the other question, and
-         * this one deliberately does not ask it.
+         * Existence only, and keyed on the SERVICE — the card's signer — rather
+         * than on the reader. A relay mirroring a provider holds millions of
+         * that provider's cards and typically none about the reader
+         * personally, and it is the cards that rank: the reader's own `d`-tag
+         * card decides how THEIR events rank for other people, which is a
+         * different question this notice does not ask.
          */
-        internal fun scoreCardFilter(pubkey: HexKey) =
+        internal fun scoreCardFilter(service: HexKey) =
             Filter(
                 kinds = listOf(ContactCardEvent.KIND),
-                tags = mapOf("d" to listOf(pubkey)),
+                authors = listOf(service),
                 limit = 1,
             )
 
         /**
-         * Both notices name the kind, because the reader who can act on this is
-         * running a client that speaks in kinds, and "trust provider list" is
-         * not a searchable string in anyone's codebase.
+         * A NOTICE is a line in somebody's console, so each says the kind and
+         * stops. The kind IS the explanation to the only readers who can act
+         * on one, and prose around it is prose nobody scrolls to.
+         *
+         * The `restricted:` prefix is NIP-42's, taken from quartz's table
+         * rather than typed here — NIP-01's convention is a single word and a
+         * colon so a client can react programmatically, and a hand-written one
+         * is a prefix that drifts out of that vocabulary without failing.
          */
-        internal const val NO_PROVIDER =
-            "trust: this relay holds no kind 10040 for you — it does not know which service scores your " +
-                "web of trust, so ranked search will come back empty. Publish a NIP-85 trust provider list " +
-                "to a relay this one mirrors."
+        internal val NO_PROVIDER = RESTRICTED.format("no kind 10040 for you here — ranked search will be empty")
 
-        internal const val NO_SCORES =
-            "trust: this relay holds no kind 30382 about you yet — no trust provider has scored your pubkey " +
-                "here, so your own events sit below the default rank floor of everyone else's ranked search."
+        internal val NO_RANK_SERVICE = RESTRICTED.format("your kind 10040 names no usable 30382:rank service")
+
+        /** Named, because a provider we have never mirrored is the operator's fix, not the reader's. */
+        internal fun noScores(service: HexKey) = RESTRICTED.format("no kind 30382 from $service here yet")
     }
 }

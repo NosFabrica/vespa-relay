@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.server
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.commands.toClient.MachineReadablePrefix
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
@@ -41,7 +42,7 @@ import kotlin.test.assertTrue
  * The decision is asserted here rather than over the wire because silence is
  * one of its answers: `RelayProtocolTest` can prove a NOTICE arrived, but
  * "nothing was said" is only ever a wait that has not finished yet. This runs
- * the two reads to completion and looks at the list.
+ * the walk to completion and looks at the list.
  */
 class TrustNoticeTest {
     private val relayUrl = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -52,64 +53,93 @@ class TrustNoticeTest {
     private val service = NostrSignerSync()
     private val stranger = NostrSignerSync()
 
-    /** The reader's NIP-85 list, naming [service] as the one whose scores rank for them. */
-    private suspend fun providerList(by: NostrSignerSync = reader): Event = by.sign(1_700_000_000L, 10040, arrayOf(arrayOf("30382:rank", service.pubKey, relayUrl.url)), "")
+    /** The reader's NIP-85 list, naming [service] for the dimension that ranks. */
+    private suspend fun providerList(
+        by: NostrSignerSync = reader,
+        tag: Array<String> = arrayOf("30382:rank", service.pubKey, relayUrl.url),
+    ): Event = by.sign(1_700_000_000L, 10040, arrayOf(tag), "")
 
-    /** A score card ABOUT [about] — NIP-85 puts the scored pubkey in `d`. */
-    private suspend fun scoreCard(about: String): Event = service.sign(1_700_000_000L, 30382, arrayOf(arrayOf("d", about), arrayOf("rank", "42")), "")
-
-    @Test
-    fun `a reader this relay knows nothing about hears about both links`() =
-        runBlocking {
-            assertEquals(
-                listOf(TrustNotice.NO_PROVIDER, TrustNotice.NO_SCORES),
-                notice.notices(reader.pubKey),
-                "both missing, in chain order: whose scores rank for you, then whether anyone has scored you",
-            )
-        }
+    /** One of [by]'s score cards. Its `d` is whoever it is about; what ranks is who SIGNED it. */
+    private suspend fun scoreCard(
+        by: NostrSignerSync = service,
+        about: String = stranger.pubKey,
+    ): Event = by.sign(1_700_000_000L, 30382, arrayOf(arrayOf("d", about), arrayOf("rank", "42")), "")
 
     @Test
-    fun `a reader with a provider list is only told about the scores`() =
+    fun `a reader this relay knows nothing about is told about the list`() =
         runBlocking {
-            store.insert(providerList())
-            assertEquals(listOf(TrustNotice.NO_SCORES), notice.notices(reader.pubKey))
-        }
-
-    @Test
-    fun `a reader who has been scored is only told about the provider list`() =
-        runBlocking {
-            store.insert(scoreCard(about = reader.pubKey))
             assertEquals(listOf(TrustNotice.NO_PROVIDER), notice.notices(reader.pubKey))
         }
 
     @Test
-    fun `a reader with both hears nothing at all`() =
+    fun `a reader whose provider has not been mirrored is told which one`() =
         runBlocking {
             store.insert(providerList())
-            store.insert(scoreCard(about = reader.pubKey))
+            assertEquals(listOf(TrustNotice.noScores(service.pubKey)), notice.notices(reader.pubKey))
+        }
+
+    @Test
+    fun `a reader whose provider's cards are here hears nothing at all`() =
+        runBlocking {
+            store.insert(providerList())
+            store.insert(scoreCard())
             assertEquals(emptyList(), notice.notices(reader.pubKey), "the failure mode of a status channel is nagging people who are fine")
         }
 
     /**
-     * The assertion that makes the score check a `d` ask rather than an author
-     * ask. A relay mirroring a provider holds millions of its cards, so a
-     * filter keyed on the card's SIGNER answers "yes" for every reader alive
-     * and the notice silently stops being about them.
+     * The assertion the whole chain rests on: it is the SIGNER of a card that
+     * ranks, not its subject. A relay holding a million cards from services
+     * this reader never named can rank nothing for them, and a filter keyed on
+     * anything but the `30382:rank` service would call that ready.
      */
     @Test
-    fun `somebody else's card does not count as yours, however many of them there are`() =
+    fun `another service's cards are not this reader's scores`() =
         runBlocking {
-            store.insert(scoreCard(about = stranger.pubKey))
-            store.insert(providerList(by = stranger))
+            store.insert(providerList())
+            store.insert(scoreCard(by = stranger, about = reader.pubKey))
             assertEquals(
-                listOf(TrustNotice.NO_PROVIDER, TrustNotice.NO_SCORES),
+                listOf(TrustNotice.noScores(service.pubKey)),
                 notice.notices(reader.pubKey),
-                "a store full of a provider's cards about other people still holds nothing about this reader",
+                "a card ABOUT the reader, signed by a service they did not name, ranks nothing for them",
             )
         }
 
     /**
-     * A store that cannot answer is not a store that answered "no". `false`
+     * Three ways a stored 10040 still names nothing this relay can rank
+     * through, told apart from having no list at all because the reader's fix
+     * is different — and read the same way the store's own provider map reads
+     * it, off the public tag array.
+     */
+    @Test
+    fun `a list that names no usable rank service is its own answer`() =
+        runBlocking {
+            val cases =
+                mapOf(
+                    "orders a list, ranks nothing" to arrayOf("30382:followers", service.pubKey, relayUrl.url),
+                    "no relay hint, so quartz drops the entry" to arrayOf("30382:rank", service.pubKey),
+                    "private (NIP-44), unreadable here" to arrayOf("p", service.pubKey),
+                )
+            for ((why, tag) in cases) {
+                val own = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
+                own.insert(providerList(tag = tag))
+                assertEquals(
+                    listOf(TrustNotice.NO_RANK_SERVICE),
+                    TrustNotice(own, CoroutineScope(SupervisorJob())).notices(reader.pubKey),
+                    why,
+                )
+            }
+        }
+
+    @Test
+    fun `somebody else's list is not yours`() =
+        runBlocking {
+            store.insert(providerList(by = stranger))
+            store.insert(scoreCard())
+            assertEquals(listOf(TrustNotice.NO_PROVIDER), notice.notices(reader.pubKey))
+        }
+
+    /**
+     * A store that cannot answer is not a store that answered "no". A notice
      * here tells a reader their own list is missing and sends them off to
      * republish it; only the store may make that claim, and a Vespa that is
      * briefly unreachable has made none.
@@ -118,35 +148,38 @@ class TrustNoticeTest {
     fun `an unanswerable check says nothing rather than guessing`() =
         runBlocking {
             store.insert(providerList())
-            store.insert(scoreCard(about = reader.pubKey))
-            val blind = TrustNotice(FailingKind(store, kind = 10040), CoroutineScope(SupervisorJob()))
-            assertEquals(emptyList(), blind.notices(reader.pubKey), "the 10040 read threw; nothing is claimed about it")
+            val blindToLists = TrustNotice(FailingKind(store, kind = 10040), CoroutineScope(SupervisorJob()))
+            assertEquals(emptyList(), blindToLists.notices(reader.pubKey), "the 10040 read threw; nothing is claimed about it")
 
-            // …and the OTHER check still answers. The two are independent asks
-            // and one failing must not take the working one down with it.
-            val emptyStore = NostrSemanticsStore(InMemoryEventIndex(), relay = relayUrl)
-            val half = TrustNotice(FailingKind(emptyStore, kind = 10040), CoroutineScope(SupervisorJob()))
-            assertEquals(listOf(TrustNotice.NO_SCORES), half.notices(reader.pubKey))
+            // The second leg the same way: the list was read, the cards were
+            // not, and "your provider has not been mirrored" is unsupported.
+            val blindToCards = TrustNotice(FailingKind(store, kind = 30382), CoroutineScope(SupervisorJob()))
+            assertEquals(emptyList(), blindToCards.notices(reader.pubKey))
         }
 
     @Test
-    fun `the two filters ask exactly one question each`() {
+    fun `each ask is addressed to exactly one key`() {
         val provider = TrustNotice.providerListFilter(reader.pubKey)
         assertEquals(listOf(10040), provider.kinds)
         assertEquals(listOf(reader.pubKey), provider.authors, "their OWN list — a 10040 someone else signed says nothing about them")
-        assertEquals(1, provider.limit, "existence, not a count")
+        assertEquals(1, provider.limit, "the current version; nothing here reads history")
 
-        val scores = TrustNotice.scoreCardFilter(reader.pubKey)
+        val scores = TrustNotice.scoreCardFilter(service.pubKey)
         assertEquals(listOf(30382), scores.kinds)
-        assertEquals(mapOf("d" to listOf(reader.pubKey)), scores.tags, "cards ABOUT them; the author is whichever service signed it")
-        assertEquals(null, scores.authors)
+        assertEquals(listOf(service.pubKey), scores.authors, "the service the 10040 named, not the reader")
+        assertEquals(null, scores.tags, "not narrowed to cards about the reader: it is the signer that ranks")
         assertEquals(1, scores.limit)
     }
 
     @Test
-    fun `both notices name the kind they are about`() {
-        assertTrue("10040" in TrustNotice.NO_PROVIDER, "the reader who can act on this reads kinds, not prose")
-        assertTrue("30382" in TrustNotice.NO_SCORES)
+    fun `every notice names the kind it is about, and stops`() {
+        val all = listOf(TrustNotice.NO_PROVIDER, TrustNotice.NO_RANK_SERVICE, TrustNotice.noScores(service.pubKey))
+        assertTrue(all.any { "10040" in it } && all.any { "30382" in it }, "the reader who can act on this reads kinds, not prose")
+        assertTrue(all.all { it.length <= 120 }, "a NOTICE is a line in somebody's console: $all")
+        assertTrue(
+            all.all { MachineReadablePrefix.parse(it) == MachineReadablePrefix.RESTRICTED },
+            "NIP-01's single-word prefix so a client can react to it, not a word of ours: $all",
+        )
     }
 
     /** A store whose reads for one kind throw; everything else is the real thing. */

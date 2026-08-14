@@ -294,9 +294,8 @@ class RelayProtocolTest {
                     // answer to the AUTH frame, and the notices arrive behind it
                     // off a scope that never touched this coroutine.
                     awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
-                    val notices = awaitNotices(out, 2)
+                    val notices = awaitNotices(out, 1)
                     assertTrue(notices.any { "10040" in it }, "an empty store holds no trust provider list for this reader: $notices")
-                    assertTrue(notices.any { "30382" in it }, "…and no score card about them either: $notices")
                 } finally {
                     session.close()
                 }
