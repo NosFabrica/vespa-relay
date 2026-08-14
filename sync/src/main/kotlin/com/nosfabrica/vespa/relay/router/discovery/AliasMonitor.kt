@@ -87,6 +87,11 @@ class AliasMonitor(
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
     private val startupDelayMs: Long = DEFAULT_STARTUP_DELAY_MS,
     private val emptyRetryMs: Long = DEFAULT_EMPTY_RETRY_MS,
+    /**
+     * Where the candidate set comes from, or null to fall back on whatever the
+     * streams have pushed through [submit] — see [Source].
+     */
+    private val source: Source? = null,
 ) {
     /**
      * All this needs of the fold: measure one stream's urls, say how many new
@@ -117,6 +122,42 @@ class AliasMonitor(
          * this a `fun interface`.
          */
         val progress: Processors.Handle? get() = null
+    }
+
+    /**
+     * THE WHOLE WORLD, derived here rather than handed over — every url every
+     * stream would dial, on this monitor's own clock.
+     *
+     * [submit] made the candidate set a function of when each stream finished
+     * discovering, and that is a race the monitor always loses on the boot that
+     * has the most to learn: measured on staging, a 16-url stream finished
+     * discovery in one second and the two 17,499-url streams finished 190
+     * seconds later — three minutes AFTER the first pass had already run and
+     * gone to sleep for six hours. The pass was not empty, so the
+     * [emptyRetryMs] guard did not fire, and 34,997 urls sat unprobed while the
+     * fan-out dialled the same relay once per alias.
+     *
+     * With a source there is no race to lose: the pass derives its own set at
+     * the moment it runs, so the first pass after boot covers everything every
+     * stream knows about, whether or not any stream has finished discovering.
+     *
+     * The callbacks are merged rather than per stream, which is the whole
+     * reason this is an interface the ENGINE implements: only the engine knows
+     * how to dial for all of them at once (one transport, one cross-stream
+     * socket refcount) and which streams a downloaded event belongs to.
+     */
+    interface Source {
+        /** Every url worth measuring, across every configured stream. */
+        suspend fun candidates(): List<NormalizedRelayUrl>
+
+        /** Whether this process can reach that url at all — transport, not policy. */
+        suspend fun canDial(url: NormalizedRelayUrl): Boolean
+
+        /** A probe's events are still events: offered to whichever streams want them. */
+        suspend fun onEvent(event: Event)
+
+        /** The cross-stream socket refcount, so a probe cannot close a live transfer. */
+        val sockets: AliasFolding.Sockets
     }
 
     /** One stream's standing offer of work: what it sees, and how to reach it. */
@@ -253,7 +294,18 @@ class AliasMonitor(
      */
     suspend fun runPass(): Int {
         var learned = 0
-        val work = pending.entries.map { it.key to it.value }
+        // THE SOURCE WINS WHERE THERE IS ONE. Derived at the moment the pass
+        // runs, so no stream's discovery clock can decide what this pass sees;
+        // `pending` stays the fallback for a deployment (and every test) that
+        // wires no source.
+        val work =
+            source?.let { src ->
+                val urls = runCatching { src.candidates() }.getOrDefault(emptyList())
+                // Nothing derived is not nothing to do — a cold store has no
+                // relay lists yet — so this reads as an empty pass and retries
+                // at [emptyRetryMs] rather than sleeping the full interval.
+                if (urls.size < 2) emptyList() else listOf(ALL_STREAMS to Work(urls, src::canDial, src::onEvent, src.sockets))
+            } ?: pending.entries.map { it.key to it.value }
         // ONE PASS AT A TIME, over every stream — rather than one stream at a
         // time over every pass, which is how this used to read.
         //
@@ -299,6 +351,18 @@ class AliasMonitor(
     }
 
     companion object {
+        /**
+         * The label a [Source]-derived pass reports under.
+         *
+         * One row rather than one per stream, and it is the honest shape: the
+         * set is a UNION, so a per-stream row would have to either double-count
+         * the urls two streams share or invent a split the pass never made. It
+         * also closes a hole the per-stream shape had — grouping happened
+         * WITHIN a stream, so a host whose urls were split across two streams
+         * was never folded, however many aliases it wore.
+         */
+        const val ALL_STREAMS = "all streams"
+
         /**
          * How often the fold re-probes. Six hours, matching the default stream
          * refresh: a url is discovered, dialled unfolded once, and measured

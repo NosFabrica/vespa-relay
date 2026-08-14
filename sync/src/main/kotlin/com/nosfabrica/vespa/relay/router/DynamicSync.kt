@@ -1653,6 +1653,90 @@ internal class DynamicSync(
         }
 
     /**
+     * EVERY URL EVERY STREAM WOULD DIAL, for the monitor to measure on its own
+     * clock — see [AliasMonitor.Source].
+     *
+     * The probe passes used to see only what a stream had pushed at them, which
+     * made the candidate set a function of discovery timing. Measured on
+     * staging: a 16-url stream finished discovering in one second, the first
+     * pass ran two minutes later against those 16 alone, and the two
+     * 17,499-url streams submitted 190 seconds after that — so 34,997 urls
+     * waited six hours for a pass they had missed by three minutes, while the
+     * fan-out went on dialling the same server once per alias.
+     *
+     * Derived here rather than in the monitor because the monitor has no store,
+     * no transport and no ingest. It is the same derivation each stream runs
+     * for its own fan-out ([discoverRelayList]), unioned — and deliberately NOT
+     * the streams' cached lists, which are exactly the thing that may not exist
+     * yet on the boot this is for.
+     *
+     * Runs alongside the streams rather than in front of them. It is a store
+     * walk per stream and it is paid on the monitor's interval, not on any
+     * cycle: the split that put this pass on its own clock is what stopped a
+     * multi-minute probe run sitting between "discovery finished" and the first
+     * downloaded byte.
+     */
+    fun aliasSource(streams: List<SyncStream>): AliasMonitor.Source =
+        object : AliasMonitor.Source {
+            override suspend fun candidates(): List<NormalizedRelayUrl> {
+                val all = LinkedHashSet<NormalizedRelayUrl>()
+                for (stream in streams) {
+                    val dynamic = stream.dynamic ?: continue
+                    // One failing stream must not cost the others their
+                    // measurement: a store walk can fail on its own terms and
+                    // the union is still worth what the rest of it found.
+                    val found =
+                        runCatching {
+                            RelayDiscovery.discover(
+                                store,
+                                dynamic,
+                                skip = setOfNotNull(store.relay),
+                                allowOnion = tor != null,
+                            )
+                        }.getOrElse {
+                            System.err.println("router: alias source could not derive ${stream.name}: ${it.message}")
+                            emptyList()
+                        }
+                    // The same two filters the fan-out applies after the fold,
+                    // so the monitor never measures a url this router has been
+                    // told not to dial.
+                    found.forEach { r -> if (r.url !in dynamic.exclude && r.url != store.relay) all += r.url }
+                }
+                System.err.println("router: alias source derived ${all.size} url(s) across ${streams.size} stream(s)")
+                return all.toList()
+            }
+
+            override suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url)
+
+            /**
+             * A fingerprint's events are still events. Offered to EVERY stream
+             * whose filter wants them, with that stream's own trust — which is
+             * the one thing a merged set cannot guess and the reason this is
+             * built here rather than in the monitor.
+             */
+            override suspend fun onEvent(event: Event) {
+                for (stream in streams) {
+                    if (stream.filter.match(event)) ingest.submit(event, stream.trusted)
+                }
+            }
+
+            /**
+             * The CROSS-STREAM refcount, which is the correct one for a pass
+             * that belongs to no stream: a probe must be able to hand its
+             * socket back without closing it under a fan-out leg that is still
+             * transferring on the same url.
+             */
+            override val sockets: AliasFolding.Sockets =
+                object : AliasFolding.Sockets {
+                    override fun claim(url: NormalizedRelayUrl) {
+                        inFlight.merge(url, 1, Int::plus)
+                    }
+
+                    override fun release(url: NormalizedRelayUrl) = releaseSocket(url)
+                }
+        }
+
+    /**
      * Drop a dynamic relay's socket once nothing is using it — hundreds of
      * relays a cycle would otherwise leave hundreds of idle connections open.
      * Pinned relays and relays another stream is still syncing are left alone.

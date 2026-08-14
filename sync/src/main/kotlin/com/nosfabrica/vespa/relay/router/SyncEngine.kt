@@ -346,7 +346,7 @@ class SyncEngine(
      * — measuring a duplicate twice and then deleting it is the one ordering
      * that pays for work it throws away.
      */
-    private val aliasMonitor =
+    private val aliasMonitor: AliasMonitor? =
         listOfNotNull<AliasMonitor.Pass>(
             // Each wrapper carries the same handle its pass writes into, so the
             // monitor's clock — when the pass ran, how long it took, when the
@@ -379,8 +379,37 @@ class SyncEngine(
                 }
             },
         ).takeIf { it.isNotEmpty() }
-            ?.let { AliasMonitor(it, scope) }
-    private val dynamic =
+            ?.let {
+                AliasMonitor(
+                    it,
+                    scope,
+                    // EVERY STREAM'S WORLD, every pass — see
+                    // [AliasMonitor.Source] and [DynamicSync.aliasSource].
+                    //
+                    // Delegated lazily because [dynamic] is built below this
+                    // and the monitor is one of its constructor arguments. The
+                    // cycle is only in the declaration order; nothing here is
+                    // touched until the first pass runs, two minutes after boot
+                    // at the earliest.
+                    source =
+                        object : AliasMonitor.Source {
+                            private val delegate by lazy { dynamic.aliasSource(dynamicStreams) }
+
+                            // Types spelled out: inferring them here asks the
+                            // compiler to resolve `dynamic` while it is still
+                            // working out this property, which it reports as a
+                            // recursive problem rather than as the cycle it is.
+                            override suspend fun candidates(): List<NormalizedRelayUrl> = delegate.candidates()
+
+                            override suspend fun canDial(url: NormalizedRelayUrl): Boolean = delegate.canDial(url)
+
+                            override suspend fun onEvent(event: Event): Unit = delegate.onEvent(event)
+
+                            override val sockets: AliasFolding.Sockets get() = delegate.sockets
+                        },
+                )
+            }
+    private val dynamic: DynamicSync =
         DynamicSync(
             client,
             store,

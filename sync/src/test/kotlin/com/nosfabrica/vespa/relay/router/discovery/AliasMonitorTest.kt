@@ -69,6 +69,82 @@ class AliasMonitorTest {
 
     private fun monitor(pass: AliasMonitor.Pass) = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined))
 
+    /** A [AliasMonitor.Source] over a fixed world, standing in for the engine's derivation. */
+    private class World(
+        private val urls: List<NormalizedRelayUrl>,
+    ) : AliasMonitor.Source {
+        val derivations = AtomicInteger()
+
+        override suspend fun candidates(): List<NormalizedRelayUrl> {
+            derivations.incrementAndGet()
+            return urls
+        }
+
+        override suspend fun canDial(url: NormalizedRelayUrl) = true
+
+        override suspend fun onEvent(event: Event) = Unit
+
+        override val sockets = AliasFolding.Sockets.NONE
+    }
+
+    private fun sourced(
+        pass: AliasMonitor.Pass,
+        source: AliasMonitor.Source,
+    ) = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined), source = source)
+
+    @Test
+    fun `a source measures every stream's world without waiting for any of them to submit`() =
+        runBlocking {
+            // THE RACE THIS EXISTS TO END, measured on staging: a 16-url stream
+            // finished discovering in one second, the first pass ran against
+            // those 16, and the two 17,499-url streams submitted 190 seconds
+            // later — three minutes after the pass had gone to sleep for six
+            // hours. Nothing had submitted here at all and the pass still
+            // covers the whole world.
+            val pass = Recording()
+            val world = World(listOf(a, b, c))
+            val m = sourced(pass, world)
+
+            m.runPass()
+
+            assertEquals(1, world.derivations.get(), "the world is derived once per pass, when the pass runs")
+            assertEquals(listOf(AliasMonitor.ALL_STREAMS), pass.passes.map { it.first })
+            assertEquals(listOf(a, b, c), pass.passes.single().second)
+        }
+
+    @Test
+    fun `the source wins over anything a stream pushed, so one union is measured and not both`() =
+        runBlocking {
+            // Grouping used to happen WITHIN a stream, so a host whose urls were
+            // split across two of them was never folded however many aliases it
+            // wore. One union is what closes that, and measuring the union AND
+            // the per-stream sets would dial the shared urls twice.
+            val pass = Recording()
+            val m = sourced(pass, World(listOf(a, b, c)))
+            m.submit("outbox", listOf(a), canDial = { true })
+            m.submit("assertions", listOf(b), canDial = { true })
+
+            m.runPass()
+
+            assertEquals(1, pass.passes.size, "the union is the pass; the submitted sets are not measured again")
+            assertEquals(listOf(a, b, c), pass.passes.single().second)
+        }
+
+    @Test
+    fun `a world too small to compare is an empty pass, not a measured one`() =
+        runBlocking {
+            // Same rule the submitted path has always had: one url cannot be
+            // held up against anything, and a cold store legitimately has none
+            // yet — which must read as "nothing to do YET" and retry, not as a
+            // pass that ran.
+            val pass = Recording()
+            val m = sourced(pass, World(listOf(a)))
+
+            m.runPass()
+
+            assertEquals(0, pass.calls.get())
+        }
+
     @Test
     fun `a stream's later submission replaces its earlier one`() =
         runBlocking {
