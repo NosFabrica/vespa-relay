@@ -4,14 +4,19 @@
 // as one import line. Every registered kind is held to a fixture in the
 // render test, so "covers all kinds" stays a checked claim rather than a
 // hope.
+//
+// TWO renderings dispatch here, not one: the card, and the type-ahead row the
+// search field draws above it. A family registers both beside each other, and
+// the test holds the two registries to the same key set — which is what a row
+// reading `{"about":"","name":"Test group","picture":""}`, beside a card
+// drawing that same channel properly, cost to learn.
 
-import { esc, clip, titleOf, summaryOf } from "./shared/format.js";
-import { shortNpub } from "./shared/nip19.js";
-import { authorOf, displayName, parseProfile } from "./shared/profiles.js";
+import { esc, clip } from "./shared/format.js";
+import { authorOf } from "./shared/profiles.js";
 import { replyPerson } from "./shared/parents.js";
 import { avatarHtml } from "./shared/avatar.js";
-import { renderers, badgeHtml, gridPeople, namedPeople, tagOf, tagsWhere } from "./cards/base.js";
-import { genericCard } from "./cards/generic.js";
+import { renderers, rows, oneLine, badgeHtml, gridPeople, namedPeople, tagOf, tagsWhere } from "./cards/base.js";
+import { genericCard, genericRow } from "./cards/generic.js";
 import "./cards/profile.js";
 import "./cards/note.js";
 import "./cards/people.js";
@@ -89,22 +94,41 @@ export function namedPubkeys(ev, opts) {
 /** The kinds whose card names the person a `p` tag points at, one per event. */
 const NAMES_P_TAGS = new Set([9734, 9735, 1984]);
 
-/** The type-ahead row: works for every kind (profiles show their own face). */
+/**
+ * What a type-ahead row SAYS — the same dispatch the card takes, at the size a
+ * list of eight rows has room for, with the ladder every family leans on
+ * applied once here rather than thirty times over.
+ *
+ * The NAME never falls back to the content: that fallback is what put a
+ * channel's `{"about":"","name":"Test group",…}` in the row while its card drew
+ * the channel. A family with nothing to say about a particular event says
+ * nothing, and the row leads with the person who posted it — always true, if
+ * not always the most interesting thing on offer.
+ *
+ * The SUB then carries that person, unless the row already used them (a kind 3
+ * says "follows 2,431 people" UNDER the author's name, never beside it) or the
+ * event simply IS them: base.js's `self`.
+ */
+export function rowOf(ev) {
+  const a = authorOf(ev);
+  const r = (rows.get(ev.kind) || genericRow)(ev) || {};
+  const name = oneLine(r.name) || a.name;
+  return {
+    pic: oneLine(r.pic) || a.picture,
+    name,
+    sub: oneLine(r.sub) || (r.self || name === a.name ? "" : a.name),
+  };
+}
+
+/** The type-ahead row: one line for what the event is, one for what it says. */
 export function popupRow(ev, idx) {
-  let pic, name, sub;
-  if (ev.kind === 0) {
-    const p = parseProfile(ev);
-    pic = p.picture; name = displayName(p) || shortNpub(ev.pubkey); sub = p.about;
-  } else {
-    const a = authorOf(ev);
-    pic = a.picture; name = titleOf(ev) || clip(ev.content, 60) || a.name; sub = titleOf(ev) ? (summaryOf(ev) || clip(ev.content, 60)) : a.name;
-  }
+  const { pic, name, sub } = rowOf(ev);
   return `
     <div class="popup-item" data-idx="${idx}" role="option">
       ${avatarHtml(pic, ev.pubkey)}
       <div class="row-main">
         <div class="row-name">${esc(clip(name, 80))}</div>
-        <div class="row-about">${esc(clip(sub || "", 90))}</div>
+        <div class="row-about">${esc(clip(sub, 90))}</div>
       </div>
       ${badgeHtml(ev)}
     </div>`;

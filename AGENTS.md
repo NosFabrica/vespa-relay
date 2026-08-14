@@ -418,7 +418,19 @@ relay/src/main/resources/
                         kind registry — one renderer module per family, a
                         generic floor for the rest, and a render test that
                         FAILS if a kind registers without a fixture, a badge
-                        label or a family tone. The NIP-51 lists and sets are
+                        label or a family tone. Each family registers TWO
+                        renderings of its kinds: the card, and the one-line
+                        type-ahead row the search field draws, whose registry
+                        the same test holds to the card registry's key set. A
+                        row has no fallback to the raw content on purpose —
+                        that rung is what printed
+                        `{"about":"","name":"Test group","picture":""}` in the
+                        popup for every channel, product, stall, app handler
+                        and NIP-66 record, and git's own `From <sha> Mon Sep 17
+                        00:00:00 2001` for every patch, beside cards that had
+                        been drawing all of them properly. A family with
+                        nothing to say about an event says nothing and the row
+                        leads with its author. The NIP-51 lists and sets are
                         one table in cards/lists.js rather than one renderer
                         each: they differ only in which tags carry their items.
                         cards/code.js is the one that PARSES: NIP-34 puts `git

@@ -12,8 +12,8 @@
 import { esc, clip, summaryOf, titleOf, imageOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
-  register, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
-  chipRow, tagOf, tagsOf, tagsWhere, jsonContent, fmtTs, extLink,
+  register, registerRow, shell, titleHtml, bodyHtml, replyLine, personLink, faceStrip, noteHref, addrHref,
+  chipRow, tagOf, tagsOf, tagsWhere, jsonContent, fmtTs, extLink, plural, satsOf,
 } from "./base.js";
 
 /** The event a reactive kind points at: `e` by id, `a` by address, in that order. */
@@ -29,6 +29,11 @@ function targetLink(ev) {
 const relationLine = (verb, target) =>
   `<div class="result-body">${verb}${target ? ` ${target}` : ""}</div>`;
 
+/** NIP-25's three cases, in the words the card and the row both use. */
+const reactionVerb = (c) => (c === "+" || c === "" ? "liked" : c === "-" ? "disliked" : "reacted to");
+/** …and whether this one HAS a glyph, rather than being a bare vote. */
+const isGlyph = (c) => !!c && c !== "+" && c !== "-";
+
 /**
  * 7 / 17 — a reaction. NIP-25 says "+" is a like, "-" a dislike, and anything
  * else is the reaction itself: a literal emoji, or a `:shortcode:` whose image
@@ -43,11 +48,22 @@ function reactionCard(ev, opts) {
   const glyph = custom
     ? `<img class="react-emoji" src="${esc(custom[2])}" alt=":${esc(shortcode[1])}:" title=":${esc(shortcode[1])}:" loading="lazy" referrerpolicy="no-referrer" onerror="this.remove()" />`
     : `<span class="react-glyph">${esc(clip(c || "+", 16))}</span>`;
-  const verb = c === "+" || c === "" ? "liked" : c === "-" ? "disliked" : "reacted to";
+  const verb = reactionVerb(c);
   const target = targetLink(ev);
-  const inner = `<div class="result-body">${c === "+" || c === "-" || c === "" ? "" : glyph + " "}${verb}${target ? ` ${target}` : ""}</div>` +
+  const inner = `<div class="result-body">${isGlyph(c) ? `${glyph} ` : ""}${verb}${target ? ` ${target}` : ""}</div>` +
     (ev.kind === 17 && tagOf(ev, "r") ? `<div class="result-body">${extLink(tagOf(ev, "r"))}</div>` : "");
   return shell(ev, opts, inner);
+}
+
+/**
+ * The event carried INSIDE another one's content — NIP-18 puts the whole
+ * reposted event there, NIP-72 the whole approved post — reduced to its text.
+ * Both cards quote it and both rows lead with it, since the wrapper's own
+ * content is nothing.
+ */
+function quotedText(ev) {
+  const inner = jsonContent(ev);
+  return inner && typeof inner.content === "string" ? inner.content : "";
 }
 
 /**
@@ -57,13 +73,20 @@ function reactionCard(ev, opts) {
  * which plenty of clients leave it.
  */
 function repostCard(ev, opts) {
-  const inner_ = jsonContent(ev);
-  const quoted = inner_ && typeof inner_.content === "string" ? inner_.content : "";
+  const quoted = quotedText(ev);
   const target = targetLink(ev);
   const inner = relationLine("reposted", target) +
     (quoted ? `<blockquote class="quote">${esc(opts && opts.full ? quoted.trim() : clip(quoted, 300))}</blockquote>` : "");
   return shell(ev, opts, inner);
 }
+
+/** The zap REQUEST a receipt carries, stringified, in its `description` tag. */
+function zapRequest(ev) {
+  try { return JSON.parse(tagOf(ev, "description") || "{}") || {}; } catch (e) { return {}; }
+}
+/** What the receipt is worth: the outer `amount` tag, else the request's own. */
+const zapSats = (ev, req) =>
+  satsOf(tagOf(ev, "amount") || ((req.tags || []).find((t) => Array.isArray(t) && t[0] === "amount") || [])[1]);
 
 /**
  * 9735 — a zap receipt. The amount is not in this event: it is in the zap
@@ -72,11 +95,8 @@ function repostCard(ev, opts) {
  * and the comment the zapper typed is in that same nested event.
  */
 function zapCard(ev, opts) {
-  let req = {};
-  try { req = JSON.parse(tagOf(ev, "description") || "{}") || {}; } catch (e) { req = {}; }
-  const reqTag = (name) => ((req.tags || []).find((t) => t[0] === name) || [])[1];
-  const msats = Number(tagOf(ev, "amount") || reqTag("amount"));
-  const sats = Number.isFinite(msats) && msats > 0 ? Math.round(msats / 1000).toLocaleString() : null;
+  const req = zapRequest(ev);
+  const sats = zapSats(ev, req);
   const to = tagOf(ev, "p");
   const from = req.pubkey && /^[0-9a-f]{64}$/.test(req.pubkey) ? req.pubkey : null;
   const target = targetLink(ev);
@@ -90,8 +110,7 @@ function zapCard(ev, opts) {
 
 /** 9734 — the zap request itself: the comment, and what it asks to pay for. */
 function zapRequestCard(ev, opts) {
-  const msats = Number(tagOf(ev, "amount"));
-  const sats = Number.isFinite(msats) && msats > 0 ? Math.round(msats / 1000).toLocaleString() : null;
+  const sats = satsOf(tagOf(ev, "amount"));
   const to = tagOf(ev, "p");
   const inner =
     `<div class="result-body">asks to zap${to && /^[0-9a-f]{64}$/.test(to) ? ` ${personLink(to)}` : ""}</div>` +
@@ -131,9 +150,12 @@ function commentCard(ev, opts) {
   ]);
 }
 
+/** A poll's choices: `["option", <id>, <label>]`, so the LABEL is element 2. */
+const pollOptions = (ev) => tagsOf(ev, "option").map((t) => t[2]).filter(Boolean);
+
 /** 1068 — a poll: the question is the content, the choices are `option` tags. */
 function pollCard(ev, opts) {
-  const options = tagsOf(ev, "option").map((t) => t[2]).filter(Boolean);
+  const options = pollOptions(ev);
   const ends = tagOf(ev, "endsAt");
   const inner =
     bodyHtml(opts, ev.content, 400) +
@@ -152,14 +174,19 @@ function pollResponseCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/** Which p/e tag names the reported thing, and therefore carries the category. */
+const flaggedTag = (ev) => tagsWhere(ev, (name, t) => (name === "p" || name === "e") && t[2])[0];
+/** "spam", "nudity", … — as a `report` tag when no p/e carried one. */
+const reportCategory = (ev) => (flaggedTag(ev) || [])[2] || tagOf(ev, "report");
+
 /**
  * 1984 — a report. The category is the THIRD element of the p/e tag that names
  * the reported thing ("spam", "nudity", …), which is the one field a moderator
  * reading a list of these actually filters on.
  */
 function reportCard(ev, opts) {
-  const flagged = tagsWhere(ev, (name, t) => (name === "p" || name === "e") && t[2])[0];
-  const category = flagged ? flagged[2] : tagOf(ev, "report");
+  const flagged = flaggedTag(ev);
+  const category = reportCategory(ev);
   const subject = flagged && flagged[0] === "p" && /^[0-9a-f]{64}$/.test(flagged[1])
     ? personLink(flagged[1])
     : targetLink(ev);
@@ -169,10 +196,13 @@ function reportCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/** The labels a 1985 puts on something — `l` values, the `L` being their namespace. */
+const labelsOf = (ev) => tagsOf(ev, "l").map((t) => t[1]).filter(Boolean);
+
 /** 1985 — a NIP-32 label: the namespace, the labels, and what they were put on. */
 function labelCard(ev, opts) {
   const ns = tagsOf(ev, "L").map((t) => t[1]).filter(Boolean);
-  const labels = tagsOf(ev, "l").map((t) => t[1]).filter(Boolean);
+  const labels = labelsOf(ev);
   const inner =
     relationLine("labels", targetLink(ev)) +
     chipRow(labels, opts) +
@@ -180,27 +210,32 @@ function labelCard(ev, opts) {
   return shell(ev, opts, inner, [["namespace", ns.length ? esc(ns.join(", ")) : null]]);
 }
 
+/** How many events a deletion request names, by id and by address alike. */
+const deletionCount = (ev) => tagsOf(ev, "e").length + tagsOf(ev, "a").length;
+
 /**
  * 5 — a deletion REQUEST, and the card says request on purpose. Whether the
  * events are gone is this relay's business, not the event's claim; what the
  * event carries is an ask and a reason.
  */
 function deletionCard(ev, opts) {
-  const n = tagsOf(ev, "e").length + tagsOf(ev, "a").length;
   const kinds = [...new Set(tagsOf(ev, "k").map((t) => t[1]).filter(Boolean))];
   const inner =
-    `<div class="result-body">asks to delete ${n.toLocaleString()} event${n === 1 ? "" : "s"}${kinds.length ? ` of kind ${esc(kinds.join(", "))}` : ""}</div>` +
+    `<div class="result-body">asks to delete ${plural(deletionCount(ev), "event")}${kinds.length ? ` of kind ${esc(kinds.join(", "))}` : ""}</div>` +
     bodyHtml(opts, ev.content, 300, true);
   return shell(ev, opts, inner);
 }
+
+/** Who a badge was awarded to — the `p` tags that are actually keys. */
+const winnersOf = (ev) => tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
 
 /** 8 — a badge award: which badge, to whom. */
 function badgeAwardCard(ev, opts) {
   const badge = tagOf(ev, "a");
   const href = badge ? addrHref(badge) : null;
-  const winners = tagsOf(ev, "p").map((t) => t[1]).filter((pk) => /^[0-9a-f]{64}$/.test(pk));
+  const winners = winnersOf(ev);
   const inner =
-    `<div class="result-body">awards ${badge ? (href ? `<a href="${href}">${esc(shortAddr(badge))}</a>` : esc(shortAddr(badge))) : "a badge"} to ${winners.length.toLocaleString()} recipient${winners.length === 1 ? "" : "s"}</div>` +
+    `<div class="result-body">awards ${badge ? (href ? `<a href="${href}">${esc(shortAddr(badge))}</a>` : esc(shortAddr(badge))) : "a badge"} to ${plural(winners.length, "recipient")}</div>` +
     faceStrip(winners, opts && opts.full ? 24 : 12);
   return shell(ev, opts, inner);
 }
@@ -209,8 +244,7 @@ function badgeAwardCard(ev, opts) {
 function approvalCard(ev, opts) {
   const community = tagOf(ev, "a");
   const href = community ? addrHref(community) : null;
-  const approved = jsonContent(ev);
-  const quoted = approved && typeof approved.content === "string" ? approved.content : "";
+  const quoted = quotedText(ev);
   const inner =
     `<div class="result-body">approved a post${community ? ` in ${href ? `<a href="${href}">${esc(shortAddr(community))}</a>` : esc(shortAddr(community))}` : ""}</div>` +
     (quoted ? `<blockquote class="quote">${esc(opts && opts.full ? quoted.trim() : clip(quoted, 300))}</blockquote>` : "");
@@ -268,3 +302,45 @@ register([8], badgeAwardCard);
 register([4550], approvalCard);
 register([34550], communityCard);
 register([30315], statusCard);
+
+// The rows. This family's whole argument — that these events are about OTHER
+// events, and their own content is a fragment — is what the type-ahead row
+// needed most: "+" was a row reading "+", a zap receipt was a row reading its
+// bolt11 invoice, and a deletion request was a row reading nothing at all. So
+// each row leads with the RELATION, exactly as the card does, minus the link
+// there is no room for.
+registerRow([7, 17], (ev) => {
+  const c = (ev.content || "").trim();
+  // A custom reaction IS its glyph, and a `:shortcode:`'s image cannot ride in
+  // a line of text — so the row shows what the event wrote, which is at worst
+  // the code itself.
+  return { name: isGlyph(c) ? `reacted ${clip(c, 24)}` : `${reactionVerb(c)} a note` };
+});
+registerRow([6, 16], (ev) => ({ name: quotedText(ev) || "reposted a note" }));
+registerRow([9735], (ev) => {
+  const req = zapRequest(ev);
+  const sats = zapSats(ev, req);
+  return { name: sats ? `zapped ${sats} sats` : "zapped", sub: typeof req.content === "string" ? req.content : "" };
+});
+registerRow([9734], (ev) => {
+  const sats = satsOf(tagOf(ev, "amount"));
+  return { name: sats ? `asks to zap ${sats} sats` : "asks to zap", sub: ev.content };
+});
+registerRow([1111], (ev) => ({ name: ev.content }));
+registerRow([1068], (ev) => ({ name: ev.content, sub: plural(pollOptions(ev).length, "choice") }));
+registerRow([1018], () => ({ name: "voted on a poll" }));
+registerRow([1984], (ev) => ({
+  name: reportCategory(ev) ? `reports as ${reportCategory(ev)}` : "reports an event",
+  sub: ev.content,
+}));
+registerRow([1985], (ev) => ({
+  name: labelsOf(ev).length ? `labels ${labelsOf(ev).join(", ")}` : "labels an event",
+  sub: ev.content,
+}));
+registerRow([5], (ev) => ({ name: `asks to delete ${plural(deletionCount(ev), "event")}`, sub: ev.content }));
+registerRow([8], (ev) => ({ name: `awards a badge to ${plural(winnersOf(ev).length, "recipient")}` }));
+registerRow([4550], (ev) => ({ name: "approved a post", sub: quotedText(ev) }));
+registerRow([34550], (ev) => ({ name: titleOf(ev), sub: summaryOf(ev) || ev.content }));
+// A status with no text is a status CLEARED, which is a fact worth a row —
+// blank would read as a row that failed to render.
+registerRow([30315], (ev) => ({ name: ev.content || "cleared" }));

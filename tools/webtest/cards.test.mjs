@@ -3,10 +3,10 @@ import { readFileSync } from 'node:fs';
 globalThis.location = { protocol: "http:", host: "localhost:7787" };
 globalThis.window = { addEventListener: () => {} };
 
-const { card, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
-const { pubkeyParam, nip19Parse, npub, noteId } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
+const { card, rowOf, popupRow, namedPubkeys } = await import(new URL("../../relay/src/main/resources/web/cards.js", import.meta.url));
+const { pubkeyParam, nip19Parse, npub, noteId, shortNpub } = await import(new URL("../../relay/src/main/resources/web/shared/nip19.js", import.meta.url));
 const { buildFilters } = await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
-const { renderers, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
+const { renderers, rows, safeUrl, PEOPLE_GRID, PEOPLE_GRID_KINDS } = await import(new URL("../../relay/src/main/resources/web/cards/base.js", import.meta.url));
 const { parsePatch } = await import(new URL("../../relay/src/main/resources/web/cards/code.js", import.meta.url));
 const { kindLabel, kindTone, KNOWN_KINDS } = await import(new URL("../../relay/src/main/resources/web/shared/kinds.js", import.meta.url));
 const { seedProfiles } = await import(new URL("../../relay/src/main/resources/web/shared/profiles.js", import.meta.url));
@@ -164,6 +164,15 @@ const stale = [...covered].filter((k) => !registered.has(k)).sort((a, b) => a - 
 assert.deepStrictEqual(missing, [], `registered kinds without a fixture: ${missing}`);
 assert.deepStrictEqual(stale, [], `fixtures for unregistered kinds: ${stale}`);
 
+// A card and its type-ahead row are one kind's knowledge at two sizes, so the
+// two registries are ONE key set — the same identity KNOWN_KINDS is held to,
+// and for the same reason. A kind with a card and no row falls back to a
+// ladder that ends in the raw content, which is how the search field came to
+// answer "group" with `{"about":"","name":"Test group","picture":""}` while
+// the card beside it drew the channel properly.
+assert.deepStrictEqual([...rows.keys()].sort((a, b) => a - b), [...registered].sort((a, b) => a - b),
+  "every card must bring the popup row that goes with it, and no row may name a kind nothing renders");
+
 // The badge is the only part of a card that says WHAT it is, so a kind good
 // enough to render is a kind good enough to name and tint. Without this,
 // dressing a kind and forgetting its label ships a beautifully rendered
@@ -202,6 +211,90 @@ for (const [kind, fixture, expect] of FIXTURES) {
 // The generic floor: unknown kind renders, labelled honestly.
 const unknown = card(ev(12345, [["title", "Mystery"], ["summary", "odd"]], "???"), { full: true });
 assert(unknown.includes("kind 12345") && unknown.includes("Mystery"), "generic floor");
+
+// ---- the type-ahead row ----------------------------------------------------
+//
+// The same card, in the two lines the search field's popup has. It used to be
+// one ladder for all 118 kinds — a `title`-ish tag, else the raw content — so
+// every kind whose payload is JSON printed its own source document, every kind
+// whose content is a FRAGMENT printed the fragment, and every countable kind
+// (a follow list, a relay list, a score) printed the author's name twice.
+//
+// THE ROW THIS STARTED FROM: a channel keeps its name, description and picture
+// in a profile-shaped JSON content.
+const channel = FIXTURES.find(([k]) => k === 40)[1];
+assert.deepStrictEqual(rowOf(channel), { name: "my channel", sub: "chat", pic: "https://x/c.png" },
+  "a channel's row is its name, its description, and its own picture");
+assert(!popupRow(channel, 0).includes("{&quot;"), "…and no part of that JSON reaches the page");
+
+// What every row owes, for every registered kind: something to say, and none
+// of the four ways this had of saying nothing.
+for (const [kind, fixture] of FIXTURES) {
+  const { name, sub } = rowOf(fixture);
+  const html = popupRow(fixture, 0);
+  assert(name, `kind ${kind}: a type-ahead row with no name at all`);
+  assert(!/^[{[]/.test(name) && !/^[{[]/.test(sub), `kind ${kind}: the row leads with the event's raw JSON`);
+  assert(!/^[0-9a-f]{16,}$/.test(name), `kind ${kind}: the row's name is a hash, which places nothing`);
+  assert(name !== sub, `kind ${kind}: the row says the same thing on both lines`);
+  assert(!html.includes("undefined") && !html.includes("[object Object]"), `kind ${kind}: a value leaked into the row`);
+  assert(html.includes(`class="popup-item"`) && html.includes("kind-badge"), `kind ${kind}: the row lost its frame`);
+}
+
+// What each row SAYS, where the row is more than the card's own title: the
+// JSON payloads (the bug), the fragments, and everything countable. Written as
+// `name · sub`, because which line a fact lands on is the row's business.
+const ROW_SAYS = [
+  // A payload is a document, not a line of text.
+  [40, "my channel · chat"], [30017, "My stall · shop"], [30018, "Widget · 10 EUR · a widget"],
+  [31990, "CoolApp · does things"], [30166, "Example Relay · a relay"],
+  [6, "the original note"], [4550, "approved a post · the approved post"],
+  // A fragment is not one either: what these say is what they point AT.
+  [7, "liked a note"], [16, "reposted a note"], [5, "asks to delete 1 event"],
+  [9735, "zapped 1,000 sats · thanks!"], [9734, "asks to zap 21 sats"], [1018, "voted on a poll"],
+  [1984, "reports as spam"], [1985, "labels photo"], [8, "awards a badge to 1 recipient"],
+  [31989, "recommends 2 handlers for kind 30023"], [10166, "monitors relays every 1h"],
+  [1631, "applied or merged"], [31925, "rsvp: accepted"],
+  // The countable kinds, which carry no prose at all and so used to carry
+  // nothing: the count is the card's first line and it is the row's too.
+  [3, "follows 2 people"], [10002, "2 relays"], [30000, "Friends · 1 member"],
+  [10040, "trusts 1 score dimension"],
+  // A named set says what it holds AND what it is for — the description used
+  // to be the whole second line, and the count is not worth losing it over.
+  [30003, "Reading list · 1 event · 1 article · 1 hashtag · things worth keeping"],
+  [30618, "repo · 1 branch"], [30040, "The Book · 1 section"], [30030, "Pack · 1 emoji"],
+  [10000, "1 person · 1 hashtag · 1 word · 1 event"],
+  // …and the ones whose fact has to be read out of somewhere first.
+  [30382, "rank 87"], [1063, "application/pdf · 120.6 KB"], [30311, "Live show · live"],
+  [31922, "Conference · 2026-09-01 · Lisbon"], [30402, "Bike for sale · 250 USD"],
+  [1617, "Fix the thing"], [39000, "Chachi · a group about groups"], [9041, "goal: 2,100,000 sats"],
+];
+for (const [kind, expect] of ROW_SAYS) {
+  const fixture = FIXTURES.find(([k]) => k === kind)[1];
+  const { name, sub } = rowOf(fixture);
+  assert(`${name} · ${sub}`.includes(expect), `kind ${kind}: the row reads "${name} · ${sub}", not "${expect}"`);
+}
+
+// The two fallbacks, which are what a family leaning on them is relying on.
+//
+// The NAME falls back to the AUTHOR, never to the content — "else the content"
+// is the rung that printed the JSON, and every kind here has a better answer or
+// none. The SUB then carries that author, unless the name already is them.
+const unnamedChannel = ev(40, [], JSON.stringify({ about: "a channel whose creator left the name off" }));
+assert.strictEqual(rowOf(unnamedChannel).name, shortNpub(pk), "with nothing to name it, a row leads with who made it");
+assert.strictEqual(rowOf(unnamedChannel).sub, "a channel whose creator left the name off", "…and still says what it knows");
+assert.strictEqual(rowOf(ev(1, [], "")).sub, "", "a row that IS the author does not say them twice");
+assert.strictEqual(rowOf(ev(1, [], "hello")).sub, shortNpub(pk), "…and one that is not, does");
+// A profile is the one row whose subject is its own author.
+assert.deepStrictEqual(rowOf(ev(0, [], JSON.stringify({ name: "carol" }))), { name: "carol", sub: "", pic: "" },
+  "a profile with no bio says nothing under its name — least of all the name again, as an npub");
+// `clip` counts CHARACTERS, so a note opening with a paragraph break spent its
+// whole row on whitespace and rendered blank.
+assert.strictEqual(rowOf(ev(1, [], "\n\n\n  the first line\n\nand the next")).name, "the first line and the next",
+  "a row is ONE line, whatever the text did with its newlines");
+// A JSON field can be any type at all, and `${}` on an object is the words
+// "[object Object]" in a row where a name belongs.
+assert.strictEqual(rowOf(ev(40, [], JSON.stringify({ name: { evil: 1 }, about: "x" }))).name, shortNpub(pk),
+  "a name that is not text is not a name");
 
 // Permalink depth is real: long content clamps in preview, not in full.
 const long = "x".repeat(2000);
@@ -295,6 +388,13 @@ assert(patchCard.includes("+3") && patchCard.includes("−1") && patchCard.inclu
   "the change is measured, in the line a reviewer reads first");
 assert(/class="[^"]*d-add[^"]*"/.test(patchCard) && /class="[^"]*d-hunk/.test(patchCard),
   "and the diff is tinted rather than being one grey wall");
+// The type-ahead row reads the mail for the same reason, and it is where that
+// bug is worst: a row is one line, so `From <sha> Mon Sep 17 00:00:00 2001`
+// was the entire result.
+const patchRow = rowOf(ev(1617, [["a", `30617:${pk2}:vespa-relay`]], FORMAT_PATCH));
+assert(!patchRow.name.includes("Mon Sep 17 00:00:00 2001"), "git's From line is not a row either");
+assert.strictEqual(patchRow.name, "router: yield ingest while the relay is under read pressure", "the subject is");
+assert.strictEqual(patchRow.sub, "vespa-relay", "…over the repository it is a patch for");
 
 // A diff's `+++`/`---` are file headers OUTSIDE a hunk and ordinary added and
 // removed lines INSIDE one. Read without that state, a markdown rule deleted
@@ -802,6 +902,14 @@ for (const [label, make] of DEGENERATE) {
       assert(!html.includes("Invalid Date"), `kind ${kind}: "Invalid Date" reached the page on a ${label} event`);
       assert(!html.includes("undefined"), `kind ${kind}: leaked "undefined" on a ${label} event`);
     }
+    // The same rule for the row, and it is not the same code path: a row reads
+    // fields a card never touches (a patch's mail, a product's JSON) and it
+    // renders on every keystroke, where a throw takes the type-ahead down.
+    let row;
+    try { row = popupRow(make(kind), 0); }
+    catch (e) { assert.fail(`kind ${kind}: its type-ahead row threw on a ${label} event: ${e.message}`); }
+    assert(!row.includes("undefined") && !row.includes("[object Object]"),
+      `kind ${kind}: a ${label} event leaked into its type-ahead row`);
   }
 }
 
@@ -873,6 +981,9 @@ const poison = (fixture) => ({
 const ESCAPED = (html) => !html.includes("<b BAD>");
 
 for (const [kind, fixture] of FIXTURES) {
+  // The row is a third interpolation site for the same strings, and the one
+  // whose values come straight off a stranger's JSON.
+  assert(ESCAPED(popupRow(poison(fixture), 0)), `kind ${kind}: an event's own text reached the type-ahead row as MARKUP`);
   for (const opts of [undefined, { full: true }]) {
     const depth = opts ? "permalink" : "preview";
     assert(ESCAPED(card(poison(fixture), opts)), `kind ${kind}: an event's own text reached the ${depth} as MARKUP`);
@@ -964,5 +1075,14 @@ assert(card(marked, { full: true }).includes("published"), "the permalink is whe
 // An article that is nothing but headings still says something.
 assert(card(ev(30023, [["d", "c"], ["title", "T"]], "# Only a heading")).includes("Only a heading"),
   "some words beat none when the body has no prose at all");
+// The type-ahead row takes the same reduction: it has ninety characters, and
+// spending the first thirty on `# On Relays, Bandwidth, and Who Pays\n\n##`
+// is spending them on syntax.
+const markedRow = rowOf(marked);
+assert.strictEqual(markedRow.name, "On Relays, Bandwidth, and Who Pays", "the row leads with the title");
+for (const mark of ["#", "**", "](", "1. "]) {
+  assert(!markedRow.sub.includes(mark), `the row's summary showed markdown \`${mark}\` instead of the prose under it`);
+}
+assert(markedRow.sub.startsWith("A relay that accepts every event from everybody"), "…and the prose is what follows it");
 
-console.log(`all kinds: ${FIXTURES.length} bespoke renderers + generic floor, all assertions passed`);
+console.log(`all kinds: ${FIXTURES.length} bespoke renderers + type-ahead rows + generic floor, all assertions passed`);

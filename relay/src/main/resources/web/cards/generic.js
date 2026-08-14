@@ -29,3 +29,13 @@ export function genericCard(ev, opts) {
   // "json" for anyone who wants it.
   return shell(ev, opts, inner);
 }
+
+/**
+ * The floor's type-ahead row: the same three fields the card above shows, in
+ * the same order, minus the markup.
+ *
+ * Not registered either, for the same reason — and the content fallback that
+ * every registered kind now avoids is honest HERE: an unknown kind's content
+ * is all anybody knows about it, JSON or not.
+ */
+export const genericRow = (ev) => ({ name: titleOf(ev) || ev.content, sub: summaryOf(ev) });

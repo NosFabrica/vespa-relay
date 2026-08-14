@@ -5,8 +5,11 @@
 // small; this is the one place where the media is the point.
 // URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
-import { esc, titleOf, imageOf } from "../shared/format.js";
-import { register, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink, imetas, tagOf, tagsOf, clipIf } from "./base.js";
+import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import {
+  register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink,
+  imetas, tagOf, tagsOf, clipIf, plural,
+} from "./base.js";
 
 /**
  * The file a single-file card is about: its FIRST imeta, read once and passed
@@ -220,21 +223,26 @@ function audioCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
+/** How many videos a set names, by address and by id alike. */
+const setSize = (ev) => tagsOf(ev, "a").length + tagsOf(ev, "e").length;
+
 /** 30005 — a video set: title + how many it holds. */
 function videoSetCard(ev, opts) {
-  const n = tagsOf(ev, "a").length + tagsOf(ev, "e").length;
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
-    `<div class="result-body">${n} video${n === 1 ? "" : "s"}</div>`;
+    `<div class="result-body">${esc(plural(setSize(ev), "video"))}</div>`;
   return shell(ev, opts, inner);
 }
 
+/** The (shortcode, url) pairs a pack defines — both halves, or it draws nothing. */
+const emojiOf = (ev) => tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]);
+
 /** 30030 — an emoji pack: the emoji, visible, which is the whole point of one. */
 function emojiPackCard(ev, opts) {
-  const emoji = tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]);
+  const emoji = emojiOf(ev);
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
-    `<div class="result-body">${emoji.length} emoji</div>` +
+    `<div class="result-body">${esc(plural(emoji.length, "emoji", "emoji"))}</div>` +
     emojiGrid(emoji, opts);
   return shell(ev, opts, inner);
 }
@@ -247,3 +255,42 @@ register([1063], fileCard);
 register([1986, 1222, 1244], audioCard);
 register([30005], videoSetCard);
 register([30030], emojiPackCard);
+
+/**
+ * The row for a file that has something to say: its title, else the words the
+ * author wrote about it — and never both, since the caption a titled post
+ * repeats verbatim is what the card drops for the same reason.
+ *
+ * A media event carries no prose at all often enough that the fallback matters:
+ * the row is then the author, and the second line is what the file IS.
+ */
+const captionRow = (ev) => {
+  const title = titleOf(ev);
+  const caption = captionOf(ev, fileOf(ev));
+  return { name: title || caption, sub: title && caption !== title ? caption : "" };
+};
+registerRow([20], captionRow);
+registerRow([21, 22, 34235, 34236], (ev) => ({
+  ...captionRow(ev),
+  sub: captionRow(ev).sub || fmtDuration(fieldOf(fileOf(ev), ev, "duration")),
+}));
+registerRow([1063], (ev) => ({
+  name: ev.content || titleOf(ev),
+  sub: [tagOf(ev, "m"), fmtBytes(tagOf(ev, "size"))].filter(Boolean).join(" · "),
+}));
+// A voice message has the spoken words nowhere in the event, so its length is
+// the only thing there is to say about it beyond who recorded it.
+registerRow([1986, 1222, 1244], (ev) => ({
+  name: ev.content || titleOf(ev),
+  sub: fmtDuration(fieldOf(fileOf(ev), ev, "duration")),
+}));
+// The two NIP-51 sets this family renders, counted the way lists.js counts its
+// own — and carrying their description after the count when they have one.
+registerRow([30005], (ev) => ({
+  name: titleOf(ev),
+  sub: [plural(setSize(ev), "video"), summaryOf(ev)].filter(Boolean).join(" · "),
+}));
+registerRow([30030], (ev) => ({
+  name: titleOf(ev),
+  sub: [plural(emojiOf(ev).length, "emoji", "emoji"), summaryOf(ev)].filter(Boolean).join(" · "),
+}));

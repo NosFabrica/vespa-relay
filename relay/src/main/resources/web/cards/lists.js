@@ -16,8 +16,8 @@
 import { esc, titleOf, summaryOf } from "../shared/format.js";
 import { relayLabel } from "../shared/groups.js";
 import {
-  register, registerPeopleGrid, shell, titleHtml, bodyHtml, peopleGrid, uniquePubkeys, relayRows, chipRow, hashtagHref,
-  emojiGrid, refRows, extLink, tagsOf, tagOf, groupHref,
+  register, registerRow, registerPeopleGrid, shell, titleHtml, bodyHtml, peopleGrid, uniquePubkeys, relayRows,
+  chipRow, hashtagHref, emojiGrid, refRows, extLink, tagsOf, tagOf, groupHref, plural,
 } from "./base.js";
 
 /**
@@ -157,37 +157,69 @@ const unique = (values, keyOf) => {
   return values.filter((v) => { const k = keyOf(v); return seen.has(k) ? false : (seen.add(k), true); });
 };
 
-const countOf = (s, n) => `${n.toLocaleString()} ${n === 1 ? s.one : s.many}`;
+const countOf = (s, n) => plural(n, s.one, s.many);
+
+/** The sections this list actually has something in, in the NIP's own order. */
+const sectionsOf = (ev) => (LISTS[ev.kind] || [])
+  .map(spec)
+  .map((s) => ({ ...s, values: valuesOf(ev, s.tag) }))
+  .filter((s) => s.values.length);
+
+/**
+ * What the list is CALLED, or "" — a list is entitled to have no name, and the
+ * card then leads with what it holds.
+ *
+ * 30007's `d` IS the muted kind, not a name — a title tag would be wrong to
+ * invent, so the identifier is stated as what it is.
+ */
+const listTitle = (ev) => ev.kind === 30007
+  ? (tagOf(ev, "d") ? `kind ${tagOf(ev, "d")}` : "")
+  : (tagsOf(ev, "title").length || tagsOf(ev, "name").length ? titleOf(ev) : "");
+
+/**
+ * What it HOLDS, in one line: "12 people · 3 hashtags" — the card's preview
+ * line, and the type-ahead row's second line, which is the whole of what a
+ * list has to say about itself when it has no title.
+ *
+ * A list whose every item is private is a legal, common NIP-51 event: the items
+ * live NIP-44-encrypted in .content and the tags are genuinely empty. "nothing
+ * public here" is the true statement; "0 people" reads as a list its author
+ * left empty, which is a different thing.
+ */
+const countsLine = (ev) => {
+  const sections = sectionsOf(ev);
+  return sections.length
+    ? sections.map((s) => countOf(s, s.values.length)).join(" · ")
+    : `nothing public here${ev.content ? " — this list keeps its items encrypted" : ""}`;
+};
 
 function listCard(ev, opts) {
   const full = opts && opts.full;
-  const sections = (LISTS[ev.kind] || [])
-    .map(spec)
-    .map((s) => ({ ...s, values: valuesOf(ev, s.tag) }))
-    .filter((s) => s.values.length);
-
-  // 30007's `d` IS the muted kind, not a name — a title tag would be wrong to
-  // invent, so the identifier is stated as what it is.
-  const title = ev.kind === 30007
-    ? (tagOf(ev, "d") ? `kind ${tagOf(ev, "d")}` : "")
-    : (tagsOf(ev, "title").length || tagsOf(ev, "name").length ? titleOf(ev) : "");
-
-  // A list whose every item is private is a legal, common NIP-51 event: the
-  // items live NIP-44-encrypted in .content and the tags are genuinely empty.
-  // "nothing public here" is the true statement; "0 people" reads as a list
-  // its author left empty, which is a different thing.
+  const sections = sectionsOf(ev);
   const body = sections.length
     ? (full
         ? sections.map((s) => `<div class="list-section"><div class="section-head">${esc(countOf(s, s.values.length))}</div>${s.show(s.values, opts)}</div>`).join("")
-        : `<div class="result-body">${esc(sections.map((s) => countOf(s, s.values.length)).join(" · "))}</div>` +
+        : `<div class="result-body">${esc(countsLine(ev))}</div>` +
           sections[0].show(sections[0].values, opts))
-    : `<div class="result-body muted">nothing public here${ev.content ? " — this list keeps its items encrypted" : ""}</div>`;
+    : `<div class="result-body muted">${esc(countsLine(ev))}</div>`;
 
-  const inner = titleHtml(opts, title, 120) + bodyHtml(opts, summaryOf(ev), 300, true) + body;
+  const inner = titleHtml(opts, listTitle(ev), 120) + bodyHtml(opts, summaryOf(ev), 300, true) + body;
   return shell(ev, opts, inner);
 }
 
 register(Object.keys(LISTS).map(Number), listCard);
+// One row for the whole table, for the same reason there is one card: a list's
+// name and what it holds are the two lines it has, whichever tags carry the
+// items. Unnamed lists — most of the standard ones, which are a person's ONE
+// mute list or relay list — lead with their owner and count underneath.
+//
+// The count comes FIRST and the description after it: the count is short and
+// every list has one, so clipping takes words off the end of a sentence rather
+// than the number the row was rebuilt to show.
+registerRow(Object.keys(LISTS).map(Number), (ev) => ({
+  name: listTitle(ev),
+  sub: [countsLine(ev), summaryOf(ev)].filter(Boolean).join(" · "),
+}));
 // Derived from the table rather than listed again: a kind draws a people grid
 // exactly when its row carries a `p` section, so adding one to the table above
 // is all it takes for those people to be named — and enriched — as well as drawn.
@@ -209,3 +241,4 @@ function webBookmarkCard(ev, opts) {
 }
 
 register([39701], webBookmarkCard);
+registerRow([39701], (ev) => ({ name: titleOf(ev) || tagOf(ev, "d"), sub: summaryOf(ev) || ev.content }));

@@ -10,7 +10,7 @@
 // HTML, so what this card interpolates is still a string it escapes.
 
 import { esc, titleOf, summaryOf, imageOf, mdExcerpt } from "../shared/format.js";
-import { register, shell, titleHtml, bodyHtml, refRows, noteHref, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
+import { register, registerRow, shell, titleHtml, bodyHtml, refRows, noteHref, tagOf, tagsOf, clipIf, fmtTs, plural } from "./base.js";
 
 /**
  * An article, at both depths — and in preview the three things a long-form
@@ -54,16 +54,21 @@ function articleCard(ev, opts) {
   return shell(ev, opts, inner, full ? [["published", published ? esc(fmtTs(published)) : null]] : []);
 }
 
+/** How many things a curation collects, by address and by id alike. */
+const picksOf = (ev) => tagsOf(ev, "a").length + tagsOf(ev, "e").length;
+
 /** 30004 — a curation: the title and what it collects. */
 function curationCard(ev, opts) {
   const title = titleOf(ev);
-  const picks = tagsOf(ev, "a").length + tagsOf(ev, "e").length;
   const inner =
     (title ? `<h2 class="result-title">${esc(clipIf(opts, title, 120))}</h2>` : "") +
-    `<div class="result-body">${picks} item${picks === 1 ? "" : "s"} curated</div>` +
+    `<div class="result-body">${esc(plural(picksOf(ev), "item"))} curated</div>` +
     bodyHtml(opts, summaryOf(ev) || ev.content, 300);
   return shell(ev, opts, inner);
 }
+
+/** A publication's ORDERED sections — its `a` tags, each naming a 30041. */
+const sectionAddrs = (ev) => tagsOf(ev, "a").map((t) => t[1]).filter(Boolean);
 
 /**
  * 30040 — a curated publication index: a book's table of contents. Its `a`
@@ -72,11 +77,11 @@ function curationCard(ev, opts) {
  * cannot share articleCard's body-first template.
  */
 function publicationCard(ev, opts) {
-  const sections = tagsOf(ev, "a").map((t) => t[1]).filter(Boolean);
+  const sections = sectionAddrs(ev);
   const inner =
     titleHtml(opts, titleOf(ev), 140, noteHref(ev.id)) +
     bodyHtml(opts, summaryOf(ev), 300, true) +
-    `<div class="result-body">${sections.length} section${sections.length === 1 ? "" : "s"}</div>` +
+    `<div class="result-body">${esc(plural(sections.length, "section"))}</div>` +
     refRows(sections.map((a) => ({ kind: "a", value: a })), opts);
   return shell(ev, opts, inner, [
     ["author", tagOf(ev, "author") ? esc(tagOf(ev, "author")) : null],
@@ -89,3 +94,14 @@ function publicationCard(ev, opts) {
 register([30023, 30024, 30818, 30041], articleCard);
 register([30004], curationCard);
 register([30040], publicationCard);
+
+// The rows. mdExcerpt is here for the same reason it is on the card: most
+// articles carry no `summary`, and the fallback is the BODY — so a row of
+// search results led with `## Somebody is paying for this`, marks and all, in
+// the ninety characters it had.
+registerRow([30023, 30024, 30818, 30041], (ev) => ({
+  name: titleOf(ev),
+  sub: summaryOf(ev) || mdExcerpt(ev.content, titleOf(ev)),
+}));
+registerRow([30004], (ev) => ({ name: titleOf(ev), sub: `${plural(picksOf(ev), "item")} curated` }));
+registerRow([30040], (ev) => ({ name: titleOf(ev), sub: summaryOf(ev) || plural(sectionAddrs(ev).length, "section") }));
