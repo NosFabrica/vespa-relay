@@ -225,6 +225,10 @@ class RelayProtocolTest {
                 awaitMessage(out) { it.startsWith("""["EOSE","x3"]""") }
                 assertEquals(EventYql.RANK_DESC, index.searchQueries.last().ranking, "sort:rank picks the profile")
                 assertEquals(7.0, index.searchQueries.last().minRank, "filter:rank:gte sets the floor")
+
+                session.receive("""["REQ","x4",{"search":"ali sort:recent","limit":5}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","x4"]""") }
+                assertEquals(EventYql.RANK_RECENCY_GATED, index.searchQueries.last().ranking, "sort:recent picks the recency profile (the Sort menu's Newest)")
             } finally {
                 session.close()
             }

@@ -82,37 +82,27 @@ app = "0.1.0"
 quartz = "1866007e99"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 13f97e2870 = store main through PR #73, and that PR is the WHOLE range: one
-# commit, `Move Quartz to 1866007e99`, touching one file — its own
-# gradle/libs.versions.toml. Verified with `git log --oneline 787cdb6f0b..` and
+# ed9d7f2cb5 = store PR #75 (`Map sort:recent onto the recency-gated profile`),
+# and that PR is the WHOLE range over the previous pin: one commit touching
+# `FilterMapping.kt` and its test — `sort:recent` now picks
+# `EventYql.RANK_RECENCY_GATED`, which is what the Sort menu's new "Newest"
+# option sends. Verified with `git log --oneline 13f97e2870..` and
 # `git diff --stat`, not assumed from the title.
 #
-# So there is nothing to say about the store contract this time, because nothing
-# in it moved: `IEventStore`, `SQLiteEventStore`, `IndexableFields` and
-# `SearchFieldExtractor` are untouched by construction when the diff is a single
-# version catalog. The near-column attribute work from #70 and the background
-# worker visibility from #71 are CARRIED — ancestors of this hash, not things
-# this bump gives up.
+# The store contract is untouched: the change is inside the NIP-50 extension
+# mapping, no engine or schema movement. The store's quartz catalog is
+# unchanged, so its quartz IS the hash pinned above, as before.
 #
-# The integration gate still ran against this commit rather than being waved
-# through on "it's only a catalog": the catalog is the store's QUARTZ, so the
-# code under test is compiled against a different engine than the one #72 was
-# gated on. That is precisely a Vespa-visible change InMemoryEventIndex cannot
-# see.
+# DIRECTION: 13f97e2870 (the pin this replaces) is a strict ancestor of this.
 #
-# DIRECTION: 787cdb6f0b is a strict ancestor of this, and its quartz IS the hash
-# pinned above. Equality on both counts.
-#
-# LEXICOGRAPHIC: '13f9…' < '787c…', so this sorts BELOW the pin it replaces —
-# the dangerous direction, and BOTH pins move that way in this bump, which is
-# the first time that has happened. It costs nothing only because nothing else
-# on the dependency graph brings the store in, so there is no conflict for a
-# higher-sorting hash to win. A fact about the graph, not about the pin.
+# LEXICOGRAPHIC: 'ed9d…' > '13f9…', so this bump would survive a conflict —
+# which settles nothing about the next one, and nothing else on the graph
+# brings the store in anyway, so there is no conflict to win.
 #
 # Bumping this pin is NOT done until the store's own integration gate has run
 # against the commit — see AGENTS.md. `InMemoryEventIndex` cannot see a
 # Vespa-only regression.
-vespaEventStore = "13f97e2870"
+vespaEventStore = "ed9d7f2cb5"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
