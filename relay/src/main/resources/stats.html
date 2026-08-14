@@ -1979,8 +1979,13 @@ function streamLane(s) {
     return box;
   }
 
+  // The url partition, but ONLY where it divides. On a stream whose relay list
+  // is named by hand nothing folds, nothing is refused and nothing is excluded,
+  // so this is one full-width segment reading "5 taken on" — a bar that cannot
+  // vary is not a mark, it is a rule with a number on it. The count is already
+  // on the pass footer.
   const u = c.urls || {};
-  if (u.discovered) {
+  if (u.discovered && DISCOVERY.filter(([m]) => u[m]).length > 1) {
     box.appendChild(partition(DISCOVERY, u, u.discovered, () => null));
   }
   const pools = poolsRow(s);
