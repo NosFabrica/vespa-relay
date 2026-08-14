@@ -42,8 +42,11 @@ export const SELF_CONSISTENT = "self-consistent";
  * monitor writes them onto the same record every time the client connects.
  *
  * They are here because they are the other half of a diagnosis. `R: auth` says
- * the relay gates reads behind NIP-42, which is the first thing to check when a
- * url will not fold; `n: tor` says a fingerprint had to go through a circuit
+ * the relay gates reads behind NIP-42, which is worth checking when a url will
+ * not fold — though it is not proof: a NIP-29 host challenges every connection
+ * and still serves its group metadata to anyone, and a whole row of `auth` pills
+ * beside `not folded` turned out to be the fold's filter ladder rather than the
+ * gate (see AGENTS.md). `n: tor` says a fingerprint had to go through a circuit
  * and is given a different idle budget; `rtt-open` says whether a probe's
  * silence was the relay being slow or being absent.
  *

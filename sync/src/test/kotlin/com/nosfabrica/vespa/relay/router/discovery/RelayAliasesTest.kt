@@ -103,6 +103,84 @@ class RelayAliasesTest {
     }
 
     @Test
+    fun `a group-metadata window folds below the general floor`() {
+        val aliases = RelayAliases()
+        // A NIP-29 relay's complete list of groups, which is what the third rung
+        // of the ladder brings back and is SHORT by nature: measured over 21 live
+        // hosts the kind-39000 window is min 1, median 9, max 1,302, and of the
+        // five hosts the rung recovers two serve under DEFAULT_MIN_SAMPLE
+        // (groups.hzrd149.com at 7, groups.fiatjaf.com at 16). Seven ids out of
+        // seven is not a thin slice of a feed — it is everything the host has.
+        val groups = window(7)
+
+        val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to groups, nosAlpha to groups), RelayAliases.GROUP_METADATA_KINDS)
+
+        assertEquals(mapOf(nosAlpha to nos), learned.folded)
+        assertEquals(nos, aliases.canonicalOf(nosAlpha))
+    }
+
+    @Test
+    fun `the lowered floor belongs to the filter, not to the window`() {
+        val aliases = RelayAliases()
+        // The same seven ids, taken through the GENERAL filter, are exactly the
+        // coincidence DEFAULT_MIN_SAMPLE exists to refuse. Nothing about a short
+        // window earns the lower bar; only the filter that could not ask for more
+        // does.
+        val seven = window(7)
+
+        val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to seven, nosAlpha to seven))
+
+        assertTrue(learned.folded.isEmpty(), "a general window folded on seven ids")
+        assertTrue(!aliases.measured(nosAlpha))
+    }
+
+    @Test
+    fun `a group-metadata window may fold a url but never clear one`() {
+        val aliases = RelayAliases()
+        // The asymmetry the lowered floor rests on. These two paths served
+        // DIFFERENT group lists, so nothing folds — and the tempting second step,
+        // publishing "each is a relay in its own right" for thirty days, is
+        // exactly the relay.damus.io/lantern-oscar-dynamo lie at a smaller scale.
+        // Refusing to fold and proving distinctness are different claims, and a
+        // seven-id window can only make one of them.
+        val learned =
+            aliases.learn(
+                listOf(nos, nosAlpha),
+                nos,
+                mapOf(nos to window(7), nosAlpha to window(7, from = 500)),
+                RelayAliases.GROUP_METADATA_KINDS,
+            )
+
+        assertTrue(learned.folded.isEmpty())
+        assertTrue(learned.distinct.isEmpty(), "a thin window cleared a url as its own relay: ${learned.distinct}")
+        assertTrue(!aliases.measured(nosAlpha), "an undecided url must come back to the fan-out")
+    }
+
+    @Test
+    fun `a group-metadata window still refuses a single shared id`() {
+        val aliases = RelayAliases()
+        // Three, not one. A host serving one or two groups hands over one or two
+        // ids, and at that width "both urls returned the same list" is the
+        // coincidence the floor exists for, whatever filter asked.
+        val two = window(2)
+
+        val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to two, nosAlpha to two), RelayAliases.GROUP_METADATA_KINDS)
+
+        assertTrue(learned.folded.isEmpty(), "two ids were enough to fold")
+    }
+
+    @Test
+    fun `a raised sample floor is never pulled back down by the group floor`() {
+        // The floor for a group-metadata window can only ever LOWER the bar. A
+        // caller that deliberately demanded more must not have it quietly
+        // undone by naming a different filter.
+        val strict = RelayAliases(minSample = 2)
+        val learned = strict.learn(listOf(nos, nosAlpha), nos, mapOf(nos to window(2), nosAlpha to window(2)), RelayAliases.GROUP_METADATA_KINDS)
+
+        assertEquals(mapOf(nosAlpha to nos), learned.folded, "minSample below the group floor must still decide")
+    }
+
+    @Test
     fun `a leader that answered too thinly clears nobody, itself included`() {
         val aliases = RelayAliases()
         val learned = aliases.learn(listOf(nos, nosAlpha), aliases.toProbe(listOf(nos, nosAlpha)).first(), mapOf(nos to window(5), nosAlpha to window(100)))

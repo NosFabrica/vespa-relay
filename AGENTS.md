@@ -1345,6 +1345,68 @@ further buys three thin windows instead of one. Silence is about that url alone.
 pins the first half; `a host whose preferred survivor will not answer still folds
 onto one that will` pins the second.
 
+**A NIP-29 relay refuses BOTH general filters, and that pair of refusals is a
+signature rather than a failure.** khatru in groups mode answers any unscoped
+query with `CLOSED blocked: invalid query, must have 'h', 'e' or 'a' tag` —
+whatever kinds are named — so the bare filter and the `{"kinds":[1]}` fallback
+both come back empty, the group has no yardstick, nothing is written down, and
+it returns widest-first on every pass forever. `groups.satsdisco.com` was the
+reported case and had been the standing example of a host that "still says
+nothing"; it was in fact perfectly foldable through a filter the ladder never
+sent. So there is a third rung: `RelayAliases.GROUP_METADATA_KINDS`, kind 39000,
+which such a relay serves unscoped and unauthenticated.
+
+Measured against a corpus of 40 hosts drawn from live kind-10009 group lists,
+21 of which serve 39000:
+
+| host | bare | `[1]` | `39000` | minted path |
+|---|---|---|---|---|
+| `groups.0xchat.com` | refused | 0 | 1,302 | 1.000 |
+| `groups.satsdisco.com` | refused | 0 | 55 | 1.000 |
+| `relay29.notoshi.win` | refused | 0 | 27 | 1.000 |
+| `groups.fiatjaf.com` | refused | 0 | 16 | 1.000 |
+| `groups.hzrd149.com` | refused | 0 | 7 | 1.000 |
+
+Every minted path that answered served the **identical** list — containment
+1.000, 6 of 6 across the sweep — so a group list is a fine fingerprint for the
+one question the fold asks, and an unusually stable one: addressable events that
+change when somebody edits a group, not a slice of a moving feed.
+
+**The rung is worth nothing without the floor, and the floor is a property of
+the FILTER.** A 39000 window is a relay's complete list of groups, so it is short
+by nature: over those 21 hosts it is min 1, median **9**, max 1,302, and
+`DEFAULT_MIN_SAMPLE` admits only 7 of them. Two of the five hosts above — 7 ids
+and 16 — sit under it, so the strict floor would have thrown away the hosts the
+rung exists to reach. `RelayAliases.foldFloor` reads the leader's filter and
+applies `DEFAULT_GROUP_METADATA_MIN_SAMPLE` (**3**) to a group-metadata window.
+Three rather than one because a host serving one or two groups hands over one or
+two ids, and at that width "both urls returned the same list" is exactly the
+coincidence the floor exists to refuse. `minOf`, so the group floor can only ever
+lower the bar and never raise it above an injected `minSample`.
+
+**It lowers the bar for FOLDING and for nothing else.** Every negative claim
+keeps `minSample`: entry to `unmatched`, and the leader's own clear. A thin
+window can support "these two urls returned the same list of groups"; it cannot
+support "this url is a relay in its own right", which is signed for a month and
+is the `relay.damus.io/lantern-oscar-dynamo` lie in miniature — sharing none of
+three ids is what a url that answered almost nothing looks like. So a NIP-29
+host whose paths serve genuinely different groups ends the pass `NOTHING_COMPARED`
+and takes the 24h cooldown, which is the honest outcome. `a group-metadata window
+may fold a url but never clear one` pins it.
+
+**And the third rung is free where it would cost the most.** It is asked only
+when the two above returned an EMPTY window rather than a null one — a refusal is
+the relay answering, silence is our transport giving up. A dead url or an onion
+whose circuit never built returns null on both and is not asked again, which
+matters because the attempts are sequential and `YARDSTICK_ATTEMPTS` multiplies
+them by three. `a url that never spoke is not asked for group metadata` pins it.
+
+Two things this was NOT, both of which the verdict card made look guilty: the
+relay does send an AUTH challenge, but 39000 reads fine unauthenticated, so `R:
+auth` was a red herring; and the 214-second `rtt-read` on those rows is quartz's
+passive monitor's number, while every fold dial measured here returned in about
+a second.
+
 **`ws://x` and `wss://x` are the one pair the urls themselves settle.** Every
 other fold refuses to read anything off a url, and rightly — a path is routinely
 a *different* endpoint, which is why `/inbox` must never fold on its spelling. A

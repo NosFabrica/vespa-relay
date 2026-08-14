@@ -186,13 +186,16 @@ class AliasFoldOnionProbe {
         val leadMs = System.currentTimeMillis() - leadAt
         val asked = lead?.kinds?.let { "kinds=$it" } ?: "bare filter"
         if (lead == null) {
-            println("    leader ${short(leader)} said NOTHING in ${leadMs}ms (bare filter and kinds fallback both empty)")
+            println("    leader ${short(leader)} said NOTHING in ${leadMs}ms (bare filter, kinds fallback and group metadata all empty)")
             println("    → no yardstick, so nothing on this host can fold and its members are never dialled by the probe")
             return
         }
         println("    leader ${short(leader)}: ${lead.ids.size} id(s) in ${leadMs}ms, via $asked")
-        if (!aliases.usableWindow(lead.ids)) {
-            println("    → under DEFAULT_MIN_SAMPLE (${RelayAliases.DEFAULT_MIN_SAMPLE}); a window this thin proves nothing either way")
+        // Against the floor for the filter the leader had to be asked, which is
+        // what the real pass does — a group-metadata window is held to
+        // [RelayAliases.DEFAULT_GROUP_METADATA_MIN_SAMPLE] instead.
+        if (!aliases.usableWindow(lead.ids, lead.kinds)) {
+            println("    → under the floor for $asked; a window this thin proves nothing either way")
             return
         }
         prints[leader] = lead.ids
@@ -215,7 +218,7 @@ class AliasFoldOnionProbe {
             println("    ${short(url)}: ${print.size} id(s) in ${ms}ms, $shared shared → containment %.3f".format(containment))
         }
 
-        val learned = aliases.learn(group, leader, prints)
+        val learned = aliases.learn(group, leader, prints, lead.kinds)
         println("    verdict: ${learned.folded.size} folded, ${learned.distinct.size} cleared as their own relay")
         for ((alias, canonical) in learned.folded) println("      FOLD ${short(alias)} → ${short(canonical)}")
         for (url in learned.distinct) println("      KEEP ${short(url)}")

@@ -331,6 +331,87 @@ class AliasProbeTest {
             assertTrue(fake.kindsAsked.all { it == null }, "nothing narrows a filter the relay never objected to")
         }
 
+    /**
+     * khatru in NIP-29 groups mode: it refuses ANY query not scoped to a group —
+     * `CLOSED blocked: invalid query, must have 'h', 'e' or 'a' tag`, whatever
+     * kinds are named — and serves its group list to everyone, unauthenticated.
+     *
+     * A refusal is an ANSWER, so it reaches the walk as an empty page and not as
+     * silence. That is the distinction the third rung is gated on.
+     */
+    private inner class Groups(
+        groups: Int,
+    ) {
+        val kindsAsked = mutableListOf<List<Int>?>()
+        private val events: List<Event> =
+            (0 until groups).map { signer.sign(BASE - it, 39_000, emptyArray(), "g$it") }
+
+        suspend fun fetch(
+            @Suppress("UNUSED_PARAMETER") at: NormalizedRelayUrl,
+            want: Int,
+            until: Long?,
+            kinds: List<Int>?,
+        ): List<Event> {
+            kindsAsked += kinds
+            if (kinds != RelayAliases.GROUP_METADATA_KINDS) return emptyList()
+            return events.filter { until == null || it.createdAt <= until }.take(want)
+        }
+    }
+
+    @Test
+    fun `a NIP-29 relay that refuses every general filter is still fingerprinted`() =
+        runBlocking {
+            // Measured on groups.satsdisco.com (55 groups), groups.0xchat.com
+            // (1,302), relay29.notoshi.win (27), groups.fiatjaf.com (16) and
+            // groups.hzrd149.com (7): every one refuses BOTH the bare filter and
+            // the kinds fallback, so every one had no yardstick and could never
+            // fold — and every one serves its group list on request.
+            val fake = Groups(groups = 55)
+
+            val lead = AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}
+
+            assertEquals(55, lead?.ids?.size)
+            assertEquals(RelayAliases.GROUP_METADATA_KINDS, lead?.kinds, "the group must be told which filter worked")
+            assertEquals(
+                listOf(null, AliasProbe.FALLBACK_KINDS, RelayAliases.GROUP_METADATA_KINDS),
+                fake.kindsAsked.distinct(),
+                "the general filters must be tried first, and group metadata only after both are refused",
+            )
+        }
+
+    @Test
+    fun `a url that never spoke is not asked for group metadata`() =
+        runBlocking {
+            // Null is our own transport giving up, and a third ask buys nothing
+            // from a url that has not answered twice. The attempts are
+            // SEQUENTIAL and AliasFolding.YARDSTICK_ATTEMPTS multiplies them by
+            // three, so on the onion window this is the difference between a
+            // dead group costing minutes and costing half again as many.
+            val asked = mutableListOf<List<Int>?>()
+            val probe =
+                AliasProbe(fetch = { _, _, _, kinds ->
+                    asked += kinds
+                    null
+                }, target = 1_000)
+
+            assertNull(probe.leaderPrint(url, BASE) {})
+            assertEquals(listOf(null, AliasProbe.FALLBACK_KINDS), asked, "silence bought a third dial")
+        }
+
+    @Test
+    fun `a relay that refuses everything and holds nothing still yields no filter`() =
+        runBlocking {
+            // The whole ladder walked, and the honest answer at the end of it is
+            // still "no yardstick" — the rung must not invent one.
+            val fake = Groups(groups = 0)
+
+            assertNull(AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {})
+            assertTrue(
+                RelayAliases.GROUP_METADATA_KINDS in fake.kindsAsked,
+                "a refusal is an answer, so the third rung is owed its ask",
+            )
+        }
+
     @Test
     fun `a leader that answers nothing either way yields no group filter at all`() =
         runBlocking {

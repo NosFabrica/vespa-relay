@@ -321,6 +321,20 @@ class AliasFolding(
                         // yardstick dialled every member of its group to decide
                         // nothing, and did it again every pass, forever.
                         //
+                        // TOO SHORT FOR WHAT, THOUGH, IS A QUESTION ABOUT THE
+                        // FILTER. The bar above is calibrated for a slice of a
+                        // general feed; a window of
+                        // [RelayAliases.GROUP_METADATA_KINDS] is a NIP-29
+                        // relay's COMPLETE list of groups, so a host with seven
+                        // groups hands over seven ids and has held nothing back.
+                        // Judging that by the firehose floor threw away the
+                        // hosts the third rung of the ladder exists to reach —
+                        // measured, `groups.hzrd149.com` at 7 ids and
+                        // `groups.fiatjaf.com` at 16, both folding at
+                        // containment 1.000. So the window is held up against
+                        // the floor for the filter that produced it, which is
+                        // what [RelayAliases.usableWindow] takes `kinds` for.
+                        //
                         // **BUT THE PREFERRED LEADER IS NOT THE ONLY URL THAT
                         // CAN BE THE YARDSTICK, AND TREATING IT AS SUCH LOST
                         // WHOLE HOSTS.** [RelayAliases.PREFERENCE] picks the
@@ -403,7 +417,12 @@ class AliasFolding(
                                 // alone, and the url next to it may well be
                                 // serving five hundred events happily. Only
                                 // silence is worth another attempt.
-                                if (aliases.usableWindow(print.ids)) {
+                                // Judged against the floor for the filter that
+                                // produced it. A NIP-29 host's whole list of
+                                // groups is a handful of ids and is not "thin"
+                                // in the sense this test means — see
+                                // [RelayAliases.foldFloor].
+                                if (aliases.usableWindow(print.ids, print.kinds)) {
                                     found = candidate
                                     foundPrint = print
                                 } else {
@@ -488,7 +507,7 @@ class AliasFolding(
                             }
                         }
                         val leaderPrint = lead.ids
-                        val result = aliases.learn(group, leader, prints)
+                        val result = aliases.learn(group, leader, prints, lead.kinds)
                         // PROVE THE YARDSTICK BEFORE MAKING A NEGATIVE CLAIM.
                         //
                         // Some relays do not answer the same question the same

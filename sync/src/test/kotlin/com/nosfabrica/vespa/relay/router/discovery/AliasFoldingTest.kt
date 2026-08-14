@@ -67,6 +67,17 @@ class AliasFoldingTest {
      * these tests assert on far more than they assert on the folding itself.
      */
     private class Upstreams(
+        /**
+         * Which filters this relay will answer at all — everything, unless a
+         * test says otherwise.
+         *
+         * A NIP-29 relay refuses every unscoped query whatever kinds are named
+         * (khatru: `CLOSED blocked: invalid query, must have 'h', 'e' or 'a'
+         * tag`), and a REFUSAL reaches the walk as an empty page rather than as
+         * silence — which is the distinction the ladder's third rung is gated
+         * on.
+         */
+        private val serves: (List<Int>?) -> Boolean = { true },
         private val corpusFor: (NormalizedRelayUrl) -> List<Event>,
     ) {
         val dials = AtomicInteger()
@@ -80,10 +91,11 @@ class AliasFoldingTest {
             at: NormalizedRelayUrl,
             want: Int,
             until: Long?,
-            @Suppress("UNUSED_PARAMETER") kinds: List<Int>?,
+            kinds: List<Int>?,
         ): List<Event> {
             dials.incrementAndGet()
             contacted += at
+            if (!serves(kinds)) return emptyList()
             return corpusFor(at).filter { until == null || it.createdAt <= until }.take(want)
         }
     }
@@ -128,6 +140,61 @@ class AliasFoldingTest {
             }
         }
     }
+
+    /**
+     * A NIP-29 relay: it refuses every general query and serves its short list
+     * of groups — the same list on every path it wears, which is what the live
+     * hosts do (containment 1.000 on a minted path, 6 of 6 measured).
+     */
+    private fun groupsUpstreams(groups: Int = 7): Upstreams {
+        val corpus: List<Event> = (0 until groups).map { events.sign(1_700_000_000L - it, 39_000, emptyArray(), "g$it") }
+        return Upstreams(serves = { it == RelayAliases.GROUP_METADATA_KINDS }) { corpus }
+    }
+
+    @Test
+    fun `a NIP-29 host folds on the one window a general filter cannot reach`() =
+        runBlocking {
+            // `groups.satsdisco.com` and its eleven minted paths, the shape the
+            // ladder's third rung exists for. Both general filters are refused,
+            // so the group had NO YARDSTICK, wrote nothing down, and came back
+            // widest-first on every pass forever.
+            //
+            // Seven groups on purpose: that is `groups.hzrd149.com`, and it is
+            // under DEFAULT_MIN_SAMPLE. The rung alone recovers nothing here —
+            // the floor has to follow the filter too.
+            val store = newStore()
+            val fold = folding(store, groupsUpstreams(groups = 7))
+            val group = listOf(canonical, alias)
+
+            assertEquals(1, fold.measure("t", group, canDial = { true }), "the group list is a perfectly good fingerprint")
+            // Read back through the store, which is the only claim that matters:
+            // the next cycle's apply() must dial one url, not two.
+            assertEquals(listOf(canonical), fold.apply(group).dial)
+        }
+
+    @Test
+    fun `a NIP-29 host whose paths serve different groups is left alone`() =
+        runBlocking {
+            // The other side of the lowered floor, and the reason it is allowed
+            // to fold but never to clear. These paths share nothing, so no fold
+            // is made — and the tempting next step, signing "each of these is a
+            // relay in its own right" for thirty days on the strength of seven
+            // ids, is refused. Nothing is published and both urls stay dialled.
+            val store = newStore()
+            val byUrl = HashMap<String, List<Event>>()
+            val up =
+                Upstreams(serves = { it == RelayAliases.GROUP_METADATA_KINDS }) { at ->
+                    byUrl.getOrPut(at.url) {
+                        (0 until 7).map { events.sign(1_700_000_000L - it, 39_000, emptyArray(), "${at.url}#g$it") }
+                    }
+                }
+            val fold = folding(store, up)
+            val group = listOf(canonical, alias)
+
+            assertEquals(0, fold.measure("t", group, canDial = { true }))
+            assertEquals(group, fold.apply(group).dial, "an undecided host must stay in the fan-out")
+            assertEquals(group, fold.apply(group).unmeasured, "and must carry no verdict at all")
+        }
 
     @Test
     fun `apply never dials, however much there is to learn`() =
