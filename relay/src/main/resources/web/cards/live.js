@@ -4,7 +4,7 @@
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
 import { shortAddr } from "../shared/nip19.js";
-import { register, shell, bodyHtml, addrHref, extLink, tagOf, tagsOf, clipIf, fmtTs } from "./base.js";
+import { register, registerRow, shell, bodyHtml, addrHref, extLink, tagOf, tagsOf, clipIf, fmtTs, plural } from "./base.js";
 
 /** 30311 — a live event: status, the stream, who is watching. */
 function liveCard(ev, opts) {
@@ -24,13 +24,15 @@ function liveCard(ev, opts) {
   ]);
 }
 
+/** NIP-52 splits all-day (a YYYY-MM-DD string, passed through) from timed (unix seconds). */
+const ts = (v) => (v && /^\d{9,}$/.test(v) ? fmtTs(v) : v);
+
 /**
  * 31922/31923 — calendar events. Two kinds because NIP-52 splits all-day
  * (dates as YYYY-MM-DD strings) from timed (unix seconds); one renderer,
  * because the difference is only how `start`/`end` want to be read.
  */
 function calendarEventCard(ev, opts) {
-  const ts = (v) => (v && /^\d{9,}$/.test(v) ? fmtTs(v) : v); // date strings pass through
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 140))}</h2>` : "") +
     bodyHtml(opts, summaryOf(ev) || ev.content, 300);
@@ -43,10 +45,9 @@ function calendarEventCard(ev, opts) {
 
 /** 31924 — a calendar: how many events it collects. */
 function calendarCard(ev, opts) {
-  const n = tagsOf(ev, "a").length;
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 140))}</h2>` : "") +
-    `<div class="result-body">${n} event${n === 1 ? "" : "s"}</div>` +
+    `<div class="result-body">${esc(plural(tagsOf(ev, "a").length, "event"))}</div>` +
     bodyHtml(opts, ev.content, 300);
   return shell(ev, opts, inner);
 }
@@ -75,3 +76,22 @@ register([30311, 30312, 30313], liveCard);
 register([31922, 31923], calendarEventCard);
 register([31924], calendarCard);
 register([31925], rsvpCard);
+
+// The rows. `status` leads the second line for the same reason it is a pill on
+// the card: "live" versus "ended" is the entire question anybody scanning these
+// has, and it is nowhere in the title.
+registerRow([30311, 30312, 30313], (ev) => ({
+  name: titleOf(ev),
+  sub: [tagOf(ev, "status"), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
+}));
+// WHEN, and where — which for a calendar entry is most of what it is.
+registerRow([31922, 31923], (ev) => ({
+  name: titleOf(ev),
+  sub: [ts(tagOf(ev, "start")), tagOf(ev, "location")].filter(Boolean).join(" · ")
+    || summaryOf(ev) || ev.content,
+}));
+registerRow([31924], (ev) => ({ name: titleOf(ev), sub: plural(tagsOf(ev, "a").length, "event") }));
+registerRow([31925], (ev) => ({
+  name: tagOf(ev, "status") ? `rsvp: ${tagOf(ev, "status")}` : "rsvp",
+  sub: ev.content,
+}));

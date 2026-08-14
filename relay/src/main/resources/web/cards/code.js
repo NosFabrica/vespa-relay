@@ -27,8 +27,8 @@
 import { esc, clip, titleOf, summaryOf } from "../shared/format.js";
 import { shortNote, shortAddr } from "../shared/nip19.js";
 import {
-  register, shell, bodyHtml, replyLine, extLink, eventHref, addrHref, personLink, registerNamedPeople,
-  tagOf, tagsOf, tagsWhere, clipIf, chipRow, hashtagHref, uniquePubkeys,
+  register, registerRow, shell, bodyHtml, replyLine, extLink, eventHref, addrHref, personLink, registerNamedPeople,
+  tagOf, tagsOf, tagsWhere, clipIf, chipRow, hashtagHref, uniquePubkeys, plural,
 } from "./base.js";
 
 // ---- what a git event belongs to ------------------------------------------
@@ -59,6 +59,15 @@ export function repoAddr(ev) {
 }
 
 /**
+ * The repository's NAME — the identifier out of its address, which is what a
+ * git host calls a repo everywhere. "" when nothing here names one.
+ */
+const repoName = (ev) => {
+  const a = repoAddr(ev);
+  return a ? clip(shortAddr(a), 60) : "";
+};
+
+/**
  * "in <repo>" — the line every git card leads with, or "" when nothing names
  * one, or when the page is ALREADY that repository: `opts.within` is the
  * address the cards are being drawn under, and a repo's page repeating "in
@@ -69,7 +78,7 @@ function repoLine(ev, opts) {
   const a = repoAddr(ev);
   if (!a || (opts && opts.within === a)) return "";
   const href = addrHref(a);
-  const label = clip(shortAddr(a), 60);
+  const label = repoName(ev);
   return `<div class="repo-line">in ${href ? `<a href="${href}">${esc(label)}</a>` : `<span class="mono">${esc(label)}</span>`}</div>`;
 }
 
@@ -438,6 +447,11 @@ function repoCard(ev, opts) {
   return shell(ev, opts, inner, [...urls("web"), ...urls("clone")]);
 }
 
+/** The refs under one prefix — the tag NAME is the branch, hence tagsWhere. */
+const refsUnder = (ev, prefix) => tagsWhere(ev, (n) => n.startsWith(prefix))
+  .map((t) => ({ name: t[0].slice(prefix.length), commit: t[1] }))
+  .filter((r) => r.name);
+
 /**
  * 30618 — repository state: one tag per ref, `["refs/heads/master", <commit>]`.
  * The tag NAME is the branch, which is why this cannot ride on repoCard.
@@ -449,11 +463,8 @@ function repoCard(ev, opts) {
  * printed raw as `ref: refs/heads/main` — was a props row nobody can act on.
  */
 function repoStateCard(ev, opts) {
-  const under = (prefix) => tagsWhere(ev, (n) => n.startsWith(prefix))
-    .map((t) => ({ name: t[0].slice(prefix.length), commit: t[1] }))
-    .filter((r) => r.name);
-  const heads = under("refs/heads/");
-  const tags = under("refs/tags/");
+  const heads = refsUnder(ev, "refs/heads/");
+  const tags = refsUnder(ev, "refs/tags/");
   const headRef = /^ref:\s*refs\/heads\/(.+)$/.exec(String(tagOf(ev, "HEAD") || "").trim());
   const head = headRef ? headRef[1] : null;
   // The counts label the groups rather than sitting on a line of their own:
@@ -461,8 +472,8 @@ function repoStateCard(ev, opts) {
   // twice, and the version with the heads is the one you can act on.
   const inner =
     repoLine(ev, opts) +
-    refSection(`${heads.length} branch${heads.length === 1 ? "" : "es"}`, heads, opts, head) +
-    refSection(`${tags.length} tag${tags.length === 1 ? "" : "s"}`, tags, opts, null) +
+    refSection(plural(heads.length, "branch", "branches"), heads, opts, head) +
+    refSection(plural(tags.length, "tag"), tags, opts, null) +
     (heads.length || tags.length ? "" : `<div class="result-body muted">no refs</div>`);
   return shell(ev, opts, inner);
 }
@@ -483,6 +494,12 @@ function refSection(label, refs, opts, head) {
     `<div class="chip-row">${shown.map(chip).join("")}${more > 0 ? `<span class="tag-chip more">+${more}</span>` : ""}</div></div>`;
 }
 
+/** What shipped: the `title` tag, else the version half of `<repo-id>@<version>`. */
+const releaseVersion = (ev) => {
+  const d = tagOf(ev, "d") || "";
+  return titleOf(ev) || (d.includes("@") ? d.slice(d.lastIndexOf("@") + 1) : "");
+};
+
 /**
  * 30063 — a release: what shipped, and the artifacts it points at.
  *
@@ -492,8 +509,7 @@ function refSection(label, refs, opts, head) {
  * publishing client left the `title` tag off.
  */
 function releaseCard(ev, opts) {
-  const d = tagOf(ev, "d") || "";
-  const version = titleOf(ev) || (d.includes("@") ? d.slice(d.lastIndexOf("@") + 1) : "");
+  const version = releaseVersion(ev);
   const urls = multiTag(ev, "url");
   const shown = urls.slice(0, opts && opts.full ? urls.length : 3);
   const more = urls.length - shown.length;
@@ -533,3 +549,33 @@ register([1630, 1631, 1632, 1633], gitStatusCard);
 register([30617], repoCard);
 register([30618], repoStateCard);
 register([30063], releaseCard);
+
+// The rows, and the second line is the REPOSITORY on every kind that names one
+// — the same fact the cards lead with, and the one that tells four projects'
+// issues apart in a list of eight rows.
+registerRow([1337], (ev) => ({
+  name: tagOf(ev, "name") || tagOf(ev, "description"),
+  sub: tagOf(ev, "l", "language") || tagOf(ev, "runtime"),
+}));
+// The mail is parsed here for the same reason it is on the card: unparsed, the
+// row led with `From 4f4d5c1a… Mon Sep 17 00:00:00 2001` — the line git has
+// printed above every patch ever made.
+registerRow([1617], (ev) => ({ name: parsePatch(ev.content).subject || tagOf(ev, "subject"), sub: repoName(ev) }));
+registerRow([1621, 1618, 1619, 1622], (ev) => ({ name: tagOf(ev, "subject") || ev.content, sub: repoName(ev) }));
+// The KIND is the status, so the row IS the verdict: "applied or merged" over
+// which repository it happened in.
+registerRow([1630, 1631, 1632, 1633], (ev) => ({ name: GIT_STATUS[ev.kind].full, sub: repoName(ev) || ev.content }));
+registerRow([30617], (ev) => ({
+  name: tagOf(ev, "name") || titleOf(ev) || tagOf(ev, "d"),
+  sub: tagOf(ev, "description") || summaryOf(ev) || ev.content,
+}));
+// Only the groups that HAVE refs, which is the card's rule too: a repo whose
+// state lists branches and no releases should not have "0 tags" as half of the
+// one line it gets.
+registerRow([30618], (ev) => {
+  const heads = refsUnder(ev, "refs/heads/").length;
+  const tags = refsUnder(ev, "refs/tags/").length;
+  const groups = [heads ? plural(heads, "branch", "branches") : "", tags ? plural(tags, "tag") : ""].filter(Boolean);
+  return { name: repoName(ev), sub: groups.join(" · ") || "no refs" };
+});
+registerRow([30063], (ev) => ({ name: releaseVersion(ev), sub: repoName(ev) || ev.content }));

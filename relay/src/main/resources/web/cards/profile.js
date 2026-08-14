@@ -6,7 +6,7 @@ import { esc } from "../shared/format.js";
 import { npub, shortNpub } from "../shared/nip19.js";
 import { displayName, parseProfile } from "../shared/profiles.js";
 import { avatarHtml } from "../shared/avatar.js";
-import { register, badgeHtml, extLink, jsonHtml, propsHtml, keyHref, selfHref, clipIf, clampCls } from "./base.js";
+import { register, registerRow, badgeHtml, extLink, jsonHtml, propsHtml, keyHref, selfHref, clipIf, clampCls } from "./base.js";
 
 function profileCard(ev, opts) {
   const p = parseProfile(ev);
@@ -46,3 +46,11 @@ function profileCard(ev, opts) {
 }
 
 register([0], profileCard);
+// The one row whose subject IS its author, which is what `self` says: without
+// it the second line would repeat the name the first line already is — and
+// from the EVENT, so a person the profile cache has not learned yet is still
+// named by their own kind 0 rather than by the npub it falls back to.
+registerRow([0], (ev) => {
+  const p = parseProfile(ev);
+  return { name: displayName(p) || shortNpub(ev.pubkey), sub: p.about, pic: p.picture, self: true };
+});

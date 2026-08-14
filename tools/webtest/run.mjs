@@ -14,7 +14,13 @@
 //                  DST-safe day steps, and the days the shortcuts write
 // cards.test.mjs   EVERY registered kind renders, preview and permalink —
 //                  fails if a kind registers without a fixture, which is
-//                  what keeps "covers all kinds" a checked claim
+//                  what keeps "covers all kinds" a checked claim. And the
+//                  same for the search field's TYPE-AHEAD row, whose
+//                  registry is held to the card registry's key set: without
+//                  it a kind falls back to a ladder ending in raw content,
+//                  which is how a channel's row read
+//                  `{"about":"","name":"Test group","picture":""}` beside a
+//                  card drawing that channel properly
 // feed.test.mjs    the latest feed — that its ask carries no NIP-50 search
 //                  string (an ordered feed is a plain NIP-01 read), that every
 //                  kind chip picks the kinds it names and survives the URL,

@@ -6,7 +6,7 @@
 import { esc } from "../shared/format.js";
 import { shortNote } from "../shared/nip19.js";
 import { avatarHtml } from "../shared/avatar.js";
-import { register, shell, bodyHtml, replyLine, extLink, noteHref, tagOf, tagsOf, jsonContent, clipIf, titleHtml, groupHref } from "./base.js";
+import { register, registerRow, shell, bodyHtml, replyLine, extLink, noteHref, tagOf, tagsOf, jsonContent, clipIf, titleHtml, groupHref } from "./base.js";
 
 /**
  * A note, and — when it is a reply — who it answers, above the text where the
@@ -60,6 +60,13 @@ const GROUP_FLAGS = [
 ];
 
 /**
+ * The access flags this group actually carries. Presence of the tag NAME is the
+ * whole value, so this reads names rather than going through tagOf — a
+ * `["private"]` tag has no element 1 to read.
+ */
+const groupAccess = (ev) => GROUP_FLAGS.filter(([f]) => tagsOf(ev, f).length).map(([, label]) => label);
+
+/**
  * 39000 — a NIP-29 group, as its HOST RELAY describes it.
  *
  * The channel card's shape with two differences that matter, both of them
@@ -77,9 +84,7 @@ const GROUP_FLAGS = [
 function groupCard(ev, opts) {
   const id = tagOf(ev, "d");
   const picture = tagOf(ev, "picture");
-  // Presence of the tag NAME is the whole value, so this reads names rather
-  // than going through tagOf — a `["private"]` tag has no element 1 to read.
-  const access = GROUP_FLAGS.filter(([f]) => tagsOf(ev, f).length).map(([, label]) => label);
+  const access = groupAccess(ev);
   const inner = `
     <div class="result-main">
       ${picture ? avatarHtml(picture, ev.pubkey) : ""}
@@ -101,3 +106,25 @@ register([1, 11, 9, 42, 1311], noteCard);
 register([9802], highlightCard);
 register([40, 41], channelCard);
 register([39000], groupCard);
+
+// The rows. For the text kinds the words ARE the event, so the row is the
+// content and the second line is who said it — the one family where the old
+// generic ladder was already right.
+registerRow([1, 11, 9, 42, 1311], (ev) => ({ name: ev.content }));
+registerRow([9802], (ev) => ({ name: ev.content, sub: tagOf(ev, "comment") || tagOf(ev, "r") }));
+// THE ROW THIS WORK STARTED FROM. A channel keeps its name, description and
+// picture in a profile-shaped JSON content, so "the content" was the whole
+// document: the row printed `{"about":"","name":"Test group","picture":""}`
+// beside a card that had drawn the channel properly all along.
+registerRow([40, 41], (ev) => {
+  const c = jsonContent(ev);
+  return { name: c.name, sub: c.about, pic: c.picture };
+});
+// The same idea with the fields in tags — and with the access flags as the
+// second line when the relay wrote no description, since "members only · invite
+// only" is what a reader picking a group out of eight rows is deciding on.
+registerRow([39000], (ev) => ({
+  name: tagOf(ev, "name") || tagOf(ev, "d"),
+  sub: tagOf(ev, "about") || groupAccess(ev).join(" · "),
+  pic: tagOf(ev, "picture"),
+}));

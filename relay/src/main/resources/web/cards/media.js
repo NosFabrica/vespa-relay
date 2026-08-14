@@ -5,8 +5,11 @@
 // small; this is the one place where the media is the point.
 // URLs come from NIP-92 imeta first, then the legacy url/image tags.
 
-import { esc, titleOf, imageOf } from "../shared/format.js";
-import { register, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink, imetas, tagOf, tagsOf, clipIf } from "./base.js";
+import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
+import {
+  register, registerRow, shell, titleHtml, bodyHtml, replyLine, emojiGrid, chipRow, hashtagHref, extLink,
+  imetas, tagOf, tagsOf, clipIf, plural,
+} from "./base.js";
 
 /**
  * The file a single-file card is about: its FIRST imeta, read once and passed
@@ -220,21 +223,28 @@ function audioCard(ev, opts) {
   return shell(ev, opts, inner);
 }
 
-/** 30005 — a video set: title + how many it holds. */
+/** How many videos a set names, by address and by id alike. */
+const setSize = (ev) => tagsOf(ev, "a").length + tagsOf(ev, "e").length;
+
+/** 30005 — a video set: title, whatever it says it is, and how many it holds. */
 function videoSetCard(ev, opts) {
-  const n = tagsOf(ev, "a").length + tagsOf(ev, "e").length;
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
-    `<div class="result-body">${n} video${n === 1 ? "" : "s"}</div>`;
+    bodyHtml(opts, summaryOf(ev), 300, true) +
+    `<div class="result-body">${esc(plural(setSize(ev), "video"))}</div>`;
   return shell(ev, opts, inner);
 }
 
+/** The (shortcode, url) pairs a pack defines — both halves, or it draws nothing. */
+const emojiOf = (ev) => tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]);
+
 /** 30030 — an emoji pack: the emoji, visible, which is the whole point of one. */
 function emojiPackCard(ev, opts) {
-  const emoji = tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]);
+  const emoji = emojiOf(ev);
   const inner =
     (titleOf(ev) ? `<h2 class="result-title">${esc(clipIf(opts, titleOf(ev), 120))}</h2>` : "") +
-    `<div class="result-body">${emoji.length} emoji</div>` +
+    bodyHtml(opts, summaryOf(ev), 300, true) +
+    `<div class="result-body">${esc(plural(emoji.length, "emoji", "emoji"))}</div>` +
     emojiGrid(emoji, opts);
   return shell(ev, opts, inner);
 }
@@ -247,3 +257,44 @@ register([1063], fileCard);
 register([1986, 1222, 1244], audioCard);
 register([30005], videoSetCard);
 register([30030], emojiPackCard);
+
+/**
+ * The row for a file that has something to say: its title, else the words the
+ * author wrote about it.
+ *
+ * A caption that merely repeats the title falls away, exactly as it does on the
+ * card — though here cards.js drops it, since a second line that is the first
+ * one is a rule every family needs and none of them should each keep.
+ */
+const captionRow = (ev) => {
+  const title = titleOf(ev);
+  const caption = captionOf(ev, fileOf(ev));
+  return { name: title || caption, sub: title ? caption : "" };
+};
+registerRow([20], captionRow);
+// A video says how long it is when it has nothing else to say for its second
+// line, which is the one fact a caption-less clip carries.
+registerRow([21, 22, 34235, 34236], (ev) => {
+  const row = captionRow(ev);
+  return { ...row, sub: row.sub || fmtDuration(fieldOf(fileOf(ev), ev, "duration")) };
+});
+registerRow([1063], (ev) => ({
+  name: ev.content || titleOf(ev),
+  sub: [tagOf(ev, "m"), fmtBytes(tagOf(ev, "size"))].filter(Boolean).join(" · "),
+}));
+// A voice message has the spoken words nowhere in the event, so its length is
+// the only thing there is to say about it beyond who recorded it.
+registerRow([1986, 1222, 1244], (ev) => ({
+  name: ev.content || titleOf(ev),
+  sub: fmtDuration(fieldOf(fileOf(ev), ev, "duration")),
+}));
+// The two NIP-51 sets this family renders, counted the way lists.js counts its
+// own — and carrying their description after the count when they have one.
+registerRow([30005], (ev) => ({
+  name: titleOf(ev),
+  sub: [plural(setSize(ev), "video"), summaryOf(ev)].filter(Boolean).join(" · "),
+}));
+registerRow([30030], (ev) => ({
+  name: titleOf(ev),
+  sub: [plural(emojiOf(ev).length, "emoji", "emoji"), summaryOf(ev)].filter(Boolean).join(" · "),
+}));

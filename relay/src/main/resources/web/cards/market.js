@@ -4,10 +4,28 @@
 // the event actually carries, with nothing invented for a missing field.
 
 import { esc, titleOf, summaryOf, imageOf } from "../shared/format.js";
-import { register, shell, bodyHtml, tagsOf, tagOf, jsonContent, clipIf } from "./base.js";
+import { register, registerRow, shell, bodyHtml, tagsOf, tagOf, jsonContent, clipIf, oneLine, satsOf } from "./base.js";
 
-const priceLine = (amount, currency, period) =>
-  amount ? `<div class="price-line">${esc(amount)} ${esc(currency || "")}${period ? ` / ${esc(period)}` : ""}</div>` : "";
+/**
+ * "250 USD", "9 EUR / month" — the price as WORDS, so the row can carry it too.
+ *
+ * Every part goes through oneLine because half of these come out of a JSON
+ * content: `{"price": {}}` is a legal document and `${}` on it reads "[object
+ * Object]", which is a price nobody quoted.
+ */
+const priceText = (amount, currency, period) => {
+  const a = oneLine(amount);
+  // Each part is tested AFTER oneLine, not before: a period that is not text
+  // passes a bare `period ?` and then renders as "250 USD / ", a rate with no
+  // unit — the same class of mistake as the price itself being an object.
+  const per = oneLine(period);
+  return a ? `${a} ${oneLine(currency)}${per ? ` / ${per}` : ""}`.trim() : "";
+};
+
+const priceLine = (amount, currency, period) => {
+  const text = priceText(amount, currency, period);
+  return text ? `<div class="price-line">${esc(text)}</div>` : "";
+};
 
 const imgEmbed = (url) =>
   url ? `<div class="embed"><img src="${esc(url)}" alt="" loading="lazy" referrerpolicy="no-referrer" onerror="this.parentElement.remove()" /></div>` : "";
@@ -51,8 +69,7 @@ function stallCard(ev, opts) {
 
 /** 9041 — a zap goal: the target, in sats rather than raw millisats. */
 function goalCard(ev, opts) {
-  const msats = Number(tagOf(ev, "amount"));
-  const sats = Number.isFinite(msats) && msats > 0 ? Math.round(msats / 1000).toLocaleString() : null;
+  const sats = satsOf(tagOf(ev, "amount"));
   const inner =
     bodyHtml(opts, ev.content || summaryOf(ev), 300) +
     (sats ? `<div class="price-line">goal: ${sats} sats</div>` : "");
@@ -79,3 +96,32 @@ register([30018, 30020], productCard);
 register([30017], stallCard);
 register([9041], goalCard);
 register([30009], badgeCard);
+
+// The rows, and the price is on every one that has a price: what a thing costs
+// is half of why anybody clicks a listing, and it is not in the title.
+registerRow([30402, 30403], (ev) => {
+  const price = tagsOf(ev, "price")[0] || [];
+  return {
+    name: titleOf(ev),
+    sub: [priceText(price[1], price[2], price[3]), summaryOf(ev) || ev.content].filter(Boolean).join(" · "),
+  };
+});
+// NIP-15 keeps the whole product in a JSON content, which is what the row used
+// to print: `{"name":"Widget","description":…,"price":10,…}` in place of the
+// three words of it a reader wanted.
+registerRow([30018, 30020], (ev) => {
+  const c = jsonContent(ev);
+  return { name: c.name, sub: [priceText(c.price, c.currency), oneLine(c.description)].filter(Boolean).join(" · ") };
+});
+registerRow([30017], (ev) => {
+  const c = jsonContent(ev);
+  return { name: c.name, sub: c.description };
+});
+registerRow([9041], (ev) => {
+  const sats = satsOf(tagOf(ev, "amount"));
+  return { name: ev.content || summaryOf(ev), sub: sats ? `goal: ${sats} sats` : "" };
+});
+registerRow([30009], (ev) => ({
+  name: tagOf(ev, "name") || titleOf(ev),
+  sub: tagOf(ev, "description") || ev.content,
+}));

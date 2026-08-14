@@ -22,6 +22,67 @@ import { replyTarget, replyAddr, replyAuthor } from "../shared/parents.js";
 export const renderers = new Map(); // kind -> (ev, opts) -> html
 export function register(kinds, fn) { for (const k of kinds) renderers.set(k, fn); }
 
+/**
+ * The TYPE-AHEAD registry: kind -> (ev) -> `{name, sub, pic, self}`.
+ *
+ * A card and a popup row are the same knowledge at two sizes, and the row had
+ * none of it: one ladder — a `title`-ish tag, else the raw content — stood in
+ * for all 118 kinds. So every kind whose payload is JSON led with its own
+ * source. A search for "group" returned rows reading
+ * `{"about":"","name":"Test group","picture":""}` where the card two hundred
+ * pixels away drew the channel properly, and the same went for stalls,
+ * products, app handlers and NIP-66 records. The kinds that carry a FRAGMENT
+ * fared no better: a patch led with git's `From <sha> Mon Sep 17 00:00:00
+ * 2001`, an article with its markdown marks, and everything countable — a
+ * follow list, a relay list, a score — with the author's name twice.
+ *
+ * So a family that knows how to draw a card says here what that card says in
+ * one line. Four slots, and only the first is normally set:
+ *
+ *   name  what the event IS: a channel's name, a patch's subject, "liked a
+ *         note". Empty falls back to the AUTHOR — never to raw content, which
+ *         is the fallback that printed the JSON.
+ *   sub   the second line. Empty falls back to who posted it, which is the
+ *         other half of the answer for every kind but a profile.
+ *   pic   a face of the row's own, set only by the kinds whose CARD draws one
+ *         (a channel's picture, an app's icon) — so the circle goes on meaning
+ *         "the author" everywhere else. The score chip on it is the author's
+ *         either way; avatarHtml says why.
+ *   self  the event is ABOUT its author (a profile, and only a profile), so
+ *         the second line must not repeat the name the first one already is.
+ *
+ * cards.js applies those fallbacks once, and the render test holds this map
+ * and `renderers` to the same key set — a new card cannot ship without the row
+ * that goes with it.
+ */
+export const rows = new Map(); // kind -> (ev) -> {name, sub, pic, self}
+export function registerRow(kinds, fn) { for (const k of kinds) rows.set(k, fn); }
+
+/**
+ * A stranger's value as ONE line of text, or "".
+ *
+ * Two guards in one, both of them paid for: a JSON payload's field can be any
+ * type at all (`{"name":{}}` interpolates as "[object Object]"), and a note's
+ * text routinely opens with blank lines — `clip` counts CHARACTERS, so a row
+ * whose content began with a paragraph break spent its whole budget on
+ * whitespace and rendered empty.
+ */
+export const oneLine = (v) =>
+  (typeof v === "string" || typeof v === "number" ? String(v).replace(/\s+/g, " ").trim() : "");
+
+/** "1 relay" / "2,431 people" — the count a card and its row both have to say. */
+export const plural = (n, one, many = `${one}s`) => `${n.toLocaleString()} ${n === 1 ? one : many}`;
+
+/**
+ * A NIP-57 amount as sats, or null. The protocol counts MILLISATS and three
+ * cards read one, so this is the difference between "1,000 sats" and a number
+ * three orders of magnitude wrong.
+ */
+export const satsOf = (msats) => {
+  const n = Number(msats);
+  return Number.isFinite(n) && n > 0 ? Math.round(n / 1000).toLocaleString() : null;
+};
+
 // ---- links ----------------------------------------------------------------
 // Internal first: this app renders NIP-19 pages itself, so cards link to
 // /npub1…, /note1… and app.js intercepts the click into a pushState render —

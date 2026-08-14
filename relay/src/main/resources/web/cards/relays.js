@@ -11,7 +11,7 @@
 // description lives, so it is read rather than printed.
 
 import { esc } from "../shared/format.js";
-import { register, shell, titleHtml, bodyHtml, chipRow, relayRows, jsonContent, tagOf, tagsOf } from "./base.js";
+import { register, registerRow, shell, titleHtml, bodyHtml, chipRow, relayRows, jsonContent, tagOf, tagsOf } from "./base.js";
 
 const hostOf = (url) => String(url || "").replace(/^wss?:\/\//i, "").replace(/\/+$/, "");
 
@@ -49,6 +49,12 @@ function relayDiscoveryCard(ev, opts) {
   ]);
 }
 
+/** "monitors relays every 1h" — the frequency being what makes its records mean anything. */
+const monitorLine = (ev) => {
+  const every = everyN(tagOf(ev, "frequency"));
+  return `monitors relays${every ? ` every ${every}` : ""}`;
+};
+
 /**
  * 10166 — a monitor announcing itself: how often it checks, how long it waits,
  * and which checks it runs. The frequency is the field that decides whether a
@@ -56,12 +62,11 @@ function relayDiscoveryCard(ev, opts) {
  * rather than as a raw seconds count.
  */
 function relayMonitorCard(ev, opts) {
-  const freq = tagOf(ev, "frequency");
   const checks = tagsOf(ev, "c").map((t) => t[1]).filter(Boolean);
   const kinds = tagsOf(ev, "k").map((t) => t[1]).filter(Boolean);
   const timeouts = tagsOf(ev, "timeout").map((t) => `${t[1]}: ${t[2]}ms`);
   const inner =
-    `<div class="result-body">monitors relays${everyN(freq) ? ` every ${esc(everyN(freq))}` : ""}</div>` +
+    `<div class="result-body">${esc(monitorLine(ev))}</div>` +
     chipRow([...checks, ...kinds.map((k) => `kind ${k}`)], opts) +
     bodyHtml(opts, ev.content, 300) +
     (timeouts.length && opts && opts.full ? relayRows(timeouts.map((t) => ({ url: t })), opts) : "");
@@ -70,3 +75,14 @@ function relayMonitorCard(ev, opts) {
 
 register([30166], relayDiscoveryCard);
 register([10166], relayMonitorCard);
+
+// The rows. A discovery record's only human-written words are in the NIP-11
+// document it carries as JSON — so the row printed that document, in a search
+// where every result was one. The host is the fallback, and it is the thing a
+// reader recognises anyway.
+registerRow([30166], (ev) => {
+  const nip11 = jsonContent(ev);
+  const url = tagOf(ev, "d") || "";
+  return { name: nip11.name || hostOf(url), sub: nip11.description || url };
+});
+registerRow([10166], (ev) => ({ name: monitorLine(ev), sub: ev.content }));
