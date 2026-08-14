@@ -224,9 +224,9 @@ class AliasFoldingTest {
      * A fingerprint is a websocket and quartz closes none of its own, so the
      * pass has to hand every connection back to the stream that lent it.
      *
-     * Unreleased, a pass leaves one socket per url it measured — up to
-     * `probesPerCycle` of them — against a router whose dispatcher budget is
-     * 1024 for the whole process and 20 per HOST. The fold probes widest group
+     * Unreleased, a pass leaves one socket per url it measured — and a pass
+     * measures its whole candidate set — against a router whose dispatcher
+     * budget is 1024 for the whole process and 20 per HOST. The fold probes widest group
      * first, so the 55-url host is exactly where it bites: the fan-out queues
      * behind connections nothing will ever close.
      *
@@ -519,35 +519,6 @@ class AliasFoldingTest {
 
             assertEquals(0, folding(store, up).measure("t", listOf(secure, plain), canDial = { true }))
             assertEquals(listOf(secure, plain), folding(store, upstreams()).apply(listOf(secure, plain)).dial)
-        }
-
-    @Test
-    fun `a group that cannot be decided returns its probe budget`() =
-        runBlocking {
-            // The budget is reserved per group up front, so a group that bails
-            // must hand back what it did not spend. Otherwise probesPerCycle is
-            // consumed by intentions and a later group goes unprobed for it.
-            val store = newStore()
-            val dead = RelayUrlNormalizer.normalize("wss://dead.example")
-            val deadPaths = (0 until 4).map { RelayUrlNormalizer.normalize("wss://dead.example/p$it") }
-            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
-            val up = Upstreams { at -> if (at.url.contains("dead.example")) emptyList() else corpus }
-
-            // The dead host wears 5 urls and answers on none of them, so it
-            // reserves 5 and spends AliasFolding.YARDSTICK_ATTEMPTS looking for
-            // one that will speak. The rest has to come back, or nos.lol's group
-            // of 2 is starved by a reservation nobody drew on.
-            val budget = 5 + 2
-            val fold =
-                AliasFolding(
-                    aliases = RelayAliases(),
-                    record = RelayAliasRecord(store, signer),
-                    probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
-                    probesPerCycle = budget - (5 - AliasFolding.YARDSTICK_ATTEMPTS),
-                )
-            val learned = fold.measure("t", listOf(dead) + deadPaths + listOf(canonical, alias), canDial = { true })
-
-            assertEquals(1, learned, "the live group was starved by a reservation the dead group never returned")
         }
 
     @Test

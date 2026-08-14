@@ -29,16 +29,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The probing half of the fold, on its own clock.
  *
- * A stream tells this what it just discovered ([submit]) and gets on with its
- * download. Some time later, on this monitor's schedule and not the stream's,
- * the urls are fingerprinted and the verdicts signed into NIP-66. The stream
- * reads them back through [AliasFolding.apply] on a subsequent cycle.
+ * The monitor derives every stream's world itself ([Source]) on its own
+ * schedule and not on any stream's, fingerprints it, and signs the verdicts
+ * into NIP-66. The streams read them back through [AliasFolding.apply] on a
+ * subsequent cycle and never wait on a probe.
  *
  * The alternative — the one this replaces — was to fold inline, which put a
  * multi-minute probe pass between "discovery finished" and "the first byte is
@@ -87,6 +86,11 @@ class AliasMonitor(
     private val intervalMs: Long = DEFAULT_INTERVAL_MS,
     private val startupDelayMs: Long = DEFAULT_STARTUP_DELAY_MS,
     private val emptyRetryMs: Long = DEFAULT_EMPTY_RETRY_MS,
+    /**
+     * Where the candidate set comes from, or null to fall back on whatever the
+     * streams have pushed through [submit] — see [Source].
+     */
+    private val source: Source? = null,
 ) {
     /**
      * All this needs of the fold: measure one stream's urls, say how many new
@@ -119,6 +123,28 @@ class AliasMonitor(
         val progress: Processors.Handle? get() = null
     }
 
+    /**
+     * Where the candidate set comes from — see [StreamWorld].
+     *
+     * [submit] made it a function of when each stream finished discovering, and
+     * the first pass after a boot lost that race: measured, 34,997 urls waited
+     * six hours for a pass they missed by three minutes. A source is derived by
+     * the pass itself, so there is no race to lose.
+     */
+    interface Source {
+        /** Every url worth measuring, across every configured stream. */
+        suspend fun candidates(): List<NormalizedRelayUrl>
+
+        /** Whether this process can reach that url at all — transport, not policy. */
+        suspend fun canDial(url: NormalizedRelayUrl): Boolean
+
+        /** A probe's events are still events: offered to whichever streams want them. */
+        suspend fun onEvent(event: Event)
+
+        /** The cross-stream socket refcount, so a probe cannot close a live transfer. */
+        val sockets: AliasFolding.Sockets
+    }
+
     /** One stream's standing offer of work: what it sees, and how to reach it. */
     private class Work(
         val candidates: List<NormalizedRelayUrl>,
@@ -126,8 +152,6 @@ class AliasMonitor(
         val onEvent: suspend (Event) -> Unit,
         val sockets: AliasFolding.Sockets,
     )
-
-    private val pending = ConcurrentHashMap<String, Work>()
 
     private val learnedTotal = AtomicLong()
 
@@ -159,26 +183,6 @@ class AliasMonitor(
     fun generation(): Long = learnedTotal.get()
 
     /**
-     * Hand the monitor this stream's current candidate set. Returns
-     * immediately — nothing is dialled here, which is the entire point.
-     *
-     * Called every cycle with the whole discovered set, not a delta: working out
-     * what is new is [AliasFolding]'s job (it already skips anything with a
-     * verdict), and a caller that tried to compute the delta itself would have
-     * to duplicate the TTL rule to know when a url became interesting again.
-     */
-    fun submit(
-        label: String,
-        candidates: List<NormalizedRelayUrl>,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit = {},
-        sockets: AliasFolding.Sockets = AliasFolding.Sockets.NONE,
-    ) {
-        if (candidates.size < 2) return
-        pending[label] = Work(candidates, canDial, onEvent, sockets)
-    }
-
-    /**
      * Start the loop. Idempotent only in the sense that the caller builds one of
      * these; calling it twice launches two loops.
      *
@@ -208,7 +212,6 @@ class AliasMonitor(
         scope.launch {
             delay(startupDelayMs)
             while (scope.isActive) {
-                val hadWork = pending.isNotEmpty()
                 // UNSET WHILE A PASS RUNS. The next one is not scheduled until
                 // this one returns — a pass takes as long as it takes — so a
                 // countdown here would be a promise about a time nobody has
@@ -216,7 +219,10 @@ class AliasMonitor(
                 // reads as a pass that is late rather than one in progress.
                 dueAtMs = null
                 runPass()
-                val wait = if (hadWork) intervalMs else emptyRetryMs
+                // Asked AFTER the pass, because only the pass knows: the
+                // candidate set is derived inside it now, so "was there
+                // anything to do" cannot be answered before it runs.
+                val wait = if (lastPassHadWork) intervalMs else emptyRetryMs
                 dueAtMs = System.currentTimeMillis() + wait
                 delay(wait)
             }
@@ -238,9 +244,21 @@ class AliasMonitor(
     private var dueAtMs: Long? = null
 
     /**
+     * Did the last pass have anything to measure at all?
+     *
+     * "Nothing to do YET" and "nothing to do" want different waits — a cold
+     * store has no relay lists to derive from and is usually fine moments
+     * later, so that case retries at [emptyRetryMs] rather than pushing the
+     * first measurement a whole interval out on exactly the boot with the most
+     * to learn.
+     */
+    @Volatile
+    private var lastPassHadWork = false
+
+    /**
      * One pass over every stream's standing work, streams in sequence.
      *
-     * Sequential on purpose: [AliasFolding] enforces its own probe budget and
+     * Sequential on purpose: [AliasFolding] bounds its own concurrency and
      * concurrency per call, and running two streams' passes at once would
      * multiply both behind its back. This is background work — it has all the
      * time it needs and none of the urgency.
@@ -253,7 +271,31 @@ class AliasMonitor(
      */
     suspend fun runPass(): Int {
         var learned = 0
-        val work = pending.entries.map { it.key to it.value }
+        // DERIVED AT THE MOMENT THE PASS RUNS, so no stream's discovery clock
+        // can decide what this pass sees. A monitor with no source measures
+        // nothing, which is the honest answer rather than a silent half-set:
+        // the streams used to push their worlds in and the pass saw whichever
+        // of them had finished discovering first.
+        val work =
+            source?.let { src ->
+                val urls =
+                    try {
+                        src.candidates()
+                    } catch (e: CancellationException) {
+                        // Shutdown, not a derivation failure. `runCatching`
+                        // catches it and would turn a cancelled pass into an
+                        // empty one that schedules another.
+                        throw e
+                    } catch (e: Exception) {
+                        System.err.println("router: alias source failed to derive: ${e.message}")
+                        emptyList()
+                    }
+                // Nothing derived is not nothing to do — a cold store has no
+                // relay lists yet — so this reads as an empty pass and retries
+                // at [emptyRetryMs] rather than sleeping the full interval.
+                if (urls.size < 2) emptyList() else listOf(ALL_STREAMS to Work(urls, src::canDial, src::onEvent, src.sockets))
+            } ?: emptyList()
+        lastPassHadWork = work.isNotEmpty()
         // ONE PASS AT A TIME, over every stream — rather than one stream at a
         // time over every pass, which is how this used to read.
         //
@@ -299,6 +341,15 @@ class AliasMonitor(
     }
 
     companion object {
+        /**
+         * The label a [Source]-derived pass reports under. One row, because the
+         * set is a UNION — a per-stream row would double-count what two streams
+         * share. It also closes the hole the per-stream shape had: grouping
+         * happened WITHIN a stream, so a host whose urls were split across two
+         * was never folded.
+         */
+        const val ALL_STREAMS = "all streams"
+
         /**
          * How often the fold re-probes. Six hours, matching the default stream
          * refresh: a url is discovered, dialled unfolded once, and measured

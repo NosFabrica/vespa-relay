@@ -465,7 +465,7 @@
      occupancy meter is a LEVEL — full means backpressured. Drawn identically
      they were: a fold at 50% and an ingest queue at 50% were the same picture
      in the same column meaning unrelated things, and a full bar meant "finished"
-     on one row and "the store is the limit" on the next.
+     on one row and "ingest is the limit" on the next.
      So progress keeps the accent, and occupancy takes the neutral this card
      already spends on `pending` and `busy` — facts about OUR OWN pool rather
      than verdicts about anything — going warm only at the ceiling, where it
@@ -795,6 +795,52 @@
     padding: .3rem .5rem; font-size: .8rem; box-shadow: 0 2px 8px rgba(0,0,0,.12);
     font-variant-numeric: tabular-nums; white-space: nowrap; z-index: 10;
   }
+
+  /* ── SYNC COVERAGE ────────────────────────────────────────────────────────
+     Two questions only: is the sync working, and how far has it got. Every
+     mark here answers one of them. Anything that read the same on a healthy
+     system every time — the worker/transfer pair, the per-leg table, the
+     outcome partition, 10,462 per-relay rows — is gone: a mark with one value
+     is not a mark, it is decoration that costs a scroll. */
+  .sy-status { display: flex; flex-wrap: wrap; gap: 6px 10px; align-items: center; font-size: 13px; margin: 0 0 4px; }
+  .sy-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--accent); display: inline-block; flex: none; }
+  .sy-dot.bad { background: var(--warn); }
+  .sy-h { font-size: 11px; letter-spacing: .08em; text-transform: uppercase; color: var(--muted);
+          margin: 16px 0 7px; border-top: 1px solid var(--line); padding-top: 10px; }
+  .sy-stream { margin: 0 0 13px; }
+  .sy-top { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 13px; }
+  .sy-name { font-weight: 600; }
+  .sy-meta, .sy-sub { color: var(--muted); }
+  .sy-sub { font-size: 12px; }
+  /* A LEVEL the reader can compare across streams, so the track is always the
+     full width and only the fill moves. */
+  .sy-track { position: relative; height: 7px; border-radius: 4px; background: var(--bar); overflow: hidden; margin: 6px 0 4px; }
+  .sy-track i { position: absolute; left: 0; top: 0; bottom: 0; background: var(--accent); }
+  .sy-bg { display: grid; grid-template-columns: auto auto 1fr; gap: 4px 14px; font-size: 12.5px; align-items: baseline; }
+  .sy-bg b { font-weight: 600; }
+  .sy-bg em { font-style: normal; color: var(--muted); }
+  .sy-bg s { text-decoration: none; color: var(--warn); }
+  /* HOW MANY RELAYS REACH EACH POINT IN THE FRAME — the one picture that says
+     whether coverage is deep or only recent, over every row at once. */
+  .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
+  .sy-depth i { flex: 1; background: var(--accent); min-height: 1px; border-radius: 1px 1px 0 0; }
+  .sy-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  /* EVERY LEG, not a sample. The list is the thing an operator scans for the
+     one bad row, so it scrolls on its own rather than pushing the rest of the
+     card off screen. */
+  .sy-legs-box { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin: 6px 0 0; }
+  table.sy-legs { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.sy-legs th { position: sticky; top: 0; background: var(--surface); text-align: left; font-weight: 600;
+                     color: var(--muted); padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.sy-legs td { padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.sy-legs tr:last-child td { border-bottom: 0; }
+  table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+  table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  /* Quiet past the stuck threshold. The row is the finding, so the row is what
+     is marked — a coloured cell would put the emphasis on the clock rather than
+     on the relay it belongs to. */
+  table.sy-legs tr.hot td { color: var(--warn); }
+
 </style>
 </head>
 <body>
@@ -816,11 +862,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import {
-  DISCOVERY, DISPOSITION, STUCK_LEG_SEC,
-  constraintOf, dividesOn, gaugesOf, heldCount, isLive, legsOf, meterOf, partitionOf, passHeld, passLabelOf,
-  pendingMeaning, sparkOf, trendOf,
-} from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, isLive, legsOf } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1544,47 +1586,6 @@ function trustCard(section) {
 }
 
 /**
- * The one line on this page about what the mirror is FOR, rather than how far
- * it has got: the kinds the router asks for, from its manifest.
- *
- * It is here because the number it corrects is one every reader of this relay
- * eventually computes. "Events we hold for an author" over "events their own
- * relay holds for them" is a filtered mirror over an unfiltered total, and it
- * cannot reach 100%: measured at 31,118 of 89,485 — *35%* — on a mirror that was
- * missing nothing, the whole gap being kinds nobody here ever asks for. The set
- * is what makes that comparison mean something, and `router.conf` is the only
- * place it exists.
- *
- * The kinds are NOT listed. There are ~130 of them, they are a machine's input
- * rather than a reader's, and `sync.mirrors.kinds` in the document carries them
- * for anything that actually needs the list. The count and the age are what a
- * person reads: a manifest is written once at the router's boot, so it outlives
- * the process that wrote it and a stale one still parses.
- */
-function mirrorLine(mirrors) {
-  if (!mirrors) return null;
-  // Absent `dir` reads as down, the same way MirrorReport reads it.
-  const down = (mirrors.streams || []).filter((s) => s.dir !== "up");
-  const p = el("p", "card-sub");
-  p.append(
-    mirrors.allKinds
-      ? `Mirrors every kind, across ${fmt(down.length)} stream(s) — at least one asks with no kind filter. `
-      : `Mirrors ${fmt((mirrors.kinds || []).length)} kind(s), across ${fmt(down.length)} stream(s). `,
-  );
-  p.append("A count against this relay is comparable only when it carries the same kinds — they are in this document, under sync.mirrors. ");
-  if (mirrors.writtenAt != null) {
-    const when = el("span", null, `Declared ${ago(mirrors.writtenAt)}`);
-    when.title = new Date(mirrors.writtenAt * 1000).toISOString();
-    p.appendChild(when);
-    // The router writes this once, at boot. So the age is the age of the
-    // ROUTER, and an old one means the config on disk may have moved on
-    // without it — not that the mirror has stalled.
-    p.append(", when the router last started.");
-  }
-  return p;
-}
-
-/**
  * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
  *
  * This sits above the coverage bars because it answers the questions asked
@@ -1689,628 +1690,320 @@ function chip(text, tone, title) {
   return c;
 }
 
-/** How wide a spark is drawn, and how tall. Small enough to sit inside a chip without changing its height. */
-const SPARK_W = 46, SPARK_H = 11, SPARK_PAD = 1;
+/** A frame timestamp as a plain day, which is the only precision this card reads at. */
+const dayOf = (t) => new Date(t * 1000).toISOString().slice(0, 10);
 
 /**
- * One gauge's last hour, as a line — see `sparkOf` for the geometry and for why
- * `x` comes from each sample's own clock rather than from its index.
+ * IS IT WORKING — one line, and the first thing on the card.
  *
- * Drawn as one path PER UNBROKEN RUN. A gap is a gap: joining across it would
- * draw a straight line through an outage, which is the one shape a reader would
- * take as evidence that nothing happened.
+ * Alive-or-not, how long since it said so, the throughput, and the constraint
+ * verdict when there is one. The verdict is the only part that names a fault,
+ * which is why it is the only part drawn as a chip.
  */
-function spark(series, member) {
-  const s = sparkOf(series, member);
-  if (!s) return null;
-  const svg = document.createElementNS(SVG, "svg");
-  svg.setAttribute("class", "trend");
-  svg.setAttribute("viewBox", `0 0 ${SPARK_W} ${SPARK_H}`);
-  svg.setAttribute("width", SPARK_W);
-  svg.setAttribute("height", SPARK_H);
-  const at = (pt) => [
-    SPARK_PAD + pt.x * (SPARK_W - 2 * SPARK_PAD),
-    SPARK_H - SPARK_PAD - pt.y * (SPARK_H - 2 * SPARK_PAD),
-  ];
-  let run = [];
-  const flush = () => {
-    if (run.length > 1) {
-      const path = document.createElementNS(SVG, "path");
-      path.setAttribute("d", run.map(([x, y], i) => `${i ? "L" : "M"}${x.toFixed(2)} ${y.toFixed(2)}`).join(" "));
-      svg.appendChild(path);
-    } else if (run.length === 1) {
-      const dot = document.createElementNS(SVG, "circle");
-      dot.setAttribute("cx", run[0][0].toFixed(2));
-      dot.setAttribute("cy", run[0][1].toFixed(2));
-      dot.setAttribute("r", "1");
-      svg.appendChild(dot);
-    }
-    run = [];
-  };
-  for (const pt of s.points) {
-    if (!pt) flush();
-    else run.push(at(pt));
+function statusRow(progress) {
+  const live = isLive(progress);
+  const row = el("div", "sy-status");
+  row.appendChild(el("i", live ? "sy-dot" : "sy-dot bad"));
+  row.append(live ? "running" : "not running");
+  // Spelled with their own spaces: consecutive text nodes collapse into ONE
+  // anonymous flex item, so the row's `gap` never lands between them.
+  if (progress.staleForSec != null) {
+    row.append(live ? ` · heard ${fmtDur(progress.staleForSec)} ago` : ` · silent ${fmtDur(progress.staleForSec)}`);
   }
-  flush();
-  return { svg, note: sparkNote(s, member) };
-}
-
-/** What the line says, for the title beside it — the direction, the range, and the window. */
-function sparkNote(s, member) {
-  const range = s.flat ? `flat at ${fmt(s.lo)}` : `${fmt(s.lo)}–${fmt(s.hi)}`;
-  return `${trendOf(s)} over the last ${fmtDur(s.span)} · ${range}` +
-    `\n\nThe line is scaled to its OWN range, not to the chip's — the chip carries the level, the line carries the shape.` +
-    `\n\n${term("series")}`;
-}
-
-/** …and the same, folded onto a chip that already carries the level. */
-function gaugeChip(text, tone, title, series, member) {
-  const c = chip(text, tone, title);
-  const s = spark(series, member);
-  if (s) {
-    c.appendChild(s.svg);
-    c.title = `${title}\n\n${s.note}`;
-  }
-  return c;
-}
-
-/**
- * A bar and its key, over one partition — see `partitionOf` for what counts as
- * a segment and what the shares are taken against.
- */
-function partitionBar(rows, counts, total, meaning) {
-  const wrap = el("div");
-  const bar = el("div", "disp");
-  const keys = el("div", "keys");
-  for (const seg of partitionOf(rows, counts, total)) {
-    const i = el("i", seg.member);
-    i.style.width = seg.share * 100 + "%";
-    const why = (meaning && meaning(seg.member)) || term(seg.member);
-    i.title = `${fmt(seg.n)} of ${fmt(total)} ${seg.label}\n\n${why}`;
-    bar.appendChild(i);
-    const k = el("span");
-    // The SAME class the segment carries, so one CSS rule paints both and the
-    // key cannot drift from the bar. Never read back a computed style here:
-    // the card is still detached from the document, so nothing resolves.
-    k.appendChild(el("b", seg.member));
-    k.appendChild(el("em", null, fmt(seg.n)));
-    // EVERY segment named, however small. Hiding the name under a share
-    // threshold was tried and it hides the wrong ones: `delivered` and
-    // `nothingNew` are the two outcomes that mean the relay WORKED, and on a
-    // fan-out mostly made of dead urls they are the small slivers — so the
-    // rule left the reader a bare "38" beside a labelled "8,569 pending".
-    // What made the old key long was the labels being sentences; they are one
-    // or two words now, and six of them fit on a line.
-    k.append(" " + seg.label);
-    k.title = i.title;
-    keys.appendChild(k);
-  }
-  wrap.appendChild(bar);
-  wrap.appendChild(keys);
-  return wrap;
-}
-
-/**
- * One pass: what it is, what became of its urls, and what it pulled.
- *
- * A stream draws one of these per RUNNING PASS. The distinction is the whole
- * reason they are drawn separately — "pass 11, handed out, 41 relays still
- * finishing" and "pass 12, walking" are two jobs running at once, and a reader
- * who sees one bar concludes either that the old walk stopped or that the new
- * one has not started.
- */
-function passBlock(p, held, alone) {
-  const wrap = el("div");
-  const total = (p.urls || {}).taken || 0;
-  if (!total) return wrap;
-  // The label is skipped when a stream has only one pass: "pass 3 · walking"
-  // above a stream head that already says `fetching 20m` is the same fact
-  // twice, and the head carries the pass number as a chip.
-  if (!alone) {
-    const label = passLabelOf(p);
-    const head = el("p", "foot");
-    head.append(`pass ${label.number}`);
-    if (label.owner) head.append(` · ${label.owner}`);
-    head.append(label.state === "finishing"
-      ? ` · handed out, ${fmt(label.outstanding)} still finishing`
-      : ` · ${label.state}`);
-    head.title =
-      "A pass ends when its last url is handed out, not when its last worker returns — so a finished walk with" +
-      " relays still finishing is the rotation working, and the next pass simply has fewer urls to hand out.";
-    wrap.appendChild(head);
-  }
-  wrap.appendChild(partitionBar(DISPOSITION, p.taken || {}, total, (m) =>
-    m === "pending" ? pendingMeaning(p.outcome, held) : null));
-  const foot = el("p", "foot");
-  foot.append(`${fmt(p.received || 0)} event(s) at the socket`);
-  if (p.hosts != null) foot.append(` · ${fmt(total)} url(s) on ${fmt(p.hosts)} host(s)`);
-  foot.title =
-    "Events as they arrived on the wire. Ingest drops the copies other relays already sent, so the store gains" +
-    " fewer than this — see the Ingest row below for what was actually stored.";
-  wrap.appendChild(foot);
-  if (p.accountedFor === false) {
-    const bad = el("p", "alarm", "these counts do not add up to their own total — read them as approximate");
-    bad.title = term("accountedFor");
-    wrap.appendChild(bad);
-  }
-  return wrap;
-}
-
-/**
- * The two pools, nested: every worker this stream is running, and the few of
- * them holding a transfer slot.
- *
- * Nested rather than side by side because one is a subset of the other, and
- * that containment is the answer to why `pending` runs to five thousand while
- * `transferring` sits at eight — the admission gate is far wider than the
- * transfer pool, by design.
- */
-function poolsRow(s) {
-  if (s.running == null && s.slotsFree == null && s.returned == null) return null;
-  const row = el("div", "pools");
-  // Drawn only where there ARE workers. An idle stream between passes has
-  // none, and "0/0 on a slot" beside an empty bar is filler in the one place
-  // this card is trying to keep marks meaningful.
-  if (s.running) {
-    const bar = el("div", "bar");
-    const w = el("i", "w");
-    w.style.width = "100%";
-    const t = el("i", "t");
-    t.style.width = ((s.transferring || 0) / s.running) * 100 + "%";
-    bar.appendChild(w);
-    bar.appendChild(t);
-    bar.title = `${fmt(s.transferring || 0)} of ${fmt(s.running)} workers hold a transfer slot\n\n${term("transferring")}`;
-    row.appendChild(bar);
-    const lab = el("span", null, `${fmt(s.transferring || 0)}/${fmt(s.running)} on a slot`);
-    lab.title = term("running");
-    row.appendChild(lab);
-  }
-  // What `holding` is waiting for — the phase most easily read as a stall.
-  if (s.slotsFree != null) {
-    const gate = el("span", null, `· gate ${fmt(s.slotsFree)}/${fmt(s.slotsNeeded)}`);
-    gate.title = `${term("slotsFree")} The next pass waits for half the pool.`;
-    row.appendChild(gate);
-  }
-  if (s.returned != null) {
-    const ret = el("span", null, `· ${fmt(s.returned)} returned`);
-    // The most misread number this router publishes, so the correction rides
-    // on the mark itself.
-    ret.title = `${term("returned")} It counts legs that CAME BACK, including unreachable and capped ones — not progress.`;
-    row.appendChild(ret);
-  }
-  if (s.collected != null) {
-    const col = el("span", null, `· ${short(s.collected)}${s.collectedTotal ? `/${short(s.collectedTotal)}` : ""} ids`);
-    col.title = term("collected");
-    row.appendChild(col);
-  }
+  const health = progress.health || {};
+  if (health.eventsPerSec != null) row.append(` · ${fmt(health.eventsPerSec)} events/s into the store`);
+  // The four verdicts are different faults with different fixes, and only the
+  // ingest one is a fault at all — see BOTTLENECK.
+  const constraint = constraintOf(health, live);
+  if (constraint) row.appendChild(chip(constraint.text, constraint.tone, constraint.why));
+  // A count, not a list: the document publishes how many, and one is already
+  // the whole message.
+  if (progress.fatals) row.appendChild(chip(`${fmt(progress.fatals)} fatal error(s)`, "warn", term("fatals")));
   return row;
 }
 
 /**
- * WHICH relays are running right now — the half the disposition bar cannot
- * draw, as a table.
+ * EVERY RELAY THIS STREAM IS HOLDING RIGHT NOW, and WHAT EACH ONE IS DOING.
  *
- * A stacked segment says `pending: 2`; it cannot say *which two*, and that is
- * the question an operator has when a stream has received two events in eleven
- * hours. Nothing else on this page can answer it either — the coverage card
- * only draws relays that have EARNED a band, and a relay stuck mid-leg never
- * does.
+ * The list was five rows behind a `+507 more`, which is the shape that cannot
+ * answer the question it exists for: the leg worth finding is by construction
+ * not in the healthy head of the list. It is the whole set now — the router
+ * caps its own rows at the widest admission gate and still discloses anything
+ * past it.
  *
- * Four clocks per relay across five relays is a MATRIX, and it was being read
- * out as a sentence per row — the one shape that makes "which of these is the
- * worst" un-scannable. See `legsOf` for what the quiet bar is a proportion of,
- * and `RelayRotation.held` for why these five are the five.
+ * `doing` is the column the clocks could never supply. `held 2h 15m, 3 events`
+ * is four different faults depending on the stage, and two of them — quiet
+ * because negentropy is computing a difference, quiet because a paged walk has
+ * stopped delivering — were indistinguishable from every number this row
+ * carries. See the `doing` entry in the document's own glossary.
  */
-function legsTable(s) {
+function legsPanel(s) {
   const { rows, more } = legsOf(s.inFlight);
   if (!rows.length) return null;
-  // WHICH WALK handed each leg out, when the stream is running more than one.
-  // A leg outlives its pass, so with two live walks a row cannot otherwise say
-  // which one it belongs to.
-  const many = (s.passes || []).length > 1;
-  const wrap = el("div");
-  const table = el("table", "legs");
+  const box = el("div");
+  // WHERE THE LEGS ARE, before the list itself. On a wide fan-out the shape is
+  // the finding — "412 in the guards, 100 paging" is a healthy rotation, and
+  // the same 512 all waiting for a slot is a saturated pool.
+  const stages = new Map();
+  for (const r of rows) stages.set(r.doing || "stage not published", (stages.get(r.doing || "stage not published") || 0) + 1);
+  const summary =
+    [...stages.entries()].sort((a, b) => b[1] - a[1]).map(([what, n]) => `${fmt(n)} ${what}`).join(" · ");
+  box.appendChild(el("div", "sy-sub",
+    `${fmt(rows.length)} leg(s) in flight — ${summary}${more ? ` · ${fmt(more)} more the router did not name` : ""}`));
+
+  const scroll = el("div", "sy-legs-box");
+  const table = el("table", "sy-legs");
   const head = el("tr");
-  for (const [label, key, right] of [["relay", "inFlight", false], ["pass", "pass", false],
+  for (const [label, key, right] of [["relay", null, false], ["doing", "doing", false],
                                      ["held", "heldForSec", true], ["events", "events", true],
-                                     ["quiet", "quietForSec", false]]) {
-    if (key === "pass" && !many) continue;
+                                     ["quiet", "quietForSec", true]]) {
     const th = el("th", null, label);
-    th.title = term(key);
+    if (key) th.title = term(key);
     if (right) th.style.textAlign = "right";
     head.appendChild(th);
   }
   table.appendChild(head);
   for (const r of rows) {
-    const tr = el("tr");
-    tr.appendChild(el("td", "u", r.short));
-    if (many) tr.appendChild(el("td", "r", r.pass ?? "—"));
-    const held = el("td", "r", fmtDur(r.heldForSec));
-    held.title = term("heldForSec");
-    tr.appendChild(held);
-    tr.appendChild(el("td", "r", fmt(r.events)));
-    const q = el("td");
-    const bar = el("div", "qbar");
-    const fill = el("i", r.hot ? "hot" : "");
-    fill.style.width = r.quietShare * 100 + "%";
-    bar.appendChild(fill);
-    bar.title = `quiet ${fmtDur(r.quietForSec)} of the ${fmtDur(STUCK_LEG_SEC)} that counts as stuck` +
-      (r.slotless
-        ? " · NO TRANSFER SLOT — in the guards or queued behind other legs, so this is our pool rather than their relay"
-        : ` · holding a slot for ${fmtDur(r.transferringForSec)}`) +
-      `\n\n${term("quietForSec")}`;
-    q.appendChild(bar);
-    tr.appendChild(q);
+    // Quiet past the threshold is the one row shape worth colouring — see
+    // STUCK_LEG_SEC for why the floor is ten minutes and not less.
+    const tr = el("tr", r.quietForSec >= STUCK_LEG_SEC ? "hot" : null);
+    const url = el("td", "u");
+    // The url in its own LTR isolate inside the rtl cell: the cell being rtl is
+    // what puts the ellipsis on the LEFT, where a path-suffixed alias differs,
+    // and the isolate is what stops that direction rewriting the address.
+    const inner = el("span", null, r.short);
+    inner.dir = "ltr";
+    url.appendChild(inner);
+    url.title = r.relay;
+    tr.appendChild(url);
+    // A leg with no slot says so here rather than leaving the column blank: the
+    // stage IS the answer for most of a fan-out's workers.
+    tr.appendChild(el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—")));
+    tr.appendChild(el("td", "n", fmtDur(r.heldForSec)));
+    tr.appendChild(el("td", "n", fmt(r.events)));
+    tr.appendChild(el("td", "n", fmtDur(r.quietForSec)));
     table.appendChild(tr);
   }
-  wrap.appendChild(table);
-  // Never silent about the tail: most of a fan-out's workers are connect
-  // timeouts to dead hosts, and a list that hides them reads as the whole set.
-  if (more) {
-    const p = el("p", "foot", `+${fmt(more)} more held, quietest shown first`);
-    p.title = term("omitted");
-    wrap.appendChild(p);
-  }
-  return wrap;
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+  return box;
 }
 
-/** One stream: its head, its two partitions, its pools and its legs. */
-function streamLane(s) {
-  const box = el("div", "stream");
-  const c = s.cycle;
-  const head = el("div", "sh");
-  head.appendChild(el("span", "nm", s.name));
-  // The phase, toned by what it means for movement: `holding` and `failed`
-  // will not move on their own, everything else is work in progress.
-  const stalled = s.phase === "holding" || s.phase === "failed";
-  head.appendChild(chip(
-    `${s.phase || "unknown"}${s.phaseForSec != null ? ` ${fmtDur(s.phaseForSec)}` : ""}`,
-    stalled ? "warn" : "busy", term(s.phase)));
-  if (c && c.number != null) head.appendChild(chip(`pass ${passLabelOf(c).number}`, null, term("passes")));
-  if (c && c.owner && c.owner !== "dynamic") head.appendChild(chip(c.owner, null, term("owner")));
-  // `reached` is the only evidence a DEEP walk is moving — `fraction` rounds
-  // to zero for hours on an unbounded one while this date moves every page.
-  if (s.reached != null) head.appendChild(chip(`back to ${isoOf(s.reached).slice(0, 10)}`, null, term("reached")));
-  if (s.fraction != null) head.appendChild(chip(`${(s.fraction * 100).toFixed(1)}%`, null, term("fraction")));
-  if (s.etaSec != null) head.appendChild(chip(`ETA ${fmtDur(s.etaSec)}`, null, term("etaSec")));
-  if (s.phase === "idle" && s.nextInSec != null) head.appendChild(chip(`next ${fmtDur(s.nextInSec)}`, null, term("nextInSec")));
-  if (s.retryInSec != null) head.appendChild(chip(`retry ${fmtDur(s.retryInSec)}`, "warn", term("retryInSec")));
-  head.appendChild(el("span", "grow"));
-  if (c && c.received != null) {
-    const r = el("span", "r", `${short(c.received)} ev`);
-    r.title = term("received");
-    head.appendChild(r);
+/**
+ * HOW FAR ONE STREAM HAS GOT, in four marks: what it is doing, how much of the
+ * pass is behind it, when it expects to finish, and how far back it has reached.
+ *
+ * `reached` earns its place because `fraction` cannot show a deep walk moving —
+ * days of progress on an unbounded walk round to zero — while the date moves
+ * every page. It is the only live evidence a slow stream is a working one.
+ */
+function streamBlock(s) {
+  const box = el("div", "sy-stream");
+  const top = el("div", "sy-top");
+  top.appendChild(el("span", "sy-name", s.name));
+  top.appendChild(el("span", "sy-meta",
+    `${s.phase || "idle"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}`));
+  box.appendChild(top);
+  if (s.fraction != null) {
+    const track = el("div", "sy-track");
+    const fill = el("i");
+    fill.style.width = Math.max(0, Math.min(100, s.fraction * 100)) + "%";
+    track.appendChild(fill);
+    box.appendChild(track);
   }
-  box.appendChild(head);
-
-  // The one thing a failed stream never said: what it threw. It is a message
-  // rather than a quantity, so it is one of the two places words are spent.
-  if (s.reason) {
-    const why = el("p", "alarm", s.reason);
-    why.title = term("reason");
-    box.appendChild(why);
-  }
-  if (!c) {
-    if (!s.reason) box.appendChild(el("p", "foot", "no cycle has run yet on this stream"));
-    // Drawn even with no cycle — the workers of the LAST one outlive it and
-    // are exactly what a stream stuck between passes is holding.
-    const only = legsTable(s);
-    if (only) box.appendChild(only);
-    return box;
-  }
-
-  const u = c.urls || {};
-  if (dividesOn(u)) box.appendChild(partitionBar(DISCOVERY, u, u.discovered, () => null));
-  const pools = poolsRow(s);
-  if (pools) box.appendChild(pools);
-
-  // EVERY WALK STILL RUNNING, not just the newest. A walk ends when its last
-  // url is handed out and its slowest legs run on past it, so the ordinary
-  // state of a rotation is the previous pass finishing while the new one hands
-  // out. One bar for both showed the old walk's live legs as the new walk's
-  // `busy` and its counters not at all.
-  const passes = Array.isArray(s.passes) && s.passes.length > 1 ? s.passes : [c];
-  const held = heldCount(s.inFlight);
-  passes.forEach((p, i) => {
-    const last = i === passes.length - 1;
-    box.appendChild(passBlock(p, last ? held : passHeld(p), passes.length === 1));
-  });
-
-  const legs = legsTable(s);
+  const now = [];
+  if (s.fraction != null) now.push(`${Math.round(s.fraction * 100)}% of this pass handed out`);
+  if (s.etaSec != null) now.push(`~${fmtDur(s.etaSec)} left`);
+  if (s.reached != null) now.push(`walked back to ${dayOf(s.reached)}`);
+  if (now.length) box.appendChild(el("div", "sy-sub", now.join(" · ")));
+  // WHAT THE PASS ACTUALLY GOT. Grouped into the three outcomes a reader acts
+  // on — it gave us something, it had nothing to give, it could not be reached
+  // — rather than the eight the tally distinguishes. The rest is forensics and
+  // lives in the document.
+  const cycle = s.cycle || {};
+  const urls = cycle.urls || {}, taken = cycle.taken || {};
+  const got = [];
+  // Zero is not a finding here. "0 already in sync" beside a stream that has
+  // dialled five relays is the same filler the old card was full of.
+  if (urls.taken != null) got.push(`${fmt(urls.taken)} relay(s) dialled`);
+  if (taken.delivered) got.push(`${fmt(taken.delivered)} sent events`);
+  if (taken.nothingNew) got.push(`${fmt(taken.nothingNew)} already in sync`);
+  const dead = (taken.knownDead || 0) + (taken.noRoute || 0) + (taken.unreachable || 0);
+  if (dead) got.push(`${fmt(dead)} unreachable`);
+  if (taken.busy) got.push(`${fmt(taken.busy)} still running from the last pass`);
+  if (taken.pending) got.push(`${fmt(taken.pending)} not reached yet`);
+  if (got.length) box.appendChild(el("div", "sy-sub", got.join(" · ")));
+  // THE FAULTS, each named rather than summed into the unreachable count,
+  // because they have different fixes and only one of them is about the relay.
+  // `transferFailed` is a handshake that succeeded and a transfer that broke —
+  // it says nothing about availability; `hostStruckOut` is our own back-off;
+  // `torUnavailable` is our own transport being down. Drawn only when non-zero.
+  const faults = [];
+  if (taken.transferFailed) faults.push(`${fmt(taken.transferFailed)} answered then broke mid-transfer`);
+  if (taken.hostStruckOut) faults.push(`${fmt(taken.hostStruckOut)} skipped — host already struck out`);
+  if (taken.torUnavailable) faults.push(`${fmt(taken.torUnavailable)} skipped — our tor proxy is down`);
+  if (faults.length) box.appendChild(el("div", "sy-sub", faults.join(" · ")));
+  // UNDER the pass counters, because "what is it doing right now" is read after
+  // "is it getting anywhere" and before anything else on this card.
+  const legs = legsPanel(s);
   if (legs) box.appendChild(legs);
   return box;
 }
 
 /**
- * The NOW line: is it running, and what is holding it back, in chips.
+ * THE PASSES THAT ARE NOT STREAMS — the fold, the stability gate, ingest,
+ * reachability, the healer.
  *
- * Everything here was already on the card as prose. The heartbeat was a
- * sentence, the constraint another, and the gauges did not exist outside the
- * router's log — and a reader wanting "is it up and why is it slow" had to
- * read both sentences to the end to find out.
+ * One line each, and exactly one number: the one that says whether it is
+ * getting anywhere. They are here rather than dropped because a stalled fold is
+ * not a side quest — an unfolded list downloads the same relay once per url,
+ * which is a sync fault that shows up nowhere else on this card.
+ *
+ * The probe passes' number is summed ACROSS STREAMS. Reading `streams[0]` made
+ * a fold that had never seen the two 17,000-url streams report the 16-url one's
+ * residue as the whole picture.
  */
-function nowLine(progress, data) {
-  const row = el("div", "now");
-  const live = isLive(progress);
-  row.appendChild(chip(live ? "live" : progress.staleForSec == null ? "no heartbeat" : "not running",
-    live ? "live" : "warn",
-    (live
-      ? `the router wrote its progress file ${fmtDur(progress.staleForSec)} before this rollup`
-      : "a phase frozen mid-fetching is exactly what a dead process leaves behind — everything below is what it" +
-        " was doing then, not what is happening now") +
-    `\n\nlast written ${isoOf(progress.writtenAt)}`));
-
-  const facts = [];
-  const streams = (progress.streams || []).length;
-  if (streams) facts.push(`${fmt(streams)} stream(s)`);
-  if (data.relays != null) facts.push(`${fmt(data.relays)} relay(s) on ${fmt(data.hosts || 0)} host(s) touched`);
-  if (live) facts.push(`heard ${fmtDur(progress.staleForSec)} ago`);
-  else if (progress.staleForSec != null) facts.push(`silent ${fmtDur(progress.staleForSec)}`);
-  if (facts.length) {
-    const f = el("span", "fact", facts.join(" · "));
-    f.title = term("relays");
-    row.appendChild(f);
-  }
-
-  const constraint = constraintOf(progress.health, live);
-  if (constraint) {
-    row.appendChild(chip(constraint.text, constraint.tone, `${term("bottleneck")}\n\n${constraint.why}`));
-  }
-  // Each level with its own last hour beside it. Three of the four have a
-  // series; `servingMs` is not sampled, so its chip is a bare level and says so
-  // by simply not carrying a line.
-  const series = progress.series;
-  for (const g of gaugesOf(progress.health)) {
-    if (g.id === "eventsPerSec") {
-      row.appendChild(gaugeChip(`${fmt(g.value)} ev/s`, g.tone, term("eventsPerSec"), series, "eventsPerSec"));
-    }
-    if (g.id === "heap") {
-      row.appendChild(gaugeChip(`heap ${g.pct}%`, g.tone,
-        `${fmt(g.value)} of ${fmt(g.of)}MB\n\n${term("heapUsedMb")}` +
-        (g.tone ? "\n\nAt the ceiling the collector runs continuously and throughput collapses without anything failing." : ""),
-        series, "heapPct"));
-    }
-    if (g.id === "sockets") {
-      row.appendChild(gaugeChip(`${fmt(g.value)}/${fmt(g.of)} sockets`, g.tone,
-        `${term("sockets")}\n\n${term("socketCeiling")}`, series, "sockets"));
-    }
-    if (g.id === "servingMs") row.appendChild(chip(`${fmt(g.value)}ms reads`, g.tone, term("servingMs")));
-  }
-  return row;
-}
-
-function progressPanel(progress, data) {
-  if (!progress) return null;
-  const wrap = el("div");
-  wrap.appendChild(nowLine(progress, data));
-  // ABOVE the streams, because a router that is alive and DAMAGED is worse
-  // than one that stopped: an uncaught error kills whichever thread it lands
-  // on, nothing restarts it, and every phase below carries on looking healthy.
-  if (progress.fatals) {
-    const dead = el("p", "alarm",
-      `${fmt(progress.fatals)} fatal error(s) killed threads in this router — it is DEGRADED and should be restarted`);
-    dead.title = term("fatals");
-    wrap.appendChild(dead);
-  }
-  for (const s of progress.streams || []) wrap.appendChild(streamLane(s));
-  return wrap;
-}
-
-/**
- * WHAT ELSE IS RUNNING — the router's jobs that are not streams.
- *
- * Everything above describes work an operator CONFIGURED. Several long-running
- * jobs sit beside those streams with nothing configured about them, and until
- * they were published the only trace any of them left was a stderr line on a
- * container whose logs rotate inside the hour:
- *
- *  - the **alias fold** and the **stability gate**, on the alias monitor's own
- *    six-hour clock, deciding which discovered urls the fan-out may stop
- *    dialling. "This server is still wearing forty urls" is a question about
- *    the fold's progress and nothing on this page could answer it;
- *  - the **NIP-66 reachability monitor**, which is NOT the same processor as
- *    those two even though all three write onto the same kind-30166 records —
- *    it watches every socket the client opens rather than dialling on a
- *    schedule, and its `knownDead` set is what a stream's `knownDead` outcome
- *    is counting against;
- *  - **ingest**, where every mirrored event actually lands, and the first thing
- *    to look at when the streams read busy and the store is not growing;
- *  - the **healer** and the **upstream push**, the two paths that write out.
- *
- * A processor that is absent is one this router does not run — a deployment
- * with no signer has no fold and no monitor at all — so nothing is drawn for a
- * name the document does not carry. That is a fact rather than missing data,
- * and inventing a zeroed row would say the opposite.
- */
-const PROCESSORS = [
-  ["aliasFold", "Alias fold",
-    "Fingerprints the urls of one host against each other and signs a `same-as` verdict when they are the same server," +
-    " so the fan-out stops dialling forty urls of one relay. Runs on the alias monitor's clock, not a stream's."],
-  ["consistency", "Self-consistency",
-    "Asks each relay one filter twice, at a week-old anchor, and refuses the ones that answer differently: a server" +
-    " whose window is a fresh slice each time holds no stable cursor, so every cycle re-downloads what the last took." +
-    " The verdict it writes is the `self-consistent` tag, which is where the name comes from."],
-  ["reachability", "NIP-66 reachability",
-    "Quartz's monitor. It watches every socket this client opens, measures the round trips and signs what it learns" +
-    " into the same kind-30166 records the two passes above write their tags onto — one document per url, three writers."],
-  ["ingest", "Ingest",
-    "The bounded queue every mirrored event passes through: dedup, supersede, verify, batch insert. Read `queued`" +
-    " against `capacity` — full means the downloads are backpressured behind it, empty means the limit is upstream."],
-  ["heal", "Healer",
-    "Repairs discovered by ingest and handed back to the relays serving them. Only where a stream opted in."],
-  ["upstreamPush", "Upstream push",
-    "Reconciles the store against an upstream configured `dir = up` and publishes what it is missing."],
+const BACKGROUND = [
+  ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
+  ["consistency", "stability gate", "Refuses a url that answers one filter two different ways. Such a relay cannot hold a cursor still, so every cycle re-serves what the last one already took."],
+  ["ingest", "ingest", "The queue every downloaded event passes through on its way to the store. Full means downloads are backpressured behind it."],
+  ["reachability", "reachability", "The NIP-66 monitor: which urls have been observed at all, and which carry a current unreachability record that holds them out of every fan-out."],
+  ["heal", "healer", "Events this mirror holds that a relay which should have them does not, pushed back to it."],
+  ["upstreamPush", "upstream push", "Events published to this relay and forwarded on to the upstreams configured to receive them."],
 ];
 
-/**
- * What a big number is MADE OF — in numbers, not a second bar.
- *
- * Ingest's rejections and a probe pass's undecided hosts are the same shape of
- * fact: a total nobody can act on until it is split. A mirror is offered the
- * same event once per relay holding it, so rejecting most of what arrives is
- * the pipeline working — and the total alone cannot say that.
- *
- * This drew the split as a stacked bar under the row's meter, and it had to
- * go. Two bars of identical form, stacked, dividing DIFFERENT wholes and
- * neither of them labelled: the top one is the queue against its capacity, the
- * bottom one is a share of `rejected`, a total that appears nowhere on the row.
- * The first question it got was "why does ingest have two bars", which is the
- * only question a mark like that can produce. The numbers are the split, and
- * they say it in the space the bar was taking.
- */
-function breakdown(p) {
-  const rows = ((p.rejections || {}).reasons || []).map((r) => [r.reason, r.events])
-    .concat((((p.streams || [])[0] || {}).undecided?.reasons || []).map((r) => [r.reason, r.hosts]));
-  if (!rows.length) return null;
-  // The two biggest named, the rest on the title. Four of the fold's five
-  // reasons recover on their own and one never will, and from outside the
-  // router they are the same silence — which is why the reasons are published
-  // at all.
-  const lab = el("p", "foot", rows.slice(0, 2).map(([reason, n]) => `${short(n)} ${reason}`).join(" · "));
-  lab.title = rows.map(([reason, n]) => `${fmt(n)} — ${reason}`).join("\n");
-  lab.style.gridColumn = "3 / -1";
-  return lab;
-}
-
-/**
- * One processor as one row: name, state, how far along, and the one number that
- * matters for it.
- *
- * A grid rather than a paragraph so the meters line up down a column, which is
- * what makes "the fold is stuck and ingest is not" a glance instead of a read —
- * and see `meterOf` for why the two kinds of meter in that column are drawn
- * differently rather than identically.
- */
-function processorRow(p, series) {
-  const known = PROCESSORS.find((row) => row[0] === p.name);
-  const row = el("div", "dec");
-  const nm = el("span", "nm", known ? known[1] : p.name);
-  if (known) nm.title = known[2];
-  row.appendChild(nm);
-
-  // `off` is the one phase whose elapsed clock says nothing: it means this
-  // deployment gives the processor no work at all — the probe passes on a
-  // router whose upstreams are every one of them named by hand — and "off for
-  // 24h" reads as an outage rather than as a configuration.
-  const state = el("span");
-  state.appendChild(chip(
-    p.phase === "off"
-      ? "off"
-      : `${p.phase || "unknown"}${p.nextInSec != null ? (p.nextInSec === 0 ? " · due" : ` · ${fmtDur(p.nextInSec)}`) : ""}`,
-    p.phase === "off" ? "warn" : p.phase === "measuring" || p.phase === "running" ? "busy" : null,
-    (p.phase === "off"
-      ? "this router discovers no relays, so there is nothing for this pass to measure"
-      : term(p.phase) || "") +
-    (p.nextInSec != null ? `\n\nnext pass: ${term("nextInSec")}` : "") +
-    (p.lastPassSec != null ? `\n\nthe last pass took ${fmtDur(p.lastPassSec)}` : "") +
-    (p.passesRun != null ? `\n\n${fmt(p.passesRun)} pass(es) so far` : "")));
-  row.appendChild(state);
-
-  const bar = el("span", "frac");
-  const meter = meterOf(p);
-  let right = "";
-  let meterSpark = null;
-  if (meter && meter.kind === "progress") {
-    const i = el("i");
-    i.style.width = meter.share * 100 + "%";
-    bar.appendChild(i);
-    bar.title = `progress: ${fmt(meter.decided)} of ${fmt(meter.candidates)} url(s) carry a verdict\n\n${term("unmeasured")}`;
-    right = `${fmt(meter.left)} left`;
-  } else if (meter && meter.kind === "level") {
-    // A LEVEL, not progress — see the `.frac i.level` rule. Nothing about a
-    // half-full queue is half-done, and drawing it in the same tone as the
-    // fold's progress said it was.
-    const q = el("i", meter.tone ? "level warn" : "level");
-    q.style.width = meter.share * 100 + "%";
-    bar.appendChild(q);
-    bar.title = `queue level: ${fmt(meter.queued)} of ${fmt(meter.capacity)}` +
-      (meter.full ? " — FULL, downloads are backpressured behind it" : " — a level, not progress; empty is healthy") +
-      `\n\n${term("queued")}`;
-    // The split, never the bare total: `rejected` is mostly the same event
-    // offered once per relay holding it, and `dropped` is the sweep declining
-    // to backpressure itself. Both are on the title; the numbers under the row
-    // are where `rejected` is broken out.
-    right = `${short(p.accepted || 0)} stored`;
-    bar.title += `\n\n${fmt(p.rejected || 0)} rejected` +
-      (p.dropped != null ? `, ${fmt(p.dropped)} dropped rather than backpressure the sweep` : "");
-    // THE ONE METER WHOSE HISTORY DECIDES ANYTHING. A queue at its ceiling is
-    // the constraint if it has been there ten minutes and noise if it filled
-    // this second, and the level alone cannot say which. Drawn as a LINE beside
-    // the filled bar rather than as a second bar — the last thing under this
-    // meter was a second bar, and the only question it produced was why there
-    // were two of them.
-    meterSpark = p.name === "ingest" ? spark(series, "queued") : null;
-  } else if (p.observed != null) {
-    // NO METER. `knownDead` is read from the STORE and `observed` is this
-    // process's sockets since boot — different populations, so there is no
-    // whole for either to be a part of. A restarted mirror reports 1,609
-    // known dead against 5 observed, and any bar dividing them is arithmetic
-    // on unrelated sets.
-    bar.style.visibility = "hidden";
-    right = `${short(p.knownDead || 0)} dead`;
-    row.title = `${fmt(p.knownDead || 0)} url(s) carry an unreachability record in the store — skipped by every` +
-      ` fan-out until it ages out\n\n${fmt(p.observed)} url(s) watched on a socket since this router started` +
-      `\n\n${term("knownDead")}`;
-  } else if (p.pushed != null) {
-    bar.style.visibility = "hidden";
-    right = `${fmt(p.pushed)} pushed`;
-  } else {
-    // Built and never run. An empty meter is a claim of zero progress;
-    // absence is the honest mark.
-    bar.style.visibility = "hidden";
-    right = p.phase === "off" ? "nothing to measure" : "no pass yet";
-  }
-  const cell = el("div", "meter");
-  cell.appendChild(bar);
-  if (meterSpark) {
-    cell.appendChild(meterSpark.svg);
-    bar.title += `\n\n${meterSpark.note}`;
-  }
-  row.appendChild(cell);
-  row.appendChild(el("span", "r", right));
-
-  const stack = breakdown(p);
-  if (stack) row.appendChild(stack);
-  // The one number here that means DATA LOSS: events that passed every check
-  // and then could not be written. Drawn only when non-zero and never folded
-  // into a count, because a loss counter at 0 belongs in the JSON and a loss
-  // counter above 0 belongs in front of an operator.
-  if (p.lostToStore) {
-    const a = el("p", "alarm",
-      `${fmt(p.lostToStore)} event(s) LOST to store errors — good events, accepted and then not written`);
-    a.title = `${term("lostToStore")}\n\nThat is a store problem to chase, not a mirror one.`;
-    a.style.gridColumn = "1 / -1";
-    row.appendChild(a);
-  }
-  return row;
-}
-
-/** The processors, in the order [PROCESSORS] names them, with anything unrecognised kept at the end. */
-function processorsPanel(progress) {
+function backgroundPanel(progress) {
   const rows = (progress && progress.processors) || [];
   if (!rows.length) return null;
-  const order = PROCESSORS.map((r) => r[0]);
-  // Unknown names sort last rather than being dropped: a row this page has not
-  // been taught about is still the router saying something is running.
-  const sorted = rows.slice().sort((a, b) => {
-    const ai = order.indexOf(a.name), bi = order.indexOf(b.name);
-    return (ai < 0 ? order.length : ai) - (bi < 0 ? order.length : bi);
-  });
-  const wrap = el("div");
-  // The boundary between the streams and the jobs beside them, for the reason
-  // `cyc-end` exists at all: every gap in this card is 12-14px, so without a
-  // rule the first processor reads as one more stream.
-  wrap.appendChild(el("hr", "cyc-end"));
-  const head = el("p", "card-sub");
-  head.appendChild(el("b", null, "Also running: "));
-  head.append(
-    "the two probe passes that decide which discovered urls are worth dialling, the NIP-66 monitor that watches every" +
-    " socket, and the pipelines events pass through. All three of the first group write onto the same kind-30166" +
-    " record per url — the Monitor verdicts panel below is where one url's whole record is read.");
-  wrap.appendChild(head);
-  for (const p of sorted) wrap.appendChild(processorRow(p, progress.series));
-  return wrap;
+  const box = el("div", "sy-bg");
+  for (const p of rows) {
+    const known = BACKGROUND.find((row) => row[0] === p.name);
+    const name = el("b", null, known ? known[1] : p.name);
+    if (known) name.title = known[2];
+    box.appendChild(name);
+    box.appendChild(el("em", null,
+      `${p.phase || "unknown"}${p.nextInSec ? ` · next in ${fmtDur(p.nextInSec)}` : ""}`));
+    box.appendChild(processorFact(p));
+  }
+  return box;
 }
+
+/**
+ * WHAT ONE BACKGROUND PASS HAS TO SHOW FOR ITSELF.
+ *
+ * One line, and only counters that mean something on their own. A loss counter
+ * is drawn LOUD and only when non-zero: at zero it belongs in the JSON, above
+ * zero it belongs in front of an operator.
+ */
+function processorFact(p) {
+  const cell = el("span");
+  /** Append a fact, hanging the document's own words on it where it has some. */
+  const add = (text, key, loud) => {
+    const part = el(loud ? "s" : "span", null, cell.children.length ? ` · ${text}` : text);
+    // Guarded: `term` answers "" for a key this document does not carry, and an
+    // EMPTY title still sets the attribute — which paints the help cursor over
+    // a tooltip the browser then declines to show.
+    const why = key && term(key);
+    if (why) part.title = why;
+    cell.appendChild(part);
+  };
+  if (p.capacity) {
+    const full = (p.queued || 0) >= p.capacity;
+    add(`queue ${fmt(p.queued || 0)} of ${fmt(p.capacity)}${full ? " — FULL, downloads are backpressured behind it" : ""}`,
+        "queued", full);
+    if (p.accepted != null) add(`${short(p.accepted)} stored`, "accepted");
+    // Mostly the same event offered once per relay holding it, which is why it
+    // is drawn beside `accepted` and never as a failure on its own.
+    if (p.rejected != null) add(`${short(p.rejected)} refused, mostly duplicates`, "rejected");
+    if (p.lostToStore) add(`${fmt(p.lostToStore)} LOST TO THE STORE`, "lostToStore", true);
+    return cell;
+  }
+  const streams = p.streams || [];
+  if (streams.length) {
+    // Summed, and the stream count said out loud: a total with no denominator
+    // was how a fold that never received two streams looked identical to one
+    // that had measured them.
+    const left = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
+    const of = streams.reduce((a, w) => a + (w.candidates || 0), 0);
+    add(`${fmt(left)} of ${fmt(of)} url(s) still with no verdict, across ${fmt(streams.length)} stream(s)`, "unmeasured");
+    return cell;
+  }
+  if (p.knownDead != null) {
+    if (p.observed != null) add(`${fmt(p.observed)} url(s) observed`, "observed");
+    add(`${fmt(p.knownDead)} held out of every fan-out as unreachable`, "knownDead");
+    return cell;
+  }
+  if (p.pushed != null) {
+    add(`${fmt(p.pushed)} event(s) pushed back to relays missing them`, "pushed");
+    // The sweep declining to backpressure itself, which is a choice and not a
+    // fault — so it is drawn plainly however large it gets.
+    if (p.dropped) add(`${short(p.dropped)} dropped rather than backpressure the sweep`, "dropped");
+    return cell;
+  }
+  return cell;
+}
+
+/**
+ * HOW DEEP THE COVERAGE IS — every walked band at once, as how many relays
+ * reach each point in the frame.
+ *
+ * This replaces the per-relay table. That table was 10,462 rows behind a filter
+ * box, and answering "is the mirror deep or only recent" from it meant reading
+ * every row. The distribution answers it in one glance and the per-relay spans
+ * are still in the document for anything that needs them.
+ */
+const DEPTH_BUCKETS = 72;
+
+function coveragePanel(d) {
+  const streams = d.streams || [];
+  if (!streams.length || d.from == null || d.to == null) return null;
+  const box = el("div");
+  const settled = streams.reduce((a, s) => a + (s.reconciled || 0), 0);
+  const open = streams.reduce((a, s) => a + (s.paged || 0), 0);
+  const facts = [];
+  if (d.relays != null) facts.push(`${fmt(d.relays)} relay(s) on ${fmt(d.hosts || 0)} host(s) have coverage recorded`);
+  // A DIFFERENT DENOMINATOR, said out loud. `reconciled` and `paged` are per
+  // stream-and-relay, so one relay two streams both walked counts twice and
+  // these do NOT add up to the relay count above them. Naming them "walk(s)"
+  // is what stops the two numbers reading as parts of one whole.
+  if (settled || open) {
+    facts.push(`${fmt(settled + open)} walk(s) — ${fmt(settled)} settled, ${fmt(open)} not proven exhaustive`);
+  }
+  box.appendChild(el("div", "sy-sub", facts.join(" · ")));
+
+  const span = Math.max(1, d.to - d.from);
+  const depth = new Array(DEPTH_BUCKETS).fill(0);
+  let rows = 0;
+  for (const s of streams) {
+    for (const r of s.rows || []) {
+      if (r.min == null || r.max == null) continue;
+      rows++;
+      const a = Math.max(0, Math.min(DEPTH_BUCKETS - 1, Math.floor(((r.min - d.from) / span) * DEPTH_BUCKETS)));
+      const b = Math.max(0, Math.min(DEPTH_BUCKETS - 1, Math.floor(((r.max - d.from) / span) * DEPTH_BUCKETS)));
+      for (let i = a; i <= b; i++) depth[i]++;
+    }
+  }
+  if (!rows) return box;
+  const peak = Math.max(...depth, 1);
+  const strip = el("div", "sy-depth");
+  depth.forEach((n, i) => {
+    const bar = el("i");
+    // A bucket nothing reaches keeps its 1px floor from the stylesheet, so the
+    // gap reads as a gap rather than as the strip ending early.
+    bar.style.height = Math.round((n / peak) * 100) + "%";
+    const at = d.from + (i / DEPTH_BUCKETS) * span;
+    bar.title = `${dayOf(at)} — ${fmt(n)} of ${fmt(rows)} walked band(s) reach here`;
+    strip.appendChild(bar);
+  });
+  box.appendChild(strip);
+  const axis = el("div", "sy-axis");
+  axis.appendChild(el("span", null, dayOf(d.from)));
+  axis.appendChild(el("span", null, `peak ${fmt(peak)} of ${fmt(rows)} band(s)`));
+  axis.appendChild(el("span", null, "now"));
+  box.appendChild(axis);
+  return box;
+}
+
 
 /** `4m` / `2h 10m` — a duration in seconds, for the phase clock. */
 function fmtDur(sec) {
@@ -2321,473 +2014,76 @@ function fmtDur(sec) {
 }
 
 /**
- * How much of each stream's relay list is in sync, and how far the current
- * sweeps have got.
+ * IS THE SYNC WORKING, AND HOW FAR HAS IT GOT — and nothing else.
  *
- * Three facts per relay, on one mark. The bar's EXTENT is the created_at span
- * already walked; its TONE is whether that span was reconciled (negentropy
- * finished — provably identical) or merely paged (we asked and stored what came
- * back); and its right edge against `now` is freshness. The sweep cursor rides
- * the same row in a warm tone with a leading edge at `downTo`, because a sweep
- * killed at 80% records no band at all — without the cursor a relay mid-walk is
- * indistinguishable from one nobody has touched, which is the state this card
- * exists to reveal.
+ * ## What this card stopped saying, and why
  *
- * THE FRAME IS NOT A TARGET. These filters carry no `since`, so "100% covered"
- * is not a defined quantity; the frame is the oldest span anything here reaches
- * and exists to make two relays comparable, not to grade them. The note under
- * the card says so, and should not be trimmed for the same reason the scope
- * line under the title is not.
+ * It used to carry the worker/transfer pair, a per-leg table, an eight-way
+ * outcome partition, a legend, a filter box and one row per relay — 10,462 of
+ * them on this deployment. Measured against the two questions above, almost
+ * none of it answered either.
  *
- * `relays` counts the relays a stream has TOUCHED, never the relays it was
- * configured with. The router's manifest says which streams exist and what
- * kinds they ask for (see [mirrorLine]) but names no urls — a dynamic stream's
- * relay list is discovered, so there is no configured list to publish. A "never
- * asked" count would be the honest headline and it is still not available here;
- * see SyncCoverageReport.
+ * The test that removed them: A MARK THAT READS THE SAME ON A HEALTHY SYSTEM
+ * EVERY TIME IS NOT A MARK. `100 of 512 workers downloading` was the clearest
+ * case — both numbers are config ceilings (`concurrency` and `admissionWidth`),
+ * so every busy stream on every deployment renders exactly that, forever. It
+ * was the implementer's argument for splitting the two gates, printed where an
+ * operator has to scroll past it. That argument belongs in the KDoc, where it
+ * already is.
  *
- * The URL FILTER is the same bargain as the Kinds one: a fan-out puts thousands
- * of rows in this card and "how far back is nos.lol" should not be a scroll.
- * What it hides it hides EVERYWHERE — the depth strip and the group counts are
- * recomputed over the rows still on screen, because a strip drawn over 4,000
- * relays above three visible rows is a mark answering a question the reader is
- * no longer asking. See [statOf] for the one number a subset cannot restate.
+ * The per-relay table went for the opposite reason: it varied so much that
+ * reading it was the work. "Is coverage deep or only recent" needed all 10,462
+ * rows; it is now one distribution.
+ *
+ * ## What is left
+ *
+ * One status line (working?), one block per stream (progress), one line per
+ * background pass (the faults that show up nowhere else — a stalled fold makes
+ * the fan-out download one relay once per url), and one depth strip (how far
+ * back the coverage actually goes).
+ *
+ * Nothing was removed from `/stats.json`. Every number this card stopped
+ * drawing is still published; what changed is which of them a person is made
+ * to read.
  */
 function syncCard(section) {
   const d = (section && section.data) || {};
   const streams = d.streams || [];
+  const progress = d.progress;
   const card = el("div", "card");
-  cardHead(card, "Sync coverage", streams.length ? null : "No sync state in this document.", section);
-  // WHAT the mirror holds, above how far it has got. Placed before the early
-  // return on purpose: a router that has walked nothing still knows its own
-  // filters, and that state — configured, not yet started — is one this card
-  // could otherwise only describe as emptiness.
-  const mirrors = mirrorLine(d.mirrors);
-  if (mirrors) card.appendChild(mirrors);
-  // ABOVE the bars, and before the early return: what the router is doing right
-  // now is the question asked first, and it is the one thing on this card that
-  // still has an answer when the mirror has walked nothing at all. A router
-  // three minutes into its first cycle used to render as an empty card.
+  cardHead(card, "Sync coverage", streams.length || progress ? null : "No sync state in this document.", section);
   // The glossary this card's marks explain themselves with, before anything
   // below draws. It is the document's own, so a chip cannot describe a member
   // in words the router would not use — see `term` and `SyncVocabularyTest`.
   TERMS = d.terms || {};
-  const progress = progressPanel(d.progress, d);
-  if (progress) card.appendChild(progress);
-  // …and the work that is not a stream at all. Under the streams because a
-  // reader asks "is the mirror running" before "has the fold got to this host
-  // yet", and above the coverage bars because both halves are about what the
-  // router is doing NOW rather than where it has walked.
-  const others = processorsPanel(d.progress);
-  if (others) card.appendChild(others);
-  // The boundary between the card's two subjects — what the router is doing
-  // now, and how far it has walked. Every gap in here was 12-14px, including
-  // the one between those two, so they never separated; the rule plus the space
-  // above it is what makes the cycle blocks read as members of the panel rather
-  // than as peers of the section below.
-  //
-  // Appended only when BOTH sides exist. A router mid-first-cycle has progress
-  // and no coverage, and an unconditional rule would end that card with a line
-  // ruling off nothing.
-  if ((progress || others) && streams.length) card.appendChild(el("hr", "cyc-end"));
-  if (!streams.length) return card;
+  if (progress) card.appendChild(statusRow(progress));
 
-  const from = d.from, to = d.to;
-  const span = Math.max(1, to - from);
-  // CLAMPED to the frame. A band's `max` is the newest created_at an upstream
-  // served, and created_at is author-signed — quartz accepts one up to about a
-  // day ahead of now (further is refused as implausible), so a bar can legally
-  // want to start or end past the frame's right edge. Unclamped it paints
-  // outside its own track, and the arithmetic that produces it is the same
-  // arithmetic that would run away entirely if `to - from` were ever negative.
-  const pct = (t) => Math.max(0, Math.min(100, ((t - from) / span) * 100));
-  const day = (t) => new Date(t * 1000).toISOString().slice(0, 10);
-
-  const legend = el("div", "legend");
-  for (const [tone, text] of [
-    // The words are the document's, not this page's — see `sync.terms`. "done"
-    // used to cover three different states here and elsewhere; these are the
-    // two the bar can actually distinguish.
-    ["done", "settled — nothing outstanding below this span"],
-    ["paged", "open — walked, not proven exhaustive"],
-    ["live", "sweeping now"],
-  ]) {
-    const s = el("span");
-    const b = el("b");
-    b.style.background = tone === "paged" ? "var(--bar)" : tone === "done" ? "var(--accent)" : "var(--warn)";
-    if (tone === "live") b.style.opacity = ".55";
-    s.appendChild(b);
-    s.append(text);
-    legend.appendChild(s);
+  const lanes = (progress && progress.streams) || [];
+  if (lanes.length) {
+    card.appendChild(el("p", "sy-h", "streams"));
+    for (const s of lanes) card.appendChild(streamBlock(s));
   }
-  // NOT appended here. It is built with the tones it describes, but it belongs
-  // BESIDE the bars — it went in directly under the cycle panel, 14px from the
-  // stacked bars it says nothing about and ~60px above the coverage bars it is
-  // the key to. It is placed below, under the filter row.
 
-  /** Year ticks, plus the two ends — the frame spans years, so months would be a smear. */
-  const axis = () => {
-    const outer = el("div", "axis");
-    const track = el("div", "axis-track");
-    outer.appendChild(track);
-    const marks = [[from, day(from)]];
-    for (let y = new Date(from * 1000).getUTCFullYear() + 1; y <= new Date(to * 1000).getUTCFullYear(); y++) {
-      marks.push([Date.UTC(y, 0, 1) / 1000, String(y)]);
-    }
-    marks.push([to, "now"]);
-    marks.forEach(([t, label], i) => {
-      if (t < from || t > to) return;
-      const s = el("span", i === 0 ? "first" : i === marks.length - 1 ? "last" : null, label);
-      s.style.left = pct(t) + "%";
-      track.appendChild(s);
-    });
-    return outer;
-  };
-
-  /**
-   * Lay one mark on the track, never past either edge.
-   *
-   * Every mark carries a MINIMUM width, because a single day inside a
-   * five-year frame is a fraction of a pixel and a relay that has covered one
-   * day has not covered nothing. That minimum is what makes the ends
-   * dangerous: a band starting at the frame's right edge — a future-dated
-   * `created_at`, which quartz accepts up to about a day out — placed its
-   * sliver outside the track. So the start is pulled back far enough to fit
-   * the minimum, and the width is capped by what is left. The track also
-   * clips, which covers any future slip in this arithmetic.
-   */
-  const MIN_MARK = 0.3;
-  const place = (node, a, b) => {
-    const left = Math.min(pct(a), 100 - MIN_MARK);
-    node.style.left = left + "%";
-    node.style.width = Math.max(MIN_MARK, Math.min(100 - left, pct(b) - left)) + "%";
-  };
-
-  const row = (r) => {
-    const wrap = el("div", "cov-row");
-    const lab = el("div", "cov-lab");
-    // The url in its own LTR isolate inside the rtl box — see `.cov-lab`. The
-    // box being rtl is what puts the ellipsis on the left; the isolate is what
-    // stops that direction leaking into the url's own punctuation and quietly
-    // rewriting the address.
-    const url = el("span", null, String(r.relay).replace(/^wss:\/\//, ""));
-    url.dir = "ltr";
-    lab.appendChild(url);
-    lab.title = r.relay;
-    wrap.appendChild(lab);
-    const track = el("div", "track");
-    if (r.min != null && r.max != null) {
-      const seg = el("i", `cov-seg ${r.complete ? "done" : "paged"}`);
-      place(seg, r.min, r.max);
-      seg.title =
-        `${r.relay}\n${day(r.min)} → ${day(r.max)} — the span this stream WALKED here\n` +
-        // A band is walk state, not holdings, and the two were read as one. A
-        // floor newer than the oldest stored event of that kind is ordinary:
-        // another stream, or an earlier config, put those events in the store.
-        `(walk state for this stream, not what the store holds)\n` +
-        // `complete` stopped meaning "negentropy" when a drained paged walk
-        // started earning it too — an EOSE on an empty page proves the same
-        // thing a finished reconcile does, that there is nothing left below.
-        // Saying "negentropy" here would report every `sync = "fetch"` relay
-        // as reconciled, which is a claim about HOW, not about what is covered.
-        (r.complete ? "settled — nothing left outstanding below this span" : "paged — walked, not proven exhaustive") +
-        (r.target ? `\nwindow ${fmt(r.target)}${r.cap ? ` (peer cap ${fmt(r.cap)})` : ""}` : "");
-      track.appendChild(seg);
-      // Present only when the per-kind spans disagree — one band holds a span
-      // per kind and min/max are the outer edges, so the widest kind sets them.
-      // This is the intersection: the part no kind is missing evidence for.
-      //
-      // EVIDENCE, not coverage, and the wording says so. A band's span is built
-      // from the events actually received per kind, so a floor above the outer
-      // one means "the oldest event of that kind we have seen", which is not
-      // the same as "we never walked below it" — a walk that ran that deep and
-      // found nothing looks identical here. Calling it "covered only from"
-      // asserted a gap the data cannot support.
-      if (r.everyKindMin != null) {
-        const inner = el("i", "cov-seg every");
-        place(inner, r.everyKindMin, r.everyKindMax);
-        inner.title =
-          `evidence for every kind in this filter reaches only ${day(r.everyKindMin)} → ${day(r.everyKindMax)}\n` +
-          `outside it at least one kind has none, so the band cannot vouch for it`;
-        track.appendChild(inner);
-      }
-    }
-    if (r.sweep) {
-      const live = el("i", "cov-seg live");
-      place(live, r.sweep.downTo, r.sweep.upTo);
-      live.title = `sweeping — reconciled down to ${day(r.sweep.downTo)}, last advanced ${ago(r.sweep.at)}`;
-      track.appendChild(live);
-      const edge = el("i", "cov-seg edge");
-      edge.style.left = Math.min(pct(r.sweep.downTo), 100 - MIN_MARK) + "%";
-      track.appendChild(edge);
-    }
-    wrap.appendChild(track);
-    return wrap;
-  };
-
-  /**
-   * For each bucket, how many of the group's relays cover it.
-   *
-   * ONE pass over the relays, adding each into the bucket range it spans —
-   * not a `filter()` per bucket. A band is one contiguous interval, so its
-   * first and last bucket are arithmetic and everything between is covered by
-   * definition; scanning all relays per bucket asked the same question 96
-   * times and allocated an array each time. Measured on 4,172 relays: 26ms of
-   * every render, down to 3ms.
-   */
-  const depthStrip = (rows, buckets = 96) => {
-    const strip = el("div", "depth");
-    const step = span / buckets;
-    const n = new Int32Array(buckets), done = new Int32Array(buckets);
-    for (const r of rows) {
-      if (r.min == null || r.max == null) continue;
-      const lo = Math.max(0, Math.floor((r.min - from) / step));
-      const hi = Math.min(buckets - 1, Math.floor((r.max - from) / step));
-      for (let i = lo; i <= hi; i++) {
-        n[i]++;
-        if (r.complete) done[i]++;
-      }
-    }
-    for (let b = 0; b < buckets; b++) {
-      const i = el("i", done[b] ? null : "thin");
-      // OVER EVERY ROW IN THE GROUP, which is the same denominator the tooltip
-      // prints. The height used to divide by the relays that have a band at all,
-      // so a bucket every banded relay covered drew FULL while its own tooltip
-      // read "14 of 28 relays" — a mark claiming the list is in sync over a
-      // number saying half of it is. A relay nobody has got a band from covers
-      // nothing, and this card exists to make that visible rather than to
-      // normalise it away; it is the closest this page gets to the "never asked"
-      // count SyncCoverageReport says it cannot give.
-      i.style.height = Math.max(1, (n[b] / Math.max(1, rows.length)) * 24) + "px";
-      i.title = `${day(from + b * step)} — ${fmt(n[b])} of ${fmt(rows.length)} relays walked here (${fmt(done[b])} settled)`;
-      strip.appendChild(i);
-    }
-    return strip;
-  };
-
-  /**
-   * A group's counts, restated over whichever of its rows are on screen.
-   *
-   * Every term here is derivable from the rows themselves and agrees with the
-   * document's own numbers when nothing is filtered — one row per relay, a band
-   * carries min/max, `sweeping` is the rows with a cursor. That is why the
-   * filtered head can be recomputed at all rather than left to contradict the
-   * list under it.
-   *
-   * `legs` is the exception and is dropped the moment a filter is on: it counts
-   * BANDS across a narrow's legs, not relays, and no arithmetic over a subset of
-   * rows can recover the number for that subset. Carrying the group's total
-   * down beside three rows would be a count of something not on screen, which
-   * is the failure mode every other number on this card is arranged to avoid.
-   */
-  const statOf = (rows, total) => {
-    let reconciled = 0, paged = 0, sweeping = 0;
-    for (const r of rows) {
-      if (r.min != null && r.max != null) {
-        if (r.complete) reconciled++;
-        else paged++;
-      }
-      if (r.sweep) sweeping++;
-    }
-    return (
-      `${fmt(reconciled)} settled · ${fmt(paged)} open` +
-      (sweeping ? ` · ${fmt(sweeping)} sweeping` : "") +
-      // The denominator stays visible, same rule as the Kinds table: a head
-      // reading "3 relays walked" describes a stream that walked thousands.
-      ` · ${fmt(rows.length)} of ${fmt(total)} relays walked`
-    );
-  };
-
-  // Above the list and below the legend, so the control sits against the thing
-  // it controls. Matching on the FULL url including `wss://`, not on the text
-  // the row draws with that scheme stripped: the displayed form is a substring
-  // of the full one, so this can only ever show a row the visible text also
-  // matches — while still answering a reader who typed the whole address in.
-  const controls = el("div", "bar-row");
-  const filter = el("input");
-  filter.type = "search";
-  // Named, because render() restores what was typed by name — there are two
-  // search boxes on this page now and they must not restore into each other.
-  filter.name = "sync";
-  filter.placeholder = "filter by relay url";
-  filter.setAttribute("aria-label", "filter relays by url");
-  const status = el("span", "status");
-  controls.appendChild(filter);
-  controls.appendChild(status);
-  card.appendChild(controls);
-  // The key, immediately above the track it is a key to.
-  card.appendChild(legend);
-
-  // One scroll box for every stream, and one axis pinned at its top: the frame
-  // is shared by design — that is what makes two streams comparable — so a
-  // per-stream axis would be the same ruler drawn N times and would stop being
-  // sticky the moment its stream scrolled past.
-  const scroll = el("div", "wrap tall cov");
-  const pinned = axis();
-  pinned.classList.add("pin");
-  scroll.appendChild(pinned);
-
-  const groups = [];
-  for (const s of streams) {
-    const box = el("div", "grp");
-    const head = el("div", "grp-head");
-    const name = el("div", "grp-name");
-    // The router's own stream name, when the state files carry one. They did
-    // not before the format nested by stream, so a group read from a
-    // pre-stream key still falls back to being labelled by its filter alone —
-    // which is what every group used to be.
-    if (s.name) {
-      const who = el("span", "grp-stream", s.name);
-      who.title = `router stream "${s.name}"`;
-      name.appendChild(who);
-    } else if (s.unnamed) {
-      // SAID, not left to be inferred from a missing label. Two of these turned
-      // up on a production card carrying 2,600 relays between them and no
-      // identity at all, which reads as two undocumented mirrors rather than as
-      // one migration shim.
-      const who = el("span", "grp-stream", "unnamed");
-      who.title =
-        "state written before the router's files nested by stream, so these keys name no stream. " +
-        "Not a second mirror — it disappears once every deployment has booted on a build that writes the nested shape.";
-      name.appendChild(who);
-    }
-    const kinds = (s.filter && s.filter.kinds) || [];
-    // What the group's legs were split BY, spelled out. A `relaySource` that
-    // binds authors gives every relay its own filter, so this one group is
-    // thousands of per-author asks — and without saying so, its chip is
-    // indistinguishable from the same kinds asked of every relay whole, which
-    // is a different and much stronger claim.
-    const narrowedBy = s.narrowedBy || [];
-    // Singular, because the phrase is "per author" — the member's name is the
-    // filter's plural array and reads as "per authors" straight out of it.
-    const per = (m) => (m.startsWith("#") ? `tag ${m.slice(1)}` : m.replace(/s$/, ""));
-    const label =
-      (kinds.length ? `kinds ${kinds.join(", ")}` : "every kind") +
-      (narrowedBy.length ? ` · per ${narrowedBy.map(per).join(" + ")}` : "");
-    const chip = el("code", null, label);
-    // The chip is clipped to one line, so the full list has to live somewhere:
-    // "kinds 1, 6, 7, 16, 1111, …" and "kinds 1, 6, 7, 16, 30023, …" are two
-    // different streams and the ellipsis is exactly where they differ.
-    chip.title = label;
-    name.appendChild(chip);
-    head.appendChild(name);
-    const stat = el("div", "grp-stat",
-      `${fmt(s.reconciled || 0)} settled · ${fmt(s.paged || 0)} open` +
-      (s.sweeping ? ` · ${fmt(s.sweeping)} sweeping` : "") +
-      ` · ${fmt(s.relays || 0)} relays walked` +
-      // Beside the url count, never instead of it. One server answers on every
-      // path, so a relay list mints urls without limit and every url-keyed
-      // number here is inflated until the alias fold decides them — measured,
-      // 3,272 urls on 850 hosts. The GAP is the disclosure.
-      (s.hosts != null && s.hosts !== s.relays ? ` on ${fmt(s.hosts)} host(s)` : "") +
-      // Present only when a narrow asked one relay more than once, and then it
-      // is the number that explains the other three: these counts are per
-      // RELAY, and a relay counts as reconciled only when every leg of it did.
-      (s.legs ? ` · ${fmt(s.legs)} legs` : ""));
-    head.appendChild(stat);
-    box.appendChild(head);
-    const rows = s.rows || [];
-    // The strip gets a slot of its own rather than being appended straight to
-    // the group: filtering redraws it from the surviving rows, and it comes and
-    // goes with the 24-row threshold, so the filter needs somewhere to put the
-    // new one that is still between the head and the first row.
-    const stripBox = el("div");
-    box.appendChild(stripBox);
-    if (rows.length > 24) stripBox.appendChild(depthStrip(rows));
-    // EVERY relay, no top-N: the relays a cap would drop are the ones the
-    // question is about. Same argument as the Kinds table.
-    const nodes = rows.map(row);
-    for (const node of nodes) box.appendChild(node);
-    scroll.appendChild(box);
-    // Lowercased ONCE per relay rather than per keystroke: this array runs to
-    // thousands of urls on a fan-out and the filter re-reads all of them on
-    // every character typed.
-    groups.push({ box, stat, stripBox, rows, nodes, urls: rows.map((r) => String(r.relay).toLowerCase()) });
+  const background = backgroundPanel(progress);
+  if (background) {
+    card.appendChild(el("p", "sy-h", "background passes"));
+    card.appendChild(background);
   }
-  card.appendChild(scroll);
 
-  // Distinct across streams, because the same relay is a row in every stream
-  // that walked it — summing the rows would report a list several times its own
-  // length. The set is the card's denominator and does not change, so it is
-  // built once and only the matching side is recounted.
-  const every = [...new Set(groups.flatMap((g) => g.urls))];
-  // Shown only when a query empties the card. The scroll box goes with it: what
-  // is left in there is the pinned axis over nothing, which reads as a card
-  // that failed to load rather than as a filter that matched nothing.
-  const none = el("p", "why cov-none");
-  none.hidden = true;
-  card.appendChild(none);
-
-  // What the heads read as built: the document's own numbers, `legs` and all,
-  // restored verbatim when the box is emptied rather than recomputed — an
-  // unfiltered card should print exactly what SyncCoverageReport published.
-  const statText = groups.map((g) => g.stat.textContent);
-  // Whether the last pass drew a narrowed view. Without it the first render —
-  // and every keystroke that leaves the box empty — pays to rebuild strips and
-  // heads that already hold the values it is about to write back.
-  let narrowed = false;
-
-  const applyFilter = () => {
-    const q = filter.value.trim().toLowerCase();
-    let live = 0;
-    groups.forEach((g, gi) => {
-      const kept = [];
-      g.nodes.forEach((node, i) => {
-        const hit = !q || g.urls[i].includes(q);
-        node.hidden = !hit;
-        if (hit) kept.push(g.rows[i]);
-      });
-      // A stream with nothing left is hidden whole — its head and depth strip
-      // are about relays that are no longer on screen.
-      g.box.hidden = !kept.length;
-      if (kept.length) live++;
-      if (!q && !narrowed) return;
-      g.stripBox.replaceChildren();
-      const drawn = q ? kept : g.rows;
-      if (drawn.length > 24) g.stripBox.appendChild(depthStrip(drawn));
-      g.stat.textContent = q ? statOf(kept, g.rows.length) : statText[gi];
-    });
-    narrowed = !!q;
-    const hits = q ? every.reduce((n, u) => n + (u.includes(q) ? 1 : 0), 0) : every.length;
-    status.textContent =
-      (q ? `${fmt(hits)} of ${fmt(every.length)} relays` : `${fmt(every.length)} relays`) +
-      // Named only while filtering, and only when it costs the reader a group:
-      // a vanished stream is otherwise a silent omission on the one card whose
-      // job is to show what is missing.
-      (q && live < groups.length ? ` · ${fmt(live)} of ${fmt(groups.length)} streams` : "");
-    // Gated on the QUERY, not just on `live`. A document whose streams carry no
-    // rows would otherwise hide its own list and print "…contains “”" — nothing
-    // upstream can produce that shape today, but `s.rows || []` above says this
-    // function does not assume so, and "no match" and "nothing to show" are not
-    // the same state to report.
-    const empty = !!q && !live;
-    scroll.hidden = empty;
-    none.hidden = !empty;
-    if (empty) none.textContent = `No relay in this document's sync state contains “${filter.value.trim()}”.`;
-  };
-  filter.addEventListener("input", applyFilter);
-  applyFilter();
-  // Measured, not guessed: a hardcoded rem offset is wrong at any root font
-  // size but the author's, and 2px out hides a sliver of one sticky element
-  // behind the other.
-  //
-  // On a ResizeObserver rather than the one rAF this was, because BOTH of these
-  // measurements go stale the moment the card changes width — the axis loses or
-  // regains a tick and `--pin-h` is off by whatever the pinned strip now is,
-  // which pins every group head to the wrong offset. The observer fires once on
-  // insertion too, which is all the rAF was there for.
-  const remeasure = () => {
-    const h = pinned.getBoundingClientRect().height + "px";
-    if (scroll.style.getPropertyValue("--pin-h") !== h) scroll.style.setProperty("--pin-h", h);
-    thinTicks(pinned.querySelector(".axis-track"));
-  };
-  new ResizeObserver(remeasure).observe(scroll);
-
-  card.appendChild(el("p", "card-sub",
-    `Frame: ${day(from)} → now. Not a target — these filters carry no lower bound, so a full row means ` +
-    `"as deep as anything here reaches", not "done". Counts relays each stream has walked, not the relays it names.`));
+  const coverage = coveragePanel(d);
+  if (coverage) {
+    card.appendChild(el("p", "sy-h", "coverage so far"));
+    card.appendChild(coverage);
+    // THE FRAME IS NOT A TARGET, and this is the one caveat worth the words:
+    // these filters carry no lower bound, so "full" is not a defined state and
+    // a deep strip means "as far back as anything here reaches", not "done".
+    card.appendChild(el("p", "card-sub",
+      `Frame starts ${dayOf(d.from)} — the oldest span anything here reaches. Not a target: these filters carry ` +
+      `no lower bound, so depth means "as deep as anything reaches", not "finished".`));
+  }
   return card;
 }
+
 
 /**
  * WHAT THE MONITOR HAS DECIDED ABOUT EACH RELAY URL, asked over the wire.

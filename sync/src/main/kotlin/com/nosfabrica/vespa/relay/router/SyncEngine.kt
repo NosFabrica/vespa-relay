@@ -28,9 +28,12 @@ import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
+import com.nosfabrica.vespa.relay.router.discovery.ReachabilityProbe
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayConsistency
+import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
+import com.nosfabrica.vespa.relay.router.discovery.StreamWorld
 import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
@@ -346,7 +349,17 @@ class SyncEngine(
      * — measuring a duplicate twice and then deleting it is the one ordering
      * that pays for work it throws away.
      */
-    private val aliasMonitor =
+    private val sockets = RelaySockets(client, pinnedUrls)
+    private val probe = ReachabilityProbe(tor, monitor)
+
+    /**
+     * What the probe passes measure. Built here rather than reached for through
+     * [dynamic]: the monitor is one of that object's constructor arguments, so
+     * asking it for the world is a cycle Kotlin can only be talked out of.
+     */
+    private val world = StreamWorld(store, dynamicStreams, probe, ingest, monitor, tor, sockets)
+
+    private val aliasMonitor: AliasMonitor? =
         listOfNotNull<AliasMonitor.Pass>(
             // Each wrapper carries the same handle its pass writes into, so the
             // monitor's clock — when the pass ran, how long it took, when the
@@ -379,8 +392,9 @@ class SyncEngine(
                 }
             },
         ).takeIf { it.isNotEmpty() }
-            ?.let { AliasMonitor(it, scope) }
-    private val dynamic =
+            ?.let { AliasMonitor(it, scope, source = world) }
+
+    private val dynamic: DynamicSync =
         DynamicSync(
             client,
             store,
@@ -399,6 +413,8 @@ class SyncEngine(
             scope,
             healer,
             refusedIds,
+            sockets,
+            probe,
         )
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure

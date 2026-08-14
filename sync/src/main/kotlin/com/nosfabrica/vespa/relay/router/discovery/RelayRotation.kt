@@ -205,6 +205,7 @@ internal class RelayRotation {
                         transferringForSec = hold.transferringSinceMs?.let { ((nowMs - it) / 1000).coerceAtLeast(0) },
                         events = hold.leg.events(),
                         quietForSec = hold.leg.quietForMs(nowMs) / 1000,
+                        doing = hold.leg.stage,
                     )
                 }.sortedWith(compareByDescending<Row> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
         return InFlight(
@@ -217,6 +218,7 @@ internal class RelayRotation {
                         transferringForSec = it.transferringForSec,
                         events = it.events,
                         quietForSec = it.quietForSec,
+                        doing = it.doing,
                     )
                 },
             omitted = (rows.size - limit).coerceAtLeast(0),
@@ -231,6 +233,7 @@ internal class RelayRotation {
         val transferringForSec: Long?,
         val events: Long,
         val quietForSec: Long,
+        val doing: String?,
     )
 
     /**
@@ -316,14 +319,11 @@ internal class RelayRotation {
 
     companion object {
         /**
-         * How many held relays [held] names.
-         *
-         * Comfortably more than a transfer pool — 8 slots is the configured
-         * default and 30 is the widest measured here — so every leg that could
-         * be wedged on a socket is named, while the probe storm behind the
-         * admission gate (128 workers against those 8 slots is ordinary) is
-         * summarised into `omitted` where it belongs.
+         * Rows [held] names before the rest go to `omitted`. Sized to the widest
+         * admission gate so a healthy stream is never truncated — it was 20,
+         * which named 20 legs and omitted 492, enough to see something was held
+         * and never enough to see which.
          */
-        const val DEFAULT_IN_FLIGHT_ROWS = 20
+        const val DEFAULT_IN_FLIGHT_ROWS = 512
     }
 }

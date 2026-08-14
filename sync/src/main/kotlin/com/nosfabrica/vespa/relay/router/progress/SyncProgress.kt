@@ -92,7 +92,7 @@ import java.nio.file.StandardCopyOption
  *      "lastPassAt": 1769998000, "lastPassSec": 812, "nextInSec": 20800,
  *      "streams": [{"name": "content", "subjects": 16752, "outstanding": 4021,
  *                   "measured": 2000, "decided": 118,
- *                   "undecided": {"reasons": [{"reason": "out of probe budget",
+ *                   "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass",
  *                                              "hosts": 214, "examples": ["relay.example"]}],
  *                                 "omitted": 0}}]},
  *     {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000,
@@ -306,6 +306,14 @@ class SyncProgress(
                                                             // from a walk that will not end.
                                                             put("events", r.events)
                                                             put("quietForSec", r.quietForSec)
+                                                            // WHAT IT IS DOING.
+                                                            // Absent until the
+                                                            // leg reaches a
+                                                            // stage worth a
+                                                            // word, which is a
+                                                            // state and not a
+                                                            // gap.
+                                                            r.doing?.let { put("doing", it) }
                                                         },
                                                     )
                                                 }

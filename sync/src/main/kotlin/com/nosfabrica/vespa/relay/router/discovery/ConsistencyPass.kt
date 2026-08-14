@@ -69,8 +69,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * ## Cost
  *
- * Two REQs per url, once a month per url, capped at [probesPerCycle] per pass
- * and [concurrency] in flight. Everything downloaded goes to the caller's
+ * Two REQs per url, once a month per url, [concurrency] in flight and no
+ * per-pass total — see [DEFAULT_PROBES_PER_CYCLE]. Everything downloaded goes to the caller's
  * ingest, exactly as [AliasProbe]'s own doc describes — on a stable relay the
  * window was worth having, and on an unstable one the store drops it as
  * already-held. The pass is not a tax on the mirror; it is a sync that also
@@ -80,7 +80,6 @@ class ConsistencyPass(
     private val consistency: RelayConsistency,
     private val record: RelayAliasRecord,
     private val probe: AliasProbe,
-    private val probesPerCycle: Int = DEFAULT_PROBES_PER_CYCLE,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
     /**
      * Where each pass reports how far it got — see [AliasFolding.progress] for
@@ -131,7 +130,7 @@ class ConsistencyPass(
         val startedMs = System.currentTimeMillis()
         adopt(candidates)
 
-        val wanted = consistency.toProbe(candidates).filter { it !in folded }.take(probesPerCycle)
+        val wanted = consistency.toProbe(candidates).filter { it !in folded }
         if (wanted.isEmpty()) {
             // NOT SILENT, because "nothing left to measure" is the state this
             // gate is trying to reach and the one an operator most wants to
@@ -149,7 +148,8 @@ class ConsistencyPass(
         // The urls that proved nothing, kept rather than only counted: grouped
         // by host they become the one `undecided` row this pass can publish, and
         // "which server would not answer twice" is what an operator chases.
-        // Bounded by `probesPerCycle`, since that is what `wanted` is capped at.
+        // Bounded by the candidate set: `wanted` is every url still owed a
+        // measurement, and this keeps only the ones that proved nothing.
         val silent = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
         // ONE anchor for the whole pass, a week behind the clock. Shared for the
         // same reason the fold shares one per group — two urls measured from
@@ -359,15 +359,6 @@ class ConsistencyPass(
     }
 
     companion object {
-        /**
-         * Urls measured per pass. Higher than the fold's, because this is two
-         * asks against one url rather than a group of fingerprints that only
-         * mean anything together — there is no reservation to make and no group
-         * to leave half-done, so a pass can simply stop at the cap and continue
-         * next time.
-         */
-        const val DEFAULT_PROBES_PER_CYCLE = 3_000
-
         /** Urls in flight. Matches the fold: this is background work. */
         const val DEFAULT_CONCURRENCY = 16
     }

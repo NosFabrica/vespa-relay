@@ -34,7 +34,6 @@ import java.util.concurrent.atomic.AtomicInteger
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertTrue
 
 /**
  * The monitor is what keeps a probe pass off a sync cycle, so what matters
@@ -67,51 +66,83 @@ class AliasMonitorTest {
         }
     }
 
-    private fun monitor(pass: AliasMonitor.Pass) = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined))
+    private fun monitor(
+        pass: AliasMonitor.Pass,
+        vararg urls: NormalizedRelayUrl,
+    ) = sourced(pass, World(urls.toList()))
+
+    /** A [AliasMonitor.Source] over a fixed world, standing in for the engine's derivation. */
+    private class World(
+        private val urls: List<NormalizedRelayUrl>,
+    ) : AliasMonitor.Source {
+        val derivations = AtomicInteger()
+
+        override suspend fun candidates(): List<NormalizedRelayUrl> {
+            derivations.incrementAndGet()
+            return urls
+        }
+
+        override suspend fun canDial(url: NormalizedRelayUrl) = true
+
+        override suspend fun onEvent(event: Event) = Unit
+
+        override val sockets = AliasFolding.Sockets.NONE
+    }
+
+    private fun sourced(
+        pass: AliasMonitor.Pass,
+        source: AliasMonitor.Source,
+    ) = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined), source = source)
 
     @Test
-    fun `a stream's later submission replaces its earlier one`() =
+    fun `a source measures every stream's world without waiting for any of them to submit`() =
         runBlocking {
-            // A stream re-discovers its whole world every cycle. Appending would
-            // make the monitor re-read the same urls once per cycle forever.
+            // THE RACE THIS EXISTS TO END, measured on staging: a 16-url stream
+            // finished discovering in one second, the first pass ran against
+            // those 16, and the two 17,499-url streams submitted 190 seconds
+            // later — three minutes after the pass had gone to sleep for six
+            // hours. Nothing had submitted here at all and the pass still
+            // covers the whole world.
             val pass = Recording()
-            val m = monitor(pass)
-            m.submit("outbox", listOf(a, b), canDial = { true })
-            m.submit("outbox", listOf(a, b, c), canDial = { true })
+            val world = World(listOf(a, b, c))
+            val m = sourced(pass, world)
 
             m.runPass()
 
-            assertEquals(1, pass.passes.size, "a stream was measured more than once in a single pass")
+            assertEquals(1, world.derivations.get(), "the world is derived once per pass, when the pass runs")
+            assertEquals(listOf(AliasMonitor.ALL_STREAMS), pass.passes.map { it.first })
             assertEquals(listOf(a, b, c), pass.passes.single().second)
         }
 
     @Test
-    fun `each stream keeps its own work`() =
+    fun `a world too small to compare is an empty pass, not a measured one`() =
         runBlocking {
+            // Same rule the submitted path has always had: one url cannot be
+            // held up against anything, and a cold store legitimately has none
+            // yet — which must read as "nothing to do YET" and retry, not as a
+            // pass that ran.
             val pass = Recording()
-            val m = monitor(pass)
-            m.submit("outbox", listOf(a, b), canDial = { true })
-            m.submit("assertions", listOf(a, c), canDial = { true })
+            val m = sourced(pass, World(listOf(a)))
 
             m.runPass()
 
-            assertEquals(setOf("outbox", "assertions"), pass.passes.map { it.first }.toSet())
+            assertEquals(0, pass.calls.get())
         }
 
     @Test
-    fun `one stream's failure does not skip the streams after it`() =
+    fun `one pass failing does not skip the passes after it`() =
         runBlocking {
             // A probe pass talks to arbitrary third-party relays; any of them
             // can fail in ways this cannot enumerate. Losing the rest of the
-            // pass to one of them is how a fold silently stops progressing.
-            val pass = Recording(throwOn = mapOf("outbox" to { IllegalStateException("upstream went away") }))
-            val m = monitor(pass)
-            m.submit("outbox", listOf(a, b), canDial = { true })
-            m.submit("assertions", listOf(a, c), canDial = { true })
+            // run to one of them is how the stability gate silently stops
+            // measuring because the fold threw.
+            val failing = Recording(throwOn = mapOf(AliasMonitor.ALL_STREAMS to { IllegalStateException("upstream went away") }))
+            val after = Recording()
+            val m = AliasMonitor(listOf(failing, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
 
             m.runPass()
 
-            assertEquals(2, pass.calls.get(), "the pass stopped at the failing stream")
+            assertEquals(1, after.calls.get(), "the run stopped at the failing pass")
         }
 
     @Test
@@ -119,30 +150,34 @@ class AliasMonitorTest {
         runBlocking {
             // Swallowing this would keep the monitor grinding through every
             // remaining stream after the scope has been told to stop.
-            val pass =
-                Recording(
-                    throwOn =
-                        mapOf(
-                            "outbox" to { CancellationException("scope closing") },
-                            "assertions" to { CancellationException("scope closing") },
-                        ),
-                )
-            val m = monitor(pass)
-            m.submit("outbox", listOf(a, b), canDial = { true })
-            m.submit("assertions", listOf(a, c), canDial = { true })
+            val cancelling = Recording(throwOn = mapOf(AliasMonitor.ALL_STREAMS to { CancellationException("scope closing") }))
+            val after = Recording()
+            val m = AliasMonitor(listOf(cancelling, after), CoroutineScope(Dispatchers.Unconfined), source = World(listOf(a, b, c)))
 
             assertFailsWith<CancellationException> { m.runPass() }
-            assertEquals(1, pass.calls.get(), "the pass continued past a cancellation")
+            assertEquals(0, after.calls.get(), "the run continued past a cancellation")
         }
 
     @Test
     fun `a boot whose streams have not discovered yet retries soon, not next interval`() =
         runBlocking {
-            // Discovery on a cold store outlasts the startup delay, so the first
-            // pass routinely lands before any stream has submitted. Sleeping the
-            // full interval on that would push the first measurement six hours
-            // out on exactly the boot with the most to learn.
+            // A cold store has no relay lists to derive from, so the first pass
+            // legitimately finds nothing. Sleeping the full interval on that
+            // would push the first measurement six hours out on exactly the
+            // boot with the most to learn.
             val pass = Recording()
+            val filling =
+                object : AliasMonitor.Source {
+                    val asked = AtomicInteger()
+
+                    override suspend fun candidates() = if (asked.incrementAndGet() > 1) listOf(a, b) else emptyList()
+
+                    override suspend fun canDial(url: NormalizedRelayUrl) = true
+
+                    override suspend fun onEvent(event: Event) = Unit
+
+                    override val sockets = AliasFolding.Sockets.NONE
+                }
             val scope = CoroutineScope(Dispatchers.Default)
             val m =
                 AliasMonitor(
@@ -151,11 +186,9 @@ class AliasMonitorTest {
                     intervalMs = 60_000,
                     startupDelayMs = 0,
                     emptyRetryMs = 20,
+                    source = filling,
                 ).start()
 
-            // Submit only AFTER the first (empty) pass has already gone by.
-            delay(120)
-            m.submit("outbox", listOf(a, b), canDial = { true })
             withTimeout(2_000) { while (pass.calls.get() == 0) delay(10) }
             scope.cancel()
 
@@ -173,8 +206,7 @@ class AliasMonitorTest {
             var learn = 0
             val pass =
                 AliasMonitor.Pass { _, _, _, _, _ -> learn }
-            val m = monitor(pass)
-            m.submit("outbox", listOf(a, b), canDial = { true })
+            val m = monitor(pass, a, b, c)
 
             m.runPass()
             assertEquals(0L, m.generation(), "a pass that folded nothing changed the version")
@@ -189,29 +221,15 @@ class AliasMonitorTest {
         }
 
     @Test
-    fun `one stream's verdicts move the generation for every stream`() =
+    fun `the union's verdicts move one generation for every stream`() =
         runBlocking {
             // A verdict is about a URL, and two streams routinely discover the
             // same one. There is nothing per stream to version.
-            val pass = AliasMonitor.Pass { label, _, _, _, _ -> if (label == "outbox") 4 else 0 }
-            val m = monitor(pass)
-            m.submit("outbox", listOf(a, b), canDial = { true })
-            m.submit("assertions", listOf(a, c), canDial = { true })
+            val pass = AliasMonitor.Pass { label, _, _, _, _ -> if (label == AliasMonitor.ALL_STREAMS) 4 else 0 }
+            val m = monitor(pass, a, b, c)
 
             m.runPass()
 
             assertEquals(4L, m.generation())
-        }
-
-    @Test
-    fun `a single url is not worth a pass`() =
-        runBlocking {
-            val pass = Recording()
-            val m = monitor(pass)
-            m.submit("outbox", listOf(a), canDial = { true })
-
-            m.runPass()
-
-            assertTrue(pass.passes.isEmpty(), "a lone url has nothing to be compared against")
         }
 }

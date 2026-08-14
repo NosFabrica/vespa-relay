@@ -55,11 +55,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * makes the split safe across a restart, and what lets a second router share the
  * work without either one knowing about the other.
  *
- * The cost of [measure] is bounded on both axes and deliberately so.
- * [probesPerCycle] caps how many fingerprints one pass will take, so the first
- * one after this ships does not turn into a single enormous probe run; the rest
- * are learned over the passes that follow, worst case first, and every verdict
- * is written down for [RelayAliasRecord.DEFAULT_TTL_SECONDS]. A steady-state
+ * The cost of [measure] is bounded by [concurrency] alone — 16 permits, and
+ * therefore 16 sockets, however large the candidate set. There is no per-pass
+ * total: a pass measures its whole set, worst case first, and every verdict is
+ * written down for [RelayAliasRecord.DEFAULT_TTL_SECONDS], so the run is paid
+ * once per url per month rather than once per pass. A steady-state
  * pass probes only the urls that appeared since the last one.
  *
  * **The cost of the split is that folding now lags discovery by one pass.** A
@@ -77,7 +77,6 @@ class AliasFolding(
     private val aliases: RelayAliases,
     private val record: RelayAliasRecord,
     private val probe: AliasProbe,
-    private val probesPerCycle: Int = DEFAULT_PROBES_PER_CYCLE,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
     /** How long a host that could not be decided is left alone — see [undecidable]. */
     private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
@@ -116,9 +115,10 @@ class AliasFolding(
      * folds four urls in TWO SECONDS at containment 1.000, and
      * `multiplexer.huszonegy.world` folds four more in fourteen. Neither is hard;
      * they were simply queued behind hosts that can never be decided and can
-     * never stop being asked. [probesPerCycle] is a per-pass ceiling, so budget
-     * spent re-proving that `groups.satsdisco.com` still says nothing is budget a
-     * foldable host does not get.
+     * never stop being asked. It no longer costs a foldable host its turn —
+     * nothing is rationed — but it still costs the pass's WALL CLOCK, and
+     * re-proving every cycle that `groups.satsdisco.com` still says nothing is
+     * time the hosts that can be decided are waiting through.
      *
      * In memory rather than signed, and that is the point. "I could not measure
      * this" is a fact about OUR pass, not about somebody's server — the
@@ -178,11 +178,14 @@ class AliasFolding(
      *
      * `fetchAll` unsubscribes when it returns — it sends a CLOSE — and leaves
      * the connection in the pool; the client's own keep-alive only ever
-     * RECONNECTS. So a pass that fingerprints up to [DEFAULT_PROBES_PER_CYCLE]
-     * urls used to leave up to that many sockets open behind it, against a
-     * router whose whole dispatcher budget is 1024 and whose per-HOST budget is
-     * 20 — and the fold probes widest group first, i.e. the hosts wearing 55
-     * urls. Every one of those sockets is a slot the fan-out cannot have.
+     * RECONNECTS. So a pass used to leave one open socket per url it
+     * fingerprinted, against a router whose whole dispatcher budget is 1024 and
+     * whose per-HOST budget is 20 — and the fold probes widest group first,
+     * i.e. the hosts wearing 55 urls. Every one of those sockets is a slot the
+     * fan-out cannot have. That is what makes this refcount load-bearing rather
+     * than tidy: with the per-pass cap gone, the number of urls a single pass
+     * touches is the whole candidate set, so a leak here would be unbounded
+     * where it used to be merely large.
      *
      * It is the STREAM's, not this component's, for the reason
      * `DynamicSync.releaseSocket` exists at all: two streams routinely land on
@@ -216,11 +219,11 @@ class AliasFolding(
     /**
      * Fingerprint what [apply] could not answer, and publish what that proves.
      *
-     * The dialling half, and the reason the two are separate: this walks up to
-     * [probesPerCycle] fingerprints, each of which is a paged websocket
-     * conversation with somebody else's relay. Returns how many new aliases it
-     * learned, so a caller can log a pass that did nothing differently from one
-     * that never ran.
+     * The dialling half, and the reason the two are separate: this fingerprints
+     * every group its candidates leave unresolved, [concurrency] at a time, and each fingerprint is a paged websocket conversation with
+     * somebody else's relay. Returns how many new aliases it learned, so a
+     * caller can log a pass that did nothing differently from one that never
+     * ran.
      *
      * Safe to call with anything: a url whose host wears no other url is never
      * probed, and a set of one returns immediately.
@@ -262,7 +265,6 @@ class AliasFolding(
             undecided[RelayAliases.hostOf(group.first().url)] = Undecided.COOLDOWN
         }
         if (groups.isNotEmpty()) {
-            val budget = AtomicInteger(probesPerCycle)
             val gate = Semaphore(concurrency)
             // The pass-wide count of folds, and nothing else: a second map of
             // the cleared urls was accumulated here and never read, and the
@@ -270,27 +272,13 @@ class AliasFolding(
             val newVerdicts = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
             val taken = AtomicInteger()
             coroutineScope {
-                // Widest group first: a host wearing 55 urls is 54 dials a
-                // cycle, and a host wearing 2 is one. With a budget that runs
-                // out, the order it runs out in is the whole design.
+                // Widest group first: a host wearing 55 urls is 54 dials and a
+                // host wearing 2 is one, so the passes that clear the most
+                // pollution start earliest and the pass's own wall clock is
+                // spent worst-first.
                 for (group in groups.sortedByDescending { it.size }) {
                     launch {
                         val wanted = aliases.toProbe(group)
-                        // Reserved as a block: half a group's fingerprints
-                        // decides nothing, so a group that cannot be finished
-                        // this cycle is left entirely for the next one.
-                        if (budget.addAndGet(-wanted.size) < 0) {
-                            budget.addAndGet(wanted.size)
-                            // The one exit that used to leave no trace at all.
-                            // A group refused for budget looks, from every log
-                            // this pass prints, exactly like a group that was
-                            // measured and found to be nothing but distinct
-                            // relays — so a host waiting several passes for its
-                            // turn was indistinguishable from one the fold had
-                            // already decided against.
-                            undecided[RelayAliases.hostOf(group.first().url)] = Undecided.NO_BUDGET
-                            return@launch
-                        }
                         val prints = ConcurrentHashMap<NormalizedRelayUrl, Set<String>>()
                         // ONE anchor for the whole group, taken before any of
                         // it is dialled, and held a minute behind the clock.
@@ -455,10 +443,6 @@ class AliasFolding(
                                 found = thinLeader
                                 foundPrint = thinLead
                                 members = listOf(twin)
-                                // The rest of the group's reservation, given back
-                                // for a host that will use it — one dial is all
-                                // this exit intends to spend.
-                                budget.addAndGet(wanted.size - spent - 1)
                             }
                         }
                         if (found == null || foundPrint == null) {
@@ -473,15 +457,6 @@ class AliasFolding(
                             } else {
                                 undecided[RelayAliases.hostOf(group.first().url)] = Undecided.TRANSPORT
                             }
-                            // Hand back what this group reserved and did not
-                            // spend, or the budget is consumed by intentions and
-                            // a later group goes unprobed for it. Counted from
-                            // the fingerprints actually TAKEN: a url the
-                            // transport guard declined cost nothing at all, and
-                            // refunding a flat `size - 1` paid for dials that
-                            // never happened out of the budget of a group that
-                            // would have used them.
-                            budget.addAndGet(wanted.size - spent)
                             return@launch
                         }
                         // Immutable from here down. The search above has to
@@ -542,7 +517,6 @@ class AliasFolding(
                         // pass starts from the store exactly as if this one had
                         // never run.
                         if (result.distinct.isNotEmpty()) {
-                            budget.decrementAndGet()
                             val again =
                                 gate.withPermit {
                                     if (!canDial(leader)) return@withPermit null
@@ -750,17 +724,14 @@ class AliasFolding(
      *
      * Every one of these is a legitimate outcome — none of them is a failure to
      * be fixed by publishing something anyway, which is the trap the thin-window
-     * guard was written for. What they are not is interchangeable: a host
-     * waiting its turn for budget will fold on a later pass with no
-     * intervention, and a host that cannot reproduce its own window never will.
-     * Telling them apart from outside the process is what this exists for.
+     * guard was written for. What they are not is interchangeable: a host on a
+     * cooldown will fold on a later pass with no intervention, and a host that
+     * cannot reproduce its own window never will. Telling them apart from
+     * outside the process is what this exists for.
      */
     private enum class Undecided(
         val reason: String,
     ) {
-        /** Never reached: [probesPerCycle] ran out before this group's turn. */
-        NO_BUDGET("out of probe budget"),
-
         /** Held back by [undecidable] from a pass that already failed on it. */
         COOLDOWN("cooling down from an earlier failed pass"),
 
@@ -889,14 +860,6 @@ class AliasFolding(
     }
 
     companion object {
-        /**
-         * Fingerprints one cycle will take. Sized so a first run against a
-         * fully polluted store spreads over a handful of cycles instead of
-         * becoming one enormous probe pass, and so a steady-state cycle — which
-         * only ever sees newly discovered urls — never comes near it.
-         */
-        const val DEFAULT_PROBES_PER_CYCLE = 2_000
-
         /** Probes in flight. Below the fan-out's own concurrency: this is a side quest. */
         const val DEFAULT_CONCURRENCY = 16
 

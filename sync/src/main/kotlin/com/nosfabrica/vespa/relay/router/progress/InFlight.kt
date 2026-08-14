@@ -141,6 +141,15 @@ class InFlight(
          * existed, and only one of them is worth an operator's attention.
          */
         val quietForSec: Long,
+        /**
+         * WHAT THE LEG IS DOING, which the clocks above cannot say: in the
+         * guards, queued behind our own pool, reconciling (where a long silence
+         * is negentropy computing), or paging (where it is a walk that has
+         * stopped delivering). [transferringForSec] separates the first two from
+         * the rest; nothing separated the last two. Null before a leg reaches a
+         * stage worth the word.
+         */
+        val doing: String? = null,
     )
 
     companion object {

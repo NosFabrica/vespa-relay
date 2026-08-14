@@ -297,7 +297,7 @@ class SyncProgressTest {
                                 unmeasured = 4_021,
                                 dialled = 2_000,
                                 decided = 118,
-                                undecided = listOf(Processors.Undecided("out of probe budget", 214, listOf("relay.example"))),
+                                undecided = listOf(Processors.Undecided("cooling down from an earlier failed pass", 214, listOf("relay.example"))),
                             ),
                         ),
                     counts = emptyList(),
@@ -323,7 +323,7 @@ class SyncProgressTest {
         val work = (fold["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
         assertEquals(4_021, work["unmeasured"]!!.jsonPrimitive.int, "the progress number")
         assertEquals(
-            "out of probe budget",
+            "cooling down from an earlier failed pass",
             (work["undecided"]!!.jsonObject["reasons"] as kotlinx.serialization.json.JsonArray)[0]
                 .jsonObject["reason"]!!
                 .jsonPrimitive.content,
