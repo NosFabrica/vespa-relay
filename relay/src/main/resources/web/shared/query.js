@@ -15,6 +15,11 @@
 //     #hashtag      the topic        -> a NIP-01 `#t` filter, plus the NIP-22
 //                                       comments written ON that topic
 //
+// …one narrows it to a NIP-29 relay group:
+//
+//     group:<id>    the channel      -> a NIP-01 `#h` filter, plus the group's
+//                                       own kind-39000 metadata
+//
 // …and a family of prefixes narrows it to the OTHER NIP-73 subjects — the
 // external ids a comment can be about that are not hashtags:
 //
@@ -68,6 +73,14 @@ const SCOPES = "podcast:item:guid|podcast:publisher|podcast:guid|site|isbn|geo|i
 // sentence enders would cut ids that exist to help ones that do not.
 const SCOPE_VALUE = "\\S*[^\\s.,;!?]";
 
+// A NIP-29 group id, which is whatever its host relay decided it is: `chachi`,
+// a hex blob, a word with a hyphen. So the token is delimited exactly as a
+// scope's value is — everything to the next whitespace, minus trailing sentence
+// punctuation — and NOT validated beyond being non-empty. There is no shape to
+// check against, and the one thing this must not do is refuse an id a relay
+// really minted.
+const GROUP_ID = SCOPE_VALUE;
+
 // Every token in one scan, because they interleave and their order in the
 // string is what the field measures its caret against — two passes would have
 // to be merged back together in position order anyway.
@@ -85,6 +98,7 @@ const TOKEN = new RegExp(
     `(?<who>(?:from|to):)?(?<key>${NPUB})(?![a-z0-9])` +
     `|(?<when>(?:since|until):)(?<day>${YMD})(?![\\w-])` +
     `|(?<ext>(?:${SCOPES}):)(?<sid>${SCOPE_VALUE})` +
+    `|(?<grp>group:)(?<gid>${GROUP_ID})` +
     `)`,
   "gi",
 );
@@ -95,6 +109,7 @@ const WHOLE = new RegExp(`^${NPUB}$`, "i");
 // the calendar which month to open on.
 const PARTIAL = /(^|\s)(from|to):(\S*)$/i;
 const PARTIAL_DAY = /(^|\s)(since|until):(\S*)$/i;
+const PARTIAL_GROUP = /(^|\s)(group):(\S*)$/i;
 
 // A hashtag: a `#` that starts a word, then the characters a `t` tag actually
 // holds. Three decisions, each one paid for:
@@ -231,6 +246,7 @@ function tagSegments(chunk, out) {
  *   { type: "date",  raw, field: "since" | "until", at }
  *   { type: "tag",   raw, tag }
  *   { type: "scope", raw, field: "site" | "isbn" | …, value }
+ *   { type: "group", raw, id }
  *
  * `raw` is the token exactly as typed, so a renderer can put it back verbatim
  * and a caret measured in characters stays measured in characters. For a tag,
@@ -248,7 +264,8 @@ function tagSegments(chunk, out) {
  * for entity pages, applied one layer up and to both kinds of token. A scope
  * has no checksum to fail — any non-empty value is an id somebody may have
  * commented on — so `site:` with nothing after it is the one corrupt form,
- * and the regex already leaves it as text.
+ * and the regex already leaves it as text. A `group:` id is the same: the host
+ * relay minted it and nothing here is entitled to an opinion on its shape.
  *
  * Hashtags are only ever found in the TEXT between the other tokens: a `#`
  * cannot occur inside an npub — bech32 has no such character — nor inside a
@@ -279,6 +296,8 @@ export function tokenize(text) {
       // function that knows what each family can ask for.
       if (!scopeIds(field, g.sid).length) continue;
       seg = { type: "scope", raw, field, value: g.sid };
+    } else if (g.grp) {
+      seg = { type: "group", raw, id: g.gid };
     } else {
       const field = g.when.slice(0, -1).toLowerCase();
       const bound = dayBound(g.day, field);
@@ -294,7 +313,7 @@ export function tokenize(text) {
 }
 
 /** The token types that pill only once the caret has left them. */
-const SETTLES = new Set(["tag", "date", "scope"]);
+const SETTLES = new Set(["tag", "date", "scope", "group"]);
 
 /**
  * The segments to DRAW: [tokenize]'s, minus the tag or date the caret is inside.
@@ -334,7 +353,7 @@ export function drawable(text, typingAt) {
 /**
  * What the relay is actually asked, from what the person typed:
  *
- *   { terms, authors, mentions, hashtags, scopes, since, until }
+ *   { terms, authors, mentions, hashtags, scopes, groups, since, until }
  *
  * `terms` is what is left for NIP-50 — the from:/to: tokens are lifted out
  * entirely, because leaving them in would search the full-text index for the
@@ -366,6 +385,7 @@ export function parseQuery(text) {
   const mentions = [];
   const hashtags = [];
   const scopes = [];
+  const groups = [];
   let since = null;
   let until = null;
   let terms = "";
@@ -380,6 +400,13 @@ export function parseQuery(text) {
       if (!scopes.some((s) => s.field === seg.field && s.value === seg.value)) scopes.push({ field: seg.field, value: seg.value });
       continue;
     }
+    // VERBATIM, and with no case variants — the one place a subject in this
+    // language is not spelled several ways. [tagValues] widens a hashtag
+    // because NIP-24 only SUGGESTS lowercase, so a `t: Bitcoin` is the same
+    // topic written carelessly; a group id is an opaque identifier its host
+    // relay minted, `General` and `general` are two groups, and asking for
+    // both would quietly pour a stranger's channel into the results.
+    if (seg.type === "group") { if (!groups.includes(seg.id)) groups.push(seg.id); continue; }
     if (seg.type === "date") {
       if (seg.field === "since") since = since == null ? seg.at : Math.max(since, seg.at);
       else until = until == null ? seg.at : Math.min(until, seg.at);
@@ -389,7 +416,7 @@ export function parseQuery(text) {
     if (!into) { terms += seg.raw; continue; }
     if (!into.includes(seg.pubkey)) into.push(seg.pubkey);
   }
-  return { terms: tidyTerms(terms), authors, mentions, hashtags, scopes, since, until };
+  return { terms: tidyTerms(terms), authors, mentions, hashtags, scopes, groups, since, until };
 }
 
 // A NIP-22 comment (kind 1111) says what it is about in `I` — the thread's
@@ -400,6 +427,16 @@ export function parseQuery(text) {
 // those replies, and separate filters is the only way NIP-01 spells "or".
 const COMMENT_KIND = 1111;
 const COMMENT_SCOPE_TAGS = ["#I", "#i"];
+
+// A NIP-29 group's own metadata: kind 39000, addressable, its `d` tag the group
+// id — and signed by the HOST RELAY's key, which is the only thing in the store
+// that tells two groups sharing an id apart. See [GROUP_TAG] for why the posts
+// cannot be told apart the same way.
+const GROUP_META_KIND = 39000;
+// Where a NIP-29 event says which group it belongs to. Single letter, so the
+// store indexes it in `tag_index` exactly as it does `t` — a group filter costs
+// what a hashtag filter costs.
+const GROUP_TAG = "#h";
 
 /**
  * The NIP-73 external ids a hashtag is written as, for a comment's `i`/`I`.
@@ -567,6 +604,27 @@ const sideLimit = (limit) => Math.max(4, Math.round(limit / 4));
  * it keeps kind 1111 whatever the tab says, and an off-tab scope search shows
  * the comments rather than a lie.
  *
+ * `group:<id>` becomes TWO questions, and they are not the hashtag's three:
+ *
+ *   - the event was posted to the group   -> `h`      (NIP-29)
+ *   - the group ITSELF                    -> kind 39000 keyed by `d`
+ *
+ * The `h` filter keeps the tab's kinds, unlike the comment and scope filters
+ * that name their own: a group post is an ordinary event of any kind that
+ * happens to carry an `h`, so "Media in this group" is a question the tab is
+ * entitled to narrow. The metadata filter is the one that names its own kind,
+ * for the reason a scope's does — 39000 is on no tab, so gating it would leave
+ * the token silently answering with nothing.
+ *
+ * WHAT THIS CANNOT DO, and no filter here can: a NIP-29 group id is unique only
+ * within its host relay (quartz's `GroupId` is the pair), while an `h` tag
+ * carries the bare id and this store keeps no per-relay provenance. So two
+ * relays with a `general` are one `#h` filter, and the union is the honest
+ * answer rather than a hidden one. The 39000s do NOT share that problem — they
+ * are addressable per (kind, host pubkey, d), so the store already holds one
+ * per host — which is why the metadata filter is also what lets the page SAY
+ * that an id it was given belongs to more than one group.
+ *
  * `search` is sent whenever it would CARRY something — words, or a sort/spam/
  * observer extension. It used to be dropped whenever the words were empty, on
  * the belief that "a filter carrying only the extensions is a text query for
@@ -593,10 +651,14 @@ export function buildFilters(text, { kinds = null, limit, searchString = (t) => 
   if (q.since != null) base.since = q.since;
   if (q.until != null) base.until = q.until;
   const scoped = scopeAsks(q.scopes);
-  if (!q.hashtags.length && !scoped.length) return [{ ...base, limit }];
+  if (!q.hashtags.length && !scoped.length && !q.groups.length) return [{ ...base, limit }];
 
   const side = sideLimit(limit);
   const filters = [];
+  if (q.groups.length) {
+    filters.push({ ...base, [GROUP_TAG]: q.groups, limit });
+    filters.push({ ...base, kinds: [GROUP_META_KIND], "#d": q.groups, limit: side });
+  }
   if (q.hashtags.length) {
     filters.push({ ...base, "#t": tagAsks(q.hashtags), limit });
     filters.push({ ...base, "#l": tagAsks(q.hashtags), limit: side });
@@ -653,3 +715,24 @@ export const mentionAt = (text, caret) => partialAt(text, caret, PARTIAL, isKey)
  * not a day and the reader has more typing to do.
  */
 export const dateAt = (text, caret) => partialAt(text, caret, PARTIAL_DAY, (v, f) => dayBound(v, f) != null);
+
+/**
+ * The `group:` token the caret is inside — what the group picker asks.
+ *
+ * NEVER `complete`, unlike the other two, and that is the difference a group
+ * id forces rather than a choice. An npub finishes at its 63rd character and a
+ * day at its tenth; a group id is whatever its host relay minted, so there is
+ * no length and no checksum at which the box could say "that is the whole
+ * thing" — `group:gen` is a plausible id AND the first three characters of
+ * `general`. What ends the token is a SPACE, which is exactly what a pick
+ * writes, so the picker stays offering until the reader takes something or
+ * types past it.
+ *
+ * The cost of that is one behaviour worth knowing: with the picker holding
+ * rows, Enter picks the highlighted group rather than searching the typed id.
+ * That is the people picker's rule too, and [shared/groups.js]'s ranking is
+ * what makes it safe — an id typed in full is ranked first by its own exact
+ * match, so Enter over it takes the group the reader actually named. An id
+ * this relay has never heard of offers no rows at all, and Enter is the search.
+ */
+export const groupAt = (text, caret) => partialAt(text, caret, PARTIAL_GROUP, () => false);

@@ -1,6 +1,6 @@
 // The search box, as a field that RENDERS what it holds.
 //
-// Four things live here, and they are one feature:
+// Five things live here, and they are one feature:
 //
 //   1. `from:npub1…` / `to:npub1…` draw as a face and a name instead of 63
 //      characters of bech32. The field's VALUE is still the plain text — the
@@ -31,6 +31,13 @@
 //      (`site:…`, `isbn:…`, `doi:…`, …) is the hashtag's rule again with a
 //      longer `#`: no picker — the value is a url or an id off a jacket, and
 //      there is nothing to look up — just the pill, once the caret leaves.
+//   5. Typing `group:` opens a THIRD picker, over NIP-29 groups. It is the
+//      people picker's shape and it exists for the opposite reason to the
+//      scopes above: a group's filter value is an opaque id its host relay
+//      minted, so unlike a url or an ISBN it is precisely the thing nobody can
+//      type from memory. What the rows offer is the NAME; what a pick writes
+//      is the id. `group:` with nothing after it opens on the reader's own
+//      groups, which is the answer most of the time.
 //
 // Why a contenteditable rather than the <input> this used to be: an input's
 // value is a string of characters and nothing else — there is no way to put a
@@ -44,18 +51,19 @@
 // finger does not get from a contenteditable the way a mouse does. app.js
 // keeps writing `$q.value` and never learns the difference.
 //
-// The pickers and the results popup are mutually exclusive on purpose. All
-// three occupy the same square of screen, and a keystroke inside `from:ali` is
+// The pickers and the results popup are mutually exclusive on purpose. All of
+// them occupy the same square of screen, and a keystroke inside `from:ali` is
 // not a search for "from:ali" — so while a token is being built this module
-// owns the arrows and Enter, and app.js is told to stand down. The two pickers
-// are exclusive with each OTHER for free: one caret is inside one token, and
-// `from|to` and `since|until` are different prefixes.
+// owns the arrows and Enter, and app.js is told to stand down. The pickers are
+// exclusive with each OTHER for free: one caret is inside one token, and
+// `from|to`, `since|until` and `group` are different prefixes.
 
 import { npub, shortNpub } from "./shared/nip19.js";
 import { esc, clip } from "./shared/format.js";
 import { profiles, displayName, enrichProfiles } from "./shared/profiles.js";
 import { avatarHtml } from "./shared/avatar.js";
-import { tokenize, mentionAt, dateAt, drawable, ymd, scopeIds } from "./shared/query.js";
+import { tokenize, mentionAt, dateAt, groupAt, drawable, ymd, scopeIds } from "./shared/query.js";
+import { where as groupWhere } from "./shared/groups.js";
 import {
   DOW, dayLabel, midnight, monthGrid, quickPicks, sameMonth, shiftDays, shiftMonths, typedMonth,
 } from "./shared/calendar.js";
@@ -116,7 +124,7 @@ export const softKeyboard = () => window.matchMedia("(pointer: coarse)").matches
 const NEWLINE = /[\r\n]/;
 const NEWLINES = /[\r\n]+/g;
 
-export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScores }) {
+export function mountSearchField(el, list, { lookup, lookupGroup, onEdit, onSubmit, paintScores }) {
   let mention = null;   // the from:/to: token being built, from mentionAt()
   let hits = [];        // pubkeys currently offered
   let active = -1;      // which one is highlighted
@@ -125,6 +133,14 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
   let day = null;       // the since:/until: token being built, from dateAt()
   let month = null;     // the month the grid is showing (a Date on its 1st)
   let cursor = null;    // the day the KEYBOARD is on, or null while the mouse leads
+  let group = null;     // the group: token being built, from groupAt()
+  let groups = [];      // the candidates currently offered, from lookupGroup()
+
+  // Which list the arrows and Enter are walking. The two network pickers share
+  // `active` rather than each keeping their own index: one caret is inside one
+  // token, so at most one of them is ever live, and two indices that must
+  // agree about which is the live one is a bug waiting for a caret to move.
+  const liveRows = () => (group ? groups : hits);
 
   /**
    * Fill the chips on the faces this module just drew.
@@ -295,6 +311,18 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
       span.title = `${seg.raw} — a NIP-73 scope filter: comments written on ${asks[0] || seg.value}`;
       return span;
     }
+    if (seg.type === "group") {
+      // The scope pill's shape, because the token splits the same way — the
+      // prefix is the language's word and the value is the reader's. What it
+      // cannot do is show the NAME the reader picked by: the field's value is
+      // the whole truth here (the URL carries it, the export carries it), and
+      // a pill drawing "Chachi" over an id would be a second source of truth
+      // that goes stale the moment the token is edited by hand.
+      span.className = "scopepill grouppill";
+      span.innerHTML = `<b>group:</b><span class="scope-id">${esc(seg.id)}</span>`;
+      span.title = `${seg.raw} — a NIP-29 group filter: events posted to the group whose id is ${seg.id}`;
+      return span;
+    }
     if (seg.type === "date") {
       // Quieter than a person, like a hashtag, and for the same reason: the
       // token is readable, so the pill is not standing in for it. What it does
@@ -396,6 +424,8 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
     day = null;
     month = null;
     cursor = null;
+    group = null;
+    groups = [];
     list.classList.remove("open");
     list.innerHTML = "";
     // Back to the shape the markup declares, so a calendar's dialog role does
@@ -507,8 +537,9 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
   }
 
   function move(delta) {
-    if (!hits.length) return;
-    active = (active + delta + hits.length) % hits.length;
+    const rows = liveRows();
+    if (!rows.length) return;
+    active = (active + delta + rows.length) % rows.length;
     markActive(true);
   }
 
@@ -584,6 +615,111 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
   function pick(pubkey) {
     if (!mention || !pubkey) return;
     replaceToken(mention, `${mention.field}:${npub(pubkey)}`);
+  }
+
+  // ---- the group picker ----------------------------------------------------
+  //
+  // The people picker's shape, over NIP-29 groups, and it exists for the
+  // reason none of the other tokens needs one: a group's filter value is an id
+  // its host relay minted, and the reader knows the NAME. So the rows show a
+  // name and a place, and a pick writes the id.
+  //
+  // No FACE on a row, deliberately, though there is a picture tag to draw and
+  // avatarHtml right there. A face here would carry the score chip, and the
+  // only key a group row has is the host RELAY's — so the number would answer
+  // "how much do you trust this relay's signing key" under a list of channels,
+  // which is the shape of question this page is careful not to answer by
+  // accident.
+
+  const GROUP_ROW_ID = (i) => `group-opt-${i}`;
+
+  /**
+   * One candidate: what it is called, and where it is.
+   *
+   * The place is [groupWhere]'s, including its `exact` flag, and the two cases
+   * are drawn DIFFERENTLY on purpose. A url out of your own `group` tag is a
+   * fact the protocol wrote down; a name for a signing key is that key's claim
+   * about itself, and a row that printed them alike would be inventing
+   * provenance. `ambiguous` is the third thing a row can say and the one the
+   * reader cannot work out alone: picking it filters on the bare id, so a
+   * second group elsewhere with the same id comes too.
+   */
+  function groupRowHtml(cand, i) {
+    const place = groupWhere(cand, displayName(profiles.get(cand.host)));
+    const name = (cand.name || "").trim() || cand.id;
+    const sub = clip((cand.about || "").trim(), 90);
+    return `
+      <div class="popup-item" id="${GROUP_ROW_ID(i)}" data-g="${i}" role="option" aria-selected="false">
+        <div class="row-main">
+          <div class="row-name">${esc(clip(name, 80))}${cand.mine ? `<span class="group-mine">yours</span>` : ""}</div>
+          <div class="row-about">${sub ? `${esc(sub)} · ` : ""}<span class="${place.exact ? "mono" : "group-host"}">${esc(place.text)}</span></div>
+        </div>
+        ${cand.ambiguous ? `<span class="group-warn" title="More than one group here carries the id “${esc(cand.id)}”, and a search filters on the id alone — so the results include all of them.">shared id</span>` : ""}
+      </div>`;
+  }
+
+  /** `rows` null means "still asking" — an empty array means "asked, none". */
+  function renderGroupList(rows) {
+    if (!group) return;
+    const head = `<div class="popup-head"><span>Posted in</span><span class="timing">group:</span></div>`;
+    let body;
+    if (rows == null) body = `<div class="popup-note">Finding groups…</div>`;
+    else if (rows.length) body = rows.map(groupRowHtml).join("");
+    // The empty states are two different facts and say so. With nothing typed
+    // the reader has not asked anything yet and the list is their own groups —
+    // so an empty one means we could not find their kind 10009, which is worth
+    // saying rather than answering a question nobody asked.
+    else if (!group.partial) body = `<div class="popup-note">No groups of yours here yet — type a name, or paste a group id</div>`;
+    else body = `<div class="popup-note">No group matches “${esc(clip(group.partial, 40))}”</div>`;
+    list.innerHTML = head + body;
+    openList("listbox", "Groups");
+    markActive();
+  }
+
+  /**
+   * Re-read the `group:` token under the caret and keep the picker in step.
+   *
+   * updateMention()'s twin, down to the two rules that were paid for there: an
+   * unchanged token returns early rather than re-asking and resetting the
+   * highlight, and the previous keystroke's rows STAY UP while the next answer
+   * is fetched rather than flickering back to a note at typing speed.
+   *
+   * The one difference is the empty partial. There it blanks the list, because
+   * `from:` with nothing after it has nothing to offer; here it is a question
+   * with an answer — your own groups — so an empty partial asks like any other.
+   */
+  function updateGroups() {
+    const next = pendingGroup();
+    if (!next) { if (group) closeList(); return; }
+    const sameToken = !!group && group.start === next.start;
+    if (sameToken && group.partial === next.partial) return;
+    group = next;
+    if (!sameToken) { groups = []; active = -1; }
+    renderGroupList(groups.length ? groups : null);
+    clearTimeout(timer);
+    const id = ++reqId;
+    timer = setTimeout(async () => {
+      let found;
+      try {
+        found = await lookupGroup(next.partial);
+      } catch (e) {
+        // The last rows stay up: a relay that did not answer is not evidence
+        // that the group does not exist. updateMention's rule, and its reason.
+        return;
+      }
+      // Outside the catch, exactly as it is there — a lookup may fail, drawing
+      // what it returned may not, and a throw in here belongs in the console
+      // rather than swallowed into a picker that sits on "Finding groups…".
+      if (id !== reqId || !group) return;
+      groups = Array.isArray(found) ? found.slice(0, PICKER_LIMIT) : [];
+      active = groups.length ? 0 : -1;
+      renderGroupList(groups);
+    }, DEBOUNCE_MS);
+  }
+
+  function pickGroup(cand) {
+    if (!group || !cand) return;
+    replaceToken(group, `group:${cand.id}`);
   }
 
   // ---- the calendar --------------------------------------------------------
@@ -683,7 +819,10 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
     const same = !!day && day.field === next.field && day.start === next.start && listOpen();
     if (same && day.partial === next.partial) return;
     day = next;
-    if (mention) { clearTimeout(timer); mention = null; hits = []; active = -1; }
+    // Both network pickers stood down, and `timer`/`reqId` with them: a
+    // calendar over a half-answered people or group lookup would take the late
+    // reply into a list that is no longer the one on screen.
+    if (mention || group) { clearTimeout(timer); mention = null; hits = []; group = null; groups = []; active = -1; }
     // The typed month wins whenever the partial names one, so the grid follows
     // what the box says. Failing that, the same token keeps wherever the reader
     // had stepped it, and a calendar only just opened starts on this month.
@@ -745,18 +884,38 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
   }
 
   /**
+   * The `group:` token the caret sits in, or null.
+   *
+   * No `complete` test, unlike its two neighbours, because [groupAt] never
+   * reports one — a group id has no finished shape to recognise. What ends the
+   * token is the space a pick writes, which takes the caret out of it.
+   */
+  const pendingGroup = () => groupAt(readValue(), caretIndex());
+
+  /**
    * Re-read the token under the caret and put the right picker under it.
    *
    * The date half goes first because it is the cheap one — no network, no
-   * debounce — and because only one of the two can match: a caret is inside one
-   * token, and `from|to` and `since|until` are different prefixes. Whichever
-   * does not match has to be shut, or stepping from `since:` straight into a
-   * `from:` would leave a calendar over a people search.
+   * debounce — and because only one of the three can match: a caret is inside
+   * one token, and `from|to`, `since|until` and `group` are different
+   * prefixes. Whichever does not match has to be shut, or stepping from
+   * `since:` straight into a `from:` would leave a calendar over a people
+   * search.
+   *
+   * The two NETWORK pickers shut each other explicitly rather than relying on
+   * that, because they share `timer` and `reqId`: leaving one live while the
+   * other asks would let a late answer land in a list it does not belong to.
    */
   function updateToken() {
     const next = pendingDate();
     if (next) { showCalendar(next); return; }
     if (day) closeList();
+    if (pendingGroup()) {
+      if (mention) closeList();
+      updateGroups();
+      return;
+    }
+    if (group) closeList();
     updateMention();
   }
 
@@ -775,8 +934,15 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
   function takeEnter() {
     if (!listOpen()) return false;
     if (day) { if (!cursor) return false; pickDay(ymd(cursor)); return true; }
-    if (active < 0 || !hits[active]) return false;
-    pick(hits[active]);
+    const rows = liveRows();
+    if (active < 0 || !rows[active]) return false;
+    // Nothing highlighted falls through to the page's Enter, which for a group
+    // is the case that matters: a reader who pasted an id this relay has never
+    // seen gets no rows, and Enter must SEARCH for that id rather than do
+    // nothing. shared/groups.js's exact-id band is the other half of the same
+    // promise — an id typed in full is row 0, so Enter over it picks itself.
+    if (group) pickGroup(rows[active]);
+    else pick(rows[active]);
     return true;
   }
 
@@ -915,7 +1081,11 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
     const row = e.target.closest(".popup-item");
     if (!row) return;
     e.preventDefault();
-    pick(hits[Number(row.dataset.i)]);
+    // Which list a row belongs to is on the row, not in a module variable: the
+    // two pickers draw the same `.popup-item`, and reading the wrong array
+    // would pick whatever happened to sit at that index in the other one.
+    if (row.dataset.g != null) pickGroup(groups[Number(row.dataset.g)]);
+    else pick(hits[Number(row.dataset.i)]);
   });
 
   /**
@@ -1014,7 +1184,7 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
 
   return {
     /**
-     * Is a `from:`/`to:`/`since:`/`until:` token being built right now?
+     * Is a `from:`/`to:`/`since:`/`until:`/`group:` token being built now?
      *
      * An open picker OR an unfinished token under the caret — the second half
      * matters because the box closes on blur and on Escape while the token
@@ -1022,7 +1192,7 @@ export function mountSearchField(el, list, { lookup, onEdit, onSubmit, paintScor
      * popup may open. Answering "no" in that window is how a stale result
      * list ended up over `from:al`.
      */
-    get picking() { return listOpen() || !!pendingMention() || !!pendingDate(); },
+    get picking() { return listOpen() || !!pendingMention() || !!pendingDate() || !!pendingGroup(); },
     /**
      * Is a picker itself on screen? Narrower than `picking`, and the difference
      * matters to exactly one caller: while one is up it owns the field's

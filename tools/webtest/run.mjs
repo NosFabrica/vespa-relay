@@ -7,6 +7,9 @@
 // query.test.mjs   the search box's from:/to:, since:/until: and #hashtag
 //                  language — what the field draws and what the relay is asked,
 //                  held to ONE tokenizer
+// groups.test.mjs  which NIP-29 group the picker offers for a half-typed
+//                  `group:` — and that a 10009 tag's url and a 39000's signing
+//                  key are never folded into one row, because nothing joins them
 // calendar.test.mjs the month arithmetic the date picker draws: lengths, leads,
 //                  DST-safe day steps, and the days the shortcuts write
 // cards.test.mjs   EVERY registered kind renders, preview and permalink —
@@ -64,7 +67,7 @@ import { spawnSync } from "child_process";
 import { fileURLToPath } from "url";
 
 let failed = 0;
-for (const t of ["nip19.test.mjs", "query.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "source.test.mjs"]) {
+for (const t of ["nip19.test.mjs", "query.test.mjs", "groups.test.mjs", "calendar.test.mjs", "feed.test.mjs", "cards.test.mjs", "related.test.mjs", "relay.test.mjs", "profiles.test.mjs", "parents.test.mjs", "preload.test.mjs", "filters.test.mjs", "keynav.test.mjs", "avatar.test.mjs", "mirrors.test.mjs", "readiness.test.mjs", "verdicts.test.mjs", "sync.test.mjs", "source.test.mjs"]) {
   const r = spawnSync(process.execPath, [fileURLToPath(new URL(t, import.meta.url))], { stdio: "inherit" });
   if (r.status !== 0) failed++;
 }

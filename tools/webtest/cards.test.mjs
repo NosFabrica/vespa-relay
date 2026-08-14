@@ -27,6 +27,7 @@ const FIXTURES = [
   [9802,  ev(9802, [["r", "https://src.example/page"]], "the quoted passage"), "quote"],
   [40,    ev(40, [], JSON.stringify({ name: "my channel", about: "chat", picture: "https://x/c.png" })), "my channel"],
   [41,    ev(41, [], JSON.stringify({ name: "renamed channel" })), "renamed channel"],
+  [39000, ev(39000, [["d", "chachi"], ["name", "Chachi"], ["about", "a group about groups"], ["private"], ["closed"]]), "a group about groups"],
   [3,     ev(3, [["p", pk2], ["p", pk]]), "follows <b>2</b>"],
   [30000, ev(30000, [["d", "friends"], ["title", "Friends"], ["p", pk2]]), "Friends"],
   [10002, ev(10002, [["r", "wss://relay.a.com"], ["r", "wss://relay.b.com", "read"]]), "relay.a.com"],
@@ -96,7 +97,12 @@ const FIXTURES = [
   [10006, ev(10006, [["relay", "wss://bad.example"]]), "bad.example"],
   [10007, ev(10007, [["relay", "wss://search.example"]]), "search.example"],
   [10008, ev(10008, [["a", `30009:${pk}:b`], ["e", eid]]), "1 badge"],
-  [10009, ev(10009, [["group", "abc123", "wss://groups.example"]]), "1 group"],
+  // A `group` tag is `["group", <id>, <relay url>, <name?>]` — the one entry in
+  // the NIP-51 table whose value is not element 1. It used to go through the
+  // relay-row renderer over `t[1]`, so the card printed the group ID as a relay
+  // url and dropped the real host and the name; the expectation is the URL for
+  // exactly that reason.
+  [10009, ev(10009, [["group", "abc123", "wss://groups.example", "My Group"]]), "groups.example"],
   [10011, ev(10011, [["a", `30000:${pk}:friends`]]), "1 follow set"],
   [10012, ev(10012, [["relay", "wss://feed.example"], ["a", `30002:${pk}:set`]]), "1 relay set"],
   [10013, ev(10013, [["relay", "wss://private.example"]]), "private.example"],
@@ -452,6 +458,37 @@ assert.strictEqual(chipHref(card(ev(30015, [["d", "mine"], ["t", "isleofskye"]])
   "one hashtag, one link, wherever the card family puts it");
 // A mute word is not a hashtag: it stays inert on purpose.
 assert(!chipHref(card(ev(10000, [["word", "spoilers"]]))), "a mute word is not a search to run");
+
+// ---- a group is a search too, and its host is not its id --------------------
+//
+// The hashtag rule above, applied to NIP-29: a group named on a list or drawn
+// as its own record links to the search that finds what was posted in it, in
+// the same language the field speaks.
+const groupList = card(ev(10009, [["group", "abc123", "wss://groups.example/", "My Group"]]), { full: true });
+const groupHrefOf = (html) => (/<a href="(\/\?q=group[^"]*)"/.exec(html) || [])[1] || null;
+let gh = groupHrefOf(groupList);
+assert(gh, "a group on a list is a link, not inert text");
+const gq = new URLSearchParams(gh.slice(gh.indexOf("?"))).get("q");
+assert.strictEqual(gq, "group:abc123", "it asks for the id, which is what an `h` tag carries");
+assert.deepStrictEqual(buildFilters(gq, { kinds: null, limit: 10 })[0]["#h"], ["abc123"],
+  "and that query builds the REQ for that group");
+
+// THE BUG THIS CLOSES. A `group` tag's second element is the id and its third
+// is the HOST RELAY; the card used to read element 1 like every other tag and
+// hand it to the relay-row renderer, so it printed the id in a list of urls
+// and threw the host and the name away. Both halves are asserted, because
+// showing the url is only half a fix if the id stopped being reachable.
+assert(groupList.includes("groups.example"), "the host relay is shown");
+assert(groupList.includes("My Group"), "…and so is the name the list cached");
+assert(!/relay-list[^]*?>abc123</.test(groupList), "the group id is never drawn as a relay url");
+
+// A group's own record links the same way, and says which id it is: a group
+// called "General" tells the reader nothing about WHICH general it is.
+const groupRec = card(ev(39000, [["d", "chachi"], ["name", "Chachi"], ["private"]]), { full: true });
+assert.strictEqual(new URLSearchParams(groupHrefOf(groupRec).slice(1)).get("q"), "group:chachi",
+  "the record's title is the search for its own posts");
+assert(groupRec.includes("chachi") && groupRec.includes("group id"), "the id is on the card, not only in its json");
+assert(groupRec.includes("members only"), "a bare `private` tag is a flag, and its PRESENCE is the value");
 
 // ---- a picture post is an album --------------------------------------------
 //

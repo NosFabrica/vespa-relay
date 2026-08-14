@@ -10,6 +10,7 @@ import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor } from "./shared/query.js";
+import { ownGroups, metaGroup, rank as rankGroups } from "./shared/groups.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
@@ -1021,6 +1022,72 @@ async function lookupAuthors(partial) {
   return [...new Set(events.map((e) => e.pubkey))];
 }
 
+// The reader's own kind 10009, held for the session. One event, and it is the
+// only place the protocol writes an id, its host relay and a name down
+// together — so it is worth a round trip and not worth a second one.
+//
+// Cached only when the relay ANSWERED, the rule rankServiceOf() and profiles.js
+// both state at length: a dropped read cached as "you have no groups" would
+// leave `group:` opening on an empty list for the rest of the session, with
+// nothing on screen to say the list was missing rather than empty.
+let ownGroupList = null;   // the parsed candidates
+let ownGroupsFor = null;   // whose they are, so signing out drops them
+
+async function ownGroupCandidates() {
+  const who = me;
+  if (!who) { ownGroupList = null; ownGroupsFor = null; return []; }
+  if (ownGroupsFor === who && ownGroupList) return ownGroupList;
+  let evs = [];
+  try {
+    evs = await relay.req({ kinds: [10009], authors: [who], limit: 1 });
+  } catch (e) { return ownGroupList && ownGroupsFor === who ? ownGroupList : []; }
+  if (evs.complete !== true) return [];
+  const rows = ownGroups(evs[0]);
+  ownGroupList = rows;
+  ownGroupsFor = who;
+  return rows;
+}
+
+/**
+ * Which groups the picker offers for a half-typed `group:`.
+ *
+ * Two asks, and they answer different questions — see shared/groups.js for why
+ * they are never folded into one row. Your own kind 10009 says which groups are
+ * YOURS, with the host relay's url written down; a NIP-50 search over kind
+ * 39000 says which groups EXIST, ranked by the relay against the corpus.
+ *
+ * The 39000 half is an ordinary search of the same shape the people picker
+ * makes: a group's `name` lands in the store's primary search tier and its
+ * `about` in the secondary, and the primary carries the prefix/fuzzy `near`
+ * column — so a half-typed name reaches "Alice's Club" while it is still being
+ * typed, exactly as a half-typed person does.
+ *
+ * The hosts are enriched as PEOPLE, because for this purpose they are: a NIP-29
+ * relay signs its own groups' metadata, and a relay that also publishes a kind 0
+ * for that key (this one does — see RelayProfile) gives the row a name to show
+ * instead of a hex prefix. It stays a claim the key made about itself, and
+ * groups.js draws it differently for that reason.
+ *
+ * A failed 39000 read leaves the reader's own groups standing rather than
+ * throwing the lot away: half an answer is the honest amount here, and the
+ * half that survives is the one they are most likely to have meant.
+ */
+async function lookupGroups(partial) {
+  await ensureLogin().catch(() => {});
+  const own = await ownGroupCandidates().catch(() => []);
+  let found = [];
+  try {
+    // Empty partial asks nothing of the relay: `group:` alone is "show me my
+    // groups", and a match-all over every 39000 in the corpus is neither that
+    // question nor a useful answer to it.
+    if (partial) found = await relay.req({ kinds: [39000], search: partial, limit: 12 });
+  } catch (e) { found = []; }
+  const meta = found.map(metaGroup).filter(Boolean);
+  const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];
+  if (hosts.length) await enrichProfiles(hosts).catch(() => {});
+  return rankGroups(partial, { own, meta });
+}
+
 /** Every human edit of the field, whatever made it — typing, paste, a pick. */
 function onQueryEdit() {
   const text = $q.value.trim();
@@ -1037,7 +1104,7 @@ function onQueryEdit() {
 // paintScores goes in for the same reason the entity page takes it: the faces
 // the field and its picker draw carry the same score chip a card's does, and
 // which lens fills it in is app state.
-const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, onEdit: onQueryEdit, onSubmit: submitField, paintScores });
+const field = mountSearchField($q, $mentions, { lookup: lookupAuthors, lookupGroup: lookupGroups, onEdit: onQueryEdit, onSubmit: submitField, paintScores });
 
 // `hitsFor` is the text `hits` actually answers. They outlive each other:
 // results stay on screen while the box is edited, and a debounce can be

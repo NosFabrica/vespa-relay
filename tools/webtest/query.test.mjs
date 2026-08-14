@@ -1,6 +1,6 @@
 // The search box's own language — `from:`/`to:`, `since:`/`until:`,
-// `#hashtag` and the NIP-73 scopes (`site:`, `isbn:`, `doi:`, …): what the
-// field draws, and what the relay is asked.
+// `#hashtag`, the NIP-73 scopes (`site:`, `isbn:`, `doi:`, …) and `group:`:
+// what the field draws, and what the relay is asked.
 //
 // This is the whole feature's contract in one place. The field renderer and
 // the query builder are in different modules and must agree EXACTLY about
@@ -10,7 +10,7 @@
 // is asserted here rather than any particular arrangement of the DOM.
 import assert from "assert";
 
-const { tokenize, parseQuery, mentionAt, dateAt, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd } =
+const { tokenize, parseQuery, mentionAt, dateAt, groupAt, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd } =
   await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 
 // Real npubs, minted by the page's own encoder from these hex keys.
@@ -532,6 +532,87 @@ assert.deepStrictEqual(f[2]["#I"], ["#nostr", "nostr"], "…and the hashtag's st
 f = build("isbn:9780765382030 doi:10.1000/182");
 assert.strictEqual(f.length, 2, "two scopes still ask two filters");
 assert.deepStrictEqual(f[0]["#I"], ["isbn:9780765382030", "doi:10.1000/182"], "…their ids merged into one OR list");
+
+// ---- buildFilters: NIP-29 groups ------------------------------------------
+//
+// Two questions, and neither is a hashtag's: the posts carry the group in `h`,
+// and the group itself is a kind-39000 addressed by its `d`.
+
+f = build("group:chachi");
+assert.strictEqual(f.length, 2, "a group is two filters");
+assert.deepStrictEqual(f[0], { "#h": ["chachi"], limit: 40 }, "the posts, at the full limit");
+assert.deepStrictEqual(f[1], { kinds: [39000], "#d": ["chachi"], limit: 10 }, "the group's own metadata, at a side limit");
+
+// Verbatim, and ONLY verbatim. A hashtag is asked in four spellings because
+// NIP-24 merely suggests lowercase; a group id is an opaque string its host
+// relay minted, so `General` and `general` are two groups and widening the ask
+// would pour a stranger's channel into the results.
+f = build("group:General");
+assert.deepStrictEqual(f[0]["#h"], ["General"], "a group id is asked exactly as typed");
+assert.deepStrictEqual(tagValues("General"), ["General", "general", "GENERAL"], "…unlike a hashtag, which is not");
+
+// The `h` filter KEEPS the tab's kinds — a group post is an ordinary event
+// that carries an `h`, so "media in this group" is the tab's to narrow. The
+// metadata filter names its own kind for the scope filters' reason: 39000 is
+// on no tab, so a gate would leave the token silently answering nothing.
+f = build("group:chachi", { kinds: [1, 9, 11, 1111] });
+assert.deepStrictEqual(f[0].kinds, [1, 9, 11, 1111], "the tab narrows the posts");
+assert.deepStrictEqual(f[1].kinds, [39000], "…and never the metadata");
+
+// Every other token narrows both halves, as it does for every other subject.
+f = build(`from:${A} group:chachi since:2026-08-06 cats`);
+assert(
+  f.every((x) => x.authors[0] === HEX_A && x.since === secs(2026, 8, 6) && x.search === "cats"),
+  "person, window and words ride on both group filters",
+);
+
+// Two groups are one OR list per filter, exactly as two scopes are.
+f = build("group:chachi group:zaps");
+assert.strictEqual(f.length, 2, "two groups still ask two filters");
+assert.deepStrictEqual(f[0]["#h"], ["chachi", "zaps"], "…their ids merged into one OR list");
+assert.deepStrictEqual(build("group:a group:a")[0]["#h"], ["a"], "a repeat collapses");
+
+// A subject grows the union; the group's two filters sit beside the hashtag's
+// four rather than intersecting them.
+f = build("#nostr group:chachi");
+assert.strictEqual(f.length, 6, "a hashtag and a group are two subjects: two filters plus four");
+
+// The token leaves the NIP-50 string entirely, like every other one: the
+// full-text index is built from CONTENT, and no post says its own group id.
+q = parseQuery("hello group:chachi world");
+assert.strictEqual(q.terms, "hello world", "the group id is not a search term");
+assert.deepStrictEqual(q.groups, ["chachi"], "…it is a filter");
+
+// The tokenizer's boundaries, which the field measures its caret against.
+assert.deepStrictEqual(tokenize("group:chachi").map((s) => s.type), ["group"], "one token");
+assert.strictEqual(tokenize("group:chachi.").at(-1).text, ".", "a full stop after an id is punctuation");
+assert.deepStrictEqual(tokenize("group:").map((s) => s.type), ["text"], "a colon with no id is not a token");
+assert.deepStrictEqual(tokenize("xgroup:a").map((s) => s.type), ["text"], "a token has to start a word");
+assert.strictEqual(tokenize("group:a1b2-c3").find((s) => s.type === "group").id, "a1b2-c3", "whatever the relay minted");
+
+// ---- groupAt: the token the GROUP picker offers over -----------------------
+//
+// The same contract the other two pickers have, with one difference forced by
+// the data: a group id has no finished shape, so this token is never complete
+// and only a space ends it.
+
+let g = groupAt("group:", 6);
+assert.deepStrictEqual([g.field, g.partial, g.start, g.end], ["group", "", 0, 6], "the picker opens on the colon");
+assert.strictEqual(g.complete, false, "with nothing picked yet");
+
+g = groupAt("cats group:cha", 14);
+assert.deepStrictEqual([g.field, g.partial, g.start], ["group", "cha", 5], "start is the token, not the space before it");
+
+// Never complete — there is no length or checksum at which an id is known to
+// be whole, and `group:gen` is both a plausible id and the start of `general`.
+assert.strictEqual(groupAt("group:general", 13).complete, false, "a full-looking id does not close the picker");
+assert.strictEqual(groupAt("group:chachi ", 13), null, "…a SPACE does, which is what a pick writes");
+
+assert.strictEqual(groupAt("cats", 4), null, "plain words open no group picker");
+assert.strictEqual(groupAt("from:ali", 8), null, "…and neither does another picker's token");
+assert.strictEqual(mentionAt("group:cha", 9), null, "…which is mutual: one caret, one token");
+assert.strictEqual(groupAt("group:chachi", 9), null, "a caret mid-word must not pop a list over the sentence");
+assert.strictEqual(groupAt("group:cha x", 9).partial, "cha", "…but a caret with only space after it is at the end of one");
 
 // ---- mentionAt: the token being TYPED --------------------------------------
 

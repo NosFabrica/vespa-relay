@@ -286,6 +286,7 @@
 <link rel="modulepreload" href="/web/shared/calendar.js" />
 <link rel="modulepreload" href="/web/shared/conn.js" />
 <link rel="modulepreload" href="/web/shared/format.js" />
+<link rel="modulepreload" href="/web/shared/groups.js" />
 <link rel="modulepreload" href="/web/shared/keynav.js" />
 <link rel="modulepreload" href="/web/shared/kinds.js" />
 <link rel="modulepreload" href="/web/shared/mirrors.js" />
@@ -885,6 +886,35 @@
   }
   .scopepill b { font-weight: 700; opacity: .65; }
   .scopepill .scope-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* A group is a scope pill that FILLED IN, because unlike `site:` or `isbn:`
+     its value was almost certainly picked rather than typed — the solid ground
+     is the field saying so, the same way a person's chip is solid and a
+     hashtag's outline is not. */
+  .grouppill { background: var(--accent-soft); border-color: transparent; }
+
+  /* ---- a group, inside the picker ---------------------------------------- */
+  /* Three things a group row can say that a person row cannot, all of them
+     about provenance rather than decoration. */
+  /* Yours: it came out of your own kind 10009, which is also the only source
+     that knows a relay url. */
+  .group-mine {
+    margin-left: .5em; padding: .05em .45em;
+    border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    vertical-align: middle;
+  }
+  /* A host named by its own kind 0 rather than by a tagged url — a claim the
+     signing key made about itself, so it is drawn as prose while an exact url
+     keeps the `.mono` every other url on this page has. */
+  .group-host { font-style: italic; }
+  /* The id is carried by more than one group here, and an `h` filter cannot
+     tell them apart. Not an error — the search still works — so it reads as a
+     note, not a warning colour. */
+  .group-warn {
+    flex-shrink: 0; padding: .1em .5em;
+    border: 1px solid var(--border-strong); border-radius: 999px;
+    color: var(--muted); font-size: 10.5px; white-space: nowrap;
+  }
 
   /* ---- the calendar `since:` and `until:` open ----------------------------
      Inside the same popup box the people picker uses — they are never open
