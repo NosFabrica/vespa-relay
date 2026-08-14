@@ -9,7 +9,7 @@ import { esc } from "./shared/format.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/profiles.js";
 import { watchNip05 } from "./shared/nip05.js";
-import { parseQuery, buildFilters as filtersFor } from "./shared/query.js";
+import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
 import { ownGroups, metaGroup, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
@@ -725,6 +725,12 @@ function exportText() {
   const typed = $q.value.trim();
   const q = parseQuery(typed);
   const full = buildFilters(typed, FULL_LIMIT);
+  // The order the STORE will apply, which is not always the one the menu shows:
+  // a `sort:` typed into the box rides through parseQuery untouched, so
+  // `/?q=cats sort:recent` is a chronological search with the menu on "Best
+  // match". Every line below that reasons about the ORDER reads this rather
+  // than $sort — an audit of an order has to name the order that was served.
+  const sort = effectiveSort(full[0].search ?? "");
   const people = (keys) => keys.map((k) => `${npub(k)}${nameOf(k) ? `  (${nameOf(k)})` : ""}`).join(", ");
   L.push("QUERY AS CONFIGURED");
   L.push(`  typed         ${JSON.stringify(typed)}`);
@@ -755,7 +761,9 @@ function exportText() {
   if (q.since != null) L.push(`  since         ${when(q.since)}`);
   if (q.until != null) L.push(`  until         ${when(q.until)}`);
   L.push(`  tab           ${tab.label}${tab.kinds ? ` (kinds ${tab.kinds.join(", ")})` : " (all kinds)"}`);
-  L.push(`  sort          ${$sort.value || "(relevance — NIP-50 default)"}`);
+  // Named from the string, and told apart from the menu when the two differ —
+  // a reader auditing the order needs to know a token in the box produced it.
+  L.push(`  sort          ${sort || "(relevance — NIP-50 default)"}${sort && sort !== $sort.value ? "  (from the search box, not the Filters menu)" : ""}`);
   L.push(`  include spam  ${$spam.checked ? "yes — unranked authors included" : "no — trust floor applied"}`);
   L.push(`  signed in as  ${me ? `${nameOf(me) || "(no name)"}  ${npub(me)}` : "(anonymous — no web of trust applied)"}`);
   L.push(`  ranking as    ${lens ? `${nameOf(lens) || "(no name)"}  ${npub(lens)}` : "(nobody)"}`);
@@ -791,7 +799,12 @@ function exportText() {
   // would send the reader hunting for a misranking in a list that is supposed
   // to be chronological — and would say nothing about the one thing the lens
   // still does there, which is decide who is IN the list.
-  if ($sort.value === "recent") {
+  //
+  // Keyed on the SENT string (see `sort` above), not on $sort: a shared
+  // `/?q=cats sort:recent` link is a chronological search with the menu
+  // untouched, and it was getting the trust question this branch exists to
+  // avoid.
+  if (sort === "recent") {
     L.push("  This order is not a ranking: `sort:recent` asked for the search's");
     L.push("  own match set in time order, newest first, so a weak match sitting");
     L.push("  above a strong one is the answer working. What is worth challenging");

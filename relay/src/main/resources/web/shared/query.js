@@ -637,6 +637,58 @@ const sideLimit = (limit) => Math.max(4, Math.round(limit / 4));
  * then there is genuinely nothing to say and a plain NIP-01 read is the honest
  * shape.
  */
+/**
+ * The `sort:` the STORE will apply to a search string — which is not always the
+ * one the sort menu is showing.
+ *
+ * A `sort:` token typed into the box survives parseQuery untouched (it is a
+ * NIP-50 extension, not one of the fields lifted out above) and the store
+ * honours it, so `/?q=cats sort:recent` is a chronological search with the menu
+ * still reading "Best match". Anything on the page that REASONS about the order
+ * — rather than just passing the string along — has to ask the string, not the
+ * control.
+ *
+ * Four rules, every one of them MEASURED against the pinned quartz
+ * (1866007e99) by running `SearchQuery.parse` rather than read off its source,
+ * because each decides an answer this would otherwise get wrong:
+ *
+ *   - LAST ONE WINS. parse collects extensions into a map, so
+ *     "sort:rank sort:recent" resolves to `recent` and the reverse to `rank`.
+ *     app.js appends the menu's token to the END of what was typed, which is
+ *     what makes the menu beat a typed token rather than the other way round.
+ *   - A QUOTED span is a phrase, not an extension: `"sort:recent"` parses to
+ *     `phrases=[sort:recent]` and no extension, so quoted spans are skipped
+ *     here too. An unclosed quote runs to the end of the string, same reading.
+ *   - A LEADING MINUS is an exclusion, not an extension: `-sort:recent` parses
+ *     to `notTerms=[sort:recent]`. It orders nothing and must not match.
+ *   - The key is CASE-SENSITIVE and must start a token: `SORT:recent` stays a
+ *     search term, and `alisort:recent` is an extension named `alisort`.
+ *
+ * Returns the value alone (`"recent"`, `"rank:asc"`) or `""` for no sort, which
+ * is the same vocabulary the menu's option values use.
+ */
+export function effectiveSort(searchString) {
+  let out = "";
+  // Quoted spans are skipped whole. An UNCLOSED quote opens a span that runs to
+  // the end of the string — the same reading the lexer takes, and the reason
+  // this walks the string rather than splitting it on whitespace.
+  const s = String(searchString ?? "");
+  let i = 0;
+  while (i < s.length) {
+    if (s[i] === '"') {
+      const close = s.indexOf('"', i + 1);
+      if (close === -1) break;
+      i = close + 1;
+      continue;
+    }
+    const next = s.indexOf('"', i);
+    const chunk = s.slice(i, next === -1 ? s.length : next);
+    for (const m of chunk.matchAll(/(?:^|\s)sort:(\S+)/g)) out = m[1];
+    i = next === -1 ? s.length : next;
+  }
+  return out;
+}
+
 export function buildFilters(text, { kinds = null, limit, searchString = (t) => t } = {}) {
   const q = parseQuery(text);
   const base = {};

@@ -10,7 +10,7 @@
 // is asserted here rather than any particular arrangement of the DOM.
 import assert from "assert";
 
-const { tokenize, parseQuery, mentionAt, dateAt, groupAt, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd } =
+const { tokenize, parseQuery, mentionAt, dateAt, groupAt, isKey, tagValues, scopeIds, buildFilters, drawable, dayBound, ymd, effectiveSort } =
   await import(new URL("../../relay/src/main/resources/web/shared/query.js", import.meta.url));
 
 // Real npubs, minted by the page's own encoder from these hex keys.
@@ -687,6 +687,46 @@ for (const typed of ["since:2026-08-06", "until:2026-02-28", "since:2026-02-31",
   const at = dateAt(typed, typed.length);
   const dates = tokenize(typed).filter((s) => s.type === "date");
   assert.strictEqual(at.complete, dates.length === 1, `complete agrees with tokenize for ${typed}`);
+}
+
+// ---- effectiveSort: the order the STORE will apply -------------------------
+//
+// Not the order the menu is showing. A `sort:` typed into the box survives
+// parseQuery (it is a NIP-50 extension, not a field this page lifts out) and
+// the store honours it, so anything on the page that REASONS about the order —
+// today the export's "question for the reader", which is wrong under
+// `sort:recent` — has to ask the string.
+//
+// Every expectation below was READ OFF THE PINNED QUARTZ (1866007e99) by
+// calling SearchQuery.parse on the same input, not reasoned about: each line is
+// what the lexer actually did with that string. Three of them corrected this
+// function while it was being written.
+assert.strictEqual(effectiveSort("ali sort:recent"), "recent", "the plain case");
+assert.strictEqual(effectiveSort("ali"), "", "no sort is the empty string, not undefined");
+assert.strictEqual(effectiveSort(""), "", "…and so is nothing at all");
+
+// LAST ONE WINS: parse collects extensions into a map. This is what makes the
+// menu beat a typed token — app.js appends the menu's to the END.
+assert.strictEqual(effectiveSort("ali sort:rank sort:recent"), "recent", "the later token wins");
+assert.strictEqual(effectiveSort("ali sort:recent sort:rank"), "rank", "…in both directions");
+
+// A QUOTED span is a phrase, not an extension (`phrases=[sort:recent]`).
+assert.strictEqual(effectiveSort('"sort:recent" ali'), "", "a quoted sort is a phrase to search for");
+assert.strictEqual(effectiveSort('"sort:recent ali'), "", "an unclosed quote runs to the end, same as the lexer");
+assert.strictEqual(effectiveSort('"a b" sort:recent "c" sort:rank'), "rank", "quoted spans are skipped, not counted");
+
+// A LEADING MINUS is an exclusion (`notTerms=[sort:recent]`) — it orders nothing.
+assert.strictEqual(effectiveSort("-sort:recent ali"), "", "an excluded token is not a sort");
+
+// The key must START a token and is CASE-SENSITIVE: `SORT:recent` stays a
+// search term and `alisort:recent` is an extension named something else.
+assert.strictEqual(effectiveSort("ali SORT:recent"), "", "the extension key is case-sensitive");
+assert.strictEqual(effectiveSort("alisort:recent"), "", "…and must start its token");
+
+// The values the menu offers all round-trip, so the export's branch and the
+// option list speak one vocabulary (filters.test.mjs holds the other half).
+for (const v of ["recent", "rank", "rank:asc", "followers", "text"]) {
+  assert.strictEqual(effectiveSort(`cats sort:${v}`), v, `sort:${v} reads back as itself`);
 }
 
 console.log("query: from:/to:, since:/until:, #hashtags and NIP-73 scopes tokenize, build their REQ, and complete consistently");

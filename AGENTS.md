@@ -365,9 +365,12 @@ relay/src/main/resources/
                         reader, a hundred at /?feed=1 — and is an EMPTY SEARCH:
                         buildFilters() with no words and none of the bar's
                         NIP-50 extensions leaves `{kinds, limit}`, a plain
-                        NIP-01 read, which is the only shape the store answers
-                        newest-first (a stray `sort:` would rank it while the
-                        page said "latest"), so the feed hides the Filters
+                        NIP-01 read, which the store answers newest-first (a
+                        stray `sort:` would rank it while the page said
+                        "latest" — `sort:recent` being the one value that
+                        would not, since store 5e44f1bde8 it asks for the
+                        order this view already has, and the feed does not
+                        lean on that), so the feed hides the Filters
                         disclosure — but NOT the kind chips, which are the
                         `kinds` of that same read and narrow the feed under the
                         hero and at /?feed=1&tab=media alike, replacing the
