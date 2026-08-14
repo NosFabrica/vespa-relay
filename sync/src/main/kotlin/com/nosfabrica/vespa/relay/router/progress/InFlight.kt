@@ -52,18 +52,25 @@ package com.nosfabrica.vespa.relay.router.progress
  * worker yet**, because the walk has not reached them. Read this as "what is
  * actually running", never as "the list of pending urls".
  *
- * ## Bounded, longest-held first, and it says what it left out
+ * ## Bounded, QUIETEST first, and it says what it left out
  *
  * A fan-out's admission gate is far wider than its transfer pool — 128 workers
  * against 8 slots is ordinary, the other 120 being connect timeouts to hosts
  * that will never answer — so the whole set is neither small nor interesting.
- * Sorted by how long each has been held, the first few rows are exactly the legs
- * that are stuck, and the tail is the ordinary churn. `omitted` says how much
- * tail there was: a truncated list that does not disclose the truncation reads
- * as the whole answer.
+ * The few rows worth keeping are the legs nothing is arriving on, and
+ * [RelayRotation.held] sorts on exactly that; the tail is the ordinary churn.
+ *
+ * It was sorted by how long each had been HELD, and that is a different set.
+ * Held is not risk — the healthiest thing this router does is hold one relay
+ * for an hour while it streams two million events — so the twenty rows were
+ * routinely twenty healthy long-haulers with the wedged leg cut into `omitted`.
+ * See [RelayRotation.held] for the whole argument.
+ *
+ * `omitted` says how much tail there was: a truncated list that does not
+ * disclose the truncation reads as the whole answer.
  */
 class InFlight(
-    /** The longest-held relays, at most [RelayRotation.DEFAULT_IN_FLIGHT_ROWS] of them. */
+    /** The quietest relays, at most [RelayRotation.DEFAULT_IN_FLIGHT_ROWS] of them. */
     val relays: List<Relay>,
     /** How many more had a worker and are not named here. Never silently dropped. */
     val omitted: Int,

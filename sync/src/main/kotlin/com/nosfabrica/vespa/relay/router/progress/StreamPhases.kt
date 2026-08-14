@@ -342,7 +342,7 @@ class StreamPhases {
         /** The current phase's own numbers — see [Detail]. */
         val detail: Detail,
         /**
-         * The relays this stream has workers on right now, longest-held first —
+         * The relays this stream has workers on right now, quietest first —
          * the names behind `running`, `pending` and `busy`, which were counts
          * and nothing else. Null for a stream that has no rotation to ask.
          */

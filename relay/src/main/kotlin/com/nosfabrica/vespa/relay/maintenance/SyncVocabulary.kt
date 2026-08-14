@@ -202,13 +202,15 @@ internal object SyncVocabulary {
             )
             put(
                 "inFlight",
-                "WHICH relays a stream has a worker on right now, longest-held first — the names behind `pending`, " +
+                "WHICH relays a stream has a worker on right now, QUIETEST FIRST — the names behind `pending`, " +
                     "`busy` and the progress line's `running`, which were counts and nothing else. It spans passes, " +
                     "which is why it sits beside the cycle rather than inside it: a worker outlives the pass that " +
                     "handed it out, so the same url is this cycle's `pending` if this pass dialled it and its `busy` " +
                     "if an earlier one did. NOT \"the pending urls\": `pending` also counts urls the walk has not " +
-                    "reached yet, which have no worker and are not here. Bounded to the longest-held few — the rest " +
-                    "of a fan-out's workers are connect timeouts to dead hosts and are counted in `omitted`.",
+                    "reached yet, which have no worker and are not here. Bounded to the few nothing is arriving on, " +
+                    "because that and not age is what a wedged leg looks like: a relay held an hour while it streams " +
+                    "two million events is this router working. The rest of a fan-out's workers are connect timeouts " +
+                    "to dead hosts and are counted in `omitted`.",
             )
             put(
                 "heldForSec",

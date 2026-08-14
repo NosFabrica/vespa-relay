@@ -154,41 +154,84 @@ internal class RelayRotation {
     fun leg(url: NormalizedRelayUrl): LegProgress? = busy[url]?.leg
 
     /**
-     * The longest-held of them, with both clocks, ready to publish.
+     * The most WEDGED of them, with both clocks, ready to publish.
      *
-     * Ordered by how long each has been held and then by url — the ordering is
-     * total on purpose, so two rollups of the same state produce the same
-     * document and a reader can diff them, exactly as `CycleTally.foldedOnto`
-     * does. [limit] is a cap on the ROWS, never on the truth: whatever it cuts
-     * is counted in `omitted`.
+     * ## Why quiet and not held
+     *
+     * This used to publish the longest-HELD legs, and that answers a question
+     * nobody asks. Held is not risk: the healthiest thing this router does is
+     * hold one relay for an hour while it streams two million events, and the
+     * measured worst case for a legitimate leg — the full purplepag.es walk —
+     * runs ~10.8 minutes. Meanwhile a leg claimed eleven minutes ago that has
+     * received nothing since is the one an operator is hunting for, and under
+     * the old ordering it sorted BELOW every long-running healthy leg and fell
+     * off the end of a twenty-row cap into `omitted`.
+     *
+     * The consequence was worse than a missing row, because the card draws
+     * exactly what it is given: five healthy long-haulers, rendered honestly,
+     * reading as the whole answer. A list that is truncated on the wrong key
+     * does not look truncated.
+     *
+     * [LegProgress.quietForMs] runs from the CLAIM when nothing has ever
+     * arrived, so this one key covers both shapes of stuck — the leg that never
+     * started and the leg that stopped — and a leg still receiving sorts to the
+     * bottom however long it has been held. `heldForSec` stays on every row; it
+     * is context, not the selector.
+     *
+     * Ordered by quiet, then by how long it has been held, then by url. The
+     * ordering is total on purpose, so two rollups of the same state produce
+     * the same document and a reader can diff them, exactly as
+     * `CycleTally.foldedOnto` does. [limit] is a cap on the ROWS, never on the
+     * truth: whatever it cuts is counted in `omitted`.
      */
     fun held(
         nowMs: Long,
         limit: Int = DEFAULT_IN_FLIGHT_ROWS,
     ): InFlight {
-        // One traversal into a list before sorting: the map is live and a
-        // comparator reading it twice could be handed a hold that was released
-        // in between, which is an IllegalArgumentException out of the sort
-        // rather than a wrong number.
+        // Every clock read ONCE, into a plain row, before anything sorts. The
+        // map is live and `quietForMs` reads a leg that is still being written
+        // to, so a comparator calling it twice could be handed two different
+        // answers for the same relay — which surfaces as an
+        // IllegalArgumentException out of the sort rather than a wrong number.
+        // The old comparator read only `sinceMs`, a field fixed at claim time,
+        // and got away with it; sorting on a live counter does not.
         val rows =
             busy.entries
-                .map { (url, hold) -> url.url to hold }
-                .sortedWith(compareBy({ it.second.sinceMs }, { it.first }))
-        return InFlight(
-            relays =
-                rows.take(limit).map { (url, hold) ->
-                    InFlight.Relay(
-                        relay = url,
+                .map { (url, hold) ->
+                    Row(
+                        relay = url.url,
                         pass = hold.pass,
                         heldForSec = ((nowMs - hold.sinceMs) / 1000).coerceAtLeast(0),
                         transferringForSec = hold.transferringSinceMs?.let { ((nowMs - it) / 1000).coerceAtLeast(0) },
                         events = hold.leg.events(),
                         quietForSec = hold.leg.quietForMs(nowMs) / 1000,
                     )
+                }.sortedWith(compareByDescending<Row> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
+        return InFlight(
+            relays =
+                rows.take(limit).map {
+                    InFlight.Relay(
+                        relay = it.relay,
+                        pass = it.pass,
+                        heldForSec = it.heldForSec,
+                        transferringForSec = it.transferringForSec,
+                        events = it.events,
+                        quietForSec = it.quietForSec,
+                    )
                 },
             omitted = (rows.size - limit).coerceAtLeast(0),
         )
     }
+
+    /** One leg's clocks, read off the live map once so the sort has something stable to order. */
+    private class Row(
+        val relay: String,
+        val pass: Long?,
+        val heldForSec: Long,
+        val transferringForSec: Long?,
+        val events: Long,
+        val quietForSec: Long,
+    )
 
     /**
      * Relays holding a TRANSFER SLOT right now, which is NOT [busyCount].

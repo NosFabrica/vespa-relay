@@ -328,7 +328,7 @@ internal object SyncProgressReport {
     }
 
     /**
-     * The longest-held legs, rebuilt row by row and capped again on this side.
+     * The quietest legs, rebuilt row by row and capped again on this side.
      *
      * Same terms as [foldedOnto]: the router already bounds its list, and this
      * bounds it a second time rather than trusting that it did. `omitted` is

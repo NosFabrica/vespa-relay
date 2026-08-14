@@ -445,8 +445,19 @@
   .dec:first-of-type { border-top: 0; }
   .dec .nm { font-weight: 620; }
   .dec .r { text-align: right; font-variant-numeric: tabular-nums; color: var(--muted); font-size: .76rem; }
+  /* TWO KINDS OF METER, and they must never be read as one.
+     A progress meter is a fraction COMPLETED — monotonic, full means done. An
+     occupancy meter is a LEVEL — full means backpressured. Drawn identically
+     they were: a fold at 50% and an ingest queue at 50% were the same picture
+     in the same column meaning unrelated things, and a full bar meant "finished"
+     on one row and "the store is the limit" on the next.
+     So progress keeps the accent, and occupancy takes the neutral this card
+     already spends on `pending` and `busy` — facts about OUR OWN pool rather
+     than verdicts about anything — going warm only at the ceiling, where it
+     stops being a level and becomes a fault. */
   .frac { height: 10px; border-radius: 2px; background: var(--grid); overflow: hidden; display: flex; }
   .frac i { display: block; height: 100%; background: var(--accent); }
+  .frac i.level { background: var(--bar); }
   .frac i.warn { background: var(--warn); }
   /* The one register left for words, and it is spent only on damage: a fatal
      error, a partition that does not hold, events lost to the store. */
@@ -1912,7 +1923,7 @@ function legsTable(s) {
   // timeouts to dead hosts, and a list that hides them reads as the whole set.
   const more = (f.omitted || 0) + (rows.length - shown.length);
   if (more) {
-    const p = el("p", "foot", `+${fmt(more)} more held, longest first`);
+    const p = el("p", "foot", `+${fmt(more)} more held, quietest shown first`);
     p.title = term("omitted");
     wrap.appendChild(p);
   }
@@ -2224,14 +2235,18 @@ function processorRow(p) {
     const i = el("i");
     i.style.width = ((decided / Math.max(1, w.candidates || 0)) * 100) + "%";
     bar.appendChild(i);
-    bar.title = `${fmt(decided)} of ${fmt(w.candidates || 0)} url(s) carry a verdict\n\n${term("unmeasured")}`;
+    bar.title = `progress: ${fmt(decided)} of ${fmt(w.candidates || 0)} url(s) carry a verdict\n\n${term("unmeasured")}`;
     right = `${fmt(w.unmeasured || 0)} left`;
   } else if (p.capacity) {
-    const q = el("i", (p.queued || 0) >= p.capacity ? "warn" : "");
+    // A LEVEL, not progress — see the `.frac i.level` rule. Nothing about a
+    // half-full queue is half-done, and drawing it in the same tone as the
+    // fold's progress said it was.
+    const full = (p.queued || 0) >= p.capacity;
+    const q = el("i", full ? "level warn" : "level");
     q.style.width = Math.min(100, ((p.queued || 0) / p.capacity) * 100) + "%";
     bar.appendChild(q);
-    bar.title = `${fmt(p.queued || 0)} of ${fmt(p.capacity)} queued` +
-      ((p.queued || 0) >= p.capacity ? " — FULL, downloads are backpressured behind it" : "") +
+    bar.title = `queue level: ${fmt(p.queued || 0)} of ${fmt(p.capacity)}` +
+      (full ? " — FULL, downloads are backpressured behind it" : " — a level, not progress; empty is healthy") +
       `\n\n${term("queued")}`;
     // The split, never the bare total: `rejected` is mostly the same event
     // offered once per relay holding it, and `dropped` is the sweep declining
