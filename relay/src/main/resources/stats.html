@@ -374,6 +374,57 @@
      muted grey as a stream that finished cleanly. */
   .cyc-head .ph.err { color: var(--warn); margin: 0; font-size: inherit; }
 
+  /* ---- the sync dashboard's two answers ----------------------------------
+     An operator opens this card with three questions — is it running, what is
+     holding it back, and what needs a hand — and every input to all three was
+     already on the page before this existed. What was missing was the ANSWER:
+     the heartbeat was one sentence, the constraint another, and the one stream
+     out of nine with a wedged leg was a clause inside its own paragraph, found
+     by reading all nine. A dashboard that requires a full read to find the bad
+     row is a log with margins. */
+  .ops {
+    display: flex; flex-wrap: wrap; gap: .35rem 1.4rem; align-items: baseline;
+    border: 1px solid var(--line); border-radius: .45rem;
+    padding: .55rem .75rem; margin: 0 0 .9rem;
+  }
+  /* The BORDER carries the alarm rather than the words: this card already
+     spends `--warn` on a dozen inline spans, and one more warm sentence among
+     them is not louder than its neighbours — a warm box is. */
+  .ops.bad { border-color: var(--warn); }
+  .ops .state { font-weight: 600; }
+  .ops .state.bad { color: var(--warn); }
+  /* The same four gauges the router prints to stderr every 60 seconds, which
+     until now could be read only on a container whose logs rotate inside the
+     hour. Tabular: they move under a 30s poll, and a number that reflows as it
+     changes is a number the eye has to find again each time. */
+  .ops .gauges {
+    display: flex; flex-wrap: wrap; gap: .2rem .9rem;
+    color: var(--muted); font-size: .8rem; font-variant-numeric: tabular-nums;
+  }
+  .ops .gauges b { color: var(--text); font-weight: 600; }
+  .ops .gauges .bad { color: var(--warn); }
+
+  /* WHAT NEEDS A HAND. Derived on this side rather than published, because
+     every input is already in the document and "stuck" is the reader's
+     threshold to set, not the router's to declare. Each row states where it
+     is, what it is, and what to do — a list of symptoms with no next move is
+     a list that gets scrolled past. */
+  .tri {
+    display: grid; grid-template-columns: .5rem 1fr; gap: .5rem;
+    align-items: start; padding: .4rem 0; font-size: .84rem;
+    border-top: 1px solid var(--line);
+  }
+  .tri:first-of-type { border-top: 0; }
+  .tri .dot { display: block; width: .5rem; height: .5rem; border-radius: 50%; margin-top: .4rem; background: var(--warn); }
+  /* Worth knowing, not worth waking anyone: same list, no alarm colour. */
+  .tri.watch .dot { background: var(--bar); }
+  .tri .hd { font-weight: 600; margin: 0; }
+  .tri.down .hd { color: var(--warn); }
+  /* WHERE, always, and quiet — the stream name is how a reader decides whether
+     the row is theirs, but the finding is what they are scanning for. */
+  .tri .who { color: var(--muted); font-weight: 400; }
+  .tri .fix { display: block; color: var(--muted); font-size: .8rem; margin-top: .1rem; }
+
   .axis-track { position: relative; height: 1.15rem; margin-left: calc(var(--lab) + .6rem); }
   .axis-track span {
     position: absolute; transform: translateX(-50%); font-size: 10px; color: var(--muted);
@@ -1684,38 +1735,20 @@ function passHead(pass, current) {
 function progressPanel(progress) {
   if (!progress) return null;
   const wrap = el("div");
-  const beat = el("p", "card-sub");
-  // Phrased against the ROLLUP's clock, not the reader's, because that is the
-  // only clock that saw the file. `ago(writtenAt)` would fold in however long
-  // this document has been cached and report a working router as dead every
-  // time a rollup ran late — and the footer already says how old the document
-  // is, which is the reader-side half of the same question.
-  // ABOVE the heartbeat, because a router that is alive and DAMAGED is worse
-  // than one that stopped: an OutOfMemoryError kills whichever thread allocates
-  // next and is caught by nobody, so the phases carry on looking healthy.
-  if (progress.fatals) {
-    const dead = el("p", "card-sub");
-    dead.appendChild(el("span", "err",
-      `${fmt(progress.fatals)} fatal error(s) killed threads in this router — it is DEGRADED and should be restarted. ` +
-      `Everything below may be a partial account of what it is doing.`));
-    wrap.appendChild(dead);
-  }
-  const health = healthLine(progress.health);
-  if (health) wrap.appendChild(health);
-  if (progress.staleForSec == null) {
-    beat.append("The router published no heartbeat, so nothing here can be dated.");
-  } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
-    // The loud case, and deliberately louder than the phase lines under it: a
-    // stream frozen mid-`fetching` looks busy, and looks exactly the same
-    // whether the process is working or gone.
-    beat.appendChild(el("span", "err",
-      `The router had said nothing for ${fmtDur(progress.staleForSec)} when this was computed — ` +
-      `the sync process is probably not running. Everything below is what it was doing then.`));
-  } else {
-    beat.append(`Router heartbeat ${fmtDur(progress.staleForSec)} before this rollup.`);
-  }
-  beat.title = `router last wrote at ${isoOf(progress.writtenAt)}`;
-  wrap.appendChild(beat);
+  // The dashboard's first two lines, in the order the questions are asked: is
+  // it running and what is holding it back, then what needs a hand. Both were
+  // answerable from the blocks below before this — the heartbeat as a sentence,
+  // the constraint as another, and a wedged leg as a clause inside whichever of
+  // nine stream paragraphs happened to own it. Being answerable by a full read
+  // is not the same as being answered.
+  const rows = triage(progress);
+  wrap.appendChild(opsStrip(progress, rows));
+  const needs = triagePanel(rows);
+  if (needs) wrap.appendChild(needs);
+  // The rule under the triage list rather than none: without it the first
+  // stream's head reads as one more finding, since every gap on this card is
+  // 12-14px and the two are different kinds of statement.
+  if (needs) wrap.appendChild(el("hr", "cyc-end"));
 
   for (const s of progress.streams || []) {
     const box = el("div", "cyc");
@@ -2030,28 +2063,313 @@ const BOTTLENECK = {
   mixed: ["keeping up", "The queue is neither full nor empty: nothing here is the constraint."],
 };
 
-function healthLine(h) {
-  if (!h) return null;
-  const line = el("p", "cyc-line");
-  const [verdict, why] = BOTTLENECK[h.bottleneck] || [h.bottleneck, ""];
-  const chip = el("span", h.bottleneck === "ingest" ? "err" : "");
-  chip.append(`Constraint: ${verdict}`);
-  chip.title = why;
-  line.appendChild(chip);
-  const bits = [];
-  if (h.eventsPerSec != null) bits.push(`${fmt(h.eventsPerSec)} ev/s into ingest`);
-  if (h.heapMaxMb) {
-    const pct = Math.round((h.heapUsedMb / h.heapMaxMb) * 100);
-    // Past ~90% this router is collecting rather than mirroring, and the id
-    // snapshot is what usually gets it there.
-    bits.push(`heap ${pct}%` + (pct >= 90 ? " — AT THE CEILING" : ""));
+/**
+ * Past this share of the heap the router is collecting rather than mirroring —
+ * the same 90% its own health line shouts at, and for the same reason: nothing
+ * FAILS at the ceiling, throughput just quietly stops.
+ */
+const HEAP_TIGHT = 0.9;
+
+/**
+ * How long a pass's tail may run past its own hand-out before it is not
+ * finishing but wedged.
+ *
+ * Six times [STUCK_LEG_SEC], and the multiple is the point: a single leg past
+ * ten minutes already gets a row of its own, so this is the AGGREGATE signal —
+ * a whole walk whose slowest legs have not come home an hour after it stopped
+ * handing urls out. The consequence is not cosmetic. Urls held by a pass that
+ * cannot retire stay `busy`, and a `busy` url is one the NEXT pass declines to
+ * redial: a rotation quietly narrows to the relays its own tail is not sitting
+ * on, and nothing about that reads as a fault anywhere else on this card.
+ */
+const STUCK_PASS_SEC = 6 * STUCK_LEG_SEC;
+
+/**
+ * A thrown message short enough to be a headline, with the whole of it kept on
+ * the title.
+ *
+ * What a stream throws is not a sentence. The live failure this was written
+ * against is `vespa search 503: {"root":{"id":"toplevel","relevance":1.0,` … —
+ * a serialised error document, already truncated on the relay side, which cut
+ * mid-object and filled the row with JSON punctuation. The useful part is the
+ * prefix before the payload starts, so the cut is at the first brace or bracket
+ * rather than at a character count, and a message with neither is left alone.
+ */
+function terse(reason) {
+  const cut = reason.search(/[[{]/);
+  const head = (cut > 0 ? reason.slice(0, cut) : reason).trim().replace(/[:\s]+$/, "");
+  return head.length && head.length < reason.length ? `${head} …` : reason;
+}
+
+/**
+ * WHAT NEEDS A HAND — derived here, from what the document already says.
+ *
+ * Nothing in this function is new information. Every input was published and
+ * drawn somewhere on this card already; what it did not have was a reader.
+ * Finding the one wedged stream meant reading every other stream's paragraph
+ * first, and the states that matter most are exactly the ones that look like
+ * health from outside: a router killed by an OutOfMemoryError keeps its phases,
+ * a leg on a transfer slot receiving nothing is indistinguishable from a slow
+ * download, and a pass whose tail never comes home narrows the next rotation
+ * without failing anything.
+ *
+ * Derived on THIS side rather than published, deliberately. The thresholds are
+ * a reader's judgement about when slow becomes stuck — the router should not be
+ * shipping that opinion in a document three other consumers read — and the
+ * relay's job here is the arithmetic it can check, not the verdict.
+ *
+ * Two rules every row follows. Each names WHERE it is, because a card that says
+ * "41 legs stuck" without a stream name has moved the search rather than ended
+ * it. And each names the NEXT MOVE, because the fixes are not the same shape —
+ * some of these clear themselves, one wants a restart, one is a store problem
+ * wearing a mirror's symptoms — and from the count alone they look alike.
+ */
+function triage(progress) {
+  const out = [];
+  const add = (level, where, what, fix) => out.push({ level, where, what, fix });
+
+  // Is it running at all — asked first because a dead router does not ADD a row
+  // to the ones below, it invalidates them. Everything else on this card
+  // describes the last moment the process spoke.
+  if (progress.staleForSec == null) {
+    add("down", "router", "no heartbeat at all",
+      "The progress file carries no write time, so nothing on this card can be dated. Check that the sync process is" +
+      " writing SYNC_PROGRESS_FILE and that this relay can read the path it writes to.");
+  } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
+    add("down", "router", `silent for ${fmtDur(progress.staleForSec)}`,
+      "The progress tick runs every few seconds, so this is not a slow tick — the sync process is probably gone." +
+      " Everything below is what it was doing when it stopped, not what is happening now.");
   }
-  if (h.socketCeiling) bits.push(`${fmt(h.sockets)} of ${fmt(h.socketCeiling)} sockets`);
-  // Deliberate slowness, named as such: without it, a router yielding politely
-  // reads as a router that has stopped.
-  if (h.servingMs != null) bits.push(`yielding to ${fmt(h.servingMs)}ms client reads`);
-  if (bits.length) line.append(" · " + bits.join(" · ") + ".");
-  return line;
+  if (progress.fatals) {
+    add("down", "router", `${fmt(progress.fatals)} thread(s) killed by an uncaught error`,
+      "Nothing restarts them, so the work each one owned simply stopped — while the phases below carry on reporting" +
+      " the state they were left in. This is the failure that looks most like health. Restart the router, and read" +
+      " its stderr for the throw.");
+  }
+
+  const h = progress.health;
+  if (h) {
+    // The router's own verdict, promoted to a row only when it names a fault.
+    // `downloads` and `mixed` are a mirror working as designed and belong in
+    // the strip, not in a list of things to act on.
+    if (h.bottleneck === "ingest") add("stuck", "ingest", "the queue is full", BOTTLENECK.ingest[1]);
+    if (h.heapMaxMb && h.heapUsedMb / h.heapMaxMb >= HEAP_TIGHT) {
+      add("stuck", "heap", `${Math.round((h.heapUsedMb / h.heapMaxMb) * 100)}% of ${fmt(h.heapMaxMb)}MB`,
+        "Past this the collector runs continuously and throughput collapses without anything failing or logging." +
+        " Give the router more heap, or narrow what the streams ask for — the local id snapshot a deep walk takes is" +
+        " usually what gets it here.");
+    }
+    if (h.socketCeiling && h.sockets >= h.socketCeiling) {
+      add("stuck", "sockets", `${fmt(h.sockets)} of ${fmt(h.socketCeiling)} — at the ceiling`,
+        "Every new leg now waits for a socket to close, so one wedged connection costs a slot the whole fan-out" +
+        " shares. The held legs listed here are where they went.");
+    }
+  }
+
+  for (const s of progress.streams || []) {
+    if (s.phase === "failed" || s.reason) {
+      // The message in full goes on the `fix` line rather than the headline —
+      // it is what an operator copies out, and it is also 200 characters of
+      // serialised error document.
+      add("down", s.name, s.reason ? `failed: ${terse(s.reason)}` : "failed",
+        (s.reason ? `${s.reason} — ` : "") +
+        (s.retryInSec != null
+          ? `the cycle threw and retries in ${fmtDur(s.retryInSec)}. If it throws the same thing again, the retry is` +
+            " not the fix."
+          : "the cycle threw and nothing here shows a retry scheduled."));
+    }
+    // The transfer pool, from the waiting end. A stream in `holding` is not
+    // stalled — it is waiting for half the pool to come free before it opens
+    // the next pass — but it is also the phase most easily read as one, and
+    // past this long the legs it is waiting on are named right below.
+    if (s.phase === "holding" && s.phaseForSec != null && s.phaseForSec >= STUCK_LEG_SEC) {
+      add("stuck", s.name, `waiting ${fmtDur(s.phaseForSec)} for transfer slots`,
+        `The next pass will not open until half the pool is free${s.slotsNeeded != null
+          ? ` — ${fmt(s.slotsFree || 0)} of ${fmt(s.slotsNeeded)} are` : ""}. This stream is not the problem: whatever` +
+        " is holding the slots is, and legs held past ten minutes are listed under their own streams here.");
+    }
+
+    const flight = s.inFlight || {};
+    const legs = flight.relays || [];
+    const old = legs.filter((r) => (r.heldForSec || 0) >= STUCK_LEG_SEC);
+    // The published list is longest-held first and bounded, so the tail it
+    // omitted is held for LESS than the last row shown. That makes this count
+    // EXACT whenever a named row fell under the threshold, and a floor only
+    // when every named row is over it — which is the one case that says "at
+    // least". Counting the omitted tail in either direction would be a guess.
+    const floor = old.length === legs.length && (flight.omitted || 0) > 0;
+    const atLeast = floor ? "at least " : "";
+    // A leg holding a slot and receiving nothing, against a leg that never got
+    // a slot. Same duration, opposite faults, opposite fixes — and before the
+    // clocks were published they were the same silence.
+    const quiet = old.filter((r) => r.transferringForSec != null && (r.quietForSec || 0) >= STUCK_LEG_SEC);
+    const unslotted = old.filter((r) => r.transferringForSec == null);
+    if (quiet.length) {
+      const w = quiet[0];
+      add("stuck", s.name, `${atLeast}${fmt(quiet.length)} leg(s) on a transfer slot receiving nothing`,
+        `Longest: ${w.relay} — held ${fmtDur(w.heldForSec)}, ${fmt(w.events || 0)} event(s), quiet` +
+        ` ${fmtDur(w.quietForSec || 0)}. A socket that will neither finish nor fail holds its slot until the cycle` +
+        " ends. This is what a stream that has stopped moving almost always turns out to be.");
+    }
+    if (unslotted.length) {
+      const w = unslotted[0];
+      add("stuck", s.name, `${atLeast}${fmt(unslotted.length)} leg(s) claimed but never admitted`,
+        `Longest: ${w.relay} — claimed ${fmtDur(w.heldForSec)} ago and still not on a transfer slot. This one is OUR` +
+        " pool rather than their relay: the rotation took the url and the guards or the queue have not let it" +
+        " through. Look at what is holding the slots, not at the url.");
+    }
+
+    // A walk whose tail never comes home. `endedAt` is when it stopped handing
+    // urls out, so this measures the tail alone rather than the pass.
+    //
+    // The same fallback the bars use: `passes` is published only when the
+    // router is running more than one, and a stream down to its LAST pass with
+    // a tail that cannot finish is the case this row exists for — reading only
+    // the array would have missed exactly it.
+    const passes = Array.isArray(s.passes) && s.passes.length > 1 ? s.passes : (s.cycle ? [s.cycle] : []);
+    for (const p of passes) {
+      const outstanding = passHeld(p);
+      if (!outstanding || p.outcome === "running" || p.endedAt == null || progress.writtenAt == null) continue;
+      const since = progress.writtenAt - p.endedAt;
+      if (since < STUCK_PASS_SEC) continue;
+      add("stuck", s.name, `pass ${fmt(p.number != null ? p.number : "?")} has not retired — ${fmt(outstanding)} url(s) out ${fmtDur(since)} past hand-out`,
+        "A pass ending with legs still running is the rotation working, for a while. This long past it, those urls are" +
+        " still marked busy, and a busy url is one the next pass declines to redial — so the rotation is quietly" +
+        " covering less than its relay list without anything here failing.");
+    }
+
+    if (s.cycle && s.cycle.accountedFor === false) {
+      add("watch", s.name, "the url partition does not add up",
+        "The counts this card draws for the cycle do not sum to their own total, so read the bar and the accounting" +
+        " line as approximate. That is a bug on one side of the progress file, not a fault in the mirror.");
+    }
+  }
+
+  for (const p of progress.processors || []) {
+    const label = (PROCESSORS.find((row) => row[0] === p.name) || [null, p.name])[1];
+    if (p.lostToStore) {
+      add("down", label, `${fmt(p.lostToStore)} event(s) lost to store errors`,
+        "Good events, accepted by every check and then not written. Nothing retries them and nothing else on this" +
+        " page will show the gap. Chase the store — the schema, the disk, the endpoint — not the mirror.");
+    }
+    // Hosts a probe pass keeps failing to decide. Not an incident: four of the
+    // reasons recover by themselves. It earns a row because an undecided host
+    // is one every fan-out goes on dialling under all of its urls, forever.
+    for (const w of p.streams || []) {
+      const reasons = (w.undecided && w.undecided.reasons) || [];
+      if (!reasons.length) continue;
+      const hosts = reasons.reduce((n, r) => n + (r.hosts || 0), 0);
+      if (!hosts) continue;
+      add("watch", `${label} · ${w.name}`, `${fmt(hosts)} host(s) it could not decide`,
+        `${reasons.map((r) => `${fmt(r.hosts || 0)} ${r.reason}`).join("; ")}. Until a host is decided, every fan-out` +
+        " keeps dialling all of its urls separately — which is the cost this pass exists to remove.");
+    }
+  }
+
+  const rank = { down: 0, stuck: 1, watch: 2 };
+  // Stable within a level: the order rows were derived in is the order this
+  // card draws its sections, so a reader who scans the list top to bottom and
+  // then looks down the card is moving the same way.
+  return out.sort((a, b) => rank[a.level] - rank[b.level]);
+}
+
+/**
+ * THE STRIP — is it running, and what is holding it back, above everything.
+ *
+ * The two questions asked before the card is read, answered in the space of one
+ * line each. The constraint is the router's own four-state verdict rather than
+ * anything derived here; the gauges beside it are the pair that verdict is made
+ * from plus the two ceilings a mirror hits, and each one is a quantity with its
+ * unit and its window rather than an adjective.
+ */
+function opsStrip(progress, rows) {
+  const box = el("div", "ops");
+  // The BOX takes the alarm from the worst row anywhere; the router chip takes
+  // it only from the router. They were the same flag at first, which drew
+  // "Router: running" in the alarm colour because a stream had thrown — the one
+  // sentence on this card whose whole job is to say the process is alive.
+  if (rows.some((r) => r.level === "down")) box.className = "ops bad";
+  const silent = progress.staleForSec == null || progress.staleForSec > HEARTBEAT_STALE_SEC;
+  const state = el("span", silent ? "state bad" : "state");
+  // The heartbeat, phrased against the ROLLUP's clock rather than the reader's,
+  // because that is the only clock that saw the file. Folding in however long
+  // this document has been cached would report a working router as dead every
+  // time a rollup ran late, and the footer already carries the reader-side half.
+  if (progress.staleForSec == null) {
+    state.append("Router: no heartbeat");
+  } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
+    state.append(`Router: silent ${fmtDur(progress.staleForSec)}`);
+  } else {
+    state.append(`Router: running, heard ${fmtDur(progress.staleForSec)} before this rollup`);
+  }
+  state.title = `the router last wrote its progress file at ${isoOf(progress.writtenAt)}`;
+  box.appendChild(state);
+  const h = progress.health;
+  if (h) {
+    const [verdict, why] = BOTTLENECK[h.bottleneck] || [h.bottleneck, ""];
+    const chip = el("span", "state" + (h.bottleneck === "ingest" ? " bad" : ""));
+    chip.append(`Constraint: ${verdict}`);
+    chip.title = why;
+    box.appendChild(chip);
+  }
+  // The third question, answered where the first two are and doubling as the
+  // heading of the list under it — which otherwise starts with a bare dot and
+  // leaves the reader to work out what kind of list they are in. Last of the
+  // three, and in that order: running, constrained by what, needing what. A
+  // count sitting between the two states read as a third state.
+  if (rows.length) {
+    const needs = el("span", "state" + (rows.some((r) => r.level === "down") ? " bad" : ""));
+    needs.append(`${fmt(rows.length)} need${rows.length === 1 ? "s" : ""} a hand`);
+    needs.title = "derived from the numbers below — see the list under this strip for what and where";
+    box.appendChild(needs);
+  }
+
+  if (h) {
+    const g = el("div", "gauges");
+    const gauge = (text, alarm) => {
+      const it = el("span", alarm ? "bad" : null);
+      it.appendChild(el("b", null, text[0]));
+      it.append(" " + text[1]);
+      g.appendChild(it);
+    };
+    if (h.eventsPerSec != null) gauge([fmt(h.eventsPerSec), "ev/s into ingest, last 60s"], false);
+    if (h.heapMaxMb) {
+      const share = h.heapUsedMb / h.heapMaxMb;
+      gauge([`${Math.round(share * 100)}%`, `of ${fmt(h.heapMaxMb)}MB heap`], share >= HEAP_TIGHT);
+    }
+    if (h.socketCeiling) {
+      gauge([`${fmt(h.sockets)}/${fmt(h.socketCeiling)}`, "sockets open"], h.sockets >= h.socketCeiling);
+    }
+    // Deliberate slowness, named as such. Ingest yields when the relay's own
+    // reads get slow — on purpose, because a client's REQ queues behind the
+    // mirror's queries inside the engine and the only lever is to stop filling
+    // it. From throughput alone that is identical to being stuck, so a mirror
+    // going slowly for a good reason should say the reason. It is a mean read
+    // latency, not a backoff: the yielding starts only once it climbs, and 0
+    // is a router whose relay has served nothing to measure.
+    if (h.servingMs != null) gauge([`${fmt(h.servingMs)}ms`, "mean client read — ingest yields as it climbs"], false);
+    box.appendChild(g);
+  }
+  return box;
+}
+
+/** The triage rows, drawn only when there are any — an empty list is a claim worth making silently. */
+function triagePanel(rows) {
+  if (!rows.length) return null;
+  const wrap = el("div");
+  for (const r of rows) {
+    const row = el("div", `tri ${r.level}`);
+    row.appendChild(el("i", "dot"));
+    const body = el("div");
+    const hd = el("p", "hd");
+    hd.append(r.what + " ");
+    hd.appendChild(el("span", "who", `— ${r.where}`));
+    body.appendChild(hd);
+    body.appendChild(el("span", "fix", r.fix));
+    row.appendChild(body);
+    wrap.appendChild(row);
+  }
+  return wrap;
 }
 
 /**
