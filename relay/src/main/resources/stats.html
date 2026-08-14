@@ -1700,6 +1700,11 @@ function passHeld(pass) {
   return (pass.taken || {}).pending || 0;
 }
 
+/** Which walk, or `?` where nothing numbered it — never `fmt`, which turns the fallback into `NaN`. */
+function passNumber(pass) {
+  return pass.number != null ? fmt(pass.number) : "?";
+}
+
 /**
  * The label above one pass's bar: which walk this is, and whether it is still
  * handing out or only finishing.
@@ -1711,7 +1716,10 @@ function passHeld(pass) {
  */
 function passHead(pass, current) {
   const line = el("p", "pass-head");
-  line.append(`pass ${fmt(pass.number != null ? pass.number : "?")}`);
+  // `fmt` is `Number(n).toLocaleString()`, so the "?" fallback went through it
+  // as the string "NaN" — the one label on this card whose whole job is to say
+  // WHICH walk this is.
+  line.append(`pass ${passNumber(pass)}`);
   // The owner only when it is the static half, which is the surprising one: a
   // stream carrying both `urls` and `relaySource` runs two walks under one name.
   if (pass.owner && pass.owner !== "dynamic") line.append(` · ${pass.owner}`);
@@ -2232,7 +2240,7 @@ function triage(progress) {
       if (!outstanding || p.outcome === "running" || p.endedAt == null || progress.writtenAt == null) continue;
       const since = progress.writtenAt - p.endedAt;
       if (since < STUCK_PASS_SEC) continue;
-      add("stuck", s.name, `pass ${fmt(p.number != null ? p.number : "?")} has not retired — ${fmt(outstanding)} url(s) out ${fmtDur(since)} past hand-out`,
+      add("stuck", s.name, `pass ${passNumber(p)} has not retired — ${fmt(outstanding)} url(s) out ${fmtDur(since)} past hand-out`,
         "A pass ending with legs still running is the rotation working, for a while. This long past it, those urls are" +
         " still marked busy, and a busy url is one the next pass declines to redial — so the rotation is quietly" +
         " covering less than its relay list without anything here failing.");
@@ -2308,7 +2316,11 @@ function opsStrip(progress, rows) {
   if (h) {
     const [verdict, why] = BOTTLENECK[h.bottleneck] || [h.bottleneck, ""];
     const chip = el("span", "state" + (h.bottleneck === "ingest" ? " bad" : ""));
-    chip.append(`Constraint: ${verdict}`);
+    // PAST TENSE once the heartbeat has gone stale. The verdict and the gauges
+    // beside it are worth keeping on a dead router — the last heap reading is
+    // most of a post-mortem — but "Constraint: the store is the limit" beside
+    // "Router: silent 40m" reads as a live diagnosis of a process that is gone.
+    chip.append(`${silent ? "Constraint when it stopped" : "Constraint"}: ${verdict}`);
     chip.title = why;
     box.appendChild(chip);
   }
