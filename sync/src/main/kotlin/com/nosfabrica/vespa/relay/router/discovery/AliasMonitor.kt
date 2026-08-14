@@ -292,7 +292,18 @@ class AliasMonitor(
         // of them had finished discovering first.
         val work =
             source?.let { src ->
-                val urls = runCatching { src.candidates() }.getOrDefault(emptyList())
+                val urls =
+                    try {
+                        src.candidates()
+                    } catch (e: CancellationException) {
+                        // Shutdown, not a derivation failure. `runCatching`
+                        // catches it and would turn a cancelled pass into an
+                        // empty one that schedules another.
+                        throw e
+                    } catch (e: Exception) {
+                        System.err.println("router: alias source failed to derive: ${e.message}")
+                        emptyList()
+                    }
                 // Nothing derived is not nothing to do — a cold store has no
                 // relay lists yet — so this reads as an empty pass and retries
                 // at [emptyRetryMs] rather than sleeping the full interval.

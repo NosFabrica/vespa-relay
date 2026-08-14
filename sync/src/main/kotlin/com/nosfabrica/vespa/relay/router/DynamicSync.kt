@@ -1659,15 +1659,22 @@ internal class DynamicSync(
                     // measurement: a store walk can fail on its own terms and
                     // the union is still worth what the rest of it found.
                     val found =
-                        runCatching {
+                        try {
                             RelayDiscovery.discover(
                                 store,
                                 dynamic,
                                 skip = setOfNotNull(store.relay),
                                 allowOnion = tor != null,
                             )
-                        }.getOrElse {
-                            System.err.println("router: alias source could not derive ${stream.name}: ${it.message}")
+                        } catch (e: CancellationException) {
+                            // NOT a store failure — the scope is shutting down.
+                            // `runCatching` catches this, which is why it is
+                            // spelled out; swallowing it would let a cancelled
+                            // pass carry on walking the store. Same reasoning as
+                            // [AliasFolding.adopt].
+                            throw e
+                        } catch (e: Exception) {
+                            System.err.println("router: alias source could not derive ${stream.name}: ${e.message}")
                             emptyList()
                         }
                     // The same two filters the fan-out applies after the fold,
@@ -1688,9 +1695,20 @@ internal class DynamicSync(
              * built here rather than in the monitor.
              */
             override suspend fun onEvent(event: Event) {
-                for (stream in streams) {
-                    if (stream.filter.match(event)) ingest.submit(event, stream.trusted)
-                }
+                // ONCE, not once per stream that wants it. Several streams
+                // routinely want the same kind-0, and [IngestPipeline.submit]
+                // queues BEFORE the store dedups — so a per-stream loop spends
+                // one slot of a bounded queue per matching stream on a single
+                // event, against the queue that is already this mirror's
+                // constraint (measured: 8,287 of 8,192, and 65.1M of 73.2M
+                // rejections are `duplicate: already have this event`).
+                val wanted = streams.filter { it.filter.match(event) }
+                if (wanted.isEmpty()) return
+                // Verified unless EVERY stream that wants it trusts its source.
+                // `skipVerify` is a claim about provenance and the probe's
+                // provenance is one thing for all of them, so the strictest
+                // stream's answer is the only safe one.
+                ingest.submit(event, wanted.all { it.trusted })
             }
 
             /**
