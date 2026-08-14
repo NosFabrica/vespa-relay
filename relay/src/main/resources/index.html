@@ -1652,10 +1652,23 @@
             <span id="advcount" class="adv-count" hidden></span>
           </summary>
           <div class="adv-panel">
+            <!-- Every option below is a NIP-50 `sort:` token app.js appends to
+                 the search string, so this list is the store's grammar and
+                 nothing more — a new one costs no code on this side.
+                 "Newest" is the odd one out and worth the line: the other five
+                 all order by how WELL something matched — relevance, the
+                 author's trust either way up, followers, text alone — while
+                 `sort:recent` does not consult match quality at all. The same words recall the same set and it
+                 comes back `created_at desc` like a feed — a trigram-level hit
+                 from a minute ago above a perfect one from yesterday. What that
+                 does NOT turn off is the other two controls in this panel: the
+                 lens and the trust floor still GATE the set, they have just
+                 stopped ordering it. -->
             <label class="adv-row">
               <span class="adv-label">Sort</span>
               <select id="sort" class="select" title="NIP-50 sort: extension">
                 <option value="">Best match</option>
+                <option value="recent">Newest</option>
                 <option value="rank">Most trusted</option>
                 <option value="rank:asc">Least trusted</option>
                 <option value="followers">Followers</option>

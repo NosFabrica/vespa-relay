@@ -82,37 +82,54 @@ app = "0.1.0"
 quartz = "1866007e99"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 13f97e2870 = store main through PR #73, and that PR is the WHOLE range: one
-# commit, `Move Quartz to 1866007e99`, touching one file — its own
-# gradle/libs.versions.toml. Verified with `git log --oneline 787cdb6f0b..` and
-# `git diff --stat`, not assumed from the title.
+# 5e44f1bde8 = store main through PR #74, and that PR is the WHOLE range: two
+# commits, `Add sort:recent — chronological, observer-gated search` and `Keep a
+# sort:recent search recency-ordered when the gate is missing`. Verified with
+# `git log --oneline 13f97e2870..` and `git diff --stat`, not assumed from the
+# titles.
 #
-# So there is nothing to say about the store contract this time, because nothing
-# in it moved: `IEventStore`, `SQLiteEventStore`, `IndexableFields` and
-# `SearchFieldExtractor` are untouched by construction when the diff is a single
-# version catalog. The near-column attribute work from #70 and the background
-# worker visibility from #71 are CARRIED — ancestors of this hash, not things
-# this bump gives up.
+# The store CONTRACT is untouched again — `IEventStore`, `SQLiteEventStore`,
+# `IndexableFields` and `SearchFieldExtractor` are not in the diff, and neither
+# is anything else this repo calls. What moved is the search STRING's grammar,
+# which reaches us as data rather than as an API: one more `sort:` token the
+# store accepts, `sort:recent`. It asks for a search's own match set in NIP-01
+# order — the same loose recall, `created_at desc, id asc`, still gated by the
+# observer's trust floor, with match tiers not consulted at all, so a trigram-
+# level hit from a minute ago sits above a perfect one from yesterday. The page
+# offers it as the sort menu's "Newest" and passes it the way it passes every
+# other `sort:`; nothing in Kotlin here parses or validates the token.
 #
-# The integration gate still ran against this commit rather than being waved
-# through on "it's only a catalog": the catalog is the store's QUARTZ, so the
-# code under test is compiled against a different engine than the one #72 was
-# gated on. That is precisely a Vespa-visible change InMemoryEventIndex cannot
-# see.
+# Two shapes of it the STORE decides, which is why this page can stay ignorant
+# of both: a termless `sort:recent` with no observer is handed back to the plain
+# path (it IS a plain filter, and the gated profile would give up the recency
+# profile and the count-probe planner to reach the same order), while one
+# carrying terms keeps the profile — ranking-free WITH terms means the relevance
+# profiles, the very order the token asked not to use.
 #
-# DIRECTION: 787cdb6f0b is a strict ancestor of this, and its quartz IS the hash
-# pinned above. Equality on both counts.
+# The gate below is not a formality here, because the shape this adds is
+# exactly the kind InMemoryEventIndex cannot judge: `sort:recent` is the first
+# query to reach a gated rank profile CARRYING TEXT CLAUSES, and whether the
+# deployed profile accepts the text-ranking features that ride beside them is a
+# fact about a real Vespa. ObserverGateIT is where it is asked, and it ran
+# against this commit — eight ITs, 11m48s, `skipped="0"` read off
+# build/test-results/test/*.xml rather than inferred from BUILD SUCCESSFUL,
+# ObserverGateIT itself 85s against a live Vespa.
 #
-# LEXICOGRAPHIC: '13f9…' < '787c…', so this sorts BELOW the pin it replaces —
-# the dangerous direction, and BOTH pins move that way in this bump, which is
-# the first time that has happened. It costs nothing only because nothing else
-# on the dependency graph brings the store in, so there is no conflict for a
-# higher-sorting hash to win. A fact about the graph, not about the pin.
+# DIRECTION: 13f97e2870 is a strict ancestor of this, and the store's own quartz
+# is UNCHANGED at 1866007e99 — the hash pinned above. Equality on both counts,
+# and unlike the last bump this moves ONE pin, not two.
+#
+# LEXICOGRAPHIC: '5e44…' > '13f9…' ('5' > '1'), so this sorts ABOVE the pin it
+# replaces — the safe direction, after two bumps that went the other way. That
+# is a fact about this pair of strings and expires with it: the next bump of
+# this pin re-rolls the digit, and sorting safely was never evidence the pin
+# took anyway. Only the resolved graph says that, and it is checked per module:
+#   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
 # Bumping this pin is NOT done until the store's own integration gate has run
 # against the commit — see AGENTS.md. `InMemoryEventIndex` cannot see a
 # Vespa-only regression.
-vespaEventStore = "13f97e2870"
+vespaEventStore = "5e44f1bde8"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

@@ -73,6 +73,42 @@ for (const [id, f] of Object.entries(FILTERS)) {
   assert.ok(read.includes(`p.get("${f.param}")`), `applyUrl() never reads ?${f.param}= — #${id} does not survive a reload`);
 }
 
+// ---- a sort value the page REASONS about is one the menu still offers ------
+//
+// The options are otherwise pure data — app.js appends whichever is selected to
+// the search string and the store owns the grammar — with one exception, and it
+// fails the same silent way the two above do. exportText() asks a different
+// "question for the reader" under `sort:recent`, because that order is not a
+// ranking: the trust question would send a reader hunting for a misranking in a
+// list that was asked for in time order. That branch is a comparison against a
+// bare token, so renaming or dropping the option breaks nothing visibly — it
+// just quietly restores the wrong question.
+//
+// What this can hold is only the SPELLING; whether the branch reads the right
+// thing at all is behaviour, and lives in query.test.mjs against
+// effectiveSort() (the export used to key on the menu, so a shared
+// `/?q=cats sort:recent` link got the trust question).
+//
+// The empty case is the trap this block was written with and failed: scraping
+// source for comparisons yields nothing the moment the comparison is respelled,
+// and a loop over nothing passes. So finding nothing is a FAILURE here, not a
+// silent success.
+const sortOptions = [...panel.matchAll(/<select id="sort"[\s\S]*?<\/select>/g)]
+  .flatMap((sel) => [...sel[0].matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]));
+assert.ok(sortOptions.includes(""), "#sort must offer the empty default (relevance)");
+assert.ok(sortOptions.length > 1, "the sort menu lost its options (or the markup changed shape)");
+
+const exportBody = bodyOf(app, "exportText");
+const branchedOn = [...new Set([...exportBody.matchAll(/\bsort ===? "([^"]+)"/g)].map((m) => m[1]))];
+assert.ok(
+  branchedOn.length > 0,
+  "exportText() no longer compares `sort` against any literal — either the chronological question is gone, " +
+  "or the comparison was respelled and this guard is now watching nothing",
+);
+for (const v of branchedOn) {
+  assert.ok(sortOptions.includes(v), `exportText() branches on the sort value "${v}", which #sort does not offer`);
+}
+
 // ---- the badge is markup the page can actually hide ------------------------
 //
 // It is drawn with the `hidden` attribute, and `display: inline-flex` beats

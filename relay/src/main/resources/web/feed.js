@@ -12,10 +12,15 @@
 // even one that is nothing but `sort:` or `observer:` — is a request for an
 // ORDER, and "a query that is nothing but extensions becomes unconstrained,
 // not match-nothing". Let the bar's sort leak into this ask and the page says
-// "newest first" over a list ranked by trust. So the three controls behind
-// Filters do not reach this view and the view does not show them — but the
-// kind chips beside them are not extensions at all, they are the `kinds` array
-// of that same plain read, and the feed answers to them (feedKinds below).
+// "newest first" over a list ranked by trust. Exactly one of the menu's values
+// would survive that leak — `sort:recent` asks for the order this view already
+// has, and a termless one the store hands straight back to the plain path — but
+// the rule is about the ASK and not about which value happens to be selected:
+// a view carrying an extension it never wanted is one option-list edit away
+// from ranking again. So the three controls behind Filters do not reach this
+// view and the view does not show them — but the kind chips beside them are not
+// extensions at all, they are the `kinds` array of that same plain read, and
+// the feed answers to them (feedKinds below).
 //
 // The trust gate rides on the CONNECTION rather than on the query, which is
 // what makes an empty search worth showing at all: a NIP-42 login turns even a

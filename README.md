@@ -104,6 +104,7 @@ from the query before matching, so they never become search terms:
 |---|---|
 | `observer:<pubkey>` | rank as seen by that pubkey's web of trust (scores are public, so any client may rank through any lens) |
 | `sort:rank` | order by trust, most trusted first (also `rank:asc`, `followers`, `text`) |
+| `sort:recent` | chronological: the same match set a search always recalls, newest first and still trust-gated, with match quality not consulted |
 | `filter:rank:gte:N` | drop results below trust rank `N` (0–100) |
 | `include:spam` | lift the default trust floor and include everything |
 | `-word` / `"exact phrase"` | Google-style exclusions and phrase matching |
