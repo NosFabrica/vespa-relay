@@ -155,7 +155,43 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     NostrRelayServer.kt the IEventStore-backed relay backend; installs StoreQueryContext
     MultiAddressAuthPolicy.kt  NIP-42 for a relay with two front doors: a Tor
                         client signs the .onion it dialled, and quartz's
-                        OptionalAuthPolicy binds exactly one url
+                        OptionalAuthPolicy binds exactly one url. It also
+                        carries the LOGIN HOOK: quartz's `authorize` is the one
+                        seam that sees a verified AUTH and that connection's
+                        `send` at once
+    TrustNotice.kt      what a reader is told the moment they sign in: ONE
+                        NOTICE naming the first link of their chain this relay
+                        does not hold, and nothing when it holds them all.
+                        readiness.js's second and third links in the existence
+                        form a relay can answer for itself — their own kind
+                        10040, then kind 30382 SIGNED BY the `30382:rank`
+                        service that list names. A chain, not a fan-out: the
+                        second ask is addressed to what the first one returns,
+                        which is also why a missing 10040 says one thing rather
+                        than two (the same first-unmet-link rule the panel
+                        holds; a column of red crosses says four things are
+                        wrong when one is). The signer is what ranks, never the
+                        card's `d` — a store full of cards ABOUT the reader
+                        from services they never named ranks nothing for them —
+                        and EVERY `30382:rank` entry counts rather than the
+                        first, because the provider map credits a reader
+                        through all of them: reading one told a reader whose
+                        SECOND provider is fully mirrored that their scores
+                        were missing, on every login. Fired once per identity
+                        per CONNECTION, since an AUTH frame stays valid for its
+                        whole ten-minute window and quartz accepts every copy —
+                        a replay loop would otherwise be free store reads on a
+                        scope the socket's close does not cancel.
+                        A stored 10040 naming no usable rank entry is its own
+                        answer, told apart from having none: only a PUBLIC
+                        `30382:rank` with a relay hint resolves, here and in
+                        the store's own provider map, so a followers-only list,
+                        a hintless entry and a NIP-44 private one all leave
+                        ranked search empty. A store that THREW is silence too
+                        — a failed read must never be published as "you never
+                        posted one". Off the AUTH path entirely: an OK is what
+                        a client waits on before it reads, and quartz reads a
+                        throw from that hook as a FAILED LOGIN
     HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
@@ -416,7 +452,11 @@ relay/src/main/resources/
                         and republishes them here VERBATIM for the next cycle to
                         find. Signing in enrols you in nothing — the server's
                         `onObserver` hook is wired to nothing, whatever older
-                        comments claimed.
+                        comments claimed. What it DOES do now is answer: a
+                        verified AUTH starts `TrustNotice`, which walks the
+                        same two middle links and carries the first unmet one
+                        to every client on the protocol as a NOTICE, rather
+                        than only to this page.
                         Its quietest number is the one that needed a whole
                         mechanism: "your own posts, N% mirrored" compares OUR
                         count for you against your write relay's, and ours is

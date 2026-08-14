@@ -33,6 +33,9 @@ import com.vitorpamplona.quartz.nip01Core.metadata.MetadataEvent
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
+import kotlinx.coroutines.CoroutineScope
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.AfterTest
@@ -260,6 +263,61 @@ class RelayProtocolTest {
                 hooked.close()
             }
         }
+
+    /**
+     * Signing in gets a reader an answer to the question the protocol gives
+     * them no way to ask: whether this relay holds the two things their ranked
+     * search depends on. The store treats the lens as a FILTER, so a reader
+     * whose chain has not been mirrored here searches an empty relay and is
+     * told nothing about it — see [TrustNotice].
+     *
+     * What this asserts is the WIRING, over the wire: that a verified AUTH
+     * reaches the hook at all, carrying the pubkey that signed it and this
+     * connection's send. Which notices a given store earns is
+     * [TrustNoticeTest]'s job, and so is the silent case — an absence over a
+     * socket is only ever a wait that has not finished.
+     */
+    @Test
+    fun `signing in reaches the login hook with the connection to answer on`() =
+        runBlocking {
+            val scope = CoroutineScope(SupervisorJob())
+            val hooked = NostrRelayServer(store, relayUrl, onAuthenticated = TrustNotice(store, scope)::check)
+            try {
+                val out = Collections.synchronizedList(mutableListOf<String>())
+                val session = hooked.connect { out.add(it) }
+                try {
+                    val challenge = awaitMessage(out) { it.startsWith("""["AUTH",""") }.substringAfter("""["AUTH","""").substringBefore('"')
+                    val auth = signer.sign(RelayAuthEvent.build(relayUrl, challenge))
+                    session.receive("""["AUTH",${auth.toJson()}]""")
+
+                    // The login is not held up by the check: the OK is quartz's
+                    // answer to the AUTH frame, and the notices arrive behind it
+                    // off a scope that never touched this coroutine.
+                    awaitMessage(out) { it.startsWith("""["OK","${auth.id}",true""") }
+                    val notices = awaitNotices(out, 1)
+                    assertTrue(notices.any { "10040" in it }, "an empty store holds no trust provider list for this reader: $notices")
+                } finally {
+                    session.close()
+                }
+            } finally {
+                hooked.close()
+                scope.cancel()
+            }
+        }
+
+    /** Every NOTICE this connection has been sent, once [count] of them have. */
+    private fun awaitNotices(
+        out: List<String>,
+        count: Int,
+    ): List<String> {
+        val deadline = System.currentTimeMillis() + 10_000
+        while (System.currentTimeMillis() < deadline) {
+            val seen = synchronized(out) { out.filter { it.startsWith("""["NOTICE"""") } }
+            if (seen.size >= count) return seen
+            Thread.sleep(20)
+        }
+        fail("timed out waiting for $count NOTICE(s); got: $out")
+    }
 
     /**
      * The search page's hashtag REQ, end to end — the assumptions the web UI's

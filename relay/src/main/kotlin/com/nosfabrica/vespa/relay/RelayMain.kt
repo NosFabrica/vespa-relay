@@ -53,6 +53,7 @@ import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
 import com.nosfabrica.vespa.relay.server.ServingPressure
 import com.nosfabrica.vespa.relay.server.StatsSnapshot
+import com.nosfabrica.vespa.relay.server.TrustNotice
 import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
@@ -308,11 +309,18 @@ fun main() {
     // SERVING_PRESSURE_THRESHOLD_MS into an instance whose backoffMs() nobody
     // calls would be a setting that is accepted and does nothing.
     val servingPressure = ServingPressure()
+    // What a reader is told the moment they sign in: whether this relay holds
+    // the two things their ranking depends on, and nothing at all when it does.
+    // On `maintenanceScope` like every other read that happens behind the
+    // server — a login must not wait on the store, and a check still running
+    // when the process is asked to stop dies with it.
+    val trustNotice = TrustNotice(store, maintenanceScope)
     val relay =
         NostrRelayServer(
             store = store,
             servingPressure = servingPressure,
             relayUrl = relayUrl,
+            onAuthenticated = trustNotice::check,
             alsoServedAt = addresses::alternates,
             listener = listener,
             limits = limits,
