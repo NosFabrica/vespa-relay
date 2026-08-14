@@ -427,11 +427,27 @@ class SyncProgressReportTest {
         assertEquals(emptyList(), unnamed, "the router registers these and the card names none of them: $unnamed")
     }
 
+    /**
+     * EVERYTHING THE CARD IS MADE OF, not just the page.
+     *
+     * This read `/stats.html` alone, and then the card's judgements — which
+     * legs to draw, what each bar is a proportion of, the ten outcomes
+     * themselves — moved into `/web/shared/sync.js` so `tools/webtest` could
+     * assert them. The pin went red, correctly: it had been asking whether a
+     * name appeared in one file rather than whether the card draws it.
+     *
+     * So it reads the page AND the module the page imports. A grep over a
+     * moving target is exactly what this pin is for — its whole job is to fail
+     * when a name is published on the Kotlin side and drawn on neither.
+     */
     private fun card(): String =
-        SyncProgressReportTest::class.java
-            .getResourceAsStream("/stats.html")!!
-            .readBytes()
-            .decodeToString()
+        listOf("/stats.html", "/web/shared/sync.js")
+            .joinToString("\n") {
+                SyncProgressReportTest::class.java
+                    .getResourceAsStream(it)!!
+                    .readBytes()
+                    .decodeToString()
+            }
 
     @Test
     fun `every outcome this object publishes can be drawn by the card`() {
@@ -441,12 +457,9 @@ class SyncProgressReportTest {
         // BY CONSTRUCTION, so a missing one does not fail — it under-fills, and
         // the count simply disappears from a card that still says the numbers
         // add up. Nothing else pins the two lists together: one is Kotlin, the
-        // other is inline JS in a resource.
-        val card =
-            SyncProgressReportTest::class.java
-                .getResourceAsStream("/stats.html")!!
-                .readBytes()
-                .decodeToString()
+        // other is a JS table in a resource — see [card] for why that is read
+        // as more than one file.
+        val card = card()
         val out =
             SyncProgressReport.build(
                 """

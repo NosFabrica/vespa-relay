@@ -791,6 +791,15 @@
 import { kindLabel } from "/web/shared/kinds.js";
 import { Relay } from "/web/shared/relay.js";
 import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/verdicts.js";
+// The sync card's judgements — which legs are worth naming, what each bar is a
+// proportion of, whether a partition divides. Extracted so `tools/webtest` can
+// assert them: the only pins over this code were string greps for member names,
+// and a grep cannot see a wrong denominator.
+import {
+  DISCOVERY, DISPOSITION, STUCK_LEG_SEC,
+  constraintOf, dividesOn, gaugesOf, heldCount, isLive, legsOf, meterOf, partitionOf, passHeld, passLabelOf,
+  pendingMeaning,
+} from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1592,60 +1601,50 @@ function mirrorLine(mirrors) {
  */
 
 /**
- * The ten terminal outcomes, in stacking order.
+ * WHAT THE ROUTER IS DOING RIGHT NOW — one cycle, live, with an outcome.
  *
- * The tone is carried by a CSS class per outcome, shared with the key's swatch
- * so the two cannot drift — see the `.disp > i.delivered` rules. The text here
- * is the SHORT label; the glossary supplies the definition on the title.
- */
-const DISPOSITION = [
-  ["delivered", "delivered"],
-  ["nothingNew", "in sync"],
-  ["pending", "pending"],
-  // Beside `pending` because both are facts about OUR pool rather than verdicts
-  // about a relay. It was missing entirely once: the router publishes it, the
-  // relay sums it into `accountedFor`, and the bar drew nothing — so a stream
-  // with a large `busy` rendered a stack that silently failed to fill its own
-  // total.
-  ["busy", "busy"],
-  ["noRoute", "no route"],
-  ["unreachable", "unreachable"],
-  ["hostStruckOut", "host struck out"],
-  ["knownDead", "known dead"],
-  ["transferFailed", "transfer failed"],
-  ["torUnavailable", "tor down"],
-];
-
-/**
- * The url partition — what discovery found, before anything was dialled.
+ * This sits above the coverage bars because it answers the questions asked
+ * first and because the coverage card cannot answer any of them. Coverage is
+ * accumulated across every run this router has ever made; this is one cycle.
  *
- * Its own bar, above the disposition, because they are partitions of different
- * wholes: this one divides `discovered`, the other divides `taken`. Drawing
- * them as one bar was the reading that made 16,752 discovered look like 16,752
- * dialled.
- */
-const DISCOVERY = [
-  ["taken", "taken on"],
-  ["foldedOntoAnother", "folded"],
-  ["refusedUnstable", "refused"],
-  ["excluded", "excluded"],
-];
-
-/** Past this, a router that has not written its heartbeat is not running. */
-const HEARTBEAT_STALE_SEC = 150;
-
-/**
- * Past this, a leg is not slow, it is stuck — and its quiet bar goes warm.
+ * ## Marks, not sentences
  *
- * Ten minutes, the same floor the router's own log line uses, and for the same
- * reason: the slowest HEALTHY leg measured on this deployment is the full
- * purplepag.es `indexers` walk at ~10.8 minutes for 1.49M events. Anything
- * lower marks legs doing exactly what they should.
+ * The half of this card that describes the live state used to be prose: a
+ * paragraph of clauses per stream, a second for the accounting, a third naming
+ * the held relays, and a fourth per processor. Measured on a two-stream
+ * deployment it came to 520 words, and it had the failure modes prose always
+ * has against a table of numbers — it is read serially, two streams cannot be
+ * compared without holding both paragraphs in your head, and a number inside a
+ * clause cannot be scanned down a column. The same facts as chips, bars and one
+ * table come to 66.
+ *
+ * So: every quantity is a mark, and the MEANING lives on the mark's `title`,
+ * taken from the glossary the document already ships (see [term]). The card
+ * spends words on exactly one thing — damage — through `.alarm`.
+ *
+ * ## Where the decisions live
+ *
+ * Not here. Which legs are worth naming, what a bar is a proportion OF, whether
+ * a partition divides, whether a health object is drawable — all of that is
+ * `/web/shared/sync.js`, because it is the half that can be wrong silently and
+ * the half nothing could reach while it was inline. What is left below is DOM
+ * and the document's own words. See that module's head for the five bugs that
+ * shipped behind a string grep.
+ *
+ * ## Three readings the arrangement is meant to make impossible
+ *
+ *  - **"16,747/16,752" as progress.** That number counts legs that RETURNED,
+ *    including every one that came back unreachable or capped. The stacked bar
+ *    is what actually became of them, and it is drawn from members that sum to
+ *    the total by construction — a stack cannot be drawn from counts that do
+ *    not.
+ *  - **"discovered" as "dialled".** Most of the gap between a fan-out's two big
+ *    numbers is duplicate urls rather than lost relays, so the url partition is
+ *    its own bar above the disposition rather than a clause beside it.
+ *  - **A stopped router as a quiet one.** `staleForSec` is a heartbeat, and the
+ *    `live` chip is the first mark on the card — a phase frozen mid-`fetching`
+ *    is exactly what a dead process leaves behind.
  */
-const STUCK_LEG_SEC = 600;
-
-/** How many held relays the table names before deferring to the JSON. */
-const IN_FLIGHT_SHOWN = 5;
 
 /**
  * The glossary the document ships, for the current card's `title` attributes.
@@ -1670,33 +1669,25 @@ function chip(text, tone, title) {
 }
 
 /**
- * A bar and its key, over one partition.
- *
- * `rows` are `[member, label]` in stacking order and `counts` is the object
- * they are read from; `total` is the whole they are parts OF, which is never
- * their sum by assumption — it is published, and when it disagrees the card
- * says so rather than rescaling to hide it.
+ * A bar and its key, over one partition — see `partitionOf` for what counts as
+ * a segment and what the shares are taken against.
  */
-function partition(rows, counts, total, meaning) {
+function partitionBar(rows, counts, total, meaning) {
   const wrap = el("div");
   const bar = el("div", "disp");
   const keys = el("div", "keys");
-  for (const [member, label] of rows) {
-    const n = counts[member] || 0;
-    if (!n) continue;
-    const share = n / Math.max(1, total);
-    const seg = el("i", member);
-    seg.style.width = share * 100 + "%";
-    const why = (meaning && meaning(member)) || term(member);
-    seg.title = `${fmt(n)} of ${fmt(total)} ${label}\n\n${why}`;
-    bar.appendChild(seg);
+  for (const seg of partitionOf(rows, counts, total)) {
+    const i = el("i", seg.member);
+    i.style.width = seg.share * 100 + "%";
+    const why = (meaning && meaning(seg.member)) || term(seg.member);
+    i.title = `${fmt(seg.n)} of ${fmt(total)} ${seg.label}\n\n${why}`;
+    bar.appendChild(i);
     const k = el("span");
     // The SAME class the segment carries, so one CSS rule paints both and the
     // key cannot drift from the bar. Never read back a computed style here:
     // the card is still detached from the document, so nothing resolves.
-    const sw = el("b", member);
-    k.appendChild(sw);
-    k.appendChild(el("em", null, fmt(n)));
+    k.appendChild(el("b", seg.member));
+    k.appendChild(el("em", null, fmt(seg.n)));
     // EVERY segment named, however small. Hiding the name under a share
     // threshold was tried and it hides the wrong ones: `delivered` and
     // `nothingNew` are the two outcomes that mean the relay WORKED, and on a
@@ -1704,47 +1695,13 @@ function partition(rows, counts, total, meaning) {
     // rule left the reader a bare "38" beside a labelled "8,569 pending".
     // What made the old key long was the labels being sentences; they are one
     // or two words now, and six of them fit on a line.
-    k.append(" " + label);
-    k.title = seg.title;
+    k.append(" " + seg.label);
+    k.title = i.title;
     keys.appendChild(k);
   }
   wrap.appendChild(bar);
   wrap.appendChild(keys);
   return wrap;
-}
-
-/**
- * What `pending` means for THIS pass.
- *
- * It is `taken` minus the nine other outcomes, so it always closes the
- * partition — but the same number means different things depending on whether
- * anything is still RUNNING, and the pass's outcome alone cannot say. A live
- * run showed the naive reading lying: a `completed` pass called 285 urls
- * "never got a verdict" directly above three of those 285 downloading at
- * 20,000 events each. A pass ends when its last url is HANDED OUT, not when
- * its last worker returns.
- */
-function pendingMeaning(outcome, held) {
-  if (outcome === "running" || outcome == null) return term("pending");
-  return held > 0
-    ? "the pass finished handing out and these legs are still running — the rotation working, not a fault"
-    : "the cycle ended before these got a verdict; dialled again next cycle";
-}
-
-/** How many relays a stream is holding, named or not. */
-function heldCount(inFlight) {
-  if (!inFlight) return 0;
-  return ((inFlight.relays || []).length) + (inFlight.omitted || 0);
-}
-
-/** A pass's own `pending` — its urls with no verdict yet, which on a finished walk is its tail. */
-function passHeld(pass) {
-  return (pass.taken || {}).pending || 0;
-}
-
-/** Which walk, or `?` where nothing numbered it — never `fmt`, which turns the fallback into `NaN`. */
-function passNumber(pass) {
-  return pass.number != null ? fmt(pass.number) : "?";
 }
 
 /**
@@ -1764,19 +1721,19 @@ function passBlock(p, held, alone) {
   // above a stream head that already says `fetching 20m` is the same fact
   // twice, and the head carries the pass number as a chip.
   if (!alone) {
+    const label = passLabelOf(p);
     const head = el("p", "foot");
-    head.append(`pass ${passNumber(p)}`);
-    if (p.owner && p.owner !== "dynamic") head.append(` · ${p.owner}`);
-    const outstanding = passHeld(p);
-    if (p.outcome === "running") head.append(" · walking");
-    else if (outstanding > 0) head.append(` · handed out, ${fmt(outstanding)} still finishing`);
-    else head.append(` · ${p.outcome || "ended"}`);
+    head.append(`pass ${label.number}`);
+    if (label.owner) head.append(` · ${label.owner}`);
+    head.append(label.state === "finishing"
+      ? ` · handed out, ${fmt(label.outstanding)} still finishing`
+      : ` · ${label.state}`);
     head.title =
       "A pass ends when its last url is handed out, not when its last worker returns — so a finished walk with" +
       " relays still finishing is the rotation working, and the next pass simply has fewer urls to hand out.";
     wrap.appendChild(head);
   }
-  wrap.appendChild(partition(DISPOSITION, p.taken || {}, total, (m) =>
+  wrap.appendChild(partitionBar(DISPOSITION, p.taken || {}, total, (m) =>
     m === "pending" ? pendingMeaning(p.outcome, held) : null));
   const foot = el("p", "foot");
   foot.append(`${fmt(p.received || 0)} event(s) at the socket`);
@@ -1813,7 +1770,7 @@ function poolsRow(s) {
     const w = el("i", "w");
     w.style.width = "100%";
     const t = el("i", "t");
-    t.style.width = (s.running ? ((s.transferring || 0) / s.running) * 100 : 0) + "%";
+    t.style.width = ((s.transferring || 0) / s.running) * 100 + "%";
     bar.appendChild(w);
     bar.appendChild(t);
     bar.title = `${fmt(s.transferring || 0)} of ${fmt(s.running)} workers hold a transfer slot\n\n${term("transferring")}`;
@@ -1855,13 +1812,11 @@ function poolsRow(s) {
  *
  * Four clocks per relay across five relays is a MATRIX, and it was being read
  * out as a sentence per row — the one shape that makes "which of these is the
- * worst" un-scannable. `quiet` is a bar because whether events are still
- * ARRIVING is what separates a relay with a real backlog from one whose walk
- * cannot terminate, and both are "held for hours".
+ * worst" un-scannable. See `legsOf` for what the quiet bar is a proportion of,
+ * and `RelayRotation.held` for why these five are the five.
  */
 function legsTable(s) {
-  const f = s.inFlight;
-  const rows = (f && f.relays) || [];
+  const { rows, more } = legsOf(s.inFlight);
   if (!rows.length) return null;
   // WHICH WALK handed each leg out, when the stream is running more than one.
   // A leg outlives its pass, so with two live walks a row cannot otherwise say
@@ -1880,37 +1835,21 @@ function legsTable(s) {
     head.appendChild(th);
   }
   table.appendChild(head);
-  const shown = rows.slice(0, IN_FLIGHT_SHOWN);
-  for (const r of shown) {
+  for (const r of rows) {
     const tr = el("tr");
-    // The scheme is dropped and nothing else is: a truncated relay url is not
-    // a relay url, and it is the thing being looked up.
-    tr.appendChild(el("td", "u", r.relay.replace(/^wss?:\/\//, "")));
-    if (many) tr.appendChild(el("td", "r", r.pass != null ? String(r.pass) : "—"));
-    const held = el("td", "r", fmtDur(r.heldForSec || 0));
+    tr.appendChild(el("td", "u", r.short));
+    if (many) tr.appendChild(el("td", "r", r.pass ?? "—"));
+    const held = el("td", "r", fmtDur(r.heldForSec));
     held.title = term("heldForSec");
     tr.appendChild(held);
-    tr.appendChild(el("td", "r", fmt(r.events || 0)));
+    tr.appendChild(el("td", "r", fmt(r.events)));
     const q = el("td");
     const bar = el("div", "qbar");
-    // HOW CLOSE TO STUCK, against the same ten minutes the colour keys off —
-    // an absolute scale, not a ranking of the rows on screen.
-    //
-    // Both relative readings were tried and both lie. Scaled against the worst
-    // row PUBLISHED, five bars rendered at 0.08% each when the outlier sat at
-    // row eight, outside the five drawn — the comparison the bar exists to
-    // make, hidden. Scaled against the worst row SHOWN, five legs all quiet a
-    // healthy thirty seconds each rendered full, which is the reading that
-    // means "stuck". A proportion needs a denominator that means something on
-    // its own, and the only one here is the threshold.
-    const quiet = r.quietForSec || 0;
-    const fill = el("i", quiet >= STUCK_LEG_SEC ? "hot" : "");
-    fill.style.width = Math.min(100, (quiet / STUCK_LEG_SEC) * 100) + "%";
+    const fill = el("i", r.hot ? "hot" : "");
+    fill.style.width = r.quietShare * 100 + "%";
     bar.appendChild(fill);
-    // Absent `transferringForSec` means "not on a socket", which is a
-    // different fault from a slow download and must not read as one.
-    bar.title = `quiet ${fmtDur(quiet)} of the ${fmtDur(STUCK_LEG_SEC)} that counts as stuck` +
-      (r.transferringForSec == null
+    bar.title = `quiet ${fmtDur(r.quietForSec)} of the ${fmtDur(STUCK_LEG_SEC)} that counts as stuck` +
+      (r.slotless
         ? " · NO TRANSFER SLOT — in the guards or queued behind other legs, so this is our pool rather than their relay"
         : ` · holding a slot for ${fmtDur(r.transferringForSec)}`) +
       `\n\n${term("quietForSec")}`;
@@ -1921,7 +1860,6 @@ function legsTable(s) {
   wrap.appendChild(table);
   // Never silent about the tail: most of a fan-out's workers are connect
   // timeouts to dead hosts, and a list that hides them reads as the whole set.
-  const more = (f.omitted || 0) + (rows.length - shown.length);
   if (more) {
     const p = el("p", "foot", `+${fmt(more)} more held, quietest shown first`);
     p.title = term("omitted");
@@ -1942,7 +1880,7 @@ function streamLane(s) {
   head.appendChild(chip(
     `${s.phase || "unknown"}${s.phaseForSec != null ? ` ${fmtDur(s.phaseForSec)}` : ""}`,
     stalled ? "warn" : "busy", term(s.phase)));
-  if (c && c.number != null) head.appendChild(chip(`pass ${passNumber(c)}`, null, term("passes")));
+  if (c && c.number != null) head.appendChild(chip(`pass ${passLabelOf(c).number}`, null, term("passes")));
   if (c && c.owner && c.owner !== "dynamic") head.appendChild(chip(c.owner, null, term("owner")));
   // `reached` is the only evidence a DEEP walk is moving — `fraction` rounds
   // to zero for hours on an unbounded one while this date moves every page.
@@ -1968,22 +1906,15 @@ function streamLane(s) {
   }
   if (!c) {
     if (!s.reason) box.appendChild(el("p", "foot", "no cycle has run yet on this stream"));
-    const only = legsTable(s);
     // Drawn even with no cycle — the workers of the LAST one outlive it and
     // are exactly what a stream stuck between passes is holding.
+    const only = legsTable(s);
     if (only) box.appendChild(only);
     return box;
   }
 
-  // The url partition, but ONLY where it divides. On a stream whose relay list
-  // is named by hand nothing folds, nothing is refused and nothing is excluded,
-  // so this is one full-width segment reading "5 taken on" — a bar that cannot
-  // vary is not a mark, it is a rule with a number on it. The count is already
-  // on the pass footer.
   const u = c.urls || {};
-  if (u.discovered && DISCOVERY.filter(([m]) => u[m]).length > 1) {
-    box.appendChild(partition(DISCOVERY, u, u.discovered, () => null));
-  }
+  if (dividesOn(u)) box.appendChild(partitionBar(DISCOVERY, u, u.discovered, () => null));
   const pools = poolsRow(s);
   if (pools) box.appendChild(pools);
 
@@ -2005,24 +1936,6 @@ function streamLane(s) {
 }
 
 /**
- * WHERE THE CONSTRAINT IS — the first question a mirror that feels slow gets,
- * and the one the router answers itself, every 60 seconds, in a line that until
- * now went only to a container's stderr.
- *
- * The four states are not degrees of one thing, they are different faults with
- * different fixes, so each names what to look at next.
- */
-const BOTTLENECK = {
-  ingest: ["store is the limit", "Ingest's queue is full, so every download is backpressured behind it. Look at the store, not at the relays."],
-  downloads: ["relays are the limit", "Ingest drains as fast as it fills. The mirror is going as fast as the upstreams will serve it."],
-  upstream: ["nothing arriving", "The queue is empty and no events are reaching it — look at discovery, the guards and the transport, not at ingest."],
-  mixed: ["keeping up", "The queue is neither full nor empty: nothing here is the constraint."],
-};
-
-/** Past this share of the heap the router is collecting rather than mirroring — the same 90% its own log line shouts at. */
-const HEAP_TIGHT = 0.9;
-
-/**
  * The NOW line: is it running, and what is holding it back, in chips.
  *
  * Everything here was already on the card as prose. The heartbeat was a
@@ -2032,11 +1945,7 @@ const HEAP_TIGHT = 0.9;
  */
 function nowLine(progress, data) {
   const row = el("div", "now");
-  const live = progress.staleForSec != null && progress.staleForSec <= HEARTBEAT_STALE_SEC;
-  // Phrased against the ROLLUP's clock, not the reader's, because that is the
-  // only clock that saw the file. Folding in however long this document has
-  // been cached would report a working router as dead every time a rollup ran
-  // late, and the footer already carries the reader-side half.
+  const live = isLive(progress);
   row.appendChild(chip(live ? "live" : progress.staleForSec == null ? "no heartbeat" : "not running",
     live ? "live" : "warn",
     (live
@@ -2057,41 +1966,20 @@ function nowLine(progress, data) {
     row.appendChild(f);
   }
 
-  const h = progress.health;
-  if (h) {
-    // The verdict is guarded on ITS OWN member rather than on the object: every
-    // gauge here is copied independently against an allowlist, so a document
-    // can carry the numbers with no word or the word with no numbers, and each
-    // has to stand without the others. Guarding the whole block on `bottleneck`
-    // would drop a perfectly good heap reading for want of a verdict.
-    if (h.bottleneck) {
-      const [verdict, why] = BOTTLENECK[h.bottleneck] || [h.bottleneck, ""];
-      // PAST TENSE on a dead router. The verdict and the gauges are worth
-      // keeping — the last heap reading is most of a post-mortem — but a live
-      // diagnosis beside "not running" claims a process that is gone is still
-      // constrained.
-      row.appendChild(chip(live ? verdict : `${verdict}, when it stopped`,
-        h.bottleneck === "ingest" ? "warn" : null, `${term("bottleneck")}\n\n${why}`));
+  const constraint = constraintOf(progress.health, live);
+  if (constraint) {
+    row.appendChild(chip(constraint.text, constraint.tone, `${term("bottleneck")}\n\n${constraint.why}`));
+  }
+  for (const g of gaugesOf(progress.health)) {
+    if (g.id === "eventsPerSec") row.appendChild(chip(`${fmt(g.value)} ev/s`, g.tone, term("eventsPerSec")));
+    if (g.id === "heap") {
+      row.appendChild(chip(`heap ${g.pct}%`, g.tone, `${fmt(g.value)} of ${fmt(g.of)}MB\n\n${term("heapUsedMb")}` +
+        (g.tone ? "\n\nAt the ceiling the collector runs continuously and throughput collapses without anything failing." : "")));
     }
-    if (h.eventsPerSec != null) row.appendChild(chip(`${fmt(h.eventsPerSec)} ev/s`, null, term("eventsPerSec")));
-    // BOTH halves of a pair or neither. The relay copies these member by
-    // member against an allowlist, so a document can carry a ceiling with no
-    // reading — and a percentage of an absent numerator renders as "NaN%",
-    // which reads as a broken page rather than as a missing number.
-    if (h.heapMaxMb && h.heapUsedMb != null) {
-      const share = h.heapUsedMb / h.heapMaxMb;
-      row.appendChild(chip(`heap ${Math.round(share * 100)}%`, share >= HEAP_TIGHT ? "warn" : null,
-        `${fmt(h.heapUsedMb)} of ${fmt(h.heapMaxMb)}MB\n\n${term("heapUsedMb")}` +
-        (share >= HEAP_TIGHT ? "\n\nAt the ceiling the collector runs continuously and throughput collapses without anything failing." : "")));
+    if (g.id === "sockets") {
+      row.appendChild(chip(`${fmt(g.value)}/${fmt(g.of)} sockets`, g.tone, `${term("sockets")}\n\n${term("socketCeiling")}`));
     }
-    if (h.socketCeiling && h.sockets != null) {
-      row.appendChild(chip(`${fmt(h.sockets)}/${fmt(h.socketCeiling)} sockets`,
-        h.sockets >= h.socketCeiling ? "warn" : null, `${term("sockets")}\n\n${term("socketCeiling")}`));
-    }
-    // Deliberate slowness, named as such: this router yields to the relay's own
-    // client reads on purpose, and from throughput alone that is identical to
-    // being stuck.
-    if (h.servingMs != null) row.appendChild(chip(`${fmt(h.servingMs)}ms reads`, null, term("servingMs")));
+    if (g.id === "servingMs") row.appendChild(chip(`${fmt(g.value)}ms reads`, g.tone, term("servingMs")));
   }
   return row;
 }
@@ -2194,10 +2082,9 @@ function breakdown(p) {
  * matters for it.
  *
  * A grid rather than a paragraph so the meters line up down a column, which is
- * what makes "the fold is stuck and ingest is not" a glance instead of a read.
- * The meter is deliberately the same idea as a stream's disposition bar: a
- * pass-shaped processor has a denominator (the urls a stream submitted) and
- * something still outstanding against it, so "how far along" is a proportion.
+ * what makes "the fold is stuck and ingest is not" a glance instead of a read —
+ * and see `meterOf` for why the two kinds of meter in that column are drawn
+ * differently rather than identically.
  */
 function processorRow(p) {
   const known = PROCESSORS.find((row) => row[0] === p.name);
@@ -2225,38 +2112,33 @@ function processorRow(p) {
   row.appendChild(state);
 
   const bar = el("span", "frac");
+  const meter = meterOf(p);
   let right = "";
-  const w = (p.streams || [])[0];
-  if (w) {
-    // `outstanding` falling pass over pass is the fold getting somewhere;
-    // standing still while the measured count climbs is a set of hosts that
-    // cannot be decided, which is what `breakdown` then names.
-    const decided = Math.max(0, (w.candidates || 0) - (w.unmeasured || 0));
+  if (meter && meter.kind === "progress") {
     const i = el("i");
-    i.style.width = ((decided / Math.max(1, w.candidates || 0)) * 100) + "%";
+    i.style.width = meter.share * 100 + "%";
     bar.appendChild(i);
-    bar.title = `progress: ${fmt(decided)} of ${fmt(w.candidates || 0)} url(s) carry a verdict\n\n${term("unmeasured")}`;
-    right = `${fmt(w.unmeasured || 0)} left`;
-  } else if (p.capacity) {
+    bar.title = `progress: ${fmt(meter.decided)} of ${fmt(meter.candidates)} url(s) carry a verdict\n\n${term("unmeasured")}`;
+    right = `${fmt(meter.left)} left`;
+  } else if (meter && meter.kind === "level") {
     // A LEVEL, not progress — see the `.frac i.level` rule. Nothing about a
     // half-full queue is half-done, and drawing it in the same tone as the
     // fold's progress said it was.
-    const full = (p.queued || 0) >= p.capacity;
-    const q = el("i", full ? "level warn" : "level");
-    q.style.width = Math.min(100, ((p.queued || 0) / p.capacity) * 100) + "%";
+    const q = el("i", meter.tone ? "level warn" : "level");
+    q.style.width = meter.share * 100 + "%";
     bar.appendChild(q);
-    bar.title = `queue level: ${fmt(p.queued || 0)} of ${fmt(p.capacity)}` +
-      (full ? " — FULL, downloads are backpressured behind it" : " — a level, not progress; empty is healthy") +
+    bar.title = `queue level: ${fmt(meter.queued)} of ${fmt(meter.capacity)}` +
+      (meter.full ? " — FULL, downloads are backpressured behind it" : " — a level, not progress; empty is healthy") +
       `\n\n${term("queued")}`;
     // The split, never the bare total: `rejected` is mostly the same event
     // offered once per relay holding it, and `dropped` is the sweep declining
-    // to backpressure itself. Both are on the title; the stack under the row
-    // is where `rejected` is broken out.
+    // to backpressure itself. Both are on the title; the numbers under the row
+    // are where `rejected` is broken out.
     right = `${short(p.accepted || 0)} stored`;
     bar.title += `\n\n${fmt(p.rejected || 0)} rejected` +
       (p.dropped != null ? `, ${fmt(p.dropped)} dropped rather than backpressure the sweep` : "");
   } else if (p.observed != null) {
-    // NO BAR. `knownDead` is read from the STORE and `observed` is this
+    // NO METER. `knownDead` is read from the STORE and `observed` is this
     // process's sockets since boot — different populations, so there is no
     // whole for either to be a part of. A restarted mirror reports 1,609
     // known dead against 5 observed, and any bar dividing them is arithmetic
