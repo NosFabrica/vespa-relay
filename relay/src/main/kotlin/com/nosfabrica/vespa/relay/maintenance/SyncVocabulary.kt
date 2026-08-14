@@ -580,6 +580,51 @@ internal object SyncVocabulary {
                     "(most often a schema the events no longer fit), not a mirror one.",
             )
             put(
+                "bottleneck",
+                "WHERE THE CONSTRAINT IS, decided by the router itself: `ingest` (the queue is full, so every " +
+                    "download is backpressured behind it — the mirror is as fast as the store), `downloads` (the " +
+                    "queue drains as fast as it fills, so the relays are the limit), `upstream` (nothing is arriving " +
+                    "at all) or `mixed`. A full queue and an empty one are opposite diagnoses that look identical " +
+                    "from every other number here, which is why this is one word rather than something to infer.",
+            )
+            put(
+                "eventsPerSec",
+                "Events reaching ingest per second, averaged over the last minute, across every stream. NOT a " +
+                    "stream's `received`, which is counted at the socket before dedup — the two are counted at " +
+                    "different points on purpose and disagreeing is not a fault in either.",
+            )
+            put(
+                "heapUsedMb",
+                "The router process's own heap, against `heapMaxMb`. Past about 90% this router is spending its " +
+                    "time collecting rather than mirroring, and the negentropy id snapshot — the largest thing it " +
+                    "builds — is what usually gets it there.",
+            )
+            put(
+                "sockets",
+                "Websockets open right now, against `socketCeiling` — the OkHttp dispatcher budget, which is the " +
+                    "real concurrency limit for the whole router. At the stock 64 every stream's `concurrency` " +
+                    "silently stopped meaning anything; it is 1,024 here, and a fan-out pressed against it is a " +
+                    "mirror whose configured widths are fiction.",
+            )
+            put(
+                "heapMaxMb",
+                "What `heapUsedMb` is measured against — the JVM's maximum heap, which in the compose deployment is " +
+                    "a percentage of the container's memory limit rather than a figure anyone set directly.",
+            )
+            put(
+                "socketCeiling",
+                "What `sockets` is measured against — the OkHttp dispatcher budget shared by every stream. An open " +
+                    "websocket holds a slot for its whole life, so this and not any stream's `concurrency` is the " +
+                    "router's real ceiling.",
+            )
+            put(
+                "servingMs",
+                "The relay's mean client read latency, which this router YIELDS to: past its threshold ingest " +
+                    "deliberately slows so that mirroring does not cost the people reading. A mirror that is " +
+                    "throttling itself politely and one that is stuck look identical from throughput alone, and " +
+                    "this is the only number that tells them apart. Absent where no pressure feed is configured.",
+            )
+            put(
                 "staleForSec",
                 "How long ago the router last wrote its progress file, measured against THIS rollup's clock. The router " +
                     "rewrites it every tick whatever its streams are doing, so this is a heartbeat: a quiet mirror and a " +

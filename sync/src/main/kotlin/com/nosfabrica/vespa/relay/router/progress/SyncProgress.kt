@@ -123,6 +123,41 @@ class SyncProgress(
     /** Where the document is written; null publishes nothing — see [write]. */
     private val file: File?,
 ) {
+    /**
+     * WHERE THE CONSTRAINT IS, and the numbers behind it.
+     *
+     * The router works this out every sixty seconds and prints it: a full ingest
+     * queue and an empty one are opposite diagnoses that look identical from
+     * every other number, and the pair is what tells them apart. It reached
+     * stderr and stopped there, so the one question this whole document exists
+     * to answer — why is it slow — was the one thing it did not carry.
+     *
+     * These are facts about the PROCESS rather than about any stream, which is
+     * why they sit at the document's root beside the heartbeat.
+     */
+    class Health(
+        /**
+         * `ingest` / `downloads` / `upstream` / `mixed` — read the router's own
+         * words in `SyncEngine.healthLoop`, which is where this is decided.
+         */
+        val bottleneck: String,
+        /** Events reaching ingest per second, averaged over the last minute. */
+        val eventsPerSec: Int,
+        val heapUsedMb: Long,
+        val heapMaxMb: Long,
+        /** Websockets open, against the dispatcher budget that is the real concurrency ceiling. */
+        val sockets: Int,
+        val socketCeiling: Int,
+        /**
+         * The relay's mean client read latency, which this router YIELDS to.
+         *
+         * A mirror that is deliberately slowing down and one that is stuck look
+         * the same from throughput alone, and only this number tells them apart.
+         * Null where no pressure feed is configured.
+         */
+        val servingMs: Long?,
+    )
+
     /** Whether this router publishes progress at all, i.e. whether `SYNC_PROGRESS_FILE` named a path. */
     val publishes: Boolean get() = file != null
 
@@ -140,6 +175,8 @@ class SyncProgress(
     fun write(
         streams: List<StreamPhases.Stream>,
         processors: List<Processors.Snapshot> = emptyList(),
+        /** Where the constraint is, and the numbers behind it — see [Health]. */
+        health: Health? = null,
         /**
          * VirtualMachineErrors this process has survived — an OutOfMemoryError
          * kills whichever thread allocates next and is caught by nobody, so the
@@ -153,7 +190,7 @@ class SyncProgress(
         return runCatching {
             f.parentFile?.mkdirs()
             val tmp = File(f.parentFile ?: File("."), "${f.name}.tmp")
-            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, processors, fatals, nowSeconds)))
+            tmp.writeText(json.encodeToString(JsonObject.serializer(), document(streams, processors, fatals, health, nowSeconds)))
             // Temp file plus an atomic move, for the same reason every other
             // file here is written that way: the relay reads this on its own
             // schedule and a half-written document parses as nothing.
@@ -176,6 +213,7 @@ class SyncProgress(
             streams: List<StreamPhases.Stream>,
             processors: List<Processors.Snapshot> = emptyList(),
             fatals: Long = 0,
+            health: Health? = null,
             nowSeconds: Long,
         ): JsonObject =
             buildJsonObject {
@@ -184,6 +222,22 @@ class SyncProgress(
                 // claim worth publishing, and a member that appears only on
                 // damage cannot be distinguished from a router too old to say.
                 put("fatals", fatals)
+                // The constraint, at the root: it is a fact about the process,
+                // and every stream's slowness is downstream of it.
+                health?.let { h ->
+                    put(
+                        "health",
+                        buildJsonObject {
+                            put("bottleneck", h.bottleneck)
+                            put("eventsPerSec", h.eventsPerSec)
+                            put("heapUsedMb", h.heapUsedMb)
+                            put("heapMaxMb", h.heapMaxMb)
+                            put("sockets", h.sockets)
+                            put("socketCeiling", h.socketCeiling)
+                            h.servingMs?.let { put("servingMs", it) }
+                        },
+                    )
+                }
                 putJsonArray("streams") {
                     for (s in streams) {
                         add(

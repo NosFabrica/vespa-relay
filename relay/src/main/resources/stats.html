@@ -1700,6 +1700,8 @@ function progressPanel(progress) {
       `Everything below may be a partial account of what it is doing.`));
     wrap.appendChild(dead);
   }
+  const health = healthLine(progress.health);
+  if (health) wrap.appendChild(health);
   if (progress.staleForSec == null) {
     beat.append("The router published no heartbeat, so nothing here can be dated.");
   } else if (progress.staleForSec > HEARTBEAT_STALE_SEC) {
@@ -2004,6 +2006,52 @@ function processorsPanel(progress) {
   wrap.appendChild(head);
   for (const p of sorted) wrap.appendChild(processorBlock(p));
   return wrap;
+}
+
+/**
+ * WHERE THE CONSTRAINT IS — the first question a mirror that feels slow gets,
+ * and the one the router answers itself.
+ *
+ * The four states are not degrees of the same thing, they are different faults
+ * with different fixes, so each names what to look at next. `ingest` means the
+ * store is the limit and every download is queued behind it; `downloads` means
+ * ingest is keeping up and the relays are the limit; `upstream` means nothing is
+ * arriving at all, which on a working mirror means discovery or the guards, not
+ * the pipeline.
+ *
+ * The pressure line beside it is what separates a router throttling itself
+ * politely from one that is stuck: this process yields to the relay's client
+ * reads on purpose, and from throughput alone the two are identical.
+ */
+const BOTTLENECK = {
+  ingest: ["the store is the limit", "Ingest's queue is full, so every download is backpressured behind it. Look at the store, not at the relays."],
+  downloads: ["the relays are the limit", "Ingest drains as fast as it fills. The mirror is going as fast as the upstreams will serve it."],
+  upstream: ["nothing is arriving", "The queue is empty and no events are reaching it — look at discovery, the guards and the transport, not at ingest."],
+  mixed: ["keeping up", "The queue is neither full nor empty: nothing here is the constraint."],
+};
+
+function healthLine(h) {
+  if (!h) return null;
+  const line = el("p", "cyc-line");
+  const [verdict, why] = BOTTLENECK[h.bottleneck] || [h.bottleneck, ""];
+  const chip = el("span", h.bottleneck === "ingest" ? "err" : "");
+  chip.append(`Constraint: ${verdict}`);
+  chip.title = why;
+  line.appendChild(chip);
+  const bits = [];
+  if (h.eventsPerSec != null) bits.push(`${fmt(h.eventsPerSec)} ev/s into ingest`);
+  if (h.heapMaxMb) {
+    const pct = Math.round((h.heapUsedMb / h.heapMaxMb) * 100);
+    // Past ~90% this router is collecting rather than mirroring, and the id
+    // snapshot is what usually gets it there.
+    bits.push(`heap ${pct}%` + (pct >= 90 ? " — AT THE CEILING" : ""));
+  }
+  if (h.socketCeiling) bits.push(`${fmt(h.sockets)} of ${fmt(h.socketCeiling)} sockets`);
+  // Deliberate slowness, named as such: without it, a router yielding politely
+  // reads as a router that has stopped.
+  if (h.servingMs != null) bits.push(`yielding to ${fmt(h.servingMs)}ms client reads`);
+  if (bits.length) line.append(" · " + bits.join(" · ") + ".");
+  return line;
 }
 
 /**

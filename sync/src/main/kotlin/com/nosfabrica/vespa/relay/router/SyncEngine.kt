@@ -484,7 +484,7 @@ class SyncEngine(
         scope.launch {
             while (scope.isActive) {
                 delay(PROGRESS_INTERVAL_MS)
-                progressFile.write(phases.snapshot(), processors.snapshot(), fatals.get())
+                progressFile.write(phases.snapshot(), processors.snapshot(), health, fatals.get())
             }
         }
         if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
@@ -651,6 +651,32 @@ class SyncEngine(
         }
 
     /**
+     * WHERE THE CONSTRAINT IS, decided once and read twice.
+     *
+     * A full ingest queue and an empty one are opposite diagnoses that look
+     * identical from every other number this router publishes, and the pair
+     * (depth against capacity, and whether anything is arriving at all) is what
+     * separates them. The health line has said this in prose for a while; the
+     * document says the same word, from the same function, so the log and the
+     * dashboard cannot drift into disagreeing about the one thing an operator
+     * asks first.
+     */
+    private fun bottleneckOf(
+        depth: Int,
+        rate: Int,
+    ): String =
+        when {
+            depth >= ingest.capacity -> "ingest"
+            depth == 0 && rate == 0 -> "upstream"
+            depth == 0 -> "downloads"
+            else -> "mixed"
+        }
+
+    /** The latest health, for the progress tick to publish — see [bottleneckOf]. */
+    @Volatile
+    private var health: SyncProgress.Health? = null
+
+    /**
      * Why the machine is idle, once a minute. A full heap, a full queue and
      * an empty queue each mean something different, and together they name
      * the bottleneck without guessing — every stall this router has had was
@@ -671,6 +697,18 @@ class SyncEngine(
             lastEvents = events
             lastAt = now
             val depth = ingest.queued.get()
+            // Published before it is printed, so the document carries the same
+            // verdict the log does even if the line below is ever reworded.
+            health =
+                SyncProgress.Health(
+                    bottleneck = bottleneckOf(depth, rate),
+                    eventsPerSec = rate,
+                    heapUsedMb = usedMb,
+                    heapMaxMb = maxMb,
+                    sockets = client.connectedRelaysFlow().value.size,
+                    socketCeiling = MAX_CONCURRENT_SOCKETS,
+                    servingMs = pressure?.meanMs(),
+                )
             System.err.println(
                 "router: health heap $usedMb/${maxMb}MB ($heapPct%)" +
                     (if (heapPct >= 90) " !! AT THE CEILING" else "") +
@@ -680,10 +718,10 @@ class SyncEngine(
                     // the rate a 60s average, so only the pair tells them
                     // apart.
                     (
-                        when {
-                            depth >= ingest.capacity -> " FULL (ingest is the limit — downloads are backpressured)"
-                            depth == 0 && rate == 0 -> " empty (nothing is arriving — the limit is upstream of ingest)"
-                            depth == 0 -> " drained (ingest is keeping up; downloads are the limit)"
+                        when (bottleneckOf(depth, rate)) {
+                            "ingest" -> " FULL (ingest is the limit — downloads are backpressured)"
+                            "upstream" -> " empty (nothing is arriving — the limit is upstream of ingest)"
+                            "downloads" -> " drained (ingest is keeping up; downloads are the limit)"
                             else -> ""
                         }
                     ) +

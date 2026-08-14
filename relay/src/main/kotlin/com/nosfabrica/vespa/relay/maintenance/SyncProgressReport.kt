@@ -134,6 +134,10 @@ internal object SyncProgressReport {
             // member that appears only on damage cannot be told from a router
             // too old to say either way.
             num(doc["fatals"])?.let { put("fatals", it) }
+            // WHERE THE CONSTRAINT IS. The router decides this itself, from the
+            // pair that separates a full ingest queue from an empty one, and it
+            // is the first thing an operator asks of a mirror that feels slow.
+            health(doc["health"] as? JsonObject)?.let { put("health", it) }
             putJsonArray("streams") {
                 for (s in streams) stream(s)?.let { add(it) }
             }
@@ -148,6 +152,22 @@ internal object SyncProgressReport {
                 ?.mapNotNull { processor(it) }
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { rows -> putJsonArray("processors") { for (r in rows) add(r) } }
+        }
+    }
+
+    /**
+     * The router's own account of why it is going at the speed it is.
+     *
+     * Rebuilt member by member like everything else, and `bottleneck` is checked
+     * against the words the router can actually emit — a value this side does
+     * not recognise is dropped rather than served, because the card colours a
+     * state from it.
+     */
+    private fun health(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        return buildJsonObject {
+            text(o["bottleneck"])?.takeIf { it in BOTTLENECKS }?.let { put("bottleneck", it) }
+            for (member in HEALTH_NUMBERS) num(o[member])?.let { put(member, it) }
         }
     }
 
@@ -487,6 +507,12 @@ internal object SyncProgressReport {
             // ingest's one loss counter
             "lostToStore",
         )
+
+    /** The four words `SyncEngine.bottleneckOf` can produce, and no others. */
+    private val BOTTLENECKS = setOf("ingest", "downloads", "upstream", "mixed")
+
+    private val HEALTH_NUMBERS =
+        listOf("eventsPerSec", "heapUsedMb", "heapMaxMb", "sockets", "socketCeiling", "servingMs")
 
     /**
      * The phase members a stream may publish beside its phase word.

@@ -87,6 +87,9 @@ class SyncVocabularyTest {
             // The fold's per-survivor sample urls: strings, and `urls` beside
             // them is the count a reader looks up.
             "examples",
+            // The container the constraint's numbers sit in; `bottleneck` and
+            // each gauge inside it is what a reader looks up.
+            "health",
             // The container `undecided` holds its rows in. `reason`, `hosts`
             // and `examples` inside it are what a reader looks up; the plural
             // is the shape, exactly as `relays` is inside `inFlight`.
@@ -107,7 +110,10 @@ class SyncVocabularyTest {
         val progress =
             SyncProgressReport.build(
                 """
-                {"writtenAt": 900, "fatals": 0, "streams": [{"name": "content", "phase": "fetching", "phaseForSec": 5,
+                {"writtenAt": 900, "fatals": 0,
+                 "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
+                            "sockets": 412, "socketCeiling": 1024, "servingMs": 18},
+                 "streams": [{"name": "content", "phase": "fetching", "phaseForSec": 5,
                  "returned": 12, "running": 128, "transferring": 8, "fraction": 0.33, "etaSec": 3600,
                  "reached": 1700000000, "collected": 10, "collectedTotal": 20, "slotsFree": 0, "slotsNeeded": 20,
                  "nextInSec": 30, "retryInSec": 60, "reason": "connection reset",
@@ -258,6 +264,14 @@ class SyncVocabularyTest {
                     "fatals",
                     "rejections",
                     "lostToStore",
+                    "health",
+                    "bottleneck",
+                    "eventsPerSec",
+                    "heapUsedMb",
+                    "heapMaxMb",
+                    "sockets",
+                    "socketCeiling",
+                    "servingMs",
                 )
 
         assertEquals(emptySet(), SyncVocabulary.TERMS.keys - known, "a term for nothing")
