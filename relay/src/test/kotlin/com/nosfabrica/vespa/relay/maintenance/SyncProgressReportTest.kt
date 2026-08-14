@@ -313,6 +313,50 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `a health object this side recognises nothing in is absent, not empty`() {
+        // Every member of `health` is allowlisted — a word `bottleneckOf` cannot
+        // emit is dropped, and so is a gauge this side does not name. When that
+        // takes all of them, the rebuilt object was still published as `{}`,
+        // which is a claim that the router reported its constraint. The card
+        // believed it and drew a chip with nothing in it, beside the live one.
+        //
+        // The case is not hypothetical: it is what a router OLDER than these
+        // gauges produces, which is every router during a rolling deploy.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "health": {"bottleneck": "somethingElse", "gauge": 4},
+                 "streams": [{"name": "content",
+                 "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+
+        assertNull(out["health"], "an empty health object is a claim; absence is the honest answer")
+    }
+
+    @Test
+    fun `a health object keeps whichever members survive, one word or one gauge`() {
+        // …and the converse, so the fix above cannot be "drop health whenever
+        // anything is missing". Each member stands on its own: the card guards
+        // the verdict on `bottleneck` and each gauge on its own pair, so a
+        // document carrying only half of them is still worth serving.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "health": {"bottleneck": "downloads", "heapUsedMb": 900},
+                 "streams": [{"name": "content",
+                 "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+
+        val health = out["health"]!!.jsonObject
+        assertEquals("downloads", health["bottleneck"]!!.jsonPrimitive.content)
+        assertEquals(setOf("bottleneck", "heapUsedMb"), health.keys, "only what survived, and all of it")
+    }
+
+    @Test
     fun `the processors are republished, and only the counters this side names`() {
         // Rebuilt member by member like everything else here: the file is
         // another process's, and a hand-edited one must not be able to put a new

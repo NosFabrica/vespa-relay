@@ -362,29 +362,6 @@
      same question two different ways. */
   .disp > i.refusedUnstable, .keys b.refusedUnstable { background: var(--warn); opacity: .6; }
   .disp > i.excluded, .keys b.excluded { background: var(--muted); opacity: .35; }
-  /* The prose under a cycle's bar — the accounting line.
-     NOT `.why`, which is deliberately margin-free because it ENDS a card; used
-     three times mid-block it collapsed a legend, a list and a sentence into one
-     undifferentiated slab with 0px between them. Same muted register, its own
-     spacing. */
-  .cyc-line { color: var(--muted); font-size: .85rem; margin: .45rem 0 0; }
-  /* The label above one pass's bar. Smaller and quieter than `.cyc-head`: a
-     stream is the subject and its passes are rows of it, and giving the two the
-     same weight made a rotation look like two streams. */
-  .pass-head { color: var(--muted); font-size: .72rem; margin: .55rem 0 0; font-variant-numeric: tabular-nums; }
-  /* How far a probe pass has got over one stream's urls. The SAME 12px height
-     as `.disp` and a coverage `.track`, for the reason the disposition bar
-     gives: they are all "a proportion of a whole" and should look it. */
-  .proc-meter { height: 12px; border-radius: 2px; overflow: hidden; background: var(--grid); margin: .5rem 0 .1rem; }
-  .proc-meter i { display: block; height: 100%; background: var(--accent); }
-  .cyc { margin: 0 0 .9rem; }
-  .cyc-head { display: flex; gap: .5rem; align-items: baseline; flex-wrap: wrap; font-size: .8rem; }
-  .cyc-head .nm { font-weight: 600; }
-  .cyc-head .ph { color: var(--muted); font-variant-numeric: tabular-nums; }
-  /* A failed cycle is the one thing on this line worth looking at, and `.err`
-     alone loses to `.cyc-head .ph` on specificity — which drew it in the same
-     muted grey as a stream that finished cleanly. */
-  .cyc-head .ph.err { color: var(--warn); margin: 0; font-size: inherit; }
 
   /* ---- the router's state, as marks --------------------------------------
      Everything in this block exists to keep the live half of the card OFF
@@ -1892,10 +1869,8 @@ function legsTable(s) {
     head.appendChild(th);
   }
   table.appendChild(head);
-  // Scaled against the worst row on screen, not against a fixed ceiling: the
-  // question is which of THESE is the outlier.
-  const worst = Math.max(1, ...rows.map((r) => r.quietForSec || 0));
-  for (const r of rows.slice(0, IN_FLIGHT_SHOWN)) {
+  const shown = rows.slice(0, IN_FLIGHT_SHOWN);
+  for (const r of shown) {
     const tr = el("tr");
     // The scheme is dropped and nothing else is: a truncated relay url is not
     // a relay url, and it is the thing being looked up.
@@ -1907,12 +1882,23 @@ function legsTable(s) {
     tr.appendChild(el("td", "r", fmt(r.events || 0)));
     const q = el("td");
     const bar = el("div", "qbar");
-    const fill = el("i", (r.quietForSec || 0) >= STUCK_LEG_SEC ? "hot" : "");
-    fill.style.width = ((r.quietForSec || 0) / worst) * 100 + "%";
+    // HOW CLOSE TO STUCK, against the same ten minutes the colour keys off —
+    // an absolute scale, not a ranking of the rows on screen.
+    //
+    // Both relative readings were tried and both lie. Scaled against the worst
+    // row PUBLISHED, five bars rendered at 0.08% each when the outlier sat at
+    // row eight, outside the five drawn — the comparison the bar exists to
+    // make, hidden. Scaled against the worst row SHOWN, five legs all quiet a
+    // healthy thirty seconds each rendered full, which is the reading that
+    // means "stuck". A proportion needs a denominator that means something on
+    // its own, and the only one here is the threshold.
+    const quiet = r.quietForSec || 0;
+    const fill = el("i", quiet >= STUCK_LEG_SEC ? "hot" : "");
+    fill.style.width = Math.min(100, (quiet / STUCK_LEG_SEC) * 100) + "%";
     bar.appendChild(fill);
     // Absent `transferringForSec` means "not on a socket", which is a
     // different fault from a slow download and must not read as one.
-    bar.title = `quiet ${fmtDur(r.quietForSec || 0)}` +
+    bar.title = `quiet ${fmtDur(quiet)} of the ${fmtDur(STUCK_LEG_SEC)} that counts as stuck` +
       (r.transferringForSec == null
         ? " · NO TRANSFER SLOT — in the guards or queued behind other legs, so this is our pool rather than their relay"
         : ` · holding a slot for ${fmtDur(r.transferringForSec)}`) +
@@ -1924,7 +1910,7 @@ function legsTable(s) {
   wrap.appendChild(table);
   // Never silent about the tail: most of a fan-out's workers are connect
   // timeouts to dead hosts, and a list that hides them reads as the whole set.
-  const more = (f.omitted || 0) + Math.max(0, rows.length - IN_FLIGHT_SHOWN);
+  const more = (f.omitted || 0) + (rows.length - shown.length);
   if (more) {
     const p = el("p", "foot", `+${fmt(more)} more held, longest first`);
     p.title = term("omitted");
@@ -2062,20 +2048,32 @@ function nowLine(progress, data) {
 
   const h = progress.health;
   if (h) {
-    const [verdict, why] = BOTTLENECK[h.bottleneck] || [h.bottleneck, ""];
-    // PAST TENSE on a dead router. The verdict and the gauges are worth keeping
-    // — the last heap reading is most of a post-mortem — but a live diagnosis
-    // beside "not running" claims a process that is gone is still constrained.
-    row.appendChild(chip(live ? verdict : `${verdict}, when it stopped`,
-      h.bottleneck === "ingest" ? "warn" : null, `${term("bottleneck")}\n\n${why}`));
+    // The verdict is guarded on ITS OWN member rather than on the object: every
+    // gauge here is copied independently against an allowlist, so a document
+    // can carry the numbers with no word or the word with no numbers, and each
+    // has to stand without the others. Guarding the whole block on `bottleneck`
+    // would drop a perfectly good heap reading for want of a verdict.
+    if (h.bottleneck) {
+      const [verdict, why] = BOTTLENECK[h.bottleneck] || [h.bottleneck, ""];
+      // PAST TENSE on a dead router. The verdict and the gauges are worth
+      // keeping — the last heap reading is most of a post-mortem — but a live
+      // diagnosis beside "not running" claims a process that is gone is still
+      // constrained.
+      row.appendChild(chip(live ? verdict : `${verdict}, when it stopped`,
+        h.bottleneck === "ingest" ? "warn" : null, `${term("bottleneck")}\n\n${why}`));
+    }
     if (h.eventsPerSec != null) row.appendChild(chip(`${fmt(h.eventsPerSec)} ev/s`, null, term("eventsPerSec")));
-    if (h.heapMaxMb) {
+    // BOTH halves of a pair or neither. The relay copies these member by
+    // member against an allowlist, so a document can carry a ceiling with no
+    // reading — and a percentage of an absent numerator renders as "NaN%",
+    // which reads as a broken page rather than as a missing number.
+    if (h.heapMaxMb && h.heapUsedMb != null) {
       const share = h.heapUsedMb / h.heapMaxMb;
       row.appendChild(chip(`heap ${Math.round(share * 100)}%`, share >= HEAP_TIGHT ? "warn" : null,
         `${fmt(h.heapUsedMb)} of ${fmt(h.heapMaxMb)}MB\n\n${term("heapUsedMb")}` +
         (share >= HEAP_TIGHT ? "\n\nAt the ceiling the collector runs continuously and throughput collapses without anything failing." : "")));
     }
-    if (h.socketCeiling) {
+    if (h.socketCeiling && h.sockets != null) {
       row.appendChild(chip(`${fmt(h.sockets)}/${fmt(h.socketCeiling)} sockets`,
         h.sockets >= h.socketCeiling ? "warn" : null, `${term("sockets")}\n\n${term("socketCeiling")}`));
     }
@@ -2228,7 +2226,7 @@ function processorRow(p) {
     bar.appendChild(i);
     bar.title = `${fmt(decided)} of ${fmt(w.candidates || 0)} url(s) carry a verdict\n\n${term("unmeasured")}`;
     right = `${fmt(w.unmeasured || 0)} left`;
-  } else if (p.capacity != null) {
+  } else if (p.capacity) {
     const q = el("i", (p.queued || 0) >= p.capacity ? "warn" : "");
     q.style.width = Math.min(100, ((p.queued || 0) / p.capacity) * 100) + "%";
     bar.appendChild(q);

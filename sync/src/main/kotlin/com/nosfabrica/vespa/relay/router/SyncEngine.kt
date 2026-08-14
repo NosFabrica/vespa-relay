@@ -697,15 +697,22 @@ class SyncEngine(
             lastEvents = events
             lastAt = now
             val depth = ingest.queued.get()
+            // Read ONCE and shared by the document and the line below. Both
+            // wanted the same two readings and each took its own, so a socket
+            // opening between them let the published count and the logged one
+            // disagree about the same instant — for a pair whose whole purpose
+            // is that they cannot drift.
+            val constraint = bottleneckOf(depth, rate)
+            val open = client.connectedRelaysFlow().value.size
             // Published before it is printed, so the document carries the same
             // verdict the log does even if the line below is ever reworded.
             health =
                 SyncProgress.Health(
-                    bottleneck = bottleneckOf(depth, rate),
+                    bottleneck = constraint,
                     eventsPerSec = rate,
                     heapUsedMb = usedMb,
                     heapMaxMb = maxMb,
-                    sockets = client.connectedRelaysFlow().value.size,
+                    sockets = open,
                     socketCeiling = MAX_CONCURRENT_SOCKETS,
                     servingMs = pressure?.meanMs(),
                 )
@@ -718,7 +725,7 @@ class SyncEngine(
                     // the rate a 60s average, so only the pair tells them
                     // apart.
                     (
-                        when (bottleneckOf(depth, rate)) {
+                        when (constraint) {
                             "ingest" -> " FULL (ingest is the limit — downloads are backpressured)"
                             "upstream" -> " empty (nothing is arriving — the limit is upstream of ingest)"
                             "downloads" -> " drained (ingest is keeping up; downloads are the limit)"
@@ -727,7 +734,7 @@ class SyncEngine(
                     ) +
                     ", $rate ev/s" +
                     ", ${transferring.get()} relay(s) transferring" +
-                    ", ${client.connectedRelaysFlow().value.size} connected" +
+                    ", $open connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
                     (
                         dynamic.deleted

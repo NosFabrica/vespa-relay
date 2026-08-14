@@ -165,10 +165,16 @@ internal object SyncProgressReport {
      */
     private fun health(o: JsonObject?): JsonObject? {
         if (o == null) return null
+        // …and EMPTY is not a health object. Every member here is allowlisted,
+        // so a `health` this side recognises nothing in — a word `bottleneckOf`
+        // cannot emit, a router older than these gauges — rebuilt to `{}` and
+        // was published anyway. `{}` is a claim that the router reported its
+        // constraint, and the card believed it: it drew a chip with no text in
+        // it, beside the live one. Absent is the honest answer.
         return buildJsonObject {
             text(o["bottleneck"])?.takeIf { it in BOTTLENECKS }?.let { put("bottleneck", it) }
             for (member in HEALTH_NUMBERS) num(o[member])?.let { put(member, it) }
-        }
+        }.takeIf { it.isNotEmpty() }
     }
 
     /** One stream's line, or null when it carries no name — without which it says nothing. */
