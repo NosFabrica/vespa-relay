@@ -57,7 +57,12 @@ class TrustNoticeTest {
     private suspend fun providerList(
         by: NostrSignerSync = reader,
         tag: Array<String> = arrayOf("30382:rank", service.pubKey, relayUrl.url),
-    ): Event = by.sign(1_700_000_000L, 10040, arrayOf(tag), "")
+    ): Event = providerList(by, listOf(tag))
+
+    private suspend fun providerList(
+        by: NostrSignerSync,
+        tags: List<Array<String>>,
+    ): Event = by.sign(1_700_000_000L, 10040, tags.toTypedArray(), "")
 
     /** One of [by]'s score cards. Its `d` is whoever it is about; what ranks is who SIGNED it. */
     private suspend fun scoreCard(
@@ -75,7 +80,7 @@ class TrustNoticeTest {
     fun `a reader whose provider has not been mirrored is told which one`() =
         runBlocking {
             store.insert(providerList())
-            assertEquals(listOf(TrustNotice.noScores(service.pubKey)), notice.notices(reader.pubKey))
+            assertEquals(listOf(TrustNotice.noScores(listOf(service.pubKey))), notice.notices(reader.pubKey))
         }
 
     @Test
@@ -98,7 +103,7 @@ class TrustNoticeTest {
             store.insert(providerList())
             store.insert(scoreCard(by = stranger, about = reader.pubKey))
             assertEquals(
-                listOf(TrustNotice.noScores(service.pubKey)),
+                listOf(TrustNotice.noScores(listOf(service.pubKey))),
                 notice.notices(reader.pubKey),
                 "a card ABOUT the reader, signed by a service they did not name, ranks nothing for them",
             )
@@ -128,6 +133,39 @@ class TrustNoticeTest {
                     why,
                 )
             }
+        }
+
+    /**
+     * A 10040 may name more than one rank service, and the store's provider
+     * map credits the reader through EVERY one of them — so either service's
+     * cards being here means ranking works. Reading only the first told a
+     * reader whose second provider is fully mirrored that their scores were
+     * missing, on every login.
+     */
+    @Test
+    fun `either of two named rank services is enough`() =
+        runBlocking {
+            val second = NostrSignerSync()
+            store.insert(
+                providerList(
+                    by = reader,
+                    tags =
+                        listOf(
+                            arrayOf("30382:rank", service.pubKey, relayUrl.url),
+                            arrayOf("30382:rank", second.pubKey, relayUrl.url),
+                        ),
+                ),
+            )
+            assertEquals(
+                listOf(TrustNotice.noScores(listOf(service.pubKey, second.pubKey))),
+                notice.notices(reader.pubKey),
+                "neither one's cards are here, and the notice names both",
+            )
+
+            // Only the SECOND is mirrored, which is the case a first-tag-only
+            // read reported as missing forever.
+            store.insert(scoreCard(by = second))
+            assertEquals(emptyList(), notice.notices(reader.pubKey))
         }
 
     @Test
@@ -164,16 +202,16 @@ class TrustNoticeTest {
         assertEquals(listOf(reader.pubKey), provider.authors, "their OWN list — a 10040 someone else signed says nothing about them")
         assertEquals(1, provider.limit, "the current version; nothing here reads history")
 
-        val scores = TrustNotice.scoreCardFilter(service.pubKey)
+        val scores = TrustNotice.scoreCardFilter(listOf(service.pubKey))
         assertEquals(listOf(30382), scores.kinds)
-        assertEquals(listOf(service.pubKey), scores.authors, "the service the 10040 named, not the reader")
+        assertEquals(listOf(service.pubKey), scores.authors, "the services the 10040 named, not the reader")
         assertEquals(null, scores.tags, "not narrowed to cards about the reader: it is the signer that ranks")
         assertEquals(1, scores.limit)
     }
 
     @Test
     fun `every notice names the kind it is about, and stops`() {
-        val all = listOf(TrustNotice.NO_PROVIDER, TrustNotice.NO_RANK_SERVICE, TrustNotice.noScores(service.pubKey))
+        val all = listOf(TrustNotice.NO_PROVIDER, TrustNotice.NO_RANK_SERVICE, TrustNotice.noScores(listOf(service.pubKey)))
         assertTrue(all.any { "10040" in it } && all.any { "30382" in it }, "the reader who can act on this reads kinds, not prose")
         assertTrue(all.all { it.length <= 120 }, "a NOTICE is a line in somebody's console: $all")
         assertTrue(

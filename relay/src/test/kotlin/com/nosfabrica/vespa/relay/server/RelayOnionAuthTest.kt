@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.relay.server.backend.RequestContext
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import com.vitorpamplona.quartz.nip42RelayAuth.RelayAuthEvent
 import com.vitorpamplona.quartz.nip42RelayAuth.tags.ChallengeTag
@@ -32,6 +33,7 @@ import com.vitorpamplona.quartz.utils.TimeUtils
 import kotlinx.coroutines.runBlocking
 import java.util.Collections
 import kotlin.test.Test
+import kotlin.test.assertEquals
 import kotlin.test.assertTrue
 import kotlin.test.fail
 
@@ -249,6 +251,42 @@ class RelayOnionAuthTest {
             server.close()
         }
     }
+
+    /**
+     * The login hook fires once per identity per connection, however many
+     * times the same AUTH is sent.
+     *
+     * An AUTH event stays valid against the challenge that minted it for its
+     * whole ten-minute freshness window, and quartz accepts every copy — so
+     * without this a client could replay one frame in a loop and have each
+     * copy start another walk of the store, on a scope the socket's close does
+     * not cancel. `OK true` still comes back every time, because the frame IS
+     * valid; it is the side effect that is paid once.
+     */
+    @Test
+    fun `a replayed auth authenticates again but is only acted on once`() =
+        runBlocking {
+            val seen = Collections.synchronizedList(mutableListOf<String>())
+            val policy = MultiAddressAuthPolicy(clearnet, emptySet()) { pubkey, _ -> seen.add(pubkey) }
+            policy.onConnect(
+                object : RequestContext {
+                    override val connectionId = 1L
+                    override val policy = policy
+                    override val authenticatedUsers = emptySet<String>()
+                },
+                {},
+            )
+
+            val auth = signer.sign(RelayAuthEvent.build(clearnet, policy.challenge))
+            repeat(3) { policy.authorize(auth) }
+            assertEquals(listOf(signer.pubKey), seen.toList(), "three identical frames, one walk of the store")
+
+            // A DIFFERENT identity on the same connection is a different
+            // answer and is still owed one.
+            val other = NostrSignerSync()
+            policy.authorize(other.sign(RelayAuthEvent.build(clearnet, policy.challenge)))
+            assertEquals(listOf(signer.pubKey, other.pubKey), seen.toList())
+        }
 
     private fun awaitMessage(
         out: List<String>,

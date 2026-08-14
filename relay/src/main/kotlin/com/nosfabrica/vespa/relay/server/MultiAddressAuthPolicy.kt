@@ -106,6 +106,18 @@ class MultiAddressAuthPolicy(
     }
 
     /**
+     * Who this connection has already been told about. An AUTH event stays
+     * valid for its whole ten-minute freshness window against the challenge
+     * that minted it, so a client may send the same frame any number of times
+     * and quartz will accept every one — each of which would start another
+     * walk of the store on a scope the socket's close does not cancel. The
+     * answer is a property of the identity, not of the frame, so it is worth
+     * paying once per identity per connection; a reader who wants a fresh one
+     * reconnects, which costs a socket rather than an unbounded read.
+     */
+    private val told = HashSet<String>()
+
+    /**
      * Quartz's post-verification hook, run once the WHOLE policy chain has
      * approved the AUTH and before the `OK` goes out.
      *
@@ -119,6 +131,9 @@ class MultiAddressAuthPolicy(
     override suspend fun authorize(event: RelayAuthEvent) {
         val notify = onAuthenticated ?: return
         val send = send ?: return
+        // Synchronized rather than a concurrent set: AUTH is rare, this holds
+        // the lock for one hash lookup, and the set is per connection.
+        if (!synchronized(told) { told.add(event.pubKey) }) return
         try {
             notify(event.pubKey, send)
         } catch (e: CancellationException) {

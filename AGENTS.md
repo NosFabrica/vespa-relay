@@ -172,7 +172,16 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         holds; a column of red crosses says four things are
                         wrong when one is). The signer is what ranks, never the
                         card's `d` — a store full of cards ABOUT the reader
-                        from services they never named ranks nothing for them.
+                        from services they never named ranks nothing for them —
+                        and EVERY `30382:rank` entry counts rather than the
+                        first, because the provider map credits a reader
+                        through all of them: reading one told a reader whose
+                        SECOND provider is fully mirrored that their scores
+                        were missing, on every login. Fired once per identity
+                        per CONNECTION, since an AUTH frame stays valid for its
+                        whole ten-minute window and quartz accepts every copy —
+                        a replay loop would otherwise be free store reads on a
+                        scope the socket's close does not cancel.
                         A stored 10040 naming no usable rank entry is its own
                         answer, told apart from having none: only a PUBLIC
                         `30382:rank` with a relay hint resolves, here and in

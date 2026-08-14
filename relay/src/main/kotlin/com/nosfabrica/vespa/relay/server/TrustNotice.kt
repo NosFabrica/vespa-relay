@@ -129,25 +129,36 @@ class TrustNotice(
         // 10040 is replaceable, so the store holds at most one per author and
         // `limit = 1` cannot hand back a superseded list.
         val list = lists.firstOrNull() ?: return listOf(NO_PROVIDER)
-        val service = list.rankService() ?: return listOf(NO_RANK_SERVICE)
-        val cards = read(scoreCardFilter(service)) ?: return emptyList()
-        return if (cards.isEmpty()) listOf(noScores(service)) else emptyList()
+        val services = list.rankServices().ifEmpty { return listOf(NO_RANK_SERVICE) }
+        val cards = read(scoreCardFilter(services)) ?: return emptyList()
+        return if (cards.isEmpty()) listOf(noScores(services)) else emptyList()
     }
 
     /**
-     * Which service this list names for RANKING, or null when it names none
-     * this relay could act on.
+     * EVERY service this list names for ranking, empty when it names none this
+     * relay could act on.
      *
-     * Both nulls are the same fact deliberately. A list carrying only
-     * `30382:followers` can order a set and cannot rank one; a `30382:rank`
-     * entry missing its relay hint does not parse (quartz's
-     * `ServiceProviderTag.parse` requires all three fields) and a NIP-44
-     * private list cannot be read here at all. In every one of those cases the
-     * store's own provider map — which reads exactly this, off the public tag
-     * array — resolves nothing either, so the notice is a statement about what
-     * this relay can use rather than a guess at what the reader meant.
+     * All of them, not the first: `ProviderMap.providersOf` maps every
+     * `30382:rank` entry a list carries, so a reader naming two services ranks
+     * off either one's cards. Reading only the first told a reader whose
+     * SECOND provider is fully mirrored that their scores were missing, on
+     * every login, forever.
+     *
+     * Empty covers three different lists on purpose, because the store cannot
+     * tell them apart either. A list carrying only `30382:followers` can order
+     * a set and cannot rank one; a `30382:rank` entry missing its relay hint
+     * does not parse (quartz's `ServiceProviderTag.parse` requires all three
+     * fields); a NIP-44 private list cannot be read here at all. In each case
+     * the provider map — which reads exactly this, off the public tag array —
+     * resolves nothing, so the notice states what this relay can use rather
+     * than guessing at what the reader meant.
      */
-    private fun Event.rankService(): HexKey? = tags.serviceProviders().firstOrNull { it.service == ProviderTypes.rank }?.pubkey
+    private fun Event.rankServices(): List<HexKey> =
+        tags
+            .serviceProviders()
+            .filter { it.service == ProviderTypes.rank }
+            .map { it.pubkey }
+            .distinct()
 
     /**
      * What the store holds for [filter], or null when it could not say. Null is
@@ -182,17 +193,29 @@ class TrustNotice(
             )
 
         /**
-         * Existence only, and keyed on the SERVICE — the card's signer — rather
-         * than on the reader. A relay mirroring a provider holds millions of
-         * that provider's cards and typically none about the reader
-         * personally, and it is the cards that rank: the reader's own `d`-tag
-         * card decides how THEIR events rank for other people, which is a
-         * different question this notice does not ask.
+         * Existence only, and keyed on the SERVICES — the cards' signers —
+         * rather than on the reader. A relay mirroring a provider holds
+         * millions of that provider's cards and typically none about the
+         * reader personally, and it is the signer that ranks: the reader's own
+         * `d`-tag card decides how THEIR events rank for other people, which
+         * is a different question this notice does not ask.
+         *
+         * One filter for all of [services] — a NIP-01 `authors` list is an OR,
+         * and any one of them having landed here means ranking has something
+         * to work with.
+         *
+         * What it does NOT prove is that a mirrored card carries a parseable
+         * `rank` tag: `TrustProjection` writes no influence cell for one that
+         * does not, so a provider whose cards are all rank-less leaves this
+         * quiet while ranked search is still empty. Deliberate — `limit = 1`
+         * can only show one card, and reading a rank-less first card as "no
+         * scores here" would be a false claim about the whole set, which is
+         * the direction this notice never goes.
          */
-        internal fun scoreCardFilter(service: HexKey) =
+        internal fun scoreCardFilter(services: List<HexKey>) =
             Filter(
                 kinds = listOf(ContactCardEvent.KIND),
-                authors = listOf(service),
+                authors = services,
                 limit = 1,
             )
 
@@ -211,6 +234,6 @@ class TrustNotice(
         internal val NO_RANK_SERVICE = RESTRICTED.format("your kind 10040 names no usable 30382:rank service")
 
         /** Named, because a provider we have never mirrored is the operator's fix, not the reader's. */
-        internal fun noScores(service: HexKey) = RESTRICTED.format("no kind 30382 from $service here yet")
+        internal fun noScores(services: List<HexKey>) = RESTRICTED.format("no kind 30382 from ${services.joinToString(", ")} here yet")
     }
 }
