@@ -157,6 +157,38 @@ class RelayAliasesTest {
     }
 
     @Test
+    fun `a group list that shares only part of itself is not folded away`() {
+        val aliases = RelayAliases()
+        // THE HOLE A RATIO CANNOT CLOSE. This path serves three groups, two of
+        // which the leader also has — 0.667, over minOverlap, and its window
+        // clears a floor of three. On the ratio alone it folds, and the third
+        // group, which nothing else on this host serves, stops being mirrored
+        // for a month. That is the fold's one unforgivable failure bought for a
+        // two-id coincidence, so the shared COUNT has to clear the floor too.
+        val leader = window(7)
+        val partial = setOf(*window(2).toTypedArray(), "id%064d".format(999))
+
+        val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to leader, nosAlpha to partial), RelayAliases.GROUP_METADATA_KINDS)
+
+        assertTrue(learned.folded.isEmpty(), "a path serving a group nobody else has was folded away")
+        assertTrue(!aliases.measured(nosAlpha), "and it must stay in the fan-out")
+    }
+
+    @Test
+    fun `a group list shared in full still folds at the smaller floor`() {
+        val aliases = RelayAliases()
+        // The other side of the same guard: three groups, all three shared. The
+        // shared count is the floor exactly, which is the smallest honest fold
+        // this filter can produce — and the measured case, since every live pair
+        // shared its list entirely (containment 1.000, 6 of 6).
+        val three = window(3)
+
+        val learned = aliases.learn(listOf(nos, nosAlpha), nos, mapOf(nos to three, nosAlpha to three), RelayAliases.GROUP_METADATA_KINDS)
+
+        assertEquals(mapOf(nosAlpha to nos), learned.folded)
+    }
+
+    @Test
     fun `a group-metadata window still refuses a single shared id`() {
         val aliases = RelayAliases()
         // Three, not one. A host serving one or two groups hands over one or two
@@ -170,10 +202,10 @@ class RelayAliasesTest {
     }
 
     @Test
-    fun `a raised sample floor is never pulled back down by the group floor`() {
-        // The floor for a group-metadata window can only ever LOWER the bar. A
-        // caller that deliberately demanded more must not have it quietly
-        // undone by naming a different filter.
+    fun `the group floor lowers the bar and never raises it`() {
+        // `minOf`, in the one direction it can be observed: a caller that set
+        // minSample BELOW the group floor keeps its own number rather than
+        // having it raised to three here.
         val strict = RelayAliases(minSample = 2)
         val learned = strict.learn(listOf(nos, nosAlpha), nos, mapOf(nos to window(2), nosAlpha to window(2)), RelayAliases.GROUP_METADATA_KINDS)
 

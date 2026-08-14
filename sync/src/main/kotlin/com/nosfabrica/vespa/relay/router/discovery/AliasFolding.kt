@@ -117,8 +117,12 @@ class AliasFolding(
      * they were simply queued behind hosts that can never be decided and can
      * never stop being asked. It no longer costs a foldable host its turn —
      * nothing is rationed — but it still costs the pass's WALL CLOCK, and
-     * re-proving every cycle that `groups.satsdisco.com` still says nothing is
-     * time the hosts that can be decided are waiting through.
+     * re-proving every cycle that `espelho.girino.org` still cannot reproduce
+     * its own window is time the hosts that can be decided are waiting through.
+     * (`groups.satsdisco.com` stood here until it turned out to be answerable —
+     * it was refusing the filter rather than saying nothing, and it folds since
+     * [RelayAliases.GROUP_METADATA_KINDS]. Worth remembering before reading the
+     * next silent host as permanent.)
      *
      * In memory rather than signed, and that is the point. "I could not measure
      * this" is a fact about OUR pass, not about somebody's server — the
@@ -581,7 +585,7 @@ class AliasFolding(
                             // comparison the verdict was not based on.
                             val shared = prints[canonical].orEmpty().count { it in print }
                             newVerdicts += alias
-                            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins)
+                            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
                         }
                         // The cleared half, and its evidence has to name what was
                         // actually held up against what. This once said "of N
@@ -640,6 +644,8 @@ class AliasFolding(
                                 // actually made on — see [RelayAliasRecord.publishSecureTwin].
                                 if (v.secureTwin) {
                                     record.publishSecureTwin(alias, v.canonical, v.sampled)
+                                } else if (v.groupList) {
+                                    record.publishGroupList(alias, v.canonical, v.sampled, v.shared)
                                 } else {
                                     record.publish(alias, v.canonical, v.sampled, v.shared)
                                 }
@@ -818,6 +824,13 @@ class AliasFolding(
          * the fold and everything about the evidence published with it.
          */
         val secureTwin: Boolean,
+        /**
+         * Decided on the host's list of groups rather than on a slice of its
+         * feed — see [RelayAliasRecord.publishGroupList]. Same reason
+         * [secureTwin] is carried: it changes nothing about the fold and
+         * everything about the sentence published with it.
+         */
+        val groupList: Boolean,
     )
 
     /** The evidence behind one cleared url, held until the group is decided. */

@@ -77,8 +77,10 @@ class RelayAliases(
      * coincidence [minSample] exists to refuse, and the hosts it would add are
      * the ones serving one or two groups.
      *
-     * **It only ever LOWERS the bar** — see [foldFloor] — so a caller that
-     * raises [minSample] is never quietly overridden downwards by this.
+     * It is BOTH halves of the bar at this width: the smallest window either url
+     * may bring, and — via [Bar.shared] — the fewest ids they must genuinely
+     * have in common, since [minOverlap] alone would settle for two of them. See
+     * [foldBar].
      */
     private val groupMetadataMinSample: Int = DEFAULT_GROUP_METADATA_MIN_SAMPLE,
     /**
@@ -247,11 +249,34 @@ class RelayAliases(
         }
     }
 
+    /** What a fold has to clear, in the two places a thin window can cheat. */
+    private data class Bar(
+        /** The smallest window either side may have brought. */
+        val window: Int,
+        /**
+         * The fewest ids the two must actually have IN COMMON.
+         *
+         * Zero for a general window, which is this class's long-standing
+         * behaviour: [minOverlap] alone decides, and a 500-id window folding at
+         * 0.5 already shares 250 ids, so a separate count buys nothing there.
+         *
+         * **It cannot stay zero once the window floor is small, and that is a
+         * hole a pure RATIO cannot close.** At a window floor of 3 against
+         * [DEFAULT_MIN_OVERLAP] the least a fold could ever rest on is TWO
+         * shared ids: a path serving `{a, b, x}` scores 0.667 against a leader
+         * serving `{a, b, c, d, e, f, g}` and folds — taking `x`, a group
+         * nothing else on the host serves, out of the fan-out for
+         * [RelayAliasRecord.DEFAULT_TTL_SECONDS]. That is the fold's one
+         * unforgivable failure, silently not mirroring something, bought for a
+         * two-id coincidence.
+         */
+        val shared: Int,
+    )
+
     /**
-     * The smallest window that may support a FOLD, given the filter that
-     * produced it.
+     * What a fold must clear, given the FILTER that produced the windows.
      *
-     * **The floor is a property of the question we had to ask, not a constant.**
+     * **The bar is a property of the question we had to ask, not a constant.**
      * [minSample] is calibrated for a slice of a general event feed, where 20
      * shared ids out of a firehose is the line between a measurement and a
      * coincidence. A window of [GROUP_METADATA_KINDS] is not that: it is a
@@ -260,10 +285,24 @@ class RelayAliases(
      * has. Holding that to the firehose floor refuses the entire NIP-29 corpus —
      * measured, 14 of 21 live hosts.
      *
-     * `minOf`, so this can only ever lower the bar. A caller that raised
-     * [minSample] deliberately must not have it silently pulled back down.
+     * So the window floor drops and [Bar.shared] rises to meet it. The concern
+     * was never that a SHORT window is untrustworthy; it is that a fold resting
+     * on one or two ids is a coincidence, and only the second of those is worth
+     * a guard. Every live pair measured shares its list entirely — containment
+     * 1.000, 6 of 6 — so demanding three ids genuinely in common costs the
+     * honest case nothing at all.
+     *
+     * `minOf` on the window floor, so this only ever LOWERS it: a caller that
+     * set [minSample] below the group floor keeps its own number rather than
+     * having it raised here.
      */
-    private fun foldFloor(kinds: List<Int>?): Int = if (kinds == GROUP_METADATA_KINDS) minOf(minSample, groupMetadataMinSample) else minSample
+    private fun foldBar(kinds: List<Int>?): Bar =
+        if (kinds == GROUP_METADATA_KINDS) {
+            val floor = minOf(minSample, groupMetadataMinSample)
+            Bar(window = floor, shared = floor)
+        } else {
+            Bar(window = minSample, shared = 0)
+        }
 
     /**
      * Is this window big enough to be measured against at all?
@@ -275,7 +314,7 @@ class RelayAliases(
     fun usableWindow(
         print: Set<String>?,
         kinds: List<Int>? = null,
-    ): Boolean = print != null && print.size >= foldFloor(kinds)
+    ): Boolean = print != null && print.size >= foldBar(kinds).window
 
     /**
      * Does this relay give the same answer twice — the question that has to be
@@ -474,7 +513,7 @@ class RelayAliases(
         prints: Map<NormalizedRelayUrl, Set<String>>,
         /**
          * The filter every print in [prints] was taken through — the group's
-         * leader decided it, and it is what [foldFloor] reads. Null is the
+         * leader decided it, and it is what [foldBar] reads. Null is the
          * general filter and the strict floor.
          */
         kinds: List<Int>? = null,
@@ -494,8 +533,8 @@ class RelayAliases(
         //
         // So [minSample] stays on every path below that WRITES a negative claim
         // — entry to `unmatched`, and the leader's own clear — and only
-        // [sameRelay] is given the filter's floor.
-        val floor = foldFloor(kinds)
+        // [sameRelay] is given the filter's bar.
+        val bar = foldBar(kinds)
         val folds = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val cleared = HashSet<NormalizedRelayUrl>()
         var compared = 0
@@ -510,7 +549,7 @@ class RelayAliases(
         for (url in group) {
             if (url == leader || url in twins || folded.containsKey(url)) continue
             val print = prints[url] ?: continue
-            if (sameRelay(leaderPrint, print, floor)) {
+            if (sameRelay(leaderPrint, print, bar)) {
                 compared++
                 folded[url] = leader
                 canonicals += leader
@@ -552,10 +591,10 @@ class RelayAliases(
         val heads = ArrayList<NormalizedRelayUrl>()
         for (url in unmatched) {
             val print = prints.getValue(url)
-            // [floor] is moot here and passed only so one rule decides every
+            // [bar] is moot here and passed only so one rule decides every
             // fold: entry to `unmatched` already demanded [minSample] on both
             // sides, so nothing thin can reach this loop.
-            val head = heads.firstOrNull { sameRelay(prints.getValue(it), print, floor) }
+            val head = heads.firstOrNull { sameRelay(prints.getValue(it), print, bar) }
             if (head == null) {
                 heads += url
                 markDistinct(url)
@@ -621,8 +660,10 @@ class RelayAliases(
      *  - **the window is too thin to decide.** A relay holding nine events hands
      *    both twins the same nine, and nine is under [minSample] — so nothing
      *    folds, nothing is cleared, the group is handed back by [unresolved] on
-     *    every pass, and `groups.satsdisco.com` spends a pass's wall clock forever to
-     *    learn what its two urls already said.
+     *    every pass, and the host spends a pass's wall clock forever to learn
+     *    what its two urls already said. (`groups.satsdisco.com` was the example
+     *    here; it turned out to be answerable through
+     *    [GROUP_METADATA_KINDS] and no longer needs the pairing to be decided.)
      *  - **only one twin has a verdict.** [toProbe] now re-dials the secure twin
      *    of an unmeasured plain url precisely so this can fire; without the
      *    pairing the plain url would be compared to the group's leader — a
@@ -743,21 +784,26 @@ class RelayAliases(
     /**
      * Do these two windows come from one relay?
      *
-     * Both sides must have handed over at least [floor] ids — the guard against
-     * calling two quiet relays identical because neither said much — and the
-     * smaller window must be [minOverlap] contained in the larger.
+     * Both sides must have handed over at least [Bar.window] ids — the guard
+     * against calling two quiet relays identical because neither said much —
+     * they must share at least [Bar.shared] of them outright, and the smaller
+     * window must be [minOverlap] contained in the larger.
      *
-     * [floor] rather than [minSample] directly because it depends on the filter
-     * the two windows came through; see [foldFloor].
+     * [bar] rather than [minSample] directly because both halves of it depend
+     * on the filter the two windows came through; see [foldBar].
      */
     private fun sameRelay(
         a: Set<String>,
         b: Set<String>,
-        floor: Int,
+        bar: Bar,
     ): Boolean {
         val smaller = minOf(a.size, b.size)
-        if (smaller < floor) return false
+        if (smaller < bar.window) return false
         val shared = if (a.size <= b.size) a.count { it in b } else b.count { it in a }
+        // The ratio is not enough on its own once the window floor is small —
+        // see [Bar.shared], which is what stops a two-id coincidence folding a
+        // path that serves a group nobody else does.
+        if (shared < bar.shared) return false
         return shared.toDouble() / smaller >= minOverlap
     }
 

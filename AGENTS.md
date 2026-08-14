@@ -1377,12 +1377,25 @@ the FILTER.** A 39000 window is a relay's complete list of groups, so it is shor
 by nature: over those 21 hosts it is min 1, median **9**, max 1,302, and
 `DEFAULT_MIN_SAMPLE` admits only 7 of them. Two of the five hosts above — 7 ids
 and 16 — sit under it, so the strict floor would have thrown away the hosts the
-rung exists to reach. `RelayAliases.foldFloor` reads the leader's filter and
+rung exists to reach. `RelayAliases.foldBar` reads the leader's filter and
 applies `DEFAULT_GROUP_METADATA_MIN_SAMPLE` (**3**) to a group-metadata window.
 Three rather than one because a host serving one or two groups hands over one or
 two ids, and at that width "both urls returned the same list" is exactly the
-coincidence the floor exists to refuse. `minOf`, so the group floor can only ever
-lower the bar and never raise it above an injected `minSample`.
+coincidence the floor exists to refuse. `minOf`, so the group floor only ever
+lowers the window bar and never raises one an injected `minSample` set below it.
+
+**A small window floor needs a SHARED-COUNT floor beside it, because a ratio
+alone cannot close the hole it opens.** At a window floor of 3 against
+`minOverlap` 0.5, the least a fold could ever rest on is TWO shared ids — so a
+path serving `{a, b, x}` scores 0.667 against a leader serving `{a..g}` and folds,
+taking `x`, a group nothing else on the host serves, out of the fan-out for the
+whole TTL. That is the fold's one unforgivable failure — silently not mirroring
+something — bought for a two-id coincidence, and it is exactly what the audit of
+the first cut of this change caught. So `Bar.shared` demands the two urls
+genuinely have `floor` ids in common as well, which costs the honest case nothing
+(every live pair shared its list entirely) and is `0` for a general window, where
+`minOverlap` on a 500-id window already implies 250 shared. `a group list that
+shares only part of itself is not folded away` pins it.
 
 **It lowers the bar for FOLDING and for nothing else.** Every negative claim
 keeps `minSample`: entry to `unmatched`, and the leader's own clear. A thin
@@ -1394,12 +1407,23 @@ host whose paths serve genuinely different groups ends the pass `NOTHING_COMPARE
 and takes the 24h cooldown, which is the honest outcome. `a group-metadata window
 may fold a url but never clear one` pins it.
 
-**And the third rung is free where it would cost the most.** It is asked only
-when the two above returned an EMPTY window rather than a null one — a refusal is
-the relay answering, silence is our transport giving up. A dead url or an onion
-whose circuit never built returns null on both and is not asked again, which
-matters because the attempts are sequential and `YARDSTICK_ATTEMPTS` multiplies
-them by three. `a url that never spoke is not asked for group metadata` pins it.
+**And the third rung is free where it would cost the most.** It is skipped when
+BOTH rungs above returned null — a refusal is the relay answering, silence is our
+transport giving up, and a dead url or an onion whose circuit never built says
+nothing twice. That matters because the attempts are sequential and
+`YARDSTICK_ATTEMPTS` multiplies them by three. One answer is enough to earn the
+ask (`&&`, not `||`): a url whose bare walk was cut short by our own transport
+while its kinds walk came back refused is still a live server declining the shape
+of the question, and dropping it on our own blip would cost a host to save one
+dial. `a url that never spoke is not asked for group metadata` pins it.
+
+**A fold decided on a group list says so, and does not borrow the sentence the
+containment form uses.** `RelayAliasRecord.publishGroupList` writes *"same group
+list as wss://x: 7 of 7 group definitions shared"* rather than `publish`'s *"7
+newest events, 7 shared"*. The numbers are identical; what changes is that a
+reader is not invited to check seven against a relay serving thousands and read
+the fold as resting on a far thinner sample than it does. Same reasoning as
+`publishSecureTwin`, which exists for exactly this.
 
 Two things this was NOT, both of which the verdict card made look guilty: the
 relay does send an AUTH challenge, but 39000 reads fine unauthenticated, so `R:

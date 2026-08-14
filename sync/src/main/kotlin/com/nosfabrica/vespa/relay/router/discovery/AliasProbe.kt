@@ -115,21 +115,25 @@ class AliasProbe(
         // of the twelve retried answered a kinds filter perfectly well.
         val general = fingerprint(url, anchor, FALLBACK_KINDS, onEvent)
         if (!general.isNullOrEmpty()) return Leader(general, FALLBACK_KINDS)
-        // A RELAY THAT REFUSED BOTH IS NOT A RELAY THAT SAID NOTHING, and only
-        // the first is worth a third ask.
+        // A RELAY THAT REFUSED IS NOT A RELAY THAT SAID NOTHING, and only the
+        // first is worth a third ask.
         //
         // Null is our transport giving up; an EMPTY set is the relay answering
         // — an EOSE with nothing in it, or a CLOSED. [fingerprint] keeps those
         // apart precisely so this decision can be made, and it is what keeps
         // this rung free where it would cost the most: a dead url, or a hidden
-        // service whose circuit never built, returns null on both rungs above
+        // service whose circuit never built, returns null on BOTH rungs above
         // and is not asked again. Against the onion window that matters, since
         // these attempts are sequential and each is minutes — see
         // [AliasFolding.YARDSTICK_ATTEMPTS], which multiplies them by three.
         //
-        // A host that refused twice is a live server declining the SHAPE of the
-        // question, which is the NIP-29 signature — see
-        // [RelayAliases.GROUP_METADATA_KINDS].
+        // One answer is enough to earn the ask, hence `&&` rather than `||`: a
+        // url whose bare walk was cut short by our own transport while its
+        // kinds walk came back refused is a live server declining the SHAPE of
+        // the question, which is the NIP-29 signature — see
+        // [RelayAliases.GROUP_METADATA_KINDS]. Demanding that BOTH rungs be
+        // refused would drop such a host on our own blip, and the cost of the
+        // looser rule is one dial at a url that has already answered once.
         if (bare == null && general == null) return null
         val groups = fingerprint(url, anchor, RelayAliases.GROUP_METADATA_KINDS, onEvent)
         if (!groups.isNullOrEmpty()) return Leader(groups, RelayAliases.GROUP_METADATA_KINDS)

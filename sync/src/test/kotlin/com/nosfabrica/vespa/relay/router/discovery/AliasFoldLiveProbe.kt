@@ -168,7 +168,7 @@ class AliasFoldLiveProbe {
                     val asked = lead.kinds?.let { "kinds=$it" } ?: "bare filter"
                     println("    leader ${leader.url}: ${lead.ids.size} id(s) via $asked")
                     val again = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(leader, anchor, lead.kinds) {} } }
-                    println("      vs ITSELF on a second walk: ${containment(lead.ids, again.orEmpty())}")
+                    println("      vs ITSELF on a second walk: ${containment(lead.ids, again.orEmpty(), lead.kinds)}")
                     // The leader's own scheme twin, which does NOT fold on the
                     // number printed beside it — it folds on the two urls naming
                     // one endpoint and both answering. Called out here because
@@ -178,7 +178,7 @@ class AliasFoldLiveProbe {
                     for (url in group.filter { it != leader }) {
                         val print = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.fingerprint(url, anchor, lead.kinds) {} } }
                         val pairing = if (url == twin) "  [scheme twin — folds on the pairing, not on this number]" else ""
-                        println("      vs ${url.url}: ${containment(lead.ids, print.orEmpty())}$pairing")
+                        println("      vs ${url.url}: ${containment(lead.ids, print.orEmpty(), lead.kinds)}$pairing")
                     }
                 }
                 val startedMs = System.currentTimeMillis()
@@ -219,14 +219,24 @@ class AliasFoldLiveProbe {
     private fun containment(
         a: Set<String>,
         b: Set<String>,
+        /** The filter these windows came through — it sets the floor. See [RelayAliases.foldBar]. */
+        kinds: List<Int>?,
     ): String {
         val smaller = minOf(a.size, b.size)
         if (smaller == 0) return "nothing came back"
         val shared = if (a.size <= b.size) a.count { it in b } else b.count { it in a }
         val score = shared.toDouble() / smaller
+        // A group list is held to its own floor, or this line reads "decides
+        // nothing" immediately before the pass below publishes the fold.
+        val floor =
+            if (kinds == RelayAliases.GROUP_METADATA_KINDS) {
+                RelayAliases.DEFAULT_GROUP_METADATA_MIN_SAMPLE
+            } else {
+                RelayAliases.DEFAULT_MIN_SAMPLE
+            }
         val bar =
             when {
-                smaller < RelayAliases.DEFAULT_MIN_SAMPLE -> "under minSample(${RelayAliases.DEFAULT_MIN_SAMPLE}) — decides nothing"
+                smaller < floor -> "under minSample($floor) — decides nothing"
                 score >= RelayAliases.DEFAULT_MIN_SELF_OVERLAP -> "reproducible"
                 score >= RelayAliases.DEFAULT_MIN_OVERLAP -> "folds, but under the self bar"
                 else -> "below minOverlap(${RelayAliases.DEFAULT_MIN_OVERLAP})"
