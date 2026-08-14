@@ -46,13 +46,13 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(constraintOf({ eventsPerSec: 900 }, true), null, "gauges are not a verdict");
 
   const c = constraintOf({ bottleneck: "ingest" }, true);
-  assert.equal(c.text, "store is the limit");
+  assert.equal(c.text, "ingest is the limit");
   assert.equal(c.tone, "warn", "ingest is the only one of the four that is a fault");
-  assert.match(c.why, /Look at the store, not at the relays/);
+  assert.match(c.why, /not at the relays/);
   assert.equal(constraintOf({ bottleneck: "downloads" }, true).tone, null, "the relays being the limit is not a fault");
 
   // A verdict on a router that has stopped is a post-mortem, not a diagnosis.
-  assert.equal(constraintOf({ bottleneck: "ingest" }, false).text, "store is the limit, when it stopped");
+  assert.equal(constraintOf({ bottleneck: "ingest" }, false).text, "ingest is the limit, when it stopped");
 
   // A word this page has not been taught still says something rather than
   // rendering as undefined — the relay allowlists it, but the card is served to

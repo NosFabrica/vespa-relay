@@ -88,7 +88,7 @@ export const DISCOVERY = [
  * different fixes, so each names what to look at next.
  */
 export const BOTTLENECK = {
-  ingest: ["store is the limit", "Ingest's queue is full, so every download is backpressured behind it. Look at the store, not at the relays."],
+  ingest: ["ingest is the limit", "Ingest's queue is full, so every download is backpressured behind it. Look at ingest and the store behind it, not at the relays."],
   downloads: ["relays are the limit", "Ingest drains as fast as it fills. The mirror is going as fast as the upstreams will serve it."],
   upstream: ["nothing arriving", "The queue is empty and no events are reaching it — look at discovery, the guards and the transport, not at ingest."],
   mixed: ["keeping up", "The queue is neither full nor empty: nothing here is the constraint."],
@@ -286,7 +286,7 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
  * completed — monotonic, full means done. `level` is occupancy — full means
  * backpressured. Drawn identically they were: a fold at 50% and an ingest queue
  * at 50% were the same picture in the same column meaning unrelated things, and
- * a full bar meant "finished" on one row and "the store is the limit" on the
+ * a full bar meant "finished" on one row and "ingest is the limit" on the
  * next.
  *
  * `null` where there is no whole to be a part of. That is the honest mark for
