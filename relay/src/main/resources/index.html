@@ -180,6 +180,59 @@
   settles like a hashtag's, because the token grows a character at a time;
   there is no picker — a url or an isbn is pasted, not chosen from a list.
 
+  `group:<id>` is the NIP-29 door, and it is the one subject here that DOES get
+  a picker — for exactly the reason the scopes above do not. A url or an ISBN
+  is copied from the thing itself; a group id is an opaque string its host
+  relay minted (`chachi`, a hex blob), so it is precisely what nobody can type
+  from memory. The rows offer the NAME and a pick writes the id; `group:` with
+  nothing after it opens on the reader's own groups, read off their kind 10009.
+  That read is on the AUTHENTICATED socket like every other, so a reader whose
+  scores and 10040 have not been mirrored here sees no personal groups — which
+  looks like a fault and is the relay being consistent: it has already decided
+  it cannot rank for them, and the group picker is not the place to make an
+  exception. The readiness panel under the box is what says so.
+
+  Half of that list can be locked, and this is the one place the page asks the
+  signer for something other than a signature. A 10009 is a NIP-51 private-tag
+  event: items may sit NIP-44-encrypted in `.content`, self-encrypted to the
+  author's own key. So when a reader with an encrypted payload uses `group:`,
+  the page asks their extension to decrypt it — at that moment and not on page
+  load, where a permission dialog would arrive with no question attached to it.
+  Three rules keep that dialog from becoming noise: no payload means no ask;
+  one prompt per reader however many keystrokes (the in-flight promise is
+  shared); and a refusal is final until the reader clicks "Unlock your private
+  groups" themselves, because reopening a dialog somebody just dismissed is
+  what a page should never do on its own. The ask is fired and NOT awaited —
+  their public groups are already in hand and a human answers a dialog on their
+  own schedule — so the rows draw immediately with a note about what is still
+  pending, and the list re-asks when the answer lands.
+
+  Two facts about that payload are worth knowing before reading the code. An
+  EMPTY private list encrypts the empty STRING rather than `[]`, so a payload
+  is not evidence there is anything in it — a reader who deleted their last
+  private group still carries a valid ciphertext, and the only way to learn it
+  is empty is to ask. And nothing records which SCHEME was used, so `isNip04`
+  ports quartz's shape test byte for byte (`?iv=` exactly 28 from the end, after
+  a `-null` strip that exists for a client bug that shipped): guessing wrong
+  does not corrupt anything, it just spends a permission prompt for nothing.
+  The filter is two questions: `#h` for what was posted in the group — one
+  letter, so the store indexes it exactly as it indexes `t`, and it KEEPS the
+  tab's kinds because a group post is an ordinary event that happens to carry
+  an `h` — and the group's own kind 39000 keyed by `d`, which names its own
+  kind for the scope filters' reason.
+
+  What that picker cannot do is the honest part. A NIP-29 group is the pair
+  (id, host relay) and an `h` tag carries only the id, so two relays with a
+  `general` are one filter and the results are the union. Worse, the two things
+  this page knows about a group name its host in incompatible ways: a 10009
+  `group` tag gives a URL, a 39000 gives the PUBKEY that signed it (NIP-29 has
+  the relay sign its own records), and nothing here joins the two — no
+  per-relay provenance in the store, no such tag on a NIP-66 record. So
+  shared/groups.js keeps them as separate rows rather than inventing the join,
+  and flags any id that more than one row carries. The 39000s themselves stay
+  apart correctly, being addressable per (kind, pubkey, `d`) — which is what
+  lets the picker warn about an ambiguity the results cannot resolve.
+
   Two things the union has to get right, both asserted by
   RelayProtocolTest."the search page's hashtag union": tag values compare CASED
   here (the engine schema says so), so the ask carries the spellings —
@@ -286,6 +339,7 @@
 <link rel="modulepreload" href="/web/shared/calendar.js" />
 <link rel="modulepreload" href="/web/shared/conn.js" />
 <link rel="modulepreload" href="/web/shared/format.js" />
+<link rel="modulepreload" href="/web/shared/groups.js" />
 <link rel="modulepreload" href="/web/shared/keynav.js" />
 <link rel="modulepreload" href="/web/shared/kinds.js" />
 <link rel="modulepreload" href="/web/shared/mirrors.js" />
@@ -885,6 +939,47 @@
   }
   .scopepill b { font-weight: 700; opacity: .65; }
   .scopepill .scope-id { min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+  /* A group is a scope pill that FILLED IN, because unlike `site:` or `isbn:`
+     its value was almost certainly picked rather than typed — the solid ground
+     is the field saying so, the same way a person's chip is solid and a
+     hashtag's outline is not. */
+  .grouppill { background: var(--accent-soft); border-color: transparent; }
+
+  /* ---- a group, inside the picker ---------------------------------------- */
+  /* Three things a group row can say that a person row cannot, all of them
+     about provenance rather than decoration. */
+  /* Yours: it came out of your own kind 10009, which is also the only source
+     that knows a relay url. Reads "private" for the rows that were behind the
+     encrypted half of that list — same chip, because both are equally yours,
+     and the word is the only part that differs. */
+  .group-mine {
+    margin-left: .5em; padding: .05em .45em;
+    border-radius: 999px; background: var(--accent-soft); color: var(--accent);
+    font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .05em;
+    vertical-align: middle;
+  }
+  /* A host named by its own kind 0 rather than by a tagged url — a claim the
+     signing key made about itself, so it is drawn as prose while an exact url
+     keeps the `.mono` every other url on this page has. */
+  .group-host { font-style: italic; }
+  /* The id is carried by more than one group here, and an `h` filter cannot
+     tell them apart. Not an error — the search still works — so it reads as a
+     note, not a warning colour. */
+  .group-warn {
+    flex-shrink: 0; padding: .1em .5em;
+    border: 1px solid var(--border-strong); border-radius: 999px;
+    color: var(--muted); font-size: 10.5px; white-space: nowrap;
+  }
+  /* The footer about the ENCRYPTED half of a group list. Under the rows, never
+     among them: what the arrows walk is `.popup-item`, and a notice that could
+     be arrowed onto and picked would splice a group that does not exist. */
+  .group-lock { border-top: 1px solid var(--border); }
+  /* The one ACTION in the list, so it is a row like the groups above it and the
+     arrows walk onto it — it was a button outside the walk and outside the tab
+     order, which left a keyboard-only reader no way to reopen a dialog they had
+     dismissed. Tinted rather than shaped differently: it is reachable the same
+     way an option is, and only what it DOES is different. */
+  .group-unlock .row-name { color: var(--accent); }
 
   /* ---- the calendar `since:` and `until:` open ----------------------------
      Inside the same popup box the people picker uses — they are never open

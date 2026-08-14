@@ -42,6 +42,13 @@ const KIND_LABELS = {
   30313: "conference", 30315: "status", 30382: "score", 30383: "event score",
   30384: "entry score", 30402: "listing", 30403: "draft listing",
   30617: "repository", 30618: "repo state", 30818: "wiki", 31890: "feed",
+  // The NIP-29 group itself, signed by its HOST RELAY's key — the record the
+  // `group:` search token resolves a name against. Its siblings (39001-39005:
+  // admins, members, roles, participants, pins) are deliberately absent: this
+  // table is an identity with the renderer registry, so naming a kind nothing
+  // draws would promise a card the search cannot show, and no stream mirrors
+  // them anyway.
+  39000: "group",
   31922: "date", 31923: "event", 31924: "calendar", 31925: "rsvp",
   31989: "app", 31990: "app", 32267: "app", 34235: "video", 34236: "short video",
   34550: "community", 39089: "starter pack", 39092: "starter pack",
@@ -66,7 +73,7 @@ export const KNOWN_KINDS = Object.keys(KIND_LABELS).map(Number).sort((a, b) => a
 // they hold rather than all going grey as "some list".
 const KIND_TONES = {
   people: [0, 3, 10002, 10040, 10166, 30000, 30002, 30166, 30382, 30383, 30384, 39089, 39092],
-  note: [1, 9, 11, 40, 41, 42, 1111, 1311, 9802, 34550],
+  note: [1, 9, 11, 40, 41, 42, 1111, 1311, 9802, 34550, 39000],
   social: [5, 6, 7, 8, 16, 17, 1018, 1068, 1984, 1985, 4550, 9734, 9735, 30315],
   article: [30004, 30023, 30024, 30040, 30041, 30818],
   media: [20, 21, 22, 1063, 1222, 1244, 1986, 30005, 30006, 30030, 34235, 34236],

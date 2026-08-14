@@ -279,7 +279,75 @@ relay/src/main/resources/
                         the way NIP-73 fixes it, plus as typed), with the page
                         state passed IN so the whole thing is testable —
                         tools/webtest/query.test.mjs asserts the filters, and
-                        RelayProtocolTest asserts the relay answers them;
+                        RelayProtocolTest asserts the relay answers them.
+                        `group:<id>` is the NIP-29 one, and the only subject
+                        with a PICKER: a group id is opaque (`chachi`, a hex
+                        blob) where a hashtag is already the word it means, so
+                        nobody can type one from memory. It becomes an `#h`
+                        filter — single letter, so `tag_index` holds it exactly
+                        as it holds `t` — plus the group's own kind 39000 keyed
+                        by `d`, which is the half that names its HOST: NIP-29
+                        has the relay sign its groups' records. shared/groups.js
+                        is the decision behind the picker, and its whole
+                        argument is a refusal. A group is the pair (id, host)
+                        — quartz's `GroupId` — and this page holds that pair in
+                        two incompatible spellings: a kind 10009 `group` tag
+                        names the host as a URL, a 39000 names it as the pubkey
+                        that signed it, and NOTHING here joins the two (no
+                        per-relay provenance in the store, no such tag on a
+                        NIP-66 record). So your list and the corpus stay two
+                        answers, and one id on two relays stays two rows,
+                        flagged `ambiguous` — because an `h` tag carries the
+                        bare id and picking either row searches for both. That
+                        last part is the honest limit: the picker fixes the
+                        human's half (remembering the id) and cannot fix the
+                        filter's. HALF A GROUP LIST CAN BE LOCKED — a 10009 is
+                        a NIP-51 private-tag event, so items may sit
+                        NIP-44-encrypted in `.content`, self-encrypted to the
+                        author's own key — and this is the ONLY place the page
+                        asks a signer for anything but a signature. The prompt
+                        fires when a reader with a payload uses `group:`, not on
+                        load, and three rules keep it from becoming noise: no
+                        payload no ask, one prompt per reader however many
+                        keystrokes (`unlockAsk` is the shared in-flight
+                        promise), and a refusal is FINAL until the reader
+                        clicks the unlock row — nothing re-asks on its own.
+                        It is fired and not awaited, or an unanswered dialog
+                        would hold the picker hostage over public groups it
+                        already had; `field.refreshGroups()` is what draws the
+                        answer whenever it lands. Two traps in the payload
+                        itself: an EMPTY private list encrypts the empty STRING
+                        rather than `[]`, so a payload is not evidence there is
+                        anything in it and "we asked and it was empty" is a real
+                        cached answer; and nothing records which scheme was
+                        used, so `isNip04` ports quartz's shape test verbatim
+                        (`?iv=` exactly 28 from the end, after the `-null`
+                        strip) — a wrong guess costs a permission prompt, which
+                        is the one thing this is all trying not to spend twice.
+                        BOTH READS GO DOWN THE AUTHENTICATED SOCKET, and the
+                        own-list one is pinned by `groups.test.mjs` against
+                        app.js's source because there is a plausible-looking
+                        change that breaks it. The store applies the observer as
+                        a FILTER, so a reader with no scores and no 10040
+                        mirrored here reads back nothing at all — their own
+                        events included. Measured against a real Vespa, signed
+                        in on a store with no scores: `{kinds:[10009],
+                        authors:[me]}` returned 0, and returned 1 the moment a
+                        provider that reader trusts scored them. Moving the read
+                        to the anonymous connection makes it answer, which is
+                        exactly why it must not — the picker would become the
+                        one place on the page showing a reader content this
+                        relay has decided it cannot rank for them. No chain
+                        here, no personal groups, and no unlock prompt either
+                        (nothing found means nothing sealed); readiness.js is
+                        what explains that, rather than a special case in the
+                        search box. Whether an observer should be gated by their
+                        own trust at all is a separate question and the store's:
+                        the reputation tensor is derived only from 30382s about
+                        a subject, so there is no self-edge and you score 0 under
+                        your own lens. Nothing here anticipates that fix — when
+                        the store stops gating a reader out of their own events
+                        this read simply starts answering;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;

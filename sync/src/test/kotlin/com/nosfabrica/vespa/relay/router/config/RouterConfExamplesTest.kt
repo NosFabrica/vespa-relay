@@ -91,8 +91,12 @@ class RouterConfExamplesTest {
 
         for (outbox in outboxes) {
             assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
-            val source = outbox.dynamic!!.sources.single()
-            assertEquals(listOf(10002), source.filter.kinds, "the scan reads NIP-65 relay lists")
+            // One source PER KIND of relay list, not one source. An outbox
+            // stream reads NIP-65 write relays and NIP-29 group hosts, and they
+            // are separate entries because they scan different kinds — this
+            // used to be `.single()`, which pinned "there is exactly one way to
+            // find a relay" rather than anything about NIP-65.
+            val source = outbox.dynamic!!.sources.single { it.filter.kinds == listOf(10002) }
 
             val nip65 = source.selects.single()
             assertEquals(10002, nip65.kind)
@@ -111,6 +115,57 @@ class RouterConfExamplesTest {
                 nip65.where,
             )
         }
+    }
+
+    @Test
+    fun `the outbox streams also fan out over NIP-29 group hosts`() {
+        // By shape again: a scan of kind 10009. The `group` tag is the one
+        // relay list in the protocol that does not put the url at element 1 —
+        // it is ["group", <id>, <relay url>, <name?>] — so the whole point of
+        // this test is that the example says 2 and not 1. Reading element 1
+        // would hand the fan-out a set of GROUP IDS to dial, which normalize
+        // rejects one at a time and silently: no error, no relays, and a
+        // `group:` search with nothing behind it.
+        val hosts =
+            example.dynamicStreams().mapNotNull { s ->
+                s.dynamic!!
+                    .sources
+                    .singleOrNull { it.filter.kinds == listOf(10009) }
+                    ?.let { s to it }
+            }
+        assertTrue(hosts.isNotEmpty(), "no stream discovers relays from NIP-29 group lists")
+
+        for ((stream, source) in hosts) {
+            val select = source.selects.single()
+            assertEquals(10009, select.kind, "the scan is narrowed to the group list kind")
+            assertEquals("group", select.tag)
+            assertEquals(2, select.index, "a `group` tag carries the host relay at element 2, after the id")
+            assertTrue(select.where.isEmpty(), "a group tag has no marker to test — every entry names a host")
+            assertTrue(
+                select.bindings.isEmpty(),
+                "the select is deliberately unbound: binding the id would ask each host only for the listed " +
+                    "groups, and give up the tag projection for a paging scan over whole events",
+            )
+            assertTrue(
+                10009 in example.streams.flatMap { it.filter.kinds.orEmpty() },
+                "stream '${stream.name}' scans kind 10009, so some stream has to mirror it",
+            )
+        }
+
+        // The half that makes it worth doing: a host discovered this way is
+        // only useful if something asks it for what a group actually holds.
+        // NIP-29 posts are kinds 9 (chat) and 11 (thread) with replies in 1111,
+        // and the group's own record is 39000 — the one the `group:` picker
+        // resolves a name against.
+        val content = example.streams.filter { it.dynamic?.sources?.any { s -> s.filter.kinds == listOf(10009) } == true }
+        assertTrue(
+            content.any {
+                it.filter.kinds
+                    .orEmpty()
+                    .containsAll(listOf(9, 11, 1111, 39000))
+            },
+            "a stream dials group hosts but none of them asks for group posts or the group record",
+        )
     }
 
     @Test

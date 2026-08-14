@@ -14,10 +14,40 @@
 // `relay` is always relay rows, `emoji` is always the emoji themselves.
 
 import { esc, titleOf, summaryOf } from "../shared/format.js";
+import { relayLabel } from "../shared/groups.js";
 import {
   register, registerPeopleGrid, shell, titleHtml, bodyHtml, peopleGrid, uniquePubkeys, relayRows, chipRow, hashtagHref,
-  emojiGrid, refRows, extLink, tagsOf, tagOf,
+  emojiGrid, refRows, extLink, tagsOf, tagOf, groupHref,
 } from "./base.js";
+
+/**
+ * NIP-51's `group` tags — `["group", <id>, <relay url>, <name?>]`.
+ *
+ * The one tag in this table whose value is NOT its second element, which is
+ * exactly how it was drawn wrong: it went through [relayRows] like `relay` and
+ * `server` do, over `t[1]` like every other tag, so the card printed group IDS
+ * in a list of relay urls and threw the real url and the name away. A NIP-29
+ * group is the pair (id, host relay) — neither half is the group — so all
+ * three elements are read and the row shows what each of them is.
+ *
+ * The name is the link, because a group is a search waiting to happen exactly
+ * as a hashtag is: `group:<id>` is what this page's search box means by it.
+ * The url stays beside it in `mono` rather than becoming a second link — it is
+ * a relay to dial, not a page here, and it is OPTIONAL here in a way it is not
+ * in the picker: a card DRAWS a stranger's list, so a `group` tag whose host is
+ * missing is still an entry they put there and still a searchable id. Dropping
+ * it is how a list with entries rendered as "nothing public here". The picker
+ * makes the stricter demand (see shared/groups.js) because it is choosing a
+ * group to filter by, and a row that cannot say where it lives is not a choice.
+ */
+function groupRows(rows, opts) {
+  const shown = opts && opts.full ? rows : rows.slice(0, 6);
+  const more = rows.length - shown.length;
+  const cells = shown.map(([id, url, name]) =>
+    `<li><a href="${groupHref(id)}">${esc(name || id)}</a>` +
+    (url ? `<span class="muted-note mono"> ${esc(relayLabel(url))}</span>` : "") + `</li>`);
+  return `<ul class="relay-list">${cells.join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
+}
 
 // What each tag holds, and how it wants to be shown. A section with no
 // renderer here cannot be declared below — the table is the whole vocabulary.
@@ -33,7 +63,7 @@ const TAGS = {
   word: { one: "word", many: "words", show: chipRow },
   relay: { one: "relay", many: "relays", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
   server: { one: "server", many: "servers", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
-  group: { one: "group", many: "groups", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
+  group: { one: "group", many: "groups", show: groupRows },
   url: { one: "feed", many: "feeds", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
   r: { one: "link", many: "links", show: (v, o) => relayRows(v.map((url) => ({ url })), o) },
   emoji: { one: "emoji", many: "emoji", show: emojiGrid },
@@ -98,6 +128,23 @@ const spec = (entry) => {
  */
 const valuesOf = (ev, tag) => {
   if (tag === "emoji") return unique(tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]), (v) => v.join("|"));
+  // A group is the PAIR (id, host relay), so both are part of its identity and
+  // the key is the pair rather than the id — the same id on two relays is two
+  // groups. The optional name rides along and is deliberately NOT in the key:
+  // quartz's own GroupTag.equals excludes it for the same reason, so one group
+  // listed once with a cached name and once without stays one row.
+  //
+  // Only the ID is REQUIRED. A card draws what somebody else's list says, and
+  // an entry with no host is still an entry they put there — dropping it left a
+  // list of them rendering as "nothing public here", which is a card claiming
+  // its author saved nothing. The host is what makes a group choosable, not
+  // what makes it real, so the picker demands both and this does not.
+  if (tag === "group") {
+    return unique(
+      tagsOf(ev, "group").filter((t) => t[1]).map((t) => [t[1], t[2] || "", t[3] || ""]),
+      (v) => `${v[0]}|${v[1]}`,
+    );
+  }
   // `p` counts and draws the same set: a value that is not a key is not a
   // person, and "7 people" over six faces is the count answering a different
   // question from the grid.

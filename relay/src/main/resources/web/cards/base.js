@@ -335,6 +335,8 @@ export function relayRows(rows, opts) {
 export const searchHref = (q) => `/?${new URLSearchParams({ q })}`;
 /** A topic, however it was written: `t` tags carry `scotland`, cards show `#scotland`. */
 export const hashtagHref = (t) => searchHref(String(t).startsWith("#") ? t : `#${t}`);
+/** A NIP-29 group, as the search that finds what was posted in it. */
+export const groupHref = (id) => searchHref(`group:${id}`);
 
 /**
  * Hashtags, words, mime types — short values that read as chips, not rows.
