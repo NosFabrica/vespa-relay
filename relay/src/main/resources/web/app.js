@@ -11,6 +11,7 @@ import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/pr
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
 import { ownGroups, metaGroup, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
+import { seedGroupNames, seedGroupEvents, forgetPrivateGroupNames } from "./shared/groupnames.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
@@ -459,6 +460,15 @@ async function fetchFeed(want) {
  */
 function hydrate(events, deep) {
   seedProfiles(events);
+  // The same for the search box's `group:` pill, and it is nearly free: a
+  // `group:` query already asks for the group's own kind 39000 beside its
+  // posts (query.js's buildFilters sends the `#d` with the `#h`), so the name
+  // the pill wants is usually in the answer the reader just got, with no
+  // second round trip to pay for it. Repainted on the same "only if it learned
+  // something" terms the chips are, and reaching `field` from here is safe for
+  // the ordinary reason: hydrate runs on a search, which cannot happen before
+  // the box that search was typed into exists.
+  if (seedGroupEvents(events)) field.repaint();
   // Authors, plus everyone the cards will NAME — a 30382's d subject, a
   // 10040's service column, a zap's sender. The names rule holds in the
   // results list, not only on permalinks. This used to be a tag scan written
@@ -919,6 +929,13 @@ $me.addEventListener("click", async () => {
       // pubkey the extension names, and it would otherwise flash back on the
       // next load of a page the reader had deliberately signed out of.
       forgetFace();
+      // And the names that came out of the ENCRYPTED half of this reader's
+      // group list, for the same reason: the public ones are the network's to
+      // read, but a label somebody gave a group in private must not still be
+      // on a pill for whoever uses this tab next. forgetOwnGroups() covers the
+      // rows themselves on the next lookup; this is the copy the search box
+      // draws from.
+      forgetPrivateGroupNames();
       // The render-only half: the finally below reruns the search once for
       // the whole click, and setViewingAs here meant every sign-out searched
       // twice — two REQs for one action, with the first result thrown away.
@@ -1297,7 +1314,16 @@ async function lookupGroups(partial) {
   const meta = found.map(metaGroup).filter(Boolean);
   const hosts = [...new Set(meta.map((g) => g.host).filter(Boolean))];
   if (hosts.length) await enrichProfiles(hosts).catch(() => {});
-  return { rows: rankGroups(partial, { own: [...own, ...secret], meta }), lock: groupLockState() };
+  const rows = rankGroups(partial, { own: [...own, ...secret], meta });
+  // Every row here is a group and a name, which is the one thing the pill
+  // cannot work out for itself — so a pick draws the name the reader picked BY
+  // without a second round trip, and without the pill flashing the id first.
+  // What it must not become is a shortcut past groupnames.js's own rule: rows
+  // go in as candidates, so a name from your list and a name from the corpus
+  // stay told apart there, and two hosts disagreeing about an id still leaves
+  // the id on the pill.
+  seedGroupNames(rows);
+  return { rows, lock: groupLockState() };
 }
 
 /** Every human edit of the field, whatever made it — typing, paste, a pick. */
