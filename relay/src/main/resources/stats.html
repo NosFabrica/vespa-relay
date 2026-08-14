@@ -825,6 +825,21 @@
   .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
   .sy-depth i { flex: 1; background: var(--accent); min-height: 1px; border-radius: 1px 1px 0 0; }
   .sy-axis { display: flex; justify-content: space-between; font-size: 11px; color: var(--muted); }
+  /* EVERY LEG, not a sample. The list is the thing an operator scans for the
+     one bad row, so it scrolls on its own rather than pushing the rest of the
+     card off screen. */
+  .sy-legs-box { max-height: 320px; overflow: auto; border: 1px solid var(--line); border-radius: 6px; margin: 6px 0 0; }
+  table.sy-legs { width: 100%; border-collapse: collapse; font-size: 12px; }
+  table.sy-legs th { position: sticky; top: 0; background: var(--surface); text-align: left; font-weight: 600;
+                     color: var(--muted); padding: 5px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.sy-legs td { padding: 3px 8px; border-bottom: 1px solid var(--line); white-space: nowrap; }
+  table.sy-legs tr:last-child td { border-bottom: 0; }
+  table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
+  table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  /* Quiet past the stuck threshold. The row is the finding, so the row is what
+     is marked — a coloured cell would put the emphasis on the clock rather than
+     on the relay it belongs to. */
+  table.sy-legs tr.hot td { color: var(--warn); }
 
 </style>
 </head>
@@ -847,7 +862,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import { constraintOf, isLive } from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, isLive, legsOf } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1708,6 +1723,73 @@ function statusRow(progress) {
 }
 
 /**
+ * EVERY RELAY THIS STREAM IS HOLDING RIGHT NOW, and WHAT EACH ONE IS DOING.
+ *
+ * The list was five rows behind a `+507 more`, which is the shape that cannot
+ * answer the question it exists for: the leg worth finding is by construction
+ * not in the healthy head of the list. It is the whole set now — the router
+ * caps its own rows at the widest admission gate and still discloses anything
+ * past it.
+ *
+ * `doing` is the column the clocks could never supply. `held 2h 15m, 3 events`
+ * is four different faults depending on the stage, and two of them — quiet
+ * because negentropy is computing a difference, quiet because a paged walk has
+ * stopped delivering — were indistinguishable from every number this row
+ * carries. See the `doing` entry in the document's own glossary.
+ */
+function legsPanel(s) {
+  const { rows, more } = legsOf(s.inFlight);
+  if (!rows.length) return null;
+  const box = el("div");
+  // WHERE THE LEGS ARE, before the list itself. On a wide fan-out the shape is
+  // the finding — "412 in the guards, 100 paging" is a healthy rotation, and
+  // the same 512 all waiting for a slot is a saturated pool.
+  const stages = new Map();
+  for (const r of rows) stages.set(r.doing || "stage not published", (stages.get(r.doing || "stage not published") || 0) + 1);
+  const summary =
+    [...stages.entries()].sort((a, b) => b[1] - a[1]).map(([what, n]) => `${fmt(n)} ${what}`).join(" · ");
+  box.appendChild(el("div", "sy-sub",
+    `${fmt(rows.length)} leg(s) in flight — ${summary}${more ? ` · ${fmt(more)} more the router did not name` : ""}`));
+
+  const scroll = el("div", "sy-legs-box");
+  const table = el("table", "sy-legs");
+  const head = el("tr");
+  for (const [label, key, right] of [["relay", null, false], ["doing", "doing", false],
+                                     ["held", "heldForSec", true], ["events", "events", true],
+                                     ["quiet", "quietForSec", true]]) {
+    const th = el("th", null, label);
+    if (key) th.title = term(key);
+    if (right) th.style.textAlign = "right";
+    head.appendChild(th);
+  }
+  table.appendChild(head);
+  for (const r of rows) {
+    // Quiet past the threshold is the one row shape worth colouring — see
+    // STUCK_LEG_SEC for why the floor is ten minutes and not less.
+    const tr = el("tr", r.quietForSec >= STUCK_LEG_SEC ? "hot" : null);
+    const url = el("td", "u");
+    // The url in its own LTR isolate inside the rtl cell: the cell being rtl is
+    // what puts the ellipsis on the LEFT, where a path-suffixed alias differs,
+    // and the isolate is what stops that direction rewriting the address.
+    const inner = el("span", null, r.short);
+    inner.dir = "ltr";
+    url.appendChild(inner);
+    url.title = r.relay;
+    tr.appendChild(url);
+    // A leg with no slot says so here rather than leaving the column blank: the
+    // stage IS the answer for most of a fan-out's workers.
+    tr.appendChild(el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—")));
+    tr.appendChild(el("td", "n", fmtDur(r.heldForSec)));
+    tr.appendChild(el("td", "n", fmt(r.events)));
+    tr.appendChild(el("td", "n", fmtDur(r.quietForSec)));
+    table.appendChild(tr);
+  }
+  scroll.appendChild(table);
+  box.appendChild(scroll);
+  return box;
+}
+
+/**
  * HOW FAR ONE STREAM HAS GOT, in four marks: what it is doing, how much of the
  * pass is behind it, when it expects to finish, and how far back it has reached.
  *
@@ -1750,6 +1832,10 @@ function streamBlock(s) {
   if (dead) got.push(`${fmt(dead)} unreachable`);
   if (taken.busy) got.push(`${fmt(taken.busy)} still running from the last pass`);
   if (got.length) box.appendChild(el("div", "sy-sub", got.join(" · ")));
+  // UNDER the pass counters, because "what is it doing right now" is read after
+  // "is it getting anywhere" and before anything else on this card.
+  const legs = legsPanel(s);
+  if (legs) box.appendChild(legs);
   return box;
 }
 
@@ -1766,20 +1852,24 @@ function streamBlock(s) {
  * a fold that had never seen the two 17,000-url streams report the 16-url one's
  * residue as the whole picture.
  */
-const BACKGROUND = {
-  aliasFold: "alias fold",
-  consistency: "stability gate",
-  ingest: "ingest",
-  reachability: "reachability",
-  heal: "healer",
-};
+const BACKGROUND = [
+  ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
+  ["consistency", "stability gate", "Refuses a url that answers one filter two different ways. Such a relay cannot hold a cursor still, so every cycle re-serves what the last one already took."],
+  ["ingest", "ingest", "The queue every downloaded event passes through on its way to the store. Full means downloads are backpressured behind it."],
+  ["reachability", "reachability", "The NIP-66 monitor: which urls have been observed at all, and which carry a current unreachability record that holds them out of every fan-out."],
+  ["heal", "healer", "Events this mirror holds that a relay which should have them does not, pushed back to it."],
+  ["upstreamPush", "upstream push", "Events published to this relay and forwarded on to the upstreams configured to receive them."],
+];
 
 function backgroundPanel(progress) {
   const rows = (progress && progress.processors) || [];
   if (!rows.length) return null;
   const box = el("div", "sy-bg");
   for (const p of rows) {
-    box.appendChild(el("b", null, BACKGROUND[p.name] || p.name));
+    const known = BACKGROUND.find((row) => row[0] === p.name);
+    const name = el("b", null, known ? known[1] : p.name);
+    if (known) name.title = known[2];
+    box.appendChild(name);
     box.appendChild(el("em", null,
       `${p.phase || "unknown"}${p.nextInSec ? ` · next in ${fmtDur(p.nextInSec)}` : ""}`));
     box.appendChild(processorFact(p));
@@ -1787,13 +1877,34 @@ function backgroundPanel(progress) {
   return box;
 }
 
-/** The single number that says whether one background pass is getting anywhere. */
+/**
+ * WHAT ONE BACKGROUND PASS HAS TO SHOW FOR ITSELF.
+ *
+ * One line, and only counters that mean something on their own. A loss counter
+ * is drawn LOUD and only when non-zero: at zero it belongs in the JSON, above
+ * zero it belongs in front of an operator.
+ */
 function processorFact(p) {
+  const cell = el("span");
+  /** Append a fact, hanging the document's own words on it where it has some. */
+  const add = (text, key, loud) => {
+    const part = el(loud ? "s" : "span", null, cell.children.length ? ` · ${text}` : text);
+    // Guarded: `term` answers "" for a key this document does not carry, and an
+    // EMPTY title still sets the attribute — which paints the help cursor over
+    // a tooltip the browser then declines to show.
+    const why = key && term(key);
+    if (why) part.title = why;
+    cell.appendChild(part);
+  };
   if (p.capacity) {
     const full = (p.queued || 0) >= p.capacity;
-    const cell = el(full ? "s" : "span", null,
-      `queue ${fmt(p.queued || 0)} of ${fmt(p.capacity)}${full ? " — FULL, downloads are backpressured behind it" : ""}`);
-    cell.title = term("queued");
+    add(`queue ${fmt(p.queued || 0)} of ${fmt(p.capacity)}${full ? " — FULL, downloads are backpressured behind it" : ""}`,
+        "queued", full);
+    if (p.accepted != null) add(`${short(p.accepted)} stored`, "accepted");
+    // Mostly the same event offered once per relay holding it, which is why it
+    // is drawn beside `accepted` and never as a failure on its own.
+    if (p.rejected != null) add(`${short(p.rejected)} refused, mostly duplicates`, "rejected");
+    if (p.lostToStore) add(`${fmt(p.lostToStore)} LOST TO THE STORE`, "lostToStore", true);
     return cell;
   }
   const streams = p.streams || [];
@@ -1803,18 +1914,22 @@ function processorFact(p) {
     // that had measured them.
     const left = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
     const of = streams.reduce((a, w) => a + (w.candidates || 0), 0);
-    const cell = el("span", null,
-      `${fmt(left)} of ${fmt(of)} url(s) still with no verdict, across ${fmt(streams.length)} stream(s)`);
-    cell.title = term("unmeasured");
+    add(`${fmt(left)} of ${fmt(of)} url(s) still with no verdict, across ${fmt(streams.length)} stream(s)`, "unmeasured");
     return cell;
   }
   if (p.knownDead != null) {
-    const cell = el("span", null, `${fmt(p.knownDead)} url(s) held out of every fan-out as unreachable`);
-    cell.title = term("knownDead");
+    if (p.observed != null) add(`${fmt(p.observed)} url(s) observed`, "observed");
+    add(`${fmt(p.knownDead)} held out of every fan-out as unreachable`, "knownDead");
     return cell;
   }
-  if (p.pushed != null) return el("span", null, `${fmt(p.pushed)} event(s) pushed back to relays missing them`);
-  return el("span", null, "");
+  if (p.pushed != null) {
+    add(`${fmt(p.pushed)} event(s) pushed back to relays missing them`, "pushed");
+    // The sweep declining to backpressure itself, which is a choice and not a
+    // fault — so it is drawn plainly however large it gets.
+    if (p.dropped) add(`${short(p.dropped)} dropped rather than backpressure the sweep`, "dropped");
+    return cell;
+  }
+  return cell;
 }
 
 /**

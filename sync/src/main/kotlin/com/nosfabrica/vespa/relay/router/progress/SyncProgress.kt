@@ -306,6 +306,14 @@ class SyncProgress(
                                                             // from a walk that will not end.
                                                             put("events", r.events)
                                                             put("quietForSec", r.quietForSec)
+                                                            // WHAT IT IS DOING.
+                                                            // Absent until the
+                                                            // leg reaches a
+                                                            // stage worth a
+                                                            // word, which is a
+                                                            // state and not a
+                                                            // gap.
+                                                            r.doing?.let { put("doing", it) }
                                                         },
                                                     )
                                                 }

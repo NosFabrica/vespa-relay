@@ -39,8 +39,18 @@ export const STUCK_LEG_SEC = 600;
  */
 export const HEAP_TIGHT = 0.9;
 
-/** How many held relays the table names before deferring to the JSON. */
-export const IN_FLIGHT_SHOWN = 5;
+/**
+ * How many held relays the table names before deferring to the JSON.
+ *
+ * It was FIVE, which on a live fan-out named five legs and deferred five
+ * hundred — enough to see that something was held and never enough to see
+ * which, and the one being looked for is by definition not in the healthy
+ * head of the list. The router caps its own rows at the widest admission gate
+ * (`RelayRotation.DEFAULT_IN_FLIGHT_ROWS`), so this defers to what the
+ * document carries rather than cutting it again; `more` still discloses
+ * whatever the ROUTER left out.
+ */
+export const IN_FLIGHT_SHOWN = Infinity;
 
 /**
  * The ten terminal outcomes, in stacking order, with the short label the key
@@ -274,6 +284,10 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
       // download and must not read as one.
       slotless: r.transferringForSec == null,
       transferringForSec: r.transferringForSec ?? null,
+      // WHAT IT IS DOING, straight from the router — see `doing` in the
+      // glossary. Null on a router that predates the member, which reads as
+      // "not known" and never as a stage.
+      doing: r.doing || null,
     };
   });
   return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };

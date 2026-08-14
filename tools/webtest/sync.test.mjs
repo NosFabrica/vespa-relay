@@ -139,9 +139,18 @@ const leg = (n, quiet, over = {}) => ({
 {
   // A truncated list that does not say it is truncated reads as the whole
   // answer, and here the whole answer is what an operator is chasing.
+  // The PAGE no longer cuts the list: the leg being chased is by construction
+  // not in the healthy head of it, so the router's own cap is now the only one
+  // and `IN_FLIGHT_SHOWN` defers to whatever the document carries.
   const many = legsOf({ relays: Array.from({ length: 8 }, (_, i) => leg(i, 30)), omitted: 12 });
-  assert.equal(many.rows.length, IN_FLIGHT_SHOWN);
-  assert.equal(many.more, 15, "what this side drops is ADDED to what the router already left out");
+  assert.equal(many.rows.length, 8, "every leg the document names is drawn");
+  assert.equal(many.more, 12, "what the ROUTER left out is still disclosed");
+  assert.equal(IN_FLIGHT_SHOWN, Infinity, "the default defers to the document rather than re-cutting it");
+  // …and a caller that does pass a limit still adds what it drops, which is the
+  // property this pin has always been about.
+  const capped = legsOf({ relays: Array.from({ length: 8 }, (_, i) => leg(i, 30)), omitted: 12 }, 5);
+  assert.equal(capped.rows.length, 5);
+  assert.equal(capped.more, 15, "what this side drops is ADDED to what the router already left out");
   assert.equal(legsOf({ relays: [leg(1, 30)], omitted: 0 }).more, 0);
   assert.deepEqual(legsOf(null), { rows: [], more: 0 });
 

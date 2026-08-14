@@ -245,6 +245,16 @@ internal object SyncVocabulary {
                     "from the durations alone.",
             )
             put(
+                "doing",
+                "WHAT THAT LEG IS ACTUALLY DOING, which the three clocks beside it cannot say. `held 2h 15m, 3 " +
+                    "events` has four readings that want opposite responses: the worker is in the guards deciding " +
+                    "whether the host is worth dialling; it cleared them and is queued behind OUR OWN transfer pool; " +
+                    "it is reconciling, where a long silence is negentropy computing a difference; or it is paging, " +
+                    "where the same silence is a walk that has stopped delivering. `transferringForSec` separates " +
+                    "the first two from the rest and nothing separated the last two. Absent until a leg reaches a " +
+                    "stage worth the word.",
+            )
+            put(
                 "omitted",
                 "How many rows a bounded list left out. Never silent and never zero by omission: these lists run to " +
                     "thousands of urls on a document fetched every poll, and a truncation that does not disclose " +

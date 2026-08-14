@@ -476,6 +476,11 @@ internal object SyncProgressReport {
                             num(row["transferringForSec"])?.let { put("transferringForSec", it) }
                             put("events", num(row["events"]) ?: 0)
                             put("quietForSec", num(row["quietForSec"]) ?: 0)
+                            // The stage the leg reached. Copied as written and
+                            // never defaulted: a router that predates it says
+                            // nothing, which reads as "not known" rather than
+                            // as a wrong stage.
+                            text(row["doing"])?.let { put("doing", it) }
                         },
                     )
                 }

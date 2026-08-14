@@ -941,6 +941,11 @@ internal class DynamicSync(
         // the next pass, a known-dead url waits out a signed record's TTL — and
         // one counter for both is unreadable in exactly the way "skipped as
         // dead" was.
+        // THE STAGES, stamped as the worker reaches them — see
+        // [InFlight.Relay.doing]. Everything from here to the pool permit is
+        // the guards, which is where most of a fan-out's workers are and where
+        // none of the three clocks on the row could say they were.
+        rotation.doing(relay.url, "checking whether it is worth dialling")
         val skip = p.strikes.whyDead(relay.url)
         if (skip != null) {
             when (skip) {
@@ -989,6 +994,10 @@ internal class DynamicSync(
         // that has stopped delivering — the two are the same durations
         // otherwise. See [LegProgress].
         val legProgress = rotation.leg(relay.url)
+        // Cleared the guards; from here the only thing between this worker and
+        // a transfer is our OWN pool. A leg sitting on this for minutes is the
+        // pool saturated, which is a fact about us and not about the relay.
+        rotation.doing(relay.url, "waiting for a transfer slot")
         val got =
             pool.withPermit {
                 rotation.transferring(relay.url) {
@@ -1002,7 +1011,19 @@ internal class DynamicSync(
                         // The relay's own filter, narrowed by what the tags
                         // that named it paired it with; identical to `window`
                         // for a select that binds only the url.
-                        syncRelay(stream, relay.url, relay.narrowed(window), lease.ids, sharedAuthors, legProgress) { reason ->
+                        syncRelay(
+                            stream,
+                            relay.url,
+                            relay.narrowed(window),
+                            lease.ids,
+                            sharedAuthors,
+                            legProgress,
+                            // The rotation is the only thing holding this leg's
+                            // row, so the stage is written straight onto the
+                            // claim rather than returned at the end — a leg that
+                            // never returns is exactly the one worth describing.
+                            doing = { what -> rotation.doing(relay.url, what) },
+                        ) { reason ->
                             p.reasons.merge(reason, 1L, Long::plus)
                         }
                     } finally {
@@ -1221,6 +1242,8 @@ internal class DynamicSync(
         sharedAuthors: Set<String>,
         /** This leg's live event counter, or null when nothing is reporting on it. */
         legProgress: LegProgress?,
+        /** Where this leg has got to, for the in-flight row — see [InFlight.Relay.doing]. */
+        doing: (String) -> Unit = {},
         onFailure: (String) -> Unit,
     ): Int {
         inFlight.merge(url, 1, Int::plus)
@@ -1276,7 +1299,7 @@ internal class DynamicSync(
                     onFailure("gave up: silent for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)} with $abandoned ask(s) left")
                     break
                 }
-                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress)
+                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress, doing)
             }
             // ABANDONED IS NOT "NOTHING NEW". A leg that gave up with no
             // downloads would otherwise fall through to the `else` branch in
@@ -1355,8 +1378,11 @@ internal class DynamicSync(
         local: List<IdAndTime>,
         sharedAuthors: Set<String>,
         legProgress: LegProgress?,
+        /** Where this leg has got to — see [InFlight.Relay.doing]. */
+        doing: (String) -> Unit = {},
     ): Int {
         if (stream.deleteMissing != DeleteMissing.OFF) {
+            doing("reconciling, then deleting what it no longer has")
             // Threaded through rather than left to the caller's return value:
             // this path can spend minutes inside one reconcile, and a counter
             // that only moves when the call returns says nothing about the call
@@ -1405,6 +1431,12 @@ internal class DynamicSync(
             // for what is outside what we already walked — the band IS the
             // mechanism here, there is no id set to fall back on.
             val fetched = stream.sync == SyncMode.FETCH
+            // THE ONE THE CLOCKS COULD NOT SAY. Both branches look identical
+            // from outside — a held slot and a silence — and they mean opposite
+            // things: negentropy is allowed to be quiet while it computes a
+            // difference, paging is not. The branch is decided right here and
+            // was never published.
+            doing(if (fetched) "paging" else "reconciling (negentropy)")
             // Set only on the fetch branch: the negentropy path below runs through
             // `negentropySyncOrFetch`, which does not surface how its paging ended.
             var walked: PagedFetchResult? = null
