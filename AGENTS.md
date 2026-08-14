@@ -120,6 +120,74 @@ Git hooks are installed by the build: **pre-commit runs `spotlessCheck`,
 pre-push runs the tests**. A commit will be rejected for formatting alone, so
 run `spotlessApply` first.
 
+## A live deployment to pull from
+
+**`https://search-staging.brainstorm.world/`** runs this code against a real
+corpus with the router on. It is reachable from here, it answers anonymously,
+and it is the cheapest way to get production-shaped input into a local test —
+reach for it before inventing a fixture, because the things a fixture gets
+wrong (how big a lens is, what a real 10040 names, what a full corpus card
+looks like) are exactly what it can hand you.
+
+- **the relay** — `wss://search-staging.brainstorm.world/`. NIPs 1, 9, 11, 40,
+  42, 45, 50, 62, 77, 86; `auth_required` is false, so REQ, COUNT and NIP-50
+  search all work without signing anything. It sends an AUTH challenge anyway
+  (that is the implicit-observer path), and ignoring it costs only the ranking
+  lens — which the `observer:` token below gives back.
+- **the diagnostics `:relay` serves** — `/stats.json`, `/stats.html`,
+  `/observer_stats.html`, `/pressure`, `/` (NIP-11 with
+  `Accept: application/nostr+json`). These are the same pages this repo builds,
+  filled with numbers a local store will never reach: on 2026-08-14
+  `/stats.json` reported 125 kinds, 132.4M kind 1, 28.7M kind 30382, 28.5M
+  kind 0, and `/pressure` `{"meanMs":863,"samples":20}`. Chart tiers there are
+  minutes old by design (`counters` every 60s, `charts` every 900s), so a
+  `generatedAt` in the past is the tiering working, not a stale relay.
+
+**To simulate an observer, rank through
+`460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c`.** It is a
+public key — the scores are public, so any client may rank through any lens —
+and it is a *usable* one, which most pubkeys are not: it has published a kind
+10040 naming `7d7ffd720b90…` at `wss://scores.brainstorm.world` for both
+`30382:rank` and `30382:followers`, and that provider's cards actually reached
+this store (242,051 kind-30382 events measured the same day, of 301 observers
+with a 10040 at all). An observer without those two facts resolves to nothing
+and silently ranks like an anonymous read, which is the failure mode this key
+exists to avoid.
+
+Node 22's global `WebSocket` is enough to ask it anything — no dependency, same
+plain-node rule as `tools/webtest`:
+
+```js
+// node probe.mjs — search, ranked through that observer
+const KEY = "460c25e682fda7832b52d1f22d3d22b3176d972f60dcdc3212ed8c92ef85065c";
+const ws = new WebSocket("wss://search-staging.brainstorm.world/");
+ws.onopen = () => ws.send(JSON.stringify(
+  ["REQ", "s", { kinds: [1], search: `bitcoin observer:${KEY} sort:rank`, limit: 5 }]));
+ws.onmessage = (e) => console.log(JSON.parse(e.data));
+```
+
+Drop the `observer:` token from that same query and the answers change — that
+difference *is* the lens, and it is the one check worth running when a change
+claims to touch ranking.
+
+To fill a local store rather than read one, point a router stream at it: it
+speaks NIP-77, so a narrow filter reconciles rather than downloads.
+
+```hocon
+streams { staging {
+    dir = "down"
+    sync = "negentropy"
+    filter = { "kinds": [10040, 30382] }   # a lens, not a corpus
+    urls = [ "wss://search-staging.brainstorm.world" ]
+} }
+```
+
+Two cautions. It is **shared and live**: read it, don't publish test events to
+it — anything written is written to a relay other people are reading, and
+NIP-09 does not un-ring that bell. And it is a **moving system**, so every
+number above is a reading taken on a date, not a constant to assert against;
+pin behaviour in tests, take scale from a fresh call.
+
 ## Layout
 
 All three modules share the `com.nosfabrica.vespa.relay` package root — files
