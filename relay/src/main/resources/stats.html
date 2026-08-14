@@ -471,7 +471,6 @@
   .frac { height: 10px; border-radius: 2px; background: var(--grid); overflow: hidden; display: flex; }
   .frac i { display: block; height: 100%; background: var(--accent); }
   .frac i.warn { background: var(--warn); }
-  .frac i.d1 { opacity: .75; } .frac i.d2 { opacity: .5; } .frac i.d3 { opacity: .3; }
   /* The one register left for words, and it is spent only on damage: a fatal
      error, a partition that does not hold, events lost to the store. */
   .alarm { color: var(--warn); font-weight: 620; font-size: .8rem; margin: .45rem 0 0; }
@@ -1661,15 +1660,6 @@ const STUCK_LEG_SEC = 600;
 const IN_FLIGHT_SHOWN = 5;
 
 /**
- * A segment gets its name printed only above this share; below it, the number
- * stands alone and the name stays on the title.
- *
- * Ten labelled buckets was the longest line on the old card and most of them
- * were under half a percent. The key is for finding the big one.
- */
-const NAMED_SHARE = 0.08;
-
-/**
  * The glossary the document ships, for the current card's `title` attributes.
  *
  * Set by [syncCard] before anything below draws. The words are the ROUTER's —
@@ -1719,8 +1709,14 @@ function partition(rows, counts, total, meaning) {
     const sw = el("b", member);
     k.appendChild(sw);
     k.appendChild(el("em", null, fmt(n)));
-    // The word only where the segment is big enough to be worth naming.
-    if (share >= NAMED_SHARE) k.append(" " + label);
+    // EVERY segment named, however small. Hiding the name under a share
+    // threshold was tried and it hides the wrong ones: `delivered` and
+    // `nothingNew` are the two outcomes that mean the relay WORKED, and on a
+    // fan-out mostly made of dead urls they are the small slivers — so the
+    // rule left the reader a bare "38" beside a labelled "8,569 pending".
+    // What made the old key long was the labels being sentences; they are one
+    // or two words now, and six of them fit on a line.
+    k.append(" " + label);
     k.title = seg.title;
     keys.appendChild(k);
   }
@@ -1821,7 +1817,10 @@ function passBlock(p, held, alone) {
 function poolsRow(s) {
   if (s.running == null && s.slotsFree == null && s.returned == null) return null;
   const row = el("div", "pools");
-  if (s.running != null) {
+  // Drawn only where there ARE workers. An idle stream between passes has
+  // none, and "0/0 on a slot" beside an empty bar is filler in the one place
+  // this card is trying to keep marks meaningful.
+  if (s.running) {
     const bar = el("div", "bar");
     const w = el("i", "w");
     w.style.width = "100%";
@@ -2152,38 +2151,33 @@ const PROCESSORS = [
 ];
 
 /**
- * What a big number is MADE OF, as a stack.
+ * What a big number is MADE OF — in numbers, not a second bar.
  *
  * Ingest's rejections and a probe pass's undecided hosts are the same shape of
  * fact: a total nobody can act on until it is split. A mirror is offered the
  * same event once per relay holding it, so rejecting most of what arrives is
  * the pipeline working — and the total alone cannot say that.
+ *
+ * This drew the split as a stacked bar under the row's meter, and it had to
+ * go. Two bars of identical form, stacked, dividing DIFFERENT wholes and
+ * neither of them labelled: the top one is the queue against its capacity, the
+ * bottom one is a share of `rejected`, a total that appears nowhere on the row.
+ * The first question it got was "why does ingest have two bars", which is the
+ * only question a mark like that can produce. The numbers are the split, and
+ * they say it in the space the bar was taking.
  */
 function breakdown(p) {
   const rows = ((p.rejections || {}).reasons || []).map((r) => [r.reason, r.events])
     .concat((((p.streams || [])[0] || {}).undecided?.reasons || []).map((r) => [r.reason, r.hosts]));
   if (!rows.length) return null;
-  const total = rows.reduce((a, [, n]) => a + n, 0);
-  if (!total) return null;
-  const wrap = el("div");
-  wrap.style.gridColumn = "3 / -1";
-  const bar = el("div", "frac");
-  bar.style.height = "8px";
-  rows.slice(0, 4).forEach(([reason, n], i) => {
-    const seg = el("i", `d${Math.min(3, i)}`);
-    seg.style.width = (n / total) * 100 + "%";
-    seg.title = `${fmt(n)} — ${reason}`;
-    bar.appendChild(seg);
-  });
-  wrap.appendChild(bar);
-  // The two biggest named under it, the rest on the title. Four of the fold's
-  // five reasons recover on their own and one never will, and from outside the
+  // The two biggest named, the rest on the title. Four of the fold's five
+  // reasons recover on their own and one never will, and from outside the
   // router they are the same silence — which is why the reasons are published
   // at all.
   const lab = el("p", "foot", rows.slice(0, 2).map(([reason, n]) => `${short(n)} ${reason}`).join(" · "));
   lab.title = rows.map(([reason, n]) => `${fmt(n)} — ${reason}`).join("\n");
-  wrap.appendChild(lab);
-  return wrap;
+  lab.style.gridColumn = "3 / -1";
+  return lab;
 }
 
 /**
