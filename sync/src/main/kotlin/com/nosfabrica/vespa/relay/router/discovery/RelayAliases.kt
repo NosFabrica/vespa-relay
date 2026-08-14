@@ -547,7 +547,7 @@ class RelayAliases(
      *  - **the window is too thin to decide.** A relay holding nine events hands
      *    both twins the same nine, and nine is under [minSample] — so nothing
      *    folds, nothing is cleared, the group is handed back by [unresolved] on
-     *    every pass, and `groups.satsdisco.com` spends a probe budget forever to
+     *    every pass, and `groups.satsdisco.com` spends a pass's wall clock forever to
      *    learn what its two urls already said.
      *  - **only one twin has a verdict.** [toProbe] now re-dials the secure twin
      *    of an unmeasured plain url precisely so this can fire; without the

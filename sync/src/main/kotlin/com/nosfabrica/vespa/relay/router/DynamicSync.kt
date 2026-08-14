@@ -643,33 +643,6 @@ internal class DynamicSync(
                 // — or this relay, syncing itself — back into the
                 // fan-out through the side door.
                 .filter { it.url !in dynamic.exclude && it.url != store.relay }
-        // What this stream would like measured before the next cycle.
-        // Non-blocking; the callbacks are this stream's own transport
-        // guard and ingest, since the monitor has neither.
-        //
-        // Only on the path that rediscovered: the monitor holds the LATEST
-        // candidate set per stream, replacing rather than appending, so
-        // re-submitting a list that has not changed hands it the work it is
-        // already holding.
-        aliasMonitor?.submit(
-            label = stream.name,
-            candidates = candidates,
-            canDial = { url -> (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url) },
-            onEvent = { event -> if (stream.filter.match(event)) ingest.submit(event, stream.trusted) },
-            // A fingerprint is a websocket, and quartz closes none of its own:
-            // the pass has to hand its connections back through the same
-            // refcount the fan-out uses, or it leaves up to `probesPerCycle` of
-            // them open against a 1024-socket dispatcher — worst on exactly the
-            // hosts it probes first, where the per-host budget is 20.
-            sockets =
-                object : AliasFolding.Sockets {
-                    override fun claim(url: NormalizedRelayUrl) {
-                        inFlight.merge(url, 1, Int::plus)
-                    }
-
-                    override fun release(url: NormalizedRelayUrl) = releaseSocket(url)
-                },
-        )
         // Each member is a difference between two lists this code
         // holds, so the identity closes for every case including a
         // synthesised survivor:

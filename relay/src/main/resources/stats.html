@@ -1831,7 +1831,18 @@ function streamBlock(s) {
   const dead = (taken.knownDead || 0) + (taken.noRoute || 0) + (taken.unreachable || 0);
   if (dead) got.push(`${fmt(dead)} unreachable`);
   if (taken.busy) got.push(`${fmt(taken.busy)} still running from the last pass`);
+  if (taken.pending) got.push(`${fmt(taken.pending)} not reached yet`);
   if (got.length) box.appendChild(el("div", "sy-sub", got.join(" · ")));
+  // THE FAULTS, each named rather than summed into the unreachable count,
+  // because they have different fixes and only one of them is about the relay.
+  // `transferFailed` is a handshake that succeeded and a transfer that broke —
+  // it says nothing about availability; `hostStruckOut` is our own back-off;
+  // `torUnavailable` is our own transport being down. Drawn only when non-zero.
+  const faults = [];
+  if (taken.transferFailed) faults.push(`${fmt(taken.transferFailed)} answered then broke mid-transfer`);
+  if (taken.hostStruckOut) faults.push(`${fmt(taken.hostStruckOut)} skipped — host already struck out`);
+  if (taken.torUnavailable) faults.push(`${fmt(taken.torUnavailable)} skipped — our tor proxy is down`);
+  if (faults.length) box.appendChild(el("div", "sy-sub", faults.join(" · ")));
   // UNDER the pass counters, because "what is it doing right now" is read after
   // "is it getting anywhere" and before anything else on this card.
   const legs = legsPanel(s);

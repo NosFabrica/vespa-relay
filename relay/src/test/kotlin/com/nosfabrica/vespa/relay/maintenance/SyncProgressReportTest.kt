@@ -472,7 +472,7 @@ class SyncProgressReportTest {
                    {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3, "nextInSec": 20800,
                     "somethingInvented": 7,
                     "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
-                      "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
+                      "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                  "examples": ["a.example", "b.example", "c.example", "d.example"]}],
                                     "omitted": 1}}]},
                    {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000}]}
@@ -573,7 +573,14 @@ class SyncProgressReportTest {
         val published =
             ((out["streams"] as JsonArray)[0].jsonObject["cycle"]!!.jsonObject["taken"] as JsonObject).keys
 
-        val undrawn = published.filterNot { card.contains("[\"$it\",") }
-        assertEquals(emptyList(), undrawn, "published in the partition, drawn by no bar segment: $undrawn")
+        // The NAME anywhere in the card, not the `["x", …]` table shape it used
+        // to be stored in — the same rule the COUNTERS pin above already uses,
+        // and for the reason stated there: this is about "published and never
+        // drawn", not about which line does the drawing. The card summarises
+        // these outcomes now rather than stacking all ten into one bar, and
+        // pinning the old shape would have forced a partition table back into
+        // the page to satisfy a grep.
+        val undrawn = published.filterNot { card.contains(it) }
+        assertEquals(emptyList(), undrawn, "published in the partition, drawn nowhere on the card: $undrawn")
     }
 }

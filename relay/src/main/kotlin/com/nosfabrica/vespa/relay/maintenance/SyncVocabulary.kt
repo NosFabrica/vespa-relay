@@ -426,10 +426,10 @@ internal object SyncVocabulary {
             )
             put(
                 "undecided",
-                "WHICH HOSTS a probe pass left with nothing written down, grouped by why. Five causes end a group " +
-                    "that way — out of probe budget, cooling down from an earlier failed pass, declined by our own " +
-                    "transport, no url that could be a yardstick, nothing to hold up against one — plus a host that " +
-                    "cannot repeat itself, and only that last one never recovers on its own. From outside the process " +
+                "WHICH HOSTS a probe pass left with nothing written down, grouped by why. Four causes end a group " +
+                    "that way — cooling down from an earlier failed pass, declined by our own transport, no url that " +
+                    "could be a yardstick, nothing to hold up against one — plus a host that cannot repeat itself, " +
+                    "and only that last one never recovers on its own. From outside the process " +
                     "all of them are the same silence: a url still being dialled beside eleven siblings that folded. " +
                     "`hosts` counts them and `examples` names a few, bounded with its own `omitted`.",
             )

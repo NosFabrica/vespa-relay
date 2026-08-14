@@ -29,16 +29,15 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
  * The probing half of the fold, on its own clock.
  *
- * A stream tells this what it just discovered ([submit]) and gets on with its
- * download. Some time later, on this monitor's schedule and not the stream's,
- * the urls are fingerprinted and the verdicts signed into NIP-66. The stream
- * reads them back through [AliasFolding.apply] on a subsequent cycle.
+ * The monitor derives every stream's world itself ([Source]) on its own
+ * schedule and not on any stream's, fingerprints it, and signs the verdicts
+ * into NIP-66. The streams read them back through [AliasFolding.apply] on a
+ * subsequent cycle and never wait on a probe.
  *
  * The alternative — the one this replaces — was to fold inline, which put a
  * multi-minute probe pass between "discovery finished" and "the first byte is
@@ -168,8 +167,6 @@ class AliasMonitor(
         val sockets: AliasFolding.Sockets,
     )
 
-    private val pending = ConcurrentHashMap<String, Work>()
-
     private val learnedTotal = AtomicLong()
 
     /**
@@ -198,26 +195,6 @@ class AliasMonitor(
      * why age remains the primary expiry and this is only an early one.
      */
     fun generation(): Long = learnedTotal.get()
-
-    /**
-     * Hand the monitor this stream's current candidate set. Returns
-     * immediately — nothing is dialled here, which is the entire point.
-     *
-     * Called every cycle with the whole discovered set, not a delta: working out
-     * what is new is [AliasFolding]'s job (it already skips anything with a
-     * verdict), and a caller that tried to compute the delta itself would have
-     * to duplicate the TTL rule to know when a url became interesting again.
-     */
-    fun submit(
-        label: String,
-        candidates: List<NormalizedRelayUrl>,
-        canDial: suspend (NormalizedRelayUrl) -> Boolean,
-        onEvent: suspend (Event) -> Unit = {},
-        sockets: AliasFolding.Sockets = AliasFolding.Sockets.NONE,
-    ) {
-        if (candidates.size < 2) return
-        pending[label] = Work(candidates, canDial, onEvent, sockets)
-    }
 
     /**
      * Start the loop. Idempotent only in the sense that the caller builds one of
@@ -249,7 +226,6 @@ class AliasMonitor(
         scope.launch {
             delay(startupDelayMs)
             while (scope.isActive) {
-                val hadWork = pending.isNotEmpty()
                 // UNSET WHILE A PASS RUNS. The next one is not scheduled until
                 // this one returns — a pass takes as long as it takes — so a
                 // countdown here would be a promise about a time nobody has
@@ -257,7 +233,10 @@ class AliasMonitor(
                 // reads as a pass that is late rather than one in progress.
                 dueAtMs = null
                 runPass()
-                val wait = if (hadWork) intervalMs else emptyRetryMs
+                // Asked AFTER the pass, because only the pass knows: the
+                // candidate set is derived inside it now, so "was there
+                // anything to do" cannot be answered before it runs.
+                val wait = if (lastPassHadWork) intervalMs else emptyRetryMs
                 dueAtMs = System.currentTimeMillis() + wait
                 delay(wait)
             }
@@ -279,9 +258,21 @@ class AliasMonitor(
     private var dueAtMs: Long? = null
 
     /**
+     * Did the last pass have anything to measure at all?
+     *
+     * "Nothing to do YET" and "nothing to do" want different waits — a cold
+     * store has no relay lists to derive from and is usually fine moments
+     * later, so that case retries at [emptyRetryMs] rather than pushing the
+     * first measurement a whole interval out on exactly the boot with the most
+     * to learn.
+     */
+    @Volatile
+    private var lastPassHadWork = false
+
+    /**
      * One pass over every stream's standing work, streams in sequence.
      *
-     * Sequential on purpose: [AliasFolding] enforces its own probe budget and
+     * Sequential on purpose: [AliasFolding] bounds its own concurrency and
      * concurrency per call, and running two streams' passes at once would
      * multiply both behind its back. This is background work — it has all the
      * time it needs and none of the urgency.
@@ -294,10 +285,11 @@ class AliasMonitor(
      */
     suspend fun runPass(): Int {
         var learned = 0
-        // THE SOURCE WINS WHERE THERE IS ONE. Derived at the moment the pass
-        // runs, so no stream's discovery clock can decide what this pass sees;
-        // `pending` stays the fallback for a deployment (and every test) that
-        // wires no source.
+        // DERIVED AT THE MOMENT THE PASS RUNS, so no stream's discovery clock
+        // can decide what this pass sees. A monitor with no source measures
+        // nothing, which is the honest answer rather than a silent half-set:
+        // the streams used to push their worlds in and the pass saw whichever
+        // of them had finished discovering first.
         val work =
             source?.let { src ->
                 val urls = runCatching { src.candidates() }.getOrDefault(emptyList())
@@ -305,7 +297,8 @@ class AliasMonitor(
                 // relay lists yet — so this reads as an empty pass and retries
                 // at [emptyRetryMs] rather than sleeping the full interval.
                 if (urls.size < 2) emptyList() else listOf(ALL_STREAMS to Work(urls, src::canDial, src::onEvent, src.sockets))
-            } ?: pending.entries.map { it.key to it.value }
+            } ?: emptyList()
+        lastPassHadWork = work.isNotEmpty()
         // ONE PASS AT A TIME, over every stream — rather than one stream at a
         // time over every pass, which is how this used to read.
         //

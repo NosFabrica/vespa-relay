@@ -134,7 +134,7 @@ class SyncVocabularyTest {
                    {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
                     "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
-                      "undecided": {"reasons": [{"reason": "out of probe budget", "hosts": 2,
+                      "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,

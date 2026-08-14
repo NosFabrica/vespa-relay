@@ -80,7 +80,6 @@ class ConsistencyPass(
     private val consistency: RelayConsistency,
     private val record: RelayAliasRecord,
     private val probe: AliasProbe,
-    private val probesPerCycle: Int = DEFAULT_PROBES_PER_CYCLE,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
     /**
      * Where each pass reports how far it got — see [AliasFolding.progress] for
@@ -131,7 +130,7 @@ class ConsistencyPass(
         val startedMs = System.currentTimeMillis()
         adopt(candidates)
 
-        val wanted = consistency.toProbe(candidates).filter { it !in folded }.take(probesPerCycle)
+        val wanted = consistency.toProbe(candidates).filter { it !in folded }
         if (wanted.isEmpty()) {
             // NOT SILENT, because "nothing left to measure" is the state this
             // gate is trying to reach and the one an operator most wants to
@@ -149,7 +148,8 @@ class ConsistencyPass(
         // The urls that proved nothing, kept rather than only counted: grouped
         // by host they become the one `undecided` row this pass can publish, and
         // "which server would not answer twice" is what an operator chases.
-        // Bounded by `probesPerCycle`, since that is what `wanted` is capped at.
+        // Bounded by the candidate set: `wanted` is every url still owed a
+        // measurement, and this keeps only the ones that proved nothing.
         val silent = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
         // ONE anchor for the whole pass, a week behind the clock. Shared for the
         // same reason the fold shares one per group — two urls measured from
@@ -359,17 +359,6 @@ class ConsistencyPass(
     }
 
     companion object {
-        /**
-         * Urls measured per pass. UNCAPPED, for the same reason the fold's is —
-         * see [AliasFolding.DEFAULT_PROBES_PER_CYCLE].
-         *
-         * It was 3,000. [concurrency] is what bounds the pass; the cap only
-         * ever decided how many six-hour intervals full coverage took, and this
-         * gate measures one url at a time with no group to leave half-done, so
-         * stopping at a cap bought nothing a shorter interval would not.
-         */
-        const val DEFAULT_PROBES_PER_CYCLE = Int.MAX_VALUE
-
         /** Urls in flight. Matches the fold: this is background work. */
         const val DEFAULT_CONCURRENCY = 16
     }
