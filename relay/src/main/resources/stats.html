@@ -1837,7 +1837,7 @@ function streamBlock(s) {
   const got = [];
   // Zero is not a finding here. "0 already in sync" beside a stream that has
   // dialled five relays is the same filler the old card was full of.
-  if (urls.taken != null) got.push(`${fmt(urls.taken)} relay(s) dialled`);
+  if (urls.taken != null) got.push(`${fmt(urls.taken)} relay(s)`);
   if (taken.delivered) got.push(`${fmt(taken.delivered)} sent events`);
   if (taken.nothingNew) got.push(`${fmt(taken.nothingNew)} already in sync`);
   const dead = (taken.knownDead || 0) + (taken.noRoute || 0) + (taken.unreachable || 0);
