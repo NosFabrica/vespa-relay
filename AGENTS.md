@@ -2335,6 +2335,19 @@ statement about someone else's server.
   can permanently hold a failed infra build while the other serves fine. The
   store coordinate uses lowercase for this reason — check the other spelling
   before concluding a commit "doesn't build".
+- **A deploy activates the package; it does not restart anything.** A store bump
+  can change the bundled `services.xml` without changing a line of Kotlin, and
+  `AUTO_DEPLOY` then makes it look applied. For a change Vespa classes as
+  restart-required — `<jvm options>` is one, and the store's direct-memory
+  ceiling landed that way — `prepareandactivate` answers `activated: true` with a
+  `configChangeActions.restart` entry naming `default/container.0`, and then
+  leaves the running JVM alone. Measured by deploying two packages in sequence
+  onto one Vespa: 90s after activation the container JVM's pid predated it and
+  still carried the OLD flags, while `:8080` answered 200 for every poll.
+  `deployBundledSchema` reports success either way — `awaitServing` asks whether
+  an application is live, not whether the live one is the activated one. Read the
+  deploy's response body, not its status code, and apply the change with a
+  deliberate `docker compose restart vespa`.
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
 - **Vespa's `time.date()` does not zero-pad.** Verified on 8.733: two documents
