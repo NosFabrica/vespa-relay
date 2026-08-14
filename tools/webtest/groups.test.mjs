@@ -8,6 +8,7 @@
 // does NOT happen — no merge, no invented url, no silent collapse of two
 // relays' groups into one row.
 import assert from "assert";
+import { readFileSync } from "node:fs";
 
 const { ownGroups, metaGroup, rank, where, relayLabel, isNip04, sealed, privateGroups } =
   await import(new URL("../../relay/src/main/resources/web/shared/groups.js", import.meta.url));
@@ -195,5 +196,30 @@ assert.strictEqual(where({ relayUrl: null, host: null }).text, "unknown relay", 
 
 assert.strictEqual(relayLabel("wss://x.example/"), "x.example", "the label drops the scheme and the trailing slash");
 assert.strictEqual(relayLabel("wss://x.example/inbox"), "x.example/inbox", "…and keeps a real path");
+
+// ---- WHICH CONNECTION each half asks on ------------------------------------
+//
+// A source assertion, because the rule lives in app.js and nothing else can
+// see it — the same shape cards.test.mjs uses to keep entity paths out of
+// app.js. It is here because it was a REAL BUG, found only by running the page
+// against a real Vespa: the store applies the observer as a FILTER, so on the
+// authenticated socket a reader whose trust chain is not mirrored here reads
+// back NOTHING — and not only for searches. Measured, signed in, on a fresh
+// store: `{kinds:[10009],authors:[me]}` returned 0 of the reader's OWN event,
+// while the identical filter anonymously returned it. So the picker's own-groups
+// half — the whole point of the feature — was empty for exactly the readers it
+// was built for, and no hermetic test could have said so.
+//
+// The split it pins: what is in YOUR OWN list is a fact about you and is read
+// anonymously; which groups EXIST and rank first is a ranked question and stays
+// on the authenticated socket, like the people picker beside it.
+const appSrc = readFileSync(new URL("../../relay/src/main/resources/web/app.js", import.meta.url), "utf8");
+const ownRead = /(\w+)\.req\(\{ kinds: \[10009\]/.exec(appSrc);
+assert(ownRead, "app.js must read the reader's own kind 10009 somewhere");
+assert.strictEqual(ownRead[1], "anon",
+  "the reader's own group list is read ANONYMOUSLY — on the authenticated socket the observer filter " +
+  "hides their own event from them on any relay that has not mirrored their trust chain");
+assert(/relay\.req\(\{ kinds: \[39000\], search:/.test(appSrc),
+  "…while the 39000 name search stays on the authenticated socket, because which groups to offer first IS ranked");
 
 console.log("groups: your list and the corpus stay two answers, and one id on two relays stays two rows");

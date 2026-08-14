@@ -323,7 +323,21 @@ relay/src/main/resources/
                         used, so `isNip04` ports quartz's shape test verbatim
                         (`?iv=` exactly 28 from the end, after the `-null`
                         strip) — a wrong guess costs a permission prompt, which
-                        is the one thing this is all trying not to spend twice;
+                        is the one thing this is all trying not to spend twice.
+                        WHICH CONNECTION each half asks on is load-bearing and
+                        was got wrong first time: the reader's own 10009 is read
+                        ANONYMOUSLY, because the store applies the observer as a
+                        FILTER and on the authenticated socket a reader whose
+                        trust chain is not mirrored here reads back nothing —
+                        not only for searches. Measured against a real Vespa,
+                        signed in on a fresh store, `{kinds:[10009],
+                        authors:[me]}` returned 0 of the reader's OWN event
+                        while the identical filter anonymously returned it, so
+                        the own-groups half was empty for exactly the readers it
+                        exists for. The 39000 name search stays authenticated:
+                        which groups to offer first IS a ranked question, as the
+                        people picker's is. `groups.test.mjs` pins both sides
+                        against app.js's source, since nothing else can see it;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;

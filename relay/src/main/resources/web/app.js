@@ -1026,6 +1026,21 @@ async function lookupAuthors(partial) {
 // only place the protocol writes an id, its host relay and a name down
 // together — so it is worth a round trip and not worth a second one.
 //
+// READ ANONYMOUSLY, on the shared reference connection, for the reason the
+// score lookup gives two hundred lines up: the store applies the observer as a
+// FILTER, so on the authenticated socket a reader whose trust chain has not
+// been mirrored here reads back NOTHING — not a degraded list, and not only
+// for searches. Measured against a real Vespa: signed in, `{kinds:[10009],
+// authors:[me]}` returned 0 of the reader's OWN event, while the identical
+// filter anonymously returned it. That is the store behaving as designed and
+// it is the wrong question to ask it here. What is in your own list is a fact
+// about you, not an opinion your web of trust is entitled to rank — the same
+// distinction that already sends the score reads down this connection.
+//
+// The 39000 name search below stays on the AUTHENTICATED socket, and the split
+// is the point: which groups exist and are worth showing first IS a ranked
+// question, exactly as the people picker's is.
+//
 // Cached only when the relay ANSWERED, the rule rankServiceOf() and profiles.js
 // both state at length: a dropped read cached as "you have no groups" would
 // leave `group:` opening on an empty list for the rest of the session, with
@@ -1054,7 +1069,8 @@ async function ownGroupCandidates() {
   if (ownGroupsFor === who && ownGroupList) return ownGroupList;
   let evs = [];
   try {
-    evs = await relay.req({ kinds: [10009], authors: [who], limit: 1 });
+    const anon = await refConn();
+    evs = await anon.req({ kinds: [10009], authors: [who], limit: 1 });
   } catch (e) { return ownGroupList && ownGroupsFor === who ? ownGroupList : []; }
   if (evs.complete !== true) return [];
   const rows = ownGroups(evs[0]);
