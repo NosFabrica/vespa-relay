@@ -141,6 +141,31 @@ assert.deepStrictEqual(rows.map((r) => r.mine), [true, false, false], "and each 
 rows = rank("chachi", { own: [], meta: [...found].reverse() });
 assert.deepStrictEqual(rows.map((r) => r.id), ["zz", "chat-abc"], "the relay's ranking survives");
 
+// …and so does every ROW. This is the one that was wrong, and the fixtures
+// above could not see it because "chachi" happens to be a literal substring of
+// "Chachi Fans". The relay matches through a real index — `name` in the primary
+// tier, `about` in the secondary, both reachable through the prefix/fuzzy `near`
+// column — and re-testing its answers with `includes` here silently discarded
+// every hit that index can make and a substring cannot, reporting them to the
+// reader as "No group matches".
+const byAbout = metaGroup(meta("g-about", HOST_A, "Nostr Talk", "all about bitcoin"));
+assert.deepStrictEqual(
+  rank("bitcoin", { own: [], meta: [byAbout] }).map((r) => r.id), ["g-about"],
+  "a hit the relay made on `about` is not thrown away by a name/id substring test",
+);
+const byNear = metaGroup(meta("g-near", HOST_A, "Alice's Club", ""));
+assert.deepStrictEqual(
+  rank("alices", { own: [], meta: [byNear] }).map((r) => r.id), ["g-near"],
+  "…nor is one the near tier matched but `includes` cannot",
+);
+assert.strictEqual(rank("zzzz", { own: [], meta: [byAbout, byNear] }).length, 2,
+  "the relay decided what matches; this module's job is the ORDER between bands, not a second opinion");
+
+// The reader's OWN list is the other way round, and has to be: it arrives whole
+// and unsearched, so nothing has decided which entries were meant.
+assert.strictEqual(rank("zaps", { own, meta: [] }).length, 1, "an own-list row is matched here, because nothing else did");
+assert.strictEqual(rank("nothinglikethis", { own, meta: [] }).length, 0, "…and a non-match is dropped");
+
 // An id typed in FULL is somebody naming one group: that row goes under Enter,
 // ahead of every name match, so the picker gets out of the way.
 rows = rank("zz", { own, meta: found });

@@ -172,7 +172,24 @@ export function metaGroup(ev) {
   };
 }
 
-/** Does this candidate answer what has been typed so far? */
+/**
+ * Does one of the reader's OWN groups answer what has been typed so far?
+ *
+ * Only ever asked of the local list, and that restriction is the whole point.
+ * A 10009 arrives whole and unsearched — nothing has decided which of its
+ * entries the reader meant — so something has to match here, and a substring
+ * over the id and the cached name is the honest amount of matching to do on
+ * four entries with no index behind them.
+ *
+ * The relay's rows are NOT put through this. They are here BECAUSE the relay
+ * matched them, against a real index: `name` in the primary search tier,
+ * `about` in the secondary, both reachable through the prefix/fuzzy `near`
+ * column. Re-testing them with `includes` discards every hit that index can
+ * make and this cannot — an `about`-only match, a prefix that is not a
+ * substring, a typo the near tier forgave — and it discards them silently, as
+ * "No group matches". Measured on the real module: `about` mentioning bitcoin
+ * → 0 rows, "alices" against "Alice's Club" → 0 rows.
+ */
 const hit = (cand, needle) =>
   !needle ||
   cand.id.toLowerCase().includes(needle) ||
@@ -191,9 +208,12 @@ const hit = (cand, needle) =>
  *   2. YOUR groups. The reader's own list is the best answer available: it is
  *      short, they chose it, its names are the ones they know, and it is the
  *      only band that can print a relay url.
- *   3. Everything else the relay found, IN THE RELAY'S OWN ORDER. That ranking
- *      already reflects the corpus and the reader's lens; re-sorting it here on
- *      where a substring landed would replace a measurement with a guess.
+ *   3. Everything else the relay found, IN THE RELAY'S OWN ORDER and ENTIRELY.
+ *      That ranking already reflects the corpus and the reader's lens;
+ *      re-sorting it here on where a substring landed would replace a
+ *      measurement with a guess, and re-FILTERING it — which this did until it
+ *      was measured — throws away every hit the index can make and `includes`
+ *      cannot. See [hit], which is deliberately asked only of band 2.
  *
  * With nothing typed yet the first two bands are empty of matches by
  * definition, so what comes back is the reader's whole list — which is the
@@ -222,7 +242,7 @@ export function rank(partial, { own = [], meta = [] } = {}) {
   // meant.
   for (const c of all) if (typed && c.id === typed) take(c);
   for (const c of own) if (hit(c, needle)) take(c);
-  for (const c of meta) if (hit(c, needle)) take(c);
+  for (const c of meta) take(c);
 
   const times = new Map();
   for (const c of rows) times.set(c.id, (times.get(c.id) || 0) + 1);

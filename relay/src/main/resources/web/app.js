@@ -743,6 +743,11 @@ function exportText() {
   // the full filter lines below, and a reader auditing the order needs to see
   // both — what the person meant, and what the relay was asked for it.
   if (q.scopes.length) L.push(`  scopes        ${q.scopes.map((s) => `${s.field}:${s.value}`).join(", ")}`);
+  // The id and nothing else, because the id is all the filter carries. A group
+  // is the pair (id, host relay) and an `h` tag holds only the id, so a reader
+  // auditing this order has to be told that the rows could have come from more
+  // than one relay's group of that name — it is not recoverable from the events.
+  if (q.groups.length) L.push(`  groups        ${q.groups.map((g) => `group:${g}`).join(", ")}  (matched by id alone — any host's group with this id)`);
   // The window, as both the second the filter carries and the moment it stands
   // for. A reader auditing an order has to be able to tell an empty page from a
   // window that excluded everything, and a bare epoch second cannot say which.

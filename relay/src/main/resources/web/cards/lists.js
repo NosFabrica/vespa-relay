@@ -33,14 +33,19 @@ import {
  * The name is the link, because a group is a search waiting to happen exactly
  * as a hashtag is: `group:<id>` is what this page's search box means by it.
  * The url stays beside it in `mono` rather than becoming a second link — it is
- * a relay to dial, not a page here.
+ * a relay to dial, not a page here, and it is OPTIONAL here in a way it is not
+ * in the picker: a card DRAWS a stranger's list, so a `group` tag whose host is
+ * missing is still an entry they put there and still a searchable id. Dropping
+ * it is how a list with entries rendered as "nothing public here". The picker
+ * makes the stricter demand (see shared/groups.js) because it is choosing a
+ * group to filter by, and a row that cannot say where it lives is not a choice.
  */
 function groupRows(rows, opts) {
   const shown = opts && opts.full ? rows : rows.slice(0, 6);
   const more = rows.length - shown.length;
   const cells = shown.map(([id, url, name]) =>
     `<li><a href="${groupHref(id)}">${esc(name || id)}</a>` +
-    `<span class="muted-note mono"> ${esc(relayLabel(url))}</span></li>`);
+    (url ? `<span class="muted-note mono"> ${esc(relayLabel(url))}</span>` : "") + `</li>`);
   return `<ul class="relay-list">${cells.join("")}${more > 0 ? `<li class="muted-note">…and ${more} more</li>` : ""}</ul>`;
 }
 
@@ -123,15 +128,20 @@ const spec = (entry) => {
  */
 const valuesOf = (ev, tag) => {
   if (tag === "emoji") return unique(tagsOf(ev, "emoji").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2]]), (v) => v.join("|"));
-  // A group is the PAIR (id, host relay), so both are required and both are
-  // part of its identity — deduped on the pair rather than on the id, because
-  // the same id on two relays is two groups. The optional name rides along and
-  // is deliberately NOT in the key: quartz's own GroupTag.equals excludes it
-  // for the same reason, so one group listed once with a cached name and once
-  // without stays one row.
+  // A group is the PAIR (id, host relay), so both are part of its identity and
+  // the key is the pair rather than the id — the same id on two relays is two
+  // groups. The optional name rides along and is deliberately NOT in the key:
+  // quartz's own GroupTag.equals excludes it for the same reason, so one group
+  // listed once with a cached name and once without stays one row.
+  //
+  // Only the ID is REQUIRED. A card draws what somebody else's list says, and
+  // an entry with no host is still an entry they put there — dropping it left a
+  // list of them rendering as "nothing public here", which is a card claiming
+  // its author saved nothing. The host is what makes a group choosable, not
+  // what makes it real, so the picker demands both and this does not.
   if (tag === "group") {
     return unique(
-      tagsOf(ev, "group").filter((t) => t[1] && t[2]).map((t) => [t[1], t[2], t[3] || ""]),
+      tagsOf(ev, "group").filter((t) => t[1]).map((t) => [t[1], t[2] || "", t[3] || ""]),
       (v) => `${v[0]}|${v[1]}`,
     );
   }

@@ -138,11 +138,25 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   let groupLock = null; // what lookupGroup() says about the reader's LOCKED groups
   let regroup = false;  // re-ask the group lookup even though the token is unchanged
 
+  // The one non-group thing the group picker can offer: reopen the permission
+  // dialog. It is an ACTION rather than an option, so it carries no id and
+  // [takeEnter] dispatches on it instead of picking it.
+  const UNLOCK_ROW = { unlock: true };
+
   // Which list the arrows and Enter are walking. The two network pickers share
   // `active` rather than each keeping their own index: one caret is inside one
   // token, so at most one of them is ever live, and two indices that must
   // agree about which is the live one is a bug waiting for a caret to move.
-  const liveRows = () => (group ? groups : hits);
+  //
+  // The unlock action is IN this list, last, and that is what makes it reachable
+  // without a mouse. It was a `tabindex="-1"` button wired only to mousedown —
+  // outside the walk, outside the tab order, outside every key this field
+  // handles — so a reader who dismissed the permission dialog with the keyboard
+  // had no way left to ask for it back. Being last keeps its index equal to its
+  // position among the rendered `.popup-item`s, which is what markActive()
+  // flips classes by.
+  const groupRows = () => (groupLock && groupLock.state === "denied" ? [...groups, UNLOCK_ROW] : groups);
+  const liveRows = () => (group ? groupRows() : hits);
 
   /**
    * Fill the chips on the faces this module just drew.
@@ -664,13 +678,15 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
   /**
    * What the list says about the reader's LOCKED groups, under the rows.
    *
-   * A footer and never a row: `.popup-item` is what the arrows walk and what
-   * Enter picks, and a notice that could be picked as a group would splice
-   * `group:undefined` into the box. `unlock` is the only clickable one of the
-   * three, and it is clickable precisely because a refused permission dialog
-   * must be reopened by the reader rather than by the page.
+   * Two of the three states are inert NOTES — there is nothing to do about an
+   * extension that cannot decrypt, or about a dialog already on screen. The
+   * third is an ACTION and is therefore a real `.popup-item`, last in the list,
+   * so the arrows reach it and Enter activates it: a refused permission dialog
+   * must be reopenable by the reader, and "by the reader" cannot mean "with a
+   * mouse". [takeEnter] tells it from a group row by its `unlock` flag rather
+   * than by its position, so it can never be spliced into the box as an id.
    */
-  function lockHtml() {
+  function lockHtml(at) {
     if (!groupLock) return "";
     if (groupLock.state === "asking") {
       return `<div class="popup-note group-lock">Waiting for your extension to unlock your private groups…</div>`;
@@ -678,7 +694,11 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     if (groupLock.state === "unsupported") {
       return `<div class="popup-note group-lock">Some of your groups are encrypted (${esc(groupLock.scheme)}), and this extension cannot decrypt them.</div>`;
     }
-    return `<div class="popup-note group-lock"><button type="button" tabindex="-1" class="group-unlock" data-unlock="1">Unlock your private groups</button></div>`;
+    return `
+      <div class="popup-item group-lock group-unlock" id="${GROUP_ROW_ID(at)}" data-unlock="1" role="option" aria-selected="false">
+        <div class="row-main"><div class="row-name">Unlock your private groups</div>
+        <div class="row-about">Some of your groups are encrypted; your extension will ask before opening them.</div></div>
+      </div>`;
   }
 
   /** `rows` null means "still asking" — an empty array means "asked, none". */
@@ -697,7 +717,9 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     else if (groupLock) body = "";
     else if (!group.partial) body = `<div class="popup-note">No groups of yours here yet — type a name, or paste a group id</div>`;
     else body = `<div class="popup-note">No group matches “${esc(clip(group.partial, 40))}”</div>`;
-    list.innerHTML = head + body + lockHtml();
+    // The action's index is the count of group rows above it, so the walkable
+    // list and the rendered `.popup-item`s stay one sequence.
+    list.innerHTML = head + body + lockHtml(rows ? rows.length : 0);
     openList("listbox", "Groups");
     markActive();
   }
@@ -715,16 +737,20 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
    * with an answer — your own groups — so an empty partial asks like any other.
    */
   function updateGroups() {
+    // `regroup` is the one thing that gets past the unchanged-token guard: an
+    // unlock changes what the SAME token answers, which is a case nothing else
+    // here has. Read and cleared FIRST, above every return in this function —
+    // it was cleared below the token check, so an unlock landing after the
+    // caret had left the token returned with the flag still armed and spent it
+    // on the next `group:` typed, re-asking and resetting that list's highlight
+    // for nothing.
+    const forced = regroup;
+    regroup = false;
     const next = pendingGroup();
     if (!next) { if (group) closeList(); return; }
     const sameToken = !!group && group.start === next.start;
-    // `regroup` is the one thing that gets past the unchanged-token guard: an
-    // unlock changes what the SAME token answers, which is a case nothing else
-    // here has. Clearing it before the early returns below, so a token that
-    // went away does not leave the flag armed for the next one.
-    const forced = regroup;
-    regroup = false;
     if (!forced && sameToken && group.partial === next.partial) return;
+
     group = next;
     if (!sameToken) { groups = []; groupLock = null; active = -1; }
     renderGroupList(groups.length ? groups : null);
@@ -746,7 +772,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
       const rows = (found && found.rows) || [];
       groupLock = (found && found.lock) || null;
       groups = rows.slice(0, PICKER_LIMIT);
-      active = groups.length ? 0 : -1;
+      // Off the WALKABLE list, not off `groups`: with no groups and a refused
+      // unlock the only row is the action, and it still has to start highlighted
+      // or Enter would fall through to a search the reader did not ask for.
+      active = groupRows().length ? 0 : -1;
       renderGroupList(groups);
     }, DEBOUNCE_MS);
   }
@@ -997,6 +1026,10 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     // seen gets no rows, and Enter must SEARCH for that id rather than do
     // nothing. shared/groups.js's exact-id band is the other half of the same
     // promise — an id typed in full is row 0, so Enter over it picks itself.
+    // The action is told from an option by its flag, never by its position: a
+    // row that could be mistaken for a group would splice `group:undefined`
+    // into the box, which is the one thing this list must not do.
+    if (rows[active].unlock) { unlock(); return true; }
     if (group) pickGroup(rows[active]);
     else pick(rows[active]);
     return true;

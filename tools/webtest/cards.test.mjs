@@ -482,6 +482,16 @@ assert(groupList.includes("groups.example"), "the host relay is shown");
 assert(groupList.includes("My Group"), "…and so is the name the list cached");
 assert(!/relay-list[^]*?>abc123</.test(groupList), "the group id is never drawn as a relay url");
 
+// A card draws what somebody ELSE's list says, so the host is optional here:
+// an entry with an id and no relay url is still an entry they saved and still a
+// searchable id. Requiring both dropped it, and a list of only such entries
+// rendered as "nothing public here" — a card claiming its author saved nothing.
+const hostless = card(ev(10009, [["group", "orphan-id", "", "Orphan"]]), { full: true });
+assert(hostless.includes("Orphan"), "a group tag with no host relay is still drawn");
+assert(!/nothing public here/i.test(hostless), "…so the card never reports an empty list it does not have");
+assert.strictEqual(new URLSearchParams(groupHrefOf(hostless).slice(1)).get("q"), "group:orphan-id",
+  "…and it still links to the search for its id");
+
 // A group's own record links the same way, and says which id it is: a group
 // called "General" tells the reader nothing about WHICH general it is.
 const groupRec = card(ev(39000, [["d", "chachi"], ["name", "Chachi"], ["private"]]), { full: true });

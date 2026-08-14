@@ -974,13 +974,12 @@
      among them: what the arrows walk is `.popup-item`, and a notice that could
      be arrowed onto and picked would splice a group that does not exist. */
   .group-lock { border-top: 1px solid var(--border); }
-  .group-unlock {
-    border: 1px solid var(--border-strong); background: var(--surface); color: var(--fg);
-    border-radius: 8px; padding: 5px 11px;
-    font: inherit; font-size: 12.5px; cursor: pointer;
-  }
-  .group-unlock:hover { border-color: var(--accent); color: var(--accent); }
-  .group-unlock:focus-visible { outline: 2px solid var(--ring); outline-offset: 1px; }
+  /* The one ACTION in the list, so it is a row like the groups above it and the
+     arrows walk onto it — it was a button outside the walk and outside the tab
+     order, which left a keyboard-only reader no way to reopen a dialog they had
+     dismissed. Tinted rather than shaped differently: it is reachable the same
+     way an option is, and only what it DOES is different. */
+  .group-unlock .row-name { color: var(--accent); }
 
   /* ---- the calendar `since:` and `until:` open ----------------------------
      Inside the same popup box the people picker uses — they are never open
