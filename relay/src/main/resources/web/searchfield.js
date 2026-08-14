@@ -37,7 +37,11 @@
 //      minted, so unlike a url or an ISBN it is precisely the thing nobody can
 //      type from memory. What the rows offer is the NAME; what a pick writes
 //      is the id. `group:` with nothing after it opens on the reader's own
-//      groups, which is the answer most of the time.
+//      groups, which is the answer most of the time. The pill then draws that
+//      name BACK over the id — the person chip's bargain, over a value that is
+//      even less readable than an npub, and on the same terms: the token
+//      underneath is still the id, and shared/groupnames.js draws a name only
+//      where the sources agree on one.
 //
 // Why a contenteditable rather than the <input> this used to be: an input's
 // value is a string of characters and nothing else — there is no way to put a
@@ -64,6 +68,7 @@ import { profiles, displayName, enrichProfiles } from "./shared/profiles.js";
 import { avatarHtml } from "./shared/avatar.js";
 import { tokenize, mentionAt, dateAt, groupAt, drawable, ymd, scopeIds } from "./shared/query.js";
 import { where as groupWhere } from "./shared/groups.js";
+import { groupName, knowsGroup, enrichGroupNames } from "./shared/groupnames.js";
 import {
   DOW, dayLabel, midnight, monthGrid, quickPicks, sameMonth, shiftDays, shiftMonths, typedMonth,
 } from "./shared/calendar.js";
@@ -296,6 +301,28 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     span.title = span.dataset.token;
   }
 
+  /**
+   * A group pill, drawn from whatever groupnames knows right now.
+   *
+   * `dataset.face` is the person chip's staleness key doing the same job for a
+   * group: the name is a lookup away, so the pill is drawn once with the id
+   * and repainted if and when a name arrives. An empty face is a real value
+   * here rather than a missing one — it is what "asked, and no ONE name can be
+   * drawn for this id" looks like, and it must not read as "not asked yet".
+   *
+   * The hover is where the truth goes, exactly as it does for a `#Nostr` that
+   * asks for `nostr`: the pill says "nos engineers" and the filter is still
+   * the id, so the id is on the hover whether or not a name replaced it.
+   */
+  function paintGroupChip(span) {
+    const id = span.dataset.gid;
+    const name = groupName(id);
+    span.innerHTML = `<b>group:</b><span class="scope-id">${esc(name || id)}</span>`;
+    span.dataset.face = name;
+    span.title = `${span.dataset.token} — a NIP-29 group filter: events posted to ` +
+      (name ? `“${name}”, the group whose id is ${id}` : `the group whose id is ${id}`);
+  }
+
   function chipEl(seg) {
     const span = document.createElement("span");
     span.contentEditable = "false";
@@ -329,14 +356,25 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     }
     if (seg.type === "group") {
       // The scope pill's shape, because the token splits the same way — the
-      // prefix is the language's word and the value is the reader's. What it
-      // cannot do is show the NAME the reader picked by: the field's value is
-      // the whole truth here (the URL carries it, the export carries it), and
-      // a pill drawing "Chachi" over an id would be a second source of truth
-      // that goes stale the moment the token is edited by hand.
+      // prefix is the language's word and the value is the reader's. Unlike
+      // every other scope it draws a NAME over that value wherever one is
+      // known, and that is the person chip's bargain, owed here for the
+      // stronger version of the person chip's reason: an npub is unreadable,
+      // and a group id is unreadable AND arbitrary. `0fe5c432fe61…` is
+      // whatever its host relay minted, so there is nothing in it to
+      // recognise — not even for the reader who picked it, who chose it off a
+      // row that said "nos engineers".
+      //
+      // It is a VIEW of the token and never a second source of truth: the
+      // field's value still reads `group:0fe5…`, so the url, the export and
+      // the query builder are untouched; the hover carries the raw token and
+      // the id; and the name is dropped the moment the id is edited by hand,
+      // because the drawing is re-derived from the id on every render. Which
+      // name that is — and when there is no honest one to draw — is
+      // shared/groupnames.js's decision, not this module's.
       span.className = "scopepill grouppill";
-      span.innerHTML = `<b>group:</b><span class="scope-id">${esc(seg.id)}</span>`;
-      span.title = `${seg.raw} — a NIP-29 group filter: events posted to the group whose id is ${seg.id}`;
+      span.dataset.gid = seg.id;
+      paintGroupChip(span);
       return span;
     }
     if (seg.type === "date") {
@@ -379,16 +417,26 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     // A repainted chip is a NEW score chip — paintChip replaces the innerHTML,
     // so whatever number was on the old face went with it.
     if (drew) fillScores();
+    // The group pills are the same rule with nothing to fill: no face, no
+    // score, so a repaint here costs one innerHTML and buys a hex id becoming
+    // a name. app.js calls repaint() after every search that learned a name,
+    // which is when the 39000 a `group:` search asks for alongside its posts
+    // has landed.
+    for (const c of el.querySelectorAll(".grouppill")) {
+      if (c.dataset.face !== groupName(c.dataset.gid)) paintGroupChip(c);
+    }
   }
 
   function render(text, caret, typingAt = caret) {
     const segs = drawable(text, typingAt);
     el.innerHTML = "";
     const unknown = [];
+    const strangeGroups = [];
     let chips = 0;
     for (const seg of segs) {
       if (seg.type === "text") { if (seg.text) el.appendChild(document.createTextNode(seg.text)); continue; }
       el.appendChild(chipEl(seg));
+      if (seg.type === "group" && !knowsGroup(seg.id)) strangeGroups.push(seg.id);
       if (seg.type === "key") {
         chips++;
         if (!profiles.has(seg.pubkey)) unknown.push(seg.pubkey);
@@ -401,6 +449,13 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
     // is the same rule the results list follows: a lookup that found nothing
     // must not cost a render.
     if (unknown.length) enrichProfiles(unknown).then((n) => { if (n) repaint(); }).catch(() => {});
+    // A group the page has never met is the same story with a hex id in place
+    // of the short npub — and this is the path that matters most for it, since
+    // a `group:` token that arrived in a URL or a paste was never offered by
+    // the picker and so has no name attached to it anywhere.
+    if (strangeGroups.length) {
+      enrichGroupNames(strangeGroups).then((n) => { if (n) repaint(); }).catch(() => {});
+    }
   }
 
   /**

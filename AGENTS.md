@@ -451,7 +451,28 @@ relay/src/main/resources/
                         a subject, so there is no self-edge and you score 0 under
                         your own lens. Nothing here anticipates that fix — when
                         the store stops gating a reader out of their own events
-                        this read simply starts answering;
+                        this read simply starts answering.
+                        shared/groupnames.js is the OTHER half of the same
+                        problem: once a group has been picked, its `group:<id>`
+                        pill draws the NAME back over the id — the person
+                        chip's bargain, over a value even less readable than an
+                        npub, since a group id is arbitrary as well as opaque.
+                        The token underneath never changes (the url, the export
+                        and the query builder all still carry the id, and the
+                        hover says so), so the pill is a view and not a second
+                        source of truth. What it may draw is the whole of that
+                        module: your own 10009's name for the id wins outright,
+                        the corpus's 39000s are used only where the hosts AGREE,
+                        and two relays that signed one id under different names
+                        leave the hex on the pill — the `#h` filter really does
+                        return both, and naming it after either would say the
+                        results are one group when they are two. Its lookup is
+                        ANONYMOUS, unlike the picker's two reads right above,
+                        and deliberately: "what is this group called" is a fact
+                        about a subject like the kind 0 behind a face, so
+                        asking it through the observer gate would leave an
+                        unmirrored reader looking at the id the pill exists to
+                        replace;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
