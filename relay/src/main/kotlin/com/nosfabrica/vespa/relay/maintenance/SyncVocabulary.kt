@@ -410,7 +410,9 @@ internal object SyncVocabulary {
                     "`dialled` climbs is a set of hosts that cannot be decided, and `undecided` says which and why. " +
                     "Zero is the state both probe passes are working towards — every url measured, nothing left to " +
                     "ask — and it is reached and held for most of a monthly TTL. NOT the complement of `dialled`: that " +
-                    "one counts what a single pass spent, this one what the whole candidate set still lacks.",
+                    "one counts what a single pass spent, this one what the whole candidate set still lacks. The CARD " +
+                    "draws this subtracted from `candidates` — the count that has a verdict, which rises as the pass " +
+                    "gets somewhere — so the two read in opposite directions and the number on screen is not this one.",
             )
             put(
                 "dialled",

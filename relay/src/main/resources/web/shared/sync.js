@@ -98,6 +98,63 @@ export function constraintOf(health, live) {
 }
 
 /**
+ * The word a processor's phase carries while one of its passes is dialling —
+ * `Processors.MEASURING`.
+ *
+ * Named rather than inlined because [probeProgress] turns on it: the clock a
+ * finished pass leaves behind is the PREVIOUS pass's while the next one runs,
+ * and drawing it beside a running pass reads as its elapsed time.
+ */
+export const MEASURING = "measuring";
+
+/**
+ * HOW FAR A PROBE PASS HAS GOT over the urls it was handed — the fold's row and
+ * the stability gate's, which publish the same shape.
+ *
+ * ## Checked, not unmeasured
+ *
+ * The document's number is `unmeasured`: what still has NO verdict. The card
+ * draws its COMPLEMENT, because the two read in opposite directions and the
+ * rising one is the one an operator wants — `7,546 of 11,693` climbing is a
+ * fold falling behind, and it was the same fold getting steadily further along.
+ * The subtraction is here, once, rather than in the page: it is exactly the
+ * wrong-direction arithmetic this module exists to hold still.
+ *
+ * Clamped at zero, and that is not defensive noise. `SyncProgressReport`
+ * defaults `unmeasured` to `candidates` when a row is unreadable — deliberately,
+ * since "nothing left to measure" is a strong claim to make on a bad read — so
+ * an old or truncated document lands on `checked = 0`, which is the honest end
+ * of the range rather than a negative count.
+ *
+ * ## Summed across the streams, still
+ *
+ * `AliasMonitor.runPass` now merges every stream into one `all streams` work
+ * item, so the array is a single row in practice. Summed anyway: reading
+ * `streams[0]` made a fold that had never seen the two 17,000-url streams
+ * report the 16-url one's residue as the whole picture, and that bug does not
+ * come back just because today's router happens to publish one row.
+ *
+ * ## The clock, only when a pass is not running
+ *
+ * `lastPassSec` is the duration of the last pass that FINISHED. While the next
+ * one is dialling, that number describes neither the pass on screen nor the one
+ * being waited for, so it is withheld — a fold measuring for two hours must not
+ * show the previous pass's `12m` beside it. Null before the first pass lands,
+ * which is the whole of a cold boot.
+ */
+export function probeProgress(p) {
+  const streams = p?.streams || [];
+  if (!streams.length) return null;
+  const candidates = streams.reduce((a, w) => a + (w.candidates || 0), 0);
+  const unmeasured = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
+  return {
+    candidates,
+    checked: Math.max(0, candidates - unmeasured),
+    tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
+  };
+}
+
+/**
  * The legs to draw, and how full each quiet bar is.
  *
  * ## The denominator

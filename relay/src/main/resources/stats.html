@@ -862,7 +862,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import { STUCK_LEG_SEC, constraintOf, isLive, legsOf } from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, isLive, legsOf, probeProgress } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1859,9 +1859,10 @@ function streamBlock(s) {
  * not a side quest — an unfolded list downloads the same relay once per url,
  * which is a sync fault that shows up nowhere else on this card.
  *
- * The probe passes' number is summed ACROSS STREAMS. Reading `streams[0]` made
- * a fold that had never seen the two 17,000-url streams report the 16-url one's
- * residue as the whole picture.
+ * The probe passes' number is `probeProgress`, in `/web/shared/sync.js` — it
+ * sums across streams, draws the RISING half of the pair, and withholds the
+ * clock while a pass is dialling. All three are decisions that can be wrong
+ * silently, which is why none of them is made here.
  */
 const BACKGROUND = [
   ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
@@ -1887,6 +1888,20 @@ function backgroundPanel(progress) {
   }
   return box;
 }
+
+/**
+ * What each probe pass is checking FOR, in its own terms.
+ *
+ * Both of them publish the same `streams` shape and were drawn with one generic
+ * sentence about verdicts, which made two rows that fail for unrelated reasons
+ * and are read for unrelated purposes look like the same row twice. A name this
+ * table does not carry falls back to the bare verb rather than claiming the
+ * fold's question about a pass that is not the fold.
+ */
+const PROBE_FOR = {
+  aliasFold: "checked for aliases",
+  consistency: "checked for consistency",
+};
 
 /**
  * WHAT ONE BACKGROUND PASS HAS TO SHOW FOR ITSELF.
@@ -1918,14 +1933,15 @@ function processorFact(p) {
     if (p.lostToStore) add(`${fmt(p.lostToStore)} LOST TO THE STORE`, "lostToStore", true);
     return cell;
   }
-  const streams = p.streams || [];
-  if (streams.length) {
-    // Summed, and the stream count said out loud: a total with no denominator
-    // was how a fold that never received two streams looked identical to one
-    // that had measured them.
-    const left = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
-    const of = streams.reduce((a, w) => a + (w.candidates || 0), 0);
-    add(`${fmt(left)} of ${fmt(of)} url(s) still with no verdict, across ${fmt(streams.length)} stream(s)`, "unmeasured");
+  const probe = probeProgress(p);
+  if (probe) {
+    // The RISING half of the pair, and the pass's own clock beside it. The
+    // document publishes `unmeasured`; `probeProgress` owns the subtraction and
+    // the argument for drawing its complement instead. The tooltip still hangs
+    // on `unmeasured`, which is the member this number is derived from and the
+    // one the glossary can be checked against.
+    add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} relay(s) ${PROBE_FOR[p.name] || "checked"}` +
+        `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
     return cell;
   }
   if (p.knownDead != null) {
