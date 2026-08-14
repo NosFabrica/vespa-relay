@@ -1808,7 +1808,7 @@ function poolsRow(s) {
   if (s.running == null && s.slotsFree == null && s.returned == null) return null;
   const row = el("div", "pools");
   // Drawn only where there ARE workers. An idle stream between passes has
-  // none, and "0/0 on a slot" beside an empty bar is filler in the one place
+  // none, and "0 of 0 workers downloading" beside an empty bar is filler in the one place
   // this card is trying to keep marks meaningful.
   if (s.running) {
     const bar = el("div", "bar");
@@ -1820,18 +1820,18 @@ function poolsRow(s) {
     bar.appendChild(t);
     bar.title = `${fmt(s.transferring || 0)} of ${fmt(s.running)} workers hold a transfer slot\n\n${term("transferring")}`;
     row.appendChild(bar);
-    const lab = el("span", null, `${fmt(s.transferring || 0)}/${fmt(s.running)} on a slot`);
+    const lab = el("span", null, `${fmt(s.transferring || 0)} of ${fmt(s.running)} workers downloading`);
     lab.title = term("running");
     row.appendChild(lab);
   }
   // What `holding` is waiting for — the phase most easily read as a stall.
   if (s.slotsFree != null) {
-    const gate = el("span", null, `· gate ${fmt(s.slotsFree)}/${fmt(s.slotsNeeded)}`);
+    const gate = el("span", null, `· ${fmt(s.slotsFree)} of ${fmt(s.slotsNeeded)} free slots needed to start`);
     gate.title = `${term("slotsFree")} The next pass waits for half the pool.`;
     row.appendChild(gate);
   }
   if (s.returned != null) {
-    const ret = el("span", null, `· ${fmt(s.returned)} returned`);
+    const ret = el("span", null, `· ${fmt(s.returned)} legs came back, incl. failures`);
     // The most misread number this router publishes, so the correction rides
     // on the mark itself.
     ret.title = `${term("returned")} It counts legs that CAME BACK, including unreachable and capped ones — not progress.`;
@@ -2002,7 +2002,7 @@ function nowLine(progress, data) {
   const facts = [];
   const streams = (progress.streams || []).length;
   if (streams) facts.push(`${fmt(streams)} stream(s)`);
-  if (data.relays != null) facts.push(`${fmt(data.relays)} relay(s) on ${fmt(data.hosts || 0)} host(s) touched`);
+  if (data.relays != null) facts.push(`${fmt(data.relays)} relay(s) on ${fmt(data.hosts || 0)} host(s) have coverage recorded`);
   if (live) facts.push(`heard ${fmtDur(progress.staleForSec)} ago`);
   else if (progress.staleForSec != null) facts.push(`silent ${fmtDur(progress.staleForSec)}`);
   if (facts.length) {
@@ -2174,7 +2174,7 @@ function processorRow(p, series) {
     i.style.width = meter.share * 100 + "%";
     bar.appendChild(i);
     bar.title = `progress: ${fmt(meter.decided)} of ${fmt(meter.candidates)} url(s) carry a verdict\n\n${term("unmeasured")}`;
-    right = `${fmt(meter.left)} left`;
+    right = `${fmt(meter.left)} urls with no verdict`;
   } else if (meter && meter.kind === "level") {
     // A LEVEL, not progress — see the `.frac i.level` rule. Nothing about a
     // half-full queue is half-done, and drawing it in the same tone as the
