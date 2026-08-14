@@ -391,12 +391,15 @@
      nothing, `heap 45%` over a line climbing out of the left edge says
      everything. `currentColor` on purpose — the trace inherits the chip's tone,
      so a gauge at its ceiling draws a warm line without a second rule. */
-  .spark { vertical-align: -.15em; margin-left: .32rem; overflow: visible; }
-  .spark path { fill: none; stroke: currentColor; stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; opacity: .75; }
+  /* `.trend`, NOT `.spark` — the kind-activity card has carried `chart spark`
+     sparklines since long before this, and the three rules below were quietly
+     restyling them and nudging every one of them .32rem to the right. */
+  .trend { vertical-align: -.15em; margin-left: .32rem; overflow: visible; }
+  .trend path { fill: none; stroke: currentColor; stroke-width: 1; stroke-linejoin: round; stroke-linecap: round; opacity: .75; }
   /* A sample with a gap on either side. Without this a lone reading between two
      outages draws nothing at all, which is the one case where the series has
      something to say and the line cannot say it. */
-  .spark circle { fill: currentColor; opacity: .75; }
+  .trend circle { fill: currentColor; opacity: .75; }
 
   /* The NOW line: what the router is, in chips, above the streams. */
   .now { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; margin: 0 0 .9rem; }
@@ -1701,7 +1704,7 @@ function spark(series, member) {
   const s = sparkOf(series, member);
   if (!s) return null;
   const svg = document.createElementNS(SVG, "svg");
-  svg.setAttribute("class", "spark");
+  svg.setAttribute("class", "trend");
   svg.setAttribute("viewBox", `0 0 ${SPARK_W} ${SPARK_H}`);
   svg.setAttribute("width", SPARK_W);
   svg.setAttribute("height", SPARK_H);
