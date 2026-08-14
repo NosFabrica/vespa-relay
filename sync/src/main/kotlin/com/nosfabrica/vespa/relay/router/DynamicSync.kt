@@ -30,9 +30,11 @@ import com.nosfabrica.vespa.relay.router.discovery.CachedRelayList
 import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.HostStrikes
+import com.nosfabrica.vespa.relay.router.discovery.ReachabilityProbe
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.RelayRotation
+import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.progress.CycleTally
@@ -57,13 +59,11 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.sync.Semaphore
 import kotlinx.coroutines.sync.withPermit
-import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicBoolean
 import java.util.concurrent.atomic.AtomicInteger
@@ -139,6 +139,8 @@ internal class DynamicSync(
     // keeps no live tail, so a detached healer would have to re-dial.
     private val healer: Healer,
     private val refusedIds: RefusedIds,
+    private val sockets: RelaySockets,
+    private val probe: ReachabilityProbe,
 ) {
     /**
      * `SYNC_DIAGNOSE=<stream>` — log one line per relay for that stream: how many
@@ -152,14 +154,6 @@ internal class DynamicSync(
 
     /** Records dropped because an upstream retracted them — see [DeleteMissingSync]. */
     val deleted: AtomicLong get() = deleteMissingSync.deleted
-
-    /**
-     * How many dynamic syncs are currently using each relay. Streams discover
-     * from the same store, so two of them routinely land on the same relay at
-     * once — and whichever finished first used to close the socket out from
-     * under the other. Only the last one out disconnects.
-     */
-    private val inFlight = ConcurrentHashMap<NormalizedRelayUrl, Int>()
 
     /**
      * One stream, forever: walk the relay list handing work to a fixed pool of
@@ -918,7 +912,8 @@ internal class DynamicSync(
         // [InFlight.Relay.doing]. Everything from here to the pool permit is
         // the guards, which is where most of a fan-out's workers are and where
         // none of the three clocks on the row could say they were.
-        rotation.doing(relay.url, "checking whether it is worth dialling")
+        val leg = rotation.leg(relay.url)
+        leg?.stage = "checking whether it is worth dialling"
         val skip = p.strikes.whyDead(relay.url)
         if (skip != null) {
             when (skip) {
@@ -952,7 +947,7 @@ internal class DynamicSync(
         // A TCP connect before the websocket handshake: a refused connection or
         // unresolvable host answers in milliseconds, where each of ~20k corpses
         // would otherwise cost a full connect timeout.
-        if (!tcpReachable(relay.url)) {
+        if (!probe.reachable(relay.url)) {
             p.reasons.merge("tcp: no route or refused", 1L, Long::plus)
             p.tally.noRoute.incrementAndGet()
             p.skipped.incrementAndGet()
@@ -966,11 +961,11 @@ internal class DynamicSync(
         // already holding. It is what tells a leg with a real backlog from one
         // that has stopped delivering — the two are the same durations
         // otherwise. See [LegProgress].
-        val legProgress = rotation.leg(relay.url)
+
         // Cleared the guards; from here the only thing between this worker and
         // a transfer is our OWN pool. A leg sitting on this for minutes is the
         // pool saturated, which is a fact about us and not about the relay.
-        rotation.doing(relay.url, "waiting for a transfer slot")
+        leg?.stage = "waiting for a transfer slot"
         val got =
             pool.withPermit {
                 rotation.transferring(relay.url) {
@@ -990,12 +985,7 @@ internal class DynamicSync(
                             relay.narrowed(window),
                             lease.ids,
                             sharedAuthors,
-                            legProgress,
-                            // The rotation is the only thing holding this leg's
-                            // row, so the stage is written straight onto the
-                            // claim rather than returned at the end — a leg that
-                            // never returns is exactly the one worth describing.
-                            doing = { what -> rotation.doing(relay.url, what) },
+                            leg,
                         ) { reason ->
                             p.reasons.merge(reason, 1L, Long::plus)
                         }
@@ -1215,11 +1205,9 @@ internal class DynamicSync(
         sharedAuthors: Set<String>,
         /** This leg's live event counter, or null when nothing is reporting on it. */
         legProgress: LegProgress?,
-        /** Where this leg has got to, for the in-flight row — see [InFlight.Relay.doing]. */
-        doing: (String) -> Unit = {},
         onFailure: (String) -> Unit,
     ): Int {
-        inFlight.merge(url, 1, Int::plus)
+        sockets.claim(url)
         transferring.incrementAndGet()
         // WHEN THIS LEG ACTUALLY STARTED TALKING, which is not when the rotation
         // claimed the url. The claim comes first, then the strike check, the Tor
@@ -1272,7 +1260,7 @@ internal class DynamicSync(
                     onFailure("gave up: silent for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)} with $abandoned ask(s) left")
                     break
                 }
-                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress, doing)
+                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress)
             }
             // ABANDONED IS NOT "NOTHING NEW". A leg that gave up with no
             // downloads would otherwise fall through to the `else` branch in
@@ -1335,7 +1323,7 @@ internal class DynamicSync(
             if (tor?.routes(url) != true && Unreachability.proves(e)) UNREACHABLE else TRANSFER_FAILED
         } finally {
             transferring.decrementAndGet()
-            releaseSocket(url)
+            sockets.release(url)
         }
     }
 
@@ -1351,11 +1339,9 @@ internal class DynamicSync(
         local: List<IdAndTime>,
         sharedAuthors: Set<String>,
         legProgress: LegProgress?,
-        /** Where this leg has got to — see [InFlight.Relay.doing]. */
-        doing: (String) -> Unit = {},
     ): Int {
         if (stream.deleteMissing != DeleteMissing.OFF) {
-            doing("reconciling, then deleting what it no longer has")
+            legProgress?.stage = "reconciling, then deleting what it no longer has"
             // Threaded through rather than left to the caller's return value:
             // this path can spend minutes inside one reconcile, and a counter
             // that only moves when the call returns says nothing about the call
@@ -1409,7 +1395,7 @@ internal class DynamicSync(
             // things: negentropy is allowed to be quiet while it computes a
             // difference, paging is not. The branch is decided right here and
             // was never published.
-            doing(if (fetched) "paging" else "reconciling (negentropy)")
+            legProgress?.stage = if (fetched) "paging" else "reconciling (negentropy)"
             // Set only on the fetch branch: the negentropy path below runs through
             // `negentropySyncOrFetch`, which does not surface how its paging ended.
             var walked: PagedFetchResult? = null
@@ -1559,208 +1545,6 @@ internal class DynamicSync(
                 reachable = false,
                 error = "host ${evicted.authority} silent after ${evicted.strikes} attempts",
             )
-        }
-    }
-
-    /**
-     * Can we open a TCP connection to this relay at all? Fail-OPEN: any error
-     * deciding this returns true, so a broken probe can never silently
-     * amputate the fan-out.
-     *
-     * Only a NEGATIVE result is published: a completed TCP handshake proves a
-     * socket, not a relay — the connection that follows says it properly. But
-     * the negative IS published, because this probe is the only thing that
-     * will ever look at most of these relays.
-     */
-    private suspend fun tcpReachable(url: NormalizedRelayUrl): Boolean {
-        if (!shouldPreProbe(url, tor)) return true
-        val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
-        // Only claim what we can prove. [TcpProber.tcpReachable] answers with a
-        // Boolean, so a refusal and a timeout arrive here as the same value — and
-        // they are not the same claim. A refusal proves nobody is listening. A
-        // timeout is at least as likely to be OUR socket budget, DNS pressure, or
-        // one NAT carrying a 100-wide fan-out.
-        //
-        // Publishing on the Boolean signed 5,001 unreachable records in a single
-        // hour. Re-probed one at a time afterwards: 3,279 had no socket at all
-        // and 986 answered nothing, but 732 urls across 423 HOSTS answered a REQ
-        // perfectly well — 120 of them by challenging us for NIP-42 AUTH. Those
-        // are signed public statements about other people's servers, and they
-        // were wrong.
-        //
-        // So the failure is re-run once to capture its cause, and published only
-        // for what [Unreachability] already accepts as proof. A relay that merely
-        // timed out is skipped this cycle and nothing is said about it. The extra
-        // connect is paid only on the failing path.
-        if (!ok) {
-            tcpFailure(url)?.takeIf { Unreachability.proves(it) }?.let { cause ->
-                monitor?.observer?.record(url, reachable = false, error = "tcp: ${cause.javaClass.simpleName}")
-            }
-        }
-        return ok
-    }
-
-    /**
-     * Re-run the TCP connect, keeping the exception instead of a Boolean.
-     *
-     * Null when it unexpectedly succeeds — the pre-probe's budget is tight and the
-     * host may merely have been slow, which is itself a reason not to have
-     * published — or when the url has no host to dial.
-     */
-    private suspend fun tcpFailure(url: NormalizedRelayUrl): Exception? =
-        withContext(Dispatchers.IO) {
-            val uri = runCatching { java.net.URI(url.url) }.getOrNull() ?: return@withContext null
-            val host = uri.host ?: return@withContext null
-            val port =
-                when {
-                    uri.port > 0 -> uri.port
-                    url.url.startsWith("wss://", ignoreCase = true) -> 443
-                    else -> 80
-                }
-            try {
-                java.net.Socket().use { it.connect(java.net.InetSocketAddress(host, port), CLAIM_PROBE_TIMEOUT_MS) }
-                null
-            } catch (e: java.io.IOException) {
-                e
-            }
-        }
-
-    /**
-     * EVERY URL EVERY STREAM WOULD DIAL, for the monitor to measure on its own
-     * clock — see [AliasMonitor.Source].
-     *
-     * The probe passes used to see only what a stream had pushed at them, which
-     * made the candidate set a function of discovery timing. Measured on
-     * staging: a 16-url stream finished discovering in one second, the first
-     * pass ran two minutes later against those 16 alone, and the two
-     * 17,499-url streams submitted 190 seconds after that — so 34,997 urls
-     * waited six hours for a pass they had missed by three minutes, while the
-     * fan-out went on dialling the same server once per alias.
-     *
-     * Derived here rather than in the monitor because the monitor has no store,
-     * no transport and no ingest. It is the same derivation each stream runs
-     * for its own fan-out ([discoverRelayList]), unioned — and deliberately NOT
-     * the streams' cached lists, which are exactly the thing that may not exist
-     * yet on the boot this is for.
-     *
-     * Runs alongside the streams rather than in front of them. It is a store
-     * walk per stream and it is paid on the monitor's interval, not on any
-     * cycle: the split that put this pass on its own clock is what stopped a
-     * multi-minute probe run sitting between "discovery finished" and the first
-     * downloaded byte.
-     */
-    fun aliasSource(streams: List<SyncStream>): AliasMonitor.Source =
-        object : AliasMonitor.Source {
-            override suspend fun candidates(): List<NormalizedRelayUrl> {
-                // URLS A SIGNED RECORD ALREADY CALLS DEAD, held out of the whole
-                // pass — the same set the fan-out obeys through
-                // [HostStrikes.whyDead], read once here.
-                //
-                // A url nothing can connect to cannot be fingerprinted, so it
-                // cannot be folded and cannot be shown to answer one filter two
-                // ways: dialling it is a connect timeout spent to re-learn what
-                // a current record already says. It was harmless while a pass
-                // was capped at 2,000 probes; with a pass measuring its whole
-                // set it is most of the pass. Measured on staging: 9,255 known
-                // dead against a ~17,500-url union.
-                //
-                // NOT a permanent exclusion, and that is why nothing else has to
-                // change. The record ages out on quartz's
-                // `RelayReachabilityStore.DEFAULT_TTL_SECONDS` (24h), or sooner
-                // if the host delivers something, and the url is simply back in
-                // the next derivation. Held out rather than declined in
-                // [canDial] on purpose: a url refused there is reported as
-                // `Undecided.TRANSPORT` — "declined by our own transport" — and
-                // our transport is fine, their server is gone.
-                val dead = monitor?.deadSet().orEmpty()
-                val all = LinkedHashSet<NormalizedRelayUrl>()
-                for (stream in streams) {
-                    val dynamic = stream.dynamic ?: continue
-                    // One failing stream must not cost the others their
-                    // measurement: a store walk can fail on its own terms and
-                    // the union is still worth what the rest of it found.
-                    val found =
-                        try {
-                            RelayDiscovery.discover(
-                                store,
-                                dynamic,
-                                skip = setOfNotNull(store.relay),
-                                allowOnion = tor != null,
-                            )
-                        } catch (e: CancellationException) {
-                            // NOT a store failure — the scope is shutting down.
-                            // `runCatching` catches this, which is why it is
-                            // spelled out; swallowing it would let a cancelled
-                            // pass carry on walking the store. Same reasoning as
-                            // [AliasFolding.adopt].
-                            throw e
-                        } catch (e: Exception) {
-                            System.err.println("router: alias source could not derive ${stream.name}: ${e.message}")
-                            emptyList()
-                        }
-                    // The same two filters the fan-out applies after the fold,
-                    // so the monitor never measures a url this router has been
-                    // told not to dial.
-                    found.forEach { r -> if (r.url !in dynamic.exclude && r.url != store.relay) all += r.url }
-                }
-                val live = all.filterNot { it in dead }
-                System.err.println(
-                    "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
-                        (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else ""),
-                )
-                return live
-            }
-
-            override suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && tcpReachable(url)
-
-            /**
-             * A fingerprint's events are still events. Offered to EVERY stream
-             * whose filter wants them, with that stream's own trust — which is
-             * the one thing a merged set cannot guess and the reason this is
-             * built here rather than in the monitor.
-             */
-            override suspend fun onEvent(event: Event) {
-                // ONCE, not once per stream that wants it. Several streams
-                // routinely want the same kind-0, and [IngestPipeline.submit]
-                // queues BEFORE the store dedups — so a per-stream loop spends
-                // one slot of a bounded queue per matching stream on a single
-                // event, against the queue that is already this mirror's
-                // constraint (measured: 8,287 of 8,192, and 65.1M of 73.2M
-                // rejections are `duplicate: already have this event`).
-                val wanted = streams.filter { it.filter.match(event) }
-                if (wanted.isEmpty()) return
-                // Verified unless EVERY stream that wants it trusts its source.
-                // `skipVerify` is a claim about provenance and the probe's
-                // provenance is one thing for all of them, so the strictest
-                // stream's answer is the only safe one.
-                ingest.submit(event, wanted.all { it.trusted })
-            }
-
-            /**
-             * The CROSS-STREAM refcount, which is the correct one for a pass
-             * that belongs to no stream: a probe must be able to hand its
-             * socket back without closing it under a fan-out leg that is still
-             * transferring on the same url.
-             */
-            override val sockets: AliasFolding.Sockets =
-                object : AliasFolding.Sockets {
-                    override fun claim(url: NormalizedRelayUrl) {
-                        inFlight.merge(url, 1, Int::plus)
-                    }
-
-                    override fun release(url: NormalizedRelayUrl) = releaseSocket(url)
-                }
-        }
-
-    /**
-     * Drop a dynamic relay's socket once nothing is using it — hundreds of
-     * relays a cycle would otherwise leave hundreds of idle connections open.
-     * Pinned relays and relays another stream is still syncing are left alone.
-     */
-    private fun releaseSocket(url: NormalizedRelayUrl) {
-        val stillInUse = inFlight.compute(url) { _, n -> ((n ?: 1) - 1).takeIf { it > 0 } } != null
-        if (!stillInUse && url !in pinnedUrls) {
-            runCatching { client.getOrCreateRelay(url).disconnect() }
         }
     }
 

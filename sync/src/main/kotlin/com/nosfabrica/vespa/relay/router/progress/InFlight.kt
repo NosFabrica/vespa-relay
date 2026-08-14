@@ -142,22 +142,12 @@ class InFlight(
          */
         val quietForSec: Long,
         /**
-         * WHAT THE LEG IS ACTUALLY DOING — the word the three clocks above
-         * could never supply.
-         *
-         * `held 2h 15m, 3 events` is the report this exists for, and from the
-         * clocks alone it has at least four readings that want opposite
-         * responses: the worker never got a slot and is queued behind our own
-         * pool; it is in the guards deciding whether the host is worth dialling;
-         * it is reconciling, where a long silence is negentropy computing rather
-         * than a relay ignoring us; or it is paging, where the same silence is a
-         * walk that has stopped delivering. `transferringForSec` separates the
-         * first from the rest and nothing separated the last two — yet the
-         * branch is chosen in [DynamicSync] and known exactly.
-         *
-         * Null where a leg has not reached a stage that sets it, which is a
-         * real state and not missing data: a claim that has only just been made
-         * is not yet doing anything worth a word.
+         * WHAT THE LEG IS DOING, which the clocks above cannot say: in the
+         * guards, queued behind our own pool, reconciling (where a long silence
+         * is negentropy computing), or paging (where it is a walk that has
+         * stopped delivering). [transferringForSec] separates the first two from
+         * the rest; nothing separated the last two. Null before a leg reaches a
+         * stage worth the word.
          */
         val doing: String? = null,
     )

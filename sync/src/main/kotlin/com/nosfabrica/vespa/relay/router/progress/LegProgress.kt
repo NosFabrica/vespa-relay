@@ -68,6 +68,14 @@ class LegProgress(
 ) {
     private val count = AtomicLong()
 
+    /**
+     * What this leg is doing — see [InFlight.Relay.doing]. Written by the worker
+     * as it moves, read by the report; last write wins, because the rollup wants
+     * whatever is true at that instant.
+     */
+    @Volatile
+    var stage: String? = null
+
     @Volatile
     private var lastMs: Long = claimedMs
 

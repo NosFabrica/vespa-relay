@@ -104,17 +104,6 @@ internal class RelayRotation {
         var transferringSinceMs: Long? = null
 
         /**
-         * The stage this leg has reached — see [InFlight.Relay.doing].
-         *
-         * Written by the worker as it moves, read by the report. Volatile and
-         * last-write-wins for the same reason the two clocks above are: the
-         * rollup asks a live map and wants whatever is true at that instant,
-         * not a consistent snapshot across legs.
-         */
-        @Volatile
-        var doing: String? = null
-
-        /**
          * What the leg has actually delivered, which is the third clock and the
          * one that decides: held-and-downloading and held-and-wedged are the
          * same two timestamps otherwise. See [LegProgress].
@@ -137,19 +126,6 @@ internal class RelayRotation {
     /** Give it back. Always from a `finally` — see the class header. */
     fun release(url: NormalizedRelayUrl) {
         busy.remove(url)
-    }
-
-    /**
-     * Say what this leg has moved on to — see [InFlight.Relay.doing].
-     *
-     * A no-op for a url nobody holds, because a worker that has just released
-     * its claim must not resurrect the row by describing it.
-     */
-    fun doing(
-        url: NormalizedRelayUrl,
-        what: String,
-    ) {
-        busy[url]?.doing = what
     }
 
     /**
@@ -229,7 +205,7 @@ internal class RelayRotation {
                         transferringForSec = hold.transferringSinceMs?.let { ((nowMs - it) / 1000).coerceAtLeast(0) },
                         events = hold.leg.events(),
                         quietForSec = hold.leg.quietForMs(nowMs) / 1000,
-                        doing = hold.doing,
+                        doing = hold.leg.stage,
                     )
                 }.sortedWith(compareByDescending<Row> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
         return InFlight(
@@ -343,16 +319,10 @@ internal class RelayRotation {
 
     companion object {
         /**
-         * Rows [held] names before it starts counting the rest into `omitted`.
-         *
-         * Sized to the WIDEST ADMISSION GATE (`DynamicSync.admissionWidth`
-         * clamps at 512), so a healthy stream is never truncated and the list
-         * an operator reads is the whole set rather than a sample of it. It was
-         * 20, which on a live fan-out named 20 legs and omitted 492 — enough to
-         * see that something was held and never enough to see which.
-         *
-         * Still a cap, and `omitted` still says what it cut: a stream holding
-         * legs from several overlapping passes can exceed even this.
+         * Rows [held] names before the rest go to `omitted`. Sized to the widest
+         * admission gate so a healthy stream is never truncated — it was 20,
+         * which named 20 legs and omitted 492, enough to see something was held
+         * and never enough to see which.
          */
         const val DEFAULT_IN_FLIGHT_ROWS = 512
     }

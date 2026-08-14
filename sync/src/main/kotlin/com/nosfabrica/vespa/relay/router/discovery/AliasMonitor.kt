@@ -124,26 +124,12 @@ class AliasMonitor(
     }
 
     /**
-     * THE WHOLE WORLD, derived here rather than handed over — every url every
-     * stream would dial, on this monitor's own clock.
+     * Where the candidate set comes from — see [StreamWorld].
      *
-     * [submit] made the candidate set a function of when each stream finished
-     * discovering, and that is a race the monitor always loses on the boot that
-     * has the most to learn: measured on staging, a 16-url stream finished
-     * discovery in one second and the two 17,499-url streams finished 190
-     * seconds later — three minutes AFTER the first pass had already run and
-     * gone to sleep for six hours. The pass was not empty, so the
-     * [emptyRetryMs] guard did not fire, and 34,997 urls sat unprobed while the
-     * fan-out dialled the same relay once per alias.
-     *
-     * With a source there is no race to lose: the pass derives its own set at
-     * the moment it runs, so the first pass after boot covers everything every
-     * stream knows about, whether or not any stream has finished discovering.
-     *
-     * The callbacks are merged rather than per stream, which is the whole
-     * reason this is an interface the ENGINE implements: only the engine knows
-     * how to dial for all of them at once (one transport, one cross-stream
-     * socket refcount) and which streams a downloaded event belongs to.
+     * [submit] made it a function of when each stream finished discovering, and
+     * the first pass after a boot lost that race: measured, 34,997 urls waited
+     * six hours for a pass they missed by three minutes. A source is derived by
+     * the pass itself, so there is no race to lose.
      */
     interface Source {
         /** Every url worth measuring, across every configured stream. */
@@ -356,14 +342,11 @@ class AliasMonitor(
 
     companion object {
         /**
-         * The label a [Source]-derived pass reports under.
-         *
-         * One row rather than one per stream, and it is the honest shape: the
-         * set is a UNION, so a per-stream row would have to either double-count
-         * the urls two streams share or invent a split the pass never made. It
-         * also closes a hole the per-stream shape had — grouping happened
-         * WITHIN a stream, so a host whose urls were split across two streams
-         * was never folded, however many aliases it wore.
+         * The label a [Source]-derived pass reports under. One row, because the
+         * set is a UNION — a per-stream row would double-count what two streams
+         * share. It also closes the hole the per-stream shape had: grouping
+         * happened WITHIN a stream, so a host whose urls were split across two
+         * was never folded.
          */
         const val ALL_STREAMS = "all streams"
 

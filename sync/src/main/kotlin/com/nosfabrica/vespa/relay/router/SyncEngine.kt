@@ -28,9 +28,12 @@ import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
+import com.nosfabrica.vespa.relay.router.discovery.ReachabilityProbe
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayConsistency
+import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
+import com.nosfabrica.vespa.relay.router.discovery.StreamWorld
 import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
@@ -346,6 +349,16 @@ class SyncEngine(
      * — measuring a duplicate twice and then deleting it is the one ordering
      * that pays for work it throws away.
      */
+    private val sockets = RelaySockets(client, pinnedUrls)
+    private val probe = ReachabilityProbe(tor, monitor)
+
+    /**
+     * What the probe passes measure. Built here rather than reached for through
+     * [dynamic]: the monitor is one of that object's constructor arguments, so
+     * asking it for the world is a cycle Kotlin can only be talked out of.
+     */
+    private val world = StreamWorld(store, dynamicStreams, probe, ingest, monitor, tor, sockets)
+
     private val aliasMonitor: AliasMonitor? =
         listOfNotNull<AliasMonitor.Pass>(
             // Each wrapper carries the same handle its pass writes into, so the
@@ -379,36 +392,8 @@ class SyncEngine(
                 }
             },
         ).takeIf { it.isNotEmpty() }
-            ?.let {
-                AliasMonitor(
-                    it,
-                    scope,
-                    // EVERY STREAM'S WORLD, every pass — see
-                    // [AliasMonitor.Source] and [DynamicSync.aliasSource].
-                    //
-                    // Delegated lazily because [dynamic] is built below this
-                    // and the monitor is one of its constructor arguments. The
-                    // cycle is only in the declaration order; nothing here is
-                    // touched until the first pass runs, two minutes after boot
-                    // at the earliest.
-                    source =
-                        object : AliasMonitor.Source {
-                            private val delegate by lazy { dynamic.aliasSource(dynamicStreams) }
+            ?.let { AliasMonitor(it, scope, source = world) }
 
-                            // Types spelled out: inferring them here asks the
-                            // compiler to resolve `dynamic` while it is still
-                            // working out this property, which it reports as a
-                            // recursive problem rather than as the cycle it is.
-                            override suspend fun candidates(): List<NormalizedRelayUrl> = delegate.candidates()
-
-                            override suspend fun canDial(url: NormalizedRelayUrl): Boolean = delegate.canDial(url)
-
-                            override suspend fun onEvent(event: Event): Unit = delegate.onEvent(event)
-
-                            override val sockets: AliasFolding.Sockets get() = delegate.sockets
-                        },
-                )
-            }
     private val dynamic: DynamicSync =
         DynamicSync(
             client,
@@ -428,6 +413,8 @@ class SyncEngine(
             scope,
             healer,
             refusedIds,
+            sockets,
+            probe,
         )
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
