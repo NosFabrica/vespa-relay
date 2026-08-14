@@ -255,6 +255,17 @@ internal object SyncVocabulary {
                     "stage worth the word.",
             )
             put(
+                "pagingUntil",
+                "WHERE IN TIME a paging leg's cursor is right now — the `created_at` second it is reading, walking " +
+                    "newest-first towards the filter's floor. `doing: paging` beside a long `quietForSec` is two " +
+                    "different legs from here: one deep in a real backlog and working its way down, and one whose " +
+                    "cursor is not moving at all. Read this twice and they separate — it either advanced or it did " +
+                    "not. The stream's own `reached` cannot answer it, being the MINIMUM over every live walk: one " +
+                    "date describing the deepest leg, while the row beside it is named precisely because it is the " +
+                    "exception. Absent on every leg that is not paging — reconciling legs have no cursor and neither " +
+                    "has one still in the guards — which is a state and not a gap.",
+            )
+            put(
                 "omitted",
                 "How many rows a bounded list left out. Never silent and never zero by omission: these lists run to " +
                     "thousands of urls on a document fetched every poll, and a truncation that does not disclose " +

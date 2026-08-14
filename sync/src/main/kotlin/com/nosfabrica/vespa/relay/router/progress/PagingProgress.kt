@@ -198,6 +198,25 @@ class PagingProgress {
      */
     fun reached(stream: String? = null): Long? = all(stream).filter { !it.done }.minOfOrNull { it.current }
 
+    /**
+     * The second ONE walk is currently reading, for the leg that is walking it.
+     *
+     * [reached] answers the same question for a whole stream by taking the
+     * minimum, which is the right shape for a progress line and the wrong one
+     * for a table: one date over a hundred legs describes the deepest of them
+     * and says nothing about the other ninety-nine. A leg named in the in-flight
+     * list is named precisely because it is the odd one out, so it needs its own
+     * position rather than the stream's.
+     *
+     * LIVE WALKS ONLY, on [reached]'s reasoning: a finished walk's cursor is
+     * where it stopped, and drawing that beside a leg still holding a slot would
+     * date the row from work that has already ended. Null is therefore the
+     * ordinary answer for most rows — a leg reconciling, in the guards, or
+     * queued for a slot is not paging — and it reads as "not paging", never as a
+     * cursor nobody could find.
+     */
+    fun cursorOf(key: String): Long? = walks[key]?.takeIf { !it.done }?.current
+
     /** Milliseconds left at the rate achieved so far, or null before it means anything. */
     fun etaMs(stream: String? = null): Long? {
         val f = fraction(stream) ?: return null

@@ -203,6 +203,33 @@ class RelayRotationTest {
     }
 
     @Test
+    fun `a paging leg carries where its cursor is, asked of whoever knows`() {
+        // `doing: paging` and a long quiet clock are the same row for two legs
+        // that want opposite responses — one deep in a real backlog working its
+        // way down, one whose cursor has stopped — and nothing on the row could
+        // separate them. The rotation does not know where a cursor is and must
+        // not learn: it asks, per url, and publishes the answer.
+        val rotation = RelayRotation()
+        rotation.take(a.url, nowMs = 1_000_000)
+        rotation.take(b.url, nowMs = 1_000_000)
+
+        val held =
+            rotation
+                .held(nowMs = 1_100_000) { url -> if (url == a.url.url) 1_689_857_148L else null }
+                .relays
+                .associateBy { it.relay }
+
+        assertEquals(1_689_857_148L, held[a.url.url]!!.pagingUntil)
+        assertNull(
+            held[b.url.url]!!.pagingUntil,
+            "no cursor is NOT paging — the ordinary answer for a leg in the guards or reconciling",
+        )
+        // The default is the honest one, so the pool gate and every caller with
+        // no paging in scope asks only what it can answer.
+        assertNull(rotation.held(nowMs = 1_100_000).relays[0].pagingUntil)
+    }
+
+    @Test
     fun `the list is capped and says what it left out`() {
         // A fan-out's admission gate is far wider than its transfer pool, so the
         // whole set is neither small nor interesting. A truncation that does not

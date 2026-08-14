@@ -836,6 +836,12 @@
   table.sy-legs tr:last-child td { border-bottom: 0; }
   table.sy-legs td.u { max-width: 34ch; overflow: hidden; text-overflow: ellipsis; direction: rtl; }
   table.sy-legs td.n { text-align: right; font-variant-numeric: tabular-nums; }
+  /* The paged cursor, muted beside the stage it qualifies: the STAGE is what is
+     scanned down the column, and the date is what is read once a row has been
+     picked out. `inherit` on a hot row, so the warning colour still owns the
+     whole row rather than leaving one span behind at its resting colour. */
+  table.sy-legs .sy-at { color: var(--muted); font-variant-numeric: tabular-nums; }
+  table.sy-legs tr.hot .sy-at { color: inherit; }
   /* Quiet past the stuck threshold. The row is the finding, so the row is what
      is marked — a coloured cell would put the emphasis on the clock rather than
      on the relay it belongs to. */
@@ -1778,7 +1784,18 @@ function legsPanel(s) {
     tr.appendChild(url);
     // A leg with no slot says so here rather than leaving the column blank: the
     // stage IS the answer for most of a fan-out's workers.
-    tr.appendChild(el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—")));
+    //
+    // …and a PAGING leg carries where its cursor is, in the same cell rather
+    // than a sixth column that would be empty on every other row. `paging` and
+    // `quiet 24m` together cannot separate a walk deep in a real backlog from
+    // one whose cursor has stopped; read twice, this date can.
+    const stage = el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—"));
+    if (r.pagingUntil != null) {
+      const at = el("span", "sy-at", ` back to ${dayOf(r.pagingUntil)}`);
+      at.title = term("pagingUntil");
+      stage.appendChild(at);
+    }
+    tr.appendChild(stage);
     tr.appendChild(el("td", "n", fmtDur(r.heldForSec)));
     tr.appendChild(el("td", "n", fmt(r.events)));
     tr.appendChild(el("td", "n", fmtDur(r.quietForSec)));

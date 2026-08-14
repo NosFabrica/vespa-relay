@@ -187,6 +187,19 @@ internal class RelayRotation {
     fun held(
         nowMs: Long,
         limit: Int = DEFAULT_IN_FLIGHT_ROWS,
+        /**
+         * Where this url's paged walk has got to, asked per row — see
+         * [InFlight.Relay.pagingUntil].
+         *
+         * A FUNCTION, so the rotation never learns that walks are keyed
+         * `"stream|url"` by something it does not own. It knows who holds what;
+         * `PagingProgress` knows where a cursor is; the caller that has both in
+         * scope joins them. Defaulted to "no cursor" so the gate in
+         * `awaitPoolHeadroom` and every test keeps asking the question it
+         * actually has — which of these is quietest — without answering one it
+         * does not.
+         */
+        pagingUntil: (String) -> Long? = { null },
     ): InFlight {
         // Every clock read ONCE, into a plain row, before anything sorts. The
         // map is live and `quietForMs` reads a leg that is still being written
@@ -206,6 +219,12 @@ internal class RelayRotation {
                         events = hold.leg.events(),
                         quietForSec = hold.leg.quietForMs(nowMs) / 1000,
                         doing = hold.leg.stage,
+                        // Read HERE, with every other clock, into the same plain
+                        // row — see the comment above. The cursor is a volatile
+                        // on a live walk, so asking for it inside the sort or
+                        // after it would read a different instant from the one
+                        // the rest of the row describes.
+                        pagingUntil = pagingUntil(url.url),
                     )
                 }.sortedWith(compareByDescending<Row> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
         return InFlight(
@@ -219,6 +238,7 @@ internal class RelayRotation {
                         events = it.events,
                         quietForSec = it.quietForSec,
                         doing = it.doing,
+                        pagingUntil = it.pagingUntil,
                     )
                 },
             omitted = (rows.size - limit).coerceAtLeast(0),
@@ -234,6 +254,7 @@ internal class RelayRotation {
         val events: Long,
         val quietForSec: Long,
         val doing: String?,
+        val pagingUntil: Long?,
     )
 
     /**

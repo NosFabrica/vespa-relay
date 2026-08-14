@@ -170,3 +170,19 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(probeProgress(null), null);
   ok("the duration is the last FINISHED pass, absent while one runs and before the first");
 }
+
+// ── where a paging leg's cursor is ──────────────────────────────────────────
+{
+  // Absent means NOT PAGING, and it is the ordinary answer: a leg in the
+  // guards, queued for a slot, or reconciling has no cursor at all.
+  assert.equal(legsOf({ relays: [leg(1, 30)] }).rows[0].pagingUntil, null);
+  assert.equal(legsOf({ relays: [leg(1, 30, { pagingUntil: 1689857148 })] }).rows[0].pagingUntil, 1689857148);
+
+  // `created_at = 0` IS A REAL SECOND — purplepag.es holds twelve events
+  // stamped with it — and it is the deepest a walk can reach. Falsy-coalescing
+  // it to null the way `doing` is coalesced would erase the one cursor position
+  // that proves a walk got all the way down.
+  assert.equal(legsOf({ relays: [leg(1, 30, { pagingUntil: 0 })] }).rows[0].pagingUntil, 0,
+    "the epoch is a position, not a missing cursor");
+  ok("a paged cursor is carried per leg, and second zero is a position rather than an absence");
+}

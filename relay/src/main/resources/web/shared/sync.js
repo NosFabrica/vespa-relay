@@ -198,6 +198,12 @@ export function legsOf(inFlight, limit = IN_FLIGHT_SHOWN) {
       // glossary. Null on a router that predates the member, which reads as
       // "not known" and never as a stage.
       doing: r.doing || null,
+      // WHERE IN TIME a paging leg has got to. Null on every leg that is not
+      // paging — and `|| null` would be wrong here in a way it is not for
+      // `doing`: `created_at = 0` is a real second relays genuinely serve, and
+      // a walk that has reached it is the deepest a walk can get, not a leg
+      // with no cursor.
+      pagingUntil: r.pagingUntil ?? null,
     };
   });
   return { rows, more: (inFlight?.omitted || 0) + (all.length - rows.length) };
