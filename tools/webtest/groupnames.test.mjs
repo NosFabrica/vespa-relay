@@ -25,7 +25,7 @@ class FakeWS {
 }
 globalThis.WebSocket = FakeWS;
 
-const { groupName, knowsGroup, seedGroupNames, seedGroupEvents, enrichGroupNames } =
+const { groupName, knowsGroup, seedGroupNames, seedGroupEvents, enrichGroupNames, forgetPrivateGroupNames } =
   await import(new URL("../../relay/src/main/resources/web/shared/groupnames.js", import.meta.url));
 
 const HOST_A = "a".repeat(64);
@@ -75,6 +75,27 @@ seedGroupNames([
   { id: "chachi", name: "chachi (public)", host: HOST_A },
 ]);
 assert.strictEqual(groupName("chachi"), "Chachi", "the name in your own list is the name you know it by");
+
+// ---- what must not outlive a sign-out -------------------------------------
+//
+// One cache, two kinds of name in it. A 39000 is signed by a relay for anyone
+// to read and a `group` tag in the clear is in the clear — but a name that
+// arrived NIP-44-encrypted got here because the reader unlocked their own list
+// to pick from it, and a label somebody gave a group in private must not still
+// be drawn on a pill for whoever uses the tab next.
+seedGroupNames([
+  { id: "hidden", name: "Family", relayUrl: "wss://groups.example", mine: true, secret: true },
+  { id: "shared-with-public", name: "Book Club", relayUrl: "wss://groups.example", mine: true, secret: true },
+  { id: "shared-with-public", name: "Book Club", host: HOST_A },
+]);
+assert.strictEqual(groupName("hidden"), "Family", "an unlocked list names its groups like any other source");
+
+forgetPrivateGroupNames();
+assert.strictEqual(groupName("hidden"), "", "…and that name goes when the reader does");
+assert.strictEqual(knowsGroup("hidden"), false, "…leaving the id askable rather than remembered as nameless");
+assert.strictEqual(groupName("shared-with-public"), "Book Club",
+  "the PUBLIC half of the same id stays: dropping it would cost a round trip to learn what the network can already see");
+assert.strictEqual(groupName("chachi"), "Chachi", "…as does a name from a `group` tag that was never encrypted");
 
 // ---- the lookup, and the complete-read rule -------------------------------
 

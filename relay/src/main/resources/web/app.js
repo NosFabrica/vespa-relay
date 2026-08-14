@@ -11,7 +11,7 @@ import { profiles, displayName, seedProfiles, enrichProfiles } from "./shared/pr
 import { watchNip05 } from "./shared/nip05.js";
 import { parseQuery, buildFilters as filtersFor, effectiveSort } from "./shared/query.js";
 import { ownGroups, metaGroup, rank as rankGroups, sealed as sealedGroups, privateGroups } from "./shared/groups.js";
-import { seedGroupNames, seedGroupEvents } from "./shared/groupnames.js";
+import { seedGroupNames, seedGroupEvents, forgetPrivateGroupNames } from "./shared/groupnames.js";
 import { isTyping, navKey, stepIndex } from "./shared/keynav.js";
 import { replyPerson, seedParentAuthors, unknownParents, loadParentAuthors } from "./shared/parents.js";
 import { selfHref } from "./cards/base.js";
@@ -929,6 +929,13 @@ $me.addEventListener("click", async () => {
       // pubkey the extension names, and it would otherwise flash back on the
       // next load of a page the reader had deliberately signed out of.
       forgetFace();
+      // And the names that came out of the ENCRYPTED half of this reader's
+      // group list, for the same reason: the public ones are the network's to
+      // read, but a label somebody gave a group in private must not still be
+      // on a pill for whoever uses this tab next. forgetOwnGroups() covers the
+      // rows themselves on the next lookup; this is the copy the search box
+      // draws from.
+      forgetPrivateGroupNames();
       // The render-only half: the finally below reruns the search once for
       // the whole click, and setViewingAs here meant every sign-out searched
       // twice — two REQs for one action, with the first result thrown away.

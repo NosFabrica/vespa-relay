@@ -306,9 +306,12 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
    *
    * `dataset.face` is the person chip's staleness key doing the same job for a
    * group: the name is a lookup away, so the pill is drawn once with the id
-   * and repainted if and when a name arrives. An empty face is a real value
-   * here rather than a missing one — it is what "asked, and no ONE name can be
-   * drawn for this id" looks like, and it must not read as "not asked yet".
+   * and repainted if and when a name arrives. It holds what the CACHE said,
+   * never what was drawn from it — the drawing is clipped, so keying on it
+   * would leave every long name permanently stale against groupName() and
+   * repaint it on every pass. An empty face is a real value rather than a
+   * missing one: it is what "asked, and no ONE name can be drawn for this id"
+   * looks like, and it must not read as "not asked yet".
    *
    * The hover is where the truth goes, exactly as it does for a `#Nostr` that
    * asks for `nostr`: the pill says "nos engineers" and the filter is still
@@ -316,9 +319,16 @@ export function mountSearchField(el, list, { lookup, lookupGroup, unlockGroups, 
    */
   function paintGroupChip(span) {
     const id = span.dataset.gid;
-    const name = groupName(id);
+    const known = groupName(id);
+    // CLIPPED, where the id it replaces is not: an id is the reader's own
+    // token and a name is a stranger's string — any relay can sign a 39000
+    // whose `name` tag is a kilobyte — and the pill's `max-width` bounds the
+    // pixels without bounding what goes into the DOM. The person chip clips
+    // for the same reason at 32; a group gets more room because a channel name
+    // is written to be read rather than to fit beside a face.
+    const name = clip(known, 48);
     span.innerHTML = `<b>group:</b><span class="scope-id">${esc(name || id)}</span>`;
-    span.dataset.face = name;
+    span.dataset.face = known;
     span.title = `${span.dataset.token} — a NIP-29 group filter: events posted to ` +
       (name ? `“${name}”, the group whose id is ${id}` : `the group whose id is ${id}`);
   }

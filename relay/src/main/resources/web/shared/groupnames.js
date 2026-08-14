@@ -82,7 +82,7 @@ export function seedGroupNames(cands) {
     if (!name) continue;
     if (!was.has(c.id)) was.set(c.id, groupName(c.id));
     const by = learned.get(c.id) || new Map();
-    by.set(hostKey(c), { name, mine: !!c.mine });
+    by.set(hostKey(c), { name, mine: !!c.mine, secret: !!c.secret });
     learned.set(c.id, by);
   }
   let changed = 0;
@@ -100,6 +100,27 @@ export function seedGroupNames(cands) {
  */
 export const seedGroupEvents = (events) =>
   seedGroupNames((events || []).map(metaGroup).filter(Boolean));
+
+/**
+ * Drop every name that came out of a reader's ENCRYPTED group list.
+ *
+ * Called where the page forgets the rest of an identity — beside forgetFace(),
+ * on sign-out — and it is the one thing in this cache that must not outlive
+ * one. Everything else here is public by construction: a 39000 is signed by a
+ * relay for anyone to read, and a `group` tag in the clear is in the clear. A
+ * name that arrived NIP-44-encrypted is neither. It reached this cache because
+ * the reader unlocked their list to pick from it, and a label they gave a
+ * group in private must not still be on the pill of whoever uses the tab next.
+ *
+ * Only that half goes: the public names stay, since dropping them would cost a
+ * round trip to learn again what the whole network can already see.
+ */
+export function forgetPrivateGroupNames() {
+  for (const [id, by] of learned) {
+    for (const [host, row] of by) if (row.secret) by.delete(host);
+    if (!by.size) learned.delete(id);
+  }
+}
 
 /** What to draw for this id, or "" when nothing can be said with one name. */
 export function groupName(id) {
