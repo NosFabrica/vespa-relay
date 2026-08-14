@@ -427,7 +427,7 @@ url at a fixed offset, so a select is just that shape:
 |---|---|
 | `kind` | apply this select only to that kind; **omit to apply it to everything the filter collected**. A kind the scan never returns simply never matches |
 | `tag` | the tag name to read; **omit for any tag** — that's how you take a whole family like NIP-85's `<kind>:<type>` service tags without naming each one |
-| `relay` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags and for `e`/`p`/`a`/`q` hints, which put an id or pubkey first. `index` is the older name for the same slot and still works |
+| `relay` | which element holds the url. `1` for nearly everything; `2` for NIP-85 service tags, for `e`/`p`/`a`/`q` hints, which put an id or pubkey first, and for NIP-51's `group` tags, which put the group id first. `index` is the older name for the same slot and still works |
 | `authors`, `ids`, `kinds`, `#p`, `#e`, … | **narrow what this relay is asked for**, reading the value out of the *same tag* that named the url. The value is a tag element number, or `"pubkey"` / `"id"` for the scanned event's own — see below |
 | `where` | conditions on the rest of the tag, shaped like NIP-01 filters: entries in the list **OR** together, the fields inside one entry **AND**. Each entry states any of `index` + `equals` (the element at that position is exactly that string — case-sensitive and untrimmed, and a missing element matches nothing, not even `""`), `minSize`, and `maxSize` (bounds on the tag's length). Omit to keep every tag |
 | `marker` | sugar for NIP-65's rule: `write` / `read` expand to the `where` that keeps that side *plus* unmarked tags — with the url at 1, `[ { index = 2, equals = "write" }, { index = 2, equals = "" }, { maxSize = 2 } ]`, the slots following the select's own `index` — and `any` to no conditions. A select states `marker` or `where`, not both |
@@ -435,6 +435,53 @@ url at a fixed offset, so a select is just that shape:
 The scan's `filter` is an ordinary NIP-01 filter — `kinds`, `authors`, `since`,
 `until`, `limit`, `#t`-style tag filters — so you can narrow it however you like:
 `{ "kinds": [1], "authors": [...] }` harvests hints from your WoT's notes only.
+
+### NIP-29 group hosts
+
+The example config uses a select whose only unusual part is `relay = 2`:
+
+```hocon
+{
+  select = [ { kind = 10009, tag = "group", relay = 2 } ]
+  filter = { "kinds": [10009] }
+}
+```
+
+A NIP-51 simple group list writes `["group", <id>, <relay url>, <name?>]`, so the
+url is at 2 and **element 1 is the group id**. Reading 1 does not fail loudly: the
+ids go to the url normalizer, which rejects them one at a time and silently, and
+the stream ends up with no relays, no error and nothing in the log to say why.
+
+Two things about this source are worth knowing before you copy it:
+
+- **It only sees the group lists you already mirror.** Kind 10009 has to be in
+  some stream's `filter`, or the scan reads an empty set forever — which is the
+  same silent nothing. The example puts it on the content stream beside 10003.
+- **A group's own id is not global.** A group is the pair *(id, host relay)* and
+  its posts carry only the bare id in an `h` tag, so a mirror holding two relays'
+  `general` cannot tell their posts apart afterwards. That is a property of
+  NIP-29 rather than of this router — the search UI says so where a reader can
+  see it — but it is the reason to think before pointing a mirror at every group
+  host on the network.
+
+The select can also **bind** the group id, so each host is asked only for the
+groups somebody listed:
+
+```hocon
+{ kind = 10009, tag = "group", relay = 2, "#h" = 1 }
+```
+
+That is one leg per *(relay, group)* rather than per relay, and each leg's band
+stays valid because a group id does not change. The cost is the tag projection:
+a bound select has to page whole events (see [Binding filter fields to a
+relay](#binding-filter-fields-to-a-relay)), and it will not find a public group
+that nobody has listed. The example leaves it unbound for that second reason —
+a search relay wants the groups nobody has told it about.
+
+Private groups are not mirrored either way. NIP-29 gates their reads behind
+NIP-42, and the identity this router signs with is not a member of anybody's
+group; the failure is membership, not reachability, so no amount of config
+reaches them.
 
 ## Mirroring the deletions themselves
 

@@ -180,6 +180,30 @@
   settles like a hashtag's, because the token grows a character at a time;
   there is no picker — a url or an isbn is pasted, not chosen from a list.
 
+  `group:<id>` is the NIP-29 door, and it is the one subject here that DOES get
+  a picker — for exactly the reason the scopes above do not. A url or an ISBN
+  is copied from the thing itself; a group id is an opaque string its host
+  relay minted (`chachi`, a hex blob), so it is precisely what nobody can type
+  from memory. The rows offer the NAME and a pick writes the id; `group:` with
+  nothing after it opens on the reader's own groups, read off their kind 10009.
+  The filter is two questions: `#h` for what was posted in the group — one
+  letter, so the store indexes it exactly as it indexes `t`, and it KEEPS the
+  tab's kinds because a group post is an ordinary event that happens to carry
+  an `h` — and the group's own kind 39000 keyed by `d`, which names its own
+  kind for the scope filters' reason.
+
+  What that picker cannot do is the honest part. A NIP-29 group is the pair
+  (id, host relay) and an `h` tag carries only the id, so two relays with a
+  `general` are one filter and the results are the union. Worse, the two things
+  this page knows about a group name its host in incompatible ways: a 10009
+  `group` tag gives a URL, a 39000 gives the PUBKEY that signed it (NIP-29 has
+  the relay sign its own records), and nothing here joins the two — no
+  per-relay provenance in the store, no such tag on a NIP-66 record. So
+  shared/groups.js keeps them as separate rows rather than inventing the join,
+  and flags any id that more than one row carries. The 39000s themselves stay
+  apart correctly, being addressable per (kind, pubkey, `d`) — which is what
+  lets the picker warn about an ambiguity the results cannot resolve.
+
   Two things the union has to get right, both asserted by
   RelayProtocolTest."the search page's hashtag union": tag values compare CASED
   here (the engine schema says so), so the ask carries the spellings —

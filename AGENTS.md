@@ -279,7 +279,29 @@ relay/src/main/resources/
                         the way NIP-73 fixes it, plus as typed), with the page
                         state passed IN so the whole thing is testable —
                         tools/webtest/query.test.mjs asserts the filters, and
-                        RelayProtocolTest asserts the relay answers them;
+                        RelayProtocolTest asserts the relay answers them.
+                        `group:<id>` is the NIP-29 one, and the only subject
+                        with a PICKER: a group id is opaque (`chachi`, a hex
+                        blob) where a hashtag is already the word it means, so
+                        nobody can type one from memory. It becomes an `#h`
+                        filter — single letter, so `tag_index` holds it exactly
+                        as it holds `t` — plus the group's own kind 39000 keyed
+                        by `d`, which is the half that names its HOST: NIP-29
+                        has the relay sign its groups' records. shared/groups.js
+                        is the decision behind the picker, and its whole
+                        argument is a refusal. A group is the pair (id, host)
+                        — quartz's `GroupId` — and this page holds that pair in
+                        two incompatible spellings: a kind 10009 `group` tag
+                        names the host as a URL, a 39000 names it as the pubkey
+                        that signed it, and NOTHING here joins the two (no
+                        per-relay provenance in the store, no such tag on a
+                        NIP-66 record). So your list and the corpus stay two
+                        answers, and one id on two relays stays two rows,
+                        flagged `ambiguous` — because an `h` tag carries the
+                        bare id and picking either row searches for both. That
+                        last part is the honest limit: the picker fixes the
+                        human's half (remembering the id) and cannot fix the
+                        filter's;
                         shared/parents.js answers "in reply to WHO" — NIP-10's
                         rule for which `e` tag is the parent, plus the by-id
                         lookup for the author when the tag carries no hint;
