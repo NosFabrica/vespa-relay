@@ -73,6 +73,23 @@ for (const [id, f] of Object.entries(FILTERS)) {
   assert.ok(read.includes(`p.get("${f.param}")`), `applyUrl() never reads ?${f.param}= — #${id} does not survive a reload`);
 }
 
+// ---- a sort value the page REASONS about is one the menu still offers ------
+//
+// The options are otherwise pure data — app.js appends whichever is selected to
+// the search string and the store owns the grammar — with one exception, and it
+// fails the same silent way the two above do. exportText() asks a different
+// "question for the reader" under `sort:recent`, because that order is not a
+// ranking: the trust question would send a reader hunting for a misranking in a
+// list that was asked for in time order. The branch is a string compare against
+// an option's value, so renaming or dropping the option breaks nothing visibly
+// — it just quietly restores the wrong question.
+const sortValues = [...panel.matchAll(/<option value="([^"]*)"/g)].map((m) => m[1]);
+assert.ok(sortValues.length > 1, "the sort menu lost its options (or the markup changed shape)");
+const branchedOn = [...new Set([...app.matchAll(/\$sort\.value === "([^"]+)"/g)].map((m) => m[1]))];
+for (const v of branchedOn) {
+  assert.ok(sortValues.includes(v), `app.js branches on the sort value "${v}", which the menu does not offer`);
+}
+
 // ---- the badge is markup the page can actually hide ------------------------
 //
 // It is drawn with the `hidden` attribute, and `display: inline-flex` beats

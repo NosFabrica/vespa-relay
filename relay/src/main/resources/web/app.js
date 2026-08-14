@@ -785,10 +785,27 @@ function exportText() {
   L.push(JSON.stringify(s.hits, null, 2));
   L.push("");
   L.push("QUESTION FOR THE READER");
-  L.push("  Is this order defensible? The relay ranks under the lens named above,");
-  L.push("  by the author scores listed above — not by recency or text relevance");
-  L.push("  alone. A result placed above another whose author scores higher, or a");
-  L.push("  low-scoring author near the top, is worth challenging.");
+  // Which question, because `sort:recent` changes what a wrong answer looks
+  // like. The trust question below asks whether the ORDER earned itself; under
+  // "Newest" the relay was told not to order by trust at all, so asking it
+  // would send the reader hunting for a misranking in a list that is supposed
+  // to be chronological — and would say nothing about the one thing the lens
+  // still does there, which is decide who is IN the list.
+  if ($sort.value === "recent") {
+    L.push("  This order is not a ranking: `sort:recent` asked for the search's");
+    L.push("  own match set in time order, newest first, so a weak match sitting");
+    L.push("  above a strong one is the answer working. What is worth challenging");
+    L.push("  is MEMBERSHIP. The lens and the trust floor named above still decide");
+    L.push("  who is IN this list — they have only stopped ordering it — and");
+    L.push("  nothing on this page can show you who was dropped. Ask whether a");
+    L.push("  timestamp is out of sequence, and whether somebody who belongs in a");
+    L.push("  chronological list of these words is missing from it.");
+  } else {
+    L.push("  Is this order defensible? The relay ranks under the lens named above,");
+    L.push("  by the author scores listed above — not by recency or text relevance");
+    L.push("  alone. A result placed above another whose author scores higher, or a");
+    L.push("  low-scoring author near the top, is worth challenging.");
+  }
   L.push("  The events are verbatim: nothing has been trimmed or annotated.");
   // No union caveat any more. This block used to warn that a multi-filter REQ
   // came back as each filter's ranked run end to end, so a jump back up the

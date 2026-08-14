@@ -225,6 +225,21 @@ class RelayProtocolTest {
                 awaitMessage(out) { it.startsWith("""["EOSE","x3"]""") }
                 assertEquals(EventYql.RANK_DESC, index.searchQueries.last().ranking, "sort:rank picks the profile")
                 assertEquals(7.0, index.searchQueries.last().minRank, "filter:rank:gte sets the floor")
+
+                // The sort menu's "Newest" (index.html). Chronological is the
+                // one order this path can get wrong in SILENCE: quartz strips
+                // every `key:value` extension before the terms, so a store that
+                // does not know `recent` does not search for the literal and
+                // does not complain — it just answers in relevance order under
+                // a menu that says newest. Nothing in this repo parses the
+                // token, so the pin is the only thing that decides, and this
+                // asserts the profile rather than the results because the order
+                // itself is the engine's (InMemoryEventIndex has no rank
+                // profiles to run).
+                session.receive("""["REQ","x4",{"search":"ali sort:recent","limit":5}]""")
+                awaitMessage(out) { it.startsWith("""["EOSE","x4"]""") }
+                assertEquals(EventYql.RANK_RECENCY_GATED, index.searchQueries.last().ranking, "sort:recent picks the gated recency profile")
+                assertEquals("ali", index.searchQueries.last().search, "and the words still recall — only the ORDER changed")
             } finally {
                 session.close()
             }
