@@ -69,8 +69,8 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * ## Cost
  *
- * Two REQs per url, once a month per url, capped at [probesPerCycle] per pass
- * and [concurrency] in flight. Everything downloaded goes to the caller's
+ * Two REQs per url, once a month per url, [concurrency] in flight and no
+ * per-pass total — see [DEFAULT_PROBES_PER_CYCLE]. Everything downloaded goes to the caller's
  * ingest, exactly as [AliasProbe]'s own doc describes — on a stable relay the
  * window was worth having, and on an unstable one the store drops it as
  * already-held. The pass is not a tax on the mirror; it is a sync that also
@@ -360,13 +360,15 @@ class ConsistencyPass(
 
     companion object {
         /**
-         * Urls measured per pass. Higher than the fold's, because this is two
-         * asks against one url rather than a group of fingerprints that only
-         * mean anything together — there is no reservation to make and no group
-         * to leave half-done, so a pass can simply stop at the cap and continue
-         * next time.
+         * Urls measured per pass. UNCAPPED, for the same reason the fold's is —
+         * see [AliasFolding.DEFAULT_PROBES_PER_CYCLE].
+         *
+         * It was 3,000. [concurrency] is what bounds the pass; the cap only
+         * ever decided how many six-hour intervals full coverage took, and this
+         * gate measures one url at a time with no group to leave half-done, so
+         * stopping at a cap bought nothing a shorter interval would not.
          */
-        const val DEFAULT_PROBES_PER_CYCLE = 3_000
+        const val DEFAULT_PROBES_PER_CYCLE = Int.MAX_VALUE
 
         /** Urls in flight. Matches the fold: this is background work. */
         const val DEFAULT_CONCURRENCY = 16

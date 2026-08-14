@@ -492,10 +492,10 @@ class RelayAliasRecord(
          *
          * Do NOT bump it for a change that leaves the conclusion alone —
          * logging, budget, ordering, the socket refcount. The cost is a full
-         * re-fingerprint of the store, spread over
-         * [AliasFolding.DEFAULT_PROBES_PER_CYCLE] per pass, and while it runs
-         * every un-re-measured url is dialled unfolded. That is the correct
-         * price for a rule change and pure waste for anything else.
+         * re-fingerprint of the store — one pass, [AliasFolding.DEFAULT_CONCURRENCY]
+         * at a time, however many urls that is — and while it runs every
+         * un-re-measured url is dialled unfolded. That is the correct price for
+         * a rule change and pure waste for anything else.
          *
          * **2** — everything published to date was measured under rules since
          * corrected in three ways that change verdicts: a host's urls are now

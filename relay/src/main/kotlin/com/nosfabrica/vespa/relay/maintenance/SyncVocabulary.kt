@@ -415,8 +415,9 @@ internal object SyncVocabulary {
             put(
                 "dialled",
                 "Dials that pass spent: fingerprints for the alias fold, paired walks for the self-consistency gate. " +
-                    "Capped per pass, which is why `unmeasured` falls in steps rather than to zero — the cap is what " +
-                    "keeps a first pass over a polluted store from becoming one enormous probe run.",
+                    "A pass measures its whole candidate set — there is no per-pass total — so `unmeasured` falls to " +
+                    "what could not be DECIDED rather than to what there was budget for. What is left after a pass " +
+                    "is a host on a cooldown or one that cannot answer twice, and `undecided` names it.",
             )
             put(
                 "decided",

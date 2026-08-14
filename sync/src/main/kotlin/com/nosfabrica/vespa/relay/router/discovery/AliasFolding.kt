@@ -55,11 +55,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * makes the split safe across a restart, and what lets a second router share the
  * work without either one knowing about the other.
  *
- * The cost of [measure] is bounded on both axes and deliberately so.
- * [probesPerCycle] caps how many fingerprints one pass will take, so the first
- * one after this ships does not turn into a single enormous probe run; the rest
- * are learned over the passes that follow, worst case first, and every verdict
- * is written down for [RelayAliasRecord.DEFAULT_TTL_SECONDS]. A steady-state
+ * The cost of [measure] is bounded by [concurrency] — 16 permits, and
+ * therefore 16 sockets, however large the candidate set. It is NOT bounded by
+ * a per-pass total any more: a pass measures its whole set, worst case first,
+ * and every verdict is written down for [RelayAliasRecord.DEFAULT_TTL_SECONDS]
+ * so the run is paid once per url per month rather than once per pass. A
+ * steady-state
  * pass probes only the urls that appeared since the last one.
  *
  * **The cost of the split is that folding now lags discovery by one pass.** A
@@ -116,9 +117,10 @@ class AliasFolding(
      * folds four urls in TWO SECONDS at containment 1.000, and
      * `multiplexer.huszonegy.world` folds four more in fourteen. Neither is hard;
      * they were simply queued behind hosts that can never be decided and can
-     * never stop being asked. [probesPerCycle] is a per-pass ceiling, so budget
-     * spent re-proving that `groups.satsdisco.com` still says nothing is budget a
-     * foldable host does not get.
+     * never stop being asked. A pass is no longer capped, so this no longer
+     * costs a foldable host its turn — but it still costs the WALL CLOCK of the
+     * pass, and re-proving every cycle that `groups.satsdisco.com` still says
+     * nothing is time the hosts that can be decided are waiting through.
      *
      * In memory rather than signed, and that is the point. "I could not measure
      * this" is a fact about OUR pass, not about somebody's server — the
@@ -178,11 +180,14 @@ class AliasFolding(
      *
      * `fetchAll` unsubscribes when it returns — it sends a CLOSE — and leaves
      * the connection in the pool; the client's own keep-alive only ever
-     * RECONNECTS. So a pass that fingerprints up to [DEFAULT_PROBES_PER_CYCLE]
-     * urls used to leave up to that many sockets open behind it, against a
-     * router whose whole dispatcher budget is 1024 and whose per-HOST budget is
-     * 20 — and the fold probes widest group first, i.e. the hosts wearing 55
-     * urls. Every one of those sockets is a slot the fan-out cannot have.
+     * RECONNECTS. So a pass used to leave one open socket per url it
+     * fingerprinted, against a router whose whole dispatcher budget is 1024 and
+     * whose per-HOST budget is 20 — and the fold probes widest group first,
+     * i.e. the hosts wearing 55 urls. Every one of those sockets is a slot the
+     * fan-out cannot have. That is what makes this refcount load-bearing rather
+     * than tidy: with the per-pass cap gone, the number of urls a single pass
+     * touches is the whole candidate set, so a leak here would be unbounded
+     * where it used to be merely large.
      *
      * It is the STREAM's, not this component's, for the reason
      * `DynamicSync.releaseSocket` exists at all: two streams routinely land on
@@ -216,11 +221,12 @@ class AliasFolding(
     /**
      * Fingerprint what [apply] could not answer, and publish what that proves.
      *
-     * The dialling half, and the reason the two are separate: this walks up to
-     * [probesPerCycle] fingerprints, each of which is a paged websocket
-     * conversation with somebody else's relay. Returns how many new aliases it
-     * learned, so a caller can log a pass that did nothing differently from one
-     * that never ran.
+     * The dialling half, and the reason the two are separate: this fingerprints
+     * every group its candidates still leave unresolved, [concurrency] at a
+     * time, and each fingerprint is a paged websocket conversation with
+     * somebody else's relay. Returns how many new aliases it learned, so a
+     * caller can log a pass that did nothing differently from one that never
+     * ran.
      *
      * Safe to call with anything: a url whose host wears no other url is never
      * probed, and a set of one returns immediately.
@@ -890,12 +896,33 @@ class AliasFolding(
 
     companion object {
         /**
-         * Fingerprints one cycle will take. Sized so a first run against a
-         * fully polluted store spreads over a handful of cycles instead of
-         * becoming one enormous probe pass, and so a steady-state cycle — which
-         * only ever sees newly discovered urls — never comes near it.
+         * Fingerprints one pass will take. UNCAPPED — a pass measures its whole
+         * candidate set.
+         *
+         * It was 2,000, and the cap outlived its reason. It was sized for the
+         * era when this pass ran INLINE on the sync cycle, where an enormous
+         * probe run sat between "discovery finished" and the first downloaded
+         * byte on every cycle; [AliasMonitor] moved it onto its own clock and
+         * the cap stayed behind.
+         *
+         * What it actually bought was passes, not safety. [concurrency] is what
+         * bounds this pass — 16 permits, and therefore 16 sockets, whatever the
+         * total — so the cap never limited pressure on the network or on our
+         * own dispatcher. It limited how many SIX-HOUR INTERVALS full coverage
+         * took: measured against a 17,499-url stream, 2,000 a pass is nine
+         * passes and about two days, and until it finished the fan-out went on
+         * dialling every un-measured alias as a relay of its own.
+         *
+         * A pass is now as long as its set needs — hours on a first run against
+         * a polluted store, seconds in the steady state where every url already
+         * carries a current verdict. It runs alongside the streams and blocks
+         * none of them.
+         *
+         * Still a parameter. A deployment that wants its probe run metered can
+         * set one; nothing in here assumes the budget is infinite, and
+         * [Undecided.NO_BUDGET] still says so when a group is refused for it.
          */
-        const val DEFAULT_PROBES_PER_CYCLE = 2_000
+        const val DEFAULT_PROBES_PER_CYCLE = Int.MAX_VALUE
 
         /** Probes in flight. Below the fan-out's own concurrency: this is a side quest. */
         const val DEFAULT_CONCURRENCY = 16

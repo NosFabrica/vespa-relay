@@ -91,8 +91,8 @@ class Processors {
         /**
          * …of those, how many still have no verdict after this pass.
          *
-         * THE PROGRESS NUMBER. A pass is capped (`probesPerCycle`), a group can
-         * be held on a cooldown, and a host that cannot be measured never
+         * THE PROGRESS NUMBER. A pass measures its whole set, but a group can
+         * be held on a cooldown and a host that cannot be measured never
          * resolves at all — so this falling pass over pass is what "the fold is
          * getting somewhere" looks like, and this sitting still while [dialled]
          * climbs is the state that used to be invisible.
