@@ -82,54 +82,102 @@ app = "0.1.0"
 quartz = "1866007e99"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 5e44f1bde8 = store main through PR #74, and that PR is the WHOLE range: two
-# commits, `Add sort:recent — chronological, observer-gated search` and `Keep a
-# sort:recent search recency-ordered when the gate is missing`. Verified with
-# `git log --oneline 13f97e2870..` and `git diff --stat`, not assumed from the
-# titles.
+# 13326d2ef2 = store main through PR #78. The whole range is four commits, two
+# of them merges: `Document the live staging system agents can pull data from`
+# (that repo's own AGENTS.md, pointed at the same staging box ours now names)
+# and `Stop the query container dying on direct-buffer exhaustion`. Read off
+# `git log --oneline 5e44f1bde8..` and `git diff --stat`, not the titles.
 #
-# The store CONTRACT is untouched again — `IEventStore`, `SQLiteEventStore`,
-# `IndexableFields` and `SearchFieldExtractor` are not in the diff, and neither
-# is anything else this repo calls. What moved is the search STRING's grammar,
-# which reaches us as data rather than as an API: one more `sort:` token the
-# store accepts, `sort:recent`. It asks for a search's own match set in NIP-01
-# order — the same loose recall, `created_at desc, id asc`, still gated by the
-# observer's trust floor, with match tiers not consulted at all, so a trigram-
-# level hit from a minute ago sits above a perfect one from yesterday. The page
-# offers it as the sort menu's "Newest" and passes it the way it passes every
-# other `sort:`; nothing in Kotlin here parses or validates the token.
+# NO KOTLIN MAIN SOURCE MOVED AT ALL — not `IEventStore`, not the engine, not
+# anything. The entire diff is `engine/app/services.xml`, two docs, and two
+# tests (`ContainerJvmIT`, `VespaAppTest`). Which makes this the easiest bump
+# here to under-read as a no-op, because what moved is the bundled APPLICATION
+# PACKAGE, and both processes POST that package to the config server on EVERY
+# boot (`deployBundledSchema`, `AUTO_DEPLOY` default true). A store release with
+# no API surface whatsoever still changes this deployment the next time either
+# process starts.
 #
-# Two shapes of it the STORE decides, which is why this page can stay ignorant
-# of both: a termless `sort:recent` with no observer is handed back to the plain
-# path (it IS a plain filter, and the gated profile would give up the recency
-# profile and the count-probe planner to reach the same order), while one
-# carrying terms keeps the profile — ranking-free WITH terms means the relevance
-# profiles, the very order the token asked not to use.
+# What it adds is one line on the stateless container — the JVM serving :8080,
+# which is every query this relay answers AND every write the router makes:
 #
-# The gate below is not a formality here, because the shape this adds is
-# exactly the kind InMemoryEventIndex cannot judge: `sort:recent` is the first
-# query to reach a gated rank profile CARRYING TEXT CLAUSES, and whether the
-# deployed profile accepts the text-ranking features that ride beside them is a
-# fact about a real Vespa. ObserverGateIT is where it is asked, and it ran
-# against this commit — eight ITs, 11m48s, `skipped="0"` read off
-# build/test-results/test/*.xml rather than inferred from BUILD SUCCESSFUL,
-# ObserverGateIT itself 85s against a live Vespa.
+#   <jvm options="-XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144" />
 #
-# DIRECTION: 13f97e2870 is a strict ancestor of this, and the store's own quartz
-# is UNCHANGED at 1866007e99 — the hash pinned above. Equality on both counts,
-# and unlike the last bump this moves ONE pin, not two.
+# That container died 8 times in 18 minutes on `Cannot reserve … bytes of direct
+# buffer memory`. The measurement is the store's, but the box is OURS —
+# search-staging.brainstorm.world, 211,861,351 events when `/stats.json` was
+# asked on 2026-08-14 — and so is the workload it names: ~500 req/s of the
+# store's own dedup, guard and supersession reads, which on that box is this
+# repo's router ingesting, not clients searching. Vespa runs
+# that container with `-XX:+ExitOnOutOfMemoryError` and derives its direct-memory
+# ceiling from the heap (208 MiB at Vespa's 1536m default), so ONE thread failing
+# to reserve a buffer takes :8080 down for reads and writes alike; it exits 1, so
+# a pod stays "healthy" while the sentinel backs off 2s → 126s.
 #
-# LEXICOGRAPHIC: '5e44…' > '13f9…' ('5' > '1'), so this sorts ABOVE the pin it
-# replaces — the safe direction, after two bumps that went the other way. That
-# is a fact about this pair of strings and expires with it: the next bump of
-# this pin re-rolls the digit, and sorting safely was never evidence the pin
-# took anyway. Only the resolved graph says that, and it is checked per module:
+# The saturation is CACHING, not demand: jrt reads into HEAP buffers, so the JDK
+# borrows a temporary DIRECT buffer per socket read and — with
+# `jdk.nio.maxCachedBufferSize` unset — retains it per thread at its high-water
+# size for the life of the thread. Hence two flags rather than a bigger ceiling,
+# which would only move the wall. The full argument is in the store's
+# services.xml and its docs/scaling.md; what matters HERE is that neither flag is
+# ours to keep, tune or drop — we deploy whatever package the pinned store
+# bundles, and nothing in this repo parses or rewrites services.xml.
+#
+# ONE CONSEQUENCE IS OURS: DEPLOYING THIS DOES NOT APPLY IT. `<jvm options>` is
+# a restart-required change, and Vespa asks rather than acts. Measured here
+# against a real Vespa, deploying the 5e44f1bde8 package and then this one onto
+# the same tenant: prepareandactivate returned `activated: true` with
+# `configChangeActions.restart` naming `default/container.0` — "Startup command
+# for 'container' has changed" — and then left the process alone. Ninety seconds
+# later the container JVM's pid still predated the activation and still ran
+# `-XX:MaxDirectMemorySize=208m` with no cache cap, while :8080 answered 200 for
+# every poll of that window.
+#
+# So nothing blips and nothing improves. `deployBundledSchema` cannot tell the
+# difference either — `awaitServing` asks whether an application is live, not
+# whether the live one is the activated one — which means a relay that boots,
+# deploys and reports success is still running the JVM that died 8 times in 18
+# minutes. Restarting the Vespa service is what applies the fix (`docker compose
+# restart vespa`), and on this repo's compose that costs a transaction-log replay
+# on the content node, so it is an operator's call and not a deploy's.
+#
+# THE STORE'S GATE IS RED AT THIS COMMIT, and the bump is taken anyway. Nine
+# tests, 10m58s, `skipped="0"` read off build/test-results/test/*.xml rather than
+# inferred from a green line; eight pass, and the one that fails is
+# `ContainerJvmIT` — the test this very range added. Its failure message prints
+# the command line it judged:
+#
+#   … -XX:MaxDirectMemorySize=208m … -XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144
+#
+# That IS the fix, in the running container JVM, ours last where HotSpot honours
+# it. What the assertion actually compares against is `declared(CACHE_CAP)`,
+# which greps the value out of the shipped services.xml with `(\S+)` — and a
+# quote is not whitespace, so for the LAST flag inside `options="…"` it captures
+# `262144"` and then hunts a command line for a string carrying a quote that no
+# command line can contain. `-XX:MaxDirectMemorySize` escapes only because a
+# space follows it. Reproduced directly against services.xml, and re-running that
+# same IT with the capture bounded (`[^\s"]+`) turns it green in place, so the
+# claim it was written to make holds and its wiring is what is broken. The bug is
+# the store's to fix — this repo can fetch that repo but not push to it — and
+# until it does, a red gate here is expected on THIS test and on nothing else.
+# `InMemoryEventIndex` has no code path any of this touches, so nothing in this
+# repo could have judged it either way.
+#
+# DIRECTION: 5e44f1bde8 is a strict ancestor of this (`git merge-base
+# --is-ancestor`, not the dates), and the store's own quartz is UNCHANGED at
+# 1866007e99 — the hash pinned above. One pin moves again.
+#
+# LEXICOGRAPHIC: '1332…' < '5e44…' ('1' < '5'), so this sorts BELOW the pin it
+# replaces — the dangerous direction, one bump after a safe one, which is the
+# coin-flip the note at the top of this file describes and not a trend either
+# way. Only `:common` declares the store and nothing else on the graph brings it
+# in, so there is no conflict here for ordering to settle — and ordering was
+# never evidence the pin took. The resolved graph is, per module:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
 # Bumping this pin is NOT done until the store's own integration gate has run
 # against the commit — see AGENTS.md. `InMemoryEventIndex` cannot see a
 # Vespa-only regression.
-vespaEventStore = "5e44f1bde8"
+vespaEventStore = "13326d2ef2"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"
