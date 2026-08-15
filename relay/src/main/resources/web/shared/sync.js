@@ -244,9 +244,15 @@ export function funnelOf(p) {
 
   const levels = [];
   for (const [key, title, members] of FUNNEL_LEVELS) {
-    // A level subdivides the FIRST segment of the one above it, so its lead is
-    // whatever that parent's own lead was — zero for both today, and carried
-    // explicitly so a level inserted in the middle cannot silently misalign.
+    // Both levels here subdivide the FIRST segment of the one above them, whose
+    // lead is zero, so theirs is too.
+    //
+    // NOT a general rule, and the hierarchy is not modelled as one: the parent
+    // is picked by name below and the reasons' lead is computed by hand. A
+    // level that subdivided anything but a leading segment, or a second branch
+    // splitting on the same level, would need both of those to become a real
+    // parent link — see the `why` level, which is the shape that would have to
+    // generalise.
     let at = 0;
     const segments = [];
     for (const [member, label] of members) {
