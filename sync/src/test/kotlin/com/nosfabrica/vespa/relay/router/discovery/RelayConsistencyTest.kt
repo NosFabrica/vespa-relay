@@ -234,7 +234,7 @@ class RelayConsistencyTest {
                                 // The shuffler hands back a window that walks
                                 // forward on every ask, so no two answers agree.
                                 val from = if (at == shuffler) drift.getAndAdd(40) else 0
-                                corpus.drop(from).take(want)
+                                AliasProbe.Page(corpus.drop(from).take(want))
                             },
                             target = 40,
                             page = 40,
@@ -267,7 +267,7 @@ class RelayConsistencyTest {
                         AliasProbe(
                             fetch = { _, _, _, _ ->
                                 dials.incrementAndGet()
-                                emptyList()
+                                AliasProbe.Page(emptyList())
                             },
                         ),
                 )
@@ -286,7 +286,7 @@ class RelayConsistencyTest {
                 ConsistencyPass(
                     consistency = RelayConsistency(),
                     record = RelayAliasRecord(store, signer),
-                    probe = AliasProbe(fetch = { _, _, _, _ -> null }),
+                    probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(null) }),
                 )
 
             assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))

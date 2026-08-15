@@ -1484,6 +1484,43 @@ auth` was a red herring; and the 214-second `rtt-read` on those rows is quartz's
 passive monitor's number, while every fold dial measured here returned in about
 a second.
 
+**A REFUSED CREDENTIAL ENDS THE LADDER, and finding out why cost two wrong
+theories.** A pass against `filter.nostr.wine` spent 184s on three urls. The first
+explanation was "one `idleTimeoutMs` per rung" — wrong: a single ask on a fresh
+socket comes back in ~1.5s at every host measured. `AuthRefusalProbe` times the
+ladder ask by ask, on one connection, through quartz's own client and the
+router's NIP-42 wiring:
+
+```
+filter.nostr.wine  rung 1 bare  limit=500:  1601ms  authRefused=true
+                   rung 1 bare  limit=100: 20007ms  reason=null
+                   rung 2 [1]   limit=500: 20004ms  reason=null
+                   rung 3 [39000]        : 20004ms  reason=null
+buzz.relay.tools   every ask:               ~85ms   authRefused=true
+nos.lol            every ask:              ~170ms   eose
+```
+
+1.6 + 20 + 20 + 20 is the 61s per url, exactly. **The first ask is answered
+properly and every one after it is answered with NOTHING** — no CLOSED, no EOSE,
+no `doneReason` — so `AliasProbe.over` reads a url that never spoke and the walk
+waits out the window. On the wire, once this relay rejects our AUTH (`OK <id>
+false restricted: user unauthorized`) it ignores every further REQ on that
+socket. `buzz.relay.tools` is the contrast: it repeats `auth-refused` to every
+ask, which is why it cost 21s for two urls where this cost 121s.
+
+**Quartz needed no change.** It reports the refusal terminally and
+machine-readably on the FIRST ask — `doneReasons[url]` starts with
+`auth-refused`, which is all `FetchAllResult.authRefused` is derived from, and
+`AliasProbe.over` already read that map to tell `cannot:` from a real answer.
+Waiting out the window on the later asks is the only thing quartz COULD do; the
+relay sends nothing. The waste was ours, and the rule that fixes it is the
+ladder's own charter: **it exists to find a filter the relay will accept, and a
+credential refusal is not a complaint about the filter.** So `AliasProbe.Page`
+carries `authRefused`, the walk stops on it, and `leaderPrint` does not try the
+next rung. Measured end to end on the same three urls: **184s → 3s**, with
+`nos.lol` unchanged at 2s. `a refused credential stops the ladder at the first
+ask` pins it.
+
 **FOLD UNLESS PROVEN DIFFERENT: a group nothing will serve from collapses onto
 its survivor.** This INVERTS the oldest default in this component. Silence used
 to decide nothing; a host whose every url answers and serves nothing now folds on
@@ -1545,9 +1582,11 @@ suggests, and it is enriched for the hosts that refuse us for reasons no
 credential fixes: payment walls, per-user endpoints. Do not size this rule with
 an unauthenticated sweep.
 
-**It is not cheap.** Three urls of `filter.nostr.wine` cost **184 seconds** — the
-full ladder against an auth-gated host is three rungs of idle window per url —
-and the sweep scales that with group size rather than stopping at three.
+**It WAS not cheap, and the reason turned out to be a bug in the ladder rather
+than a property of the rule.** Three urls of `filter.nostr.wine` cost **184
+seconds**; they now cost **3**. See the credential short-circuit below — the
+sweep still scales with group size rather than stopping at three, but each url in
+it is one ask instead of six.
 
 **`ws://x` and `wss://x` are the one pair the urls themselves settle.** Every
 other fold refuses to read anything off a url, and rightly — a path is routinely

@@ -56,6 +56,9 @@ class AliasProbeTest {
         // Refuses a bare filter the way 46 of 229 sweep hosts did:
         // `CLOSED blocked: can't handle empty filters`.
         val demandsKinds: Boolean = false,
+        // Turns our credentials down on every ask, the way a paid relay does:
+        // it ANSWERS, and no filter will change its mind.
+        val refusesCredentials: Boolean = false,
         // The same relay, [newerBy] events later — what a firehose looks like
         // by the time the second url of a group gets its turn at the gate.
         val newerBy: Int = 0,
@@ -71,16 +74,19 @@ class AliasProbeTest {
             want: Int,
             until: Long?,
             kinds: List<Int>?,
-        ): List<Event> {
+        ): AliasProbe.Page {
             asks += want to until
             kindsAsked += kinds
-            if (demandsKinds && kinds == null) return emptyList()
+            if (refusesCredentials) return AliasProbe.Page(emptyList(), authRefused = true)
+            if (demandsKinds && kinds == null) return AliasProbe.Page(emptyList())
             // A relay that ENFORCES its cap answers nothing at all, which is
             // what purplepag.es does to an over-large ask.
-            if (refuseOver != null && want > refuseOver) return emptyList()
-            return events
-                .filter { until == null || it.createdAt <= until }
-                .take(minOf(want, cap))
+            if (refuseOver != null && want > refuseOver) return AliasProbe.Page(emptyList())
+            return AliasProbe.Page(
+                events
+                    .filter { until == null || it.createdAt <= until }
+                    .take(minOf(want, cap)),
+            )
         }
 
         /** The ids this relay holds above [ts] — what an anchor is there to exclude. */
@@ -187,7 +193,7 @@ class AliasProbeTest {
     @Test
     fun `a url that cannot be asked at all stays null, never empty`() =
         runBlocking {
-            val probe = AliasProbe(fetch = { _, _, _, _ -> null }, target = 1_000)
+            val probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(null) }, target = 1_000)
 
             // Null is what stops [RelayAliases] folding it. An empty set would
             // be an assertion that the relay holds nothing.
@@ -201,7 +207,7 @@ class AliasProbeTest {
             val fake = Fake(total = 5_000, cap = 500)
             val probe =
                 AliasProbe(
-                    fetch = { u, want, until, kinds -> if (calls++ == 0) fake.fetch(u, want, until, kinds) else null },
+                    fetch = { u, want, until, kinds -> if (calls++ == 0) fake.fetch(u, want, until, kinds) else AliasProbe.Page(null) },
                     target = 1_000,
                 )
 
@@ -226,7 +232,7 @@ class AliasProbeTest {
             val probe =
                 AliasProbe(fetch = { _, _, _, _ ->
                     asks++
-                    same
+                    AliasProbe.Page(same)
                 }, target = 1_000)
 
             assertEquals(10, probe.fingerprint(url) {}?.size)
@@ -351,10 +357,10 @@ class AliasProbeTest {
             want: Int,
             until: Long?,
             kinds: List<Int>?,
-        ): List<Event> {
+        ): AliasProbe.Page {
             kindsAsked += kinds
-            if (kinds != RelayAliases.GROUP_METADATA_KINDS) return emptyList()
-            return events.filter { until == null || it.createdAt <= until }.take(want)
+            if (kinds != RelayAliases.GROUP_METADATA_KINDS) return AliasProbe.Page(emptyList())
+            return AliasProbe.Page(events.filter { until == null || it.createdAt <= until }.take(want))
         }
     }
 
@@ -380,6 +386,27 @@ class AliasProbeTest {
         }
 
     @Test
+    fun `a refused credential stops the ladder at the first ask`() =
+        runBlocking {
+            // Measured on `filter.nostr.wine`: the first ask is answered in
+            // 1.6s with `auth-refused`, and every ask after it on that
+            // connection gets NOTHING back at all — no CLOSED, no EOSE, no
+            // reason — so each one waits out the whole idle window. Six asks
+            // down the ladder cost 61s per url where one costs 1.6.
+            //
+            // Which is waste on top of an answer we already had. The ladder
+            // exists to find a filter the relay will ACCEPT, and a refused
+            // credential is not a complaint about the filter.
+            val fake = Fake(total = 5_000, refusesCredentials = true)
+
+            val attempt = AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}
+
+            assertNull(attempt.leader, "a relay that refuses us has no window to give")
+            assertTrue(attempt.spoke, "a refusal is the relay ANSWERING, and the fold turns on that")
+            assertEquals(1, fake.asks.size, "the ladder asked again after being refused: ${fake.kindsAsked}")
+        }
+
+    @Test
     fun `a url that never spoke is not asked for group metadata`() =
         runBlocking {
             // Null is our own transport giving up, and a third ask buys nothing
@@ -391,7 +418,7 @@ class AliasProbeTest {
             val probe =
                 AliasProbe(fetch = { _, _, _, kinds ->
                     asked += kinds
-                    null
+                    AliasProbe.Page(null)
                 }, target = 1_000)
 
             assertNull(probe.leaderPrint(url, BASE) {}.leader)
@@ -416,7 +443,7 @@ class AliasProbeTest {
     fun `a leader that answers nothing either way yields no group filter at all`() =
         runBlocking {
             // Neither shape works: the group cannot fold and must not be probed.
-            val probe = AliasProbe(fetch = { _, _, _, _ -> null }, target = 1_000)
+            val probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(null) }, target = 1_000)
 
             assertNull(probe.leaderPrint(url, BASE) {}.leader)
         }

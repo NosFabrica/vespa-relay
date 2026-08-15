@@ -99,12 +99,12 @@ class AliasFoldingTest {
             want: Int,
             until: Long?,
             kinds: List<Int>?,
-        ): List<Event>? {
+        ): AliasProbe.Page {
             dials.incrementAndGet()
             contacted += at
-            if (!answers(at)) return null
-            if (!serves(kinds)) return emptyList()
-            return corpusFor(at).filter { until == null || it.createdAt <= until }.take(want)
+            if (!answers(at)) return AliasProbe.Page(null)
+            if (!serves(kinds)) return AliasProbe.Page(emptyList())
+            return AliasProbe.Page(corpusFor(at).filter { until == null || it.createdAt <= until }.take(want))
         }
     }
 

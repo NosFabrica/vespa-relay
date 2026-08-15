@@ -71,10 +71,11 @@ class AliasProbe(
     /**
      * One page, as a function, so the walk below can be tested without a relay.
      * Takes the url, the page size, and the exclusive-to-us `until` cursor
-     * (null for the newest page). Returns null when the url could not be asked
-     * at all — which is NOT the same as an empty page.
+     * (null for the newest page). See [Page] for the three answers it can give —
+     * a window, an empty relay, and a url that never spoke are all different
+     * things here, and so is a relay that refused our credentials.
      */
-    private val fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> List<Event>?,
+    private val fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> Page,
     /** How many ids make a fingerprint. The walk stops here. */
     private val target: Int = RelayAliases.DEFAULT_PROBE_TARGET,
     /** How many events one REQ asks for. Trimmed to [fallbackPage] if the first page is refused. */
@@ -93,6 +94,35 @@ class AliasProbe(
     private val maxPages: Int = DEFAULT_MAX_PAGES,
 ) {
     /**
+     * One page, and the one thing about it that ends a walk early.
+     *
+     * [events] keeps the distinction the rest of this class is built on — null
+     * is a url that never spoke, an empty list is one that answered with
+     * nothing. [authRefused] is the third state, and it exists because the
+     * first two cannot express it: a relay that turned our credentials down
+     * ANSWERED, so it is not silence, and it will not serve, so it is not an
+     * empty relay either.
+     */
+    data class Page(
+        /** The events, or null when the url could not be asked at all. */
+        val events: List<Event>?,
+        /**
+         * The relay refused our credentials — NIP-42 came back rejected, or it
+         * went on demanding auth we cannot satisfy.
+         *
+         * **Terminal for the whole ladder, not just this page.** Measured on
+         * `filter.nostr.wine`: the first ask is answered in 1.6s with exactly
+         * this, and every ask after it on that connection is answered with
+         * NOTHING — no CLOSED, no EOSE, no reason at all — so each one waits out
+         * the full idle window. Six asks down the ladder cost 61s per url where
+         * one costs 1.6. Asking again is not merely wasteful, it is asking a
+         * question already answered: a credential refusal is not a complaint
+         * about the FILTER, so no filter can fix it.
+         */
+        val authRefused: Boolean = false,
+    )
+
+    /**
      * The leader's fingerprint AND the filter that produced it — the two things
      * the rest of its group needs.
      *
@@ -107,14 +137,19 @@ class AliasProbe(
         anchor: Long,
         onEvent: suspend (Event) -> Unit,
     ): Attempt {
-        val bare = fingerprint(url, anchor, null, onEvent)
-        if (!bare.isNullOrEmpty()) return Attempt(Leader(bare, null), spoke = true)
+        val bare = walk(url, anchor, null, onEvent)
+        if (!bare.ids.isNullOrEmpty()) return Attempt(Leader(bare.ids, null), spoke = true)
+        // THE LADDER IS FOR FILTERS THE RELAY WILL NOT ACCEPT, and a refused
+        // credential is not one of those. See [Page.authRefused] — this is the
+        // difference between 1.6s and 61s at a paid relay.
+        if (bare.authRefused) return Attempt(null, spoke = true)
         // Measured: 46 of 229 hosts in a full-corpus sweep answered a bare
         // filter with `CLOSED blocked: can't handle empty filters`, taking 892
         // urls out of the fold — by far its largest blind spot, and every one
         // of the twelve retried answered a kinds filter perfectly well.
-        val general = fingerprint(url, anchor, FALLBACK_KINDS, onEvent)
-        if (!general.isNullOrEmpty()) return Attempt(Leader(general, FALLBACK_KINDS), spoke = true)
+        val general = walk(url, anchor, FALLBACK_KINDS, onEvent)
+        if (!general.ids.isNullOrEmpty()) return Attempt(Leader(general.ids, FALLBACK_KINDS), spoke = true)
+        if (general.authRefused) return Attempt(null, spoke = true)
         // A RELAY THAT REFUSED IS NOT A RELAY THAT SAID NOTHING, and only the
         // first is worth a third ask.
         //
@@ -134,9 +169,9 @@ class AliasProbe(
         // [RelayAliases.GROUP_METADATA_KINDS]. Demanding that BOTH rungs be
         // refused would drop such a host on our own blip, and the cost of the
         // looser rule is one dial at a url that has already answered once.
-        if (bare == null && general == null) return Attempt(null, spoke = false)
-        val groups = fingerprint(url, anchor, RelayAliases.GROUP_METADATA_KINDS, onEvent)
-        if (!groups.isNullOrEmpty()) return Attempt(Leader(groups, RelayAliases.GROUP_METADATA_KINDS), spoke = true)
+        if (bare.ids == null && general.ids == null) return Attempt(null, spoke = false)
+        val groups = walk(url, anchor, RelayAliases.GROUP_METADATA_KINDS, onEvent)
+        if (!groups.ids.isNullOrEmpty()) return Attempt(Leader(groups.ids, RelayAliases.GROUP_METADATA_KINDS), spoke = true)
         // Every filter refused, and the relay was there for all of them.
         return Attempt(null, spoke = true)
     }
@@ -193,7 +228,20 @@ class AliasProbe(
          */
         kinds: List<Int>? = null,
         onEvent: suspend (Event) -> Unit,
-    ): Set<String>? {
+    ): Set<String>? = walk(url, anchor, kinds, onEvent).ids
+
+    /** What one url's window turned out to be, and whether the ladder may go on. */
+    private data class Walk(
+        val ids: Set<String>?,
+        val authRefused: Boolean = false,
+    )
+
+    private suspend fun walk(
+        url: NormalizedRelayUrl,
+        anchor: Long?,
+        kinds: List<Int>?,
+        onEvent: suspend (Event) -> Unit,
+    ): Walk {
         // id -> created_at, because the fingerprint is "the newest [target]",
         // and only the timestamp can say which those are. A page may arrive in
         // any order, and two urls on the same host can page at different sizes
@@ -207,7 +255,7 @@ class AliasProbe(
         var stalls = 0
 
         repeat(maxPages) {
-            if (ids.size >= target) return newest(ids)
+            if (ids.size >= target) return Walk(newest(ids))
             // A FULL page every time, never trimmed to what is still missing.
             // `until` is inclusive, so each page re-reads its boundary and
             // yields one fewer new id than it returned; trimming the last ask
@@ -215,12 +263,17 @@ class AliasProbe(
             // target by that boundary, and then asking for 1, and then for 1
             // again. Over-fetching by at most a page costs nothing — the
             // events go to ingest either way.
-            val events = fetch(url, size, until, kinds)
+            val page = fetch(url, size, until, kinds)
+            // Refused our credentials. The relay ANSWERED — so this is not
+            // silence — and no further ask down this walk or the ladder above
+            // can change its mind. See [Page.authRefused].
+            if (page.authRefused) return Walk(newest(ids), authRefused = true)
+            val events = page.events
             if (events == null) {
                 // Mid-walk the transport gave up. Keep what the walk already
                 // proved rather than throwing it away — but a walk that never
                 // got a single page has nothing to stand behind.
-                return if (spoke) newest(ids) else null
+                return if (spoke) Walk(newest(ids)) else Walk(null)
             }
             spoke = true
             if (events.isEmpty()) {
@@ -231,7 +284,7 @@ class AliasProbe(
                     size = fallbackPage
                     return@repeat
                 }
-                return newest(ids)
+                return Walk(newest(ids))
             }
             val before = ids.size
             for (event in events) {
@@ -249,13 +302,13 @@ class AliasProbe(
                 until = oldest - 1
                 // Two stalled pages in a row is a relay that is not walking
                 // backwards for us. Take what we have.
-                if (++stalls >= MAX_STALLS) return newest(ids)
+                if (++stalls >= MAX_STALLS) return Walk(newest(ids))
             } else {
                 until = oldest
                 stalls = 0
             }
         }
-        return newest(ids)
+        return Walk(newest(ids))
     }
 
     /** The [target] newest ids of a walk that may have overshot by up to a page. */
@@ -387,7 +440,15 @@ class AliasProbe(
                     // react to — and reading it as silence would return null,
                     // skip the retry, and take every relay capping under
                     // [RelayAliases.DEFAULT_PROBE_PAGE] out of the fold.
-                    if (result.doneReasons.values.any { !it.startsWith(CANNOT_CONNECT) }) result.events.map { it.second } else null
+                    val spoke = result.doneReasons.values.any { !it.startsWith(CANNOT_CONNECT) }
+                    Page(
+                        events = if (spoke) result.events.map { it.second } else null,
+                        // Quartz derives this from the same `doneReasons` map —
+                        // the reason string starts with `auth-refused` — so it
+                        // costs nothing to read and it is the only warning we
+                        // get before five asks into a wall. See [Page.authRefused].
+                        authRefused = url in result.authRefused,
+                    )
                 },
                 target = target,
             )
