@@ -264,12 +264,11 @@ class AliasProbe(
             // again. Over-fetching by at most a page costs nothing — the
             // events go to ingest either way.
             val page = fetch(url, size, until, kinds)
-            // Refused our credentials. The relay ANSWERED — so this is not
-            // silence — and no further ask down this walk or the ladder above
-            // can change its mind. See [Page.authRefused].
-            if (page.authRefused) return Walk(newest(ids), authRefused = true)
             val events = page.events
             if (events == null) {
+                // A refusal with no page at all is still the relay ANSWERING,
+                // so it ends the walk here rather than reading as silence.
+                if (page.authRefused) return Walk(newest(ids), authRefused = true)
                 // Mid-walk the transport gave up. Keep what the walk already
                 // proved rather than throwing it away — but a walk that never
                 // got a single page has nothing to stand behind.
@@ -280,6 +279,9 @@ class AliasProbe(
                 // The first empty page is ambiguous: an empty relay, or one
                 // refusing this page size. Drop to the smaller ask once and
                 // let the next page decide which it was.
+                // Nothing came with the refusal, so there is nothing to keep
+                // and no smaller page worth trying.
+                if (page.authRefused) return Walk(newest(ids), authRefused = true)
                 if (ids.isEmpty() && size > fallbackPage) {
                     size = fallbackPage
                     return@repeat
@@ -291,6 +293,15 @@ class AliasProbe(
                 onEvent(event)
                 ids[event.id] = event.createdAt
             }
+            // THE WINDOW COMES FIRST, and the order is load-bearing. A page can
+            // carry events AND a refusal at once: `chorus.bonsai.com` refuses a
+            // 500-limit ask as anti-scraping and answers the smaller retry with
+            // 100 events plus `auth-required: At least one matching event
+            // requires AUTH`. Returning on the flag before ingesting them threw
+            // away a fingerprint the relay had actually served — a partial
+            // window is still a window, and the refusal only means there is no
+            // point asking for MORE.
+            if (page.authRefused) return Walk(newest(ids), authRefused = true)
             // `until` is INCLUSIVE, so the next page re-sees everything sharing
             // the oldest timestamp — harmless for a set, except that a page
             // which is entirely one timestamp cannot move the cursor at all.

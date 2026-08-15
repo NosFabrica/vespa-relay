@@ -85,6 +85,8 @@ class AliasFoldingTest {
          * on.
          */
         private val serves: (List<Int>?) -> Boolean = { true },
+        /** Which urls turn our credentials down — an ANSWER, and a different one. */
+        private val refuses: (NormalizedRelayUrl) -> Boolean = { false },
         private val corpusFor: (NormalizedRelayUrl) -> List<Event>,
     ) {
         val dials = AtomicInteger()
@@ -103,6 +105,7 @@ class AliasFoldingTest {
             dials.incrementAndGet()
             contacted += at
             if (!answers(at)) return AliasProbe.Page(null)
+            if (refuses(at)) return AliasProbe.Page(emptyList(), authRefused = true)
             if (!serves(kinds)) return AliasProbe.Page(emptyList())
             return AliasProbe.Page(corpusFor(at).filter { until == null || it.createdAt <= until }.take(want))
         }
@@ -226,6 +229,73 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `a hundred unreadable urls collapse to one, and the dials are counted`() =
+        runBlocking {
+            // `nwc.primal.net`, reported from the coverage card: 100 url(s) ->
+            // 100 dialled, every row NOT FOLDED. An NWC relay serves
+            // wallet-connect traffic and nothing else, and of its four kinds
+            // only 13194 is storable — 23194/23195/23196 are ephemeral and are
+            // never persisted — so there is no stream behind those urls to lose.
+            //
+            // The count is the point as much as the fold. Each url is asked the
+            // WHOLE ladder, because an EOSE-empty page is not a refusal and
+            // cannot end it: `top.testrelay.top` proves a host can answer a bare
+            // filter with nothing and still serve on kinds. So this pins the
+            // real cost at 3 asks per url, and would catch either regression —
+            // a fourth rung appearing, or the sweep re-asking urls the yardstick
+            // walk already tried.
+            val store = newStore()
+            val up = unreadableUpstreams()
+            val fold = folding(store, up)
+            val host = "wss://nwc.example"
+            val urls = (listOf(host) + (0 until 99).map { "$host/p$it" }).map { RelayUrlNormalizer.normalize(it) }
+
+            assertEquals(99, fold.measure("t", urls, canDial = { true }), "the whole host must collapse")
+            assertEquals(listOf(urls.first()), fold.apply(urls).dial, "100 urls, one dial")
+            assertEquals(100, up.contacted.size, "every url has to answer before the group may fold")
+            assertEquals(
+                300,
+                up.dials.get(),
+                "the ladder is 3 rungs and no url may be asked twice — got ${up.dials.get()} asks for 100 urls",
+            )
+        }
+
+    @Test
+    fun `a window found past the third attempt is adopted, not thrown away`() =
+        runBlocking {
+            // The sweep exists to prove "every url answered, none served", so it
+            // dials the urls the yardstick walk never reached — and sometimes one
+            // of THOSE serves a window. YARDSTICK_ATTEMPTS stops at three; a host
+            // whose fourth url is the only one that answers used to be abandoned
+            // even though the sweep had just been past it.
+            //
+            // Taking it costs nothing: the dial already happened. The group then
+            // folds on a measurement rather than on the shared name, which is the
+            // stronger verdict of the two and must win where it is available.
+            val store = newStore()
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            // The first three in PREFERENCE order answer with nothing; the last
+            // two serve one window between them.
+            val quiet = setOf("", "/a", "/b")
+            val up =
+                Upstreams(serves = { true }) { at ->
+                    if (RelayAliases.pathOf(at.url).let { p -> quiet.contains(if (p.isEmpty()) "" else "/$p") }) emptyList() else corpus
+                }
+            val fold = folding(store, up)
+            val host = "wss://late.example"
+            val urls = listOf(host, "$host/a", "$host/b", "$host/c", "$host/d").map { RelayUrlNormalizer.normalize(it) }
+
+            val learned = fold.measure("t", urls, canDial = { true })
+
+            // A real fold, not the shared-name default: /d folds onto /c because
+            // their windows matched.
+            assertEquals(1, learned, "the window the sweep turned up was discarded")
+            val dial = fold.apply(urls).dial
+            assertTrue(RelayUrlNormalizer.normalize("$host/d") !in dial, "the measured duplicate is still being dialled")
+            assertTrue(RelayUrlNormalizer.normalize("$host/c") in dial, "the survivor must be the url that answered")
+        }
+
+    @Test
     fun `a url that never spoke keeps its whole group out of the fold`() =
         runBlocking {
             // Our own transport failing is not evidence about their server. One
@@ -262,6 +332,35 @@ class AliasFoldingTest {
             fold.measure("t", group, canDial = { true })
 
             assertEquals(group, fold.apply(group).dial, "an empty path was folded away while the host was readable")
+        }
+
+    @Test
+    fun `urls that answered DIFFERENTLY are still folded together`() =
+        runBlocking {
+            // DOCUMENTING A LIMIT, NOT ASSERTING IT IS RIGHT. The rule reads
+            // "every url answered, none served", and it counts a credential
+            // refusal and a clean empty EOSE as the same thing — an answer. But
+            // those are different answers, and two endpoints that behave
+            // differently are weak evidence of being one server.
+            //
+            // Held as a test rather than a fix because no host has been MEASURED
+            // in this shape: every mixed-looking candidate turned out uniform on
+            // a second look (`chorus.bonsai.com`), and the rate-limited census
+            // that suggested otherwise was measuring us. Tightening the rule to
+            // demand the same KIND of answer from every url would be cheap and
+            // would shrink the false-fold surface — see the hazard list in
+            // AGENTS.md. If that is ever done, this test inverts.
+            val store = newStore()
+            val up =
+                Upstreams(
+                    serves = { false },
+                    refuses = { RelayAliases.pathOf(it.url).isNotEmpty() },
+                ) { emptyList() }
+            val fold = folding(store, up)
+            val group = listOf(canonical, alias)
+
+            assertEquals(1, fold.measure("t", group, canDial = { true }))
+            assertEquals(listOf(canonical), fold.apply(group).dial, "current behaviour: a refusal and an EOSE fold together")
         }
 
     @Test

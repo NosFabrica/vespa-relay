@@ -1529,6 +1529,55 @@ walk-level stop a refused member still pays the empty-page retry at
 the ladder at the first ask` and `a refused credential also ends the WALK, not
 just the ladder` pin the two halves.
 
+**THE MEASURED RELAY SHAPES, PINNED AS TESTS.** Everything above is prose until
+a fake reproduces it, so each live shape has a deterministic test against
+`AliasProbeTest.Fake` / `AliasFoldingTest.Upstreams`. Writing them found one real
+bug and exercised one path that had never run:
+
+| live host | shape | test |
+|---|---|---|
+| `groups.satsdisco.com` | refuses both general filters, serves 39000 | `a NIP-29 host folds on the one window a general filter cannot reach` |
+| `top.testrelay.top` | bare filter → EOSE-empty, kinds serve | `a relay refusing bare filters is asked with kinds instead` |
+| `filter.nostr.wine` | auth-refused, then silent | `a refused credential stops the ladder at the first ask` |
+| `chorus.bonsai.com` | a page carrying a window AND a refusal | `a page carrying both a window and a refusal keeps the window` |
+| `nwc.primal.net` | 100 urls, all answer, none serve | `a hundred unreadable urls collapse to one, and the dials are counted` |
+| `haven.calva.dev` | `/chat` empty while the host serves | `one url that serves anything keeps the empty ones separate` |
+| `buzz.relay.tools/echo` | silent beside a url that answers | `a url that never spoke keeps its whole group out of the fold` |
+
+**The bug the tests found:** the walk returned on `Page.authRefused` BEFORE
+ingesting the page, so `chorus.bonsai.com` — which serves 100 events and flags
+the refusal on the same page — had its window thrown away and read as
+unfingerprintable. The order is now window first, refusal second: a partial
+window is still a window, and the flag only means there is no point asking for
+MORE.
+
+**The path that had never run:** the `foldUnreadableGroups` sweep adopts a
+yardstick found past `YARDSTICK_ATTEMPTS`. A host whose fourth url is the only one
+that answers used to be abandoned even though the sweep had just dialled it.
+Taking it costs nothing — the dial already happened — and the group then folds on
+a MEASUREMENT rather than on the shared name, which is the stronger verdict and
+must win wherever it is available. `a window found past the third attempt is
+adopted, not thrown away`.
+
+**The cost, pinned rather than described:** 100 unreadable urls cost exactly
+**300 asks** — three rungs each, no url asked twice. An EOSE-empty page cannot end
+the ladder the way a credential refusal can, because `top.testrelay.top` proves a
+host can answer a bare filter with nothing and still serve on kinds. So 3× is the
+honest floor for this shape, and the assertion catches either regression: a
+fourth rung appearing, or the sweep re-asking what the yardstick walk already
+tried.
+
+**One limit is documented rather than fixed.** The rule counts a credential
+refusal and a clean empty EOSE as the same thing — "answered" — so a host whose
+urls answer DIFFERENTLY still folds. Two endpoints that behave differently are
+weak evidence of being one server, and demanding the same KIND of answer from
+every url would be cheap and would shrink the false-fold surface. It is not done
+because no host has been measured in that shape: every mixed-looking candidate
+turned out uniform on a second look, and the census that suggested otherwise was
+measuring our own rate limit. `urls that answered DIFFERENTLY are still folded
+together` holds the current behaviour so the decision is visible; if it is ever
+tightened, that test inverts.
+
 **A HUNT FOR NEW RUNGS, BY READING WHAT RELAYS SAY WHEN THEY REFUSE.** The
 kind-39000 rung was found in one CLOSED message, so `hunt` clustered the terminal
 message of one bare ask across ~260 fresh urls (hosts already probed that session

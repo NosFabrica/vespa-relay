@@ -59,6 +59,10 @@ class AliasProbeTest {
         // Turns our credentials down on every ask, the way a paid relay does:
         // it ANSWERS, and no filter will change its mind.
         val refusesCredentials: Boolean = false,
+        // Serves a PARTIAL window and flags the refusal on the same page, which
+        // is what `chorus.bonsai.com` does: 100 events plus
+        // `auth-required: At least one matching event requires AUTH`.
+        val servesThenRefuses: Boolean = false,
         // The same relay, [newerBy] events later — what a firehose looks like
         // by the time the second url of a group gets its turn at the gate.
         val newerBy: Int = 0,
@@ -78,6 +82,12 @@ class AliasProbeTest {
             asks += want to until
             kindsAsked += kinds
             if (refusesCredentials) return AliasProbe.Page(emptyList(), authRefused = true)
+            if (servesThenRefuses) {
+                return AliasProbe.Page(
+                    events.filter { until == null || it.createdAt <= until }.take(minOf(want, cap)),
+                    authRefused = true,
+                )
+            }
             if (demandsKinds && kinds == null) return AliasProbe.Page(emptyList())
             // A relay that ENFORCES its cap answers nothing at all, which is
             // what purplepag.es does to an over-large ask.
@@ -424,6 +434,27 @@ class AliasProbeTest {
             // "every url answered" rule turns on exactly that distinction.
             assertEquals(emptySet(), print)
             assertEquals(1, fake.asks.size, "the walk retried at the smaller page after being refused")
+        }
+
+    @Test
+    fun `a page carrying both a window and a refusal keeps the window`() =
+        runBlocking {
+            // `chorus.bonsai.com`, measured: it refuses a 500-limit ask outright
+            // as anti-scraping and then answers the FALLBACK_PROBE_PAGE retry
+            // with 100 events AND `auth-required: At least one matching event
+            // requires AUTH`. So a page can carry a window and a refusal at
+            // once, and the order the two are tested in decides whether that
+            // host is fingerprinted at all.
+            //
+            // A partial window is still a fingerprint. The refusal only ends the
+            // walk when nothing came back with it.
+            val fake = Fake(total = 5_000, cap = 60, servesThenRefuses = true)
+
+            val attempt = AliasProbe(fetch = fake::fetch, target = 1_000).leaderPrint(url, BASE) {}
+
+            assertEquals(60, attempt.leader?.ids?.size, "a window arriving beside a refusal was thrown away")
+            assertNull(attempt.leader?.kinds, "the bare filter answered, so the group must stay bare")
+            assertEquals(1, fake.asks.size, "the refusal must still stop the walk after taking the window")
         }
 
     @Test
