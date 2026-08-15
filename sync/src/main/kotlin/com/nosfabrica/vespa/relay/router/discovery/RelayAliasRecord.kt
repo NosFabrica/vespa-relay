@@ -219,6 +219,40 @@ class RelayAliasRecord(
         )
 
     /**
+     * The fitness pass's whole write: the status a stream filters on, and the
+     * two measured facts a visit reads back off the record.
+     *
+     * The `s` tag is single-letter ON PURPOSE, unlike every other tag this
+     * monitor defines: it is the one value streams FILTER on, and only
+     * single-letter tags are indexed. Its shape follows the house rule all the
+     * same — value, evidence, measured-at, epoch — so it ages by its own
+     * measurement like `same-as` does, not by the record's much-rewritten
+     * `createdAt`. The facts are spelled out (`pageable`, `nip77`), because
+     * they are read from the fetched record rather than filtered on, and every
+     * other NIP-66 consumer skips them as unknown tags.
+     */
+    suspend fun publishFitness(
+        url: NormalizedRelayUrl,
+        status: String,
+        evidence: String,
+        pageable: Pair<Boolean, String>?,
+        nip77: Pair<Boolean, String>?,
+    ): Event? {
+        val at = nowSeconds().toString()
+        val add =
+            buildList {
+                add(arrayOf(STATUS_TAG, status, evidence, at, FITNESS_EPOCH))
+                pageable?.let { (yes, why) -> add(arrayOf(PAGEABLE_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
+                nip77?.let { (yes, why) -> add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
+            }
+        // Owns all three even when a fact is absent this pass: a verdict that
+        // changed makes the old facts claims about a different relay, and
+        // carrying them forward would pin, say, `pageable true` to a url that
+        // has been dead for a week.
+        return edit(url, owned = setOf(STATUS_TAG, PAGEABLE_TAG, NIP77_TAG), add = add)
+    }
+
+    /**
      * Sign and store one verdict. Returns the event so a caller can push it
      * upstream; null when there is no signer, which is also when the router
      * runs without a NIP-66 monitor at all.
@@ -587,6 +621,29 @@ class RelayAliasRecord(
          * here they age normally.
          */
         const val CONSISTENCY_EPOCH = "1"
+
+        /**
+         * The fitness verdict — the one tag streams FILTER on, which is why it
+         * is the one single-letter tag this monitor writes: only single-letter
+         * tags are indexed, and `"#s": ["syncable"]` is a whole relay list.
+         * See [FitnessPass.Verdict] for the vocabulary.
+         */
+        const val STATUS_TAG = "s"
+
+        /** Measured: does the relay honour `until`, i.e. can a paged walk terminate? */
+        const val PAGEABLE_TAG = "pageable"
+
+        /** Measured: did it answer a NEG-OPEN, i.e. is reconcile on the table? */
+        const val NIP77_TAG = "nip77"
+
+        /**
+         * The fitness verdict's own rules version, separate from the fold's
+         * and the consistency pass's for the same reason those two are
+         * separate: each is its own measurement with its own re-take cost.
+         *
+         * **1** — the vocabulary and checks as first shipped.
+         */
+        const val FITNESS_EPOCH = "1"
 
         /** How old the stability anchor is, for the evidence string. */
         private const val ANCHOR_DAYS = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60)

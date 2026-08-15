@@ -28,6 +28,7 @@ import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasMonitor
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
+import com.nosfabrica.vespa.relay.router.discovery.FitnessPass
 import com.nosfabrica.vespa.relay.router.discovery.ReachabilityProbe
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
@@ -359,6 +360,28 @@ class SyncEngine(
      */
     private val world = StreamWorld(store, dynamicStreams, probe, ingest, monitor, tor, sockets)
 
+    /**
+     * The verdict the sync plane selects on — `"#s": ["syncable"]` — plus the
+     * measured facts a visit reads back. Third in the pass order on purpose:
+     * fitness turns the fold's and the consistency pass's standing verdicts
+     * into refusals without re-dialling, so both must have run first or a
+     * to-be-folded url earns a dial the fold is about to make pointless.
+     */
+    private val fitness =
+        signer?.let { s ->
+            FitnessPass(
+                record = RelayAliasRecord(store, s),
+                probe =
+                    AliasProbe.over(client, FitnessPass.FITNESS_TARGET) { url ->
+                        probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
+                    },
+                client = client,
+                foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
+                unstable = { urls -> stability?.apply(urls)?.toSet() ?: emptySet() },
+                progress = processors.of(FITNESS_PROCESSOR),
+            )
+        }
+
     private val aliasMonitor: AliasMonitor? =
         listOfNotNull<AliasMonitor.Pass>(
             // Each wrapper carries the same handle its pass writes into, so the
@@ -389,6 +412,19 @@ class SyncEngine(
                         onEvent: suspend (Event) -> Unit,
                         sockets: AliasFolding.Sockets,
                     ): Int = g.measure(label, candidates, canDial, onEvent, sockets)
+                }
+            },
+            fitness?.let { f ->
+                object : AliasMonitor.Pass {
+                    override val progress = f.progress
+
+                    override suspend fun measure(
+                        label: String,
+                        candidates: List<NormalizedRelayUrl>,
+                        canDial: suspend (NormalizedRelayUrl) -> Boolean,
+                        onEvent: suspend (Event) -> Unit,
+                        sockets: AliasFolding.Sockets,
+                    ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
                 }
             },
         ).takeIf { it.isNotEmpty() }
@@ -882,6 +918,14 @@ class SyncEngine(
         // `self-consistent`. A fourth word for the same measurement is a word
         // nobody can grep from the document back to the code.
         const val STABILITY_PROCESSOR = "consistency"
+
+        /**
+         * The fitness pass — the verdict funnel the sync plane selects on.
+         * Its counts are the verdicts themselves, not the candidate funnel the
+         * fold and consistency rows carry: those two share a derivation, this
+         * one reports what it decided.
+         */
+        const val FITNESS_PROCESSOR = "fitness"
         const val REACHABILITY_PROCESSOR = "reachability"
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"
