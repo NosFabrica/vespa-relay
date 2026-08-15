@@ -179,6 +179,16 @@ data class SyncStream(
      */
     val healRetractions: Boolean = false,
     /**
+     * Fetch forward, audit the past: when set, a relay whose band's last full
+     * pass is older than this gets a windowed negentropy audit on its next
+     * visit — the covered history reconciled, only the diff downloaded, and
+     * `fullAt` re-stamped. A week is the intended magnitude. Staggering is
+     * free (each relay's band ages on its own clock), so no herd and no cap.
+     * Null audits nothing, which leaves history exactly as complete as the
+     * paged walks left it.
+     */
+    val verifySeconds: Long? = null,
+    /**
      * The kinds this stream's upstreams are the source of truth for — the only
      * kinds [deleteMissing] may delete on their own absence. Required whenever
      * it is on, and checked against [filter]: turning on deletion without

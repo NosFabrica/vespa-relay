@@ -234,6 +234,10 @@ object RouterConfigLoader {
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
+                    // An hour is the floor because the audit re-reconciles the
+                    // WHOLE covered history: a knob under it is a re-walk loop
+                    // wearing an audit's name.
+                    verifySeconds = if (s.hasPath("verifySeconds")) s.getLong("verifySeconds").coerceAtLeast(3600L) else null,
                 )
             }
         return RouterConfig(

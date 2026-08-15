@@ -241,6 +241,16 @@ class SyncEngine(
     private val upUpstreams = config.upUpstreams()
     private val dynamicStreams = config.dynamicStreams()
 
+    /**
+     * The fork's arithmetic: a dynamic stream whose relay list comes ENTIRELY
+     * from the monitor's verdicts (a syncable source, no parsed sources) is a
+     * visit-mode stream; one still parsing relay lists keeps the legacy pass
+     * machinery. Both at once — `syncableRelays` beside a `relaySource` — is
+     * the union path through the legacy engine, for the deployment mid-crossing.
+     */
+    private val visitStreams = dynamicStreams.filter { it.dynamic?.syncable != null && it.dynamic.sources.isEmpty() }
+    private val legacyStreams = dynamicStreams - visitStreams.toSet()
+
     // The relays we hold a live subscription on; a dynamic sync must not drop
     // one of these sockets out from under its tail.
     private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
@@ -502,6 +512,24 @@ class SyncEngine(
             probe,
             monitorAuthor = signer?.pubKey,
         )
+
+    /** The rotating pool — the visit-mode streams' whole engine. Inert when none are configured. */
+    private val visitPool =
+        VisitPool(
+            client = client,
+            store = store,
+            bands = bands,
+            ingest = ingest,
+            pager = pager,
+            healer = healer,
+            sockets = sockets,
+            tor = tor,
+            scope = scope,
+            monitorAuthor = signer?.pubKey,
+            streams = visitStreams,
+            progress = processors.of(VISITS_PROCESSOR),
+        )
+
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
@@ -565,7 +593,13 @@ class SyncEngine(
 
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
 
-        dynamicStreams.forEach { stream -> scope.launch { dynamic.loop(stream) } }
+        // THE FORK IN THE ROAD. A stream running purely on the monitor's
+        // verdicts rides the rotating pool — one queue, socket-owning workers,
+        // tails, the audit clock. Everything else keeps the legacy pass
+        // machinery, which is the migration posture: both engines run side by
+        // side until every stream has crossed.
+        legacyStreams.forEach { stream -> scope.launch { dynamic.loop(stream) } }
+        visitPool.start()
 
         // Only where there is something to fold for. A dynamic stream is what
         // discovers urls off other people's relay lists; a static config names
@@ -955,6 +989,9 @@ class SyncEngine(
          * one reports what it decided.
          */
         const val FITNESS_PROCESSOR = "fitness"
+
+        /** The rotating pool — roster, tails, audits, visits. See [VisitPool]. */
+        const val VISITS_PROCESSOR = "visits"
         const val REACHABILITY_PROCESSOR = "reachability"
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"

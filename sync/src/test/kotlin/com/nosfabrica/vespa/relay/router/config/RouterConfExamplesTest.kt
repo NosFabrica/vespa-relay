@@ -78,26 +78,16 @@ class RouterConfExamplesTest {
     }
 
     @Test
-    fun `the outbox streams fan out over NIP-65 write relays`() {
-        // Found by SHAPE, not by name. There is more than one outbox stream now
-        // (profiles and content are split so they can sync differently), and
-        // they have been renamed once already — a test that pins the name fails
-        // on a rename while the thing it checks is still correct.
-        val outboxes =
-            example.dynamicStreams().filter { s ->
-                s.dynamic!!.sources.any { it.filter.kinds == listOf(10002) }
-            }
-        assertTrue(outboxes.isNotEmpty(), "no stream discovers relays from NIP-65 lists")
+    fun `the monitor fans out over NIP-65 write relays`() {
+        // Found by SHAPE, not by name — and in the MONITOR block now: relay
+        // list parsing moved off the streams and onto the monitor's own
+        // sources, whose verdicts the streams then select on. The shape checks
+        // survive the move because they were never about which block the
+        // source lives in.
+        val sources = example.monitor!!.sources.filter { it.filter.kinds == listOf(10002) }
+        assertTrue(sources.isNotEmpty(), "the monitor does not read NIP-65 lists")
 
-        for (outbox in outboxes) {
-            assertTrue(outbox.urls.isEmpty(), "a relaySource stream carries no static urls")
-            // One source PER KIND of relay list, not one source. An outbox
-            // stream reads NIP-65 write relays and NIP-29 group hosts, and they
-            // are separate entries because they scan different kinds — this
-            // used to be `.single()`, which pinned "there is exactly one way to
-            // find a relay" rather than anything about NIP-65.
-            val source = outbox.dynamic!!.sources.single { it.filter.kinds == listOf(10002) }
-
+        for (source in sources) {
             val nip65 = source.selects.single()
             assertEquals(10002, nip65.kind)
             assertEquals("r", nip65.tag)
@@ -118,7 +108,7 @@ class RouterConfExamplesTest {
     }
 
     @Test
-    fun `the outbox streams also fan out over NIP-29 group hosts`() {
+    fun `the monitor also fans out over NIP-29 group hosts`() {
         // By shape again: a scan of kind 10009. The `group` tag is the one
         // relay list in the protocol that does not put the url at element 1 —
         // it is ["group", <id>, <relay url>, <name?>] — so the whole point of
@@ -127,13 +117,11 @@ class RouterConfExamplesTest {
         // rejects one at a time and silently: no error, no relays, and a
         // `group:` search with nothing behind it.
         val hosts =
-            example.dynamicStreams().mapNotNull { s ->
-                s.dynamic!!
-                    .sources
-                    .singleOrNull { it.filter.kinds == listOf(10009) }
-                    ?.let { s to it }
-            }
-        assertTrue(hosts.isNotEmpty(), "no stream discovers relays from NIP-29 group lists")
+            example.monitor!!
+                .sources
+                .filter { it.filter.kinds == listOf(10009) }
+                .map { "monitor" to it }
+        assertTrue(hosts.isNotEmpty(), "the monitor does not read NIP-29 group lists")
 
         for ((stream, source) in hosts) {
             val select = source.selects.single()
@@ -148,7 +136,7 @@ class RouterConfExamplesTest {
             )
             assertTrue(
                 10009 in example.streams.flatMap { it.filter.kinds.orEmpty() },
-                "stream '${stream.name}' scans kind 10009, so some stream has to mirror it",
+                "$stream scans kind 10009, so some stream has to mirror it",
             )
         }
 
@@ -157,14 +145,16 @@ class RouterConfExamplesTest {
         // NIP-29 posts are kinds 9 (chat) and 11 (thread) with replies in 1111,
         // and the group's own record is 39000 — the one the `group:` picker
         // resolves a name against.
-        val content = example.streams.filter { it.dynamic?.sources?.any { s -> s.filter.kinds == listOf(10009) } == true }
+        // The hosts the monitor certifies are only useful if a visit-mode
+        // stream then asks them for what a group actually holds.
         assertTrue(
-            content.any {
-                it.filter.kinds
-                    .orEmpty()
-                    .containsAll(listOf(9, 11, 1111, 39000))
+            example.streams.any {
+                it.dynamic?.syncable != null &&
+                    it.filter.kinds
+                        .orEmpty()
+                        .containsAll(listOf(9, 11, 1111, 39000))
             },
-            "a stream dials group hosts but none of them asks for group posts or the group record",
+            "the monitor certifies group hosts but no verdict-built stream asks for group posts or the group record",
         )
     }
 
