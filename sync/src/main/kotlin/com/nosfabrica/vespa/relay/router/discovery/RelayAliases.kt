@@ -57,8 +57,32 @@ class RelayAliases(
      * The smallest window worth deciding on. Two relays that both answered with
      * four events look identical and are not evidence of anything; below this,
      * nothing is folded and both urls stay in the fan-out.
+     *
+     * This is the floor for a window taken through a GENERAL filter, and it is
+     * the floor every NEGATIVE claim uses whatever the filter was — see
+     * [groupMetadataMinSample] for the one window that folds below it.
      */
     private val minSample: Int = DEFAULT_MIN_SAMPLE,
+    /**
+     * The floor for a window taken through [GROUP_METADATA_KINDS] alone.
+     *
+     * A NIP-29 relay refuses a general window outright, so the only fingerprint
+     * to be had at one is its list of groups — and that list is SHORT. Measured
+     * over 21 live NIP-29 hosts discovered from kind-10009 group lists, the
+     * kind-39000 window is min 1, median **9**, max 1,302; [DEFAULT_MIN_SAMPLE]
+     * admits 7 of the 21 and this admits 16. A floor built for a slice of a
+     * firehose is simply the wrong instrument for a list of groups.
+     *
+     * Three rather than one, because a single shared id is the definition of the
+     * coincidence [minSample] exists to refuse, and the hosts it would add are
+     * the ones serving one or two groups.
+     *
+     * It is BOTH halves of the bar at this width: the smallest window either url
+     * may bring, and — via [Bar.shared] — the fewest ids they must genuinely
+     * have in common, since [minOverlap] alone would settle for two of them. See
+     * [foldBar].
+     */
+    private val groupMetadataMinSample: Int = DEFAULT_GROUP_METADATA_MIN_SAMPLE,
     /**
      * How much of the smaller window must appear in the larger one. Containment
      * rather than a symmetric ratio, because the two dials are seconds apart on
@@ -225,8 +249,72 @@ class RelayAliases(
         }
     }
 
-    /** Is this window big enough to be measured against at all? */
-    fun usableWindow(print: Set<String>?): Boolean = print != null && print.size >= minSample
+    /** What a fold has to clear, in the two places a thin window can cheat. */
+    private data class Bar(
+        /** The smallest window either side may have brought. */
+        val window: Int,
+        /**
+         * The fewest ids the two must actually have IN COMMON.
+         *
+         * Zero for a general window, which is this class's long-standing
+         * behaviour: [minOverlap] alone decides, and a 500-id window folding at
+         * 0.5 already shares 250 ids, so a separate count buys nothing there.
+         *
+         * **It cannot stay zero once the window floor is small, and that is a
+         * hole a pure RATIO cannot close.** At a window floor of 3 against
+         * [DEFAULT_MIN_OVERLAP] the least a fold could ever rest on is TWO
+         * shared ids: a path serving `{a, b, x}` scores 0.667 against a leader
+         * serving `{a, b, c, d, e, f, g}` and folds — taking `x`, a group
+         * nothing else on the host serves, out of the fan-out for
+         * [RelayAliasRecord.DEFAULT_TTL_SECONDS]. That is the fold's one
+         * unforgivable failure, silently not mirroring something, bought for a
+         * two-id coincidence.
+         */
+        val shared: Int,
+    )
+
+    /**
+     * What a fold must clear, given the FILTER that produced the windows.
+     *
+     * **The bar is a property of the question we had to ask, not a constant.**
+     * [minSample] is calibrated for a slice of a general event feed, where 20
+     * shared ids out of a firehose is the line between a measurement and a
+     * coincidence. A window of [GROUP_METADATA_KINDS] is not that: it is a
+     * relay's complete list of groups, addressable, one event per group, and a
+     * host with nine groups hands over nine ids and has told us everything it
+     * has. Holding that to the firehose floor refuses the entire NIP-29 corpus —
+     * measured, 14 of 21 live hosts.
+     *
+     * So the window floor drops and [Bar.shared] rises to meet it. The concern
+     * was never that a SHORT window is untrustworthy; it is that a fold resting
+     * on one or two ids is a coincidence, and only the second of those is worth
+     * a guard. Every live pair measured shares its list entirely — containment
+     * 1.000, 6 of 6 — so demanding three ids genuinely in common costs the
+     * honest case nothing at all.
+     *
+     * `minOf` on the window floor, so this only ever LOWERS it: a caller that
+     * set [minSample] below the group floor keeps its own number rather than
+     * having it raised here.
+     */
+    private fun foldBar(kinds: List<Int>?): Bar =
+        if (kinds == GROUP_METADATA_KINDS) {
+            val floor = minOf(minSample, groupMetadataMinSample)
+            Bar(window = floor, shared = floor)
+        } else {
+            Bar(window = minSample, shared = 0)
+        }
+
+    /**
+     * Is this window big enough to be measured against at all?
+     *
+     * [kinds] is the filter the window came through — null for the general one,
+     * which is the strict floor and the safe default for any caller that does
+     * not track it.
+     */
+    fun usableWindow(
+        print: Set<String>?,
+        kinds: List<Int>? = null,
+    ): Boolean = print != null && print.size >= foldBar(kinds).window
 
     /**
      * Does this relay give the same answer twice — the question that has to be
@@ -423,8 +511,30 @@ class RelayAliases(
         group: List<NormalizedRelayUrl>,
         leader: NormalizedRelayUrl,
         prints: Map<NormalizedRelayUrl, Set<String>>,
+        /**
+         * The filter every print in [prints] was taken through — the group's
+         * leader decided it, and it is what [foldBar] reads. Null is the
+         * general filter and the strict floor.
+         */
+        kinds: List<Int>? = null,
     ): Learned {
         val leaderPrint = prints[leader] ?: return Learned()
+        // FOLDING and CLEARING do not get the same floor, and that asymmetry is
+        // the whole safety argument for lowering one of them.
+        //
+        // A thin window can support "these two urls are the same relay": the
+        // NIP-29 host handed over its complete list of groups and two of its
+        // urls returned the same list. It cannot support "this url is a relay in
+        // its own right", which is a signed statement about somebody else's
+        // server that stands for [RelayAliasRecord.DEFAULT_TTL_SECONDS] — and
+        // which a thin window manufactures for free, since sharing none of three
+        // ids is exactly what a url that answered almost nothing looks like.
+        // That is the `relay.damus.io/lantern-oscar-dynamo` lie in miniature.
+        //
+        // So [minSample] stays on every path below that WRITES a negative claim
+        // — entry to `unmatched`, and the leader's own clear — and only
+        // [sameRelay] is given the filter's bar.
+        val bar = foldBar(kinds)
         val folds = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val cleared = HashSet<NormalizedRelayUrl>()
         var compared = 0
@@ -439,7 +549,7 @@ class RelayAliases(
         for (url in group) {
             if (url == leader || url in twins || folded.containsKey(url)) continue
             val print = prints[url] ?: continue
-            if (sameRelay(leaderPrint, print)) {
+            if (sameRelay(leaderPrint, print, bar)) {
                 compared++
                 folded[url] = leader
                 canonicals += leader
@@ -481,7 +591,10 @@ class RelayAliases(
         val heads = ArrayList<NormalizedRelayUrl>()
         for (url in unmatched) {
             val print = prints.getValue(url)
-            val head = heads.firstOrNull { sameRelay(prints.getValue(it), print) }
+            // [bar] is moot here and passed only so one rule decides every
+            // fold: entry to `unmatched` already demanded [minSample] on both
+            // sides, so nothing thin can reach this loop.
+            val head = heads.firstOrNull { sameRelay(prints.getValue(it), print, bar) }
             if (head == null) {
                 heads += url
                 markDistinct(url)
@@ -527,6 +640,53 @@ class RelayAliases(
     }
 
     /**
+     * Fold a group NOTHING could be read from onto its preferred survivor, on the
+     * strength of the shared hostname alone.
+     *
+     * **This is the only fold in this class that rests on no measurement, and it
+     * must be read as the policy choice it is rather than as a verdict.** Every
+     * other path here refuses to conclude anything from silence, on the ground
+     * that a path is routinely a different endpoint. This one concludes the
+     * opposite by default: the urls share a DNS name, every one of them answered,
+     * none of them served anything through any filter we know, so nothing
+     * distinguishes them and they collapse.
+     *
+     * What makes it defensible is what it costs when it is wrong. A fold that
+     * silently stops mirroring a relay is this component's cardinal sin — but a
+     * url nothing can be read from is mirroring nothing, so there is no stream to
+     * lose today. What IS lost is the day the relay starts answering us: the
+     * verdict stands until it expires, and the other urls are not dialled again
+     * until then.
+     *
+     * **And it can be flatly wrong about somebody's server.** Measured over 45
+     * multi-url hosts taken from live relay lists, the rule fires on three, and
+     * one of them is `filter.nostr.wine` — whose urls are
+     * `/npub1…?broadcast=true`, a PER-USER filtered endpoint behind
+     * `auth_required` and `payment_required`. Those four paths are four different
+     * users' feeds; nothing about them is the same relay, and only the payment
+     * wall makes them look alike. See [AliasFolding.foldUnreadableGroups] for the
+     * switch and the argument.
+     *
+     * Every url must have ANSWERED. A group holding one url our transport merely
+     * failed to reach is not "all alike", it is "we do not know", and folding it
+     * would turn our own outage into a claim about their server.
+     */
+    fun foldUnreadable(
+        group: List<NormalizedRelayUrl>,
+        leader: NormalizedRelayUrl,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val folds = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        for (url in group) {
+            if (url == leader || folded.containsKey(url)) continue
+            folded[url] = leader
+            canonicals += leader
+            distinct -= url
+            folds[url] = leader
+        }
+        return folds
+    }
+
+    /**
      * The one fold the urls decide by themselves: `ws://x` and `wss://x` are one
      * endpoint reached two ways, so when BOTH of them answer, the plain one
      * folds onto the secure one.
@@ -547,8 +707,10 @@ class RelayAliases(
      *  - **the window is too thin to decide.** A relay holding nine events hands
      *    both twins the same nine, and nine is under [minSample] — so nothing
      *    folds, nothing is cleared, the group is handed back by [unresolved] on
-     *    every pass, and `groups.satsdisco.com` spends a pass's wall clock forever to
-     *    learn what its two urls already said.
+     *    every pass, and the host spends a pass's wall clock forever to learn
+     *    what its two urls already said. (`groups.satsdisco.com` was the example
+     *    here; it turned out to be answerable through
+     *    [GROUP_METADATA_KINDS] and no longer needs the pairing to be decided.)
      *  - **only one twin has a verdict.** [toProbe] now re-dials the secure twin
      *    of an unmeasured plain url precisely so this can fire; without the
      *    pairing the plain url would be compared to the group's leader — a
@@ -669,17 +831,26 @@ class RelayAliases(
     /**
      * Do these two windows come from one relay?
      *
-     * Both sides must have handed over at least [minSample] ids — the guard
+     * Both sides must have handed over at least [Bar.window] ids — the guard
      * against calling two quiet relays identical because neither said much —
-     * and the smaller window must be [minOverlap] contained in the larger.
+     * they must share at least [Bar.shared] of them outright, and the smaller
+     * window must be [minOverlap] contained in the larger.
+     *
+     * [bar] rather than [minSample] directly because both halves of it depend
+     * on the filter the two windows came through; see [foldBar].
      */
     private fun sameRelay(
         a: Set<String>,
         b: Set<String>,
+        bar: Bar,
     ): Boolean {
         val smaller = minOf(a.size, b.size)
-        if (smaller < minSample) return false
+        if (smaller < bar.window) return false
         val shared = if (a.size <= b.size) a.count { it in b } else b.count { it in a }
+        // The ratio is not enough on its own once the window floor is small —
+        // see [Bar.shared], which is what stops a two-id coincidence folding a
+        // path that serves a group nobody else does.
+        if (shared < bar.shared) return false
         return shared.toDouble() / smaller >= minOverlap
     }
 
@@ -743,6 +914,35 @@ class RelayAliases(
 
         /** Below 20 shared ids a match is a coincidence, not a measurement. */
         const val DEFAULT_MIN_SAMPLE = 20
+
+        /**
+         * What a relay is asked once it has refused both a bare filter and
+         * [AliasProbe.FALLBACK_KINDS]: its NIP-29 group metadata.
+         *
+         * That pair of refusals is not a generic failure — it is a SIGNATURE. A
+         * relay running khatru's groups mode answers any unscoped query with
+         * `CLOSED blocked: invalid query, must have 'h', 'e' or 'a' tag`,
+         * whatever kinds are named, so both existing rungs of the ladder come
+         * back empty and the host has no yardstick and can never fold. Kind
+         * 39000 is the one window such a relay serves unscoped and
+         * unauthenticated — verified on `groups.satsdisco.com` (55 ids),
+         * `groups.0xchat.com` (1,302), `groups.fiatjaf.com` (16) and
+         * `relay29.notoshi.win` (27), every one of which had been refusing the
+         * first two rungs.
+         *
+         * A list of groups is a fine fingerprint for the one question the fold
+         * asks: every minted path measured on these hosts served the IDENTICAL
+         * list, containment 1.000. It is also unusually stable — addressable
+         * events that change when somebody edits a group, not a moving window —
+         * so it is the rare fingerprint that barely drifts between two dials.
+         */
+        val GROUP_METADATA_KINDS = listOf(39000)
+
+        /**
+         * The floor for a [GROUP_METADATA_KINDS] window — see
+         * [groupMetadataMinSample] for why it is not [DEFAULT_MIN_SAMPLE].
+         */
+        const val DEFAULT_GROUP_METADATA_MIN_SAMPLE = 3
 
         /**
          * Half. The two windows are taken seconds apart against a moving feed

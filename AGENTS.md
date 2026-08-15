@@ -1378,6 +1378,425 @@ further buys three thin windows instead of one. Silence is about that url alone.
 pins the first half; `a host whose preferred survivor will not answer still folds
 onto one that will` pins the second.
 
+**A NIP-29 relay refuses BOTH general filters, and that pair of refusals is a
+signature rather than a failure.** khatru in groups mode answers any unscoped
+query with `CLOSED blocked: invalid query, must have 'h', 'e' or 'a' tag` —
+whatever kinds are named — so the bare filter and the `{"kinds":[1]}` fallback
+both come back empty, the group has no yardstick, nothing is written down, and
+it returns widest-first on every pass forever. `groups.satsdisco.com` was the
+reported case and had been the standing example of a host that "still says
+nothing"; it was in fact perfectly foldable through a filter the ladder never
+sent. So there is a third rung: `RelayAliases.GROUP_METADATA_KINDS`, kind 39000,
+which such a relay serves unscoped and unauthenticated.
+
+Measured against a corpus of 40 hosts drawn from live kind-10009 group lists,
+21 of which serve 39000:
+
+| host | bare | `[1]` | `39000` | minted path |
+|---|---|---|---|---|
+| `groups.0xchat.com` | refused | 0 | 1,302 | 1.000 |
+| `groups.satsdisco.com` | refused | 0 | 55 | 1.000 |
+| `relay29.notoshi.win` | refused | 0 | 27 | 1.000 |
+| `groups.fiatjaf.com` | refused | 0 | 16 | 1.000 |
+| `groups.hzrd149.com` | refused | 0 | 7 | 1.000 |
+
+Every minted path that answered served the **identical** list — containment
+1.000, 6 of 6 across the sweep — so a group list is a fine fingerprint for the
+one question the fold asks, and an unusually stable one: addressable events that
+change when somebody edits a group, not a slice of a moving feed.
+
+**The rung is worth nothing without the floor, and the floor is a property of
+the FILTER.** A 39000 window is a relay's complete list of groups, so it is short
+by nature: over those 21 hosts it is min 1, median **9**, max 1,302, and
+`DEFAULT_MIN_SAMPLE` admits only 7 of them. Two of the five hosts above — 7 ids
+and 16 — sit under it, so the strict floor would have thrown away the hosts the
+rung exists to reach. `RelayAliases.foldBar` reads the leader's filter and
+applies `DEFAULT_GROUP_METADATA_MIN_SAMPLE` (**3**) to a group-metadata window.
+Three rather than one because a host serving one or two groups hands over one or
+two ids, and at that width "both urls returned the same list" is exactly the
+coincidence the floor exists to refuse. `minOf`, so the group floor only ever
+lowers the window bar and never raises one an injected `minSample` set below it.
+
+**A small window floor needs a SHARED-COUNT floor beside it, because a ratio
+alone cannot close the hole it opens.** At a window floor of 3 against
+`minOverlap` 0.5, the least a fold could ever rest on is TWO shared ids — so a
+path serving `{a, b, x}` scores 0.667 against a leader serving `{a..g}` and folds,
+taking `x`, a group nothing else on the host serves, out of the fan-out for the
+whole TTL. That is the fold's one unforgivable failure — silently not mirroring
+something — bought for a two-id coincidence, and it is exactly what the audit of
+the first cut of this change caught. So `Bar.shared` demands the two urls
+genuinely have `floor` ids in common as well, which costs the honest case nothing
+(every live pair shared its list entirely) and is `0` for a general window, where
+`minOverlap` on a 500-id window already implies 250 shared. `a group list that
+shares only part of itself is not folded away` pins it.
+
+**It lowers the bar for FOLDING and for nothing else.** Every negative claim
+keeps `minSample`: entry to `unmatched`, and the leader's own clear. A thin
+window can support "these two urls returned the same list of groups"; it cannot
+support "this url is a relay in its own right", which is signed for a month and
+is the `relay.damus.io/lantern-oscar-dynamo` lie in miniature — sharing none of
+three ids is what a url that answered almost nothing looks like. So a NIP-29
+host whose paths serve genuinely different groups ends the pass `NOTHING_COMPARED`
+and takes the 24h cooldown, which is the honest outcome. `a group-metadata window
+may fold a url but never clear one` pins it.
+
+**And the third rung is free where it would cost the most.** It is skipped when
+BOTH rungs above returned null — a refusal is the relay answering, silence is our
+transport giving up, and a dead url or an onion whose circuit never built says
+nothing twice. That matters because the attempts are sequential and
+`YARDSTICK_ATTEMPTS` multiplies them by three. One answer is enough to earn the
+ask (`&&`, not `||`): a url whose bare walk was cut short by our own transport
+while its kinds walk came back refused is still a live server declining the shape
+of the question, and dropping it on our own blip would cost a host to save one
+dial. `a url that never spoke is not asked for group metadata` pins it.
+
+**What a REAL pass decides, run through `AliasFoldLiveProbe` against the live
+hosts** — the whole `AliasFolding.measure` path, the router's own NIP-42 wiring,
+an in-memory store, no Vespa and no Docker needed:
+
+```
+groups.hzrd149.com   leader 7 id(s) via kinds=[39000], self 1.000   2 fold(s) from 3 dial(s) in 2s
+groups.fiatjaf.com   leader 16 id(s),  self 1.000                   1 fold  from 2 dials  in 3s
+pantry.zap.cooking   leader 7 id(s),   self 1.000                   1 fold  from 2 dials  in 1s
+relay29.notoshi.win  leader 27 id(s),  self 1.000                   2 folds from 3 dials  in 6s
+groups.satsdisco.com leader 55 id(s),  self 1.000                   2 folds from 3 dials  in 3s
+groups.0xchat.com    leader 500 id(s), self 1.000                   1 fold  from 2 dials  in 3s
+nos.lol (control)    leader 500 id(s) via BARE filter, sibling 0.994 1 fold — rung 1 still wins
+```
+
+Every sibling scored **1.000**, every leader reproduced itself at 1.000, and every
+group ended `0 sockets still held`. The group list is the most stable fingerprint
+in this file — addressable events that change when somebody edits a group, where
+a firehose slice drifts between two dials (`nos.lol` self 0.998, `fiatjaf.com`
+0.638).
+
+**The floor is doing most of the work, not the rung.** Sweeping every host named
+in live kind-10009 group lists: 34 never reach rung 3 at all (a general filter
+answered, so the lowered floor cannot touch them), and 6 reach it AND serve a
+group list. **Four of those six are under `DEFAULT_MIN_SAMPLE`** —
+`groups.hzrd149.com` 7, `pantry.zap.cooking` 7, `groups.fiatjaf.com` 16,
+`relay.pana.social` 3 — so shipping the rung at the firehose floor would have
+recovered a third of what it can reach. That is the measurement behind
+`DEFAULT_GROUP_METADATA_MIN_SAMPLE`, not a feel for the number.
+
+**The floor of 3 bites on a real host, and cost nothing to do it.**
+`groups.sharegap.net` serves exactly 2 groups; the pass refuses it
+(`under minSample(3) — decides nothing`) and reports `no url that could be a
+yardstick`. Its paths served nothing anyway, so no fold was lost — and no rung-3
+host was observed at 1 or 2 groups where a lower floor would have gained
+anything. Do not lower it without re-running this sweep.
+
+**The shared-count guard is UNEXERCISED in the field, and that is worth knowing
+before trusting it.** Across every rung-3 host measured, a minted path served
+either the identical list (containment 1.000) or nothing at all — **zero**
+partially-overlapping pairs. So the `{a, b, x}` case the guard exists for is
+constructed, not observed. It is insurance against a multi-tenant groups host,
+kept because the failure it prevents is the fold's worst one; treat it as
+correct-but-unproven, the same standing as the cleared form.
+
+**What the rung costs, and who pays it.** A large tail of NIP-29 hosts is
+auth-gated and answers `CLOSED auth-required` to everything — and the router's
+NIP-42 wiring does NOT rescue them (verified on `buzz.relay.tools` and
+`relay.andotherstuff.org`: nothing, even authenticated). A refusal is an answer,
+so these DO earn the third ask and pay one extra dial: `buzz.relay.tools` spent
+21s over 2 urls. Bounded twice over — the `undecidable` cooldown means such a
+host is dialled on one pass in four, and a host that is merely dead returns null
+twice and is never asked at all.
+
+**A fold decided on a group list says so, and does not borrow the sentence the
+containment form uses.** `RelayAliasRecord.publishGroupList` writes *"same group
+list as wss://x: 7 of 7 group definitions shared"* rather than `publish`'s *"7
+newest events, 7 shared"*. The numbers are identical; what changes is that a
+reader is not invited to check seven against a relay serving thousands and read
+the fold as resting on a far thinner sample than it does. Same reasoning as
+`publishSecureTwin`, which exists for exactly this.
+
+Two things this was NOT, both of which the verdict card made look guilty: the
+relay does send an AUTH challenge, but 39000 reads fine unauthenticated, so `R:
+auth` was a red herring; and the 214-second `rtt-read` on those rows is quartz's
+passive monitor's number, while every fold dial measured here returned in about
+a second.
+
+**A REFUSED CREDENTIAL ENDS THE LADDER, and finding out why cost two wrong
+theories.** A pass against `filter.nostr.wine` spent 184s on three urls. The first
+explanation was "one `idleTimeoutMs` per rung" — wrong: a single ask on a fresh
+socket comes back in ~1.5s at every host measured. `AuthRefusalProbe` times the
+ladder ask by ask, on one connection, through quartz's own client and the
+router's NIP-42 wiring:
+
+```
+filter.nostr.wine  rung 1 bare  limit=500:  1601ms  authRefused=true
+                   rung 1 bare  limit=100: 20007ms  reason=null
+                   rung 2 [1]   limit=500: 20004ms  reason=null
+                   rung 3 [39000]        : 20004ms  reason=null
+buzz.relay.tools   every ask:               ~85ms   authRefused=true
+nos.lol            every ask:              ~170ms   eose
+```
+
+1.6 + 20 + 20 + 20 is the 61s per url, exactly. **The first ask is answered
+properly and every one after it is answered with NOTHING** — no CLOSED, no EOSE,
+no `doneReason` — so `AliasProbe.over` reads a url that never spoke and the walk
+waits out the window. On the wire, once this relay rejects our AUTH (`OK <id>
+false restricted: user unauthorized`) it ignores every further REQ on that
+socket. `buzz.relay.tools` is the contrast: it repeats `auth-refused` to every
+ask, which is why it cost 21s for two urls where this cost 121s.
+
+**Quartz needed no change.** It reports the refusal terminally and
+machine-readably on the FIRST ask — `doneReasons[url]` starts with
+`auth-refused`, which is all `FetchAllResult.authRefused` is derived from, and
+`AliasProbe.over` already read that map to tell `cannot:` from a real answer.
+Waiting out the window on the later asks is the only thing quartz COULD do; the
+relay sends nothing. The waste was ours, and the rule that fixes it is the
+ladder's own charter: **it exists to find a filter the relay will accept, and a
+credential refusal is not a complaint about the filter.** So `AliasProbe.Page`
+carries `authRefused`, the walk stops on it, and `leaderPrint` does not try the
+next rung. Measured end to end on the same three urls: **184s → 2-3s**, with
+`nos.lol` unchanged at 2s.
+
+**The stop lives in the WALK, not only in the ladder**, because the ladder is not
+the only caller: `AliasFolding` dials every member of a group through
+`fingerprint` with the leader's filter, and walks the leader a second time for the
+reproducibility guard. Neither goes near `leaderPrint`, and without the
+walk-level stop a refused member still pays the empty-page retry at
+`FALLBACK_PROBE_PAGE` — the ask measured at 20,007ms. `a refused credential stops
+the ladder at the first ask` and `a refused credential also ends the WALK, not
+just the ladder` pin the two halves.
+
+**THE MEASURED RELAY SHAPES, PINNED AS TESTS.** Everything above is prose until
+a fake reproduces it, so each live shape has a deterministic test against
+`AliasProbeTest.Fake` / `AliasFoldingTest.Upstreams`. Writing them found one real
+bug and exercised one path that had never run:
+
+| live host | shape | test |
+|---|---|---|
+| `groups.satsdisco.com` | refuses both general filters, serves 39000 | `a NIP-29 host folds on the one window a general filter cannot reach` |
+| `top.testrelay.top` | bare filter → EOSE-empty, kinds serve | `a relay refusing bare filters is asked with kinds instead` |
+| `filter.nostr.wine` | auth-refused, then silent | `a refused credential stops the ladder at the first ask` |
+| `chorus.bonsai.com` | a page carrying a window AND a refusal | `a page carrying both a window and a refusal keeps the window` |
+| `nwc.primal.net` | 100 urls, all answer, none serve | `a hundred unreadable urls collapse to one, and the dials are counted` |
+| `haven.calva.dev` | `/chat` empty while the host serves | `one url that serves anything keeps the empty ones separate` |
+| `buzz.relay.tools/echo` | silent beside a url that answers | `a url that never spoke keeps its whole group out of the fold` |
+
+**The bug the tests found:** the walk returned on `Page.authRefused` BEFORE
+ingesting the page, so `chorus.bonsai.com` — which serves 100 events and flags
+the refusal on the same page — had its window thrown away and read as
+unfingerprintable. The order is now window first, refusal second: a partial
+window is still a window, and the flag only means there is no point asking for
+MORE.
+
+**The path that had never run:** the `foldUnreadableGroups` sweep adopts a
+yardstick found past `YARDSTICK_ATTEMPTS`. A host whose fourth url is the only one
+that answers used to be abandoned even though the sweep had just dialled it.
+Taking it costs nothing — the dial already happened — and the group then folds on
+a MEASUREMENT rather than on the shared name, which is the stronger verdict and
+must win wherever it is available. `a window found past the third attempt is
+adopted, not thrown away`.
+
+**The cost, pinned rather than described:** 100 unreadable urls cost exactly
+**300 asks** — three rungs each, no url asked twice. An EOSE-empty page cannot end
+the ladder the way a credential refusal can, because `top.testrelay.top` proves a
+host can answer a bare filter with nothing and still serve on kinds. So 3× is the
+honest floor for this shape, and the assertion catches either regression: a
+fourth rung appearing, or the sweep re-asking what the yardstick walk already
+tried.
+
+**One limit is documented rather than fixed.** The rule counts a credential
+refusal and a clean empty EOSE as the same thing — "answered" — so a host whose
+urls answer DIFFERENTLY still folds. Two endpoints that behave differently are
+weak evidence of being one server, and demanding the same KIND of answer from
+every url would be cheap and would shrink the false-fold surface. It is not done
+because no host has been measured in that shape: every mixed-looking candidate
+turned out uniform on a second look, and the census that suggested otherwise was
+measuring our own rate limit. `urls that answered DIFFERENTLY are still folded
+together` holds the current behaviour so the decision is visible; if it is ever
+tightened, that test inverts.
+
+**A HUNT FOR NEW RUNGS, BY READING WHAT RELAYS SAY WHEN THEY REFUSE.** The
+kind-39000 rung was found in one CLOSED message, so `hunt` clustered the terminal
+message of one bare ask across ~260 fresh urls (hosts already probed that session
+excluded by name, one ask each, to avoid measuring our own rate limit again):
+
+| what the relay said | urls | hosts |
+|---|---|---|
+| served events | 155 | 79 |
+| `blocked: can't handle empty filters` | 58 | 29 |
+| EOSE, zero events | 6 | 3 |
+| credential refusals (auth / payment / member) | ~13 | 8 |
+| `error: scraper, …pocket-db/src/lib.rs` | 2 | 1 |
+| `blocked: please add kind 13194 or 23194 or 23195 or 23196` | 2 | 1 |
+
+**No new rung is warranted, and the near-misses are worth writing down so nobody
+re-hunts them.**
+
+- **`can't handle empty filters` is still the big one** — 29 hosts, mostly haven
+  instances — and rung 2 already exists for exactly it.
+- **`top.testrelay.top` refuses a bare filter by answering EOSE WITH ZERO EVENTS**
+  rather than a CLOSED. Same behaviour, no diagnostic. Rung 2 recovers it. The
+  lesson is for censuses, not for the ladder: an "empty relay" bucket silently
+  contains rung-2-recoverable hosts. A theory that our `until` anchor was
+  silencing it was tested and is FALSE — `{kinds:[1], until}` and
+  `{kinds:[1]}` both serve, and `nostr.oxtr.dev` serves at `until = now + 1 day`.
+- **`nwclay.paywithflash.com` names the kinds it wants** (`13194/23194/23195/23196`,
+  the NWC set) which looks like a free rung — and is not. Ask with those kinds and
+  it answers `blocked: please add authors or #p`. There is no unscoped window at
+  that host at all.
+- **The pocket anti-scraper is a CLASS, not a quirk** — `chorus.bonsai.com` and
+  `koru.bitcointxoko.org` both refuse `limit > 100` as scraping (leaking a cargo
+  source path in the CLOSED). `FALLBACK_PROBE_PAGE` recovers them: koru serves 8
+  events at limit=100 having refused 200. Existing machinery, no change needed.
+
+**What the hunt DID find is more hazard for `foldUnreadableGroups`.** The rule
+fires on "every url answered, none served", and that bucket now has named
+members that are not minted-path duplicates:
+
+- **relays with no unscoped window by design.** `nwclay.paywithflash.com` (NWC,
+  demands kinds AND authors/`#p`) is the same shape as `filter.nostr.wine`'s
+  per-npub paths — a PER-USER endpoint that can never answer a generic ask.
+- **live, well-known relays that answer EOSE-empty to everything.**
+  `relay.noswhere.com` advertises `nips=[1,11,50]` and returned zero events to a
+  bare filter, `kinds:[1]`, `kinds:[0]`, and `search=bitcoin`, with and without
+  `until`. `nwc.primal.net` the same. Nothing is wrong with these relays; we
+  simply cannot fingerprint them.
+- **uniform refusers.** `relay.getalby.com` answers `blocked: Request rejected` to
+  every filter tried.
+
+None of those would lose a mirrored stream if folded — we read nothing from them
+either way — but each would be a signed public claim that two urls are one relay,
+made on no measurement. Weigh that against the fan-out saving before leaving the
+inverted default on.
+
+**A cost census over 52 live urls, and the trap in running one.** With the
+credential stop in place, `AuthRefusalProbe`'s census ranks what a single
+`leaderPrint` costs per url. The SHAPES it reports are the useful part:
+
+| shape | urls | median |
+|---|---|---|
+| a window came back | 35 | 1.1s |
+| answered, served nothing | 3 | 1.7s |
+| never spoke | 14 | ~20s |
+
+**But do not quote the totals from that run, and do not read the silent column as
+a property of those relays.** Probing the same hosts repeatedly from one IP all
+session produced exactly what you would expect: `relay.rodbishop.nz` came back
+`cannot:Server Misconfigured. Response: 429 Too Many Requests`, `relay.damus.io`
+read as silent minutes after serving 500 events to a kinds filter, and
+`chorus.bonsai.com` swung from "21s, served nothing" to "1.1s, 100 events"
+between two runs. A census run warm measures OUR rate limit. Re-run it cold —
+fresh IP, no prior sweep — before believing any number in it.
+
+**One genuinely new shape did surface**, and the code already handles it:
+`chorus.bonsai.com` refuses a 500-limit ask outright as anti-scraping
+(`closed:error: scraper, …pocket-db/src/lib.rs:782:48` — it leaks a source path)
+and then answers the `FALLBACK_PROBE_PAGE` retry with **100 events AND
+`authRefused=true`** (*"At least one matching event requires AUTH"*). So a page
+can carry a window and a refusal at once. `leaderPrint` tests the window first
+and the refusal second, which is the right order: a partial window is still a
+fingerprint, and the refusal only ends the walk when nothing came back with it.
+
+**What this does NOT fix, and should not be confused with it:** a url that never
+speaks at all. `buzz.relay.tools` still costs ~21s for two urls, because its
+`/echo` path is genuinely SILENT — no frame ever arrives, so the idle window is
+the only thing that can end the ask, and that is what the window is for. The host
+correctly refuses to fold (not every url answered). Credential refusal is fast
+now; silence costs what silence has always cost.
+
+**FOLD UNLESS PROVEN DIFFERENT: a group nothing will serve from collapses onto
+its survivor.** This INVERTS the oldest default in this component. Silence used
+to decide nothing; a host whose every url answers and serves nothing now folds on
+the shared DNS name alone — `AliasFolding.foldUnreadableGroups`,
+`RelayAliases.foldUnreadable`, on by default and switchable off.
+
+Three conditions, and each is load-bearing:
+
+- **Every url must ANSWER.** An EOSE or a CLOSED is the relay being there; a null
+  page is our own transport giving up. One silent url makes the group "we do not
+  know", and folding it would publish our outage as a claim about their server.
+  This is also what keeps the bound: a host that fails the yardstick walk by
+  going SILENT still stops at `YARDSTICK_ATTEMPTS` and is never swept.
+- **Nothing anywhere may serve a window** — including a THIN one. A url with
+  content is distinguishable from an empty one, so the group is not "all alike",
+  and sweeping it would undo the cheap exit that stops a thin yardstick dragging
+  its group onto the wire.
+- **The whole group is asked, not a sample of it.** "All of them answer, none of
+  them serves" cannot be concluded from the three urls the yardstick walk tried,
+  so the rest are swept concurrently first. A window turning up in that sweep is
+  ADOPTED as the yardstick rather than discarded — it is a wider yardstick search
+  that happened to run.
+
+**What it decides, live.** `haven.calva.dev` is the control and the rule leaves
+it alone: the bare url serves 500, `/inbox` scores **0.192** and is kept, and
+`/chat` and `/private` come back empty and keep no verdict at all — because
+SOMETHING on the host answered, the rule never fires. NIP-11 confirms they are
+genuinely different relays ("calvadev's chat relay" against "calvadev's outbox
+relay"), so this boundary is doing real work.
+
+**THE CASE IT WAS BUILT FOR, AND THE SCALE OF IT: `nwc.primal.net` wears 100
+urls and every one of them was being dialled.** Reported from the coverage card —
+`100 url(s) -> 100 dialled`, every row NOT FOLDED — with paths in both pollution
+shapes at once: minted words (`/echo`, `/marble`, `/victor`) and wallet
+connection tokens (`/2tobu4855tuth8lr716v7hllkcssta`). The rule collapses them:
+
+```
+router: live nwc.primal.net served nothing at any of 6 url(s) and every one
+  answered — folded onto wss://nwc.primal.net/ on the shared name, WITHOUT a measurement
+  5 new alias(es) from 6 dial(s) in 6s, 0 sockets still held
+```
+
+**And nothing is lost, for a reason specific to NIP-47.** An NWC relay serves
+wallet-connect traffic and nothing else, and of its four kinds only **13194 is
+storable** — 23194/23195/23196 sit in the ephemeral range (20000-29999) and are
+never persisted by anyone. So the entire mirrorable content of an NWC relay is a
+set of replaceable info events, and `nwc.primal.net` serves none of those either
+(EOSE-empty to `[13194]`, to all four kinds, to a bare filter, to `[1]`, and to
+`search=`). There is no stream behind those 100 urls to lose. Measured across
+three NWC hosts, the shapes differ and none of them is foldable any other way:
+`nwc.nostr1.com` does serve 13194 (4 events) — and already folds at rung 1 —
+while `nwclay.paywithflash.com` answers `blocked: please add authors or #p` to
+every kind, so no unscoped window exists there at all.
+
+`relay.noswhere.com` is the same conclusion by a different route: a search-only
+relay (`nip50: ["ext include:spam", "query negate", "query exact-phrase-match"]`)
+that returned zero events to seven different search forms — with kinds, without,
+exact-phrase, `include:spam`, and on kind 0. Alive, well-known, and holding
+nothing we can read.
+
+**And it is demonstrably WRONG on `filter.nostr.wine`.** Its urls are
+`/npub1…?broadcast=true` — a PER-USER filtered endpoint behind `auth_required`
+and `payment_required`. Every one answers, none serves, so the rule folds four
+users' feeds onto one url and signs it:
+
+```
+router: live filter.nostr.wine served nothing at any of 3 url(s) and every one
+  answered — folded onto wss://filter.nostr.wine/ on the shared name, WITHOUT a measurement
+```
+
+Swept over 45 multi-url hosts taken from live relay lists, the rule fires on
+three — and that is one of them. Treat a third of its firing population being
+wrong as the number until someone re-measures it.
+
+**Two things make it defensible anyway, and both should be understood before
+touching it.** A url nothing can be read from is mirroring nothing, so a wrong
+fold here costs no stream TODAY — only the day the relay starts answering us,
+until the verdict expires. And the record says so in words rather than quoting a
+number it does not have: `RelayAliasRecord.publishUnreadable` writes *"nothing
+readable at any of N url(s) on this host; folded on the shared name, not on a
+measurement"*.
+
+**AUTH RESCUES THE BENIGN CASES, WHICH CONCENTRATES THE RULE ON THE PATHOLOGICAL
+ONES.** `support.flotilla.social` reads as all-empty to an unauthenticated sweep
+and would fire the rule — but the router authenticates, gets 500 events on every
+url, and folds it by MEASUREMENT at containment 1.000. So the population that
+actually reaches this rule in production is smaller than an anonymous probe
+suggests, and it is enriched for the hosts that refuse us for reasons no
+credential fixes: payment walls, per-user endpoints. Do not size this rule with
+an unauthenticated sweep.
+
+**It WAS not cheap, and the reason turned out to be a bug in the ladder rather
+than a property of the rule.** Three urls of `filter.nostr.wine` cost **184
+seconds**; they now cost **3**. See the credential short-circuit below — the
+sweep still scales with group size rather than stopping at three, but each url in
+it is one ask instead of six.
+
 **`ws://x` and `wss://x` are the one pair the urls themselves settle.** Every
 other fold refuses to read anything off a url, and rightly — a path is routinely
 a *different* endpoint, which is why `/inbox` must never fold on its spelling. A

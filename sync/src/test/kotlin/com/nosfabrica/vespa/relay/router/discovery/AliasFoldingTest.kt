@@ -67,6 +67,26 @@ class AliasFoldingTest {
      * these tests assert on far more than they assert on the folding itself.
      */
     private class Upstreams(
+        /**
+         * Which urls ANSWER at all. False is our transport giving up — a null
+         * page, silence — and is a different fact from a relay that answers and
+         * serves nothing. The fold now draws opposite conclusions from the two,
+         * so no fixture may blur them: see [AliasFolding.foldUnreadableGroups].
+         */
+        private val answers: (NormalizedRelayUrl) -> Boolean = { true },
+        /**
+         * Which filters this relay will answer at all — everything, unless a
+         * test says otherwise.
+         *
+         * A NIP-29 relay refuses every unscoped query whatever kinds are named
+         * (khatru: `CLOSED blocked: invalid query, must have 'h', 'e' or 'a'
+         * tag`), and a REFUSAL reaches the walk as an empty page rather than as
+         * silence — which is the distinction the ladder's third rung is gated
+         * on.
+         */
+        private val serves: (List<Int>?) -> Boolean = { true },
+        /** Which urls turn our credentials down — an ANSWER, and a different one. */
+        private val refuses: (NormalizedRelayUrl) -> Boolean = { false },
         private val corpusFor: (NormalizedRelayUrl) -> List<Event>,
     ) {
         val dials = AtomicInteger()
@@ -80,11 +100,14 @@ class AliasFoldingTest {
             at: NormalizedRelayUrl,
             want: Int,
             until: Long?,
-            @Suppress("UNUSED_PARAMETER") kinds: List<Int>?,
-        ): List<Event> {
+            kinds: List<Int>?,
+        ): AliasProbe.Page {
             dials.incrementAndGet()
             contacted += at
-            return corpusFor(at).filter { until == null || it.createdAt <= until }.take(want)
+            if (!answers(at)) return AliasProbe.Page(null)
+            if (refuses(at)) return AliasProbe.Page(emptyList(), authRefused = true)
+            if (!serves(kinds)) return AliasProbe.Page(emptyList())
+            return AliasProbe.Page(corpusFor(at).filter { until == null || it.createdAt <= until }.take(want))
         }
     }
 
@@ -103,11 +126,13 @@ class AliasFoldingTest {
         upstreams: Upstreams,
         aliases: RelayAliases = RelayAliases(),
         undecidableCooldownMs: Long = AliasFolding.DEFAULT_UNDECIDABLE_COOLDOWN_MS,
+        foldUnreadableGroups: Boolean = AliasFolding.DEFAULT_FOLD_UNREADABLE_GROUPS,
     ) = AliasFolding(
         aliases = aliases,
         record = RelayAliasRecord(store, signer),
         probe = AliasProbe(fetch = upstreams::fetch, target = 40, page = 40, fallbackPage = 40),
         undecidableCooldownMs = undecidableCooldownMs,
+        foldUnreadableGroups = foldUnreadableGroups,
     )
 
     /** Every url serves the same 40 events, so any two of them fold. */
@@ -128,6 +153,274 @@ class AliasFoldingTest {
             }
         }
     }
+
+    /**
+     * A NIP-29 relay: it refuses every general query and serves its short list
+     * of groups — the same list on every path it wears, which is what the live
+     * hosts do (containment 1.000 on a minted path, 6 of 6 measured).
+     */
+    private fun groupsUpstreams(groups: Int = 7): Upstreams {
+        val corpus: List<Event> = (0 until groups).map { events.sign(1_700_000_000L - it, 39_000, emptyArray(), "g$it") }
+        return Upstreams(serves = { it == RelayAliases.GROUP_METADATA_KINDS }) { corpus }
+    }
+
+    @Test
+    fun `a NIP-29 host folds on the one window a general filter cannot reach`() =
+        runBlocking {
+            // `groups.satsdisco.com` and its eleven minted paths, the shape the
+            // ladder's third rung exists for. Both general filters are refused,
+            // so the group had NO YARDSTICK, wrote nothing down, and came back
+            // widest-first on every pass forever.
+            //
+            // Seven groups on purpose: that is `groups.hzrd149.com`, and it is
+            // under DEFAULT_MIN_SAMPLE. The rung alone recovers nothing here —
+            // the floor has to follow the filter too.
+            val store = newStore()
+            val fold = folding(store, groupsUpstreams(groups = 7))
+            val group = listOf(canonical, alias)
+
+            assertEquals(1, fold.measure("t", group, canDial = { true }), "the group list is a perfectly good fingerprint")
+            // Read back through the store, which is the only claim that matters:
+            // the next cycle's apply() must dial one url, not two.
+            assertEquals(listOf(canonical), fold.apply(group).dial)
+        }
+
+    @Test
+    fun `a NIP-29 host whose paths serve different groups is left alone`() =
+        runBlocking {
+            // The other side of the lowered floor, and the reason it is allowed
+            // to fold but never to clear. These paths share nothing, so no fold
+            // is made — and the tempting next step, signing "each of these is a
+            // relay in its own right" for thirty days on the strength of seven
+            // ids, is refused. Nothing is published and both urls stay dialled.
+            val store = newStore()
+            val byUrl = HashMap<String, List<Event>>()
+            val up =
+                Upstreams(serves = { it == RelayAliases.GROUP_METADATA_KINDS }) { at ->
+                    byUrl.getOrPut(at.url) {
+                        (0 until 7).map { events.sign(1_700_000_000L - it, 39_000, emptyArray(), "${at.url}#g$it") }
+                    }
+                }
+            val fold = folding(store, up)
+            val group = listOf(canonical, alias)
+
+            assertEquals(0, fold.measure("t", group, canDial = { true }))
+            assertEquals(group, fold.apply(group).dial, "an undecided host must stay in the fan-out")
+            assertEquals(group, fold.apply(group).unmeasured, "and must carry no verdict at all")
+        }
+
+    /** A host where every url is reachable and none of them will serve anything. */
+    private fun unreadableUpstreams(): Upstreams = Upstreams(serves = { false }) { emptyList() }
+
+    @Test
+    fun `a host that answers everywhere and serves nowhere folds onto its survivor`() =
+        runBlocking {
+            // THE INVERTED DEFAULT. Every url answers — an EOSE or a CLOSED, not
+            // silence — and none serves a window through any filter, so nothing
+            // distinguishes them and they collapse on the shared host name.
+            // Measured live on support.flotilla.social, budabit.nostr1.com and
+            // relay.andotherstuff.org, all auth-gated.
+            val store = newStore()
+            val fold = folding(store, unreadableUpstreams())
+            val group = listOf(canonical, alias)
+
+            assertEquals(1, fold.measure("t", group, canDial = { true }))
+            assertEquals(listOf(canonical), fold.apply(group).dial, "the survivor is the preferred url")
+        }
+
+    @Test
+    fun `a hundred unreadable urls collapse to one, and the dials are counted`() =
+        runBlocking {
+            // `nwc.primal.net`, reported from the coverage card: 100 url(s) ->
+            // 100 dialled, every row NOT FOLDED. An NWC relay serves
+            // wallet-connect traffic and nothing else, and of its four kinds
+            // only 13194 is storable — 23194/23195/23196 are ephemeral and are
+            // never persisted — so there is no stream behind those urls to lose.
+            //
+            // The count is the point as much as the fold. Each url is asked the
+            // WHOLE ladder, because an EOSE-empty page is not a refusal and
+            // cannot end it: `top.testrelay.top` proves a host can answer a bare
+            // filter with nothing and still serve on kinds. So this pins the
+            // real cost at 3 asks per url, and would catch either regression —
+            // a fourth rung appearing, or the sweep re-asking urls the yardstick
+            // walk already tried.
+            val store = newStore()
+            val up = unreadableUpstreams()
+            val fold = folding(store, up)
+            val host = "wss://nwc.example"
+            val urls = (listOf(host) + (0 until 99).map { "$host/p$it" }).map { RelayUrlNormalizer.normalize(it) }
+
+            assertEquals(99, fold.measure("t", urls, canDial = { true }), "the whole host must collapse")
+            assertEquals(listOf(urls.first()), fold.apply(urls).dial, "100 urls, one dial")
+            assertEquals(100, up.contacted.size, "every url has to answer before the group may fold")
+            assertEquals(
+                300,
+                up.dials.get(),
+                "the ladder is 3 rungs and no url may be asked twice — got ${up.dials.get()} asks for 100 urls",
+            )
+        }
+
+    @Test
+    fun `a window found past the third attempt is adopted, not thrown away`() =
+        runBlocking {
+            // The sweep exists to prove "every url answered, none served", so it
+            // dials the urls the yardstick walk never reached — and sometimes one
+            // of THOSE serves a window. YARDSTICK_ATTEMPTS stops at three; a host
+            // whose fourth url is the only one that answers used to be abandoned
+            // even though the sweep had just been past it.
+            //
+            // Taking it costs nothing: the dial already happened. The group then
+            // folds on a measurement rather than on the shared name, which is the
+            // stronger verdict of the two and must win where it is available.
+            val store = newStore()
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            // The first three in PREFERENCE order answer with nothing; the last
+            // two serve one window between them.
+            val quiet = setOf("", "/a", "/b")
+            val up =
+                Upstreams(serves = { true }) { at ->
+                    if (RelayAliases.pathOf(at.url).let { p -> quiet.contains(if (p.isEmpty()) "" else "/$p") }) emptyList() else corpus
+                }
+            val fold = folding(store, up)
+            val host = "wss://late.example"
+            val urls = listOf(host, "$host/a", "$host/b", "$host/c", "$host/d").map { RelayUrlNormalizer.normalize(it) }
+
+            val learned = fold.measure("t", urls, canDial = { true })
+
+            // A real fold, not the shared-name default: /d folds onto /c because
+            // their windows matched.
+            assertEquals(1, learned, "the window the sweep turned up was discarded")
+            val dial = fold.apply(urls).dial
+            assertTrue(RelayUrlNormalizer.normalize("$host/d") !in dial, "the measured duplicate is still being dialled")
+            assertTrue(RelayUrlNormalizer.normalize("$host/c") in dial, "the survivor must be the url that answered")
+        }
+
+    @Test
+    fun `the sweep adopts a window it can measure with, not merely the first one`() =
+        runBlocking {
+            // The sweep's yardstick search had no `usableWindow` gate while the
+            // walk above it does, so a sub-floor window beat a usable one the
+            // SAME sweep had already fetched: /c hands over five ids, wins on
+            // PREFERENCE order, and then measures nothing — /d and /e serve an
+            // identical 40 and would have folded.
+            val store = newStore()
+            val thin: List<Event> = (0 until 5).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "thin$it") }
+            val full: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "full$it") }
+            val up =
+                Upstreams { at ->
+                    when (RelayAliases.pathOf(at.url)) {
+                        "", "a", "b" -> emptyList()
+                        "c" -> thin
+                        else -> full
+                    }
+                }
+            val fold = folding(store, up)
+            val host = "wss://mixed.example"
+            val urls = listOf(host, "$host/a", "$host/b", "$host/c", "$host/d", "$host/e").map { RelayUrlNormalizer.normalize(it) }
+
+            assertEquals(1, fold.measure("t", urls, canDial = { true }), "a thin window beat a usable one")
+            assertTrue(
+                RelayUrlNormalizer.normalize("$host/e") !in fold.apply(urls).dial,
+                "the two urls serving an identical window were left unfolded",
+            )
+        }
+
+    @Test
+    fun `a group where only a thin window came back is not folded on its name`() =
+        runBlocking {
+            // The trap in fixing the above. Gate the sweep on `usableWindow` and
+            // a thin-only host leaves `found` null — which drops it straight into
+            // the shared-name default, folding a host that DID serve on a rule
+            // that says nothing served. Anything served at all disqualifies it.
+            val store = newStore()
+            val thin: List<Event> = (0 until 5).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "thin$it") }
+            val up = Upstreams { at -> if (RelayAliases.pathOf(at.url) == "c") thin else emptyList() }
+            val fold = folding(store, up)
+            val host = "wss://thinonly.example"
+            val urls = listOf(host, "$host/a", "$host/b", "$host/c").map { RelayUrlNormalizer.normalize(it) }
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(urls, fold.apply(urls).dial, "a host that served a window was folded on its name")
+        }
+
+    @Test
+    fun `a url that never spoke keeps its whole group out of the fold`() =
+        runBlocking {
+            // Our own transport failing is not evidence about their server. One
+            // unreachable url makes the group "we do not know", not "all alike",
+            // and folding it would publish our outage as a claim about them.
+            val store = newStore()
+            val up =
+                Upstreams(
+                    answers = { RelayAliases.pathOf(it.url).isNotEmpty() },
+                    serves = { false },
+                ) { emptyList() }
+            val fold = folding(store, up)
+            val group = listOf(canonical, alias)
+
+            assertEquals(0, fold.measure("t", group, canDial = { true }))
+            assertEquals(group, fold.apply(group).dial, "a group holding a silent url must stay in the fan-out")
+        }
+
+    @Test
+    fun `one url that serves anything keeps the empty ones separate`() =
+        runBlocking {
+            // The haven shape, and the boundary of the whole policy. `/chat` and
+            // `/private` answer with nothing while the bare url serves a window —
+            // measured on haven.calva.dev, where NIP-11 names them as genuinely
+            // different relays. Because SOMETHING on the host answered, the rule
+            // does not fire and the empty urls get no verdict at all, which is
+            // what keeps them being dialled.
+            val store = newStore()
+            val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
+            val up = Upstreams { at -> if (RelayAliases.pathOf(at.url).isEmpty()) corpus else emptyList() }
+            val fold = folding(store, up)
+            val group = listOf(canonical, alias)
+
+            fold.measure("t", group, canDial = { true })
+
+            assertEquals(group, fold.apply(group).dial, "an empty path was folded away while the host was readable")
+        }
+
+    @Test
+    fun `urls that answered DIFFERENTLY are still folded together`() =
+        runBlocking {
+            // DOCUMENTING A LIMIT, NOT ASSERTING IT IS RIGHT. The rule reads
+            // "every url answered, none served", and it counts a credential
+            // refusal and a clean empty EOSE as the same thing — an answer. But
+            // those are different answers, and two endpoints that behave
+            // differently are weak evidence of being one server.
+            //
+            // Held as a test rather than a fix because no host has been MEASURED
+            // in this shape: every mixed-looking candidate turned out uniform on
+            // a second look (`chorus.bonsai.com`), and the rate-limited census
+            // that suggested otherwise was measuring us. Tightening the rule to
+            // demand the same KIND of answer from every url would be cheap and
+            // would shrink the false-fold surface — see the hazard list in
+            // AGENTS.md. If that is ever done, this test inverts.
+            val store = newStore()
+            val up =
+                Upstreams(
+                    serves = { false },
+                    refuses = { RelayAliases.pathOf(it.url).isNotEmpty() },
+                ) { emptyList() }
+            val fold = folding(store, up)
+            val group = listOf(canonical, alias)
+
+            assertEquals(1, fold.measure("t", group, canDial = { true }))
+            assertEquals(listOf(canonical), fold.apply(group).dial, "current behaviour: a refusal and an EOSE fold together")
+        }
+
+    @Test
+    fun `the inverted default can be switched off`() =
+        runBlocking {
+            val store = newStore()
+            val fold = folding(store, unreadableUpstreams(), foldUnreadableGroups = false)
+            val group = listOf(canonical, alias)
+
+            assertEquals(0, fold.measure("t", group, canDial = { true }))
+            assertEquals(group, fold.apply(group).dial)
+        }
 
     @Test
     fun `apply never dials, however much there is to learn`() =
@@ -535,11 +828,18 @@ class AliasFoldingTest {
         }
 
     /**
-     * A host that answers every fingerprint with nothing. It can never be
-     * decided — no yardstick, so [RelayAliases.learn] has nothing to compare —
-     * and, critically, a pass writes NOTHING down about it.
+     * A host that never answers: our transport gives up and no page comes back,
+     * so nothing can be decided about it and a pass writes NOTHING down.
+     *
+     * **Not the same fixture as [unreadableUpstreams], and the tests below turn
+     * on the difference.** This one returns NULL — "we do not know" — while the
+     * other ANSWERS and serves nothing, which since
+     * [AliasFolding.DEFAULT_FOLD_UNREADABLE_GROUPS] is a fold. It used to be one
+     * fixture returning an empty list for both jobs, and the policy inversion is
+     * what made that ambiguity untenable: the cooldown and the bounded yardstick
+     * walk belong to silence alone now.
      */
-    private fun silentUpstreams(): Upstreams = Upstreams { emptyList() }
+    private fun silentUpstreams(): Upstreams = Upstreams(answers = { false }) { emptyList() }
 
     @Test
     fun `a host that cannot be decided is not re-dialled by the very next pass`() =
@@ -594,7 +894,8 @@ class AliasFoldingTest {
             // One corpus shared by every url that answers at all, so the
             // foldable host folds; the silent one answers nothing, ever.
             val corpus: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "e$it") }
-            val up = Upstreams { at -> if (RelayAliases.hostOf(at.url) == "silent.example") emptyList() else corpus }
+            val up =
+                Upstreams(answers = { RelayAliases.hostOf(it.url) != "silent.example" }) { corpus }
             val fold = folding(store, up)
             val urls = listOf(quietHost, quietAlias, canonical, alias)
 

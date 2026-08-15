@@ -70,4 +70,7 @@ tasks.test {
     System.getProperty("selfConsistencyUrls")?.let { systemProperty("selfConsistencyUrls", it) }
     System.getProperty("authGatedProbe")?.let { systemProperty("authGatedProbe", it) }
     System.getProperty("authGatedUrl")?.let { systemProperty("authGatedUrl", it) }
+    System.getProperty("authRefusalProbe")?.let { systemProperty("authRefusalProbe", it) }
+    System.getProperty("authRefusalUrls")?.let { systemProperty("authRefusalUrls", it) }
+    System.getProperty("authRefusalCensus")?.let { systemProperty("authRefusalCensus", it) }
 }

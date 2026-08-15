@@ -262,7 +262,71 @@ class RelayAliasRecord(
         alias: NormalizedRelayUrl,
         canonical: NormalizedRelayUrl,
         sampled: Int,
-    ): Event? = write(alias, canonical, "same endpoint as ${canonical.url} over TLS, both answered; $sampled newest events here")
+        /**
+         * True when the pair's windows came through
+         * [RelayAliases.GROUP_METADATA_KINDS] — see [publishGroupList] for why
+         * that changes the noun. The ARGUMENT is unchanged (the two urls name one
+         * endpoint and both answered); only "newest events" would be the wrong
+         * name for a relay's list of groups.
+         */
+        groupList: Boolean = false,
+    ): Event? =
+        write(
+            alias,
+            canonical,
+            "same endpoint as ${canonical.url} over TLS, both answered; " +
+                if (groupList) "$sampled group definitions here" else "$sampled newest events here",
+        )
+
+    /**
+     * Sign and store a fold decided on a relay's LIST OF GROUPS rather than on a
+     * slice of its event feed — see [RelayAliases.GROUP_METADATA_KINDS].
+     *
+     * ```json
+     * ["same-as", "wss://groups.example/", "same group list as wss://groups.example/: 7 of 7 group definitions shared", "1776038400", "2"]
+     * ```
+     *
+     * A separate call rather than [publish], for the reason
+     * [publishSecureTwin] is one: the numbers are true but the SENTENCE is not.
+     * "7 newest events, 7 shared" invites a reader to check it against a
+     * general window and find seven events where the relay serves thousands,
+     * and to read the fold as resting on a sample far thinner than the one it
+     * actually rests on — which is a relay's COMPLETE list of groups, nothing
+     * withheld. The number is the same either way; what changes is whether the
+     * reader can tell what was measured.
+     */
+    suspend fun publishGroupList(
+        alias: NormalizedRelayUrl,
+        canonical: NormalizedRelayUrl,
+        sampled: Int,
+        shared: Int,
+    ): Event? = write(alias, canonical, "same group list as ${canonical.url}: $shared of $sampled group definitions shared")
+
+    /**
+     * Sign and store the weakest thing this monitor says: these urls share a host,
+     * every one of them answered, none of them would serve anything, so they were
+     * treated as one.
+     *
+     * ```json
+     * ["same-as", "wss://x/", "nothing readable at any of 5 url(s) on this host; folded on the shared name, not on a measurement", "1776038400", "2"]
+     * ```
+     *
+     * **The evidence says "not on a measurement" in so many words, and that is
+     * the point.** Every other form here quotes a number taken off the wire. This
+     * one has none to quote — it is a default applied in the absence of evidence
+     * — and a reader of a signed claim about somebody else's server is owed that
+     * distinction plainly rather than left to infer it from a missing figure.
+     */
+    suspend fun publishUnreadable(
+        alias: NormalizedRelayUrl,
+        canonical: NormalizedRelayUrl,
+        urls: Int,
+    ): Event? =
+        write(
+            alias,
+            canonical,
+            "nothing readable at any of $urls url(s) on this host; folded on the shared name, not on a measurement",
+        )
 
     /**
      * Sign and store the other verdict: this url was fingerprinted against the

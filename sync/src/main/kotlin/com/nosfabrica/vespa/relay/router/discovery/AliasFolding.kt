@@ -81,6 +81,11 @@ class AliasFolding(
     /** How long a host that could not be decided is left alone — see [undecidable]. */
     private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
     /**
+     * Fold a group that every url ANSWERED and none of them would serve anything
+     * from — see [foldUnreadableGroups] for what it decides and what it risks.
+     */
+    private val foldUnreadableGroups: Boolean = DEFAULT_FOLD_UNREADABLE_GROUPS,
+    /**
      * Where each pass reports how far it got, or null to say nothing — which is
      * every test and every caller that is not the router.
      *
@@ -117,8 +122,12 @@ class AliasFolding(
      * they were simply queued behind hosts that can never be decided and can
      * never stop being asked. It no longer costs a foldable host its turn —
      * nothing is rationed — but it still costs the pass's WALL CLOCK, and
-     * re-proving every cycle that `groups.satsdisco.com` still says nothing is
-     * time the hosts that can be decided are waiting through.
+     * re-proving every cycle that `espelho.girino.org` still cannot reproduce
+     * its own window is time the hosts that can be decided are waiting through.
+     * (`groups.satsdisco.com` stood here until it turned out to be answerable —
+     * it was refusing the filter rather than saying nothing, and it folds since
+     * [RelayAliases.GROUP_METADATA_KINDS]. Worth remembering before reading the
+     * next silent host as permanent.)
      *
      * In memory rather than signed, and that is the point. "I could not measure
      * this" is a fact about OUR pass, not about somebody's server — the
@@ -321,6 +330,20 @@ class AliasFolding(
                         // yardstick dialled every member of its group to decide
                         // nothing, and did it again every pass, forever.
                         //
+                        // TOO SHORT FOR WHAT, THOUGH, IS A QUESTION ABOUT THE
+                        // FILTER. The bar above is calibrated for a slice of a
+                        // general feed; a window of
+                        // [RelayAliases.GROUP_METADATA_KINDS] is a NIP-29
+                        // relay's COMPLETE list of groups, so a host with seven
+                        // groups hands over seven ids and has held nothing back.
+                        // Judging that by the firehose floor threw away the
+                        // hosts the third rung of the ladder exists to reach —
+                        // measured, `groups.hzrd149.com` at 7 ids and
+                        // `groups.fiatjaf.com` at 16, both folding at
+                        // containment 1.000. So the window is held up against
+                        // the floor for the filter that produced it, which is
+                        // what [RelayAliases.usableWindow] takes `kinds` for.
+                        //
                         // **BUT THE PREFERRED LEADER IS NOT THE ONLY URL THAT
                         // CAN BE THE YARDSTICK, AND TREATING IT AS SUCH LOST
                         // WHOLE HOSTS.** [RelayAliases.PREFERENCE] picks the
@@ -368,9 +391,14 @@ class AliasFolding(
                         // for the whole pass, on our outage rather than their
                         // behaviour.
                         val exhausted = HashSet<NormalizedRelayUrl>()
+                        // Urls this pass ASKED, and the subset that ANSWERED —
+                        // the two facts [foldUnreadableGroups] turns on. A url
+                        // the transport declined is in neither.
+                        val askedUrls = HashSet<NormalizedRelayUrl>()
+                        val spoke = HashSet<NormalizedRelayUrl>()
                         for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
                             var asked = false
-                            val print =
+                            val attempt =
                                 gate.withPermit {
                                     if (!canDial(candidate)) return@withPermit null
                                     asked = true
@@ -384,7 +412,10 @@ class AliasFolding(
                                         sockets.release(candidate)
                                     }
                                 }
-                            // Asked, and it said nothing. It failed BOTH filters,
+                            if (asked) askedUrls += candidate
+                            if (attempt?.spoke == true) spoke += candidate
+                            val print = attempt?.leader
+                            // Asked, and it said nothing. It failed EVERY filter,
                             // so asking it again as a member this pass buys the
                             // same silence at the price of a dial.
                             if (asked && print == null) exhausted += candidate
@@ -403,7 +434,12 @@ class AliasFolding(
                                 // alone, and the url next to it may well be
                                 // serving five hundred events happily. Only
                                 // silence is worth another attempt.
-                                if (aliases.usableWindow(print.ids)) {
+                                // Judged against the floor for the filter that
+                                // produced it. A NIP-29 host's whole list of
+                                // groups is a handful of ids and is not "thin"
+                                // in the sense this test means — see
+                                // [RelayAliases.usableWindow].
+                                if (aliases.usableWindow(print.ids, print.kinds)) {
                                     found = candidate
                                     foundPrint = print
                                 } else {
@@ -443,6 +479,119 @@ class AliasFolding(
                                 found = thinLeader
                                 foundPrint = thinLead
                                 members = listOf(twin)
+                            }
+                        }
+                        // FOLD UNLESS PROVEN DIFFERENT: the group nothing would
+                        // read from collapses onto its preferred survivor.
+                        //
+                        // Everything above this line concludes nothing from
+                        // silence. This concludes the opposite by default, and it
+                        // is a POLICY rather than a measurement — see
+                        // [RelayAliases.foldUnreadable] for the argument and for
+                        // the host it gets wrong.
+                        //
+                        // The yardstick walk only asked three urls, so the rest
+                        // are asked here before anything is concluded: "all of
+                        // them answer, none of them serves" is a claim about the
+                        // WHOLE group and cannot be made from a sample of it.
+                        // Concurrently, because no filter has to be agreed —
+                        // nothing is being compared, only counted.
+                        // ONLY when nothing on the host served anything at all.
+                        // A THIN leader is a url that answered with content, so
+                        // its group is not "all alike" — and sweeping it here
+                        // would also undo the cheap exit that keeps a thin
+                        // yardstick from dragging its whole group onto the wire.
+                        //
+                        // And only while the evidence still points that way. If a
+                        // url the yardstick walk already asked did not ANSWER, the
+                        // group can never be "all of them answered" — so sweeping
+                        // the rest buys nothing and would undo the bound that
+                        // keeps a dead host from costing a dial per url. A silent
+                        // host still stops at [YARDSTICK_ATTEMPTS], exactly as it
+                        // did before this policy existed.
+                        if (found == null &&
+                            thinLeader == null &&
+                            foldUnreadableGroups &&
+                            askedUrls.isNotEmpty() &&
+                            askedUrls.all { it in spoke }
+                        ) {
+                            val rest = wanted.filter { it !in askedUrls }
+                            val swept = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Attempt>()
+                            coroutineScope {
+                                for (url in rest) {
+                                    launch {
+                                        gate.withPermit {
+                                            if (!canDial(url)) return@withPermit
+                                            taken.incrementAndGet()
+                                            sockets.claim(url)
+                                            try {
+                                                swept[url] = probe.leaderPrint(url, anchor, onEvent)
+                                            } finally {
+                                                sockets.release(url)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            for ((url, attempt) in swept) {
+                                if (attempt.spoke) spoke += url
+                                if (attempt.leader == null) exhausted += url
+                            }
+                            // A WINDOW TURNED UP BEYOND THE THIRD ATTEMPT. The
+                            // sweep is a wider yardstick search that happens to
+                            // have run, so take it rather than throw it away —
+                            // and take it in [RelayAliases.PREFERENCE] order, so
+                            // the leader does not depend on which dial finished
+                            // first. The members are re-dialled below through
+                            // this filter, which is what keeps the group
+                            // comparable.
+                            //
+                            // **It must be a window that can be MEASURED against,
+                            // which the walk above tests and this did not.** A
+                            // sub-floor window still arrives as a [AliasProbe.Leader],
+                            // so taking the first one let five ids beat forty
+                            // fetched by the same sweep: the thin url led, nothing
+                            // could fold onto it, and a host whose other paths
+                            // served an identical window took a 24h cooldown.
+                            val usable =
+                                wanted.firstOrNull { url ->
+                                    swept[url]?.leader?.let { aliases.usableWindow(it.ids, it.kinds) } == true
+                                }
+                            usable?.let { better ->
+                                found = better
+                                foundPrint = swept.getValue(better).leader
+                                exhausted -= better
+                            }
+                            // ANYTHING served disqualifies the shared-name
+                            // default, thin windows included. This is the trap in
+                            // the gate above: once a sub-floor window no longer
+                            // sets `found`, a host that DID serve would fall
+                            // straight through to a rule whose whole premise is
+                            // that nothing did.
+                            val servedSomething = swept.values.any { it.leader != null }
+                            if (found == null && !servedSomething) {
+                                // EVERY url, not most of them. One url our own
+                                // transport could not reach makes this "we do not
+                                // know", and folding on that would turn our
+                                // outage into a claim about their server.
+                                val everyUrlAnswered = wanted.all { it in spoke }
+                                if (everyUrlAnswered && wanted.size > 1) {
+                                    val survivor = wanted.first()
+                                    val folds = aliases.foldUnreadable(wanted, survivor)
+                                    for (alias in folds.keys) {
+                                        runCatching { record.publishUnreadable(alias, survivor, wanted.size) }
+                                    }
+                                    if (folds.isNotEmpty()) {
+                                        newVerdicts += folds.keys
+                                        clearUndecidable(survivor)
+                                        System.err.println(
+                                            "router: $label ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
+                                                "${wanted.size} url(s) and every one answered — folded onto ${survivor.url} " +
+                                                "on the shared name, WITHOUT a measurement",
+                                        )
+                                    }
+                                    return@launch
+                                }
                             }
                         }
                         if (found == null || foundPrint == null) {
@@ -488,7 +637,7 @@ class AliasFolding(
                             }
                         }
                         val leaderPrint = lead.ids
-                        val result = aliases.learn(group, leader, prints)
+                        val result = aliases.learn(group, leader, prints, lead.kinds)
                         // PROVE THE YARDSTICK BEFORE MAKING A NEGATIVE CLAIM.
                         //
                         // Some relays do not answer the same question the same
@@ -562,7 +711,7 @@ class AliasFolding(
                             // comparison the verdict was not based on.
                             val shared = prints[canonical].orEmpty().count { it in print }
                             newVerdicts += alias
-                            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins)
+                            verdicts[alias] = Fold(canonical, print.size, shared, alias in result.twins, lead.kinds == RelayAliases.GROUP_METADATA_KINDS)
                         }
                         // The cleared half, and its evidence has to name what was
                         // actually held up against what. This once said "of N
@@ -620,7 +769,13 @@ class AliasFolding(
                                 // Each verdict published with the argument it was
                                 // actually made on — see [RelayAliasRecord.publishSecureTwin].
                                 if (v.secureTwin) {
-                                    record.publishSecureTwin(alias, v.canonical, v.sampled)
+                                    // Both flags can be set at once — a `ws://`
+                                    // pair on a NIP-29 host — and the twin form
+                                    // wins because the pairing is the argument.
+                                    // It still has to name what it counted.
+                                    record.publishSecureTwin(alias, v.canonical, v.sampled, v.groupList)
+                                } else if (v.groupList) {
+                                    record.publishGroupList(alias, v.canonical, v.sampled, v.shared)
                                 } else {
                                     record.publish(alias, v.canonical, v.sampled, v.shared)
                                 }
@@ -799,6 +954,13 @@ class AliasFolding(
          * the fold and everything about the evidence published with it.
          */
         val secureTwin: Boolean,
+        /**
+         * Decided on the host's list of groups rather than on a slice of its
+         * feed — see [RelayAliasRecord.publishGroupList]. Same reason
+         * [secureTwin] is carried: it changes nothing about the fold and
+         * everything about the sentence published with it.
+         */
+        val groupList: Boolean,
     )
 
     /** The evidence behind one cleared url, held until the group is decided. */
@@ -905,5 +1067,15 @@ class AliasFolding(
          * not take one.
          */
         const val DEFAULT_UNDECIDABLE_COOLDOWN_MS = 24L * 60 * 60 * 1000
+
+        /**
+         * Whether a group nothing can be read from folds onto its survivor.
+         *
+         * ON, which INVERTS this component's oldest default: silence used to
+         * decide nothing and now decides sameness. See
+         * [RelayAliases.foldUnreadable] — including `filter.nostr.wine`, the
+         * measured host it gets wrong.
+         */
+        const val DEFAULT_FOLD_UNREADABLE_GROUPS = true
     }
 }
