@@ -330,9 +330,9 @@ internal class DeleteMissingSync(
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             // Same time-axis reporting as every other paged walk: without it
             // these walks are the one hole in the stream's fraction/ETA line.
-            val walk = "${stream.name}|${url.url}"
+            val walk = PagingProgress.Walked(stream.name, url.url)
             var walked: PagedFetchResult? = null
-            paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+            val cursor = paging.begin(walk, leg.until ?: nowSeconds(), leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
             try {
                 // Assigned inside the try, so `finally` can tell PagingProgress
                 // whether the walk drained — see [PagingProgress.finish].
@@ -341,7 +341,7 @@ internal class DeleteMissingSync(
                         url,
                         listOf(leg),
                         NEG_IDLE_MS,
-                        onNewPage = { until -> paging.mark(walk, until) },
+                        onNewPage = { until -> cursor?.reached(until) },
                     ) { event ->
                         legProgress?.received()
                         if (stream.filter.match(event)) {
@@ -351,8 +351,8 @@ internal class DeleteMissingSync(
                                 // Where the walk is, as it moves — `onNewPage`
                                 // fires only at page boundaries, so without this
                                 // a leg inside its first page reports the day it
-                                // opened at. See [PagingProgress.mark].
-                                paging.mark(walk, event.createdAt)
+                                // opened at. See [PagingProgress.Walk.reached].
+                                cursor?.reached(event.createdAt)
                             }
                             SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                             ingest.submit(event, stream.trusted, origin)

@@ -26,17 +26,22 @@ import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 class PagingProgressTest {
+    private fun w(
+        stream: String,
+        url: String,
+    ) = PagingProgress.Walked(stream, url)
+
     @Test
     fun `progress is the walked share of the time window`() {
         val p = PagingProgress()
-        p.begin("a", top = 1_000L, bottom = 0L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
 
         assertEquals(0.0, p.fraction()!!, 0.001, "nothing walked yet")
 
-        p.mark("a", 750L)
+        a.reached(750L)
         assertEquals(0.25, p.fraction()!!, 0.001)
 
-        p.mark("a", 100L)
+        a.reached(100L)
         assertEquals(0.90, p.fraction()!!, 0.001)
     }
 
@@ -46,10 +51,10 @@ class PagingProgressTest {
         // guarantees it, and a percentage that goes DOWN is worse than one that
         // is slightly wrong — it reads as the sync having lost ground.
         val p = PagingProgress()
-        p.begin("a", top = 1_000L, bottom = 0L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
 
-        p.mark("a", 200L)
-        p.mark("a", 900L)
+        a.reached(200L)
+        a.reached(900L)
 
         assertEquals(0.80, p.fraction()!!, 0.001, "the later, higher `until` is ignored")
     }
@@ -59,10 +64,10 @@ class PagingProgressTest {
         // Two relays each walking their own window: one done, one untouched, is
         // half way — not 100%, which summing would give.
         val p = PagingProgress()
-        p.begin("a", top = 1_000L, bottom = 0L)
-        p.begin("b", top = 500L, bottom = 0L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
+        val b = p.begin(w("s", "b"), top = 500L, bottom = 0L)!!
 
-        p.mark("a", 0L)
+        a.reached(0L)
 
         assertEquals(0.5, p.fraction()!!, 0.001)
     }
@@ -74,17 +79,17 @@ class PagingProgressTest {
         // stream whose fast relays drained first fell from 60% to 20% while
         // strictly gaining ground.
         val p = PagingProgress()
-        p.begin("s|a", top = 1_000L, bottom = 0L)
-        p.begin("s|b", top = 1_000L, bottom = 0L)
-        p.mark("s|b", 500L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
+        val b = p.begin(w("s", "b"), top = 1_000L, bottom = 0L)!!
+        b.reached(500L)
 
         val before = p.fraction("s")!!
-        p.finish("s|a", covered = true)
+        p.finish(w("s", "a"), covered = true)
 
         assertEquals(0.75, p.fraction("s")!!, 0.001, "a is done (1.0) and b is half way")
         assertTrue(p.fraction("s")!! >= before, "finishing a walk may never lower the fraction")
 
-        p.finish("s|b", covered = true)
+        p.finish(w("s", "b"), covered = true)
         assertEquals(1.0, p.fraction("s")!!, 0.001, "every walk settled")
     }
 
@@ -95,10 +100,10 @@ class PagingProgressTest {
         // failed cycle read as a complete one — which is exactly how success and
         // failure came to render identically.
         val p = PagingProgress()
-        p.begin("s|a", top = 1_000L, bottom = 0L)
-        p.mark("s|a", 800L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
+        a.reached(800L)
 
-        p.finish("s|a", covered = false)
+        p.finish(w("s", "a"), covered = false)
 
         assertEquals(0.2, p.fraction("s")!!, 0.001, "20% walked is 20%, finished or not")
     }
@@ -110,10 +115,10 @@ class PagingProgressTest {
         // routinely well above the filter's floor. Measured against the floor a
         // fully exhausted relay would sit near 70% forever.
         val p = PagingProgress()
-        p.begin("s|a", top = 1_000L, bottom = 0L)
-        p.mark("s|a", 700L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
+        a.reached(700L)
 
-        p.finish("s|a", covered = true)
+        p.finish(w("s", "a"), covered = true)
 
         assertEquals(1.0, p.fraction("s")!!, 0.001)
     }
@@ -126,14 +131,14 @@ class PagingProgressTest {
         // still running — every later mark and finish on a removed key is
         // silently a no-op.
         val p = PagingProgress()
-        p.begin("s|done", top = 1_000L, bottom = 0L)
-        p.begin("s|live", top = 1_000L, bottom = 0L)
-        p.finish("s|done", covered = true)
+        val done = p.begin(w("s", "done"), top = 1_000L, bottom = 0L)!!
+        val live = p.begin(w("s", "live"), top = 1_000L, bottom = 0L)!!
+        p.finish(w("s", "done"), covered = true)
 
         p.reset("s")
 
         assertEquals(0.0, p.fraction("s")!!, 0.001, "only the live walk is left, and it has walked nothing")
-        p.mark("s|live", 500L)
+        live.reached(500L)
         assertEquals(0.5, p.fraction("s")!!, 0.001, "the live walk still advances after the reset")
     }
 
@@ -144,11 +149,11 @@ class PagingProgressTest {
         // date at the deepest thing the cycle touched while the relays still
         // walking are nowhere near it.
         val p = PagingProgress()
-        p.begin("s|deep", top = 1_000L, bottom = 0L)
-        p.begin("s|shallow", top = 1_000L, bottom = 0L)
-        p.mark("s|deep", 10L)
-        p.mark("s|shallow", 900L)
-        p.finish("s|deep", covered = true)
+        val deep = p.begin(w("s", "deep"), top = 1_000L, bottom = 0L)!!
+        val shallow = p.begin(w("s", "shallow"), top = 1_000L, bottom = 0L)!!
+        deep.reached(10L)
+        shallow.reached(900L)
+        p.finish(w("s", "deep"), covered = true)
 
         assertEquals(900L, p.reached("s"))
     }
@@ -162,14 +167,14 @@ class PagingProgressTest {
         // are the two states the cursor exists to separate. Marking per event
         // makes the position what has actually arrived.
         val p = PagingProgress()
-        p.begin("s|a", top = 1_000L, bottom = 0L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
 
-        assertEquals(1_000L, p.cursorOf("s|a"), "nothing received yet is the second it opened at")
+        assertEquals(1_000L, p.cursorOf(w("s", "a")), "nothing received yet is the second it opened at")
 
-        p.mark("s|a", 900L)
-        p.mark("s|a", 880L)
+        a.reached(900L)
+        a.reached(880L)
 
-        assertEquals(880L, p.cursorOf("s|a"), "the oldest event received, not the last boundary crossed")
+        assertEquals(880L, p.cursorOf(w("s", "a")), "the oldest event received, not the last boundary crossed")
         assertEquals(0.12, p.fraction("s")!!, 0.001, "and the share moves with it")
     }
 
@@ -182,31 +187,54 @@ class PagingProgressTest {
         // walk at all, inflating the share it really achieved and the ETA drawn
         // from it. `cursorOf` and `reached` already filter the same way.
         val p = PagingProgress()
-        p.begin("s|a", top = 1_000L, bottom = 0L)
-        p.mark("s|a", 800L)
-        p.finish("s|a", covered = false)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
+        a.reached(800L)
+        p.finish(w("s", "a"), covered = false)
 
-        p.mark("s|a", 100L)
+        a.reached(100L)
 
         assertEquals(0.2, p.fraction("s")!!, 0.001, "20% is what it walked, and it is done walking")
-        assertNull(p.cursorOf("s|a"), "a finished walk is not a position")
+        assertNull(p.cursorOf(w("s", "a")), "a finished walk is not a position")
+    }
+
+    @Test
+    fun `a stream cannot claim another stream's walks by sharing a name prefix`() {
+        // The key was `"$stream|$url"` matched with `startsWith("$stream|")`, so
+        // stream `a` matched every key stream `a|b` wrote — clearing its walks on
+        // `reset` and averaging them into its `fraction`. Nothing rejects a `|` in
+        // a stream name; it comes from the operator's config file. Two fields
+        // cannot collide whatever either half contains.
+        val p = PagingProgress()
+        val relay = p.begin(w("a|b", "relay"), top = 1_000L, bottom = 0L)!!
+        relay.reached(500L)
+
+        assertNull(p.fraction("a"), "stream `a` has no walks of its own")
+        assertEquals(0.5, p.fraction("a|b")!!, 0.001)
+
+        p.finish(w("a|b", "relay"), covered = true)
+        p.reset("a")
+
+        assertEquals(1.0, p.fraction("a|b")!!, 0.001, "another stream's reset may not clear these")
     }
 
     @Test
     fun `a leg whose window is inverted cannot inherit the previous leg's result`() {
-        // The key is `stream|url` and one relay is walked leg after leg. While
-        // `finish` DELETED the entry a skipped `begin` was harmless — the later
-        // mark/finish found nothing. With the walk retained, leaving the old one
-        // in place let the skipped leg's `finish` land on the finished one.
+        // One relay is walked leg after leg under the same key. While `finish`
+        // DELETED the entry a skipped `begin` was harmless — the later marks and
+        // `finish` found nothing. With the walk retained, leaving the old one in
+        // place let the skipped leg's `finish` land on the finished one.
         val p = PagingProgress()
-        p.begin("s|a", top = 1_000L, bottom = 0L)
-        p.finish("s|a", covered = true)
+        p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
+        p.finish(w("s", "a"), covered = true)
         assertEquals(1.0, p.fraction("s")!!, 0.001)
 
-        // The next leg is inverted, so nothing is walked for it at all.
-        p.begin("s|a", top = 100L, bottom = 900L)
-        p.mark("s|a", 950L)
-        p.finish("s|a", covered = false)
+        // The next leg is inverted, so nothing is walked for it at all — and the
+        // null handle is how the caller learns that, rather than marking onto
+        // whatever the key held before.
+        val skipped = p.begin(w("s", "a"), top = 100L, bottom = 900L)
+        assertNull(skipped, "an inverted window hands back no walk to report on")
+        skipped?.reached(950L)
+        p.finish(w("s", "a"), covered = false)
 
         assertNull(p.fraction("s"), "the drained walk is gone, and the inverted leg never became one")
     }
@@ -217,7 +245,7 @@ class PagingProgressTest {
         // in. Dividing by that span would produce infinities on the status line.
         val p = PagingProgress()
 
-        p.begin("a", top = 100L, bottom = 900L)
+        assertNull(p.begin(w("s", "a"), top = 100L, bottom = 900L))
 
         assertNull(p.fraction())
     }
@@ -228,12 +256,12 @@ class PagingProgressTest {
         // a real, one-second range, not an inverted one.
         val p = PagingProgress()
 
-        p.begin("s|a", top = 500L, bottom = 500L)
+        p.begin(w("s", "a"), top = 500L, bottom = 500L)!!
 
         assertEquals(0.0, p.fraction()!!, 0.001)
         // `finish` keeps it — see the monotonicity test above — so it takes a
         // cycle boundary to make the number go away.
-        p.finish("s|a")
+        p.finish(w("s", "a"))
         p.reset("s")
         assertNull(p.fraction())
     }
@@ -241,9 +269,9 @@ class PagingProgressTest {
     @Test
     fun `no ETA before the estimate means anything`() {
         val p = PagingProgress()
-        p.begin("a", top = 1_000_000L, bottom = 0L)
+        val a = p.begin(w("s", "a"), top = 1_000_000L, bottom = 0L)!!
 
-        p.mark("a", 999_000L)
+        a.reached(999_000L)
 
         // 0.1% in: extrapolating here yields "ETA ~9 days" from connect latency
         // alone, which is worse than printing nothing.
@@ -253,8 +281,8 @@ class PagingProgressTest {
     @Test
     fun `ETA extrapolates from the rate achieved so far`() {
         val p = PagingProgress()
-        p.begin("a", top = 1_000L, bottom = 0L)
-        p.mark("a", 500L)
+        val a = p.begin(w("s", "a"), top = 1_000L, bottom = 0L)!!
+        a.reached(500L)
 
         // Half way, so whatever has elapsed is also what remains. The clock is
         // real here, so assert the relationship rather than a wall-clock value.

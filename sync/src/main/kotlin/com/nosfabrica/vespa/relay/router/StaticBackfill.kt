@@ -370,12 +370,12 @@ internal class StaticBackfill(
                 // Per-kind spans, which quartz's SyncCoverage requires before it
                 // will record a band for a multi-kind filter at all.
                 val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
-                val walk = "${upstream.streamName}|${upstream.url.url}"
+                val walk = PagingProgress.Walked(upstream.streamName, upstream.url.url)
                 // Counted as events arrive — not from fetchAllPages' return
                 // value, which only lands when the walk ends; that once read
                 // `0 event(s)` through a 17-minute, 7.5M-event walk.
                 var seenSoFar = 0
-                paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                val cursor = paging.begin(walk, window.until ?: nowSeconds(), window.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                 // The walk's own account of why it stopped. Only `DRAINED` — the
                 // relay EOSEd an empty page, so there is nothing older — earns the
                 // band the right to close its older leg. See `drainSettlesThePast`.
@@ -393,7 +393,7 @@ internal class StaticBackfill(
                             upstream.url,
                             listOf(window),
                             NEG_IDLE_MS,
-                            onNewPage = { until -> paging.mark(walk, until) },
+                            onNewPage = { until -> cursor?.reached(until) },
                         ) { event ->
                             if (upstream.filter.match(event)) {
                                 if (SyncCoverage.isPlausible(event.createdAt)) {
@@ -403,8 +403,8 @@ internal class StaticBackfill(
                                     // above fires only at page boundaries, so
                                     // without this a leg inside its first page
                                     // reports the day it opened at. See
-                                    // [PagingProgress.mark].
-                                    paging.mark(walk, event.createdAt)
+                                    // [PagingProgress.Walk.reached].
+                                    cursor?.reached(event.createdAt)
                                 }
                                 // Per KIND too: a band holding one interval for a
                                 // multi-kind filter lets a long-lived kind vouch
@@ -617,18 +617,20 @@ internal class StaticBackfill(
                 val startedAt = nowSeconds()
                 // Hoisted so the callback can report where a paged walk has got
                 // to. The fallback below rebuilt the identical string.
-                val walk = "${upstream.streamName}|${upstream.url.url}"
+                val walk = PagingProgress.Walked(upstream.streamName, upstream.url.url)
+                // Set only if this leg falls back to paging below — the sweep
+                // reconciles and has no cursor — and read by `onEvent`, which
+                // both halves share. See [PagingProgress.Walk].
+                var cursor: PagingProgress.Walk? = null
                 val onEvent: suspend (Event) -> Unit = { event ->
                     if (upstream.filter.match(event)) {
                         if (SyncCoverage.isPlausible(event.createdAt)) {
                             seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                             seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
-                            // Only lands while the paging fallback below is
-                            // running: the SWEEP registers no walk, and the
-                            // previous leg's is finished, so this is a no-op for
-                            // the reconciling half of the callback's life. See
-                            // [PagingProgress.mark].
-                            paging.mark(walk, event.createdAt)
+                            // Null for the reconciling half of this callback's
+                            // life: the SWEEP has no cursor, and only the paging
+                            // fallback below sets one. See [PagingProgress.Walk].
+                            cursor?.reached(event.createdAt)
                         }
                         SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                         ingest.submit(event, upstream.trusted, origin)
@@ -662,7 +664,7 @@ internal class StaticBackfill(
                     // `!!`: falling back to the whole leg re-pages, which is
                     // wasteful, while `!!` would crash the stream.
                     val rest = (outcome.outstanding ?: leg).flooredForPaging()
-                    paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                    cursor = paging.begin(walk, rest.until ?: nowSeconds(), rest.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                     // finally: see the paged site above — an orphaned walk is
                     // averaged into `fraction` at 0% for as long as the process
                     // lives.
@@ -675,7 +677,7 @@ internal class StaticBackfill(
                                 upstream.url,
                                 listOf(rest),
                                 NEG_IDLE_MS,
-                                onNewPage = { until -> paging.mark(walk, until) },
+                                onNewPage = { until -> cursor?.reached(until) },
                                 onEvent = onEvent,
                             )
                     } finally {
