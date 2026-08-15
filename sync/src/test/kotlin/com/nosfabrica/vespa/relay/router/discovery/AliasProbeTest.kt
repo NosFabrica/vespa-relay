@@ -407,6 +407,26 @@ class AliasProbeTest {
         }
 
     @Test
+    fun `a refused credential also ends the WALK, not just the ladder`() =
+        runBlocking {
+            // The ladder is not the only caller. [AliasFolding] dials every
+            // member of a group through `fingerprint` with the leader's filter,
+            // and walks the leader a second time for the reproducibility guard —
+            // neither goes anywhere near `leaderPrint`. So the stop belongs in
+            // the walk, or a member that refuses us pays the empty-page retry at
+            // FALLBACK_PROBE_PAGE, which is the ask measured at 20,007ms on
+            // `filter.nostr.wine`.
+            val fake = Fake(total = 5_000, refusesCredentials = true)
+
+            val print = AliasProbe(fetch = fake::fetch).fingerprint(url, BASE, AliasProbe.FALLBACK_KINDS) {}
+
+            // Empty rather than null: the relay ANSWERED, and the fold's
+            // "every url answered" rule turns on exactly that distinction.
+            assertEquals(emptySet(), print)
+            assertEquals(1, fake.asks.size, "the walk retried at the smaller page after being refused")
+        }
+
+    @Test
     fun `a url that never spoke is not asked for group metadata`() =
         runBlocking {
             // Null is our own transport giving up, and a third ask buys nothing

@@ -1517,9 +1517,24 @@ relay sends nothing. The waste was ours, and the rule that fixes it is the
 ladder's own charter: **it exists to find a filter the relay will accept, and a
 credential refusal is not a complaint about the filter.** So `AliasProbe.Page`
 carries `authRefused`, the walk stops on it, and `leaderPrint` does not try the
-next rung. Measured end to end on the same three urls: **184s → 3s**, with
-`nos.lol` unchanged at 2s. `a refused credential stops the ladder at the first
-ask` pins it.
+next rung. Measured end to end on the same three urls: **184s → 2-3s**, with
+`nos.lol` unchanged at 2s.
+
+**The stop lives in the WALK, not only in the ladder**, because the ladder is not
+the only caller: `AliasFolding` dials every member of a group through
+`fingerprint` with the leader's filter, and walks the leader a second time for the
+reproducibility guard. Neither goes near `leaderPrint`, and without the
+walk-level stop a refused member still pays the empty-page retry at
+`FALLBACK_PROBE_PAGE` — the ask measured at 20,007ms. `a refused credential stops
+the ladder at the first ask` and `a refused credential also ends the WALK, not
+just the ladder` pin the two halves.
+
+**What this does NOT fix, and should not be confused with it:** a url that never
+speaks at all. `buzz.relay.tools` still costs ~21s for two urls, because its
+`/echo` path is genuinely SILENT — no frame ever arrives, so the idle window is
+the only thing that can end the ask, and that is what the window is for. The host
+correctly refuses to fold (not every url answered). Credential refusal is fast
+now; silence costs what silence has always cost.
 
 **FOLD UNLESS PROVEN DIFFERENT: a group nothing will serve from collapses onto
 its survivor.** This INVERTS the oldest default in this component. Silence used
