@@ -126,15 +126,6 @@ export function probeProgress(p) {
   return {
     candidates,
     checked: Math.max(0, candidates - unmeasured),
-    // The two VERDICTS inside that checked count, or null on a pass that does
-    // not publish them (the fold, and any router older than the partition).
-    // Drawn beside it because "checked" on the stability gate silently includes
-    // urls the FOLD removed — they are checked in the sense that nothing more
-    // will be asked of them, and not in the sense a reader assumes — and
-    // because `inconsistent` is the one number on this row that says what the
-    // gate is FOR, and it appeared nowhere on the page at all.
-    consistent: streams.some((w) => w.consistent != null) ? sum("consistent") : null,
-    inconsistent: streams.some((w) => w.inconsistent != null) ? sum("inconsistent") : null,
     tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
   };
 }
@@ -167,10 +158,6 @@ const FUNNEL_TONE = {
   "the probe failed mid-walk": "ours",
   // The arithmetic not closing is neither of those and must LOOK wrong.
   unattributed: "warn",
-  // The tail a ranked head was taken from, which is DISCLOSED truncation and
-  // not a fault — the opposite of `unattributed`, and toned apart from it so
-  // the two are never read as the same thing.
-  moreHosts: "mute",
 };
 
 /**
@@ -244,17 +231,28 @@ export function funnelOf(p) {
     children,
   });
 
+  // A REASON IS A LEAF. The hosts under it are published — `undecided[].top`,
+  // ranked, with their url counts — and they are deliberately NOT drawn: a row
+  // per host is a row per SERVER on a corpus of two thousand of them, and the
+  // ranked head is short only because the router capped it. The tree would grow
+  // by a page to say what two numbers on the reason's own row already say.
+  //
+  // So the ranking survives as those two numbers rather than as a list.
+  // `hosts` is how many servers the reason's urls resolve to and `largest` is
+  // the widest one's share, which together answer the question the pair raises
+  // and a list would answer at forty times the height: 3,902 urls on 2,201
+  // hosts with the largest at 61 is a dead network spread thin, and the same
+  // urls with the largest at 3,000 is three servers. The names go on the row's
+  // title, where they cost no space at all.
   const asReason = (row) => {
     const value = Math.max(0, row.urls || 0);
     const top = (row.top || []).filter((h) => h && h.host && h.urls > 0);
-    const hosts = top.map((h) => node(h.host, h.host, Math.max(0, h.urls)));
-    // The tail this ranked head was taken from. Drawn, and NOT as a fault: a
-    // reason spread across two thousand hosts with none above a dozen urls is
-    // the normal shape of a dead corpus, and it is also the finding.
-    const named = hosts.reduce((a, h) => a + h.value, 0);
-    if (hosts.length && value > named) hosts.push(node("moreHosts", "other hosts", value - named));
-    return { ...node(row.reason, row.reason, value, hosts), hosts: row.hosts || 0,
-             examples: row.examples?.length ? row.examples : top.map((h) => h.host) };
+    return {
+      ...node(row.reason, row.reason, value),
+      hosts: row.hosts || 0,
+      largest: top[0]?.urls || 0,
+      examples: row.examples?.length ? row.examples : top.map((h) => h.host),
+    };
   };
 
   // ROWS THAT REFINE ANOTHER ROW GO UNDER IT. The router publishes a FLAT list

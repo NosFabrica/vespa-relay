@@ -2025,10 +2025,16 @@ function funnelPanel(p) {
     // free-text reason and a hostname are their own explanation.
     const why = term(r.key);
     if (why) name.title = why;
-    // What a reason's urls resolve to as SERVERS, where the pass counted them.
-    // Beside the label rather than as a child row: it is a different unit, and
-    // a unit change inside a tree of url counts reads as a subtotal.
-    if (r.hosts) name.appendChild(el("em", "sy-tr-hosts", ` on ${fmt(r.hosts)} host(s)`));
+    // What a reason's urls resolve to as SERVERS, and how much of it the widest
+    // one is. Beside the label rather than as child rows: they are a different
+    // unit, a unit change inside a tree of url counts reads as a subtotal, and
+    // one row per host would be one row per server on a corpus of thousands.
+    // These two numbers are what that list was for — spread thin, or a handful
+    // of servers — and the names are on the row's title.
+    if (r.hosts) {
+      const spread = r.largest ? ` on ${fmt(r.hosts)} host(s), largest ${fmt(r.largest)}` : ` on ${fmt(r.hosts)} host(s)`;
+      name.appendChild(el("em", "sy-tr-hosts", spread));
+    }
     row.appendChild(name);
 
     row.appendChild(el("span", "sy-tr-n", fmt(r.value)));
@@ -2099,20 +2105,14 @@ function processorFact(p) {
   if (probe) {
     // The tooltip hangs on `unmeasured`: the member this is derived from, and
     // the one the glossary can be checked against.
+    // ONE FACT: how far it got, and how long that took. The verdicts behind it
+    // — how many relays are consistent, and the count this router refuses —
+    // were briefly on this line too, because nothing anywhere published them;
+    // they are now the tree at the head of the section, with the rest of the
+    // partition around them. A line that repeats what a chart six rows above it
+    // already says is a line a reader has to reconcile.
     add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} relay(s) ${PROBE_FOR[p.name] || "checked"}` +
         `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
-    // THE VERDICTS, beside the ratio. `checked` on the stability gate counts
-    // urls the FOLD removed as well as urls it measured, so on its own it
-    // overstates what the gate knows — and the count of relays this router
-    // actually refuses, which is the whole point of the pass, appeared nowhere
-    // on this page at all. Drawn only where published, so the fold's row and
-    // any router older than the partition are unchanged.
-    if (probe.consistent != null) add(`${fmt(probe.consistent)} consistent`, "consistent");
-    // LOUD only when it has found something: at zero it is a gate that has
-    // refused nobody, which is not a fault to shout about.
-    if (probe.inconsistent != null) {
-      add(`${fmt(probe.inconsistent)} refused as inconsistent`, "inconsistent", probe.inconsistent > 0);
-    }
     return cell;
   }
   if (p.knownDead != null) {

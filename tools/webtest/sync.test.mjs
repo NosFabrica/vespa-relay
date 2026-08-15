@@ -224,16 +224,28 @@ const leg = (n, quiet, over = {}) => ({
     [0, "sourced"],
     [1, "dropped"], [2, "excluded"], [2, "heldOutDead"],
     [1, "candidates"], [2, "foldedAway"], [2, "consistent"], [2, "inconsistent"], [2, "unmeasured"],
-    [3, "never answered a REQ"], [4, "dead.example"], [4, "gone.example"], [4, "moreHosts"],
-    [3, "too few events to judge on"], [4, "thin.example"], [4, "moreHosts"],
+    [3, "never answered a REQ"],
+    [3, "too few events to judge on"],
   ]);
+
+  // A REASON IS A LEAF. The hosts under it are published and deliberately not
+  // drawn: one row per host is one row per SERVER on a corpus of two thousand
+  // of them, and the ranked head is short only because the router capped it.
+  assert.equal(f.rows.some((r) => r.key === "dead.example"), false, "no row per host");
+  // What that list was FOR survives as two numbers on the reason's own row —
+  // 3,902 urls on 2,201 hosts with the largest at 61 is a dead network spread
+  // thin; the same urls with the largest at 3,000 would be three servers.
+  assert.equal(at("never answered a REQ").hosts, 2201);
+  assert.equal(at("never answered a REQ").largest, 61, "the widest host's share, not a list of them");
+  assert.deepEqual(at("never answered a REQ").examples, ["dead.example", "gone.example"],
+    "…and the names ride along for the row's title, which costs no height");
 
   // EVERY BAR AGAINST THE ROOT, never against the parent — against its parent a
   // host with 61 urls under a reason with 3,902 would draw at the width the
   // whole corpus gets, contradicting the indentation that already says it is
   // deep in a subtree.
   assert.equal(at("candidates").share, 16752 / 17584);
-  assert.equal(at("dead.example").share, 61 / 17584);
+  assert.equal(at("never answered a REQ").share, 3902 / 17584);
 
   // THE GUIDES. A `│` is drawn at every ancestor that still has a sibling
   // below it, which is exactly the fact a flattened list loses — computed from
@@ -244,15 +256,8 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(at("heldOutDead").prefix, "│  └─ ");
   assert.equal(at("candidates").prefix, "└─ ", "the last child of the root");
   assert.equal(at("unmeasured").prefix, "   └─ ", "…so nothing is drawn below it");
-  assert.equal(at("dead.example").prefix, "      │  ├─ ", "its reason has another below it, so the trunk continues");
-  assert.equal(at("thin.example").prefix, "         ├─ ", "…and under the LAST reason the trunk is blank, not a repeated corner");
-
-  // The tail a ranked head was taken from, under EACH reason, and not the fault
-  // tone: a reason spread across 2,201 hosts is the normal shape of a dead
-  // corpus, not an arithmetic error.
-  const rests = f.rows.filter((r) => r.key === "moreHosts");
-  assert.deepEqual(rests.map((r) => r.value), [3902 - 61 - 44, 826 - 12]);
-  assert.deepEqual(rests.map((r) => r.tone), ["mute", "mute"]);
+  assert.equal(at("never answered a REQ").prefix, "      ├─ ", "its sibling is below it, so the trunk continues");
+  assert.equal(at("too few events to judge on").prefix, "      └─ ");
 
   // Tones are claims, and only one row on the whole tree is a fault.
   assert.equal(at("consistent").tone, "good");
@@ -327,8 +332,8 @@ const leg = (n, quiet, over = {}) => ({
         undecided: { reasons: [{ reason: hostile, urls: 8, hosts: 1, top: [{ host: hostile, urls: 8 }] }], omitted: 0 } }],
     });
     const rows = f.rows.filter((r) => r.key === hostile);
-    assert.equal(rows.length, 2, "the reason and the host under it");
-    assert.deepEqual(rows.map((r) => r.tone), [null, null], `${hostile} is unknown text, not a prototype member`);
+    assert.equal(rows.length, 1, "the reason; its hosts are numbers on it rather than rows");
+    assert.equal(rows[0].tone, null, `${hostile} is unknown text, not a prototype member`);
   }
   ok("a reason or host this page has not been taught cannot reach Object.prototype");
 }
@@ -362,7 +367,8 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(at("never answered a REQ").value, 700, "the sum of its children, not a published number");
   assert.equal(at("never answered a REQ").depth, 3);
   assert.equal(at("the name does not resolve").depth, 4, "a refinement sits under what it refines");
-  assert.equal(at("gone.example").depth, 5, "…and its hosts under it, five levels down");
+  assert.equal(at("the name does not resolve").largest, 20, "and its widest host is a number on it, not a row under it");
+  assert.equal(f.rows.some((r) => r.depth > 4), false, "a refinement is the deepest thing drawn");
 
   // Widest first among siblings, and the synthesised parent competes on its own
   // total rather than on whichever child happened to be published first.

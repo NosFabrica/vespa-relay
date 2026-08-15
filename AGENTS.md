@@ -1959,23 +1959,21 @@ identity and one test per reason.
 `/web/shared/sync.js`, one row per node, five levels deep:
 
 ```
-every url the streams named                               17,584
-├─ dropped before a pass could see it                        832
-│  ├─ excluded by config, or our own url                       3
-│  └─ known dead — a signed unreachability record            829
-└─ in reach — the candidate set                           16,752
-   ├─ folded onto another url                             11,429
-   ├─ consistent                                             583
-   ├─ inconsistent — refused                                  12
-   └─ no verdict                                           4,728
-      ├─ never answered a REQ                              3,902
-      │  ├─ the name does not resolve  on 1,502 host(s)    2,140
-      │  │  ├─ gone.example                                   44
-      │  │  └─ other hosts                                 2,066
-      │  ├─ it never answered in time  on 611 host(s)      1,204
-      │  ├─ the connection was refused  on 388 host(s)       402
-      │  └─ the TLS handshake failed  on 121 host(s)         156
-      └─ refused our auth  on 4 host(s)                      826
+every url the streams named                                           17,584
+├─ dropped before a pass could see it                                    832
+│  ├─ excluded by config, or our own url                                   3
+│  └─ known dead — a signed unreachability record                        829
+└─ in reach — the candidate set                                       16,752
+   ├─ folded onto another url                                         11,429
+   ├─ consistent                                                         583
+   ├─ inconsistent — refused                                              12
+   └─ no verdict                                                       4,728
+      ├─ never answered a REQ                                          3,902
+      │  ├─ the name does not resolve  on 1,502 host(s), largest 44    2,140
+      │  ├─ it never answered in time  on 611 host(s), largest 61      1,204
+      │  ├─ the connection was refused  on 388 host(s)                   402
+      │  └─ the TLS handshake failed  on 121 host(s)                     156
+      └─ refused our auth  on 4 host(s), largest 600                     826
 ```
 
 It was an icicle first — one row per LEVEL, each a share of one width, a child
@@ -2013,13 +2011,21 @@ property the whole tree rests on at the mercy of a shape. The page nests them
 and SYNTHESISES the parent from its children, because the parent has no urls of
 its own.
 
-**The deepest level is the widest HOSTS under each reason** (`undecided[].top`),
-there because `urls` and `hosts` together raise a question neither can settle:
-3,902 urls on 2,201 hosts is either a dead network spread thin — no host above a
-few dozen urls — or a handful of servers wearing a thousand urls each, and those
-want opposite responses. It is a ranked head that deliberately does NOT sum to
-its reason; the tail is drawn as `other hosts`, toned apart from `unattributed`
-because disclosed truncation and broken arithmetic must never look alike.
+**The hosts under a reason are published and NOT drawn as rows** — one row per
+host is one row per SERVER on a corpus of two thousand of them, and the ranked
+head (`undecided[].top`, capped at six) is short only because the router capped
+it. What that ranking is FOR survives as two numbers on the reason's own row:
+`on 1,502 host(s), largest 44`. That is the question `urls` and `hosts` raise
+and cannot settle — 3,902 urls on 2,201 hosts with the largest at 61 is a dead
+network spread thin, the same urls with the largest at 3,000 is three servers —
+answered in a line rather than in forty rows. The names ride along on the row's
+title, and the full ranking with its counts stays in the JSON.
+
+The two probe passes' own lines carry ONE fact each — how far the pass got, and
+how long it took. The verdicts were briefly on the gate's line too, because
+nothing published them anywhere; they are the tree's business now, and a line
+repeating what a chart six rows above it says is a line a reader has to
+reconcile.
 
 Two caps have to move together: `Processors.MAX_UNDECIDED_REASONS` (8) and
 `SyncProgressReport.MAX_UNDECIDED_ROWS`. The relay's job is to bound a list the
