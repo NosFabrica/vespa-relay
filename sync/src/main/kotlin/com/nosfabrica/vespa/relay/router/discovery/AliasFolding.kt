@@ -1022,8 +1022,21 @@ class AliasFolding(
     }
 
     companion object {
-        /** Probes in flight. Below the fan-out's own concurrency: this is a side quest. */
-        const val DEFAULT_CONCURRENCY = 16
+        /**
+         * Probes in flight, for every monitor pass that dials.
+         *
+         * This was 16, with the note "below the fan-out's own concurrency:
+         * this is a side quest" — true when the fold shared its sockets with
+         * the streams' fan-out, and a relic after the split. The monitor IS
+         * the admission path now: nothing certifies until its passes finish,
+         * and the corpus is mostly dead relays whose cost is a timeout, not
+         * bandwidth — a 929-url sweep measured at 16 spent half an hour in
+         * the fitness dials alone, nearly all of it waiting. The passes are
+         * serialized on the monitor's clock, so only one holds this many at
+         * a time, and the dispatcher ceiling minus the visit pool's budget
+         * leaves room for it comfortably.
+         */
+        const val DEFAULT_CONCURRENCY = 128
 
         /**
          * How far down a group's preference order the search for a yardstick

@@ -614,8 +614,8 @@ class ConsistencyPass(
     }
 
     companion object {
-        /** Urls in flight. Matches the fold: this is background work. */
-        const val DEFAULT_CONCURRENCY = 16
+        /** Urls in flight. Matches the fold's — see [AliasFolding.DEFAULT_CONCURRENCY] for the sizing. */
+        const val DEFAULT_CONCURRENCY = AliasFolding.DEFAULT_CONCURRENCY
 
         /**
          * Distinct unclassified terminal reasons sampled per pass — see
