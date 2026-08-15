@@ -1529,6 +1529,60 @@ walk-level stop a refused member still pays the empty-page retry at
 the ladder at the first ask` and `a refused credential also ends the WALK, not
 just the ladder` pin the two halves.
 
+**A HUNT FOR NEW RUNGS, BY READING WHAT RELAYS SAY WHEN THEY REFUSE.** The
+kind-39000 rung was found in one CLOSED message, so `hunt` clustered the terminal
+message of one bare ask across ~260 fresh urls (hosts already probed that session
+excluded by name, one ask each, to avoid measuring our own rate limit again):
+
+| what the relay said | urls | hosts |
+|---|---|---|
+| served events | 155 | 79 |
+| `blocked: can't handle empty filters` | 58 | 29 |
+| EOSE, zero events | 6 | 3 |
+| credential refusals (auth / payment / member) | ~13 | 8 |
+| `error: scraper, …pocket-db/src/lib.rs` | 2 | 1 |
+| `blocked: please add kind 13194 or 23194 or 23195 or 23196` | 2 | 1 |
+
+**No new rung is warranted, and the near-misses are worth writing down so nobody
+re-hunts them.**
+
+- **`can't handle empty filters` is still the big one** — 29 hosts, mostly haven
+  instances — and rung 2 already exists for exactly it.
+- **`top.testrelay.top` refuses a bare filter by answering EOSE WITH ZERO EVENTS**
+  rather than a CLOSED. Same behaviour, no diagnostic. Rung 2 recovers it. The
+  lesson is for censuses, not for the ladder: an "empty relay" bucket silently
+  contains rung-2-recoverable hosts. A theory that our `until` anchor was
+  silencing it was tested and is FALSE — `{kinds:[1], until}` and
+  `{kinds:[1]}` both serve, and `nostr.oxtr.dev` serves at `until = now + 1 day`.
+- **`nwclay.paywithflash.com` names the kinds it wants** (`13194/23194/23195/23196`,
+  the NWC set) which looks like a free rung — and is not. Ask with those kinds and
+  it answers `blocked: please add authors or #p`. There is no unscoped window at
+  that host at all.
+- **The pocket anti-scraper is a CLASS, not a quirk** — `chorus.bonsai.com` and
+  `koru.bitcointxoko.org` both refuse `limit > 100` as scraping (leaking a cargo
+  source path in the CLOSED). `FALLBACK_PROBE_PAGE` recovers them: koru serves 8
+  events at limit=100 having refused 200. Existing machinery, no change needed.
+
+**What the hunt DID find is more hazard for `foldUnreadableGroups`.** The rule
+fires on "every url answered, none served", and that bucket now has named
+members that are not minted-path duplicates:
+
+- **relays with no unscoped window by design.** `nwclay.paywithflash.com` (NWC,
+  demands kinds AND authors/`#p`) is the same shape as `filter.nostr.wine`'s
+  per-npub paths — a PER-USER endpoint that can never answer a generic ask.
+- **live, well-known relays that answer EOSE-empty to everything.**
+  `relay.noswhere.com` advertises `nips=[1,11,50]` and returned zero events to a
+  bare filter, `kinds:[1]`, `kinds:[0]`, and `search=bitcoin`, with and without
+  `until`. `nwc.primal.net` the same. Nothing is wrong with these relays; we
+  simply cannot fingerprint them.
+- **uniform refusers.** `relay.getalby.com` answers `blocked: Request rejected` to
+  every filter tried.
+
+None of those would lose a mirrored stream if folded — we read nothing from them
+either way — but each would be a signed public claim that two urls are one relay,
+made on no measurement. Weigh that against the fan-out saving before leaving the
+inverted default on.
+
 **A cost census over 52 live urls, and the trap in running one.** With the
 credential stop in place, `AuthRefusalProbe`'s census ranks what a single
 `leaderPrint` costs per url. The SHAPES it reports are the useful part:
