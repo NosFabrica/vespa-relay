@@ -136,6 +136,20 @@ data class RelayDiscoveryConfig(
      * this is only about refusing to read an implausible list at all.
      */
     val maxRelaysPerList: Int? = null,
+    /**
+     * Build the relay list from the monitor's own kind-30166 verdicts instead
+     * of (or alongside) parsing relay-list events: every url whose record
+     * carries a fresh `["s", "syncable", …]` from OUR monitor identity.
+     *
+     * This is not a gate in front of a source — it IS the source. The monitor
+     * plane earns the verdicts on its own clock (the fold, the consistency
+     * pass, [com.nosfabrica.vespa.relay.router.discovery.FitnessPass]); a
+     * stream configured this way never parses a 10002 again and its discovery
+     * collapses to one indexed query. Configured sources still union in, which
+     * is what a migration needs and costs nothing once the monitor covers the
+     * same ground.
+     */
+    val syncable: SyncableSource? = null,
 ) {
     /**
      * How long the stream sleeps after a cycle it actually ran — the recycle
@@ -146,6 +160,31 @@ data class RelayDiscoveryConfig(
      * one the loop sleeps is worse than no countdown.
      */
     val nextCycleSeconds: Long get() = recycleSeconds ?: refreshSeconds
+}
+
+/**
+ * The one knob a syncable source has: how stale a verdict may be and still
+ * admit its relay.
+ *
+ * Freshness is read off the VERDICT TAG's own measured-at stamp, never the
+ * record's `createdAt` — quartz's passive monitor rewrites the record on every
+ * connection it opens, so `createdAt` says "we talked recently", which for a
+ * relay in the fan-out is always true and for a verdict is no evidence at all.
+ * A stale `syncable` is no verdict: the relay simply waits for the monitor's
+ * next sweep, the same as a url the monitor has never seen.
+ */
+data class SyncableSource(
+    val maxAgeSeconds: Long = DEFAULT_MAX_AGE_SECONDS,
+) {
+    companion object {
+        /**
+         * Two of the monitor's 6h sweeps plus slack: one missed sweep must not
+         * empty a stream's relay list, and three missed sweeps is a monitor
+         * whose silence SHOULD empty it — mirroring off verdicts nobody is
+         * re-taking is how a dead relay gets dialled for a month.
+         */
+        const val DEFAULT_MAX_AGE_SECONDS = 14 * 60 * 60L
+    }
 }
 
 /**

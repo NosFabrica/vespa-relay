@@ -1096,4 +1096,53 @@ class RouterConfigTest {
 
         assertEquals(2, cfg!!.streams.size)
     }
+
+    @Test
+    fun `a stream may run entirely on the monitor's syncable verdicts`() {
+        // No relaySource at all: the verdict-built list IS the source, which
+        // is the whole point of the monitor split — this stream never parses
+        // a 10002 again.
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    content {
+                        dir    = "down"
+                        sync   = "fetch"
+                        filter = { "kinds": [1] }
+                        syncableRelays = {}
+                    }
+                }
+                """.trimIndent(),
+            )
+        val dynamic = cfg.streams.single().dynamic
+        assertEquals(emptyList(), dynamic!!.sources)
+        assertEquals(SyncableSource.DEFAULT_MAX_AGE_SECONDS, dynamic.syncable!!.maxAgeSeconds)
+    }
+
+    @Test
+    fun `syncableRelays takes a freshness bound and unions with parsed sources`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    content {
+                        dir    = "down"
+                        sync   = "fetch"
+                        filter = { "kinds": [1] }
+                        syncableRelays = { maxAgeSeconds = 7200 }
+                        relaySource = [
+                            {
+                                select = [ { kind = 10009, tag = "group", index = 2 } ]
+                                filter = { "kinds": [10009] }
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent(),
+            )
+        val dynamic = cfg.streams.single().dynamic
+        assertEquals(7200L, dynamic!!.syncable!!.maxAgeSeconds)
+        assertEquals(1, dynamic.sources.size, "parsed sources ride alongside the verdicts during a migration")
+    }
 }

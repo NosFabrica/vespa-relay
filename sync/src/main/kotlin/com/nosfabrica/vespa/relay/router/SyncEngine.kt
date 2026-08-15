@@ -472,6 +472,7 @@ class SyncEngine(
             refusedIds,
             sockets,
             probe,
+            monitorAuthor = signer?.pubKey,
         )
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure

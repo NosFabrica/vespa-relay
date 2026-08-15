@@ -22,14 +22,17 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.Slot
 import com.nosfabrica.vespa.relay.router.config.withoutDefaultPort
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired
@@ -188,6 +191,61 @@ object RelayDiscovery {
             .map { url ->
                 DiscoveredRelay(url, narrowing[url]?.mapValues { (_, v) -> v.toSet() }.orEmpty())
             }.sortedBy { it.url.url }
+            .toList()
+    }
+
+    /**
+     * The relay list a [SyncableSource] stream runs on: every url whose
+     * kind-30166 record carries a FRESH `["s", "syncable", …]` from
+     * [monitorAuthor] — one indexed query where parsing relay lists is a store
+     * walk of minutes.
+     *
+     * Freshness and rules come from the TAG, not the event. The record's
+     * `createdAt` is rewritten by quartz's passive monitor on every connection
+     * it opens, so it says "we talked recently" — true of every relay in the
+     * fan-out and evidence of nothing. The verdict's own measured-at stamp
+     * (element 3) and epoch (element 4) are what age and version it; a stale
+     * or foreign-epoch `syncable` admits nothing, exactly as no verdict does.
+     *
+     * The url is taken from the `d` tag and put through the same [normalize]
+     * as every other source — the record's OWN address is our monitor's, but
+     * defence in depth costs one function call.
+     */
+    suspend fun syncable(
+        store: IEventStore,
+        monitorAuthor: String,
+        maxAgeSeconds: Long,
+        exclude: RelayExcludes,
+        skip: Set<NormalizedRelayUrl> = emptySet(),
+        allowOnion: Boolean = false,
+        now: Long = nowSeconds(),
+    ): List<DiscoveredRelay> {
+        val records =
+            store.query<Event>(
+                Filter(
+                    kinds = listOf(RelayDiscoveryEvent.KIND),
+                    authors = listOf(monitorAuthor),
+                    tags = mapOf(RelayAliasRecord.STATUS_TAG to listOf(FitnessPass.Verdict.SYNCABLE.value)),
+                ),
+            )
+        val floor = now - maxAgeSeconds
+        return records
+            .asSequence()
+            .filter { event ->
+                val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayAliasRecord.STATUS_TAG }
+                s != null &&
+                    s[1] == FitnessPass.Verdict.SYNCABLE.value &&
+                    s.getOrNull(4) == RelayAliasRecord.FITNESS_EPOCH &&
+                    (s.getOrNull(3)?.toLongOrNull() ?: 0L) >= floor
+            }.mapNotNull { event ->
+                event.tags
+                    .firstOrNull { it.size > 1 && it[0] == "d" }
+                    ?.get(1)
+                    ?.let { normalize(it, allowOnion) }
+            }.filter { it !in exclude && it !in skip }
+            .distinct()
+            .map { DiscoveredRelay(it) }
+            .sortedBy { it.url.url }
             .toList()
     }
 

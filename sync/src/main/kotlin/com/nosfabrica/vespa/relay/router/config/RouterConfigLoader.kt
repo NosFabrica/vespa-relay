@@ -345,9 +345,17 @@ object RouterConfigLoader {
         s: Config,
         defaults: RelaySourceDefaults,
     ): RelayDiscoveryConfig? {
-        if (!s.hasPath("relaySource")) return null
-        val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
-        require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
+        // `syncableRelays` is the verdict-built list — a dynamic stream in its
+        // own right, with or without parsed sources beside it.
+        if (!s.hasPath("relaySource") && !s.hasPath("syncableRelays")) return null
+        val sources =
+            if (s.hasPath("relaySource")) {
+                s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
+            } else {
+                emptyList()
+            }
+        val syncable = parseSyncable(stream, s)
+        require(sources.isNotEmpty() || syncable != null) { "router: stream '$stream' has an empty `relaySource` list" }
         return RelayDiscoveryConfig(
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
@@ -358,7 +366,30 @@ object RouterConfigLoader {
             exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
+            syncable = syncable,
         )
+    }
+
+    /**
+     * `syncableRelays = {}` or `syncableRelays = { maxAgeSeconds = 7200 }` —
+     * build the stream's relay list from the monitor's own fresh `syncable`
+     * verdicts. An empty block is the ordinary spelling: the default freshness
+     * bound is sized to the monitor's sweep, and there is nothing else to say.
+     */
+    private fun parseSyncable(
+        stream: String,
+        s: Config,
+    ): SyncableSource? {
+        if (!s.hasPath("syncableRelays")) return null
+        val block = s.getConfig("syncableRelays")
+        val maxAge =
+            if (block.hasPath("maxAgeSeconds")) {
+                block.getLong("maxAgeSeconds").coerceAtLeast(60L)
+            } else {
+                SyncableSource.DEFAULT_MAX_AGE_SECONDS
+            }
+        require(maxAge >= 60L) { "router: stream '$stream' sets syncableRelays.maxAgeSeconds under a minute — no sweep is that fast" }
+        return SyncableSource(maxAgeSeconds = maxAge)
     }
 
     /**

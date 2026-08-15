@@ -141,6 +141,14 @@ internal class DynamicSync(
     private val refusedIds: RefusedIds,
     private val sockets: RelaySockets,
     private val probe: ReachabilityProbe,
+    /**
+     * Whose kind-30166 verdicts a [SyncableSource] stream trusts: our own
+     * monitor identity. Null when there is no signer — and then a syncable
+     * source yields nothing, loudly, because a stream configured to run on
+     * verdicts nobody here can write is a stream that would otherwise idle
+     * silently forever.
+     */
+    private val monitorAuthor: String? = null,
 ) {
     /**
      * `SYNC_DIAGNOSE=<stream>` — log one line per relay for that stream: how many
@@ -549,7 +557,7 @@ internal class DynamicSync(
         // stamping the later generation on the list would mark it current for a
         // fold it never saw — the one case a version check has to get right.
         val aliasGeneration = aliasMonitor?.generation() ?: 0L
-        val discovered =
+        val parsed =
             RelayDiscovery.discover(
                 store,
                 dynamic,
@@ -558,6 +566,50 @@ internal class DynamicSync(
                 // reading when something can dial them.
                 allowOnion = tor != null,
             )
+        // The verdict-built half of the list, where one is configured: every
+        // url our monitor currently certifies syncable, from one indexed
+        // query. Unioned with the parsed sources rather than replacing them —
+        // a migration runs both, and once the monitor covers the same ground
+        // the parsed half contributes nothing but its query cost. Parsed
+        // entries win the union so their narrows survive: the syncable side
+        // never carries one.
+        val certified =
+            dynamic.syncable
+                ?.let { source ->
+                    val author = monitorAuthor
+                    if (author == null) {
+                        // Configured to trust verdicts nobody here can write.
+                        // Said every discovery rather than once, because a stream
+                        // idling on an empty certified list looks exactly like a
+                        // network with no syncable relays.
+                        System.err.println(
+                            "router: ${stream.name} has a syncable relay source but no signer — no monitor identity, no verdicts, no relays from it",
+                        )
+                        emptyList()
+                    } else {
+                        RelayDiscovery.syncable(
+                            store,
+                            monitorAuthor = author,
+                            maxAgeSeconds = source.maxAgeSeconds,
+                            exclude = dynamic.exclude,
+                            skip = setOfNotNull(store.relay),
+                            allowOnion = tor != null,
+                        )
+                    }
+                }.orEmpty()
+        val discovered =
+            if (certified.isEmpty()) {
+                parsed
+            } else {
+                val have = parsed.mapTo(HashSet()) { it.url }
+                (parsed + certified.filter { it.url !in have }).sortedBy { it.url.url }
+            }
+        if (certified.isNotEmpty()) {
+            System.err.println(
+                "router: ${stream.name} — ${certified.size} relay(s) certified syncable" +
+                    " (verdicts fresher than ${dynamic.syncable?.maxAgeSeconds}s), ${parsed.size} from parsed sources",
+            )
+        }
         // Before the fan-out, and before the snapshot it sizes itself
         // against: a folded url must never reach [cycle], or it takes
         // a socket, a cursor band and a place in the concurrency gate
