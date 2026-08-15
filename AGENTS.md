@@ -1648,6 +1648,36 @@ SOMETHING on the host answered, the rule never fires. NIP-11 confirms they are
 genuinely different relays ("calvadev's chat relay" against "calvadev's outbox
 relay"), so this boundary is doing real work.
 
+**THE CASE IT WAS BUILT FOR, AND THE SCALE OF IT: `nwc.primal.net` wears 100
+urls and every one of them was being dialled.** Reported from the coverage card —
+`100 url(s) -> 100 dialled`, every row NOT FOLDED — with paths in both pollution
+shapes at once: minted words (`/echo`, `/marble`, `/victor`) and wallet
+connection tokens (`/2tobu4855tuth8lr716v7hllkcssta`). The rule collapses them:
+
+```
+router: live nwc.primal.net served nothing at any of 6 url(s) and every one
+  answered — folded onto wss://nwc.primal.net/ on the shared name, WITHOUT a measurement
+  5 new alias(es) from 6 dial(s) in 6s, 0 sockets still held
+```
+
+**And nothing is lost, for a reason specific to NIP-47.** An NWC relay serves
+wallet-connect traffic and nothing else, and of its four kinds only **13194 is
+storable** — 23194/23195/23196 sit in the ephemeral range (20000-29999) and are
+never persisted by anyone. So the entire mirrorable content of an NWC relay is a
+set of replaceable info events, and `nwc.primal.net` serves none of those either
+(EOSE-empty to `[13194]`, to all four kinds, to a bare filter, to `[1]`, and to
+`search=`). There is no stream behind those 100 urls to lose. Measured across
+three NWC hosts, the shapes differ and none of them is foldable any other way:
+`nwc.nostr1.com` does serve 13194 (4 events) — and already folds at rung 1 —
+while `nwclay.paywithflash.com` answers `blocked: please add authors or #p` to
+every kind, so no unscoped window exists there at all.
+
+`relay.noswhere.com` is the same conclusion by a different route: a search-only
+relay (`nip50: ["ext include:spam", "query negate", "query exact-phrase-match"]`)
+that returned zero events to seven different search forms — with kinds, without,
+exact-phrase, `include:spam`, and on kind 0. Alive, well-known, and holding
+nothing we can read.
+
 **And it is demonstrably WRONG on `filter.nostr.wine`.** Its urls are
 `/npub1…?broadcast=true` — a PER-USER filtered endpoint behind `auth_required`
 and `payment_required`. Every one answers, none serves, so the rule folds four
