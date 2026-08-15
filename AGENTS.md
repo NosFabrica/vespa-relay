@@ -57,6 +57,16 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 #   …or a group of your own, `;` between groups and `,` within one:
 #   -DliveFoldGroups='wss://relay.example,wss://relay.example/alpha'
 
+# Runs a WHOLE stability pass against real relays — good, dead, unresolvable and
+# auth-gated — and prints the published partition. The only test that can prove
+# `Silence` classifies what OkHttp and the JDK actually say rather than what a
+# fake page says: its unrecognised bucket either is empty or names the strings
+# the table still has to learn. Asserts only what cannot depend on the network —
+# that the partition closes and the rows sum to `unmeasured`.
+./gradlew :sync:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i
+#   …or urls of your own:
+#   -DliveConsistencyUrls='wss://relay.example,wss://other.example'
+
 # Walks each url TWICE from one anchor and prints the containment, at anchors of
 # 1min / 1hour / 1day / 7days. Answers whether a relay that fails the
 # reproducibility bar is failing because its window is still moving (an older
