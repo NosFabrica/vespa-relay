@@ -148,14 +148,20 @@ streams {
         dir  = "down"
         sync = "fetch"
         filter = { "kinds": [0, 10002, 10040] }
-        # The monitor's verdicts ARE the relay list: our own kind-30166
-        # records, admitting every relay whose indexed `s` tag says syncable
-        # and whose verdict is fresher than maxAgeSeconds (measured on the
-        # verdict tag's own stamp — record createdAt proves nothing). Only OUR
-        # monitor identity is consulted; a stranger's 30166s never enter.
+        # The monitor's verdicts ARE the relay list: kind-30166 records,
+        # admitting every relay whose indexed `s` tag says syncable and whose
+        # verdict is fresher than maxAgeSeconds (measured on the verdict tag's
+        # own stamp — record createdAt proves nothing). `authors` names the
+        # monitor identity to trust, as its npub (npub only: bare hex has no
+        # checksum, so a typo is a nobody with an empty roster and no error).
+        # Left off, it is this process's own signer — RELAY_NSEC's npub — which
+        # is the single-process deployment this file ships as. A stranger's
+        # 30166s never enter either way.
         relaySource = [
             {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
+                # ...naming a split-process monitor's identity explicitly:
+                # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["npub1..."] }
                 maxAgeSeconds = 50400  # two 6h sweeps + slack
             }
         ]

@@ -338,22 +338,26 @@ internal class VisitPool(
     }
 
     private suspend fun rebuildRoster() {
-        val author = monitorAuthor
-        if (author == null) {
-            // Streams configured to run on verdicts nobody here can write.
-            // Once per rebuild rather than once ever, because an operator
-            // fixing the signer should see it take effect.
-            System.err.println("router: visit pool has ${streams.size} stream(s) and no monitor identity — roster stays empty")
-            return
-        }
         val next = HashMap<NormalizedRelayUrl, MutableList<SyncStream>>()
         for (stream in streams) {
             val dynamic = stream.dynamic ?: continue
             for (source in dynamic.verdictSources) {
+                // The source's configured monitor keys, or our own signer
+                // where none are named. A stream with neither is configured
+                // to run on verdicts nobody here can write — said once per
+                // rebuild rather than once ever, because an operator fixing
+                // the signer should see it take effect.
+                val authors = source.authors.ifEmpty { listOfNotNull(monitorAuthor) }
+                if (authors.isEmpty()) {
+                    System.err.println(
+                        "router: ${stream.name} has a verdict source, no `authors` and no signer — no monitor identity, roster stays empty",
+                    )
+                    continue
+                }
                 val certified =
                     RelayDiscovery.syncable(
                         store,
-                        monitorAuthor = author,
+                        monitorAuthors = authors,
                         maxAgeSeconds = source.maxAgeSeconds,
                         exclude = dynamic.exclude,
                         skip = setOfNotNull(store.relay),

@@ -25,6 +25,7 @@ import com.typesafe.config.ConfigFactory
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import java.io.File
 import java.util.regex.PatternSyntaxException
@@ -525,10 +526,31 @@ object RouterConfigLoader {
             "router: stream '$stream' asks for verdicts $verdicts — `syncable` is the only value that " +
                 "admits a relay to a sync stream; the refusals are diagnoses, not relay lists"
         }
-        require(filter.authors == null) {
-            "router: stream '$stream' names `authors` on its verdict source — verdicts are trusted from " +
-                "this router's own monitor identity only; third-party monitors are not supported yet"
-        }
+        // WHOSE verdicts. The operator who set the monitor's nsec knows its
+        // npub, so naming it is one copy-paste — and npub-ONLY, for the reason
+        // the relay side's PubKeys spells out: hex has no checksum, so one
+        // mistyped character is a valid-looking key that simply is not anybody,
+        // and a roster built on it is empty with no error anywhere. Absent
+        // means this process's own signer — the single-process deployment,
+        // where monitor and router share one identity.
+        val authors =
+            filter.authors.orEmpty().map { raw ->
+                val trimmed = raw.trim().let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
+                require(!trimmed.startsWith("nsec1")) {
+                    "router: stream '$stream' has an nsec in its verdict source `authors` — that is a PRIVATE key; " +
+                        "put the monitor's npub there"
+                }
+                val hex = if (trimmed.startsWith("n")) decodePublicKeyAsHexOrNull(trimmed) else null
+                requireNotNull(hex?.takeIf { it.length == 64 }) {
+                    "router: stream '$stream' verdict source authors entry does not decode as an npub — " +
+                        if (raw.trim().length == 64) {
+                            "bare hex has no checksum, so a typo is a nobody with an empty roster and no error; " +
+                                "convert it to its npub form and use that"
+                        } else {
+                            "recopy the monitor's npub1…"
+                        }
+                }
+            }
         require(filter.since == null && filter.until == null && filter.limit == null) {
             "router: stream '$stream' bounds its verdict source with since/until/limit — freshness is " +
                 "measured on the verdict tag's own stamp, so say `maxAgeSeconds` on the source instead"
@@ -539,7 +561,11 @@ object RouterConfigLoader {
             } else {
                 VerdictSource.DEFAULT_MAX_AGE_SECONDS
             }
-        return RelaySource(selects = emptyList(), filter = filter, verdicts = VerdictSource(maxAgeSeconds = maxAge))
+        return RelaySource(
+            selects = emptyList(),
+            filter = filter,
+            verdicts = VerdictSource(maxAgeSeconds = maxAge, authors = authors),
+        )
     }
 
     /** One `{ kind = ..., tag = ..., index = ..., where = [ ] }` entry of a source's `select` list. */

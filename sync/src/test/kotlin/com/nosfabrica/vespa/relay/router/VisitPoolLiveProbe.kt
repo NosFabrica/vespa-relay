@@ -121,7 +121,7 @@ class VisitPoolLiveProbe {
                 val roster =
                     RelayDiscovery.syncable(
                         store,
-                        monitorAuthor = signer.pubKey,
+                        monitorAuthors = listOf(signer.pubKey),
                         maxAgeSeconds = 3600,
                         exclude = RelayExcludes.NONE,
                     )

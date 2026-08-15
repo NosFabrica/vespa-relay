@@ -576,20 +576,21 @@ internal class DynamicSync(
         val certified =
             dynamic.verdictSources
                 .flatMap { source ->
-                    val author = monitorAuthor
-                    if (author == null) {
+                    // The source's configured monitor keys, or our own signer.
+                    val authors = source.authors.ifEmpty { listOfNotNull(monitorAuthor) }
+                    if (authors.isEmpty()) {
                         // Configured to trust verdicts nobody here can write.
                         // Said every discovery rather than once, because a stream
                         // idling on an empty certified list looks exactly like a
                         // network with no syncable relays.
                         System.err.println(
-                            "router: ${stream.name} has a verdict relay source but no signer — no monitor identity, no verdicts, no relays from it",
+                            "router: ${stream.name} has a verdict relay source, no `authors` and no signer — no monitor identity, no relays from it",
                         )
                         emptyList()
                     } else {
                         RelayDiscovery.syncable(
                             store,
-                            monitorAuthor = author,
+                            monitorAuthors = authors,
                             maxAgeSeconds = source.maxAgeSeconds,
                             exclude = dynamic.exclude,
                             skip = setOfNotNull(store.relay),

@@ -65,7 +65,7 @@ class SyncableRelaysTest {
             val admitted =
                 RelayDiscovery.syncable(
                     store,
-                    monitorAuthor = signer.pubKey,
+                    monitorAuthors = listOf(signer.pubKey),
                     maxAgeSeconds = 3600,
                     exclude = RelayExcludes.NONE,
                 )
@@ -88,7 +88,7 @@ class SyncableRelaysTest {
             val admitted =
                 RelayDiscovery.syncable(
                     store,
-                    monitorAuthor = signer.pubKey,
+                    monitorAuthors = listOf(signer.pubKey),
                     maxAgeSeconds = 3600,
                     exclude = RelayExcludes.NONE,
                     now = nowSeconds() + 7200,
@@ -110,7 +110,7 @@ class SyncableRelaysTest {
             val fresh =
                 RelayDiscovery.syncable(
                     store,
-                    monitorAuthor = signer.pubKey,
+                    monitorAuthors = listOf(signer.pubKey),
                     maxAgeSeconds = 3600,
                     exclude = RelayExcludes.NONE,
                 )

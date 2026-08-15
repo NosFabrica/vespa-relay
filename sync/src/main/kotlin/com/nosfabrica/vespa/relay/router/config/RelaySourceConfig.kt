@@ -168,6 +168,16 @@ data class RelayDiscoveryConfig(
  */
 data class VerdictSource(
     val maxAgeSeconds: Long = DEFAULT_MAX_AGE_SECONDS,
+    /**
+     * Whose verdicts to trust, as 64-char lowercase hex — decoded from the
+     * `authors = ["npub1…"]` the operator wrote. EMPTY means this process's
+     * own signer, which is the single-process deployment where the monitor
+     * and the router share one identity and the operator has nothing to copy.
+     * Named explicitly, it is a deliberate trust statement: the deployment
+     * where the monitor runs as its own process under its own key, and every
+     * router consuming its verdicts writes that key here.
+     */
+    val authors: List<String> = emptyList(),
 ) {
     companion object {
         /**

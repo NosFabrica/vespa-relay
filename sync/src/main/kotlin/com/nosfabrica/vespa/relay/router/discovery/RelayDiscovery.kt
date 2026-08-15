@@ -199,9 +199,12 @@ object RelayDiscovery {
 
     /**
      * The relay list a [VerdictSource] stream runs on: every url whose
-     * kind-30166 record carries a FRESH `["s", "syncable", …]` from
-     * [monitorAuthor] — one indexed query where parsing relay lists is a store
-     * walk of minutes.
+     * kind-30166 record carries a FRESH `["s", "syncable", …]` from one of
+     * [monitorAuthors] — one indexed query where parsing relay lists is a
+     * store walk of minutes. The authors are the trust boundary: the source's
+     * configured monitor keys, or this process's own signer where none are
+     * named — never unscoped, so a stranger's records are queried out before
+     * verification even starts.
      *
      * Freshness and rules come from the TAG, not the event. The record's
      * `createdAt` is rewritten by quartz's passive monitor on every connection
@@ -216,18 +219,19 @@ object RelayDiscovery {
      */
     suspend fun syncable(
         store: IEventStore,
-        monitorAuthor: String,
+        monitorAuthors: List<String>,
         maxAgeSeconds: Long,
         exclude: RelayExcludes,
         skip: Set<NormalizedRelayUrl> = emptySet(),
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
     ): List<DiscoveredRelay> {
+        if (monitorAuthors.isEmpty()) return emptyList()
         val records =
             store.query<Event>(
                 Filter(
                     kinds = listOf(RelayDiscoveryEvent.KIND),
-                    authors = listOf(monitorAuthor),
+                    authors = monitorAuthors,
                     tags = mapOf(RelayAliasRecord.STATUS_TAG to listOf(FitnessPass.Verdict.SYNCABLE.value)),
                 ),
             )

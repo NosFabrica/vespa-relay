@@ -1150,20 +1150,73 @@ class RouterConfigTest {
                 .single()
                 .maxAgeSeconds,
         )
-        // A select would be a scan of records whose reading is verified, an
-        // author would trust a stranger's monitor, and a refusal verdict is a
-        // diagnosis rather than a relay list — each refused where it is typed.
+        // A select would be a scan of records whose reading is verified, and a
+        // refusal verdict is a diagnosis rather than a relay list — each
+        // refused where it is typed.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(stream("""{ select = [ { tag = "d" } ], filter = { "kinds": [30166] } }"""))
-        }
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["deadbeef"] } }"""))
         }
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#s": ["dead"] } }"""))
         }
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166, 10002] } }"""))
+        }
+    }
+
+    @Test
+    fun `a verdict source's authors name the monitor to trust, as an npub`() {
+        fun stream(source: String) =
+            """
+            streams {
+                s {
+                    dir    = "down"
+                    sync   = "fetch"
+                    filter = { "kinds": [1] }
+                    relaySource = [ $source ]
+                }
+            }
+            """.trimIndent()
+        // The split-monitor deployment: the operator who set the monitor's
+        // nsec knows its npub and writes it here; the loader hands the read
+        // the hex the store speaks.
+        val named =
+            RouterConfigLoader.parse(
+                stream(
+                    """{ filter = { "kinds": [30166], "#s": ["syncable"],
+                         "authors": ["npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"] } }""",
+                ),
+            )
+        assertEquals(
+            listOf("0".repeat(63) + "1"),
+            named.streams
+                .single()
+                .dynamic!!
+                .verdictSources
+                .single()
+                .authors,
+        )
+        // Absent means this process's own signer — the single-process shape.
+        val bare = RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] } }"""))
+        assertEquals(
+            emptyList(),
+            bare.streams
+                .single()
+                .dynamic!!
+                .verdictSources
+                .single()
+                .authors,
+        )
+        // Bare hex has no checksum — a typo is a nobody with an empty roster
+        // and no error anywhere — and an nsec is a private key in a public
+        // file. Both refused where they are typed, same as PubKeys.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"a".repeat(64)}"] } }"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(
+                stream("""{ filter = { "kinds": [30166], "authors": ["nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"] } }"""),
+            )
         }
     }
 
