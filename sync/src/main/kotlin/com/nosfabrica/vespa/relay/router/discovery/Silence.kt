@@ -37,7 +37,10 @@ package com.nosfabrica.vespa.relay.router.discovery
  * The text is formatted by somebody else and is not a contract: it comes from
  * OkHttp and the JDK's socket exceptions through
  * `onCannotConnect(relay, message, filters)`, and its wording differs by
- * platform and by version. Matching on it is a judgement, so it is made HERE,
+ * platform and by version. Measured live, quartz relays it as
+ * `WebSocket Failure: <message> (<ExceptionName>)` — and for a refused port the
+ * message is `Failed to connect to localhost/127.0.0.1:1`, which carries no
+ * "refused" at all. The class name in the suffix is the whole evidence. Matching on it is a judgement, so it is made HERE,
  * once, where it can be read and corrected — and quartz itself classifies the
  * same strings the same way (`classifyDrainFailure` matches `timeout`,
  * `timed out`, `connect timed out`, `429`, `too many requests`).
@@ -70,6 +73,12 @@ enum class Silence(
     /** `SSLHandshakeException` and friends: reachable, and we could not agree on TLS. */
     TLS("the TLS handshake failed"),
 
+    /**
+     * Reachable, and what answered is not a websocket. A relay list full of
+     * plain web servers is ordinary, and this is what they look like.
+     */
+    UPGRADE("the websocket upgrade was refused"),
+
     /** The window lapsed with nothing on it — the one cause here that is worth simply retrying. */
     TIMEOUT("it never answered in time"),
 
@@ -100,9 +109,16 @@ enum class Silence(
                         "temporary failure in name resolution",
                     ),
                 NO_ROUTE to listOf("no route to host", "noroutetohost", "network is unreachable", "portunreachable"),
-                TLS to listOf("sslhandshake", "handshake", "certificate", "sslexception", "trust anchor", "sslpeerunverified"),
-                REFUSED to listOf("connection refused", "connectexception", "econnrefused"),
-                TIMEOUT to listOf("timeout", "timed out", "sockettimeout", "no answer"),
+                TLS to listOf("sslhandshake", "sslexception", "sslpeerunverified", "certificate", "trust anchor"),
+                UPGRADE to listOf("unexpected response code", "expected http 101", "not a websocket"),
+                // TIMEOUT ABOVE REFUSED, because the class name is the only
+                // evidence a refusal leaves and it is the weaker of the two: the
+                // message quartz relays for a refused port is `Failed to connect
+                // to localhost/127.0.0.1:1`, which says nothing, and the verdict
+                // rides on the `(ConnectException)` suffix. An explicit timeout
+                // in the same string must win over that.
+                TIMEOUT to listOf("timeout", "timed out", "sockettimeout"),
+                REFUSED to listOf("connection refused", "econnrefused", "connectexception"),
             )
 
         /**

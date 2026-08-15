@@ -398,3 +398,21 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(f.rows.find((r) => r.key === "the TLS handshake failed").value, 90);
   ok("a lone refinement keeps both its own row and the group it belongs to");
 }
+
+// ── does the document still add up ──────────────────────────────────────────
+{
+  // The relay recomputes both identities on the way out, and the tree carries
+  // its verdict — because `unattributed` can only report children that fall
+  // SHORT of their parent. Rows that OVERSHOOT leave no slice at all, which is
+  // the shape a document carrying both a group and its children produces.
+  const doc = (over) => ({
+    name: "consistency", sourced: 100,
+    streams: [{ candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "never answered a REQ", urls: 90, hosts: 9 }], omitted: 0 }, ...over }],
+  });
+  assert.equal(funnelOf(doc({ accountedFor: true })).accountedFor, true);
+  assert.equal(funnelOf(doc({ accountedFor: false })).accountedFor, false);
+  // A router too old to make the claim is not a router making a false one.
+  assert.equal(funnelOf(doc({})).accountedFor, null, "absent is not a verdict either way");
+  ok("the relay's own arithmetic check rides on the tree, and absent is not false");
+}

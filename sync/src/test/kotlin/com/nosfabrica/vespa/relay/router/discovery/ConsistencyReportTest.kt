@@ -284,6 +284,26 @@ class ConsistencyReportTest {
         }
 
     @Test
+    fun `every row the gate can emit fits under the published cap`() =
+        runBlocking {
+            // THE CAP HAS BEEN ONE SHORT TWICE. Truncating here does not shorten
+            // a list, it breaks the property the url counts exist for — the rows
+            // sum to `unmeasured` — and the shortfall surfaces on the card as
+            // `not accounted for` in the FAULT tone, an arithmetic error
+            // reported against a pass that was working perfectly.
+            //
+            // Six reasons, plus the seven causes `never answered a REQ` splits
+            // into, is thirteen rows. Asserted against the enums rather than
+            // against today's output, so naming an eighth cause fails here
+            // rather than on a live card.
+            val widest = (ConsistencyPass.Unmeasured.entries.size - 1) + Silence.entries.size
+            assertTrue(
+                widest <= Processors.MAX_UNDECIDED_REASONS,
+                "the gate can emit $widest rows and the cap keeps ${Processors.MAX_UNDECIDED_REASONS}",
+            )
+        }
+
+    @Test
     fun `the candidate set divides exactly once`() =
         runBlocking {
             // THE PROPERTY THE WHOLE BREAKDOWN RESTS ON:
@@ -343,7 +363,7 @@ class ConsistencyReportTest {
                 work.undecided.sumOf { it.urls },
                 "every url with no verdict must be under exactly one reason",
             )
-            assertEquals(0, work.undecidedOmitted, "seven reasons fit in the published cap")
+            assertEquals(0, work.undecidedOmitted, "the reasons fit in the published cap")
             // The folded url is never dialled, so the fold's work is not paid
             // for twice — the reason `wanted` filters it out.
             assertEquals(3, work.dialled)

@@ -181,14 +181,11 @@ class Processors {
         /** How many hosts ended the pass that way. */
         val hosts: Int,
         /**
-         * A couple of them by name, so the reason has a subject to chase.
-         *
-         * For a pass that has only NAMES to give — the fold, which decides a
-         * host at a time and has no per-url count to report under one. A pass
-         * that can count fills [top] instead, which is the same disclosure with
-         * the number that makes it rankable.
+         * A couple of them by name, for a pass that has only NAMES to give —
+         * the fold, which decides a host at a time. A pass that can count fills
+         * [top] instead: the same disclosure with the number that ranks it.
          */
-        val examples: List<String>,
+        val examples: List<String> = emptyList(),
         /**
          * …or the widest few WITH their url counts, for a pass that measures
          * urls: the fourth level of the funnel.
@@ -432,15 +429,17 @@ class Processors {
         /**
          * How many `undecided` reasons a work row publishes.
          *
-         * Eight covers both enumerations whole — five from the fold, seven from
-         * the stability gate — so this cuts nothing in practice and still
-         * refuses to be unbounded if either list grows, the same bargain
-         * `foldedOnto` and `inFlight` make. It was six, which fitted the fold
-         * alone and would have silently truncated the gate's reasons the moment
-         * they were named, breaking the one property the url counts are for:
-         * that the rows sum back to [Work.unmeasured].
+         * Sixteen covers both enumerations whole with headroom: five from the
+         * fold, and thirteen from the stability gate — six reasons plus the
+         * SEVEN causes `never answered a REQ` splits into. Truncating here does
+         * not merely shorten a list, it breaks the property the url counts
+         * exist for: the rows sum to [Work.unmeasured], and a cut tail surfaces
+         * on the card as `not accounted for` in the fault tone — an arithmetic
+         * error reported against a pass that was working. This has been one
+         * short twice, once at six and once at eight, both times because a
+         * reason list grew and the cap did not.
          */
-        const val MAX_UNDECIDED_REASONS = 8
+        const val MAX_UNDECIDED_REASONS = 16
 
         /** Named hosts per reason. Enough to recognise the pattern, not an inventory. */
         const val MAX_UNDECIDED_EXAMPLES = 3

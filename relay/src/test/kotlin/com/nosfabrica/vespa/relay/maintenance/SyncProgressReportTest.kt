@@ -655,6 +655,48 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `a probe pass's numbers are checked for adding up, and a mismatch is published`() {
+        // The same check `cycle` gets, on the other partition this object
+        // publishes — and recomputed here rather than forwarded, so it is a
+        // statement about the document being served.
+        fun row(streams: String) =
+            (
+                (
+                    SyncProgressReport
+                        .build("""{"writtenAt": 900, "processors": [{"name": "consistency", "streams": [$streams]}]}""", nowSeconds = 1_000)!!
+                        ["processors"] as JsonArray
+                )[0].jsonObject["streams"] as JsonArray
+            )[0].jsonObject
+
+        val whole =
+            row(
+                """{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9, "inconsistent": 1,
+                    "unmeasured": 22, "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 22, "hosts": 7}], "omitted": 0}}""",
+            )
+        assertTrue(whole["accountedFor"]!!.jsonPrimitive.booleanOrNull!!, "8 + 9 + 1 + 22 = 40, and the rows cover all 22")
+
+        // The candidate set does not divide.
+        val short =
+            row(
+                """{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9, "inconsistent": 1,
+                    "unmeasured": 20, "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 20, "hosts": 7}], "omitted": 0}}""",
+            )
+        assertFalse(short["accountedFor"]!!.jsonPrimitive.booleanOrNull!!, "38 of 40 urls have a disposition")
+
+        // …and the rows do not cover what has no verdict, which is the identity
+        // the second level of the tree rests on.
+        val gap =
+            row(
+                """{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9, "inconsistent": 1,
+                    "unmeasured": 22, "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 9, "hosts": 7}], "omitted": 0}}""",
+            )
+        assertFalse(gap["accountedFor"]!!.jsonPrimitive.booleanOrNull!!, "9 of the 22 undecided urls are under a reason")
+
+        // A pass that publishes no partition makes no claim about it either.
+        assertFalse("accountedFor" in row("""{"name": "all streams", "candidates": 40, "unmeasured": 22}"""))
+    }
+
+    @Test
     fun `a pass that measures no verdicts publishes none, rather than zero of them`() {
         // The alias fold has no stability verdicts to report, and neither has a
         // router written before the partition existed. A zero would be a

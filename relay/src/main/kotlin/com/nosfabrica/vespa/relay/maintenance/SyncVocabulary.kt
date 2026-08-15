@@ -501,6 +501,17 @@ internal object SyncVocabulary {
                     "`omitted` carries whatever either side dropped.",
             )
             put(
+                "accountedFor",
+                "Do a probe pass's numbers still add up in THIS document — `candidates = foldedAway + consistent + " +
+                    "inconsistent + unmeasured`, and the `undecided` rows covering every url with no verdict. " +
+                    "Recomputed on this side rather than forwarded, so it describes what is being served rather " +
+                    "than what the router believed, and a mismatch is published rather than hidden: the counts are " +
+                    "still worth having and this is what stops a reader treating a broken partition as a whole one. " +
+                    "Absent on a pass that publishes no partition — the alias fold measures no verdicts, and " +
+                    "\"these add up\" is a claim about numbers that exist. The card draws the shortfall as its own " +
+                    "`not accounted for` row.",
+            )
+            put(
                 "parent",
                 "The undecided reason this row REFINES, where it refines one. `never answered a REQ` is the largest " +
                     "thing a probe pass reports and it covers four findings with four different responses — a name " +

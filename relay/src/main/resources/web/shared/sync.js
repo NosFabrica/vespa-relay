@@ -274,14 +274,18 @@ export function funnelOf(p) {
   const reasons = [];
   const drawn = new Set();
   for (const row of all) {
-    if (row.parent) {
-      // Its parent carries it — unless nothing else claims that name, in which
-      // case the row stands on its own rather than vanishing into a group that
-      // was never opened.
-      if (drawn.has(row.parent)) continue;
-      drawn.add(row.parent);
-      const kids = children.get(row.parent).map(asReason);
-      reasons.push(node(row.parent, row.parent, kids.reduce((a, k) => a + k.value, 0), kids));
+    const group = row.parent || (children.has(row.reason) ? row.reason : null);
+    if (group) {
+      // A row whose NAME is also a parent is consumed as that parent rather
+      // than drawn beside it — otherwise a document carrying both the group and
+      // its children counts every url under it twice, and a sum that comes out
+      // OVER its own total is the one error the `unattributed` slice cannot
+      // report. The router never publishes both; the card is served to whoever
+      // asks, and this file's own rule is not to trust the writer.
+      if (drawn.has(group)) continue;
+      drawn.add(group);
+      const kids = children.get(group).map(asReason);
+      reasons.push(node(group, group, kids.reduce((a, k) => a + k.value, 0), kids));
       continue;
     }
     reasons.push(asReason(row));
@@ -302,7 +306,17 @@ export function funnelOf(p) {
       ]),
       node("candidates", "in reach — the candidate set", candidates, kept),
     ]);
-  return { total, candidates, root, rows: flatten(root), omitted: firstOmitted(streams) };
+  // WHAT THE RELAY THINKS OF THE ARITHMETIC, which is not the same question as
+  // what this function's own subtraction found. `unattributed` can only report a
+  // parent whose children fall SHORT; rows that overshoot their parent — the
+  // shape a document carrying both a group and its children produces — leave no
+  // slice at all. The relay recomputes both identities on the way out, so a
+  // false here is drawn as a note even when every bar looks whole.
+  const claimed = streams.map((w) => w.accountedFor).filter((v) => v != null);
+  return {
+    total, candidates, root, rows: flatten(root), omitted: firstOmitted(streams),
+    accountedFor: claimed.length ? claimed.every(Boolean) : null,
+  };
 }
 
 /**

@@ -122,19 +122,18 @@ class RelayConsistency(
     fun refusedCount(): Int = inconsistent.size
 
     /**
-     * How many of THESE urls carry each verdict — the two standing counts a
-     * funnel needs, as opposed to what one pass happened to decide.
+     * Which verdict this url carries, asked one at a time so a caller can
+     * partition a candidate set in a single walk.
      *
-     * Scoped to a candidate set rather than reported as the sizes of the two
-     * sets, because those are not a partition of anything a reader is looking
-     * at: [replace] only rewrites the urls it is handed, so both sets can hold
-     * verdicts about urls no stream discovers any more. Counting within the
-     * candidates is what makes `candidates = folded + consistent + inconsistent
-     * + unmeasured` close — see [ConsistencyPass.report].
+     * Asked of the CANDIDATES rather than reported as the sizes of the two sets:
+     * [replace] only rewrites the urls it is handed, so both sets can hold
+     * verdicts about urls no stream discovers any more, and only counting within
+     * the candidate set makes `candidates = folded + consistent + inconsistent +
+     * unmeasured` close — see [ConsistencyPass.report].
      */
-    fun consistentCount(candidates: Collection<NormalizedRelayUrl>): Int = candidates.count { it in consistent }
+    fun isConsistent(url: NormalizedRelayUrl): Boolean = url in consistent
 
-    fun inconsistentCount(candidates: Collection<NormalizedRelayUrl>): Int = candidates.count { it in inconsistent }
+    fun isInconsistent(url: NormalizedRelayUrl): Boolean = url in inconsistent
 
     /** Which urls still need measuring: everything with no verdict yet. */
     fun toProbe(candidates: Collection<NormalizedRelayUrl>): List<NormalizedRelayUrl> = candidates.filter { !measured(it) }

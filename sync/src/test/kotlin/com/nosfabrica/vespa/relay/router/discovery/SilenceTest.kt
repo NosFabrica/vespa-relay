@@ -52,11 +52,37 @@ class SilenceTest {
     }
 
     @Test
+    fun `the strings a live pass actually produced`() {
+        // MEASURED, not imagined — `ConsistencyLivePassProbe` against real urls,
+        // through quartz's `WebSocket Failure: <message> (<ExceptionName>)`.
+        // Both of these landed in UNKNOWN on the first live run, which is what
+        // that bucket is for and how this table gets extended.
+        assertEquals(
+            Silence.REFUSED,
+            Silence.of("cannot:WebSocket Failure: Failed to connect to localhost/127.0.0.1:1 (ConnectException)"),
+            "the message says nothing; the exception name in the suffix is the whole evidence",
+        )
+        assertEquals(
+            Silence.UPGRADE,
+            Silence.of("cannot:WebSocket Failure: Unexpected response code for CONNECT: 502 (IOException)"),
+            "reachable, and what answered is not a websocket",
+        )
+        assertEquals(
+            Silence.UPGRADE,
+            Silence.of("cannot:WebSocket Failure: Expected HTTP 101 response but was '404 Not Found'"),
+        )
+    }
+
+    @Test
     fun `the specific pattern wins over the general one`() {
         // `connect timed out` is a timeout and not a refusal, and a rate limit
         // that mentions a timeout is a rate limit — first hit wins, so the order
         // of the table is part of its meaning.
         assertEquals(Silence.RATE_LIMITED, Silence.of("cannot: 429 too many requests, retry after timeout"))
+        // A refused port and a connect timeout BOTH surface as ConnectException
+        // on some platforms, so an explicit timeout has to outrank the class
+        // name — otherwise every slow host is reported as refusing us.
+        assertEquals(Silence.TIMEOUT, Silence.of("cannot: java.net.ConnectException: connect timed out"))
         assertEquals(Silence.TIMEOUT, Silence.of("cannot: failed to connect after 10000ms: connect timed out"))
         // Case is not a contract either: the same message arrives capitalised
         // from one platform and not from another.

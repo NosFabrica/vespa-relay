@@ -399,10 +399,34 @@ internal object SyncProgressReport {
             // `candidates` rather than to 0 when a file does not say — "nothing
             // left to measure" is a strong claim and an unreadable row must not
             // make it.
-            put("unmeasured", num(o["unmeasured"]) ?: num(o["candidates"]) ?: 0)
+            val unmeasured = num(o["unmeasured"]) ?: num(o["candidates"]) ?: 0
+            put("unmeasured", unmeasured)
             put("dialled", num(o["dialled"]) ?: 0)
             put("decided", num(o["decided"]) ?: 0)
-            undecided(o["undecided"] as? JsonObject)?.let { put("undecided", it) }
+            val rows = undecided(o["undecided"] as? JsonObject)
+            rows?.let { put("undecided", it) }
+            // DOES IT STILL ADD UP, in the document being served — the same
+            // check and the same wording `cycle` uses, on the other partition
+            // this object publishes. Two identities have to hold: the candidate
+            // set divides once, and the undecided rows account for everything
+            // with no verdict. Recomputed here rather than forwarded, and a
+            // mismatch is PUBLISHED rather than hidden: the counts are still
+            // worth having, and the flag is what stops a reader treating a
+            // broken partition as a whole one.
+            //
+            // Only claimed where the router published the partition at all. The
+            // alias fold measures no verdicts, and "these numbers add up" is a
+            // statement about numbers that exist.
+            val split = listOf("foldedAway", "consistent", "inconsistent").mapNotNull { num(o[it]) }
+            if (split.size == 3) {
+                val named = rows?.let { r -> (r["reasons"] as? JsonArray).orEmpty().sumOf { num(it.jsonObject["urls"]) ?: 0 } } ?: 0
+                val omitted = rows?.let { num(it["omitted"]) ?: 0 } ?: 0
+                put(
+                    "accountedFor",
+                    split.sum() + unmeasured == (num(o["candidates"]) ?: 0) &&
+                        (rows == null || (named == unmeasured && omitted == 0L)),
+                )
+            }
         }
     }
 
@@ -745,17 +769,16 @@ internal object SyncProgressReport {
     private const val MAX_PROCESSOR_STREAMS = 12
 
     /**
-     * Undecided reasons kept per row — EIGHT, matching the router's own
-     * `Processors.MAX_UNDECIDED_REASONS`.
+     * Undecided reasons kept per row, matching `Processors.MAX_UNDECIDED_REASONS`.
      *
-     * It was six, which was the fold's whole enumeration and one short of the
-     * stability gate's seven. This side is supposed to bound a list the router
-     * already bounded; cutting BELOW what the router publishes is a different
-     * thing entirely, and here it would have dropped a reason whose urls the
-     * page then draws as `not accounted for` — an arithmetic fault reported
-     * against a document that was complete when it arrived.
+     * The two move together. This side bounds a list the router already
+     * bounded; cutting BELOW what the router publishes drops a reason whose
+     * urls the page then draws as `not accounted for` — an arithmetic fault
+     * reported against a document that was complete when it arrived. It has
+     * been short twice, so the number is chosen against the gate's whole
+     * enumeration (thirteen) rather than against today's output.
      */
-    private const val MAX_UNDECIDED_ROWS = 8
+    private const val MAX_UNDECIDED_ROWS = 16
     private const val MAX_REJECTION_ROWS = 4
     private const val MAX_UNDECIDED_EXAMPLES = 3
 

@@ -229,16 +229,12 @@ class ConsistencyPass(
         val gate = Semaphore(concurrency)
         val decided = AtomicInteger()
         val refused = AtomicInteger()
-        // Urls a socket was actually opened for. NOT `wanted.size`, which is
-        // what this used to publish as `dialled`: a url held back by [canDial]
-        // costs no connection, and counting it as one made "we dialled 7,577
-        // and decided 74" a sentence about work that never happened.
+        // Urls a socket was actually opened for. NOT `wanted.size`, which this
+        // used to publish as `dialled` — a url [canDial] held back costs no
+        // connection, and counting it made the number a claim about work that
+        // never happened.
         val walked = AtomicInteger()
-        // The urls that proved nothing AND WHY — grouped by reason they become
-        // the `undecided` rows, and grouped by host within a reason they name
-        // the servers to chase. Bounded by the candidate set: `wanted` is every
-        // url still owed a measurement, and this keeps only the ones that ended
-        // without a verdict.
+        // The urls that proved nothing AND WHY. Bounded by the candidate set.
         val silent = ConcurrentHashMap<NormalizedRelayUrl, Finding>()
         // Raw terminal text [Silence] could not place, bounded and distinct.
         // Sampled to stderr rather than published: the table is extended from
@@ -255,15 +251,10 @@ class ConsistencyPass(
             for (url in wanted) {
                 launch {
                     gate.withPermit {
-                        // Guarded, because it opens a socket of its own: the TCP
-                        // pre-probe is a dial like any other and a throw from it
-                        // used to take the whole `launch` down as an unclassified
-                        // failure. Ours either way — see [Unmeasured.TRANSPORT].
-                        //
-                        // NOT `runCatching`, which catches CancellationException
-                        // too: a pass cancelled at shutdown would record every
-                        // remaining url as a probe failure on its way out, and
-                        // publish that as a measurement.
+                        // The pre-probe opens a socket of its own and can throw.
+                        // NOT `runCatching`, which swallows CancellationException:
+                        // a pass cancelled at shutdown would record every
+                        // remaining url as a probe failure on its way out.
                         val reachable =
                             try {
                                 canDial(url)
@@ -281,27 +272,11 @@ class ConsistencyPass(
                         sockets.claim(url)
                         val attempt =
                             try {
-                                // THE PAIR, GENUINELY CONCURRENT, over one
-                                // connection — two REQs in flight at the same
-                                // instant, which is what makes "the answer
-                                // changed" impossible to blame on elapsed time.
-                                //
-                                // This was staged before, and the comment here
-                                // claimed concurrency it did not have: the first
-                                // walk ran to completion to discover the filter
-                                // and only the second was wrapped in `async`, so
-                                // the pair was sequential and one of the two
-                                // `async`s was returning an already-computed set.
-                                //
-                                // The filter still has to be agreed on — two
-                                // answers to different questions are not evidence
-                                // — so the bare filter is tried as a concurrent
-                                // PAIR first, and only if it comes back unusable
-                                // is the kinds fallback tried, also as a pair.
-                                // The common case is two REQs and no extra walk;
-                                // the minority of hosts refusing a bare filter
-                                // pay a second pair. Neither case compares two
-                                // windows taken through different filters.
+                                // The pair, genuinely concurrent over one
+                                // connection, so "the answer changed" cannot be
+                                // blamed on elapsed time. It was staged once,
+                                // with a comment claiming concurrency it did not
+                                // have. See [ladder] for the filter rungs.
                                 ladder(url, anchor, onEvent)
                             } catch (e: CancellationException) {
                                 throw e
@@ -361,18 +336,14 @@ class ConsistencyPass(
             System.err.println(
                 "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) ? ${decided.get()} decided " +
                     "(${refused.get()} refused as inconsistent), ${silent.size} proved nothing" +
-                    // WHY, on the same line, in the order that says which fix is
-                    // worth anyone's time. A single "said too little to judge"
-                    // covered a dead corpus, an auth wall and a thin relay, and
-                    // an operator could not tell which of the three they had.
+                    // WHY, widest first. One "said too little to judge" covered
+                    // a dead corpus, an auth wall and a thin relay alike.
                     breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.label}" } +
                     ", ${consistency.refusedCount()} url(s) now refused in total " +
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
-        // The strings [Silence] could not place, once per pass. This is how the
-        // table is extended: from text a real relay produced, rather than from a
-        // guess about how OkHttp words things on somebody else's platform.
+        // How [Silence]'s table gets extended: from text a real relay produced.
         if (unplaced.isNotEmpty()) {
             System.err.println("router: $label stability could not classify ${unplaced.size} terminal reason(s): " + unplaced.joinToString(" | "))
         }
@@ -381,11 +352,11 @@ class ConsistencyPass(
     }
 
     /** The undecided urls by finding, commonest first — the log's order and the report's. */
-    private fun breakdown(silent: Map<NormalizedRelayUrl, Finding>): List<Pair<Finding, Int>> =
-        silent.values
-            .groupingBy { it }
-            .eachCount()
-            .entries
+    private fun breakdown(silent: Map<NormalizedRelayUrl, Finding>): List<Pair<Finding, Int>> = order(silent.values.groupingBy { it }.eachCount())
+
+    /** Findings widest first, ties broken by the enum order so a document is stable. */
+    private fun order(counts: Map<Finding, Int>): List<Pair<Finding, Int>> =
+        counts.entries
             .sortedWith(
                 compareByDescending<Map.Entry<Finding, Int>> { it.value }
                     .thenBy { it.key.reason.ordinal }
@@ -425,58 +396,57 @@ class ConsistencyPass(
         unmeasurable: Map<NormalizedRelayUrl, Finding>,
     ) {
         val handle = progress ?: return
-        val kept = candidates.filterNot { it in folded }
+        // ONE PASS over the candidates for the whole partition, and one over the
+        // undecided urls for every row's urls AND hosts. It was four passes and
+        // then a filter of the whole map per row — seven times over five
+        // thousand urls, parsing a host out of each — for numbers a single walk
+        // produces.
+        var foldedAway = 0
+        var consistent = 0
+        var inconsistent = 0
+        var unmeasured = 0
+        for (url in candidates) {
+            when {
+                url in folded -> foldedAway++
+                consistency.isConsistent(url) -> consistent++
+                consistency.isInconsistent(url) -> inconsistent++
+                else -> unmeasured++
+            }
+        }
+        val urls = HashMap<Finding, Int>()
+        val hosts = HashMap<Finding, HashMap<String, Int>>()
+        for ((url, finding) in unmeasurable) {
+            urls.merge(finding, 1, Int::plus)
+            hosts.getOrPut(finding) { HashMap() }.merge(RelayAliases.hostOf(url.url), 1, Int::plus)
+        }
         val rows =
-            breakdown(unmeasurable).map { (finding, urls) ->
-                // Urls AND hosts on the same row. The url count is what makes
-                // the partition close; the host count is what an operator
-                // chases, because the thing that would not answer twice is a
-                // server and forty paths on one host say the same thing forty
-                // times.
-                //
-                // RANKED, not merely listed. "3,902 urls on 2,201 hosts" is two
-                // opposite findings wearing one shape — a corpus spread thin
-                // across a dead network, or three servers wearing a thousand
-                // urls each — and only the widest few can tell them apart.
-                val hosts =
-                    unmeasurable
-                        .asSequence()
-                        .filter { it.value == finding }
-                        .groupingBy { RelayAliases.hostOf(it.key.url) }
-                        .eachCount()
-                val top =
-                    hosts.entries
-                        // By host name within a count, so two passes over one
-                        // unchanged network publish the same document rather
-                        // than a list that reshuffles on every tick.
-                        .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
-                        .take(Processors.MAX_UNDECIDED_HOSTS)
-                        .map { Processors.HostCount(it.key, it.value) }
+            order(urls).map { (finding, count) ->
+                val byHost = hosts[finding].orEmpty()
                 Processors.Undecided(
-                    // The words the log line uses, so a reader meeting both does
-                    // not have to work out that they are the same finding.
                     reason = finding.label,
-                    // …and what this row REFINES, where it refines one. The rows
-                    // stay a flat list that sums to `unmeasured`; naming the
-                    // parent is what lets a reader nest them without the
-                    // arithmetic having to survive a tree on the wire.
                     parent = finding.parent,
-                    urls = urls,
-                    hosts = hosts.size,
-                    // Named WITH counts, so `examples` — which is for a pass
-                    // that has only names — would be the same disclosure twice.
-                    examples = emptyList(),
-                    top = top,
+                    urls = count,
+                    // Beside the urls, never instead: the url count closes the
+                    // partition, the host count says how many SERVERS those urls
+                    // are, and the ranked head says whether they concentrate.
+                    hosts = byHost.size,
+                    // Ranked by host name within a count, so two passes over an
+                    // unchanged network publish the same document.
+                    top =
+                        byHost.entries
+                            .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+                            .take(Processors.MAX_UNDECIDED_HOSTS)
+                            .map { Processors.HostCount(it.key, it.value) },
                 )
             }
         handle.record(
             Processors.Work(
                 stream = label,
                 candidates = candidates.size,
-                foldedAway = candidates.size - kept.size,
-                consistent = consistency.consistentCount(kept),
-                inconsistent = consistency.inconsistentCount(kept),
-                unmeasured = consistency.toProbe(kept).size,
+                foldedAway = foldedAway,
+                consistent = consistent,
+                inconsistent = inconsistent,
+                unmeasured = unmeasured,
                 dialled = dialled,
                 decided = decided,
                 undecided = rows.take(Processors.MAX_UNDECIDED_REASONS),
