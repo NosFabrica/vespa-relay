@@ -299,6 +299,9 @@ class SyncEngine(
         )
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope, healer, refusedIds)
 
+    /** The `monitor { concurrency }` knob, applied to every pass that dials — see [MonitorConfig.concurrency]. */
+    private val monitorConcurrency = config.monitor?.concurrency ?: MonitorConfig.DEFAULT_CONCURRENCY
+
     /**
      * The duplicate-url fold, built only when there is a signer — the verdict
      * it produces is a signed NIP-66 record, so a router with no identity has
@@ -324,6 +327,7 @@ class SyncEngine(
                     AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
                         probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
                     },
+                concurrency = monitorConcurrency,
                 progress = processors.of(FOLD_PROCESSOR),
             )
         }
@@ -348,6 +352,7 @@ class SyncEngine(
                     AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
                         probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
                     },
+                concurrency = monitorConcurrency,
                 progress = processors.of(STABILITY_PROCESSOR),
             )
         }
@@ -390,6 +395,7 @@ class SyncEngine(
                 foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
                 unstable = { urls -> stability?.apply(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
+                concurrency = monitorConcurrency,
             )
         }
 

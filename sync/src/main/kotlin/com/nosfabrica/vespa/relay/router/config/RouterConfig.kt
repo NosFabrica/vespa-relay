@@ -133,12 +133,31 @@ data class MonitorConfig(
      * the store.
      */
     val newUrlSeconds: Long? = DEFAULT_NEW_URL_SECONDS,
+    /**
+     * How many relays a probe pass dials at once — the sweep's wall clock,
+     * since the corpus is mostly dead relays whose cost is a timeout. Shared
+     * by all three dialling passes, which run serialized, so this is also the
+     * most sockets the monitor plane ever holds; size it against the
+     * dispatcher ceiling minus the visit pool's budget.
+     */
+    val concurrency: Int = DEFAULT_CONCURRENCY,
 ) {
     companion object {
         const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
 
         /** Two minutes: a new relay is syncable before its author refreshes the page. */
         const val DEFAULT_NEW_URL_SECONDS = 120L
+
+        /**
+         * This was 16, with a note calling the probe work "a side quest"
+         * that must stay below the fan-out's concurrency — true when the
+         * fold shared its sockets with the streams' fan-out, and a relic
+         * after the split. Nothing certifies until the passes finish, and a
+         * mostly-dead corpus costs timeouts, not bandwidth: a 929-url sweep
+         * measured at 16 spent half an hour in the fitness dials alone,
+         * nearly all of it waiting.
+         */
+        const val DEFAULT_CONCURRENCY = 128
     }
 }
 

@@ -1135,6 +1135,7 @@ class RouterConfigTest {
                     exclude       = [ "wss://skip.example" ]
                     sweepSeconds  = 3600
                     newUrlSeconds = 60
+                    concurrency   = 32
                 }
                 streams {
                     content {
@@ -1150,6 +1151,26 @@ class RouterConfigTest {
         assertEquals(1, m.sources.size)
         assertEquals(3600L, m.sweepSeconds)
         assertEquals(60L, m.newUrlSeconds)
+        assertEquals(32, m.concurrency)
+    }
+
+    @Test
+    fun `monitor concurrency defaults when absent and cannot be set to a monitor that never dials`() {
+        val block = """
+            streams {
+                s {
+                    dir    = "down"
+                    filter = { "kinds": [1] }
+                    urls   = ["wss://a.example"]
+                }
+            }
+        """
+        val absent = RouterConfigLoader.parse("monitor { sweepSeconds = 3600 }\n$block")
+        assertEquals(MonitorConfig.DEFAULT_CONCURRENCY, absent.monitor!!.concurrency)
+        // Zero dials is an off switch wearing a tuning knob's name — floored,
+        // not honored.
+        val floored = RouterConfigLoader.parse("monitor { concurrency = 0 }\n$block")
+        assertEquals(1, floored.monitor!!.concurrency)
     }
 
     @Test

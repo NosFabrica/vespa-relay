@@ -97,6 +97,12 @@ monitor {
     # This is what bounds a NEW relay's wait for its first `syncable` at
     # minutes. 0 turns the lane off.
     newUrlSeconds = 120
+
+    # Relays a probe pass dials at once — the sweep's wall clock, since most
+    # of a discovered corpus is dead and a dead relay costs a full timeout.
+    # Also the most sockets the monitor ever holds (its passes run one at a
+    # time), so size it against the socket budget the sync plane leaves free.
+    concurrency = 128
 }
 
 streams {

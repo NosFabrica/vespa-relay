@@ -282,6 +282,16 @@ object RouterConfigLoader {
 
                     else -> m.getLong("newUrlSeconds").coerceAtLeast(30L)
                 },
+            // Floored at 1: zero dials is a monitor that never certifies
+            // anything, which is an off switch no operator asked this knob
+            // to be. The ceiling is the operator's own arithmetic — the
+            // dispatcher budget minus the pool's — and is not second-guessed.
+            concurrency =
+                if (m.hasPath("concurrency")) {
+                    m.getInt("concurrency").coerceAtLeast(1)
+                } else {
+                    MonitorConfig.DEFAULT_CONCURRENCY
+                },
         )
     }
 
