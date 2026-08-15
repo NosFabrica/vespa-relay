@@ -740,8 +740,10 @@ a fixed set, and it ships in vespa-eventstore, so every new chart would cost a
 store release plus a JitPack pin bump. The duplication is the WHERE clause and
 nothing else.
 
-`docs/configuration.md` documents every environment variable and
-`docs/router.md` the router config format. They are the reference; this file is
+`docs/configuration.md` documents every environment variable, `docs/router.md`
+the router config format, and `docs/migrations.md` the schema changes a store
+bump can need on a cluster that already holds events — the ones a deploy
+reports success for and only half applies. They are the reference; this file is
 the orientation.
 
 ## The router, in one pass
@@ -2783,12 +2785,17 @@ statement about someone else's server.
   drift check compares search columns and near arrays, finds them identical, and
   re-puts nothing, so the run logs "reindex complete" having repaired nothing.
   Nothing errors and whole-word search keeps working, so only the missing feature
-  shows it. Vespa names the column in the deploy response ("Non-document field
-  'search_text_gram' added; this may be populated by reindexing"). The repair is a
-  Vespa reindex — `POST <config>:19071/reindex?clusterId=content&documentType=event`,
-  asynchronous, so a 200 means *pending* and a maintenance job dispatches it — or
-  a full re-feed, since a plain put re-derives the column even with byte-identical
-  content.
+  shows it. Vespa names the column in the deploy response, under
+  `configChangeActions.reindex` ("Non-document field 'search_text_gram' added;
+  this may be populated by reindexing") — a body nothing here reads, so a deploy
+  that wants a migration and one that does not look identical from the log. The
+  repair is a Vespa reindex or a genuine full re-feed, and **`POST /reindex` on
+  its own does nothing**: measured on a real Vespa 8, the job sat `pending` for
+  over ten minutes with the column still empty, and a REDEPLOY of the identical
+  package is what dispatched it (`pending → successful` in ~60s, the partial-word
+  query going 0 → 1 hit on the same corpus). Poll `GET …/reindexing` for
+  `state`, and deploy again if it stays `pending`. Full procedure, with the real
+  endpoint paths: [docs/migrations.md](docs/migrations.md).
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
 - **Vespa's `time.date()` does not zero-pad.** Verified on 8.733: two documents

@@ -129,11 +129,13 @@ quartz = "1866007e99"
 # so only a re-put can produce them and FtsReindex is the tool; this one is
 # DERIVED, so the re-feed's drift check sees identical search columns and
 # identical near arrays, re-puts NOTHING, and the walk reports success having
-# repaired nothing. What repairs it is a Vespa REINDEX — `POST
-# <config>/reindex?clusterId=content&documentType=event`, asynchronous, so a 200
-# means `pending` and not completion — or a full re-feed. FtsReindex.kt and
-# docs/configuration.md now say this; the three behaviours are the store's,
-# verified there on Vespa 8.
+# repaired nothing. What repairs it is a Vespa REINDEX, or a genuine full
+# re-feed. The runnable procedure is docs/migrations.md, written against a real
+# Vespa 8 rather than transcribed: it records the `configChangeActions.reindex`
+# the deploy answers with, the silent gap (whole-word 1 hit, partial-word 0 on
+# the same corpus), and the step that is easy to miss — `POST /reindex` only
+# QUEUES the job, which sat `pending` for over ten minutes here until a redeploy
+# dispatched it and took the same query to 1 hit in ~60s.
 #
 # ONE FIX ARRIVES UNASKED ON EVERY SEARCH WE SERVE. The read-side schema fallback
 # used to flip `nearFieldsAvailable` on any 400 whose text merely CONTAINED a

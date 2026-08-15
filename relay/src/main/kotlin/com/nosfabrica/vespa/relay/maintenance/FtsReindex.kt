@@ -48,9 +48,10 @@ import java.nio.file.StandardCopyOption
  * columns and near arrays, finds both identical, re-puts nothing, and the run
  * reports success having fixed nothing. Nothing errors, and the corpus keeps
  * serving whole-word search the whole time, which is why it goes unnoticed.
- * That class of column is repaired by a Vespa REINDEX on the config server
- * (`POST /reindex?clusterId=content&documentType=event` — asynchronous, so a
- * 200 is "pending", not "done") or by a full re-feed.
+ * That class of column is repaired by a Vespa REINDEX on the config server, or
+ * by a genuine full re-feed — never by this. The runnable procedure, and the
+ * step that makes it work (a POST alone leaves the job `pending` forever; a
+ * redeploy dispatches it), is in docs/migrations.md.
  *
  * The walk is resumable: the cursor is persisted to [cursorFile] so a failed
  * page costs a retry, not the 12M events an in-memory cursor once threw away.
