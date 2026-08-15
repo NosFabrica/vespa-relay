@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -103,6 +104,38 @@ class DynamicSyncGatesTest {
         // five minutes.
         assertTrue(LEG_QUIET_GIVE_UP_MS >= 5 * NEG_IDLE_MS, "one slow empty ask must never be enough to abandon a relay")
         assertEquals(300_000L, LEG_QUIET_GIVE_UP_MS)
+    }
+
+    @Test
+    fun `a walk that was refused with nothing delivered ends the relay's remaining legs`() {
+        // The wedge class the give-up above cannot see: with `authorsPerLeg`
+        // unset there is exactly one ask, so `givesUp` never runs, and the leg
+        // loop inside the ask re-opened the same refused conversation once per
+        // leg — an idle window of silence apiece, hours on a multi-leg filter.
+        // quartz already names why each walk ended; this is believing it.
+        for (end in listOf(
+            PagedFetchResult.End.IDLE,
+            PagedFetchResult.End.CLOSED,
+            PagedFetchResult.End.AUTH_REQUIRED,
+            PagedFetchResult.End.CANNOT_CONNECT,
+            PagedFetchResult.End.UNPAGEABLE,
+        )) {
+            assertTrue(DynamicSync.refusedOutright(PagedFetchResult(0, end)), "$end with nothing delivered is a refusal")
+        }
+    }
+
+    @Test
+    fun `a drained or self-limited walk is not a refusal, and neither is one that delivered`() {
+        // DRAINED is the relay honestly EOSEing an empty page — the one ending
+        // that proves absence — and LIMIT_REACHED stopped on our own
+        // instruction. Neither says the next leg is futile.
+        assertFalse(DynamicSync.refusedOutright(PagedFetchResult(0, PagedFetchResult.End.DRAINED)))
+        assertFalse(DynamicSync.refusedOutright(PagedFetchResult(0, PagedFetchResult.End.LIMIT_REACHED)))
+        // A walk that carried events did real work whatever ended it: a CLOSED
+        // after 4,000 events is a rate limit, not a dead relay, and the later
+        // legs may fare better.
+        assertFalse(DynamicSync.refusedOutright(PagedFetchResult(4_000, PagedFetchResult.End.CLOSED)))
+        assertFalse(DynamicSync.refusedOutright(PagedFetchResult(1, PagedFetchResult.End.IDLE)))
     }
 
     @Test

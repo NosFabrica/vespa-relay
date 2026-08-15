@@ -1265,7 +1265,17 @@ internal class DynamicSync(
                     onFailure("gave up: silent for ${fmtDuration(LEG_QUIET_GIVE_UP_MS)} with $abandoned ask(s) left")
                     break
                 }
-                downloaded += syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress)
+                val sweep = syncOneFilter(stream, url, ask, local, sharedAuthors, legProgress, transferStartedMs)
+                downloaded += sweep.downloaded
+                // The ask itself said stop — a refusal or a give-up from inside
+                // the leg loop, where `givesUp` above cannot see. This ask did
+                // not complete, so it counts among the abandoned along with
+                // everything after it.
+                if (sweep.abandoned != null) {
+                    abandoned = asks.size - n
+                    onFailure(sweep.abandoned)
+                    break
+                }
             }
             // ABANDONED IS NOT "NOTHING NEW". A leg that gave up with no
             // downloads would otherwise fall through to the `else` branch in
@@ -1333,6 +1343,17 @@ internal class DynamicSync(
     }
 
     /**
+     * What one ask's walk came to: the events it delivered, and — when it
+     * stopped before its legs ran out — why. A null [abandoned] is the ordinary
+     * ending; non-null is a sentence for the pass's `reasons` map, and the
+     * caller stops asking this relay anything further.
+     */
+    private class LegSweep(
+        val downloaded: Int,
+        val abandoned: String? = null,
+    )
+
+    /**
      * One relay, one filter: walk what the cursor says is outside its band.
      * A narrowed stream asks the same relay once per author chunk, each its
      * own band; the socket is held once around all of them.
@@ -1344,14 +1365,16 @@ internal class DynamicSync(
         local: List<IdAndTime>,
         sharedAuthors: Set<String>,
         legProgress: LegProgress?,
-    ): Int {
+        /** When the worker took its transfer slot — see [syncRelay]'s clamp. */
+        transferStartedMs: Long,
+    ): LegSweep {
         if (stream.deleteMissing != DeleteMissing.OFF) {
             legProgress?.stage = "reconciling, then deleting what it no longer has"
             // Threaded through rather than left to the caller's return value:
             // this path can spend minutes inside one reconcile, and a counter
             // that only moves when the call returns says nothing about the call
             // that never does.
-            return deleteMissingSync.reconcileAndDelete(stream, url, window, sharedAuthors, legProgress)
+            return LegSweep(deleteMissingSync.reconcileAndDelete(stream, url, window, sharedAuthors, legProgress))
         }
         var downloaded = 0
         // Invariant for the whole relay: hoisted out of the per-event callback
@@ -1369,6 +1392,18 @@ internal class DynamicSync(
         // every one after.
         legProgress?.stage = "working out what is still outstanding"
         for (leg in bands.legs(stream.name, url, window)) {
+            // THE GIVE-UP THE ASK LOOP CANNOT MAKE. `givesUp` in [syncRelay]
+            // runs between ASKS, and a stream with `authorsPerLeg` unset has
+            // exactly one — so a relay whose every leg ends empty (a refusal per
+            // page, a subscription that dies on send) was walked leg after leg
+            // with nothing bounding the sequence. Same clock, same clamp, same
+            // reasoning as the ask loop's: silence only, reset by every event,
+            // never elapsed time — a delivering relay is never cut.
+            val quietNow = System.currentTimeMillis()
+            val quietMs = legProgress?.quietForMs(quietNow)?.coerceAtMost(quietNow - transferStartedMs)
+            if (downloaded == 0 && quietMs != null && quietMs >= LEG_QUIET_GIVE_UP_MS) {
+                return LegSweep(downloaded, "gave up: no event in ${fmtDuration(LEG_QUIET_GIVE_UP_MS)} of walking this relay's legs")
+            }
             var seenMin: Long? = null
             var seenMax: Long? = null
             // Per-kind spans, which quartz's SyncCoverage requires before it
@@ -1490,6 +1525,21 @@ internal class DynamicSync(
                             legProgress?.stage = "storing what it walked"
                         }
                         downloaded += walked?.downloaded ?: 0
+                        // THE WALK SAID WHY IT ENDED — believe it. A refusal
+                        // that delivered nothing is the relay declining this
+                        // conversation, and the next leg is the same
+                        // conversation: re-opening it once per remaining leg
+                        // buys an idle window of silence apiece and nothing
+                        // else. Endings that carry events, and DRAINED — an
+                        // empty page the relay honestly EOSEd — walk on.
+                        // No band is recorded for the refused leg: nothing was
+                        // observed and nothing drained, and a record would
+                        // still re-stamp a walk that never happened.
+                        walked?.let { w ->
+                            if (refusedOutright(w)) {
+                                return LegSweep(downloaded, "stopped: relay ended the page ${w.end} with nothing delivered")
+                            }
+                        }
                     }
                 } else {
                     client
@@ -1525,9 +1575,11 @@ internal class DynamicSync(
         }
         // The socket is still open here and it will not be after this returns:
         // these streams hold no live tail. Draining now keeps the connection
-        // the repairs need without the sweep ever waiting on a publish.
+        // the repairs need without the sweep ever waiting on a publish. Not on
+        // the abandoned paths above, deliberately: a relay that refused every
+        // read is not going to take writes, and the queue persists either way.
         healer.drain(url)
-        return downloaded
+        return LegSweep(downloaded)
     }
 
     /**
@@ -1687,6 +1739,28 @@ internal class DynamicSync(
             askIndex: Int,
             quietForMs: Long?,
         ): Boolean = askIndex > 0 && quietForMs != null && quietForMs >= LEG_QUIET_GIVE_UP_MS
+
+        /**
+         * Did this leg's walk end in a way that makes the NEXT leg futile?
+         *
+         * Only when it delivered nothing: a walk that carried events did real
+         * work whatever ended it, and the later legs may fare the same.
+         * [PagedFetchResult.End.DRAINED] is the opposite of a refusal — an
+         * empty page the relay honestly EOSEd — and LIMIT_REACHED stopped on
+         * our own instruction; every other ending is the relay (or the path to
+         * it) declining the conversation the next leg would re-open, at the
+         * price of an idle window of silence per leg.
+         */
+        internal fun refusedOutright(walked: PagedFetchResult): Boolean =
+            walked.downloaded == 0 &&
+                when (walked.end) {
+                    PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED -> false
+
+                    PagedFetchResult.End.IDLE, PagedFetchResult.End.CLOSED,
+                    PagedFetchResult.End.AUTH_REQUIRED, PagedFetchResult.End.CANNOT_CONNECT,
+                    PagedFetchResult.End.UNPAGEABLE,
+                    -> true
+                }
 
         /**
          * How often the gate re-reads the pool.
