@@ -54,72 +54,145 @@ import java.util.concurrent.ConcurrentHashMap
  * identical.
  */
 class PagingProgress {
-    private class Walk(
-        val top: Long,
-        val bottom: Long,
-        val startedMs: Long,
-        @Volatile var current: Long,
+    /**
+     * WHICH WALK — one stream's walk of one relay, as two fields rather than
+     * the `"$stream|$url"` string this used to concatenate.
+     *
+     * **It is not a formatting preference.** The old key was rebuilt on every
+     * call, and `mark` is now called per EVENT on a router measured at 13.5k
+     * events/s — each one allocating a `StringBuilder`, a copied char array and
+     * a `String` header to be thrown away by the next collection, on the same
+     * path whose heap is already the reason the negentropy snapshot gets
+     * watched. A data class allocates one small object per LOOKUP instead of
+     * copying two url-length strings, and both halves' `hashCode` are already
+     * cached by `String` itself, so the hash is a multiply and an add.
+     *
+     * It also closes a real hole. The stream half was matched with
+     * `key.startsWith("$stream|")`, so a stream named `a` claimed the walks of
+     * a stream named `a|b` — its `reset` would clear them and its `fraction`
+     * would average them in. Stream names come from an operator's config file
+     * and nothing rejects a `|`. Comparing the fields cannot collide whatever
+     * either string contains.
+     */
+    data class Walked(
+        val stream: String,
+        val url: String,
+    )
+
+    /**
+     * ONE LIVE WALK, handed straight back by [begin] so the hot path never has
+     * to look itself up.
+     *
+     * The cursor is now written per EVENT, and a probe against four real relays
+     * put a number on what that costs: 577,000 marks in 90 seconds against 1,171
+     * page boundaries over the same walks — 480 events per page on a firehose,
+     * and production ingests 13.5k events/s across the fan-out. Reaching that
+     * through `walks[key]` would hash two strings and walk a bin on every one of
+     * them, to arrive at an object the caller already had. The leg holds the
+     * handle instead: [reached] is a volatile read, a compare and — only when
+     * the walk actually moves — a volatile write.
+     *
+     * Handed out rather than exposed as a map entry so a leg cannot be given a
+     * walk that is not its own, and so `null` (an inverted window, see [begin])
+     * is a state the caller must handle rather than a lookup that silently
+     * misses.
+     */
+    class Walk internal constructor(
+        internal val top: Long,
+        internal val bottom: Long,
+        internal val startedMs: Long,
+        @Volatile internal var current: Long,
         /** Ended, and still counted — see the class header. */
-        @Volatile var done: Boolean = false,
+        @Volatile internal var done: Boolean = false,
         /** Ended having proved there is nothing below it, i.e. worth a full share. */
-        @Volatile var covered: Boolean = false,
+        @Volatile internal var covered: Boolean = false,
     ) {
+        /**
+         * The walk got as far back as [second]; monotonic, so a page that jumps
+         * back cannot un-advance it.
+         *
+         * Fed from BOTH ends of a page, and that is the point. The page boundary
+         * (`onNewPage`) is where quartz names the cursor for the next ask, and
+         * on its own it is one update per page — so a leg still inside its FIRST
+         * page has never called this and its position is still [top], which the
+         * card renders as `back to <the day the walk started>`. A relay serving
+         * a slow page and a relay serving nothing at all then read identically,
+         * which is the one distinction this class exists to draw. Measured: a
+         * narrow leg that finished in a second produced no page boundary at all,
+         * so the old feed never reported a position for it.
+         *
+         * So the callers also mark per EVENT, from the same `created_at` they
+         * fold into the band's span. Both feeds are the same statement — "the
+         * walk has got this far" — and the min reconciles them: the boundary
+         * cursor is derived from the page just delivered, so it can only confirm
+         * or deepen what the events already reported, and neither can pull the
+         * position back up. The same probe checked it on 577,000 real events:
+         * the two feeds ended every deep walk on the identical second.
+         *
+         * A FINISHED WALK IGNORES THIS, which is what makes the per-event feed
+         * safe in a callback shared with the negentropy branch. `finish` RETAINS
+         * the walk for the rest of the cycle (see the class header), so a later
+         * reconciling leg on the same relay would otherwise move a walk that
+         * ended — dragging the share it really achieved, and the stream's
+         * `fraction` and ETA with it. [cursorOf] and [reached] filter the same
+         * way for the same reason.
+         */
+        fun reached(second: Long) {
+            if (done) return
+            // Clamped to the walk's own floor: relays serve events stamped 0,
+            // and one of those once dragged the line to `back to 1969-12-31`.
+            // Below the floor means the walk is done, not time travel.
+            val at = second.coerceAtLeast(bottom)
+            if (at < current) current = at
+        }
+
         /**
          * The share of this walk's window it has got through.
          *
-         * A settled walk is 1.0 by fiat rather than by arithmetic: `mark` is fed
-         * the cursor of each page RECEIVED, so the last thing a drained walk
-         * reports is the oldest event the relay actually held — routinely well
-         * above the filter's floor. Measured against the floor it would sit at
-         * about 70% forever, and a stream of exhausted relays would report a
-         * number that could never reach 100% however complete it was.
+         * A settled walk is 1.0 by fiat rather than by arithmetic: [reached] is
+         * fed what the walk RECEIVED, so the last thing a drained walk reports
+         * is the oldest event the relay actually held — routinely well above the
+         * filter's floor. Measured against the floor it would sit at about 70%
+         * forever, and a stream of exhausted relays would report a number that
+         * could never reach 100% however complete it was.
          */
-        fun share(): Double {
+        internal fun share(): Double {
             if (covered) return 1.0
             val span = (top - bottom).coerceAtLeast(1)
             return ((top - current).toDouble() / span).coerceIn(0.0, 1.0)
         }
     }
 
-    private val walks = ConcurrentHashMap<String, Walk>()
+    private val walks = ConcurrentHashMap<Walked, Walk>()
 
     /**
-     * Begin a walk over `[bottom, top]` seconds. Keys are `"stream|url"`.
-     * An inverted window is not a walk; a single-second one (`top == bottom`)
-     * is — a band's re-read edge leg is exactly that shape.
+     * Begin a walk over `[bottom, top]` seconds, for one stream's walk of one
+     * relay ([Walked]), and hand back the [Walk] to report progress on.
+     *
+     * NULL when the window is inverted, which is not a walk — a single-second
+     * one (`top == bottom`) is, since a band's re-read edge leg is exactly that
+     * shape. The caller marks through the returned handle, so a leg whose window
+     * was inverted reports nothing rather than reporting onto whatever the key
+     * held before.
      */
     fun begin(
-        key: String,
+        key: Walked,
         top: Long,
         bottom: Long,
-    ) {
+    ): Walk? {
         // An inverted window REMOVES whatever the key held; it does not simply
-        // decline to add. The key is `stream|url` and one relay is walked leg
+        // decline to add. The key is (stream, url) and one relay is walked leg
         // after leg, so while `finish` deleted the entry a skipped `begin` was
-        // harmless — the later `mark`/`finish` found nothing. Now that a
+        // harmless — the later marks and `finish` found nothing. Now that a
         // finished walk is RETAINED, leaving the old one in place lets the
         // skipped leg's `finish(covered = …)` land on the PREVIOUS leg, flipping
         // a drained walk to partial and dragging the stream's fraction and ETA
         // down with it.
-        if (top >= bottom) {
-            walks[key] = Walk(top, bottom, System.currentTimeMillis(), top)
-        } else {
+        if (top < bottom) {
             walks.remove(key)
+            return null
         }
-    }
-
-    /** The walk reached [until]; monotonic, so a page that jumps back cannot un-advance it. */
-    fun mark(
-        key: String,
-        until: Long,
-    ) {
-        walks[key]?.let {
-            // Clamped to the walk's own floor: relays serve events stamped 0,
-            // and one of those once dragged the line to `back to 1969-12-31`.
-            // Below the floor means the walk is done, not time travel.
-            val reached = until.coerceAtLeast(it.bottom)
-            if (reached < it.current) it.current = reached
-        }
+        return Walk(top, bottom, System.currentTimeMillis(), top).also { walks[key] = it }
     }
 
     /**
@@ -132,7 +205,7 @@ class PagingProgress {
      * a throw between [begin] and [finish] settled nothing.
      */
     fun finish(
-        key: String,
+        key: Walked,
         covered: Boolean = false,
     ) {
         walks[key]?.let {
@@ -157,7 +230,7 @@ class PagingProgress {
      * walk would simply stop existing while it was still running.
      */
     fun reset(stream: String) {
-        walks.entries.removeIf { it.key.startsWith("$stream|") && it.value.done }
+        walks.entries.removeIf { it.key.stream == stream && it.value.done }
     }
 
     /**
@@ -184,7 +257,7 @@ class PagingProgress {
         if (stream == null) {
             walks.values.toList()
         } else {
-            walks.entries.filter { it.key.startsWith("$stream|") }.map { it.value }
+            walks.entries.filter { it.key.stream == stream }.map { it.value }
         }
 
     /**
@@ -199,13 +272,18 @@ class PagingProgress {
     fun reached(stream: String? = null): Long? = all(stream).filter { !it.done }.minOfOrNull { it.current }
 
     /**
-     * The second ONE walk is reading, for the leg walking it — [reached] per key
-     * rather than minimised over a stream, which describes only its deepest leg.
+     * The oldest second ONE walk has reached, for the leg walking it — [reached]
+     * per key rather than minimised over a stream, which describes only its
+     * deepest leg.
      *
      * Live walks only, on [reached]'s reasoning: a finished walk's cursor is
      * where it stopped, and dating a row from it would describe work that ended.
+     *
+     * Still `top` means the walk has received NOTHING yet, not that it is
+     * reading there — the one reading the card cannot make on its own, which is
+     * why the row prints the event count and the quiet clock beside it.
      */
-    fun cursorOf(key: String): Long? = walks[key]?.takeIf { !it.done }?.current
+    fun cursorOf(key: Walked): Long? = walks[key]?.takeIf { !it.done }?.current
 
     /** Milliseconds left at the rate achieved so far, or null before it means anything. */
     fun etaMs(stream: String? = null): Long? {

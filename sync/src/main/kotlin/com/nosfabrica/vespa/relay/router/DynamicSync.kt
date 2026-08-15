@@ -210,7 +210,7 @@ internal class DynamicSync(
         // holding both halves — the rotation's claims and `paging`'s walks —
         // and the `"stream|url"` key that ties them is this file's.
         phases.namesInFlight(stream.name) {
-            rotation.held(System.currentTimeMillis()) { url -> paging.cursorOf("${stream.name}|$url") }
+            rotation.held(System.currentTimeMillis()) { url -> paging.cursorOf(PagingProgress.Walked(stream.name, url)) }
         }
         val idSet = SharedIdSet()
         // What the ticker reports. The ticker belongs to the stream too: between
@@ -1358,6 +1358,16 @@ internal class DynamicSync(
         // below, which ran on every mirrored event and allocated an identical
         // object each time.
         val origin = originFor(stream, url)
+        // Hoisted above `onEvent` so the per-event callback can report where the
+        // walk has got to. Constant for the whole relay — `paging.begin` keys on
+        // exactly this — and the branch below rebuilt it per leg.
+        val walk = PagingProgress.Walked(stream.name, url.url)
+        // Named because it is not free and it is not the walk: deriving the
+        // outstanding legs reads this relay's whole band set, and a leg sitting
+        // in here published whatever the last stage said — `waiting for a
+        // transfer slot` on the first pass through, the previous leg's state on
+        // every one after.
+        legProgress?.stage = "working out what is still outstanding"
         for (leg in bands.legs(stream.name, url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
@@ -1365,6 +1375,12 @@ internal class DynamicSync(
             // will record a band for a multi-kind filter at all.
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             val syncStartedAt = System.currentTimeMillis() / 1000
+            // Assigned by the PAGED branch below and read by `onEvent`, which is
+            // built first and outlives it — null on the negentropy branch, which
+            // has no cursor, and null again once this leg's walk has been handed
+            // to `finish`. A var rather than a lookup per event: see
+            // [PagingProgress.Walk].
+            var cursor: PagingProgress.Walk? = null
             val onEvent: suspend (Event) -> Unit = { event ->
                 // Counted where the events ARRIVE, not where the leg returns.
                 // `p.downloaded` is the pass's total and only moves when a leg
@@ -1383,6 +1399,18 @@ internal class DynamicSync(
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                        // WHERE THE WALK IS, as it moves rather than once a page.
+                        // `onNewPage` below fires at page BOUNDARIES, so a leg
+                        // inside its first page reports nothing and the row reads
+                        // `back to <today>` — the day the walk opened at — for as
+                        // long as that page takes. Same second the band's span is
+                        // folded from, under the same plausibility guard, because
+                        // a relay serving `created_at = 0` must not date this row
+                        // any more than it may date a band.
+                        //
+                        // Null on the negentropy branch, which shares this
+                        // callback and has no cursor to move.
+                        cursor?.reached(event.createdAt)
                     }
                     // See StaticBackfill: without per-kind evidence quartz
                     // records no band for a multi-kind filter, so a discovery
@@ -1407,13 +1435,12 @@ internal class DynamicSync(
             val result =
                 if (fetched) {
                     null.also {
-                        val walk = "${stream.name}|${url.url}"
                         // Floored on the PAGED branch only: a walk that runs past
                         // `created_at = 0` never returns ([flooredForPaging]), while
                         // narrowing the negentropy branch's leg the same way would
                         // leave the local id set wider than the remote one.
                         val flooredLeg = leg.flooredForPaging()
-                        paging.begin(walk, flooredLeg.until ?: nowSeconds(), flooredLeg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
+                        cursor = paging.begin(walk, flooredLeg.until ?: nowSeconds(), flooredLeg.since ?: SyncCoverage.PLAUSIBLE_FLOOR)
                         // finally, because `syncRelay` catches Exception around
                         // this: a throw between begin and finish leaves the walk
                         // in PagingProgress with `current` still at `top`, and
@@ -1436,13 +1463,31 @@ internal class DynamicSync(
                                     url,
                                     listOf(flooredLeg),
                                     NEG_IDLE_MS,
-                                    onNewPage = { until -> paging.mark(walk, until) },
+                                    onNewPage = { until -> cursor?.reached(until) },
                                     onEvent = onEvent,
                                 )
                         } finally {
                             // Still null on the throw path, which is exactly the
                             // case that must not claim cover.
                             paging.finish(walk, covered = walked?.drained == true)
+                            // Dropped with the walk it names. `onEvent` outlives
+                            // this block — the negentropy branch of a LATER leg
+                            // reuses it — and a handle left behind would let
+                            // those events move a walk that has ended.
+                            cursor = null
+                            // THE WALK IS OVER AND THE LEG IS NOT. `stage` was
+                            // written once, at the top of this leg, and never
+                            // again — so a worker that finished paging and went
+                            // on to record its band, work out the next leg or
+                            // wait its turn still published `doing: paging`.
+                            // The live document that prompted this carried 38
+                            // such rows out of 40: `paging`, with no
+                            // `pagingUntil` beside it, which is precisely the
+                            // shape of a leg that is no longer walking. Naming
+                            // the state costs a volatile store per leg and is
+                            // the difference between a row that misdirects and
+                            // one that says where the time is going.
+                            legProgress?.stage = "storing what it walked"
                         }
                         downloaded += walked?.downloaded ?: 0
                     }
@@ -1458,6 +1503,11 @@ internal class DynamicSync(
                             wantId = wantIdFor(leg),
                             onEvent = onEvent,
                         ).also { downloaded += it.downloaded }
+                        // The reconciling half of the same correction — see the
+                        // paged branch's `finally`. A leg that finished its
+                        // reconcile kept publishing `reconciling (negentropy)`
+                        // through everything it did afterwards.
+                        .also { legProgress?.stage = "storing what it reconciled" }
                 }
             bands.record(
                 stream.name,
