@@ -1529,6 +1529,34 @@ walk-level stop a refused member still pays the empty-page retry at
 the ladder at the first ask` and `a refused credential also ends the WALK, not
 just the ladder` pin the two halves.
 
+**A cost census over 52 live urls, and the trap in running one.** With the
+credential stop in place, `AuthRefusalProbe`'s census ranks what a single
+`leaderPrint` costs per url. The SHAPES it reports are the useful part:
+
+| shape | urls | median |
+|---|---|---|
+| a window came back | 35 | 1.1s |
+| answered, served nothing | 3 | 1.7s |
+| never spoke | 14 | ~20s |
+
+**But do not quote the totals from that run, and do not read the silent column as
+a property of those relays.** Probing the same hosts repeatedly from one IP all
+session produced exactly what you would expect: `relay.rodbishop.nz` came back
+`cannot:Server Misconfigured. Response: 429 Too Many Requests`, `relay.damus.io`
+read as silent minutes after serving 500 events to a kinds filter, and
+`chorus.bonsai.com` swung from "21s, served nothing" to "1.1s, 100 events"
+between two runs. A census run warm measures OUR rate limit. Re-run it cold —
+fresh IP, no prior sweep — before believing any number in it.
+
+**One genuinely new shape did surface**, and the code already handles it:
+`chorus.bonsai.com` refuses a 500-limit ask outright as anti-scraping
+(`closed:error: scraper, …pocket-db/src/lib.rs:782:48` — it leaks a source path)
+and then answers the `FALLBACK_PROBE_PAGE` retry with **100 events AND
+`authRefused=true`** (*"At least one matching event requires AUTH"*). So a page
+can carry a window and a refusal at once. `leaderPrint` tests the window first
+and the refusal second, which is the right order: a partial window is still a
+fingerprint, and the refusal only ends the walk when nothing came back with it.
+
 **What this does NOT fix, and should not be confused with it:** a url that never
 speaks at all. `buzz.relay.tools` still costs ~21s for two urls, because its
 `/echo` path is genuinely SILENT — no frame ever arrives, so the idle window is

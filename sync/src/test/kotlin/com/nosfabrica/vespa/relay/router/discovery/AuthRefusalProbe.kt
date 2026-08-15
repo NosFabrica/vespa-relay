@@ -31,7 +31,9 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
+import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
+import kotlinx.coroutines.sync.withPermit
 import okhttp3.OkHttpClient
 import java.time.Duration
 import kotlin.test.Test
@@ -93,6 +95,104 @@ class AuthRefusalProbe {
                 "wss://relay.andotherstuff.org,wss://support.flotilla.social,wss://nos.lol"
         ).split(",")
             .mapNotNull { RelayUrlNormalizer.normalizeOrNull(it.trim()) }
+
+    /**
+     * **Which relays are expensive to FINGERPRINT, ranked, over a real corpus.**
+     *
+     * The per-rung breakdown above explains one host. This asks the population
+     * question instead: with the credential stop in place, what does
+     * [AliasProbe.leaderPrint] — the exact call a pass makes, once per url —
+     * actually cost at each of a few dozen live urls, and which shapes dominate?
+     *
+     * Concurrent behind a small gate, the way [AliasFolding] runs it, so the wall
+     * clock is not the sum of the slow ones.
+     *
+     * **A CENSUS RUN FROM ONE IP AGAINST RELAYS YOU HAVE BEEN PROBING MEASURES
+     * YOUR OWN RATE LIMIT.** The first run of this ranked 14 of 52 urls as SILENT
+     * at ~20s each, 79% of the total cost — and `relay.rodbishop.nz` then
+     * answered a follow-up with `cannot:Server Misconfigured. Response: 429 Too
+     * Many Requests`, which is not a fact about that relay. `relay.damus.io`
+     * appearing silent is the same tell: it had served 500 events to a kinds
+     * filter minutes earlier. `chorus.bonsai.com` swung from "21s, served
+     * nothing" to "1.1s, 100 events" between two runs.
+     *
+     * So read the SHAPES here, never the totals, unless the run is cold: fresh
+     * IP, no prior sweep of the same hosts, and ideally spread over hours. The
+     * shapes are stable and the timings are not.
+     *
+     * ```
+     * ./gradlew :sync:test --tests '*AuthRefusalProbe*' -DauthRefusalCensus=true \
+     *   -DauthRefusalUrls='wss://a.example,wss://b.example' --rerun -i
+     * ```
+     */
+    @Test
+    fun rankWhatEachUrlCostsToFingerprint() {
+        if (System.getProperty("authRefusalCensus") != "true") {
+            println("[skip] AuthRefusalProbe census — set -DauthRefusalCensus=true")
+            return
+        }
+        val okhttp =
+            OkHttpClient
+                .Builder()
+                .connectTimeout(Duration.ofSeconds(20))
+                .pingInterval(Duration.ofSeconds(120))
+                .build()
+        val scope = CoroutineScope(SupervisorJob())
+        val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
+        val signer = NostrSignerInternal(KeyPair())
+        val authenticator = RelayAuthenticator(client, scope) { _, template, _ -> listOf(signer.sign(template)) }
+        val probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS }
+        val anchor = AliasProbe.settledAnchor(System.currentTimeMillis() / 1000)
+
+        println("=".repeat(78))
+        println("What one leaderPrint costs, per url, over ${urls.size} live url(s)")
+        println("=".repeat(78))
+        val rows = java.util.concurrent.ConcurrentHashMap<String, Triple<Long, String, Int>>()
+        try {
+            runBlocking {
+                val gate = kotlinx.coroutines.sync.Semaphore(8)
+                kotlinx.coroutines.coroutineScope {
+                    for (url in urls) {
+                        launch {
+                            gate.withPermit {
+                                val startedMs = System.currentTimeMillis()
+                                val attempt = runCatching { probe.leaderPrint(url, anchor) {} }.getOrNull()
+                                val tookMs = System.currentTimeMillis() - startedMs
+                                // The three outcomes a pass distinguishes, which
+                                // are also the three cost classes.
+                                val shape =
+                                    when {
+                                        attempt == null -> "threw"
+                                        attempt.leader != null -> "window(${attempt.leader!!.ids.size})"
+                                        attempt.spoke -> "answered, served nothing"
+                                        else -> "SILENT"
+                                    }
+                                rows[url.url] = Triple(tookMs, shape, attempt?.leader?.ids?.size ?: 0)
+                                runCatching { client.getOrCreateRelay(url).disconnect() }
+                            }
+                        }
+                    }
+                }
+            }
+        } finally {
+            runCatching { authenticator.destroy() }
+            runCatching { client.disconnect() }
+            scope.cancel()
+        }
+        println("-".repeat(78))
+        for ((u, row) in rows.entries.sortedByDescending { it.value.first }) {
+            println("  ${row.first.toString().padStart(6)}ms  ${row.second.padEnd(26)} $u")
+        }
+        val byShape = rows.values.groupBy { it.second.substringBefore("(") }
+        println("-".repeat(78))
+        for ((shape, list) in byShape.entries.sortedByDescending { it.value.sumOf { r -> r.first } }) {
+            println(
+                "  $shape: ${list.size} url(s), ${list.sumOf { it.first } / 1000}s total, " +
+                    "median ${list.map { it.first }.sorted()[list.size / 2]}ms",
+            )
+        }
+        println("=".repeat(78))
+    }
 
     @Test
     fun reportWhatARefusedAuthCostsAndSays() {
