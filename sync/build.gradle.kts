@@ -78,4 +78,7 @@ tasks.test {
     // what a fake page says. Same forwarding, same trap.
     System.getProperty("liveConsistency")?.let { systemProperty("liveConsistency", it) }
     System.getProperty("liveConsistencyUrls")?.let { systemProperty("liveConsistencyUrls", it) }
+    // The two planes end to end against real relays: fitness verdicts onto
+    // records, the roster read back, a small VisitPool run on it.
+    System.getProperty("visitPoolProbe")?.let { systemProperty("visitPoolProbe", it) }
 }
