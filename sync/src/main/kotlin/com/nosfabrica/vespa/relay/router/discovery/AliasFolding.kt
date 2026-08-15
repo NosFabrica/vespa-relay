@@ -81,6 +81,11 @@ class AliasFolding(
     /** How long a host that could not be decided is left alone — see [undecidable]. */
     private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
     /**
+     * Fold a group that every url ANSWERED and none of them would serve anything
+     * from — see [foldUnreadableGroups] for what it decides and what it risks.
+     */
+    private val foldUnreadableGroups: Boolean = DEFAULT_FOLD_UNREADABLE_GROUPS,
+    /**
      * Where each pass reports how far it got, or null to say nothing — which is
      * every test and every caller that is not the router.
      *
@@ -386,9 +391,14 @@ class AliasFolding(
                         // for the whole pass, on our outage rather than their
                         // behaviour.
                         val exhausted = HashSet<NormalizedRelayUrl>()
+                        // Urls this pass ASKED, and the subset that ANSWERED —
+                        // the two facts [foldUnreadableGroups] turns on. A url
+                        // the transport declined is in neither.
+                        val askedUrls = HashSet<NormalizedRelayUrl>()
+                        val spoke = HashSet<NormalizedRelayUrl>()
                         for (candidate in wanted.take(YARDSTICK_ATTEMPTS)) {
                             var asked = false
-                            val print =
+                            val attempt =
                                 gate.withPermit {
                                     if (!canDial(candidate)) return@withPermit null
                                     asked = true
@@ -402,7 +412,10 @@ class AliasFolding(
                                         sockets.release(candidate)
                                     }
                                 }
-                            // Asked, and it said nothing. It failed BOTH filters,
+                            if (asked) askedUrls += candidate
+                            if (attempt?.spoke == true) spoke += candidate
+                            val print = attempt?.leader
+                            // Asked, and it said nothing. It failed EVERY filter,
                             // so asking it again as a member this pass buys the
                             // same silence at the price of a dial.
                             if (asked && print == null) exhausted += candidate
@@ -466,6 +479,100 @@ class AliasFolding(
                                 found = thinLeader
                                 foundPrint = thinLead
                                 members = listOf(twin)
+                            }
+                        }
+                        // FOLD UNLESS PROVEN DIFFERENT: the group nothing would
+                        // read from collapses onto its preferred survivor.
+                        //
+                        // Everything above this line concludes nothing from
+                        // silence. This concludes the opposite by default, and it
+                        // is a POLICY rather than a measurement — see
+                        // [RelayAliases.foldUnreadable] for the argument and for
+                        // the host it gets wrong.
+                        //
+                        // The yardstick walk only asked three urls, so the rest
+                        // are asked here before anything is concluded: "all of
+                        // them answer, none of them serves" is a claim about the
+                        // WHOLE group and cannot be made from a sample of it.
+                        // Concurrently, because no filter has to be agreed —
+                        // nothing is being compared, only counted.
+                        // ONLY when nothing on the host served anything at all.
+                        // A THIN leader is a url that answered with content, so
+                        // its group is not "all alike" — and sweeping it here
+                        // would also undo the cheap exit that keeps a thin
+                        // yardstick from dragging its whole group onto the wire.
+                        //
+                        // And only while the evidence still points that way. If a
+                        // url the yardstick walk already asked did not ANSWER, the
+                        // group can never be "all of them answered" — so sweeping
+                        // the rest buys nothing and would undo the bound that
+                        // keeps a dead host from costing a dial per url. A silent
+                        // host still stops at [YARDSTICK_ATTEMPTS], exactly as it
+                        // did before this policy existed.
+                        if (found == null &&
+                            thinLeader == null &&
+                            foldUnreadableGroups &&
+                            askedUrls.isNotEmpty() &&
+                            askedUrls.all { it in spoke }
+                        ) {
+                            val rest = wanted.filter { it !in askedUrls }
+                            val swept = ConcurrentHashMap<NormalizedRelayUrl, AliasProbe.Attempt>()
+                            coroutineScope {
+                                for (url in rest) {
+                                    launch {
+                                        gate.withPermit {
+                                            if (!canDial(url)) return@withPermit
+                                            taken.incrementAndGet()
+                                            sockets.claim(url)
+                                            try {
+                                                swept[url] = probe.leaderPrint(url, anchor, onEvent)
+                                            } finally {
+                                                sockets.release(url)
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                            for ((url, attempt) in swept) {
+                                if (attempt.spoke) spoke += url
+                                if (attempt.leader == null) exhausted += url
+                            }
+                            // A WINDOW TURNED UP BEYOND THE THIRD ATTEMPT. The
+                            // sweep is a wider yardstick search that happens to
+                            // have run, so take it rather than throw it away —
+                            // and take it in [RelayAliases.PREFERENCE] order, so
+                            // the leader does not depend on which dial finished
+                            // first. The members are re-dialled below through
+                            // this filter, which is what keeps the group
+                            // comparable.
+                            wanted.firstOrNull { swept[it]?.leader != null }?.let { better ->
+                                found = better
+                                foundPrint = swept.getValue(better).leader
+                                exhausted -= better
+                            }
+                            if (found == null) {
+                                // EVERY url, not most of them. One url our own
+                                // transport could not reach makes this "we do not
+                                // know", and folding on that would turn our
+                                // outage into a claim about their server.
+                                val everyUrlAnswered = wanted.all { it in spoke }
+                                if (everyUrlAnswered && wanted.size > 1) {
+                                    val survivor = wanted.first()
+                                    val folds = aliases.foldUnreadable(wanted, survivor)
+                                    for (alias in folds.keys) {
+                                        runCatching { record.publishUnreadable(alias, survivor, wanted.size) }
+                                    }
+                                    if (folds.isNotEmpty()) {
+                                        newVerdicts += folds.keys
+                                        clearUndecidable(survivor)
+                                        System.err.println(
+                                            "router: $label ${RelayAliases.hostOf(survivor.url)} served nothing at any of " +
+                                                "${wanted.size} url(s) and every one answered — folded onto ${survivor.url} " +
+                                                "on the shared name, WITHOUT a measurement",
+                                        )
+                                    }
+                                    return@launch
+                                }
                             }
                         }
                         if (found == null || foundPrint == null) {
@@ -937,5 +1044,15 @@ class AliasFolding(
          * not take one.
          */
         const val DEFAULT_UNDECIDABLE_COOLDOWN_MS = 24L * 60 * 60 * 1000
+
+        /**
+         * Whether a group nothing can be read from folds onto its survivor.
+         *
+         * ON, which INVERTS this component's oldest default: silence used to
+         * decide nothing and now decides sameness. See
+         * [RelayAliases.foldUnreadable] — including `filter.nostr.wine`, the
+         * measured host it gets wrong.
+         */
+        const val DEFAULT_FOLD_UNREADABLE_GROUPS = true
     }
 }

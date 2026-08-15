@@ -289,6 +289,32 @@ class RelayAliasRecord(
     ): Event? = write(alias, canonical, "same group list as ${canonical.url}: $shared of $sampled group definitions shared")
 
     /**
+     * Sign and store the weakest thing this monitor says: these urls share a host,
+     * every one of them answered, none of them would serve anything, so they were
+     * treated as one.
+     *
+     * ```json
+     * ["same-as", "wss://x/", "nothing readable at any of 5 url(s) on this host; folded on the shared name, not on a measurement", "1776038400", "2"]
+     * ```
+     *
+     * **The evidence says "not on a measurement" in so many words, and that is
+     * the point.** Every other form here quotes a number taken off the wire. This
+     * one has none to quote — it is a default applied in the absence of evidence
+     * — and a reader of a signed claim about somebody else's server is owed that
+     * distinction plainly rather than left to infer it from a missing figure.
+     */
+    suspend fun publishUnreadable(
+        alias: NormalizedRelayUrl,
+        canonical: NormalizedRelayUrl,
+        urls: Int,
+    ): Event? =
+        write(
+            alias,
+            canonical,
+            "nothing readable at any of $urls url(s) on this host; folded on the shared name, not on a measurement",
+        )
+
+    /**
      * Sign and store the other verdict: this url was fingerprinted against the
      * other urls on its host and matched none of them.
      *

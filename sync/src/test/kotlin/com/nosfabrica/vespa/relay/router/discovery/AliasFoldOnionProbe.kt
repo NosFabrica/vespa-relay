@@ -182,7 +182,7 @@ class AliasFoldOnionProbe {
         val prints = LinkedHashMap<NormalizedRelayUrl, Set<String>>()
 
         val leadAt = System.currentTimeMillis()
-        val lead = runBlocking { probe.leaderPrint(leader, anchor) {} }
+        val lead = runBlocking { probe.leaderPrint(leader, anchor) {} }.leader
         val leadMs = System.currentTimeMillis() - leadAt
         val asked = lead?.kinds?.let { "kinds=$it" } ?: "bare filter"
         if (lead == null) {

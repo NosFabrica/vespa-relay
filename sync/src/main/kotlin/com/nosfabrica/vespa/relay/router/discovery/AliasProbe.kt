@@ -106,15 +106,15 @@ class AliasProbe(
         url: NormalizedRelayUrl,
         anchor: Long,
         onEvent: suspend (Event) -> Unit,
-    ): Leader? {
+    ): Attempt {
         val bare = fingerprint(url, anchor, null, onEvent)
-        if (!bare.isNullOrEmpty()) return Leader(bare, null)
+        if (!bare.isNullOrEmpty()) return Attempt(Leader(bare, null), spoke = true)
         // Measured: 46 of 229 hosts in a full-corpus sweep answered a bare
         // filter with `CLOSED blocked: can't handle empty filters`, taking 892
         // urls out of the fold — by far its largest blind spot, and every one
         // of the twelve retried answered a kinds filter perfectly well.
         val general = fingerprint(url, anchor, FALLBACK_KINDS, onEvent)
-        if (!general.isNullOrEmpty()) return Leader(general, FALLBACK_KINDS)
+        if (!general.isNullOrEmpty()) return Attempt(Leader(general, FALLBACK_KINDS), spoke = true)
         // A RELAY THAT REFUSED IS NOT A RELAY THAT SAID NOTHING, and only the
         // first is worth a third ask.
         //
@@ -134,11 +134,32 @@ class AliasProbe(
         // [RelayAliases.GROUP_METADATA_KINDS]. Demanding that BOTH rungs be
         // refused would drop such a host on our own blip, and the cost of the
         // looser rule is one dial at a url that has already answered once.
-        if (bare == null && general == null) return null
+        if (bare == null && general == null) return Attempt(null, spoke = false)
         val groups = fingerprint(url, anchor, RelayAliases.GROUP_METADATA_KINDS, onEvent)
-        if (!groups.isNullOrEmpty()) return Leader(groups, RelayAliases.GROUP_METADATA_KINDS)
-        return null
+        if (!groups.isNullOrEmpty()) return Attempt(Leader(groups, RelayAliases.GROUP_METADATA_KINDS), spoke = true)
+        // Every filter refused, and the relay was there for all of them.
+        return Attempt(null, spoke = true)
     }
+
+    /**
+     * What one url gave up, in the two facts a pass needs to tell apart.
+     *
+     * **A window and an ANSWER are different things, and the second one used to
+     * be thrown away here.** `leaderPrint` returned a nullable [Leader], which
+     * flattened "the relay refused every filter I know" into "the relay was not
+     * there" — and those support opposite conclusions about a host wearing
+     * several urls. A relay that answered every rung with nothing has told us it
+     * is reachable and that our instrument does not work on it; a url that never
+     * spoke has told us nothing about anything. See
+     * [AliasFolding.foldUnreadableGroups], which can only be safe because these
+     * are kept apart.
+     */
+    data class Attempt(
+        /** The window and the filter that produced it, or null when none was had. */
+        val leader: Leader?,
+        /** Did the relay ANSWER at all — an EOSE or a CLOSED, rather than silence? */
+        val spoke: Boolean,
+    )
 
     /** What a group's leader answered, and what it had to be asked to get it. */
     data class Leader(

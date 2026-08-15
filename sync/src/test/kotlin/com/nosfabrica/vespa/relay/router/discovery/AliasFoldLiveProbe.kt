@@ -158,7 +158,7 @@ class AliasFoldLiveProbe {
                 var lead: AliasProbe.Leader? = null
                 for (candidate in wanted.take(AliasFolding.YARDSTICK_ATTEMPTS)) {
                     leader = candidate
-                    lead = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.leaderPrint(candidate, anchor) {} } }
+                    lead = runBlocking { withTimeoutOrNull(PER_GROUP_MS) { probe.leaderPrint(candidate, anchor) {}.leader } }
                     if (lead != null) break
                     println("    ${candidate.url} said nothing — trying the next url on the host")
                 }

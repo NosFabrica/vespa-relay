@@ -312,7 +312,7 @@ class AliasProbeTest {
             // urls out of the fold. Every one retried answered a kinds filter.
             val fake = Fake(total = 2_000, cap = 500, demandsKinds = true)
 
-            val lead = probe(fake, target = 1_000).leaderPrint(url, BASE) {}
+            val lead = probe(fake, target = 1_000).leaderPrint(url, BASE) {}.leader
 
             assertEquals(1_000, lead?.ids?.size)
             assertEquals(AliasProbe.FALLBACK_KINDS, lead?.kinds, "the group must be told which filter worked")
@@ -324,7 +324,7 @@ class AliasProbeTest {
         runBlocking {
             val fake = Fake(total = 2_000, cap = 500)
 
-            val lead = probe(fake, target = 1_000).leaderPrint(url, BASE) {}
+            val lead = probe(fake, target = 1_000).leaderPrint(url, BASE) {}.leader
 
             assertEquals(1_000, lead?.ids?.size)
             assertNull(lead?.kinds)
@@ -368,7 +368,7 @@ class AliasProbeTest {
             // fold — and every one serves its group list on request.
             val fake = Groups(groups = 55)
 
-            val lead = AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}
+            val lead = AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}.leader
 
             assertEquals(55, lead?.ids?.size)
             assertEquals(RelayAliases.GROUP_METADATA_KINDS, lead?.kinds, "the group must be told which filter worked")
@@ -394,7 +394,7 @@ class AliasProbeTest {
                     null
                 }, target = 1_000)
 
-            assertNull(probe.leaderPrint(url, BASE) {})
+            assertNull(probe.leaderPrint(url, BASE) {}.leader)
             assertEquals(listOf(null, AliasProbe.FALLBACK_KINDS), asked, "silence bought a third dial")
         }
 
@@ -405,7 +405,7 @@ class AliasProbeTest {
             // still "no yardstick" — the rung must not invent one.
             val fake = Groups(groups = 0)
 
-            assertNull(AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {})
+            assertNull(AliasProbe(fetch = fake::fetch).leaderPrint(url, BASE) {}.leader)
             assertTrue(
                 RelayAliases.GROUP_METADATA_KINDS in fake.kindsAsked,
                 "a refusal is an answer, so the third rung is owed its ask",
@@ -418,7 +418,7 @@ class AliasProbeTest {
             // Neither shape works: the group cannot fold and must not be probed.
             val probe = AliasProbe(fetch = { _, _, _, _ -> null }, target = 1_000)
 
-            assertNull(probe.leaderPrint(url, BASE) {})
+            assertNull(probe.leaderPrint(url, BASE) {}.leader)
         }
 
     @Test

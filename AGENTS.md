@@ -1484,6 +1484,71 @@ auth` was a red herring; and the 214-second `rtt-read` on those rows is quartz's
 passive monitor's number, while every fold dial measured here returned in about
 a second.
 
+**FOLD UNLESS PROVEN DIFFERENT: a group nothing will serve from collapses onto
+its survivor.** This INVERTS the oldest default in this component. Silence used
+to decide nothing; a host whose every url answers and serves nothing now folds on
+the shared DNS name alone — `AliasFolding.foldUnreadableGroups`,
+`RelayAliases.foldUnreadable`, on by default and switchable off.
+
+Three conditions, and each is load-bearing:
+
+- **Every url must ANSWER.** An EOSE or a CLOSED is the relay being there; a null
+  page is our own transport giving up. One silent url makes the group "we do not
+  know", and folding it would publish our outage as a claim about their server.
+  This is also what keeps the bound: a host that fails the yardstick walk by
+  going SILENT still stops at `YARDSTICK_ATTEMPTS` and is never swept.
+- **Nothing anywhere may serve a window** — including a THIN one. A url with
+  content is distinguishable from an empty one, so the group is not "all alike",
+  and sweeping it would undo the cheap exit that stops a thin yardstick dragging
+  its group onto the wire.
+- **The whole group is asked, not a sample of it.** "All of them answer, none of
+  them serves" cannot be concluded from the three urls the yardstick walk tried,
+  so the rest are swept concurrently first. A window turning up in that sweep is
+  ADOPTED as the yardstick rather than discarded — it is a wider yardstick search
+  that happened to run.
+
+**What it decides, live.** `haven.calva.dev` is the control and the rule leaves
+it alone: the bare url serves 500, `/inbox` scores **0.192** and is kept, and
+`/chat` and `/private` come back empty and keep no verdict at all — because
+SOMETHING on the host answered, the rule never fires. NIP-11 confirms they are
+genuinely different relays ("calvadev's chat relay" against "calvadev's outbox
+relay"), so this boundary is doing real work.
+
+**And it is demonstrably WRONG on `filter.nostr.wine`.** Its urls are
+`/npub1…?broadcast=true` — a PER-USER filtered endpoint behind `auth_required`
+and `payment_required`. Every one answers, none serves, so the rule folds four
+users' feeds onto one url and signs it:
+
+```
+router: live filter.nostr.wine served nothing at any of 3 url(s) and every one
+  answered — folded onto wss://filter.nostr.wine/ on the shared name, WITHOUT a measurement
+```
+
+Swept over 45 multi-url hosts taken from live relay lists, the rule fires on
+three — and that is one of them. Treat a third of its firing population being
+wrong as the number until someone re-measures it.
+
+**Two things make it defensible anyway, and both should be understood before
+touching it.** A url nothing can be read from is mirroring nothing, so a wrong
+fold here costs no stream TODAY — only the day the relay starts answering us,
+until the verdict expires. And the record says so in words rather than quoting a
+number it does not have: `RelayAliasRecord.publishUnreadable` writes *"nothing
+readable at any of N url(s) on this host; folded on the shared name, not on a
+measurement"*.
+
+**AUTH RESCUES THE BENIGN CASES, WHICH CONCENTRATES THE RULE ON THE PATHOLOGICAL
+ONES.** `support.flotilla.social` reads as all-empty to an unauthenticated sweep
+and would fire the rule — but the router authenticates, gets 500 events on every
+url, and folds it by MEASUREMENT at containment 1.000. So the population that
+actually reaches this rule in production is smaller than an anonymous probe
+suggests, and it is enriched for the hosts that refuse us for reasons no
+credential fixes: payment walls, per-user endpoints. Do not size this rule with
+an unauthenticated sweep.
+
+**It is not cheap.** Three urls of `filter.nostr.wine` cost **184 seconds** — the
+full ladder against an auth-gated host is three rungs of idle window per url —
+and the sweep scales that with group size rather than stopping at three.
+
 **`ws://x` and `wss://x` are the one pair the urls themselves settle.** Every
 other fold refuses to read anything off a url, and rightly — a path is routinely
 a *different* endpoint, which is why `/inbox` must never fold on its spelling. A

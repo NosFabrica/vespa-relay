@@ -105,7 +105,7 @@ class RelaySelfConsistencyProbe {
                 for ((label, lagSeconds) in ANCHOR_AGES) {
                     val anchor = now - lagSeconds
                     val first =
-                        runBlocking { withTimeoutOrNull(PER_WALK_MS) { probe.leaderPrint(url, anchor) {} } }
+                        runBlocking { withTimeoutOrNull(PER_WALK_MS) { probe.leaderPrint(url, anchor) {}.leader } }
                     if (first == null || first.ids.isEmpty()) {
                         println("    %-8s no window came back — nothing to compare".format(label))
                         continue

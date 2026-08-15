@@ -640,6 +640,53 @@ class RelayAliases(
     }
 
     /**
+     * Fold a group NOTHING could be read from onto its preferred survivor, on the
+     * strength of the shared hostname alone.
+     *
+     * **This is the only fold in this class that rests on no measurement, and it
+     * must be read as the policy choice it is rather than as a verdict.** Every
+     * other path here refuses to conclude anything from silence, on the ground
+     * that a path is routinely a different endpoint. This one concludes the
+     * opposite by default: the urls share a DNS name, every one of them answered,
+     * none of them served anything through any filter we know, so nothing
+     * distinguishes them and they collapse.
+     *
+     * What makes it defensible is what it costs when it is wrong. A fold that
+     * silently stops mirroring a relay is this component's cardinal sin — but a
+     * url nothing can be read from is mirroring nothing, so there is no stream to
+     * lose today. What IS lost is the day the relay starts answering us: the
+     * verdict stands until it expires, and the other urls are not dialled again
+     * until then.
+     *
+     * **And it can be flatly wrong about somebody's server.** Measured over 45
+     * multi-url hosts taken from live relay lists, the rule fires on three, and
+     * one of them is `filter.nostr.wine` — whose urls are
+     * `/npub1…?broadcast=true`, a PER-USER filtered endpoint behind
+     * `auth_required` and `payment_required`. Those four paths are four different
+     * users' feeds; nothing about them is the same relay, and only the payment
+     * wall makes them look alike. See [AliasFolding.foldUnreadableGroups] for the
+     * switch and the argument.
+     *
+     * Every url must have ANSWERED. A group holding one url our transport merely
+     * failed to reach is not "all alike", it is "we do not know", and folding it
+     * would turn our own outage into a claim about their server.
+     */
+    fun foldUnreadable(
+        group: List<NormalizedRelayUrl>,
+        leader: NormalizedRelayUrl,
+    ): Map<NormalizedRelayUrl, NormalizedRelayUrl> {
+        val folds = LinkedHashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
+        for (url in group) {
+            if (url == leader || folded.containsKey(url)) continue
+            folded[url] = leader
+            canonicals += leader
+            distinct -= url
+            folds[url] = leader
+        }
+        return folds
+    }
+
+    /**
      * The one fold the urls decide by themselves: `ws://x` and `wss://x` are one
      * endpoint reached two ways, so when BOTH of them answer, the plain one
      * folds onto the secure one.
