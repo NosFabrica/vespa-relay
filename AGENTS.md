@@ -1417,6 +1417,59 @@ while its kinds walk came back refused is still a live server declining the shap
 of the question, and dropping it on our own blip would cost a host to save one
 dial. `a url that never spoke is not asked for group metadata` pins it.
 
+**What a REAL pass decides, run through `AliasFoldLiveProbe` against the live
+hosts** — the whole `AliasFolding.measure` path, the router's own NIP-42 wiring,
+an in-memory store, no Vespa and no Docker needed:
+
+```
+groups.hzrd149.com   leader 7 id(s) via kinds=[39000], self 1.000   2 fold(s) from 3 dial(s) in 2s
+groups.fiatjaf.com   leader 16 id(s),  self 1.000                   1 fold  from 2 dials  in 3s
+pantry.zap.cooking   leader 7 id(s),   self 1.000                   1 fold  from 2 dials  in 1s
+relay29.notoshi.win  leader 27 id(s),  self 1.000                   2 folds from 3 dials  in 6s
+groups.satsdisco.com leader 55 id(s),  self 1.000                   2 folds from 3 dials  in 3s
+groups.0xchat.com    leader 500 id(s), self 1.000                   1 fold  from 2 dials  in 3s
+nos.lol (control)    leader 500 id(s) via BARE filter, sibling 0.994 1 fold — rung 1 still wins
+```
+
+Every sibling scored **1.000**, every leader reproduced itself at 1.000, and every
+group ended `0 sockets still held`. The group list is the most stable fingerprint
+in this file — addressable events that change when somebody edits a group, where
+a firehose slice drifts between two dials (`nos.lol` self 0.998, `fiatjaf.com`
+0.638).
+
+**The floor is doing most of the work, not the rung.** Sweeping every host named
+in live kind-10009 group lists: 34 never reach rung 3 at all (a general filter
+answered, so the lowered floor cannot touch them), and 6 reach it AND serve a
+group list. **Four of those six are under `DEFAULT_MIN_SAMPLE`** —
+`groups.hzrd149.com` 7, `pantry.zap.cooking` 7, `groups.fiatjaf.com` 16,
+`relay.pana.social` 3 — so shipping the rung at the firehose floor would have
+recovered a third of what it can reach. That is the measurement behind
+`DEFAULT_GROUP_METADATA_MIN_SAMPLE`, not a feel for the number.
+
+**The floor of 3 bites on a real host, and cost nothing to do it.**
+`groups.sharegap.net` serves exactly 2 groups; the pass refuses it
+(`under minSample(3) — decides nothing`) and reports `no url that could be a
+yardstick`. Its paths served nothing anyway, so no fold was lost — and no rung-3
+host was observed at 1 or 2 groups where a lower floor would have gained
+anything. Do not lower it without re-running this sweep.
+
+**The shared-count guard is UNEXERCISED in the field, and that is worth knowing
+before trusting it.** Across every rung-3 host measured, a minted path served
+either the identical list (containment 1.000) or nothing at all — **zero**
+partially-overlapping pairs. So the `{a, b, x}` case the guard exists for is
+constructed, not observed. It is insurance against a multi-tenant groups host,
+kept because the failure it prevents is the fold's worst one; treat it as
+correct-but-unproven, the same standing as the cleared form.
+
+**What the rung costs, and who pays it.** A large tail of NIP-29 hosts is
+auth-gated and answers `CLOSED auth-required` to everything — and the router's
+NIP-42 wiring does NOT rescue them (verified on `buzz.relay.tools` and
+`relay.andotherstuff.org`: nothing, even authenticated). A refusal is an answer,
+so these DO earn the third ask and pay one extra dial: `buzz.relay.tools` spent
+21s over 2 urls. Bounded twice over — the `undecidable` cooldown means such a
+host is dialled on one pass in four, and a host that is merely dead returns null
+twice and is never asked at all.
+
 **A fold decided on a group list says so, and does not borrow the sentence the
 containment form uses.** `RelayAliasRecord.publishGroupList` writes *"same group
 list as wss://x: 7 of 7 group definitions shared"* rather than `publish`'s *"7
