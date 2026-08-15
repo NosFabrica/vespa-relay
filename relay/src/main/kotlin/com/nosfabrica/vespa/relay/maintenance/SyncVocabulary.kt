@@ -849,6 +849,13 @@ internal object SyncVocabulary {
                     "beside `roster` for the rotation rate.",
             )
             put(
+                "auditing",
+                "Audits RUNNING right now — the gauge beside `auditsRun`'s odometer. A deep history's audit " +
+                    "holds its worker for minutes, and without this it was one unit of `visiting` that could " +
+                    "not be told from a catch-up. The relay under audit is named in its stream's in-flight " +
+                    "rows, stage `auditing history (negentropy)`, with the window it has reached.",
+            )
+            put(
                 "auditsRun",
                 "History audits run since boot: the windowed negentropy reconcile a stream's `verifySeconds` " +
                     "schedules when a relay's last verified full pass ages out. Each relay's clock is its own, so " +

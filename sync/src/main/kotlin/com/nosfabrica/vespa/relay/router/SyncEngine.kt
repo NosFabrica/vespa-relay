@@ -534,6 +534,7 @@ class SyncEngine(
             monitorAuthor = signer?.pubKey,
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),
+            phases = phases,
         )
 
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)

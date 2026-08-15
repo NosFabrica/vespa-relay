@@ -192,6 +192,21 @@ class StreamPhases {
             val reason: String,
             val retrySec: Long,
         ) : Phase
+
+        /**
+         * Riding the visit pool: the stream's relay list is the monitor's
+         * verdicts and its engine is the rotation, so the fan-out phases above
+         * never happen to it. One long-lived phase whose numbers move, rather
+         * than a cycle of phases — there is no walk to be a phase OF. The
+         * per-relay truth (which relays a worker is on, what each is doing) is
+         * the in-flight list, registered beside this.
+         */
+        data class Rotating(
+            /** Certified relays this stream is riding right now. */
+            val relays: Int,
+            /** …of which this many hold a live tail. */
+            val tailed: Int,
+        ) : Phase
     }
 
     /**
@@ -545,6 +560,15 @@ class StreamPhases {
                 Detail(retrySec = phase.retrySec, reason = phase.reason)
             }
 
+            is Phase.Rotating -> {
+                // `running`'s glossary entry — relays with a worker on them —
+                // is exactly what the pool's visit set is, so the member is
+                // reused rather than a synonym invented beside it. The tailed
+                // count is NOT forced into `transferring`: a held tail is not
+                // a transfer slot, and the pool's own row already counts it.
+                Detail(running = phase.relays)
+            }
+
             is Phase.Queued, is Phase.Discovering, is Phase.Starting -> {
                 Detail()
             }
@@ -569,6 +593,7 @@ class StreamPhases {
             is Phase.Holding -> "holding"
             is Phase.Idle -> "idle"
             is Phase.Failed -> "failed"
+            is Phase.Rotating -> "rotating"
         }
 
     fun set(
@@ -715,6 +740,10 @@ class StreamPhases {
 
             is Phase.Failed -> {
                 "failed: ${phase.reason} — retry in ${phase.retrySec}s ($elapsed ago)"
+            }
+
+            is Phase.Rotating -> {
+                "riding the pool — ${phase.relays} certified relay(s), ${phase.tailed} tailed ($elapsed elapsed)"
             }
         }
     }

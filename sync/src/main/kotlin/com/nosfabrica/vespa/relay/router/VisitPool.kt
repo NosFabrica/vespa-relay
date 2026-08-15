@@ -24,7 +24,9 @@ import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
 import com.nosfabrica.vespa.relay.router.heal.Healer
+import com.nosfabrica.vespa.relay.router.progress.InFlight
 import com.nosfabrica.vespa.relay.router.progress.Processors
+import com.nosfabrica.vespa.relay.router.progress.StreamPhases
 import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -101,6 +103,17 @@ internal class VisitPool(
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
     /**
+     * The streams' own rows in the progress document. Registered at boot by
+     * the engine so silence never reads as "not configured" — and before this
+     * was passed in, that was ALL a visit stream's row ever said: the pool
+     * kept every fact on its processor row and left the stream row frozen on
+     * `starting` forever, a zombie that read as a stream that never began.
+     * The pool sets the one phase it has ([StreamPhases.Phase.Rotating]) and
+     * registers the in-flight source that names which relays a worker is on.
+     * Null for callers with no document to keep (the probes).
+     */
+    private val phases: StreamPhases? = null,
+    /**
      * How many relays are VISITED — and therefore dialled — at once. This is
      * the herd control: a fresh roster floods the queue, every worker pulls,
      * and whatever this number is becomes the count of simultaneous TLS
@@ -169,6 +182,85 @@ internal class VisitPool(
 
     private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
 
+    /**
+     * ONE RELAY MID-VISIT, for the in-flight list — the clocks and the stage,
+     * on the same terms as the legacy engine's [InFlight.Relay] so the same
+     * card column reads both. Removed the moment the visit ends: a tail is not
+     * a worker, and listing 400 held tails as in-flight rows would bury the
+     * one wedged visit the list exists to name.
+     */
+    private class Ongoing(
+        val startedMs: Long,
+    ) {
+        /** Which stream's asks the visit is on right now — visits serve streams in turn. */
+        @Volatile var stream: String? = null
+
+        @Volatile var doing: String = "claiming the socket"
+
+        /** The `created_at` second the walk or audit window is at — time-axis progress. */
+        @Volatile var pagingUntil: Long? = null
+
+        val events = AtomicLong()
+
+        /** Any sign of life: an event, a negentropy frame, a window opening. */
+        @Volatile var lastActivityMs: Long = startedMs
+    }
+
+    private val ongoing = ConcurrentHashMap<NormalizedRelayUrl, Ongoing>()
+
+    /**
+     * The in-flight rows for one stream: every relay whose visit is currently
+     * serving it, quietest first — the same ordering argument as
+     * [InFlight]'s, because the row worth reading is the one nothing is
+     * arriving on. Bounded here as everywhere a list leaves the process, with
+     * the cut disclosed.
+     */
+    private fun inFlightFor(stream: String): InFlight {
+        val nowMs = System.currentTimeMillis()
+        val rows =
+            ongoing
+                .entries
+                .filter { it.value.stream == stream }
+                .map { (url, o) ->
+                    InFlight.Relay(
+                        relay = url.url,
+                        heldForSec = ((nowMs - o.startedMs) / 1000).coerceAtLeast(0),
+                        // A visit IS on the socket from its first moment — the
+                        // claim and the dial are inside it — so the two clocks
+                        // agree by construction. Published anyway: this is the
+                        // member the card reads as "has a transfer slot".
+                        transferringForSec = ((nowMs - o.startedMs) / 1000).coerceAtLeast(0),
+                        events = o.events.get(),
+                        quietForSec = ((nowMs - o.lastActivityMs) / 1000).coerceAtLeast(0),
+                        doing = o.doing,
+                        pagingUntil = o.pagingUntil,
+                    )
+                }.sortedWith(compareByDescending<InFlight.Relay> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
+        return InFlight(
+            relays = rows.take(MAX_IN_FLIGHT_ROWS),
+            omitted = (rows.size - MAX_IN_FLIGHT_ROWS).coerceAtLeast(0),
+        )
+    }
+
+    /**
+     * The stream rows' one phase, refreshed wherever the numbers it carries
+     * change hands — the roster rebuild, a tail opening, a tail dropping.
+     */
+    private fun publishPhases() {
+        val phases = phases ?: return
+        val current = roster
+        for (stream in streams) {
+            val mine = current.entries.filter { stream in it.value }
+            phases.set(
+                stream.name,
+                StreamPhases.Phase.Rotating(
+                    relays = mine.size,
+                    tailed = mine.count { tails.containsKey(it.key) },
+                ),
+            )
+        }
+    }
+
     private val tailsEvicted = AtomicLong()
 
     private val downloaded = AtomicLong()
@@ -190,12 +282,23 @@ internal class VisitPool(
                 Processors.Count("visiting", inFlight.size.toLong()),
                 Processors.Count("tails", tails.size.toLong()),
                 Processors.Count("visitsRun", visits.get()),
+                // The gauge beside the odometer: audits RUNNING against
+                // auditsRun's total. A deep history's audit holds a worker for
+                // minutes, and without this the only trace was one unit of
+                // `visiting` that could not be told from a catch-up.
+                Processors.Count("auditing", ongoing.values.count { it.doing == STAGE_AUDITING }.toLong()),
                 Processors.Count("auditsRun", audits.get()),
                 Processors.Count("abortedVisits", aborted.get()),
                 Processors.Count("evictedTails", tailsEvicted.get()),
                 Processors.Count("poolReceived", downloaded.get()),
             )
         }
+        // The streams' own rows: the pool's one phase, and the source that
+        // names which relays a worker is on — see the [phases] parameter.
+        for (stream in streams) {
+            phases?.namesInFlight(stream.name) { inFlightFor(stream.name) }
+        }
+        publishPhases()
         scope.launch { rosterLoop() }
         repeat(visitConcurrency) {
             scope.launch { workerLoop() }
@@ -281,6 +384,7 @@ internal class VisitPool(
                     (if (enqueued > 0) ", $enqueued newly queued" else ""),
             )
         }
+        publishPhases()
     }
 
     private suspend fun workerLoop() {
@@ -318,9 +422,12 @@ internal class VisitPool(
     /** One relay's turn: every stream's catch-up, the audit where due, the heal drain, then the tail. */
     private suspend fun visit(url: NormalizedRelayUrl) {
         visits.incrementAndGet()
+        val o = Ongoing(System.currentTimeMillis())
+        ongoing[url] = o
         sockets.claim(url)
         try {
             for (stream in roster[url].orEmpty()) {
+                o.stream = stream.name
                 val clean = catchUp(stream, url)
                 // A refusal ends the whole visit, not just this stream's part:
                 // the next stream's ask is the same conversation with the same
@@ -332,9 +439,11 @@ internal class VisitPool(
                 }
                 auditIfDue(stream, url)
             }
+            o.doing = "draining queued heals, then the tail"
             healer.drain(url)
             openTail(url)
         } finally {
+            ongoing.remove(url)
             sockets.release(url)
         }
     }
@@ -347,14 +456,25 @@ internal class VisitPool(
         stream: SyncStream,
         url: NormalizedRelayUrl,
     ): Boolean {
+        val o = ongoing[url]
         for (leg in bands.legs(stream.name, url, stream.filter)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
             val relayYield = yieldOf(url)
+            o?.doing = STAGE_PAGING
             val onEvent: suspend (Event) -> Unit = { event ->
                 downloaded.incrementAndGet()
                 relayYield.arrived.incrementAndGet()
+                o?.let {
+                    it.events.incrementAndGet()
+                    it.lastActivityMs = System.currentTimeMillis()
+                    // Newest-first is the walk's own order, so the oldest event
+                    // seen IS the cursor's depth, near enough for a reader.
+                    if (SyncCoverage.isPlausible(event.createdAt) && event.createdAt < (it.pagingUntil ?: Long.MAX_VALUE)) {
+                        it.pagingUntil = event.createdAt
+                    }
+                }
                 if (stream.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -403,11 +523,32 @@ internal class VisitPool(
         if (!auditDue(band?.fullAt ?: 0L, now, verifySeconds)) return
         val auditStarted = now
         var received = 0
+        val o = ongoing[url]
+        o?.doing = STAGE_AUDITING
         val outcome =
-            pager.sweep(stream.name, url, stream.filter, stream.filter) { event ->
+            pager.sweep(
+                stream.name,
+                url,
+                stream.filter,
+                stream.filter,
+                // Frames are life. A clean audit downloads NOTHING — every
+                // window already agrees — so without this a relay whose whole
+                // history verifies reads as a worker gone quiet for minutes.
+                onProgress = { _, _ -> o?.lastActivityMs = System.currentTimeMillis() },
+                onWindow = { _, until ->
+                    o?.let {
+                        it.lastActivityMs = System.currentTimeMillis()
+                        it.pagingUntil = until
+                    }
+                },
+            ) { event ->
                 received++
                 downloaded.incrementAndGet()
                 yieldOf(url).arrived.incrementAndGet()
+                o?.let {
+                    it.events.incrementAndGet()
+                    it.lastActivityMs = System.currentTimeMillis()
+                }
                 if (stream.filter.match(event)) {
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
@@ -490,12 +631,14 @@ internal class VisitPool(
                 }
             },
         )
+        publishPhases()
     }
 
     private fun dropTail(url: NormalizedRelayUrl) {
         val subId = tails.remove(url) ?: return
         runCatching { client.unsubscribe(subId) }
         sockets.release(url)
+        publishPhases()
     }
 
     companion object {
@@ -518,6 +661,17 @@ internal class VisitPool(
          * timeouts) sizes both.
          */
         const val DEFAULT_VISIT_CONCURRENCY = 128
+
+        /**
+         * The visit's two stages worth a word, in the in-flight rows' `doing`
+         * column. Constants because the `auditing` gauge counts rows by the
+         * audit stage — a reworded string there would silently zero the gauge.
+         */
+        const val STAGE_PAGING = "paging"
+        const val STAGE_AUDITING = "auditing history (negentropy)"
+
+        /** In-flight rows published per stream — matches the report side's own ceiling. */
+        const val MAX_IN_FLIGHT_ROWS = 20
 
         /**
          * Held tails, the pool's steady-state socket count. Sized to the

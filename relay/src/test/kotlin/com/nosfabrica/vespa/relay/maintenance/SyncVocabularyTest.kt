@@ -158,7 +158,7 @@ class SyncVocabularyTest {
                     "unpageable": 1, "auth-refused": 1, "restricted": 1},
                    {"name": "visits", "phase": "rotating", "phaseForSec": 900,
                     "roster": 30, "awaitingVisit": 3, "visiting": 5, "tails": 22,
-                    "visitsRun": 90, "auditsRun": 4, "abortedVisits": 2, "evictedTails": 1, "poolReceived": 4000},
+                    "visitsRun": 90, "auditing": 1, "auditsRun": 4, "abortedVisits": 2, "evictedTails": 1, "poolReceived": 4000},
                    {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
@@ -293,6 +293,7 @@ class SyncVocabularyTest {
                     "visiting",
                     "tails",
                     "visitsRun",
+                    "auditing",
                     "auditsRun",
                     "abortedVisits",
                     "evictedTails",

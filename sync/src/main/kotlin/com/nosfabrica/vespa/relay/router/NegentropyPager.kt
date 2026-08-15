@@ -278,6 +278,13 @@ internal class NegentropyPager(
         shape: Filter,
         leg: Filter,
         onProgress: ((Int, Int) -> Unit)? = null,
+        /**
+         * WHERE IN TIME the sweep is: called with (since, until) as each
+         * window is taken up, newest first. The progress callback above counts
+         * events, and a sweep that finds nothing missing delivers none — this
+         * is the only signal that moves on a clean audit.
+         */
+        onWindow: ((Long, Long) -> Unit)? = null,
         onEvent: suspend (Event) -> Unit,
     ): SweepOutcome {
         val floor = leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR
@@ -309,6 +316,7 @@ internal class NegentropyPager(
         while (stack.isNotEmpty()) {
             // Newest first — the invariant the cursor rests on.
             val w = stack.removeLast()
+            onWindow?.invoke(w.first, w.last)
             val minimal = w.last - w.first <= MIN_WINDOW_SECONDS
 
             // (1) Our side, before the round trip: this is what sizes the
