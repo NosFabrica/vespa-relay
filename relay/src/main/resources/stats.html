@@ -2128,8 +2128,10 @@ function processorFact(p) {
     // The pool's one line, and the arithmetic it exists to make visible:
     // visiting + tails IS the socket count, because a slot here is a socket.
     add(`${fmt(p.roster)} on the roster`, "roster");
+    if (p.awaitingVisit) add(`${fmt(p.awaitingVisit)} awaiting a visit`, "awaitingVisit");
     add(`${fmt(p.visiting || 0)} visiting`, "visiting");
     add(`${fmt(p.tails || 0)} live tail(s)`, "tails");
+    if (p.visitsRun) add(`${fmt(p.visitsRun)} visit(s) run`, "visitsRun");
     if (p.auditsRun) add(`${fmt(p.auditsRun)} history audit(s)`, "auditsRun");
     if (p.abortedVisits) add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
     if (p.evictedTails) add(`${fmt(p.evictedTails)} tail(s) rotated out`, "evictedTails");

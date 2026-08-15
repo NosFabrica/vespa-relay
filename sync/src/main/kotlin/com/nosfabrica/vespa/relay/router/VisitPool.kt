@@ -212,7 +212,13 @@ internal class VisitPool(
             } catch (e: Exception) {
                 System.err.println("router: visit roster rebuild failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
             }
-            delay(cadence)
+            // "Nothing certified yet" and "nothing certified" are different
+            // facts, and only the first is worth retrying for — the same
+            // distinction AliasMonitor's empty-retry draws, caught here by the
+            // first integration run: a fresh boot rebuilt its empty roster
+            // seconds before the monitor's first verdicts landed, then slept
+            // half the freshness bound while a certified network waited.
+            delay(if (roster.isEmpty()) EMPTY_ROSTER_RETRY_MS else cadence)
         }
     }
 
@@ -535,6 +541,9 @@ internal class VisitPool(
 
         /** How long recent content stays recent: an hour halves the score. */
         const val YIELD_HALF_LIFE_MS = 60L * 60 * 1000
+
+        /** An empty roster re-checks the records on this clock, not the freshness bound's. */
+        const val EMPTY_ROSTER_RETRY_MS = 60_000L
 
         /**
          * How far behind now a tail's `since` starts: the seam with the
