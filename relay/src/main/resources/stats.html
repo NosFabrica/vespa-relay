@@ -832,9 +832,15 @@
      proportion. */
   /* CAPPED, and narrower than the card. The three columns are a label, its
      count and a bar; stretched to a wide card the label and its own number end
-     up an inch apart, which is the one association every row exists to make. */
-  .sy-funnel { grid-column: 1 / -1; max-width: 760px; margin: 6px 0 4px;
+     up an inch apart, which is the one association every row exists to make.
+     The rule down the left edge groups the block: it sits at the HEAD of the
+     section, above a run of one-line processors, and without it the first
+     `alias fold` line reads as one more row of the tree. */
+  .sy-funnel { grid-column: 1 / -1; max-width: 760px; margin: 1px 0 12px;
                padding-left: 10px; border-left: 2px solid var(--line); }
+  /* Whose numbers these are. The tree is the widest thing on the card and it is
+     still ONE pass's reading, so it is named rather than left to be assumed. */
+  .sy-tr-cap { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); margin: 2px 0 0; }
   .sy-tr { display: grid; grid-template-columns: 1fr auto 120px; gap: 0 10px; align-items: center;
            font-size: 12px; line-height: 1.8; }
   .sy-tr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
@@ -1948,6 +1954,29 @@ function backgroundPanel(progress) {
   const rows = (progress && progress.processors) || [];
   if (!rows.length) return null;
   const box = el("div", "sy-bg");
+  // THE CORPUS FIRST, above every pass's line.
+  //
+  // It was drawn under the row that publishes it, which put the widest thing on
+  // the card — what became of every url this router knows of — below two lines
+  // of clock. Every pass under it works on that same corpus, so it is context
+  // for all of them rather than a detail of the one that happens to measure it,
+  // and a reader arriving at this card is asking "what is out there" before
+  // "when does the next pass run".
+  //
+  // It is still ONE pass's numbers, which is why it is captioned with that
+  // pass's name: `folded onto another url` is the STABILITY GATE's reading of
+  // the fold's verdicts, taken when the gate last ran, and unlabelled at the top
+  // of a section it would read as the card's own arithmetic.
+  for (const p of rows) {
+    const funnel = funnelPanel(p);
+    if (!funnel) continue;
+    const known = BACKGROUND.find((row) => row[0] === p.name);
+    const cap = el("div", "sy-tr-cap", `every relay url this router knows of, as the ${known ? known[1] : p.name} last measured it`);
+    if (known) cap.title = known[2];
+    box.appendChild(cap);
+    box.appendChild(funnel);
+    break;
+  }
   for (const p of rows) {
     const known = BACKGROUND.find((row) => row[0] === p.name);
     const name = el("b", null, known ? known[1] : p.name);
@@ -1956,11 +1985,6 @@ function backgroundPanel(progress) {
     box.appendChild(el("em", null,
       `${p.phase || "unknown"}${p.nextInSec ? ` · next in ${fmtDur(p.nextInSec)}` : ""}`));
     box.appendChild(processorFact(p));
-    // FULL WIDTH, under the row it belongs to. The funnel divides one pass's
-    // candidate set and there is no version of it that fits in the third column
-    // beside a sentence.
-    const funnel = funnelPanel(p);
-    if (funnel) box.appendChild(funnel);
   }
   return box;
 }
