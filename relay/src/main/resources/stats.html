@@ -2132,6 +2132,7 @@ function processorFact(p) {
     add(`${fmt(p.tails || 0)} live tail(s)`, "tails");
     if (p.auditsRun) add(`${fmt(p.auditsRun)} history audit(s)`, "auditsRun");
     if (p.abortedVisits) add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
+    if (p.evictedTails) add(`${fmt(p.evictedTails)} tail(s) rotated out`, "evictedTails");
     if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");
     return cell;
   }

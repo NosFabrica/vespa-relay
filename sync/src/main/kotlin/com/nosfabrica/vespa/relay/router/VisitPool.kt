@@ -101,7 +101,16 @@ internal class VisitPool(
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
     private val socketBudget: Int = DEFAULT_SOCKET_BUDGET,
-    private val revisitMs: Long = DEFAULT_REVISIT_MS,
+    /**
+     * How many live tails may be held at once. The visit half of the pool is
+     * bounded by its workers; the tails were not, and a roster past the OkHttp
+     * dispatcher's ceiling would have strangled every NEW connect with held
+     * sockets — the exact occlusion the pool replaced, rebuilt out of its best
+     * feature. Under the budget every visited relay keeps its tail; over it,
+     * tails are EARNED: the relay with more content lately takes the socket of
+     * the tail that has delivered least.
+     */
+    private val tailBudget: Int = DEFAULT_SOCKET_BUDGET,
 ) {
     /** url → the streams that want it, rebuilt on the roster clock. */
     @Volatile
@@ -114,6 +123,43 @@ internal class VisitPool(
     /** url → live tail subscription id. A held [sockets] claim rides with each. */
     private val tails = ConcurrentHashMap<NormalizedRelayUrl, String>()
     private val tailSeq = AtomicInteger()
+
+    /**
+     * WHAT EACH RELAY HAS DELIVERED LATELY — the pool's one priority signal.
+     *
+     * A half-life decayed score: every event a relay delivers (visit, audit or
+     * tail) adds one, and the total halves every [YIELD_HALF_LIFE_MS]. "More
+     * content lately" is then a number that can be compared across relays
+     * without a window to maintain: a relay that served a thousand events this
+     * hour outranks one that served a thousand yesterday, and both outrank the
+     * one that has been quiet all week. It decides two things — which relays
+     * hold tails when the budget is short, and how soon a relay is revisited —
+     * and deliberately nothing else: admission is the monitor's verdict alone.
+     */
+    private class Yield {
+        val arrived = AtomicLong()
+
+        @Volatile var score: Double = 0.0
+
+        @Volatile var foldedAtMs: Long = System.currentTimeMillis()
+
+        /** Fold what arrived into the decayed score and read it, cheaply racy — a priority hint, not a ledger. */
+        fun current(nowMs: Long): Double {
+            val fresh = arrived.getAndSet(0)
+            val dtMs = (nowMs - foldedAtMs).coerceAtLeast(0)
+            if (fresh > 0 || dtMs > YIELD_HALF_LIFE_MS / 8) {
+                score = score * Math.pow(0.5, dtMs.toDouble() / YIELD_HALF_LIFE_MS) + fresh
+                foldedAtMs = nowMs
+            }
+            return score
+        }
+    }
+
+    private val yields = ConcurrentHashMap<NormalizedRelayUrl, Yield>()
+
+    private fun yieldOf(url: NormalizedRelayUrl): Yield = yields.getOrPut(url) { Yield() }
+
+    private val tailsEvicted = AtomicLong()
 
     private val downloaded = AtomicLong()
     private val visits = AtomicLong()
@@ -136,6 +182,7 @@ internal class VisitPool(
                 Processors.Count("visitsRun", visits.get()),
                 Processors.Count("auditsRun", audits.get()),
                 Processors.Count("abortedVisits", aborted.get()),
+                Processors.Count("evictedTails", tailsEvicted.get()),
                 Processors.Count("poolReceived", downloaded.get()),
             )
         }
@@ -200,6 +247,10 @@ internal class VisitPool(
         // relay we no longer trust to sync is the old machine's habit.
         for (url in previous - next.keys) {
             dropTail(url)
+            // The score dies with the certificate: a relay that comes back
+            // after a week earns its tail on what it delivers then, not on a
+            // decayed memory of what it was.
+            yields.remove(url)
         }
         var enqueued = 0
         for (url in next.keys) {
@@ -234,10 +285,16 @@ internal class VisitPool(
         }
     }
 
-    /** Back on the queue after [revisitMs], if the roster still wants it. */
+    /**
+     * Back on the queue, if the roster still wants it — on a delay the relay's
+     * own recent yield sets. A tailed relay's revisit only serves the audit
+     * clock and dropped-tail recovery, so its base is long; an untailed one
+     * carries its whole freshness on this cadence, so its base is short; and
+     * within either, more content lately means sooner ([revisitDelayMs]).
+     */
     private fun scheduleRevisit(url: NormalizedRelayUrl) {
         scope.launch {
-            delay(revisitMs)
+            delay(revisitDelayMs(yieldOf(url).current(System.currentTimeMillis()), tails.containsKey(url)))
             if (roster.containsKey(url) && queued.add(url)) queue.trySend(url)
         }
     }
@@ -278,8 +335,10 @@ internal class VisitPool(
             var seenMin: Long? = null
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
+            val relayYield = yieldOf(url)
             val onEvent: suspend (Event) -> Unit = { event ->
                 downloaded.incrementAndGet()
+                relayYield.arrived.incrementAndGet()
                 if (stream.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
@@ -332,6 +391,7 @@ internal class VisitPool(
             pager.sweep(stream.name, url, stream.filter, stream.filter) { event ->
                 received++
                 downloaded.incrementAndGet()
+                yieldOf(url).arrived.incrementAndGet()
                 if (stream.filter.match(event)) {
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
@@ -368,6 +428,21 @@ internal class VisitPool(
         if (tails.containsKey(url) || !roster.containsKey(url)) return
         val wanting = roster[url].orEmpty()
         if (wanting.isEmpty()) return
+        // THE BUDGET, and how a tail is earned past it. Under it every visited
+        // relay keeps its tail. Over it, the candidate must outrank the
+        // weakest sitting tail on recent yield — the socket goes to the relay
+        // with more content lately, and the evicted one falls back to the
+        // untailed revisit cadence, promptly requeued so its freshness gap is
+        // one queue wait and not a timer.
+        if (tails.size >= tailBudget) {
+            val nowMs = System.currentTimeMillis()
+            val candidate = yieldOf(url).current(nowMs)
+            val weakest = tails.keys.minByOrNull { yieldOf(it).current(nowMs) } ?: return
+            if (yieldOf(weakest).current(nowMs) >= candidate) return
+            tailsEvicted.incrementAndGet()
+            dropTail(weakest)
+            if (roster.containsKey(weakest) && queued.add(weakest)) queue.trySend(weakest)
+        }
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
         if (tails.putIfAbsent(url, subId) != null) return
         sockets.claim(url)
@@ -385,6 +460,7 @@ internal class VisitPool(
                 ) {
                     if (relay != url) return
                     downloaded.incrementAndGet()
+                    yieldOf(url).arrived.incrementAndGet()
                     // Bind trust per stream, and re-check scope so a broken
                     // relay cannot widen what we ingest — the same rule the
                     // static tails follow.
@@ -430,12 +506,35 @@ internal class VisitPool(
         const val DEFAULT_SOCKET_BUDGET = 600
 
         /**
-         * How long a visited relay rests before its next top-up. With the
-         * tail carrying the present, a revisit only covers what a dropped
-         * tail missed and the audit clock — fifteen minutes is generous for
-         * both, and 600 relays / 15 min is a placid 0.7 visits/s.
+         * The revisit delay one relay has earned: the base its tail status
+         * sets, shrunk by its recent yield, floored so a firehose relay is a
+         * frequent guest and not a busy loop.
+         *
+         * A TAILED relay's revisit only serves the audit clock and
+         * dropped-tail recovery — the tail carries its present — so its base
+         * is half an hour. An UNTAILED relay carries its whole freshness on
+         * this cadence, so its base is five minutes. Within either, "more
+         * content lately" divides: fifty decayed events halves the wait, five
+         * hundred cuts it to the floor. The scale is events, not events/sec,
+         * because the score already decays — see [Yield].
          */
-        const val DEFAULT_REVISIT_MS = 15L * 60 * 1000
+        internal fun revisitDelayMs(
+            yieldScore: Double,
+            tailed: Boolean,
+        ): Long {
+            val base = if (tailed) REVISIT_TAILED_MS else REVISIT_UNTAILED_MS
+            return (base / (1.0 + yieldScore / YIELD_HALVES_THE_WAIT)).toLong().coerceAtLeast(REVISIT_FLOOR_MS)
+        }
+
+        const val REVISIT_TAILED_MS = 30L * 60 * 1000
+        const val REVISIT_UNTAILED_MS = 5L * 60 * 1000
+        const val REVISIT_FLOOR_MS = 60_000L
+
+        /** The decayed-event count at which a relay's revisit wait halves. */
+        const val YIELD_HALVES_THE_WAIT = 50.0
+
+        /** How long recent content stays recent: an hour halves the score. */
+        const val YIELD_HALF_LIFE_MS = 60L * 60 * 1000
 
         /**
          * How far behind now a tail's `since` starts: the seam with the

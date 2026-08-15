@@ -50,6 +50,34 @@ class VisitPoolTest {
     }
 
     @Test
+    fun `more content lately means a sooner revisit, on both bases`() {
+        // The priority rule: yield divides the wait. Fifty decayed events
+        // halves it, five hundred pins it near the floor — and the tailed
+        // base stays above the untailed one at every score, because a tail
+        // is already carrying that relay's present.
+        val quietTailed = VisitPool.revisitDelayMs(0.0, tailed = true)
+        val quietUntailed = VisitPool.revisitDelayMs(0.0, tailed = false)
+        assertEquals(VisitPool.REVISIT_TAILED_MS, quietTailed)
+        assertEquals(VisitPool.REVISIT_UNTAILED_MS, quietUntailed)
+        assertEquals(quietTailed / 2, VisitPool.revisitDelayMs(VisitPool.YIELD_HALVES_THE_WAIT, tailed = true))
+        assertEquals(quietUntailed / 2, VisitPool.revisitDelayMs(VisitPool.YIELD_HALVES_THE_WAIT, tailed = false))
+        // Five hundred decayed events takes an untailed relay all the way to
+        // the floor — base/11 sits under it — while the tailed base, six times
+        // longer, still has room to divide.
+        assertEquals(VisitPool.REVISIT_FLOOR_MS, VisitPool.revisitDelayMs(500.0, tailed = false))
+        assertTrue(VisitPool.revisitDelayMs(500.0, tailed = true) > VisitPool.revisitDelayMs(500.0, tailed = false))
+    }
+
+    @Test
+    fun `a firehose relay is a frequent guest, never a busy loop`() {
+        // The floor: however much a relay delivers, its revisit never drops
+        // under a minute — the queue wait and the visit itself are the real
+        // pacing below that, and a zero delay would be a spin on one relay.
+        assertEquals(VisitPool.REVISIT_FLOOR_MS, VisitPool.revisitDelayMs(1e9, tailed = false))
+        assertEquals(VisitPool.REVISIT_FLOOR_MS, VisitPool.revisitDelayMs(1e9, tailed = true))
+    }
+
+    @Test
     fun `only a purely verdict-built stream rides the pool`() {
         // The fork's arithmetic, spelled as config: syncableRelays alone is
         // visit-mode; syncableRelays beside a parsed relaySource is the

@@ -833,7 +833,15 @@ internal object SyncVocabulary {
                 "tails",
                 "Live subscriptions left open after a visit's catch-up, one per relay, carrying every wanting " +
                     "stream's filter. This is what \"constantly connected\" means: new events arrive the moment they " +
-                    "exist, and the revisit only covers what a dropped tail missed.",
+                    "exist, and the revisit only covers what a dropped tail missed. Bounded by the tail budget: past " +
+                    "it a tail is EARNED, and the relay with more content lately takes the socket of the one that " +
+                    "has delivered least.",
+            )
+            put(
+                "evictedTails",
+                "Tails closed to give their socket to a relay with more content lately — the tail budget's rotation, " +
+                    "counted since boot. An evicted relay is requeued promptly and falls back to the untailed revisit " +
+                    "cadence; nothing about its certificate changes.",
             )
             put(
                 "visitsRun",
