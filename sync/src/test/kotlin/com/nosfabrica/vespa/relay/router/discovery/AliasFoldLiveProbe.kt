@@ -219,7 +219,7 @@ class AliasFoldLiveProbe {
     private fun containment(
         a: Set<String>,
         b: Set<String>,
-        /** The filter these windows came through — it sets the floor. See [RelayAliases.foldBar]. */
+        /** The filter these windows came through — it sets the floor. See `RelayAliases.foldBar`. */
         kinds: List<Int>?,
     ): String {
         val smaller = minOf(a.size, b.size)

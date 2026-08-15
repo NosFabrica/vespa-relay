@@ -262,7 +262,21 @@ class RelayAliasRecord(
         alias: NormalizedRelayUrl,
         canonical: NormalizedRelayUrl,
         sampled: Int,
-    ): Event? = write(alias, canonical, "same endpoint as ${canonical.url} over TLS, both answered; $sampled newest events here")
+        /**
+         * True when the pair's windows came through
+         * [RelayAliases.GROUP_METADATA_KINDS] — see [publishGroupList] for why
+         * that changes the noun. The ARGUMENT is unchanged (the two urls name one
+         * endpoint and both answered); only "newest events" would be the wrong
+         * name for a relay's list of groups.
+         */
+        groupList: Boolean = false,
+    ): Event? =
+        write(
+            alias,
+            canonical,
+            "same endpoint as ${canonical.url} over TLS, both answered; " +
+                if (groupList) "$sampled group definitions here" else "$sampled newest events here",
+        )
 
     /**
      * Sign and store a fold decided on a relay's LIST OF GROUPS rather than on a

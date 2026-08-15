@@ -296,6 +296,54 @@ class AliasFoldingTest {
         }
 
     @Test
+    fun `the sweep adopts a window it can measure with, not merely the first one`() =
+        runBlocking {
+            // The sweep's yardstick search had no `usableWindow` gate while the
+            // walk above it does, so a sub-floor window beat a usable one the
+            // SAME sweep had already fetched: /c hands over five ids, wins on
+            // PREFERENCE order, and then measures nothing — /d and /e serve an
+            // identical 40 and would have folded.
+            val store = newStore()
+            val thin: List<Event> = (0 until 5).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "thin$it") }
+            val full: List<Event> = (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "full$it") }
+            val up =
+                Upstreams { at ->
+                    when (RelayAliases.pathOf(at.url)) {
+                        "", "a", "b" -> emptyList()
+                        "c" -> thin
+                        else -> full
+                    }
+                }
+            val fold = folding(store, up)
+            val host = "wss://mixed.example"
+            val urls = listOf(host, "$host/a", "$host/b", "$host/c", "$host/d", "$host/e").map { RelayUrlNormalizer.normalize(it) }
+
+            assertEquals(1, fold.measure("t", urls, canDial = { true }), "a thin window beat a usable one")
+            assertTrue(
+                RelayUrlNormalizer.normalize("$host/e") !in fold.apply(urls).dial,
+                "the two urls serving an identical window were left unfolded",
+            )
+        }
+
+    @Test
+    fun `a group where only a thin window came back is not folded on its name`() =
+        runBlocking {
+            // The trap in fixing the above. Gate the sweep on `usableWindow` and
+            // a thin-only host leaves `found` null — which drops it straight into
+            // the shared-name default, folding a host that DID serve on a rule
+            // that says nothing served. Anything served at all disqualifies it.
+            val store = newStore()
+            val thin: List<Event> = (0 until 5).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "thin$it") }
+            val up = Upstreams { at -> if (RelayAliases.pathOf(at.url) == "c") thin else emptyList() }
+            val fold = folding(store, up)
+            val host = "wss://thinonly.example"
+            val urls = listOf(host, "$host/a", "$host/b", "$host/c").map { RelayUrlNormalizer.normalize(it) }
+
+            assertEquals(0, fold.measure("t", urls, canDial = { true }))
+            assertEquals(urls, fold.apply(urls).dial, "a host that served a window was folded on its name")
+        }
+
+    @Test
     fun `a url that never spoke keeps its whole group out of the fold`() =
         runBlocking {
             // Our own transport failing is not evidence about their server. One

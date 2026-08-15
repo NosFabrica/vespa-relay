@@ -438,7 +438,7 @@ class AliasFolding(
                                 // produced it. A NIP-29 host's whole list of
                                 // groups is a handful of ids and is not "thin"
                                 // in the sense this test means — see
-                                // [RelayAliases.foldFloor].
+                                // [RelayAliases.usableWindow].
                                 if (aliases.usableWindow(print.ids, print.kinds)) {
                                     found = candidate
                                     foundPrint = print
@@ -545,12 +545,31 @@ class AliasFolding(
                             // first. The members are re-dialled below through
                             // this filter, which is what keeps the group
                             // comparable.
-                            wanted.firstOrNull { swept[it]?.leader != null }?.let { better ->
+                            //
+                            // **It must be a window that can be MEASURED against,
+                            // which the walk above tests and this did not.** A
+                            // sub-floor window still arrives as a [AliasProbe.Leader],
+                            // so taking the first one let five ids beat forty
+                            // fetched by the same sweep: the thin url led, nothing
+                            // could fold onto it, and a host whose other paths
+                            // served an identical window took a 24h cooldown.
+                            val usable =
+                                wanted.firstOrNull { url ->
+                                    swept[url]?.leader?.let { aliases.usableWindow(it.ids, it.kinds) } == true
+                                }
+                            usable?.let { better ->
                                 found = better
                                 foundPrint = swept.getValue(better).leader
                                 exhausted -= better
                             }
-                            if (found == null) {
+                            // ANYTHING served disqualifies the shared-name
+                            // default, thin windows included. This is the trap in
+                            // the gate above: once a sub-floor window no longer
+                            // sets `found`, a host that DID serve would fall
+                            // straight through to a rule whose whole premise is
+                            // that nothing did.
+                            val servedSomething = swept.values.any { it.leader != null }
+                            if (found == null && !servedSomething) {
                                 // EVERY url, not most of them. One url our own
                                 // transport could not reach makes this "we do not
                                 // know", and folding on that would turn our
@@ -750,7 +769,11 @@ class AliasFolding(
                                 // Each verdict published with the argument it was
                                 // actually made on — see [RelayAliasRecord.publishSecureTwin].
                                 if (v.secureTwin) {
-                                    record.publishSecureTwin(alias, v.canonical, v.sampled)
+                                    // Both flags can be set at once — a `ws://`
+                                    // pair on a NIP-29 host — and the twin form
+                                    // wins because the pairing is the argument.
+                                    // It still has to name what it counted.
+                                    record.publishSecureTwin(alias, v.canonical, v.sampled, v.groupList)
                                 } else if (v.groupList) {
                                     record.publishGroupList(alias, v.canonical, v.sampled, v.shared)
                                 } else {
