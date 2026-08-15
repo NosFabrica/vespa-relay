@@ -279,10 +279,14 @@ internal object SyncVocabulary {
             )
             put(
                 "excluded",
-                "Urls dropped by CONFIG after the fold — a stream's `exclude` list, or this relay's own url, which is in " +
-                    "plenty of other people's relay lists. Its own member because an operator's instruction being obeyed " +
-                    "and a duplicate the router worked out for itself are different facts with different fixes; they were " +
-                    "one number while the fold count was inferred from a subtraction.",
+                "Urls dropped by CONFIG — a stream's `exclude` list, or this relay's own url, which is in plenty of " +
+                    "other people's relay lists. Its own member because an operator's instruction being obeyed and a " +
+                    "duplicate the router worked out for itself are different facts with different fixes; they were " +
+                    "one number while the fold count was inferred from a subtraction. Published in two places with the " +
+                    "same meaning and different scopes: on a CYCLE it is after that stream's fold, and on a PROBE PASS " +
+                    "it is over the union of every stream, where `sourced = excluded + heldOutDead + candidates`. " +
+                    "`exclude` is per stream, so a url one stream excludes and another asks for counts as a candidate " +
+                    "there — it is dialled, and counting it on both sides would break the one partition it belongs to.",
             )
             put(
                 "taken",

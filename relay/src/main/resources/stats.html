@@ -820,50 +820,47 @@
   .sy-bg b { font-weight: 600; }
   .sy-bg em { font-style: normal; color: var(--muted); }
   .sy-bg s { text-decoration: none; color: var(--warn); }
-  /* EVERY DISCOVERED URL, DIVIDED — one row per level, each level a share of
-     the SAME width so a slice sits under the slice it subdivides. An icicle
-     rather than a stack of independent bars for exactly that: the reasons a url
-     has no verdict are a share of the corpus, and drawn against their own total
-     they would read as wide as it. */
-  /* TIED TO THE ROW ABOVE IT. The card is a three-column grid of one-line
-     processors and this spans all three, so without a rule down its left edge
-     it reads as belonging to the card rather than to the pass whose candidate
-     set it divides — with the next processor's line directly underneath. */
-  .sy-funnel { grid-column: 1 / -1; margin: 6px 0 4px; padding-left: 10px; border-left: 2px solid var(--line); }
-  .sy-fn-row { position: relative; height: 14px; margin-bottom: 2px; }
-  /* `min-width` because the slice that matters most is the smallest one:
+  /* EVERY DISCOVERED URL, ONCE, INTO WHAT BECAME OF IT — one row per node,
+     nesting carried by indentation.
+
+     This replaced an icicle: one row per LEVEL, each a share of one width, a
+     child drawn under the parent it subdivides. That was correct, and it needed
+     three captions and a legend to say what indentation says for free — the
+     nesting was carried by horizontal offset, which is the one visual channel
+     already spent on proportion. Rendered on the real card it read as four
+     unrelated bars. Here depth IS the relationship and the bar is only ever
+     proportion. */
+  /* CAPPED, and narrower than the card. The three columns are a label, its
+     count and a bar; stretched to a wide card the label and its own number end
+     up an inch apart, which is the one association every row exists to make. */
+  .sy-funnel { grid-column: 1 / -1; max-width: 760px; margin: 6px 0 4px;
+               padding-left: 10px; border-left: 2px solid var(--line); }
+  .sy-tr { display: grid; grid-template-columns: 1fr auto 120px; gap: 0 10px; align-items: center;
+           font-size: 12px; line-height: 1.8; }
+  .sy-tr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Monospace, and the only monospace on this card: the guides are box-drawing
+     characters that must align vertically down every level, which a
+     proportional face cannot promise. */
+  .sy-tr-guide { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-style: normal;
+                 color: var(--line); white-space: pre; }
+  .sy-tr-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 2px;
+               vertical-align: -.01em; margin-right: .35rem; background: var(--bar); }
+  /* The four tones, and each is a claim: `good` is a relay we can sync against,
+     `warn` is a fault worth an operator's attention, `ours` is a failure on
+     THIS side (a transport we do not have, a probe that broke) and must never
+     colour like a relay misbehaving, and the default is a fact that is neither. */
+  .sy-tr-dot.good, .sy-tr-track i.good { background: var(--accent); }
+  .sy-tr-dot.warn, .sy-tr-track i.warn { background: var(--warn); }
+  .sy-tr-dot.ours, .sy-tr-track i.ours { background: var(--muted); opacity: .5; }
+  .sy-tr-dot.mute, .sy-tr-track i.mute { background: var(--bar); opacity: .55; }
+  .sy-tr-hosts { font-style: normal; color: var(--muted); }
+  .sy-tr-n { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .sy-tr-track { position: relative; height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+  /* `min-width` because the row that matters most is the smallest one:
      `inconsistent` is twelve urls in seventeen thousand — 0.07%, which rounds
-     to nothing — and a fault drawn at zero pixels is a fault nobody sees. Two
-     pixels overlaps a neighbour by at most two pixels and leaves every slice's
-     POSITION exactly true, which is the property the alignment rests on. */
-  /* A HAIRLINE ON EACH SEGMENT'S TRAILING EDGE, in the card's own background.
-     Most of a level is neighbouring slices of the SAME tone — three hosts and
-     their remainder, `folded` beside `no verdict` — and abutting equal fills
-     draw as one continuous block, which is the reading an icicle exists to
-     prevent. Inset, so it costs no width and cannot shift a slice's position. */
-  .sy-fn-row > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 2px;
-                   background: var(--bar); box-shadow: inset -1px 0 0 var(--surface); }
-  /* The four tones the levels use, and each is a claim: `good` is a relay we
-     can sync against, `warn` is a fault worth an operator's attention, `ours`
-     is a failure on THIS side (a transport we do not have, a probe that broke)
-     and must never colour like a relay misbehaving, and the default is a fact
-     that is neither. */
-  .sy-fn-row > i.good { background: var(--accent); }
-  .sy-fn-row > i.warn { background: var(--warn); }
-  .sy-fn-row > i.ours { background: var(--muted); opacity: .5; }
-  .sy-fn-row > i.mute { background: var(--bar); opacity: .55; }
-  .sy-fn-cap { font-size: 11.5px; color: var(--muted); margin: 1px 0 5px; }
-  .sy-fn-cap b { color: var(--text); font-weight: 600; }
-  .sy-fn-keys { display: flex; flex-wrap: wrap; gap: .1rem .8rem; font-size: 11.5px; color: var(--muted); }
-  .sy-fn-keys span { white-space: nowrap; font-variant-numeric: tabular-nums; }
-  .sy-fn-keys em, .sy-fn-keys i { font-style: normal; }
-  .sy-fn-keys i { color: var(--text); font-weight: 600; }
-  .sy-fn-keys b { display: inline-block; width: .5rem; height: .5rem; border-radius: 2px;
-                  vertical-align: -.01em; margin-right: .3rem; background: var(--bar); }
-  .sy-fn-keys b.good { background: var(--accent); }
-  .sy-fn-keys b.warn { background: var(--warn); }
-  .sy-fn-keys b.ours { background: var(--muted); opacity: .5; }
-  .sy-fn-keys b.mute { background: var(--bar); opacity: .55; }
+     to nothing — and a fault drawn at zero pixels is a fault nobody sees. */
+  .sy-tr-track i { display: block; height: 100%; min-width: 2px; border-radius: 3px; background: var(--bar); }
+  .sy-tr-note { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
   /* HOW MANY RELAYS REACH EACH POINT IN THE FRAME — the one picture that says
      whether coverage is deep or only recent, over every row at once. */
   .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
@@ -1988,42 +1985,45 @@ function backgroundPanel(progress) {
  */
 function funnelPanel(p) {
   const f = funnelOf(p);
-  // One level is the root and nothing else — a bar as wide as its own total,
-  // which says less than the sentence above it already does.
-  if (!f || f.levels.length < 2) return null;
+  if (!f) return null;
   const box = el("div", "sy-funnel");
-  for (const level of f.levels) {
-    const row = el("div", "sy-fn-row");
-    const keys = el("div", "sy-fn-keys");
-    for (const s of level.segments) {
-      const bar = el("i", s.tone || null);
-      bar.style.left = `${s.lead * 100}%`;
-      bar.style.width = `${s.share * 100}%`;
-      // The count first, then who they are, then the reason — rather than the
-      // reason inline, which collides with its own wording: several of them end
-      // in a preposition ("too few events to judge on") and read as "…judge on
-      // on 611 host(s)" the moment a host count follows.
-      const who = s.hosts ? ` on ${fmt(s.hosts)} host(s)` : "";
-      const eg = s.examples && s.examples.length ? ` (e.g. ${s.examples.join(", ")})` : "";
-      bar.title = `${fmt(s.value)} url(s)${who}: ${s.label}${eg}`;
-      row.appendChild(bar);
+  for (const r of f.rows) {
+    const row = el("div", "sy-tr");
 
-      const key = el("span");
-      key.appendChild(el("b", s.tone || null));
-      key.appendChild(el("em", null, `${s.label} `));
-      key.appendChild(el("i", null, fmt(s.value)));
-      // The document's own words where the slice is one of ours; the router's
-      // free-text reason is its own explanation and needs no gloss.
-      const why = term(s.key);
-      if (why) key.title = why;
-      keys.appendChild(key);
-    }
-    box.appendChild(el("div", "sy-fn-cap", level.title));
+    // The guides and the label in one cell, so indentation is the label's own
+    // left edge rather than a column that the longest name at any depth would
+    // have to be measured against.
+    const name = el("div", "sy-tr-name");
+    if (r.prefix) name.appendChild(el("i", "sy-tr-guide", r.prefix));
+    name.appendChild(el("b", r.tone ? `sy-tr-dot ${r.tone}` : "sy-tr-dot"));
+    name.appendChild(el("span", null, r.label));
+    // The document's own words where the row is one of ours; a router's
+    // free-text reason and a hostname are their own explanation.
+    const why = term(r.key);
+    if (why) name.title = why;
+    // What a reason's urls resolve to as SERVERS, where the pass counted them.
+    // Beside the label rather than as a child row: it is a different unit, and
+    // a unit change inside a tree of url counts reads as a subtotal.
+    if (r.hosts) name.appendChild(el("em", "sy-tr-hosts", ` on ${fmt(r.hosts)} host(s)`));
+    row.appendChild(name);
+
+    row.appendChild(el("span", "sy-tr-n", fmt(r.value)));
+
+    // EVERY BAR AGAINST THE ROOT, never against the parent. Against its parent
+    // a host with four urls under a reason with five would draw at 80% of the
+    // width the whole corpus gets, which is the reading the tree's indentation
+    // already carries and the one proportion must not contradict.
+    const track = el("span", "sy-tr-track");
+    const fill = el("i", r.tone || null);
+    fill.style.width = `${Math.min(100, r.share * 100)}%`;
+    track.appendChild(fill);
+    row.appendChild(track);
+    row.title = `${fmt(r.value)} url(s) — ${(r.share * 100).toFixed(r.share < 0.01 ? 2 : 1)}% of ${fmt(f.total)}` +
+      (r.examples && r.examples.length ? ` (e.g. ${r.examples.join(", ")})` : "");
     box.appendChild(row);
-    box.appendChild(keys);
   }
   if (f.omitted) {
-    box.appendChild(el("div", "sy-fn-cap", `${fmt(f.omitted)} more reason(s) not drawn — see the JSON`));
+    box.appendChild(el("div", "sy-tr-note", `${fmt(f.omitted)} more reason(s) not drawn — see the JSON`));
   }
   return box;
 }

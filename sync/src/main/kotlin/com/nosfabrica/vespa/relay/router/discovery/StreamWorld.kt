@@ -73,11 +73,21 @@ internal class StreamWorld(
     var lastDerivation: Derivation = Derivation()
         private set
 
-    /** One derivation's arithmetic: `sourced - heldOutDead = candidates`. */
+    /** One derivation's arithmetic: `sourced = excluded + heldOutDead + candidates`. */
     data class Derivation(
-        /** Every url the streams' relay lists yielded, before anything was held out. */
+        /** Every url the streams' relay lists yielded, before anything was dropped. */
         val sourced: Int = 0,
-        /** …of those, how many carried a current unreachability record. */
+        /**
+         * …of those, how many an OPERATOR's instruction dropped: on a stream's
+         * `exclude` list, or this relay's own url.
+         *
+         * Its own number rather than folded into [heldOutDead], for the reason
+         * [CycleTally.excluded] gives: one is an instruction and the other is a
+         * measurement, they have different fixes, and a reader who cannot tell
+         * them apart cannot act on either.
+         */
+        val excluded: Int = 0,
+        /** …and how many carried a current unreachability record. */
         val heldOutDead: Int = 0,
     )
 
@@ -94,6 +104,10 @@ internal class StreamWorld(
     override suspend fun candidates(): List<NormalizedRelayUrl> {
         val dead = monitor?.deadSet().orEmpty()
         val all = LinkedHashSet<NormalizedRelayUrl>()
+        // Kept rather than only skipped, so the funnel's first branch divides.
+        // An operator who excluded a hundred urls and then asks why the fan-out
+        // is a hundred short is asking about a number nothing published.
+        val excluded = LinkedHashSet<NormalizedRelayUrl>()
         for (stream in streams) {
             val dynamic = stream.dynamic ?: continue
             val found =
@@ -105,10 +119,21 @@ internal class StreamWorld(
                     System.err.println("router: alias source could not derive ${stream.name}: ${e.message}")
                     emptyList()
                 }
-            found.forEach { if (it.url !in dynamic.exclude && it.url != store.relay) all += it.url }
+            found.forEach {
+                if (it.url !in dynamic.exclude && it.url != store.relay) all += it.url else excluded += it.url
+            }
         }
+        // `exclude` is PER STREAM, so a url one stream excludes and another asks
+        // for is a candidate — it is dialled, and counting it as excluded would
+        // put it on both sides of a partition that has to divide exactly once.
+        val onlyExcluded = excluded - all
         val live = all.filterNot { it in dead }
-        lastDerivation = Derivation(sourced = all.size, heldOutDead = all.size - live.size)
+        lastDerivation =
+            Derivation(
+                sourced = all.size + onlyExcluded.size,
+                excluded = onlyExcluded.size,
+                heldOutDead = all.size - live.size,
+            )
         System.err.println(
             "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
                 (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else ""),

@@ -408,6 +408,7 @@ class SyncEngine(
                     pass.counts {
                         listOf(
                             Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
+                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
                             Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
                         )
                     }

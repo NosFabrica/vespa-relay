@@ -186,21 +186,25 @@ const leg = (n, quiet, over = {}) => ({
   ok("a bottleneck word this page has not been taught cannot reach Object.prototype");
 }
 
-// ── the candidate set, divided ──────────────────────────────────────────────
+// ── the candidate set, as a tree ────────────────────────────────────────────
 {
   // A live-shaped document: a corpus mostly made of urls that cannot be
-  // measured at all, which is the reading the whole funnel exists to make
-  // visible. The numbers are the identity `sourced - heldOutDead = candidates`
-  // and `candidates = foldedAway + consistent + inconsistent + unmeasured`.
+  // measured at all, which is the reading the whole tree exists to make
+  // visible. The numbers are the identities
+  // `sourced = excluded + heldOutDead + candidates` and
+  // `candidates = foldedAway + consistent + inconsistent + unmeasured`.
   const gate = (over = {}, row = {}) => ({
-    name: "consistency", phase: "idle", lastPassSec: 9720, sourced: 17584, heldOutDead: 832,
+    name: "consistency", phase: "idle", lastPassSec: 9720,
+    sourced: 17584, excluded: 3, heldOutDead: 829,
     streams: [{
       name: "all streams", candidates: 16752, foldedAway: 11429, consistent: 583, inconsistent: 12,
       unmeasured: 4728, dialled: 4728, decided: 74,
       undecided: {
         reasons: [
-          { reason: "never answered a REQ", urls: 3902, hosts: 2201, examples: ["dead.example"] },
-          { reason: "too few events to judge on", urls: 826, hosts: 611, examples: ["thin.example"] },
+          { reason: "never answered a REQ", urls: 3902, hosts: 2201,
+            top: [{ host: "dead.example", urls: 61 }, { host: "gone.example", urls: 44 }] },
+          { reason: "too few events to judge on", urls: 826, hosts: 611,
+            top: [{ host: "thin.example", urls: 12 }] },
         ],
         omitted: 0,
       },
@@ -210,198 +214,121 @@ const leg = (n, quiet, over = {}) => ({
   });
 
   const f = funnelOf(gate());
-  assert.equal(f.total, 17584, "the width is every url the streams named, before anything was held out");
-  assert.equal(f.levels.length, 3, "reach, verdict, and why the rest has none");
+  const at = (key) => f.rows.find((r) => r.key === key);
+  assert.equal(f.total, 17584, "the root is every url the streams named");
 
-  // EVERY LEVEL AGAINST ONE WIDTH. Scaled to its own total, `never answered a
-  // REQ` would draw as 83% of the corpus when it is 22% of it — the reading a
-  // per-level denominator produces and the reason for the shared one.
-  const by = (level, key) => f.levels[level].segments.find((s) => s.key === key);
-  assert.equal(by(0, "candidates").share, 16752 / 17584);
-  assert.equal(by(1, "foldedAway").share, 11429 / 17584);
-  assert.equal(by(2, "never answered a REQ").share, 3902 / 17584);
+  // THE SHAPE. Depth is the relationship, so it is the thing to assert: a host
+  // is under its reason, a reason under `no verdict`, that under the candidate
+  // set, and the two dropped kinds under one branch of their own.
+  assert.deepEqual(f.rows.map((r) => [r.depth, r.key]), [
+    [0, "sourced"],
+    [1, "dropped"], [2, "excluded"], [2, "heldOutDead"],
+    [1, "candidates"], [2, "foldedAway"], [2, "consistent"], [2, "inconsistent"], [2, "unmeasured"],
+    [3, "never answered a REQ"], [4, "dead.example"], [4, "gone.example"], [4, "moreHosts"],
+    [3, "too few events to judge on"], [4, "thin.example"], [4, "moreHosts"],
+  ]);
 
-  // A SLICE SITS UNDER WHAT IT SUBDIVIDES. The reasons divide `unmeasured`, so
-  // the first of them starts where everything that HAS a verdict ends — not at
-  // zero, which would draw the corpus's dead urls on top of its folded ones.
-  assert.equal(by(1, "foldedAway").lead, 0);
-  assert.equal(by(2, "never answered a REQ").lead, (11429 + 583 + 12) / 17584);
-  assert.equal(by(2, "too few events to judge on").lead, (11429 + 583 + 12 + 3902) / 17584);
+  // EVERY BAR AGAINST THE ROOT, never against the parent — against its parent a
+  // host with 61 urls under a reason with 3,902 would draw at the width the
+  // whole corpus gets, contradicting the indentation that already says it is
+  // deep in a subtree.
+  assert.equal(at("candidates").share, 16752 / 17584);
+  assert.equal(at("dead.example").share, 61 / 17584);
 
-  // Widest reason first, whatever order the router published them in.
-  assert.deepEqual(f.levels[2].segments.map((s) => s.value), [3902, 826]);
+  // THE GUIDES. A `│` is drawn at every ancestor that still has a sibling
+  // below it, which is exactly the fact a flattened list loses — computed from
+  // depth alone the tree still renders, with dangling verticals under the last
+  // branch.
+  assert.equal(at("dropped").prefix, "├─ ");
+  assert.equal(at("excluded").prefix, "│  ├─ ", "inside a branch that is not the last");
+  assert.equal(at("heldOutDead").prefix, "│  └─ ");
+  assert.equal(at("candidates").prefix, "└─ ", "the last child of the root");
+  assert.equal(at("unmeasured").prefix, "   └─ ", "…so nothing is drawn below it");
+  assert.equal(at("dead.example").prefix, "      │  ├─ ", "its reason has another below it, so the trunk continues");
+  assert.equal(at("thin.example").prefix, "         ├─ ", "…and under the LAST reason the trunk is blank, not a repeated corner");
 
-  // The tones are claims. A failure on OUR side must not colour like a relay
-  // misbehaving, and only one slice on the whole chart is a fault.
-  assert.equal(by(1, "consistent").tone, "good");
-  assert.equal(by(1, "inconsistent").tone, "warn");
-  assert.equal(by(1, "foldedAway").tone, "mute");
-  assert.equal(by(0, "heldOutDead").tone, "mute");
-  assert.equal(by(2, "never answered a REQ").tone, null, "a relay that will not answer is not our fault");
-  ok("every level is a share of one width, and a slice sits under the slice it subdivides");
+  // The tail a ranked head was taken from, under EACH reason, and not the fault
+  // tone: a reason spread across 2,201 hosts is the normal shape of a dead
+  // corpus, not an arithmetic error.
+  const rests = f.rows.filter((r) => r.key === "moreHosts");
+  assert.deepEqual(rests.map((r) => r.value), [3902 - 61 - 44, 826 - 12]);
+  assert.deepEqual(rests.map((r) => r.tone), ["mute", "mute"]);
+
+  // Tones are claims, and only one row on the whole tree is a fault.
+  assert.equal(at("consistent").tone, "good");
+  assert.equal(at("inconsistent").tone, "warn");
+  assert.equal(at("never answered a REQ").tone, null, "a relay that will not answer is not our fault");
+  assert.equal(at("never answered a REQ").hosts, 2201, "the url count's resolution into servers rides along");
+  ok("the tree nests by depth, guides its own branches, and scales every bar to the root");
 }
 
 {
-  // A ROW THAT ANSWERS NONE OF THE THREE GETS NO CHART. Absent is not zero:
-  // the alias fold measures no stability verdicts and a router older than the
-  // partition measured none either, and read as zeroes every url WITH a verdict
-  // lands in `not accounted for` — in the fault tone, on a pass that is working.
-  // Caught in a screenshot of the real card: 12,731 of the fold's 16,752 urls
-  // drawn as an arithmetic error.
+  // A NODE WHOSE CHILDREN DO NOT SUM TO IT gets a named child rather than a
+  // short bar — any arithmetic slip, and any reason list either side truncated,
+  // surfaces as a row in the fault tone instead of quietly shrinking the tree.
+  const f = funnelOf({
+    name: "consistency", sourced: 100, excluded: 0, heldOutDead: 0,
+    streams: [{ candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "never answered a REQ", urls: 40, hosts: 4 }], omitted: 3 } }],
+  });
+  const short = f.rows.find((r) => r.key === "unattributed");
+  assert.equal(short.value, 50, "the reasons cover 40 of the 90 with no verdict");
+  assert.equal(short.depth, 3, "…and it is a child of the node that did not close, not of the root");
+  assert.equal(short.tone, "warn", "an unclosed partition must look wrong");
+  assert.equal(f.omitted, 3, "and the rows the router itself dropped are carried through");
+  ok("a node whose children do not sum names the remainder rather than drawing a short bar");
+}
+
+{
+  // ABSENT IS NOT ZERO. A pass that publishes none of the three verdict members
+  // measures no verdicts — the alias fold, and any router older than the
+  // partition — and read as zeroes, every url WITH a verdict lands in `not
+  // accounted for`, in the fault tone, on a pass that is working. Caught in a
+  // screenshot of the real card: 12,731 of the fold's 16,752 urls drawn as an
+  // arithmetic error.
   assert.equal(funnelOf({
     name: "aliasFold", phase: "idle", sourced: 17584, heldOutDead: 832,
     streams: [{ name: "all streams", candidates: 16752, unmeasured: 4021, dialled: 2000, decided: 118 }],
   }), null, "a pass that publishes no partition is not given one");
 
-  // THE ARITHMETIC THAT DOES NOT CLOSE is the other case, and it keeps the
-  // slice: here the partition IS published and the members do not reach the
-  // candidate set, which is a fault and has to look like one.
-  const f = funnelOf({
-    name: "consistency", phase: "idle",
-    streams: [{ name: "all streams", candidates: 16752, consistent: 10, unmeasured: 4728 }],
-  });
-  assert.equal(f.total, 16752, "with no `sourced`, the root is the candidate set itself");
-  const level = f.levels[1].segments;
-  assert.deepEqual(level.map((s) => s.key), ["consistent", "unmeasured", "unattributed"]);
-  assert.equal(level[2].value, 16752 - 4728 - 10, "what is not accounted for is named, not dropped");
-  assert.equal(level[2].tone, "warn", "an unclosed partition must look wrong");
-
-  // …and the same rule inside a level: reasons that do not sum to `unmeasured`
-  // leave a named remainder rather than a short bar.
-  const short = funnelOf({
-    name: "consistency", sourced: 100, heldOutDead: 0,
-    streams: [{
-      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
-      undecided: { reasons: [{ reason: "never answered a REQ", urls: 40, hosts: 4 }], omitted: 3 },
-    }],
-  });
-  const why = short.levels[2].segments;
-  assert.equal(why[1].key, "unattributed");
-  assert.equal(why[1].value, 50, "the reasons cover 40 of the 90 with no verdict");
-  assert.equal(short.omitted, 3, "and the rows the router itself dropped are carried through");
-  ok("a level that does not sum names the remainder rather than drawing a gap");
-}
-
-{
-  // Nothing is invented from a missing member, and nothing divides by zero.
   assert.equal(funnelOf(null), null);
-  assert.equal(funnelOf({ name: "consistency" }), null, "a row with no streams has no funnel");
-  assert.equal(funnelOf({ name: "consistency", streams: [{ candidates: 0 }] }), null,
-    "an empty candidate set is not a chart of zeroes");
+  assert.equal(funnelOf({ name: "consistency" }), null, "a row with no streams has no tree");
+  assert.equal(funnelOf({ name: "consistency", streams: [{ candidates: 0, consistent: 0 }] }), null,
+    "an empty candidate set is not a tree of zeroes");
 
-  // The fold publishes no partition and counts its undecided rows in HOSTS, so
-  // every level of its funnel would be one full-width bar restating the
-  // sentence above it.
-  assert.equal(funnelOf({ name: "aliasFold", streams: [{ candidates: 40, unmeasured: 40 }] }), null,
-    "a row that divides into nothing is not a chart");
+  // With no `sourced` the root is what can still be accounted for, rather than
+  // a mouth invented for it.
+  const bare = funnelOf({ name: "consistency", streams: [{ candidates: 40, consistent: 10, unmeasured: 30 }] });
+  assert.equal(bare.total, 40);
+  assert.equal(bare.rows.find((r) => r.key === "dropped").value, 0);
 
   // Summed across rows, never `streams[0]` — the bug that shipped on the line
-  // this chart sits under.
+  // this tree sits under.
   const two = funnelOf({
-    name: "consistency", sourced: 60, heldOutDead: 0,
+    name: "consistency", sourced: 60,
     streams: [
       { candidates: 40, foldedAway: 10, consistent: 10, inconsistent: 0, unmeasured: 20 },
       { candidates: 20, foldedAway: 0, consistent: 5, inconsistent: 5, unmeasured: 10 },
     ],
   });
   assert.equal(two.candidates, 60);
-  assert.equal(two.levels[1].segments.find((s) => s.key === "inconsistent").value, 5);
-  ok("an absent member is a zero, an empty set is no chart, and rows are summed");
+  assert.equal(two.rows.find((r) => r.key === "inconsistent").value, 5);
+  ok("an absent partition is no tree, an absent member is a zero, and rows are summed");
 }
 
 {
-  // A reason is free text off the wire, and it is used as a KEY for the tone
-  // lookup. Reaching Object.prototype hands back a function, which renders as
-  // a class name and throws the row's colours away.
+  // A reason and a hostname are free text off the wire, and both are used as
+  // KEYS for the tone lookup. Reaching Object.prototype hands back a function,
+  // which renders as a class name and throws the row's colours away.
   for (const hostile of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
     const f = funnelOf({
-      name: "consistency", sourced: 10, heldOutDead: 0,
-      streams: [{
-        candidates: 10, foldedAway: 0, consistent: 2, inconsistent: 0, unmeasured: 8,
-        undecided: { reasons: [{ reason: hostile, urls: 8, hosts: 1 }], omitted: 0 },
-      }],
+      name: "consistency", sourced: 10,
+      streams: [{ candidates: 10, foldedAway: 0, consistent: 2, inconsistent: 0, unmeasured: 8,
+        undecided: { reasons: [{ reason: hostile, urls: 8, hosts: 1, top: [{ host: hostile, urls: 8 }] }], omitted: 0 } }],
     });
-    assert.equal(f.levels[2].segments[0].tone, null, `${hostile} is an unknown reason, not a prototype member`);
+    const rows = f.rows.filter((r) => r.key === hostile);
+    assert.equal(rows.length, 2, "the reason and the host under it");
+    assert.deepEqual(rows.map((r) => r.tone), [null, null], `${hostile} is unknown text, not a prototype member`);
   }
-  ok("a reason this page has not been taught cannot reach Object.prototype");
-}
-
-// ── the hosts under each reason ─────────────────────────────────────────────
-{
-  // THE FOURTH LEVEL, and the first whose segments do not share one parent:
-  // each host sits under its OWN reason, not under the level as a whole. Every
-  // level above gets away with a lead of zero because its parent is always the
-  // leading segment; this one cannot.
-  const gate = funnelOf({
-    name: "consistency", sourced: 1000, heldOutDead: 0,
-    streams: [{
-      candidates: 1000, foldedAway: 100, consistent: 40, inconsistent: 10, unmeasured: 850,
-      undecided: {
-        reasons: [
-          { reason: "never answered a REQ", urls: 600, hosts: 220,
-            top: [{ host: "dead.example", urls: 30 }, { host: "gone.example", urls: 20 }] },
-          { reason: "refused our credentials", urls: 250, hosts: 3,
-            top: [{ host: "paid.example", urls: 200 }, { host: "wall.example", urls: 50 }] },
-        ],
-        omitted: 0,
-      },
-    }],
-  });
-  const level = gate.levels[3];
-  assert.equal(level.key, "hosts");
-
-  // The first reason starts after everything WITH a verdict (100+40+10 = 150),
-  // and its hosts start there — not at zero, and not after the other reason.
-  const at = (key) => level.segments.find((s) => s.key === key).lead * 1000;
-  assert.equal(at("dead.example"), 150, "the first host sits at the head of its own reason");
-  assert.equal(at("gone.example"), 180);
-  // …and the SECOND reason's hosts sit under it, 600 further along, not
-  // packed against the first reason's tail.
-  assert.equal(at("paid.example"), 750, "150 + the whole first reason");
-  assert.equal(at("wall.example"), 950);
-
-  // Each host carries the reason it belongs to, so a hover or a future filter
-  // can say which parent it divides.
-  assert.equal(level.segments.find((s) => s.key === "paid.example").parent, "refused our credentials");
-
-  // THE TAIL THE RANKED HEAD WAS TAKEN FROM. `top` is deliberately not a
-  // partition — 550 of the first reason's 600 urls are on hosts nobody named —
-  // and drawing only the head would report two servers as the whole finding.
-  const rests = level.segments.filter((s) => s.key === "moreHosts");
-  assert.deepEqual(rests.map((s) => s.value), [550, 0].filter(Boolean));
-  assert.equal(rests[0].lead * 1000, 200, "the remainder starts after the named hosts");
-  // …and it is NOT the fault tone: a reason spread across two hundred hosts is
-  // the normal shape of a dead corpus, not an arithmetic error.
-  assert.equal(rests[0].tone, "mute");
-  assert.notEqual(rests[0].tone, gate.levels[1].segments.find((s) => s.key === "inconsistent").tone);
-  ok("each host sits under its own reason, and the tail its ranking came from is drawn as disclosure");
-}
-
-{
-  // A pass with no host counts — the fold — grows no fourth level, and a reason
-  // whose `top` is missing or junk does not invent one.
-  const bare = funnelOf({
-    name: "consistency", sourced: 100, heldOutDead: 0,
-    streams: [{
-      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
-      undecided: { reasons: [{ reason: "never answered a REQ", urls: 90, hosts: 9, examples: ["a.example"] }], omitted: 0 },
-    }],
-  });
-  assert.equal(bare.levels.length, 3, "no host counts, no host level");
-  assert.deepEqual(bare.levels[2].segments[0].examples, ["a.example"], "and the names it DID publish still reach the tooltip");
-
-  const junk = funnelOf({
-    name: "consistency", sourced: 100, heldOutDead: 0,
-    streams: [{
-      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
-      undecided: { reasons: [{ reason: "never answered a REQ", urls: 90, hosts: 9,
-        top: [{ urls: 5 }, null, { host: "real.example", urls: 0 }, { host: "ok.example", urls: 4 }] }], omitted: 0 },
-    }],
-  });
-  const drawn = junk.levels[3].segments;
-  assert.deepEqual(drawn.filter((s) => s.key !== "moreHosts").map((s) => s.key), ["ok.example"],
-    "a row with no host, or no urls, is dropped rather than drawn anonymously");
-  // The tooltip's names come from `top` when the pass published no `examples`.
-  assert.deepEqual(junk.levels[2].segments[0].examples, ["real.example", "ok.example"]);
-  ok("a reason with no usable host rows grows no level, and junk rows are dropped not drawn");
+  ok("a reason or host this page has not been taught cannot reach Object.prototype");
 }

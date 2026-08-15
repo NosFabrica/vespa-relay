@@ -173,46 +173,49 @@ const FUNNEL_TONE = {
   moreHosts: "mute",
 };
 
-/** Every level of the funnel is drawn against one width, so a child sits under its parent. */
-const FUNNEL_LEVELS = [
-  ["reach", "every url the streams named", [["candidates", "in reach"], ["heldOutDead", "known dead, held out"]]],
-  ["verdict", "…what is known about each", [["foldedAway", "folded onto another url"], ["consistent", "consistent"],
-    ["inconsistent", "inconsistent — refused"], ["unmeasured", "no verdict"]]],
-];
-
 /**
- * THE WHOLE CANDIDATE SET, DIVIDED — every url a stream would dial, once, into
- * the category that decided its fate, and then into why.
+ * EVERY DISCOVERED URL, ONCE, INTO WHAT BECAME OF IT — as a tree.
+ *
+ * ## Why a tree and not the stacked levels this replaces
+ *
+ * It was an icicle: one row per level, every level a share of one width, a
+ * child sitting under the parent it subdivides. It was correct and it needed
+ * three captions and a legend to say what indentation says for free — the
+ * nesting was carried by horizontal offset, which is the one visual channel
+ * already spent on proportion. Rendered on the real card, the levels read as
+ * four unrelated bars.
+ *
+ * The same numbers as `parent → children` need no captions: depth IS the
+ * relationship, the label sits next to its own count, and a fifth level costs
+ * one more indent rather than a new alignment rule. What the icicle was good at
+ * — comparing two slices at a glance — is kept as a bar per row, all against
+ * the SAME root total, so a host under a reason is still visibly a sliver of
+ * the corpus and not of its parent.
  *
  * ## Why this and not the one number beside it
  *
- * `probeProgress` answers "how much has a verdict", which on a discovered corpus
- * sits at a few hundred out of several thousand and reads as a gate that is
- * stuck. It is not: the pass dials its whole set every time, and most of that
- * set is urls that cannot be measured at all — dead hosts, auth walls, relays
- * holding nine events. Those are four different problems with four different
- * fixes and they were one undifferentiated number, so the honest reading and
- * the alarming one were indistinguishable. This is the breakdown that separates
- * them.
+ * `probeProgress` answers "how much has a verdict", which on a discovered
+ * corpus sits at a few hundred out of several thousand and reads as a gate that
+ * is stuck. It is not: the pass dials its whole set every time, and most of
+ * that set is urls that cannot be measured at all — dead hosts, auth walls,
+ * relays holding nine events. Those are different problems with different
+ * fixes, and they were one undifferentiated number.
  *
  * ## The rules it is held to
  *
- * **Every level is drawn against the SAME width**, with a `lead` offset, so a
- * level's segments sit under the parent segment they subdivide. A level scaled
- * to its own total would draw `unmeasured`'s seven reasons as wide as the whole
- * corpus, which is the reading this exists to prevent.
+ * **A node whose children do not sum to it gets an `unattributed` child rather
+ * than a short bar.** Any arithmetic slip, and any reason list either side
+ * truncated, surfaces as a named row in the fault tone instead of quietly
+ * shrinking the tree.
  *
- * **A level that does not sum gets an `unattributed` slice rather than a gap.**
- * Three ways that happens and all three are real: a router older than the
- * partition publishes `candidates` and `unmeasured` and nothing between them; a
- * reason list truncated by either side leaves urls in no row; and any future
- * arithmetic slip. A gap reads as "nothing there", a named slice reads as "not
- * accounted for", and only the second is true. It is toned as a fault so it
- * cannot be mistaken for a finding.
+ * **Absent is not zero.** A pass that publishes none of the three verdict
+ * members measures no verdicts — the alias fold, and any router older than the
+ * partition — and gets NO tree, rather than one claiming every url it checked
+ * is unaccounted for. That bug shipped and a screenshot of the real card caught
+ * it.
  *
- * **Nothing is invented from a missing member.** Absent reads as zero, never as
- * a share of something else, and a document with no `sourced` simply loses the
- * first level instead of having one guessed for it.
+ * **Nothing is invented from a missing member**, and a subtree nobody can fill
+ * simply does not appear.
  */
 export function funnelOf(p) {
   const streams = p?.streams || [];
@@ -221,124 +224,86 @@ export function funnelOf(p) {
   const candidates = sum("candidates");
   if (!candidates) return null;
   // ABSENT IS NOT ZERO, and this is the one place in the module where the
-  // difference is load-bearing. A pass that measures no verdicts publishes none
-  // of the three — the alias fold, and any router older than the partition —
-  // and `sum` cannot tell that from three real zeroes. Read as zeroes, the
-  // level below draws everything with a verdict as `not accounted for` IN THE
-  // FAULT TONE: measured on the fold's own row, 12,731 of 16,752 urls painted
-  // as an arithmetic error on a pass that was working perfectly.
-  //
-  // So a row that answers none of them gets no chart at all, and `unattributed`
-  // goes back to meaning what it is for: a partition that WAS published and
-  // does not close.
+  // difference is load-bearing — see the header. `sum` cannot tell a missing
+  // member from a real zero, so the question is asked of the rows directly.
   if (!streams.some((w) => w.foldedAway != null || w.consistent != null || w.inconsistent != null)) return null;
-  const heldOutDead = Math.max(0, p.heldOutDead || 0);
-  // The width every level is a share of. `sourced` is the honest root when the
-  // router publishes it; without it the root is the candidate set itself, and
-  // the level naming what was held out is dropped rather than drawn empty.
-  const total = Math.max(candidates + heldOutDead, p.sourced || 0);
-  const values = {
-    candidates,
-    // As PUBLISHED, never as `total - candidates`. The two numbers are written
-    // by different clocks — the derivation's and the pass's — so a source that
-    // re-derived between them would silently inflate this slice with urls that
-    // were never held out. Any gap shows up as `unattributed`, which is what
-    // that slice is for.
-    heldOutDead,
-    foldedAway: sum("foldedAway"),
-    consistent: sum("consistent"),
-    inconsistent: sum("inconsistent"),
-    unmeasured: sum("unmeasured"),
-  };
 
-  const seg = (key, label, value, lead) => ({
+  const excluded = Math.max(0, p.excluded || 0);
+  const heldOutDead = Math.max(0, p.heldOutDead || 0);
+  const dropped = excluded + heldOutDead;
+  // The root: everything the streams named. `sourced` is the honest one when
+  // the router publishes it; without it the root is what we can still account
+  // for, and the tree simply starts lower rather than inventing a mouth.
+  const total = Math.max(candidates + dropped, p.sourced || 0);
+
+  /** One node. `children` is built by the callers below, never inferred. */
+  const node = (key, label, value, children = []) => ({
     key, label, value,
     share: total ? value / total : 0,
-    lead: total ? lead / total : 0,
     tone: FUNNEL_TONE[key] || null,
+    children,
   });
 
-  const levels = [];
-  for (const [key, title, members] of FUNNEL_LEVELS) {
-    // Both levels here subdivide the FIRST segment of the one above them, whose
-    // lead is zero, so theirs is too.
-    //
-    // NOT a general rule, and the hierarchy is not modelled as one: the parent
-    // is picked by name below and the reasons' lead is computed by hand. A
-    // level that subdivided anything but a leading segment, or a second branch
-    // splitting on the same level, would need both of those to become a real
-    // parent link — see the `why` level, which is the shape that would have to
-    // generalise.
-    let at = 0;
-    const segments = [];
-    for (const [member, label] of members) {
-      const value = Math.max(0, values[member] || 0);
-      if (value > 0) segments.push(seg(member, label, value, at));
-      at += value;
-    }
-    // The parent of this level, as a width: level one divides `total`, and
-    // every level after it divides its predecessor's first member.
-    const parent = key === "reach" ? total : candidates;
-    const short = parent - segments.reduce((a, s) => a + s.value, 0);
-    if (short > 0) segments.push(seg("unattributed", "not accounted for", short, at));
-    if (segments.length) levels.push({ key, title, segments });
-  }
-
-  // …and the reasons, which subdivide `unmeasured` and therefore start where it
-  // starts: after everything that DOES have a verdict.
-  const lead = values.foldedAway + values.consistent + values.inconsistent;
-  const reasons = [];
-  // The fourth level, built in the SAME walk as the third, because each host
-  // row is positioned under its own reason rather than under the level as a
-  // whole. This is the first level whose segments do not share one parent, and
-  // computing it separately would mean re-deriving every reason's offset from
-  // its position in a list — the arithmetic the levels above get away with
-  // because their parent is always the leading segment.
-  const hosts = [];
-  let at = lead;
-  for (const row of firstReasons(streams)) {
+  const reasons = firstReasons(streams).map((row) => {
     const value = Math.max(0, row.urls || 0);
-    if (!value) continue;
-    const top = (row.top || []).filter((h) => h && h.host);
-    reasons.push({
-      ...seg(row.reason, row.reason, value, at),
-      hosts: row.hosts || 0,
-      // Names for the tooltip: whichever the pass had to give. A pass that
-      // counts publishes `top` and no `examples`, so asking for both here is
-      // what keeps one tooltip working for the fold and the gate alike.
-      examples: row.examples?.length ? row.examples : top.map((h) => h.host),
-    });
-    // UNDER THIS REASON, starting where it starts.
-    let within = at;
-    for (const h of top) {
-      const urls = Math.max(0, h.urls || 0);
-      if (!urls) continue;
-      hosts.push({ ...seg(h.host, h.host, urls, within), parent: row.reason });
-      within += urls;
-    }
+    const top = (row.top || []).filter((h) => h && h.host && h.urls > 0);
+    const hosts = top.map((h) => node(h.host, h.host, Math.max(0, h.urls)));
     // The tail this ranked head was taken from. Drawn, and NOT as a fault: a
     // reason spread across two thousand hosts with none above a dozen urls is
-    // the normal shape of a dead corpus, and it is also the finding — so the
-    // remainder has to be visible rather than left as empty track.
-    const rest = value - (within - at);
-    if (top.length && rest > 0) {
-      hosts.push({ ...seg("moreHosts", `other hosts under "${row.reason}"`, rest, within), parent: row.reason });
+    // the normal shape of a dead corpus, and it is also the finding.
+    const named = hosts.reduce((a, h) => a + h.value, 0);
+    if (hosts.length && value > named) hosts.push(node("moreHosts", "other hosts", value - named));
+    return { ...node(row.reason, row.reason, value, hosts), hosts: row.hosts || 0,
+             examples: row.examples?.length ? row.examples : top.map((h) => h.host) };
+  }).filter((r) => r.value > 0);
+
+  const kept = [
+    node("foldedAway", "folded onto another url", sum("foldedAway")),
+    node("consistent", "consistent", sum("consistent")),
+    node("inconsistent", "inconsistent — refused", sum("inconsistent")),
+    node("unmeasured", "no verdict", sum("unmeasured"), reasons),
+  ];
+  const root =
+    node("sourced", "every url the streams named", total, [
+      node("dropped", "dropped before a pass could see it", dropped, [
+        node("excluded", "excluded by config, or our own url", excluded),
+        node("heldOutDead", "known dead — a signed unreachability record", heldOutDead),
+      ]),
+      node("candidates", "in reach — the candidate set", candidates, kept),
+    ]);
+  return { total, candidates, root, rows: flatten(root), omitted: firstOmitted(streams) };
+}
+
+/**
+ * The tree as rows a page can draw, depth-first, each carrying the box-drawing
+ * prefix that makes the nesting readable without the page knowing the shape.
+ *
+ * The guides are built HERE rather than from a depth counter in the renderer
+ * because they are not a function of depth alone: a `│` is drawn at every
+ * ancestor that still has a sibling below it, and that is exactly the fact a
+ * flattened list loses. Computed wrong, the tree still renders — with dangling
+ * verticals under the last branch — which is the class of bug this module
+ * exists to keep out of the page.
+ *
+ * A node whose children do not account for it gets an `unattributed` child on
+ * the way out, so the check runs once, on the finished tree, and cannot be
+ * forgotten by whoever adds the next level.
+ */
+function flatten(root) {
+  const rows = [];
+  const walk = (n, depth, prefix, last) => {
+    rows.push({ ...n, depth, prefix: depth === 0 ? "" : prefix + (last ? "└─ " : "├─ ") });
+    const kids = n.children.slice();
+    const named = kids.reduce((a, k) => a + k.value, 0);
+    if (kids.length && n.value > named) {
+      kids.push({ key: "unattributed", label: "not accounted for", value: n.value - named,
+                  share: root.value ? (n.value - named) / root.value : 0, tone: "warn", children: [] });
     }
-    at += value;
-  }
-  if (reasons.length) {
-    const short = values.unmeasured - reasons.reduce((a, s) => a + s.value, 0);
-    if (short > 0) reasons.push(seg("unattributed", "not accounted for", short, at));
-    levels.push({ key: "why", title: "…and why the rest has none", segments: reasons });
-  }
-  if (hosts.length) levels.push({ key: "hosts", title: "…and which hosts those are", segments: hosts });
-  // A CHART THAT DIVIDES NOTHING IS NOT A CHART. The alias fold publishes
-  // `candidates` and `unmeasured` and counts its undecided rows in HOSTS, so
-  // every level of its funnel is one full-width bar restating the sentence
-  // above it. One level somewhere has to actually split for this to earn the
-  // space.
-  if (!levels.some((l) => l.segments.length > 1)) return null;
-  return { total, candidates, levels, omitted: firstOmitted(streams) };
+    const below = depth === 0 ? "" : prefix + (last ? "   " : "│  ");
+    kids.forEach((k, i) => walk(k, depth + 1, below, i === kids.length - 1));
+  };
+  walk(root, 0, "", true);
+  return rows;
 }
 
 /**

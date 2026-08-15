@@ -1953,23 +1953,50 @@ of them, in two families:
 `report` publishes them as counts of URLS, so the candidate set divides exactly
 once: `candidates = foldedAway + consistent + inconsistent + unmeasured`, and
 `unmeasured` is the sum of those reasons. `ConsistencyReportTest` pins that
-identity and one test per reason; the stats card draws the whole thing as a
-four-level icicle (`funnelOf` in `/web/shared/sync.js`), every level a share of
-the same width so a slice sits under the slice it subdivides. A level whose
-members do not sum draws an `unattributed` slice rather than a gap — which is
-what a router older than the partition produces, and what any future arithmetic
-slip would.
+identity and one test per reason.
 
-**The fourth level is the widest HOSTS under each reason** (`undecided[].top`),
-and it is there because `urls` and `hosts` together raise a question neither can
-settle: 3,902 urls on 2,201 hosts is either a dead network spread thin — no host
-above a few dozen urls — or a handful of servers wearing a thousand urls each,
-and those want opposite responses. It is a ranked head that deliberately does
-NOT sum to its reason; the tail is drawn as its own slice, toned apart from
-`unattributed` because disclosed truncation and broken arithmetic must never
-look alike. It is also the first level whose segments do not share one parent —
-each host sits under its own reason — so the lead-of-zero shortcut the levels
-above take does not apply to it.
+**The stats card draws the whole thing as a TREE** — `funnelOf` in
+`/web/shared/sync.js`, one row per node, five levels deep:
+
+```
+every url the streams named                       17,584
+├─ dropped before a pass could see it                832
+│  ├─ excluded by config, or our own url               3
+│  └─ known dead — a signed unreachability record    829
+└─ in reach — the candidate set                   16,752
+   ├─ folded onto another url                     11,429
+   ├─ consistent                                     583
+   ├─ inconsistent — refused                          12
+   └─ no verdict                                   4,728
+      ├─ never answered a REQ   on 2,201 host(s)   3,902
+      │  ├─ dead.example                              61
+      │  └─ other hosts                            3,767
+      └─ refused our credentials  on 4 host(s)       826
+```
+
+It was an icicle first — one row per LEVEL, each a share of one width, a child
+drawn under the parent it subdivides. That was correct, and it needed three
+captions and a legend to say what indentation says for free: the nesting was
+carried by horizontal offset, the one visual channel already spent on
+proportion. Rendered on the real card it read as four unrelated bars. Every bar
+is still a share of the ROOT, never of the parent, so a host under a reason
+stays visibly a sliver of the corpus.
+
+A node whose children do not sum to it gets an `unattributed` child in the fault
+tone rather than a short bar — any arithmetic slip, and any reason list either
+side truncated. **Absent is not zero**: a pass publishing none of the three
+verdict members gets NO tree, because read as zeroes every url it checked lands
+in `unattributed`. That one shipped, and a screenshot of the real card is what
+caught it — 12,731 of the fold's 16,752 urls drawn as an arithmetic error on a
+pass that was working perfectly.
+
+**The deepest level is the widest HOSTS under each reason** (`undecided[].top`),
+there because `urls` and `hosts` together raise a question neither can settle:
+3,902 urls on 2,201 hosts is either a dead network spread thin — no host above a
+few dozen urls — or a handful of servers wearing a thousand urls each, and those
+want opposite responses. It is a ranked head that deliberately does NOT sum to
+its reason; the tail is drawn as `other hosts`, toned apart from `unattributed`
+because disclosed truncation and broken arithmetic must never look alike.
 
 Two caps have to move together: `Processors.MAX_UNDECIDED_REASONS` (8) and
 `SyncProgressReport.MAX_UNDECIDED_ROWS`. The relay's job is to bound a list the

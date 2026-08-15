@@ -672,6 +672,7 @@ internal object SyncProgressReport {
             // where the two probe passes' candidate set came from — the funnel's
             // mouth, above everything their `streams` rows partition
             "sourced",
+            "excluded",
             "heldOutDead",
         )
 
