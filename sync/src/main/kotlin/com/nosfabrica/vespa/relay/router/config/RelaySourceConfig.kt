@@ -302,6 +302,22 @@ data class RelaySource(
     val selects: List<RelaySelect>,
     val filter: Filter,
     val verdicts: VerdictSource? = null,
+    /**
+     * A LIVENESS GATE on a scan: keep only the discovered urls that ALSO hold
+     * a fresh `syncable` verdict — the monitor's, or the identity the block
+     * names. Intersection, never union: the scan supplies the pairing (which
+     * relay, narrowed to which authors) and the verdicts supply the right to
+     * be dialled at all.
+     *
+     * This is what makes an author-bound source safe at scale. A 10040 is as
+     * writable as a 10002 — the same dead hosts and spammed urls, multiplied
+     * by every future user — and without the gate each of them costs the
+     * stream a dial and a timeout per cycle, forever. With it, an uncertified
+     * url waits exactly as a new relay does: the monitor's fast lane probes
+     * it within minutes, and its first `syncable` is its admission. Meaningless
+     * beside [verdicts] — a verdict source IS certified.
+     */
+    val certified: VerdictSource? = null,
 )
 
 /**

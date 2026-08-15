@@ -257,6 +257,36 @@ object RelayDiscovery {
     }
 
     /**
+     * [discovered] with every url that holds no fresh `syncable` verdict held
+     * out — the `certified { }` gate on a scan source. INTERSECTION, never
+     * union: the scan supplied the pairing (which relay, narrowed to which
+     * authors — the narrows ride through untouched), and the verdicts supply
+     * the right to be dialled at all. An uncertified url is not refused
+     * forever; it waits exactly as a new relay does, for the monitor's fast
+     * lane and its first `syncable`.
+     */
+    suspend fun certifiedOnly(
+        store: IEventStore,
+        discovered: List<DiscoveredRelay>,
+        monitorAuthors: List<String>,
+        maxAgeSeconds: Long,
+        allowOnion: Boolean = false,
+        now: Long = nowSeconds(),
+    ): List<DiscoveredRelay> {
+        if (discovered.isEmpty()) return discovered
+        val live =
+            syncable(
+                store,
+                monitorAuthors = monitorAuthors,
+                maxAgeSeconds = maxAgeSeconds,
+                exclude = RelayExcludes.NONE,
+                allowOnion = allowOnion,
+                now = now,
+            ).mapTo(HashSet()) { it.url }
+        return discovered.filter { it.url in live }
+    }
+
+    /**
      * Walk everything [filter] matches, a page at a time, oldest-ward, so
      * memory is a page rather than the corpus (the store answers an unbounded
      * query with the whole match set in one list).

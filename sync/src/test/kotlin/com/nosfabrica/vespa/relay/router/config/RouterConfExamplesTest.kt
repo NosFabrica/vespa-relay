@@ -202,6 +202,23 @@ class RouterConfExamplesTest {
         // A band per (relay, service) rather than per relay, so a new provider
         // list does not invalidate the ones already walked.
         assertEquals(1, assertions.dynamic!!.authorsPerLeg)
+        // GATED on the monitor's verdicts: a 10040 is as writable as a 10002,
+        // and at millions of provider lists the spammed dead urls in them must
+        // cost the monitor one probe each — never this stream a dial and a
+        // timeout per cycle forever.
+        assertTrue(source.certified != null, "the assertions scan dials only relays the monitor certifies")
+        // ...which only works if those urls EARN verdicts: the monitor must
+        // read the same 10040 tags as candidates.
+        val monitor10040 = example.monitor!!.sources.filter { it.filter.kinds == listOf(10040) }
+        assertTrue(monitor10040.isNotEmpty(), "the assertions scan is gated on verdicts no monitor source would ever take")
+        assertTrue(
+            monitor10040.flatMap { it.selects }.map { it.tag }.containsAll(listOf("30382:rank", "30382:followers")),
+            "the monitor reads the service tags the assertions stream scans",
+        )
+        assertTrue(
+            monitor10040.flatMap { it.selects }.all { it.index == 2 },
+            "the service tag carries the url at element 2 — reading 1 would probe provider pubkeys as urls",
+        )
     }
 
     @Test

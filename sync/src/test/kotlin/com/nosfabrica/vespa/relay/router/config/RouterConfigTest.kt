@@ -1335,6 +1335,66 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `a scan source may gate its relays on the monitor's verdicts`() {
+        fun stream(source: String) =
+            """
+            streams {
+                s {
+                    dir    = "down"
+                    sync   = "fetch"
+                    filter = { "kinds": [30382] }
+                    relaySource = [ $source ]
+                }
+            }
+            """.trimIndent()
+        // The 10040 shape: the scan supplies the (relay, provider) pairing,
+        // `certified = {}` supplies the right to be dialled at all.
+        val gated =
+            RouterConfigLoader.parse(
+                stream(
+                    """{
+                        select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                        filter = { "kinds": [10040] }
+                        certified = { maxAgeSeconds = 7200 }
+                    }""",
+                ),
+            )
+        val source =
+            gated.streams
+                .single()
+                .dynamic!!
+                .scanSources
+                .single()
+        assertEquals(7200L, source.certified!!.maxAgeSeconds)
+        assertEquals(emptyList(), source.certified!!.authors, "absent authors is this process's own monitor")
+        // An empty block is the ordinary spelling.
+        val bare =
+            RouterConfigLoader.parse(
+                stream(
+                    """{
+                        select = [ { tag = "30382:rank", relay = 2 } ]
+                        filter = { "kinds": [10040] }
+                        certified = {}
+                    }""",
+                ),
+            )
+        assertEquals(
+            VerdictSource.DEFAULT_MAX_AGE_SECONDS,
+            bare.streams
+                .single()
+                .dynamic!!
+                .scanSources
+                .single()
+                .certified!!
+                .maxAgeSeconds,
+        )
+        // On a verdict source the gate is a tautology — refused where typed.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] }, certified = {} }"""))
+        }
+    }
+
+    @Test
     fun `a verdict source rides alongside scanned sources during a migration`() {
         val cfg =
             RouterConfigLoader.parse(

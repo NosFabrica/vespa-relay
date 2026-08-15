@@ -97,6 +97,32 @@ class SyncableRelaysTest {
         }
 
     @Test
+    fun `the certified gate holds out unverdicted urls and lets the narrows ride through`() =
+        runBlocking {
+            val store = newStore()
+            RelayAliasRecord(store, signer).publishFitness(good, "syncable", "answers and pages", pageable = null, nip77 = null)
+
+            // What a gated 10040 scan hands over: the pairing is the point —
+            // each relay narrowed to its provider — and the gate must filter
+            // urls without touching it.
+            val provider = "a".repeat(64)
+            val scanned =
+                listOf(
+                    DiscoveredRelay(good, narrow = mapOf("authors" to setOf(provider))),
+                    DiscoveredRelay(dead, narrow = mapOf("authors" to setOf(provider))),
+                )
+            val gated =
+                RelayDiscovery.certifiedOnly(
+                    store,
+                    scanned,
+                    monitorAuthors = listOf(signer.pubKey),
+                    maxAgeSeconds = 3600,
+                )
+            assertEquals(listOf(good), gated.map { it.url }, "no fresh verdict, no dial — however many 10040s name the url")
+            assertEquals(mapOf("authors" to setOf(provider)), gated.single().narrow, "the (relay, provider) pairing survives the gate")
+        }
+
+    @Test
     fun `a verdict from an older rules epoch reads as no verdict at all`() =
         runBlocking {
             val store = newStore()

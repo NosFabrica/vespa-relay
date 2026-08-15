@@ -483,7 +483,7 @@ object RouterConfigLoader {
                 "add `limit` (the bound that stays meaningful on a repeating cycle), `since`, or `authors`, " +
                 "or it would load every matching event in the store at once"
         }
-        return RelaySource(selects = selects, filter = filter)
+        return RelaySource(selects = selects, filter = filter, certified = parseCertified(stream, s))
     }
 
     /**
@@ -533,24 +533,11 @@ object RouterConfigLoader {
         // and a roster built on it is empty with no error anywhere. Absent
         // means this process's own signer — the single-process deployment,
         // where monitor and router share one identity.
-        val authors =
-            filter.authors.orEmpty().map { raw ->
-                val trimmed = raw.trim().let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
-                require(!trimmed.startsWith("nsec1")) {
-                    "router: stream '$stream' has an nsec in its verdict source `authors` — that is a PRIVATE key; " +
-                        "put the monitor's npub there"
-                }
-                val hex = if (trimmed.startsWith("n")) decodePublicKeyAsHexOrNull(trimmed) else null
-                requireNotNull(hex?.takeIf { it.length == 64 }) {
-                    "router: stream '$stream' verdict source authors entry does not decode as an npub — " +
-                        if (raw.trim().length == 64) {
-                            "bare hex has no checksum, so a typo is a nobody with an empty roster and no error; " +
-                                "convert it to its npub form and use that"
-                        } else {
-                            "recopy the monitor's npub1…"
-                        }
-                }
-            }
+        val authors = monitorNpubs(stream, filter.authors.orEmpty())
+        require(!s.hasPath("certified")) {
+            "router: stream '$stream' puts `certified` on its verdict source — a verdict source IS the " +
+                "certification; the gate belongs on a scan"
+        }
         require(filter.since == null && filter.until == null && filter.limit == null) {
             "router: stream '$stream' bounds its verdict source with since/until/limit — freshness is " +
                 "measured on the verdict tag's own stamp, so say `maxAgeSeconds` on the source instead"
@@ -569,6 +556,58 @@ object RouterConfigLoader {
             // invalid the moment anything ran or serialized it as one.
             filter = filter.copy(authors = authors.takeIf { it.isNotEmpty() }),
             verdicts = VerdictSource(maxAgeSeconds = maxAge, authors = authors),
+        )
+    }
+
+    /**
+     * Monitor identities as the operator wrote them — npub-ONLY, for the
+     * reason the relay side's PubKeys spells out: hex has no checksum, so one
+     * mistyped character is a valid-looking key that simply is not anybody,
+     * and a roster or gate built on it is empty with no error anywhere.
+     * Absent means this process's own signer — the single-process deployment,
+     * where monitor and router share one identity.
+     */
+    private fun monitorNpubs(
+        stream: String,
+        raw: List<String>,
+    ): List<String> =
+        raw.map { entry ->
+            val trimmed = entry.trim().let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
+            require(!trimmed.startsWith("nsec1")) {
+                "router: stream '$stream' has an nsec where a monitor npub belongs — that is a PRIVATE key; " +
+                    "put the monitor's npub there"
+            }
+            val hex = if (trimmed.startsWith("n")) decodePublicKeyAsHexOrNull(trimmed) else null
+            requireNotNull(hex?.takeIf { it.length == 64 }) {
+                "router: stream '$stream' monitor authors entry does not decode as an npub — " +
+                    if (entry.trim().length == 64) {
+                        "bare hex has no checksum, so a typo is a nobody with an empty roster and no error; " +
+                            "convert it to its npub form and use that"
+                    } else {
+                        "recopy the monitor's npub1…"
+                    }
+            }
+        }
+
+    /**
+     * The `certified { }` liveness gate on a scan source — see
+     * [RelaySource.certified]. An empty block is the ordinary spelling: the
+     * default freshness bound and this process's own monitor identity.
+     */
+    private fun parseCertified(
+        stream: String,
+        s: Config,
+    ): VerdictSource? {
+        if (!s.hasPath("certified")) return null
+        val c = s.getConfig("certified")
+        return VerdictSource(
+            maxAgeSeconds =
+                if (c.hasPath("maxAgeSeconds")) {
+                    c.getLong("maxAgeSeconds").coerceAtLeast(60L)
+                } else {
+                    VerdictSource.DEFAULT_MAX_AGE_SECONDS
+                },
+            authors = if (c.hasPath("authors")) monitorNpubs(stream, c.getStringList("authors")) else emptyList(),
         )
     }
 

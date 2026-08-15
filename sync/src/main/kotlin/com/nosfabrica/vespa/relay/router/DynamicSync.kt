@@ -557,7 +557,7 @@ internal class DynamicSync(
         // stamping the later generation on the list would mark it current for a
         // fold it never saw — the one case a version check has to get right.
         val aliasGeneration = aliasMonitor?.generation() ?: 0L
-        val parsed =
+        val scanned =
             RelayDiscovery.discover(
                 store,
                 dynamic,
@@ -566,6 +566,35 @@ internal class DynamicSync(
                 // reading when something can dial them.
                 allowOnion = tor != null,
             )
+        // The `certified { }` gate, where a scan declares one: a discovered
+        // url must ALSO hold a fresh syncable verdict to be dialled. Applied
+        // to the whole scanned set with the strictest gate configured —
+        // per-source attribution would need one store walk per source for a
+        // distinction no configuration has yet asked for.
+        val gate = dynamic.scanSources.mapNotNull { it.certified }.minByOrNull { it.maxAgeSeconds }
+        val parsed =
+            if (gate == null) {
+                scanned
+            } else {
+                val authors = gate.authors.ifEmpty { listOfNotNull(monitorAuthor) }
+                if (authors.isEmpty()) {
+                    System.err.println(
+                        "router: ${stream.name} gates its scan on verdicts, has no `authors` and no signer — no monitor identity, no relays pass",
+                    )
+                    emptyList()
+                } else {
+                    RelayDiscovery
+                        .certifiedOnly(store, scanned, authors, gate.maxAgeSeconds, allowOnion = tor != null)
+                        .also {
+                            if (it.size != scanned.size) {
+                                System.err.println(
+                                    "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +
+                                        "held out uncertified (no fresh syncable verdict); the monitor's fast lane is their way in",
+                                )
+                            }
+                        }
+                }
+            }
         // The verdict-built half of the list, where a kind-30166 source is
         // configured: every url our monitor currently certifies syncable,
         // from one indexed query. Unioned with the scanned sources rather

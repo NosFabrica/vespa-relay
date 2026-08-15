@@ -92,6 +92,17 @@ monitor {
         {
             select = [ { kind = 10009, tag = "group", relay = 2 } ]
             filter = { "kinds": [10009] }
+        },
+        {
+            # NIP-85 provider relays (10040 service tags carry the url at 2).
+            # As writable as a 10002 — same dead hosts, same spammed urls — so
+            # they earn verdicts here and the assertions stream dials only the
+            # certified ones.
+            select = [
+                { tag = "30382:rank",      relay = 2 }
+                { tag = "30382:followers", relay = 2 }
+            ]
+            filter = { "kinds": [10040] }
         }
     ]
 
@@ -193,6 +204,14 @@ streams {
                     { tag = "30382:followers", relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
+                # Only relays the monitor certifies syncable are dialled — the
+                # scan supplies the (relay, provider) pairing, the verdicts the
+                # right to be dialled at all. 300 users write 10040s today;
+                # millions will, with the same spammed dead urls a 10002
+                # carries, and without this gate each of them costs a dial and
+                # a timeout per cycle forever. An uncertified url waits like
+                # any new relay: the fast lane probes it within minutes.
+                certified = {}
             }
         ]
         authorsPerLeg = 1
