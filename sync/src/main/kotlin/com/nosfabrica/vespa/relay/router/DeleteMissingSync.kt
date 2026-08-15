@@ -348,6 +348,11 @@ internal class DeleteMissingSync(
                             if (SyncCoverage.isPlausible(event.createdAt)) {
                                 seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                                 seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                                // Where the walk is, as it moves — `onNewPage`
+                                // fires only at page boundaries, so without this
+                                // a leg inside its first page reports the day it
+                                // opened at. See [PagingProgress.mark].
+                                paging.mark(walk, event.createdAt)
                             }
                             SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
                             ingest.submit(event, stream.trusted, origin)

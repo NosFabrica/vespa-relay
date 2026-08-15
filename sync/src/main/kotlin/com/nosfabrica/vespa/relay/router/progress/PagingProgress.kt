@@ -68,11 +68,11 @@ class PagingProgress {
          * The share of this walk's window it has got through.
          *
          * A settled walk is 1.0 by fiat rather than by arithmetic: `mark` is fed
-         * the cursor of each page RECEIVED, so the last thing a drained walk
-         * reports is the oldest event the relay actually held — routinely well
-         * above the filter's floor. Measured against the floor it would sit at
-         * about 70% forever, and a stream of exhausted relays would report a
-         * number that could never reach 100% however complete it was.
+         * what the walk RECEIVED, so the last thing a drained walk reports is
+         * the oldest event the relay actually held — routinely well above the
+         * filter's floor. Measured against the floor it would sit at about 70%
+         * forever, and a stream of exhausted relays would report a number that
+         * could never reach 100% however complete it was.
          */
         fun share(): Double {
             if (covered) return 1.0
@@ -108,12 +108,39 @@ class PagingProgress {
         }
     }
 
-    /** The walk reached [until]; monotonic, so a page that jumps back cannot un-advance it. */
+    /**
+     * The walk reached [until]; monotonic, so a page that jumps back cannot
+     * un-advance it.
+     *
+     * Fed from BOTH ends of a page, and that is the point. The page boundary
+     * (`onNewPage`) is where quartz names the cursor for the next ask, and on
+     * its own it is one update per page — so a leg still inside its FIRST page
+     * has never called this and its position is still `top`, which the card
+     * renders as `back to <the day the walk started>`. A relay serving a slow
+     * page and a relay serving nothing at all then read identically, which is
+     * the one distinction this class exists to draw. So the callers also mark
+     * per EVENT, from the same `created_at` they fold into the band's span, and
+     * the position is the oldest second actually received rather than the last
+     * boundary crossed.
+     *
+     * Both feeds are the same statement — "the walk has got this far" — and the
+     * min is what reconciles them: the boundary cursor is derived from the page
+     * just delivered, so it can only ever confirm or slightly deepen what the
+     * events already reported, and neither can pull the position back up.
+     *
+     * FINISHED WALKS ARE IGNORED, which is what makes the per-event feed safe to
+     * wire into a callback shared with the negentropy branch. `finish` RETAINS
+     * the walk for the rest of the cycle (see the class header), so a later
+     * reconciling leg on the same `stream|url` would otherwise move a walk that
+     * ended — dragging the share it really achieved, and the stream's `fraction`
+     * and ETA with it. [cursorOf] and [reached] already filter the same way for
+     * the same reason.
+     */
     fun mark(
         key: String,
         until: Long,
     ) {
-        walks[key]?.let {
+        walks[key]?.takeIf { !it.done }?.let {
             // Clamped to the walk's own floor: relays serve events stamped 0,
             // and one of those once dragged the line to `back to 1969-12-31`.
             // Below the floor means the walk is done, not time travel.
@@ -199,11 +226,16 @@ class PagingProgress {
     fun reached(stream: String? = null): Long? = all(stream).filter { !it.done }.minOfOrNull { it.current }
 
     /**
-     * The second ONE walk is reading, for the leg walking it — [reached] per key
-     * rather than minimised over a stream, which describes only its deepest leg.
+     * The oldest second ONE walk has reached, for the leg walking it — [reached]
+     * per key rather than minimised over a stream, which describes only its
+     * deepest leg.
      *
      * Live walks only, on [reached]'s reasoning: a finished walk's cursor is
      * where it stopped, and dating a row from it would describe work that ended.
+     *
+     * Still `top` means the walk has received NOTHING yet, not that it is
+     * reading there — the one reading the card cannot make on its own, which is
+     * why the row prints the event count and the quiet clock beside it.
      */
     fun cursorOf(key: String): Long? = walks[key]?.takeIf { !it.done }?.current
 

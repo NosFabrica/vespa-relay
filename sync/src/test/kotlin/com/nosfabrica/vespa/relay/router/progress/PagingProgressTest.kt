@@ -154,6 +154,45 @@ class PagingProgressTest {
     }
 
     @Test
+    fun `a walk reports where its events reached, before any page boundary`() {
+        // THE FIRST PAGE IS THE WHOLE PROBLEM. `onNewPage` fires at page
+        // BOUNDARIES, so a leg still inside its first page had never marked and
+        // sat at `top` — the card then read `back to <the day the walk opened>`
+        // on a leg streaming a backlog and on one receiving nothing at all, which
+        // are the two states the cursor exists to separate. Marking per event
+        // makes the position what has actually arrived.
+        val p = PagingProgress()
+        p.begin("s|a", top = 1_000L, bottom = 0L)
+
+        assertEquals(1_000L, p.cursorOf("s|a"), "nothing received yet is the second it opened at")
+
+        p.mark("s|a", 900L)
+        p.mark("s|a", 880L)
+
+        assertEquals(880L, p.cursorOf("s|a"), "the oldest event received, not the last boundary crossed")
+        assertEquals(0.12, p.fraction("s")!!, 0.001, "and the share moves with it")
+    }
+
+    @Test
+    fun `a finished walk cannot be moved by a later leg on the same relay`() {
+        // The per-event feed is wired into a callback SHARED with the negentropy
+        // branch, and `finish` retains the walk for the rest of the cycle — so
+        // without this guard a reconciling leg on the same `stream|url` would
+        // drag the finished walk's cursor down with events that belong to no
+        // walk at all, inflating the share it really achieved and the ETA drawn
+        // from it. `cursorOf` and `reached` already filter the same way.
+        val p = PagingProgress()
+        p.begin("s|a", top = 1_000L, bottom = 0L)
+        p.mark("s|a", 800L)
+        p.finish("s|a", covered = false)
+
+        p.mark("s|a", 100L)
+
+        assertEquals(0.2, p.fraction("s")!!, 0.001, "20% is what it walked, and it is done walking")
+        assertNull(p.cursorOf("s|a"), "a finished walk is not a position")
+    }
+
+    @Test
     fun `a leg whose window is inverted cannot inherit the previous leg's result`() {
         // The key is `stream|url` and one relay is walked leg after leg. While
         // `finish` DELETED the entry a skipped `begin` was harmless — the later

@@ -1358,6 +1358,10 @@ internal class DynamicSync(
         // below, which ran on every mirrored event and allocated an identical
         // object each time.
         val origin = originFor(stream, url)
+        // Hoisted above `onEvent` so the per-event callback can report where the
+        // walk has got to. Constant for the whole relay — `paging.begin` keys on
+        // exactly this — and the branch below rebuilt it per leg.
+        val walk = "${stream.name}|${url.url}"
         for (leg in bands.legs(stream.name, url, window)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
@@ -1383,6 +1387,19 @@ internal class DynamicSync(
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
+                        // WHERE THE WALK IS, as it moves rather than once a page.
+                        // `onNewPage` below fires at page BOUNDARIES, so a leg
+                        // inside its first page reports nothing and the row reads
+                        // `back to <today>` — the day the walk opened at — for as
+                        // long as that page takes. Same second the band's span is
+                        // folded from, under the same plausibility guard, because
+                        // a relay serving `created_at = 0` must not date this row
+                        // any more than it may date a band.
+                        //
+                        // A no-op on the negentropy branch, which shares this
+                        // callback: that branch registers no walk, and the
+                        // previous leg's is finished — see [PagingProgress.mark].
+                        paging.mark(walk, event.createdAt)
                     }
                     // See StaticBackfill: without per-kind evidence quartz
                     // records no band for a multi-kind filter, so a discovery
@@ -1407,7 +1424,6 @@ internal class DynamicSync(
             val result =
                 if (fetched) {
                     null.also {
-                        val walk = "${stream.name}|${url.url}"
                         // Floored on the PAGED branch only: a walk that runs past
                         // `created_at = 0` never returns ([flooredForPaging]), while
                         // narrowing the negentropy branch's leg the same way would

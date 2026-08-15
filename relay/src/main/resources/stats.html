@@ -1698,6 +1698,22 @@ function chip(text, tone, title) {
 const dayOf = (t) => new Date(t * 1000).toISOString().slice(0, 10);
 
 /**
+ * A LIVE cursor, which is the one place a day is not enough precision.
+ *
+ * `pagingUntil` now moves with every event a leg receives, and a walk that
+ * opened at `now` spends its first stretch inside TODAY — where a day-granular
+ * label cannot move however fast the walk does, which is the exact reading the
+ * per-event cursor exists to give. So the minute is drawn while the cursor is
+ * still within [FINE_CURSOR_SEC] of now, and the plain day after that, where the
+ * minute would be false precision on a walk measured in years.
+ */
+const FINE_CURSOR_SEC = 2 * 24 * 60 * 60;
+const cursorOf = (t, nowSec) =>
+  nowSec != null && nowSec - t < FINE_CURSOR_SEC
+    ? new Date(t * 1000).toISOString().slice(0, 16).replace("T", " ")
+    : dayOf(t);
+
+/**
  * IS IT WORKING — one line, and the first thing on the card.
  *
  * Alive-or-not, how long since it said so, the throughput, and the constraint
@@ -1786,7 +1802,9 @@ function legsPanel(s) {
     // that is not paging.
     const stage = el("td", null, r.doing || (r.slotless ? "not on a transfer slot" : "—"));
     if (r.pagingUntil != null) {
-      const at = el("span", "sy-at", ` back to ${dayOf(r.pagingUntil)}`);
+      // The reader's own clock, and it only decides the LABEL's precision — a
+      // skewed one draws a coarser or finer cursor, never a wrong one.
+      const at = el("span", "sy-at", ` back to ${cursorOf(r.pagingUntil, Date.now() / 1000)}`);
       at.title = term("pagingUntil");
       stage.appendChild(at);
     }

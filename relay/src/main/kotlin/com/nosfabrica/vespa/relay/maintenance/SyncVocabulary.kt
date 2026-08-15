@@ -256,14 +256,20 @@ internal object SyncVocabulary {
             )
             put(
                 "pagingUntil",
-                "WHERE IN TIME a paging leg's cursor is right now — the `created_at` second it is reading, walking " +
-                    "newest-first towards the filter's floor. `doing: paging` beside a long `quietForSec` is two " +
-                    "different legs from here: one deep in a real backlog and working its way down, and one whose " +
-                    "cursor is not moving at all. Read this twice and they separate — it either advanced or it did " +
-                    "not. The stream's own `reached` cannot answer it, being the MINIMUM over every live walk: one " +
-                    "date describing the deepest leg, while the row beside it is named precisely because it is the " +
-                    "exception. Absent on every leg that is not paging — reconciling legs have no cursor and neither " +
-                    "has one still in the guards — which is a state and not a gap.",
+                "WHERE IN TIME a paging leg has REACHED — the oldest `created_at` it has actually received, walking " +
+                    "newest-first towards the filter's floor. Updated per EVENT, not per page: a page boundary is " +
+                    "the only other moment the cursor could be read, and a leg inside its first page has not " +
+                    "crossed one, so this used to sit at the second the walk OPENED at for however long that page " +
+                    "took — every fresh leg reporting `back to <today>` whether it was streaming a backlog or " +
+                    "receiving nothing at all. It now moves with the events, so a leg that has been running for " +
+                    "minutes and still names its own start date has received nothing in that window. " +
+                    "`doing: paging` beside a long `quietForSec` is two different legs from here: one deep in a " +
+                    "real backlog and working its way down, and one whose cursor is not moving at all. Read this " +
+                    "twice and they separate — it either advanced or it did not. The stream's own `reached` cannot " +
+                    "answer it, being the MINIMUM over every live walk: one date describing the deepest leg, while " +
+                    "the row beside it is named precisely because it is the exception. Absent on every leg that is " +
+                    "not paging — reconciling legs have no cursor and neither has one still in the guards — which " +
+                    "is a state and not a gap.",
             )
             put(
                 "omitted",
@@ -512,9 +518,9 @@ internal object SyncVocabulary {
                 "reached",
                 "THE ONE THAT SHOWS A DEEP WALK MOVING. The oldest created_at a stream's paged walks have reached so " +
                     "far, as a timestamp. On an unbounded walk `fraction` rounds to zero for hours while this date " +
-                    "moves every page, so it is the only live evidence that a leg going back through years is going " +
-                    "anywhere. It is the running counterpart of a band's floor and sits on the same axis: where the " +
-                    "row under Walked ends is where this walk currently is.",
+                    "moves with every event received, so it is the only live evidence that a leg going back through " +
+                    "years is going anywhere. It is the running counterpart of a band's floor and sits on the same " +
+                    "axis: where the row under Walked ends is where this walk currently is.",
             )
             put(
                 "fraction",
