@@ -242,20 +242,29 @@ const leg = (n, quiet, over = {}) => ({
 }
 
 {
-  // THE ARITHMETIC THAT DOES NOT CLOSE, which is the normal case for a router
-  // older than the partition: it publishes `candidates` and `unmeasured` and
-  // nothing between them. Drawn as a gap that reads as "nothing there", the
-  // 12,024 urls that DO have a verdict would simply vanish off the chart.
-  const old = {
+  // A ROW THAT ANSWERS NONE OF THE THREE GETS NO CHART. Absent is not zero:
+  // the alias fold measures no stability verdicts and a router older than the
+  // partition measured none either, and read as zeroes every url WITH a verdict
+  // lands in `not accounted for` — in the fault tone, on a pass that is working.
+  // Caught in a screenshot of the real card: 12,731 of the fold's 16,752 urls
+  // drawn as an arithmetic error.
+  assert.equal(funnelOf({
+    name: "aliasFold", phase: "idle", sourced: 17584, heldOutDead: 832,
+    streams: [{ name: "all streams", candidates: 16752, unmeasured: 4021, dialled: 2000, decided: 118 }],
+  }), null, "a pass that publishes no partition is not given one");
+
+  // THE ARITHMETIC THAT DOES NOT CLOSE is the other case, and it keeps the
+  // slice: here the partition IS published and the members do not reach the
+  // candidate set, which is a fault and has to look like one.
+  const f = funnelOf({
     name: "consistency", phase: "idle",
-    streams: [{ name: "all streams", candidates: 16752, unmeasured: 4728 }],
-  };
-  const f = funnelOf(old);
+    streams: [{ name: "all streams", candidates: 16752, consistent: 10, unmeasured: 4728 }],
+  });
   assert.equal(f.total, 16752, "with no `sourced`, the root is the candidate set itself");
   const level = f.levels[1].segments;
-  assert.deepEqual(level.map((s) => s.key), ["unmeasured", "unattributed"]);
-  assert.equal(level[1].value, 16752 - 4728, "what is not accounted for is named, not dropped");
-  assert.equal(level[1].tone, "warn", "an unclosed partition must look wrong");
+  assert.deepEqual(level.map((s) => s.key), ["consistent", "unmeasured", "unattributed"]);
+  assert.equal(level[2].value, 16752 - 4728 - 10, "what is not accounted for is named, not dropped");
+  assert.equal(level[2].tone, "warn", "an unclosed partition must look wrong");
 
   // …and the same rule inside a level: reasons that do not sum to `unmeasured`
   // leave a named remainder rather than a short bar.

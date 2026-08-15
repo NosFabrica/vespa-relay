@@ -825,14 +825,24 @@
      rather than a stack of independent bars for exactly that: the reasons a url
      has no verdict are a share of the corpus, and drawn against their own total
      they would read as wide as it. */
-  .sy-funnel { grid-column: 1 / -1; margin: 8px 0 2px; }
+  /* TIED TO THE ROW ABOVE IT. The card is a three-column grid of one-line
+     processors and this spans all three, so without a rule down its left edge
+     it reads as belonging to the card rather than to the pass whose candidate
+     set it divides — with the next processor's line directly underneath. */
+  .sy-funnel { grid-column: 1 / -1; margin: 6px 0 4px; padding-left: 10px; border-left: 2px solid var(--line); }
   .sy-fn-row { position: relative; height: 14px; margin-bottom: 2px; }
   /* `min-width` because the slice that matters most is the smallest one:
      `inconsistent` is twelve urls in seventeen thousand — 0.07%, which rounds
      to nothing — and a fault drawn at zero pixels is a fault nobody sees. Two
      pixels overlaps a neighbour by at most two pixels and leaves every slice's
      POSITION exactly true, which is the property the alignment rests on. */
-  .sy-fn-row > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 2px; background: var(--bar); }
+  /* A HAIRLINE ON EACH SEGMENT'S TRAILING EDGE, in the card's own background.
+     Most of a level is neighbouring slices of the SAME tone — three hosts and
+     their remainder, `folded` beside `no verdict` — and abutting equal fills
+     draw as one continuous block, which is the reading an icicle exists to
+     prevent. Inset, so it costs no width and cannot shift a slice's position. */
+  .sy-fn-row > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 2px;
+                   background: var(--bar); box-shadow: inset -1px 0 0 var(--surface); }
   /* The four tones the levels use, and each is a claim: `good` is a relay we
      can sync against, `warn` is a fault worth an operator's attention, `ours`
      is a failure on THIS side (a transport we do not have, a probe that broke)

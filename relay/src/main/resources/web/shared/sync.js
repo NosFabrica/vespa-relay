@@ -220,6 +220,18 @@ export function funnelOf(p) {
   const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
   const candidates = sum("candidates");
   if (!candidates) return null;
+  // ABSENT IS NOT ZERO, and this is the one place in the module where the
+  // difference is load-bearing. A pass that measures no verdicts publishes none
+  // of the three — the alias fold, and any router older than the partition —
+  // and `sum` cannot tell that from three real zeroes. Read as zeroes, the
+  // level below draws everything with a verdict as `not accounted for` IN THE
+  // FAULT TONE: measured on the fold's own row, 12,731 of 16,752 urls painted
+  // as an arithmetic error on a pass that was working perfectly.
+  //
+  // So a row that answers none of them gets no chart at all, and `unattributed`
+  // goes back to meaning what it is for: a partition that WAS published and
+  // does not close.
+  if (!streams.some((w) => w.foldedAway != null || w.consistent != null || w.inconsistent != null)) return null;
   const heldOutDead = Math.max(0, p.heldOutDead || 0);
   // The width every level is a share of. `sourced` is the honest root when the
   // router publishes it; without it the root is the candidate set itself, and
