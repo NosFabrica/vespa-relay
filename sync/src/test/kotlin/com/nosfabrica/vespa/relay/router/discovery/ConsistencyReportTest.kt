@@ -129,10 +129,48 @@ class ConsistencyReportTest {
     @Test
     fun `a url that never answers is silent, and one that answers once is not`() =
         runBlocking {
+            // WHY it never answered, read off what the transport said. The row
+            // is the CAUSE and it names the reason it refines, so the two are
+            // one nesting rather than one undifferentiated bucket — a name that
+            // no longer resolves and a window that lapsed want different
+            // responses and used to arrive identical.
             val silent = Processors()
-            val never = pass(silent.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
+            val never =
+                pass(silent.of("consistency")) { _, _, _, _ ->
+                    AliasProbe.Page(null, reason = "cannot: java.net.ConnectException: Connection refused")
+                }
             assertEquals(0, never.measure("t", listOf(steady), canDial = { true }))
-            assertEquals("never answered a REQ", reasonOf(silent))
+            assertEquals("the connection was refused", reasonOf(silent))
+            assertEquals(
+                "never answered a REQ",
+                silent
+                    .snapshot()
+                    .single()
+                    .work
+                    .single()
+                    .undecided
+                    .single()
+                    .parent,
+            )
+
+            // …and a transport that said nothing we can place is counted as
+            // exactly that, still under the reason it belongs to, rather than
+            // forced into whichever bucket looked closest.
+            val mute = Processors()
+            val quiet = pass(mute.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
+            assertEquals(0, quiet.measure("t", listOf(steady), canDial = { true }))
+            assertEquals("gave up for a reason we do not recognise", reasonOf(mute))
+            assertEquals(
+                "never answered a REQ",
+                mute
+                    .snapshot()
+                    .single()
+                    .work
+                    .single()
+                    .undecided
+                    .single()
+                    .parent,
+            )
 
             // ONE OF THE TWO, which is its own finding: the relay was reachable
             // enough to serve one REQ and not the second one issued at the same

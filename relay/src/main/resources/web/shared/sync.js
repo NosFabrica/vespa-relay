@@ -244,7 +244,7 @@ export function funnelOf(p) {
     children,
   });
 
-  const reasons = firstReasons(streams).map((row) => {
+  const asReason = (row) => {
     const value = Math.max(0, row.urls || 0);
     const top = (row.top || []).filter((h) => h && h.host && h.urls > 0);
     const hosts = top.map((h) => node(h.host, h.host, Math.max(0, h.urls)));
@@ -255,7 +255,40 @@ export function funnelOf(p) {
     if (hosts.length && value > named) hosts.push(node("moreHosts", "other hosts", value - named));
     return { ...node(row.reason, row.reason, value, hosts), hosts: row.hosts || 0,
              examples: row.examples?.length ? row.examples : top.map((h) => h.host) };
-  }).filter((r) => r.value > 0);
+  };
+
+  // ROWS THAT REFINE ANOTHER ROW GO UNDER IT. The router publishes a FLAT list
+  // that sums to `unmeasured` — nesting on the wire would put the one property
+  // the whole tree rests on at the mercy of a shape — and each row names the
+  // reason it refines. `never answered a REQ` has four of those: a name that
+  // does not resolve, a refusal, a failed handshake, a window that lapsed.
+  //
+  // The parent is SYNTHESISED from its children rather than published, because
+  // it has no urls of its own: every url it covers is already in a child, and a
+  // row for the parent beside them would double-count the lot.
+  const all = firstReasons(streams).filter((r) => (r.urls || 0) > 0);
+  const children = new Map();
+  for (const row of all) {
+    if (!row.parent) continue;
+    if (!children.has(row.parent)) children.set(row.parent, []);
+    children.get(row.parent).push(row);
+  }
+  const reasons = [];
+  const drawn = new Set();
+  for (const row of all) {
+    if (row.parent) {
+      // Its parent carries it — unless nothing else claims that name, in which
+      // case the row stands on its own rather than vanishing into a group that
+      // was never opened.
+      if (drawn.has(row.parent)) continue;
+      drawn.add(row.parent);
+      const kids = children.get(row.parent).map(asReason);
+      reasons.push(node(row.parent, row.parent, kids.reduce((a, k) => a + k.value, 0), kids));
+      continue;
+    }
+    reasons.push(asReason(row));
+  }
+  reasons.sort((a, b) => b.value - a.value);
 
   const kept = [
     node("foldedAway", "folded onto another url", sum("foldedAway")),

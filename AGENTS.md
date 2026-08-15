@@ -1959,19 +1959,23 @@ identity and one test per reason.
 `/web/shared/sync.js`, one row per node, five levels deep:
 
 ```
-every url the streams named                         17,584
-├─ dropped before a pass could see it                  832
-│  ├─ excluded by config, or our own url                 3
-│  └─ known dead — a signed unreachability record      829
-└─ in reach — the candidate set                     16,752
-   ├─ folded onto another url                       11,429
-   ├─ consistent                                       583
-   ├─ inconsistent — refused                            12
-   └─ no verdict                                     4,728
-      ├─ never answered a REQ  on 2,201 host(s)      3,902
-      │  ├─ dead.example                                61
-      │  └─ other hosts                              3,767
-      └─ refused our auth  on 4 host(s)                826
+every url the streams named                               17,584
+├─ dropped before a pass could see it                        832
+│  ├─ excluded by config, or our own url                       3
+│  └─ known dead — a signed unreachability record            829
+└─ in reach — the candidate set                           16,752
+   ├─ folded onto another url                             11,429
+   ├─ consistent                                             583
+   ├─ inconsistent — refused                                  12
+   └─ no verdict                                           4,728
+      ├─ never answered a REQ                              3,902
+      │  ├─ the name does not resolve  on 1,502 host(s)    2,140
+      │  │  ├─ gone.example                                   44
+      │  │  └─ other hosts                                 2,066
+      │  ├─ it never answered in time  on 611 host(s)      1,204
+      │  ├─ the connection was refused  on 388 host(s)       402
+      │  └─ the TLS handshake failed  on 121 host(s)         156
+      └─ refused our auth  on 4 host(s)                      826
 ```
 
 It was an icicle first — one row per LEVEL, each a share of one width, a child
@@ -1989,6 +1993,25 @@ verdict members gets NO tree, because read as zeroes every url it checked lands
 in `unattributed`. That one shipped, and a screenshot of the real card is what
 caught it — 12,731 of the fold's 16,752 urls drawn as an arithmetic error on a
 pass that was working perfectly.
+
+**`never answered a REQ` splits again, on what the TRANSPORT said.** It is the
+largest bucket on a discovered corpus and it covers a name that no longer
+resolves, a refused connection, a failed TLS handshake and a window that lapsed
+in silence — four findings with four responses, and only the last is worth
+simply retrying. The evidence already existed: quartz hands us the socket
+layer's own message as the url's terminal reason (`onCannotConnect` →
+`"cannot:" + message`), and it was read once for a `startsWith` and dropped.
+`Silence` classifies it, by substring, because the text is somebody else's
+formatting and not a contract — quartz classifies the same strings the same way.
+**What makes that honest is `Silence.UNKNOWN`**: text the table does not
+recognise is counted as unrecognised and sampled to stderr, so the gap shows up
+on the first pass after a deploy and the table is extended from real strings.
+
+Those rows are published FLAT, each naming the reason it refines (`parent`), so
+the list still sums to `unmeasured` — nesting on the wire would put the one
+property the whole tree rests on at the mercy of a shape. The page nests them
+and SYNTHESISES the parent from its children, because the parent has no urls of
+its own.
 
 **The deepest level is the widest HOSTS under each reason** (`undecided[].top`),
 there because `urls` and `hosts` together raise a question neither can settle:

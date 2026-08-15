@@ -145,7 +145,8 @@ class SyncVocabularyTest {
                     "sourced": 44, "excluded": 1, "heldOutDead": 3,
                     "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
                       "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
-                      "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 22, "hosts": 7,
+                      "undecided": {"reasons": [{"reason": "the connection was refused",
+                                                 "parent": "never answered a REQ", "urls": 22, "hosts": 7,
                                                  "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}}]},
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
@@ -255,9 +256,11 @@ class SyncVocabularyTest {
                     "dialled",
                     "decided",
                     "undecided",
-                    // The ranked hosts under one reason — the funnel's fourth
-                    // level. `host` is an identifier, like `relay` beside it.
+                    // The ranked hosts under one reason — the tree's deepest
+                    // level — and the reason a row refines, which is what nests
+                    // the sub-causes of silence under it.
                     "top",
+                    "parent",
                     "reason",
                     "lastPassAt",
                     "lastPassSec",

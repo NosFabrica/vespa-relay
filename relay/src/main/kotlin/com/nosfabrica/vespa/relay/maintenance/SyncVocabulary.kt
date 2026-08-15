@@ -501,6 +501,18 @@ internal object SyncVocabulary {
                     "`omitted` carries whatever either side dropped.",
             )
             put(
+                "parent",
+                "The undecided reason this row REFINES, where it refines one. `never answered a REQ` is the largest " +
+                    "thing a probe pass reports and it covers four findings with four different responses — a name " +
+                    "that no longer resolves, a refused connection, a failed TLS handshake, and a window that lapsed " +
+                    "in silence — so the rows for those name it here rather than sitting beside it as peers. The " +
+                    "list stays FLAT and still sums to `unmeasured`: this is what lets a reader nest the rows " +
+                    "without the arithmetic having to survive a tree on the wire, and a reader that ignores it still " +
+                    "sees every url exactly once. Read off what the TRANSPORT said when it gave up; text the router " +
+                    "cannot place is counted as unrecognised rather than forced into a bucket, and sampled to its " +
+                    "log so the classification can be extended from real strings.",
+            )
+            put(
                 "top",
                 "The widest few HOSTS under one undecided reason, ranked by how many of their urls ended there, " +
                     "with the name beside the count. It answers the question the pair `urls`/`hosts` raises and " +

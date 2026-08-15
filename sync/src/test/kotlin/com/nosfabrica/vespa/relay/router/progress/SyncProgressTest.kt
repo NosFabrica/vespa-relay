@@ -314,7 +314,14 @@ class SyncProgressTest {
                                 unmeasured = 4_021,
                                 dialled = 2_000,
                                 decided = 118,
-                                undecided = listOf(Processors.Undecided("cooling down from an earlier failed pass", 214, listOf("relay.example"))),
+                                undecided =
+                                    listOf(
+                                        Processors.Undecided(
+                                            reason = "cooling down from an earlier failed pass",
+                                            hosts = 214,
+                                            examples = listOf("relay.example"),
+                                        ),
+                                    ),
                             ),
                         ),
                     counts = emptyList(),

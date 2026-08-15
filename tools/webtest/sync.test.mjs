@@ -332,3 +332,63 @@ const leg = (n, quiet, over = {}) => ({
   }
   ok("a reason or host this page has not been taught cannot reach Object.prototype");
 }
+
+// ── a reason that refines another reason ────────────────────────────────────
+{
+  // `never answered a REQ` covers four findings with four different responses,
+  // and the router publishes them as a FLAT list of rows naming the reason they
+  // refine — nesting on the wire would put the one property the tree rests on,
+  // that the rows sum to `unmeasured`, at the mercy of a shape.
+  const f = funnelOf({
+    name: "consistency", sourced: 1000,
+    streams: [{
+      candidates: 1000, foldedAway: 0, consistent: 100, inconsistent: 0, unmeasured: 900,
+      undecided: {
+        reasons: [
+          { reason: "the name does not resolve", parent: "never answered a REQ", urls: 500, hosts: 480,
+            top: [{ host: "gone.example", urls: 20 }] },
+          { reason: "the connection was refused", parent: "never answered a REQ", urls: 200, hosts: 90 },
+          { reason: "too few events to judge on", urls: 200, hosts: 150 },
+        ],
+        omitted: 0,
+      },
+    }],
+  });
+  const at = (key) => f.rows.find((r) => r.key === key);
+
+  // THE PARENT IS SYNTHESISED, because it has no urls of its own: every url it
+  // covers is already in a child, and a published row for it beside them would
+  // double-count the lot.
+  assert.equal(at("never answered a REQ").value, 700, "the sum of its children, not a published number");
+  assert.equal(at("never answered a REQ").depth, 3);
+  assert.equal(at("the name does not resolve").depth, 4, "a refinement sits under what it refines");
+  assert.equal(at("gone.example").depth, 5, "…and its hosts under it, five levels down");
+
+  // Widest first among siblings, and the synthesised parent competes on its own
+  // total rather than on whichever child happened to be published first.
+  assert.deepEqual(
+    f.rows.filter((r) => r.depth === 3).map((r) => r.key),
+    ["never answered a REQ", "too few events to judge on"],
+  );
+
+  // The partition still closes: `unmeasured` is 900 and its children are 700 +
+  // 200, so nothing is unattributed.
+  assert.equal(f.rows.some((r) => r.key === "unattributed"), false);
+  ok("a row that refines another is nested under it, and the parent is summed rather than trusted");
+}
+
+{
+  // A refinement whose parent nothing else claims still stands on its own — a
+  // router that publishes one sub-cause and no siblings must not have it
+  // vanish into a group that was never opened.
+  const f = funnelOf({
+    name: "consistency", sourced: 100,
+    streams: [{
+      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "the TLS handshake failed", parent: "never answered a REQ", urls: 90, hosts: 9 }], omitted: 0 },
+    }],
+  });
+  assert.equal(f.rows.find((r) => r.key === "never answered a REQ").value, 90);
+  assert.equal(f.rows.find((r) => r.key === "the TLS handshake failed").value, 90);
+  ok("a lone refinement keeps both its own row and the group it belongs to");
+}

@@ -163,6 +163,21 @@ class Processors {
     class Undecided(
         /** The reason, in the words the router's own log uses. */
         val reason: String,
+        /**
+         * …and the reason this one REFINES, where it refines one.
+         *
+         * `never answered a REQ` is the largest thing a probe pass reports and
+         * it covers four different findings — a name that no longer resolves, a
+         * refused connection, a failed TLS handshake, a window that lapsed — so
+         * the rows for those name it here instead of appearing beside it as
+         * peers. The list stays FLAT and still sums to [Work.unmeasured]: naming
+         * the parent is what lets a reader nest the rows without the arithmetic
+         * having to survive a tree on the wire, and a reader that ignores this
+         * member still sees every url exactly once.
+         *
+         * Null on a row that refines nothing, which is most of them.
+         */
+        val parent: String? = null,
         /** How many hosts ended the pass that way. */
         val hosts: Int,
         /**

@@ -120,6 +120,24 @@ class AliasProbe(
          * about the FILTER, so no filter can fix it.
          */
         val authRefused: Boolean = false,
+        /**
+         * What the transport SAID when it gave up, verbatim — quartz's terminal
+         * reason for this url, which is `"cannot:"` and then whatever the socket
+         * layer reported (`onCannotConnect(relay, message, filters)`).
+         *
+         * Only meaningful when [events] is null, which is the case it exists
+         * for. "The relay never answered" is the largest bucket on a discovered
+         * corpus and it covers a name that does not resolve, a refused
+         * connection, a TLS handshake that failed and a window that lapsed in
+         * silence — four different things with four different responses, and
+         * this string is the only evidence anywhere that separates them. It was
+         * read once, for a `startsWith` on the prefix, and dropped.
+         *
+         * Kept RAW rather than classified here, because the classification is a
+         * judgement about text somebody else formats — see [Silence], which
+         * makes it in one place and says out loud when it cannot.
+         */
+        val reason: String? = null,
     )
 
     /**
@@ -258,6 +276,11 @@ class AliasProbe(
     data class Window(
         val ids: Set<String>?,
         val authRefused: Boolean = false,
+        /**
+         * What the transport said when it gave up, where [ids] is null because
+         * of it — see [Page.reason]. Null on a walk that reached the relay.
+         */
+        val reason: String? = null,
     )
 
     private suspend fun walk(
@@ -296,7 +319,9 @@ class AliasProbe(
                 // Mid-walk the transport gave up. Keep what the walk already
                 // proved rather than throwing it away — but a walk that never
                 // got a single page has nothing to stand behind.
-                return if (spoke) Window(newest(ids)) else Window(null)
+                // The transport's own words go with the silence: this is the
+                // one place they exist, and [Silence] is the only reader.
+                return if (spoke) Window(newest(ids)) else Window(null, reason = page.reason)
             }
             spoke = true
             if (events.isEmpty()) {
@@ -478,6 +503,9 @@ class AliasProbe(
                     val spoke = result.doneReasons.values.any { !it.startsWith(CANNOT_CONNECT) }
                     Page(
                         events = if (spoke) result.events.map { it.second } else null,
+                        // Verbatim, for the url this call asked about — the map
+                        // holds one entry, since `filters` names one relay.
+                        reason = result.doneReasons[url],
                         // Quartz derives this from the same `doneReasons` map —
                         // the reason string starts with `auth-refused` — so it
                         // costs nothing to read and it is the only warning we

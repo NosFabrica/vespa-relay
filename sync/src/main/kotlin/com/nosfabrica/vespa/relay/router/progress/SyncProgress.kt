@@ -543,6 +543,7 @@ class SyncProgress(
                                                         add(
                                                             buildJsonObject {
                                                                 put("reason", u.reason)
+                                                                u.parent?.let { put("parent", it) }
                                                                 // Urls first: it is the count that
                                                                 // sums back to `unmeasured`, and
                                                                 // `hosts` beside it is the count

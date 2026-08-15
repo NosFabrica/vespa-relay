@@ -159,6 +159,24 @@ class ConsistencyPass(
     }
 
     /**
+     * One url's outcome: the reason, and — where the reason has one — the cause
+     * underneath it.
+     *
+     * Only [Unmeasured.SILENT] carries a [Silence] today, because it is the only
+     * reason with evidence underneath it: the transport's own message. The rest
+     * are already as specific as what we know.
+     */
+    private data class Finding(
+        val reason: Unmeasured,
+        val cause: Silence? = null,
+    ) {
+        /** What the row is called, and what it is a REFINEMENT of — see [report]. */
+        val label: String get() = cause?.reason ?: reason.reason
+
+        val parent: String? get() = cause?.let { reason.reason }
+    }
+
+    /**
      * Read back what is already known about these urls, WITHOUT dialling.
      *
      * The cheap half, and the one a fan-out runs: one `#d` query per 500 urls,
@@ -221,7 +239,12 @@ class ConsistencyPass(
         // the servers to chase. Bounded by the candidate set: `wanted` is every
         // url still owed a measurement, and this keeps only the ones that ended
         // without a verdict.
-        val silent = ConcurrentHashMap<NormalizedRelayUrl, Unmeasured>()
+        val silent = ConcurrentHashMap<NormalizedRelayUrl, Finding>()
+        // Raw terminal text [Silence] could not place, bounded and distinct.
+        // Sampled to stderr rather than published: the table is extended from
+        // real strings, and until it is, the count is the honest answer and the
+        // sample is how the next person fixes it.
+        val unplaced = ConcurrentHashMap.newKeySet<String>()
         // ONE anchor for the whole pass, a week behind the clock. Shared for the
         // same reason the fold shares one per group — two urls measured from
         // different anchors are not comparable — though here it matters less,
@@ -247,11 +270,11 @@ class ConsistencyPass(
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
-                                silent[url] = Unmeasured.FAILED
+                                silent[url] = Finding(Unmeasured.FAILED)
                                 return@withPermit
                             }
                         if (!reachable) {
-                            silent[url] = Unmeasured.TRANSPORT
+                            silent[url] = Finding(Unmeasured.TRANSPORT)
                             return@withPermit
                         }
                         walked.incrementAndGet()
@@ -291,12 +314,20 @@ class ConsistencyPass(
                                 sockets.release(url)
                             }
                         if (attempt == null) {
-                            silent[url] = Unmeasured.FAILED
+                            silent[url] = Finding(Unmeasured.FAILED)
                             return@withPermit
                         }
                         val answer = consistency.decide(attempt.best.first.ids, attempt.best.second.ids)
                         if (answer == RelayConsistency.Verdict.UNMEASURABLE) {
-                            silent[url] = attempt.why()
+                            val why = attempt.why()
+                            // The transport's own words, but only under the one
+                            // reason they explain: a relay that answered thinly
+                            // said nothing about its socket.
+                            val cause = if (why == Unmeasured.SILENT) Silence.of(attempt.saidWhat()) else null
+                            if (cause == Silence.UNKNOWN && unplaced.size < MAX_UNPLACED_SAMPLES) {
+                                attempt.saidWhat()?.let { unplaced += it }
+                            }
+                            silent[url] = Finding(why, cause)
                             return@withPermit
                         }
                         val first = attempt.best.first.ids!!
@@ -334,23 +365,32 @@ class ConsistencyPass(
                     // worth anyone's time. A single "said too little to judge"
                     // covered a dead corpus, an auth wall and a thin relay, and
                     // an operator could not tell which of the three they had.
-                    breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.reason}" } +
+                    breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.label}" } +
                     ", ${consistency.refusedCount()} url(s) now refused in total " +
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
+        }
+        // The strings [Silence] could not place, once per pass. This is how the
+        // table is extended: from text a real relay produced, rather than from a
+        // guess about how OkHttp words things on somebody else's platform.
+        if (unplaced.isNotEmpty()) {
+            System.err.println("router: $label stability could not classify ${unplaced.size} terminal reason(s): " + unplaced.joinToString(" | "))
         }
         report(label, candidates, dialled = walked.get(), decided = decided.get(), unmeasurable = silent)
         return decided.get()
     }
 
-    /** The undecided urls by reason, commonest first — the log's order and the report's. */
-    private fun breakdown(silent: Map<NormalizedRelayUrl, Unmeasured>): List<Pair<Unmeasured, Int>> =
+    /** The undecided urls by finding, commonest first — the log's order and the report's. */
+    private fun breakdown(silent: Map<NormalizedRelayUrl, Finding>): List<Pair<Finding, Int>> =
         silent.values
             .groupingBy { it }
             .eachCount()
             .entries
-            .sortedWith(compareByDescending<Map.Entry<Unmeasured, Int>> { it.value }.thenBy { it.key.ordinal })
-            .map { it.key to it.value }
+            .sortedWith(
+                compareByDescending<Map.Entry<Finding, Int>> { it.value }
+                    .thenBy { it.key.reason.ordinal }
+                    .thenBy { it.key.cause?.ordinal ?: -1 },
+            ).map { it.key to it.value }
 
     /**
      * What this pass reached, where it outlives the log line above.
@@ -382,12 +422,12 @@ class ConsistencyPass(
         candidates: List<NormalizedRelayUrl>,
         dialled: Int,
         decided: Int,
-        unmeasurable: Map<NormalizedRelayUrl, Unmeasured>,
+        unmeasurable: Map<NormalizedRelayUrl, Finding>,
     ) {
         val handle = progress ?: return
         val kept = candidates.filterNot { it in folded }
         val rows =
-            breakdown(unmeasurable).map { (reason, urls) ->
+            breakdown(unmeasurable).map { (finding, urls) ->
                 // Urls AND hosts on the same row. The url count is what makes
                 // the partition close; the host count is what an operator
                 // chases, because the thing that would not answer twice is a
@@ -401,7 +441,7 @@ class ConsistencyPass(
                 val hosts =
                     unmeasurable
                         .asSequence()
-                        .filter { it.value == reason }
+                        .filter { it.value == finding }
                         .groupingBy { RelayAliases.hostOf(it.key.url) }
                         .eachCount()
                 val top =
@@ -415,7 +455,12 @@ class ConsistencyPass(
                 Processors.Undecided(
                     // The words the log line uses, so a reader meeting both does
                     // not have to work out that they are the same finding.
-                    reason = reason.reason,
+                    reason = finding.label,
+                    // …and what this row REFINES, where it refines one. The rows
+                    // stay a flat list that sums to `unmeasured`; naming the
+                    // parent is what lets a reader nest them without the
+                    // arithmetic having to survive a tree on the wire.
+                    parent = finding.parent,
                     urls = urls,
                     hosts = hosts.size,
                     // Named WITH counts, so `examples` — which is for a pass
@@ -480,6 +525,20 @@ class ConsistencyPass(
     ) {
         /** The attempt that got furthest — the one a verdict, or a reason, is taken from. */
         val best: Answers get() = if (fallback != null && fallback.depth > bare.depth) fallback else bare
+
+        /**
+         * What the TRANSPORT said when it gave up, across both rungs.
+         *
+         * The first non-null wins rather than the best attempt's, because a
+         * window that never spoke is the only kind that carries one at all —
+         * there is nothing to rank, and either rung's message describes the same
+         * socket.
+         */
+        fun saidWhat(): String? =
+            bare.first.reason
+                ?: bare.second.reason
+                ?: fallback?.first?.reason
+                ?: fallback?.second?.reason
 
         /**
          * WHY this url ended the pass undecided, read off the evidence rather
@@ -587,5 +646,13 @@ class ConsistencyPass(
     companion object {
         /** Urls in flight. Matches the fold: this is background work. */
         const val DEFAULT_CONCURRENCY = 16
+
+        /**
+         * Distinct unclassified terminal reasons sampled per pass — see
+         * [Silence.UNKNOWN]. Three is enough to recognise a pattern and extend
+         * the table; the COUNT of urls under it is published in full either way,
+         * so nothing is hidden by the cap.
+         */
+        const val MAX_UNPLACED_SAMPLES = 3
     }
 }

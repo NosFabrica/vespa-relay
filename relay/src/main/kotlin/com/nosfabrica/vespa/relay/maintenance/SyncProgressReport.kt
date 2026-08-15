@@ -430,6 +430,11 @@ internal object SyncProgressReport {
                     add(
                         buildJsonObject {
                             put("reason", reason)
+                            // What this row refines, where it refines one. Carried
+                            // as written: the page nests on it, and a name this
+                            // side invented would nest a row under a parent the
+                            // router never claimed.
+                            text(row["parent"])?.let { put("parent", it) }
                             put("urls", num(row["urls"]) ?: 0)
                             put("hosts", num(row["hosts"]) ?: 0)
                             (row["examples"] as? JsonArray)?.takeIf { it.isNotEmpty() }?.let { names ->
