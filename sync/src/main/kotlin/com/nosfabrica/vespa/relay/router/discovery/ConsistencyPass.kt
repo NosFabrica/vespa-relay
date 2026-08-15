@@ -146,7 +146,7 @@ class ConsistencyPass(
         ONE_SIDED("answered one of the two asks, not both"),
 
         /** NIP-42 came back rejected, or the relay went on demanding auth we cannot satisfy. */
-        AUTH_REFUSED("refused our credentials"),
+        AUTH_REFUSED("refused our auth"),
 
         /** It answered — with nothing, to both the bare filter and the kinds fallback. */
         FILTER_REFUSED("answered, but served no filter we know"),

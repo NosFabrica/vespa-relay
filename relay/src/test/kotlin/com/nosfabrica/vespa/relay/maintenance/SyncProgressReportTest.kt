@@ -601,7 +601,7 @@ class SyncProgressReportTest {
                 "declined by our own transport",
                 "never answered a REQ",
                 "answered one of the two asks, not both",
-                "refused our credentials",
+                "refused our auth",
                 "answered, but served no filter we know",
                 "too few events to judge on",
                 "the probe failed mid-walk",

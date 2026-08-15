@@ -238,7 +238,7 @@ class AliasProbe(
      * empty relay and a relay whose window was simply thin are one value. That
      * is enough for the fold, which only ever asks "can this be compared" — and
      * it is not enough for a pass that has to say WHY a url could not be
-     * measured, because "it refused our credentials" is the one reason with an
+     * measured, because "it refused our auth" is the one reason with an
      * action attached to it and the one that must not cost a second ask. See
      * [ConsistencyPass.Unmeasured].
      */

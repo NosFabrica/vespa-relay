@@ -1946,7 +1946,7 @@ of them, in two families:
 |---|---|
 | declined by our own transport | never answered a REQ |
 | the probe failed mid-walk | answered one of the two asks, not both |
-| | refused our credentials |
+| | refused our auth |
 | | answered, but served no filter we know |
 | | too few events to judge on |
 
@@ -1959,19 +1959,19 @@ identity and one test per reason.
 `/web/shared/sync.js`, one row per node, five levels deep:
 
 ```
-every url the streams named                       17,584
-├─ dropped before a pass could see it                832
-│  ├─ excluded by config, or our own url               3
-│  └─ known dead — a signed unreachability record    829
-└─ in reach — the candidate set                   16,752
-   ├─ folded onto another url                     11,429
-   ├─ consistent                                     583
-   ├─ inconsistent — refused                          12
-   └─ no verdict                                   4,728
-      ├─ never answered a REQ   on 2,201 host(s)   3,902
-      │  ├─ dead.example                              61
-      │  └─ other hosts                            3,767
-      └─ refused our credentials  on 4 host(s)       826
+every url the streams named                         17,584
+├─ dropped before a pass could see it                  832
+│  ├─ excluded by config, or our own url                 3
+│  └─ known dead — a signed unreachability record      829
+└─ in reach — the candidate set                     16,752
+   ├─ folded onto another url                       11,429
+   ├─ consistent                                       583
+   ├─ inconsistent — refused                            12
+   └─ no verdict                                     4,728
+      ├─ never answered a REQ  on 2,201 host(s)      3,902
+      │  ├─ dead.example                                61
+      │  └─ other hosts                              3,767
+      └─ refused our auth  on 4 host(s)                826
 ```
 
 It was an icicle first — one row per LEVEL, each a share of one width, a child

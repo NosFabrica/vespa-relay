@@ -185,7 +185,7 @@ class ConsistencyReportTest {
                 }
 
             assertEquals(0, gate.measure("t", listOf(steady), canDial = { true }))
-            assertEquals("refused our credentials", reasonOf(processors))
+            assertEquals("refused our auth", reasonOf(processors))
             assertEquals(2, dials.get(), "the pair, and not the kinds fallback behind it")
         }
 

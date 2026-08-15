@@ -494,7 +494,7 @@ internal object SyncVocabulary {
                     "cannot repeat itself, of which only the last never recovers on its own. The STABILITY GATE ends " +
                     "a url seven ways, in two families: about us (declined by our own transport, the probe failed " +
                     "mid-walk) and about the far end (never answered a REQ, answered one of the two asks not both, " +
-                    "refused our credentials, answered but served no filter we know, too few events to judge on). " +
+                    "refused our auth, answered but served no filter we know, too few events to judge on). " +
                     "From outside the process all of them are the same silence, which is what this exists to end — " +
                     "a corpus of dead urls being re-asked every six hours reads exactly like a gate that is stuck. " +
                     "`urls` counts them, `hosts` says how many servers those urls are, `examples` names a few, and " +
