@@ -124,15 +124,19 @@ internal class VisitPool(
         if (streams.isEmpty()) return
         progress.phase("rotating")
         progress.counts {
+            // Named to collide with NOTHING the document already publishes:
+            // `queued` is ingest's depth and `received` a cycle's socket count
+            // elsewhere on this card, and one word meaning two quantities on
+            // adjacent rows is the exact bug the vocabulary test exists for.
             listOf(
                 Processors.Count("roster", roster.size.toLong()),
-                Processors.Count("queued", queued.size.toLong()),
+                Processors.Count("awaitingVisit", queued.size.toLong()),
                 Processors.Count("visiting", inFlight.size.toLong()),
                 Processors.Count("tails", tails.size.toLong()),
-                Processors.Count("visits", visits.get()),
-                Processors.Count("audits", audits.get()),
-                Processors.Count("aborted", aborted.get()),
-                Processors.Count("received", downloaded.get()),
+                Processors.Count("visitsRun", visits.get()),
+                Processors.Count("auditsRun", audits.get()),
+                Processors.Count("abortedVisits", aborted.get()),
+                Processors.Count("poolReceived", downloaded.get()),
             )
         }
         scope.launch { rosterLoop() }

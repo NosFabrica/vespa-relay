@@ -1945,6 +1945,8 @@ function streamBlock(s) {
 const BACKGROUND = [
   ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
   ["consistency", "stability gate", "Refuses a url that answers one filter two different ways. Such a relay cannot hold a cursor still, so every cycle re-serves what the last one already took."],
+  ["fitness", "fitness", "The monitor's verdict funnel: one measured certificate per relay, signed onto its NIP-66 record. `syncable` is the only admitting value, and it is the whole relay list of every stream that selects on it."],
+  ["visits", "rotating pool", "The visit-mode streams' engine: socket-owning workers over every certified relay — catch-up pages, the history audit where due, then a live tail on the open socket. A slot here IS a socket."],
   ["ingest", "ingest", "The queue every downloaded event passes through on its way to the store. Full means downloads are backpressured behind it."],
   ["reachability", "reachability", "The NIP-66 monitor: which urls have been observed at all, and which carry a current unreachability record that holds them out of every fan-out."],
   ["heal", "healer", "Events this mirror holds that a relay which should have them does not, pushed back to it."],
@@ -2108,6 +2110,29 @@ function processorFact(p) {
     // is drawn beside `accepted` and never as a failure on its own.
     if (p.rejected != null) add(`${short(p.rejected)} refused, mostly duplicates`, "rejected");
     if (p.lostToStore) add(`${fmt(p.lostToStore)} LOST TO THE STORE`, "lostToStore", true);
+    return cell;
+  }
+  if (p.syncable != null) {
+    // The verdict funnel, one line: the certificate count first — it is the
+    // number every visit-mode stream's whole relay list equals — then the
+    // refusals that are ALIVE, which is the argument for the word `syncable`
+    // over `live`, then the dead. The glossary hangs per member.
+    add(`${fmt(p.syncable)} certified syncable`, "syncable");
+    const alive = (p.silent || 0) + (p.alias || 0) + (p.inconsistent || 0) +
+                  (p.unpageable || 0) + (p["auth-refused"] || 0) + (p.restricted || 0);
+    if (alive) add(`${fmt(alive)} refused while alive`, "silent");
+    if (p.dead) add(`${fmt(p.dead)} dead`, "dead");
+    return cell;
+  }
+  if (p.roster != null) {
+    // The pool's one line, and the arithmetic it exists to make visible:
+    // visiting + tails IS the socket count, because a slot here is a socket.
+    add(`${fmt(p.roster)} on the roster`, "roster");
+    add(`${fmt(p.visiting || 0)} visiting`, "visiting");
+    add(`${fmt(p.tails || 0)} live tail(s)`, "tails");
+    if (p.auditsRun) add(`${fmt(p.auditsRun)} history audit(s)`, "auditsRun");
+    if (p.abortedVisits) add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
+    if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");
     return cell;
   }
   const probe = probeProgress(p);

@@ -152,6 +152,13 @@ class SyncVocabularyTest {
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
                     "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
                    {"name": "reachability", "phase": "watching", "phaseForSec": 900, "observed": 40, "knownDead": 8},
+                   {"name": "fitness", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
+                    "lastPassAt": 880, "lastPassSec": 60, "nextInSec": 20800,
+                    "syncable": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
+                    "unpageable": 1, "auth-refused": 1, "restricted": 1},
+                   {"name": "visits", "phase": "rotating", "phaseForSec": 900,
+                    "roster": 30, "awaitingVisit": 3, "visiting": 5, "tails": 22,
+                    "visitsRun": 90, "auditsRun": 4, "abortedVisits": 2, "poolReceived": 4000},
                    {"name": "heal", "phase": "running", "phaseForSec": 900, "queued": 2, "dropped": 7, "pushed": 5}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
@@ -272,6 +279,23 @@ class SyncVocabularyTest {
                     "pushed",
                     "dropped",
                     "observed",
+                    // The fitness pass's verdict funnel — each member one value
+                    // of the `s` tag it signs — and the rotating pool's row.
+                    "syncable",
+                    "dead",
+                    "silent",
+                    "alias",
+                    "unpageable",
+                    "auth-refused",
+                    "restricted",
+                    "roster",
+                    "awaitingVisit",
+                    "visiting",
+                    "tails",
+                    "visitsRun",
+                    "auditsRun",
+                    "abortedVisits",
+                    "poolReceived",
                 ) +
                 // What the phase itself knows, which used to reach a log line
                 // and stop there — plus the two facts about the process rather
