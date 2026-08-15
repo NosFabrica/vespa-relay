@@ -316,3 +316,83 @@ const leg = (n, quiet, over = {}) => ({
   }
   ok("a reason this page has not been taught cannot reach Object.prototype");
 }
+
+// ── the hosts under each reason ─────────────────────────────────────────────
+{
+  // THE FOURTH LEVEL, and the first whose segments do not share one parent:
+  // each host sits under its OWN reason, not under the level as a whole. Every
+  // level above gets away with a lead of zero because its parent is always the
+  // leading segment; this one cannot.
+  const gate = funnelOf({
+    name: "consistency", sourced: 1000, heldOutDead: 0,
+    streams: [{
+      candidates: 1000, foldedAway: 100, consistent: 40, inconsistent: 10, unmeasured: 850,
+      undecided: {
+        reasons: [
+          { reason: "never answered a REQ", urls: 600, hosts: 220,
+            top: [{ host: "dead.example", urls: 30 }, { host: "gone.example", urls: 20 }] },
+          { reason: "refused our credentials", urls: 250, hosts: 3,
+            top: [{ host: "paid.example", urls: 200 }, { host: "wall.example", urls: 50 }] },
+        ],
+        omitted: 0,
+      },
+    }],
+  });
+  const level = gate.levels[3];
+  assert.equal(level.key, "hosts");
+
+  // The first reason starts after everything WITH a verdict (100+40+10 = 150),
+  // and its hosts start there — not at zero, and not after the other reason.
+  const at = (key) => level.segments.find((s) => s.key === key).lead * 1000;
+  assert.equal(at("dead.example"), 150, "the first host sits at the head of its own reason");
+  assert.equal(at("gone.example"), 180);
+  // …and the SECOND reason's hosts sit under it, 600 further along, not
+  // packed against the first reason's tail.
+  assert.equal(at("paid.example"), 750, "150 + the whole first reason");
+  assert.equal(at("wall.example"), 950);
+
+  // Each host carries the reason it belongs to, so a hover or a future filter
+  // can say which parent it divides.
+  assert.equal(level.segments.find((s) => s.key === "paid.example").parent, "refused our credentials");
+
+  // THE TAIL THE RANKED HEAD WAS TAKEN FROM. `top` is deliberately not a
+  // partition — 550 of the first reason's 600 urls are on hosts nobody named —
+  // and drawing only the head would report two servers as the whole finding.
+  const rests = level.segments.filter((s) => s.key === "moreHosts");
+  assert.deepEqual(rests.map((s) => s.value), [550, 0].filter(Boolean));
+  assert.equal(rests[0].lead * 1000, 200, "the remainder starts after the named hosts");
+  // …and it is NOT the fault tone: a reason spread across two hundred hosts is
+  // the normal shape of a dead corpus, not an arithmetic error.
+  assert.equal(rests[0].tone, "mute");
+  assert.notEqual(rests[0].tone, gate.levels[1].segments.find((s) => s.key === "inconsistent").tone);
+  ok("each host sits under its own reason, and the tail its ranking came from is drawn as disclosure");
+}
+
+{
+  // A pass with no host counts — the fold — grows no fourth level, and a reason
+  // whose `top` is missing or junk does not invent one.
+  const bare = funnelOf({
+    name: "consistency", sourced: 100, heldOutDead: 0,
+    streams: [{
+      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "never answered a REQ", urls: 90, hosts: 9, examples: ["a.example"] }], omitted: 0 },
+    }],
+  });
+  assert.equal(bare.levels.length, 3, "no host counts, no host level");
+  assert.deepEqual(bare.levels[2].segments[0].examples, ["a.example"], "and the names it DID publish still reach the tooltip");
+
+  const junk = funnelOf({
+    name: "consistency", sourced: 100, heldOutDead: 0,
+    streams: [{
+      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "never answered a REQ", urls: 90, hosts: 9,
+        top: [{ urls: 5 }, null, { host: "real.example", urls: 0 }, { host: "ok.example", urls: 4 }] }], omitted: 0 },
+    }],
+  });
+  const drawn = junk.levels[3].segments;
+  assert.deepEqual(drawn.filter((s) => s.key !== "moreHosts").map((s) => s.key), ["ok.example"],
+    "a row with no host, or no urls, is dropped rather than drawn anonymously");
+  // The tooltip's names come from `top` when the pass published no `examples`.
+  assert.deepEqual(junk.levels[2].segments[0].examples, ["real.example", "ok.example"]);
+  ok("a reason with no usable host rows grows no level, and junk rows are dropped not drawn");
+}

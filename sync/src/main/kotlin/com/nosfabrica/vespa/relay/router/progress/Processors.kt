@@ -153,14 +153,38 @@ class Processors {
         val undecidedOmitted: Int = 0,
     )
 
+    /** One server under a reason, and how many of its urls ended there. */
+    class HostCount(
+        val host: String,
+        val urls: Int,
+    )
+
     /** One reason a pass ended some hosts with nothing written down, and who they were. */
     class Undecided(
         /** The reason, in the words the router's own log uses. */
         val reason: String,
         /** How many hosts ended the pass that way. */
         val hosts: Int,
-        /** A couple of them by name, so the reason has a subject to chase. */
+        /**
+         * A couple of them by name, so the reason has a subject to chase.
+         *
+         * For a pass that has only NAMES to give — the fold, which decides a
+         * host at a time and has no per-url count to report under one. A pass
+         * that can count fills [top] instead, which is the same disclosure with
+         * the number that makes it rankable.
+         */
         val examples: List<String>,
+        /**
+         * …or the widest few WITH their url counts, for a pass that measures
+         * urls: the fourth level of the funnel.
+         *
+         * Bounded at [MAX_UNDECIDED_HOSTS] and never summing to the reason on
+         * its own — the tail is deliberately left for the reader to see as a
+         * remainder, because "3,902 urls on 2,201 hosts and no host above 12"
+         * and "3,902 urls of which one host is 3,000" are opposite findings and
+         * a truncated list that closes would hide the difference.
+         */
+        val top: List<HostCount> = emptyList(),
         /**
          * How many URLS ended the pass that way — the count that makes the
          * partition close.
@@ -405,5 +429,17 @@ class Processors {
 
         /** Named hosts per reason. Enough to recognise the pattern, not an inventory. */
         const val MAX_UNDECIDED_EXAMPLES = 3
+
+        /**
+         * …and how many are named WITH their url counts, where a pass can count
+         * them — see [Undecided.top].
+         *
+         * Six rather than three, because these are ranked and a rank of three is
+         * not one: the question they answer is whether a reason is concentrated
+         * on a few servers or spread across thousands, and three rows is too
+         * short a head to see the shape of the tail. Still an inventory nobody
+         * has to scroll, and still bounded twice — the relay re-caps it.
+         */
+        const val MAX_UNDECIDED_HOSTS = 6
     }
 }

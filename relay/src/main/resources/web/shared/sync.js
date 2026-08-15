@@ -167,6 +167,10 @@ const FUNNEL_TONE = {
   "the probe failed mid-walk": "ours",
   // The arithmetic not closing is neither of those and must LOOK wrong.
   unattributed: "warn",
+  // The tail a ranked head was taken from, which is DISCLOSED truncation and
+  // not a fault — the opposite of `unattributed`, and toned apart from it so
+  // the two are never read as the same thing.
+  moreHosts: "mute",
 };
 
 /** Every level of the funnel is drawn against one width, so a child sits under its parent. */
@@ -272,11 +276,42 @@ export function funnelOf(p) {
   // starts: after everything that DOES have a verdict.
   const lead = values.foldedAway + values.consistent + values.inconsistent;
   const reasons = [];
+  // The fourth level, built in the SAME walk as the third, because each host
+  // row is positioned under its own reason rather than under the level as a
+  // whole. This is the first level whose segments do not share one parent, and
+  // computing it separately would mean re-deriving every reason's offset from
+  // its position in a list — the arithmetic the levels above get away with
+  // because their parent is always the leading segment.
+  const hosts = [];
   let at = lead;
   for (const row of firstReasons(streams)) {
     const value = Math.max(0, row.urls || 0);
     if (!value) continue;
-    reasons.push({ ...seg(row.reason, row.reason, value, at), hosts: row.hosts || 0, examples: row.examples || [] });
+    const top = (row.top || []).filter((h) => h && h.host);
+    reasons.push({
+      ...seg(row.reason, row.reason, value, at),
+      hosts: row.hosts || 0,
+      // Names for the tooltip: whichever the pass had to give. A pass that
+      // counts publishes `top` and no `examples`, so asking for both here is
+      // what keeps one tooltip working for the fold and the gate alike.
+      examples: row.examples?.length ? row.examples : top.map((h) => h.host),
+    });
+    // UNDER THIS REASON, starting where it starts.
+    let within = at;
+    for (const h of top) {
+      const urls = Math.max(0, h.urls || 0);
+      if (!urls) continue;
+      hosts.push({ ...seg(h.host, h.host, urls, within), parent: row.reason });
+      within += urls;
+    }
+    // The tail this ranked head was taken from. Drawn, and NOT as a fault: a
+    // reason spread across two thousand hosts with none above a dozen urls is
+    // the normal shape of a dead corpus, and it is also the finding — so the
+    // remainder has to be visible rather than left as empty track.
+    const rest = value - (within - at);
+    if (top.length && rest > 0) {
+      hosts.push({ ...seg("moreHosts", `other hosts under "${row.reason}"`, rest, within), parent: row.reason });
+    }
     at += value;
   }
   if (reasons.length) {
@@ -284,6 +319,7 @@ export function funnelOf(p) {
     if (short > 0) reasons.push(seg("unattributed", "not accounted for", short, at));
     levels.push({ key: "why", title: "…and why the rest has none", segments: reasons });
   }
+  if (hosts.length) levels.push({ key: "hosts", title: "…and which hosts those are", segments: hosts });
   // A CHART THAT DIVIDES NOTHING IS NOT A CHART. The alias fold publishes
   // `candidates` and `unmeasured` and counts its undecided rows in HOSTS, so
   // every level of its funnel is one full-width bar restating the sentence

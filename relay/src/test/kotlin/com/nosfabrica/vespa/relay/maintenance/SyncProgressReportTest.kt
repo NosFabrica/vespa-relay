@@ -587,6 +587,74 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `every reason the gate can reach survives this side, and its hosts are ranked as sent`() {
+        // THE CAP THAT WAS ONE SHORT. This side bounds what the router already
+        // bounded, and the two numbers have to be read together: the router
+        // publishes up to `Processors.MAX_UNDECIDED_REASONS` (8) and the
+        // stability gate can reach seven of them, while this side cut at six.
+        // Cutting BELOW the router is not bounding, it is dropping — and the
+        // dropped reason's urls then land in the card's `not accounted for`
+        // slice, which reports an arithmetic fault against a document that was
+        // complete when it arrived.
+        val reasons =
+            listOf(
+                "declined by our own transport",
+                "never answered a REQ",
+                "answered one of the two asks, not both",
+                "refused our credentials",
+                "answered, but served no filter we know",
+                "too few events to judge on",
+                "the probe failed mid-walk",
+            )
+        val rows =
+            reasons.joinToString(",") {
+                """{"reason": "$it", "urls": 10, "hosts": 2,
+                 "top": [{"host": "a.example", "urls": 6}, {"host": "b.example", "urls": 4}]}"""
+            }
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "consistency", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 70, "foldedAway": 0, "consistent": 0,
+                   "inconsistent": 0, "unmeasured": 70, "dialled": 70, "decided": 0,
+                   "undecided": {"reasons": [$rows], "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val undecided = row["undecided"]!!.jsonObject
+        val kept = (undecided["reasons"] as JsonArray).map { it.jsonObject["reason"]!!.jsonPrimitive.content }
+        assertEquals(reasons, kept, "every reason the gate can reach must survive the trip")
+        assertEquals(0, undecided["omitted"]!!.jsonPrimitive.int, "and nothing is reported as dropped")
+
+        // The order is the ROUTER's ranking, taken over the whole set it
+        // measured. Re-sorting a capped list here would order the head by a
+        // criterion never applied to the tail, which reads as a top-N and is not.
+        val top = ((undecided["reasons"] as JsonArray)[0].jsonObject["top"] as JsonArray)
+        assertEquals(listOf("a.example", "b.example"), top.map { it.jsonObject["host"]!!.jsonPrimitive.content })
+        assertEquals(6, top[0].jsonObject["urls"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun `a host row with no name is dropped rather than published as an anonymous count`() {
+        // It is the NAME that makes the fourth level worth drawing: a slice
+        // labelled with a number and nothing else is a slice nobody can chase.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "consistency", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 10, "unmeasured": 10,
+                   "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 10, "hosts": 1,
+                     "top": [{"urls": 5}, {"host": "real.example", "urls": 4}]}], "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val top = ((row["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject["top"] as JsonArray)
+        assertEquals(listOf("real.example"), top.map { it.jsonObject["host"]!!.jsonPrimitive.content })
+    }
+
+    @Test
     fun `a pass that measures no verdicts publishes none, rather than zero of them`() {
         // The alias fold has no stability verdicts to report, and neither has a
         // router written before the partition existed. A zero would be a

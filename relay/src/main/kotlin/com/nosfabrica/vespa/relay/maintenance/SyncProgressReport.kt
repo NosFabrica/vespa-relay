@@ -432,17 +432,48 @@ internal object SyncProgressReport {
                             put("reason", reason)
                             put("urls", num(row["urls"]) ?: 0)
                             put("hosts", num(row["hosts"]) ?: 0)
-                            putJsonArray("examples") {
-                                for (h in (row["examples"] as? JsonArray).orEmpty().take(MAX_UNDECIDED_EXAMPLES)) {
-                                    text(h)?.let { add(it) }
+                            (row["examples"] as? JsonArray)?.takeIf { it.isNotEmpty() }?.let { names ->
+                                putJsonArray("examples") {
+                                    for (h in names.take(MAX_UNDECIDED_EXAMPLES)) text(h)?.let { add(it) }
                                 }
                             }
+                            // The ranked hosts under this reason, rebuilt row by
+                            // row and capped again here — the same contract
+                            // `foldedOnto` and `inFlight` are held to. A row
+                            // with no host is dropped rather than published as
+                            // an anonymous count: it is the NAME that makes this
+                            // level worth drawing.
+                            topHosts(row["top"] as? JsonArray)?.let { put("top", it) }
                         },
                     )
                 }
             }
             put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
         }
+    }
+
+    /**
+     * The widest hosts under one reason, ranked as the router ranked them.
+     *
+     * The order is NOT re-sorted here. It is the router's ranking, taken over
+     * the whole set it measured, and re-sorting a capped list would order the
+     * head by a criterion that was never applied to the tail — which reads as a
+     * top-N and is not one.
+     */
+    private fun topHosts(rows: JsonArray?): JsonArray? {
+        val kept =
+            rows
+                .orEmpty()
+                .filterIsInstance<JsonObject>()
+                .take(MAX_UNDECIDED_HOSTS)
+                .mapNotNull { row ->
+                    val host = text(row["host"]) ?: return@mapNotNull null
+                    buildJsonObject {
+                        put("host", host)
+                        put("urls", num(row["urls"]) ?: 0)
+                    }
+                }
+        return if (kept.isEmpty()) null else JsonArray(kept)
     }
 
     /**
@@ -707,9 +738,23 @@ internal object SyncProgressReport {
     /** A processor reports per stream, and a router runs a handful of them. */
     private const val MAX_PROCESSOR_STREAMS = 12
 
-    private const val MAX_UNDECIDED_ROWS = 6
+    /**
+     * Undecided reasons kept per row — EIGHT, matching the router's own
+     * `Processors.MAX_UNDECIDED_REASONS`.
+     *
+     * It was six, which was the fold's whole enumeration and one short of the
+     * stability gate's seven. This side is supposed to bound a list the router
+     * already bounded; cutting BELOW what the router publishes is a different
+     * thing entirely, and here it would have dropped a reason whose urls the
+     * page then draws as `not accounted for` — an arithmetic fault reported
+     * against a document that was complete when it arrived.
+     */
+    private const val MAX_UNDECIDED_ROWS = 8
     private const val MAX_REJECTION_ROWS = 4
     private const val MAX_UNDECIDED_EXAMPLES = 3
+
+    /** Ranked hosts kept under one reason, matching `Processors.MAX_UNDECIDED_HOSTS`. */
+    private const val MAX_UNDECIDED_HOSTS = 6
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 

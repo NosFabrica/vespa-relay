@@ -72,6 +72,9 @@ class SyncVocabularyTest {
             "max",
             "complete",
             "fullAt",
+            // A hostname, inside a row whose `urls` is the count a reader looks
+            // up — the same call `relay` gets inside `foldedOnto`.
+            "host",
             "everyKindMin",
             "everyKindMax",
             "sweep",
@@ -143,7 +146,7 @@ class SyncVocabularyTest {
                     "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
                       "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
                       "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 22, "hosts": 7,
-                                                 "examples": ["dead.example"]}], "omitted": 0}}]},
+                                                 "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}}]},
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
                     "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
@@ -252,6 +255,9 @@ class SyncVocabularyTest {
                     "dialled",
                     "decided",
                     "undecided",
+                    // The ranked hosts under one reason — the funnel's fourth
+                    // level. `host` is an identifier, like `relay` beside it.
+                    "top",
                     "reason",
                     "lastPassAt",
                     "lastPassSec",

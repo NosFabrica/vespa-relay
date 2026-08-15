@@ -497,6 +497,16 @@ internal object SyncVocabulary {
                     "`omitted` carries whatever either side dropped.",
             )
             put(
+                "top",
+                "The widest few HOSTS under one undecided reason, ranked by how many of their urls ended there, " +
+                    "with the name beside the count. It answers the question the pair `urls`/`hosts` raises and " +
+                    "cannot settle: 3,902 urls on 2,201 hosts is either a dead network spread thin — no host above " +
+                    "a dozen urls — or three servers wearing a thousand urls each, and those are opposite findings " +
+                    "wanting opposite responses. DELIBERATELY DOES NOT SUM to the reason's `urls`: it is a ranked " +
+                    "head, and the remainder is the tail it is a head OF. The card draws that remainder as its own " +
+                    "slice rather than closing the level, so a list that was cut can never read as the whole one.",
+            )
+            put(
                 "lastPassAt",
                 "When a processor's last pass ENDED, whatever it achieved and whether or not it threw. Beside " +
                     "`nextInSec` it is what separates a pass that is failing every time from one that stopped running " +

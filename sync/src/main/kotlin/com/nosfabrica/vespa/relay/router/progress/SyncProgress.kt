@@ -104,8 +104,8 @@ import java.nio.file.StandardCopyOption
  *      "streams": [{"name": "all streams", "candidates": 16752, "foldedAway": 11429,
  *                   "consistent": 583, "inconsistent": 12, "unmeasured": 4728,
  *                   "dialled": 4728, "decided": 74,
- *                   "undecided": {"reasons": [{"reason": "never answered a REQ",
- *                                              "urls": 3902, "hosts": 2201, "examples": ["dead.example"]}],
+ *                   "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 3902, "hosts": 2201,
+ *                                              "top": [{"host": "dead.example", "urls": 12}]}],
  *                                 "omitted": 0}}]},
  *     {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000,
  *      "accepted": 3910233, "rejected": 41002}
@@ -549,7 +549,24 @@ class SyncProgress(
                                                                 // that names who to chase.
                                                                 put("urls", u.urls)
                                                                 put("hosts", u.hosts)
-                                                                putJsonArray("examples") { for (h in u.examples) add(h) }
+                                                                u.examples.takeIf { it.isNotEmpty() }?.let { names ->
+                                                                    putJsonArray("examples") { for (h in names) add(h) }
+                                                                }
+                                                                // The widest few WITH counts, where the pass
+                                                                // counts urls. Ranked, and deliberately not
+                                                                // summing to the row — see [Processors.Undecided.top].
+                                                                u.top.takeIf { it.isNotEmpty() }?.let { rows ->
+                                                                    putJsonArray("top") {
+                                                                        for (h in rows) {
+                                                                            add(
+                                                                                buildJsonObject {
+                                                                                    put("host", h.host)
+                                                                                    put("urls", h.urls)
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
                                                             },
                                                         )
                                                     }

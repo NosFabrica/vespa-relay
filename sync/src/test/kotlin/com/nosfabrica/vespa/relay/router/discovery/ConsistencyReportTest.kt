@@ -190,6 +190,62 @@ class ConsistencyReportTest {
         }
 
     @Test
+    fun `the hosts under a reason are ranked, and do not pretend to be all of them`() =
+        runBlocking {
+            // "3,902 urls on 2,201 hosts" is two opposite findings wearing one
+            // shape — a dead network spread thin, or three servers wearing a
+            // thousand urls each — and only the widest few can tell them apart.
+            //
+            // One host with four dead urls, four hosts with one each. The rank
+            // is what says which of the two shapes this is.
+            val processors = Processors()
+            val wide = (1..4).map { RelayUrlNormalizer.normalize("wss://busy.example/$it") }
+            val thin = (1..4).map { RelayUrlNormalizer.normalize("wss://lonely$it.example") }
+            val gate = pass(processors.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
+
+            gate.measure("t", wide + thin, canDial = { true })
+
+            val row = row(processors).undecided.single()
+            assertEquals(8, row.urls)
+            assertEquals(5, row.hosts)
+            assertEquals("busy.example" to 4, row.top.first().let { it.host to it.urls })
+            // Sorted by host name within a count, so two passes over one
+            // unchanged network publish the same document rather than a list
+            // that reshuffles on every tick.
+            assertEquals(
+                listOf("busy.example", "lonely1.example", "lonely2.example", "lonely3.example", "lonely4.example"),
+                row.top.map { it.host },
+            )
+            // A ranked head, not a partition: the reason's urls are NOT the sum
+            // of what it names, and the card draws that difference as the tail
+            // rather than closing the level over a list that was cut.
+            assertEquals(emptyList(), row.examples, "names with counts, rather than the same names twice")
+        }
+
+    @Test
+    fun `the named hosts are capped, and the reason still counts every url`() =
+        runBlocking {
+            // Ten hosts, six named. The cap is the point: what must NOT happen
+            // is the row's own `urls` falling to what the cap could name, which
+            // would make the funnel's fourth level close over a truncated list
+            // and report the tail as if it did not exist.
+            val processors = Processors()
+            val many = (1..10).map { RelayUrlNormalizer.normalize("wss://h$it.example") }
+            val gate = pass(processors.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
+
+            gate.measure("t", many, canDial = { true })
+
+            val row = row(processors).undecided.single()
+            assertEquals(Processors.MAX_UNDECIDED_HOSTS, row.top.size)
+            assertEquals(10, row.urls, "the count is over every url, not over the ones that fitted")
+            assertEquals(10, row.hosts)
+            assertTrue(
+                row.urls > row.top.sumOf { it.urls },
+                "a ranked head that summed to its reason would hide the tail it was taken from",
+            )
+        }
+
+    @Test
     fun `the candidate set divides exactly once`() =
         runBlocking {
             // THE PROPERTY THE WHOLE BREAKDOWN RESTS ON:

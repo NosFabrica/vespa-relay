@@ -393,21 +393,35 @@ class ConsistencyPass(
                 // chases, because the thing that would not answer twice is a
                 // server and forty paths on one host say the same thing forty
                 // times.
+                //
+                // RANKED, not merely listed. "3,902 urls on 2,201 hosts" is two
+                // opposite findings wearing one shape — a corpus spread thin
+                // across a dead network, or three servers wearing a thousand
+                // urls each — and only the widest few can tell them apart.
                 val hosts =
                     unmeasurable
                         .asSequence()
                         .filter { it.value == reason }
-                        .map { RelayAliases.hostOf(it.key.url) }
-                        .distinct()
-                        .sorted()
-                        .toList()
+                        .groupingBy { RelayAliases.hostOf(it.key.url) }
+                        .eachCount()
+                val top =
+                    hosts.entries
+                        // By host name within a count, so two passes over one
+                        // unchanged network publish the same document rather
+                        // than a list that reshuffles on every tick.
+                        .sortedWith(compareByDescending<Map.Entry<String, Int>> { it.value }.thenBy { it.key })
+                        .take(Processors.MAX_UNDECIDED_HOSTS)
+                        .map { Processors.HostCount(it.key, it.value) }
                 Processors.Undecided(
                     // The words the log line uses, so a reader meeting both does
                     // not have to work out that they are the same finding.
                     reason = reason.reason,
                     urls = urls,
                     hosts = hosts.size,
-                    examples = hosts.take(Processors.MAX_UNDECIDED_EXAMPLES),
+                    // Named WITH counts, so `examples` — which is for a pass
+                    // that has only names — would be the same disclosure twice.
+                    examples = emptyList(),
+                    top = top,
                 )
             }
         handle.record(

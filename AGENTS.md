@@ -1953,12 +1953,30 @@ of them, in two families:
 `report` publishes them as counts of URLS, so the candidate set divides exactly
 once: `candidates = foldedAway + consistent + inconsistent + unmeasured`, and
 `unmeasured` is the sum of those reasons. `ConsistencyReportTest` pins that
-identity and one test per reason; the stats card draws the whole thing as an
-icicle (`funnelOf` in `/web/shared/sync.js`), every level a share of the same
-width so a slice sits under the slice it subdivides. A level whose members do
-not sum draws an `unattributed` slice rather than a gap — which is what a
-router older than the partition produces, and what any future arithmetic slip
-would.
+identity and one test per reason; the stats card draws the whole thing as a
+four-level icicle (`funnelOf` in `/web/shared/sync.js`), every level a share of
+the same width so a slice sits under the slice it subdivides. A level whose
+members do not sum draws an `unattributed` slice rather than a gap — which is
+what a router older than the partition produces, and what any future arithmetic
+slip would.
+
+**The fourth level is the widest HOSTS under each reason** (`undecided[].top`),
+and it is there because `urls` and `hosts` together raise a question neither can
+settle: 3,902 urls on 2,201 hosts is either a dead network spread thin — no host
+above a few dozen urls — or a handful of servers wearing a thousand urls each,
+and those want opposite responses. It is a ranked head that deliberately does
+NOT sum to its reason; the tail is drawn as its own slice, toned apart from
+`unattributed` because disclosed truncation and broken arithmetic must never
+look alike. It is also the first level whose segments do not share one parent —
+each host sits under its own reason — so the lead-of-zero shortcut the levels
+above take does not apply to it.
+
+Two caps have to move together: `Processors.MAX_UNDECIDED_REASONS` (8) and
+`SyncProgressReport.MAX_UNDECIDED_ROWS`. The relay's job is to bound a list the
+router already bounded, and it sat at 6 against a gate that can reach 7 — cutting
+below the writer is not bounding, it is dropping, and the dropped reason's urls
+then surface as an arithmetic fault on a document that was complete when it
+arrived.
 
 Two things that partition made visible and then fixed. `dialled` was
 `wanted.size`, so urls the transport declined were reported as dials that never
