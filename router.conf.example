@@ -68,6 +68,16 @@
 
 connectionTimeout = 20
 
+# THE POOL'S SOCKETS. Two numbers govern every socket the visit-mode streams
+# own. visitConcurrency is the dial width: how many relays are visited — and
+# therefore TLS-handshaking — at once; a visit is seconds long, so this bounds
+# the burst, not the throughput. tailBudget is the steady state: how many live
+# tails stay open, which is what "constantly connected" means; past it, tails
+# are earned by recent yield. Their sum plus monitor.concurrency and the
+# static upstreams must stay under the dispatcher's 1,024.
+visitConcurrency = 128
+tailBudget = 600
+
 # THE MONITOR PLANE. Owns every question about a relay's health and shape, on
 # its own clock, so no stream ever waits on a probe.
 monitor {

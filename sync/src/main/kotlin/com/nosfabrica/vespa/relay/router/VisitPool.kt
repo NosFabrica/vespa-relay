@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
@@ -661,11 +662,12 @@ internal class VisitPool(
 
         /**
          * Concurrent visits, which is concurrent DIALS — see the constructor
-         * parameter for the herd it exists to break up. Matches the monitor's
-         * dial width: the same arithmetic (simultaneous handshakes against
-         * timeouts) sizes both.
+         * parameter for the herd it exists to break up. The default lives on
+         * the config: `visitConcurrency` in router.conf is the operator's
+         * knob, and [RouterConfig.DEFAULT_VISIT_CONCURRENCY] carries the
+         * sizing argument.
          */
-        const val DEFAULT_VISIT_CONCURRENCY = 128
+        const val DEFAULT_VISIT_CONCURRENCY = RouterConfig.DEFAULT_VISIT_CONCURRENCY
 
         /**
          * The visit's two stages worth a word, in the in-flight rows' `doing`
@@ -679,14 +681,13 @@ internal class VisitPool(
         const val MAX_IN_FLIGHT_ROWS = 20
 
         /**
-         * Held tails, the pool's steady-state socket count. Sized to the
-         * measured syncable population (~600 responsive hosts after folding)
-         * rather than to a per-stream guess — the whole point is that every
-         * syncable relay is effectively always connected. Tails plus the
-         * visit width stay under the OkHttp dispatcher's 1,024 so the static
-         * upstreams, the probe passes and the healer keep theirs.
+         * Held tails, the pool's steady-state socket count — `tailBudget` in
+         * router.conf, defaulted from [RouterConfig.DEFAULT_TAIL_BUDGET].
+         * Tails plus the visit width stay under the OkHttp dispatcher's 1,024
+         * so the static upstreams, the probe passes and the healer keep
+         * theirs.
          */
-        const val DEFAULT_TAIL_BUDGET = 600
+        const val DEFAULT_TAIL_BUDGET = RouterConfig.DEFAULT_TAIL_BUDGET
 
         /**
          * The revisit delay one relay has earned: the base its tail status

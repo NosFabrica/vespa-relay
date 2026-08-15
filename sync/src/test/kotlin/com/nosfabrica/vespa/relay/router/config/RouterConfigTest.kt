@@ -1257,6 +1257,30 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `the pool's two socket knobs parse, default, and refuse zero`() {
+        val block = """
+            streams {
+                s {
+                    dir    = "down"
+                    filter = { "kinds": [1] }
+                    urls   = ["wss://a.example"]
+                }
+            }
+        """
+        val tuned = RouterConfigLoader.parse("visitConcurrency = 64\ntailBudget = 900\n$block")
+        assertEquals(64, tuned.visitConcurrency)
+        assertEquals(900, tuned.tailBudget)
+        val defaulted = RouterConfigLoader.parse(block)
+        assertEquals(RouterConfig.DEFAULT_VISIT_CONCURRENCY, defaulted.visitConcurrency)
+        assertEquals(RouterConfig.DEFAULT_TAIL_BUDGET, defaulted.tailBudget)
+        // Zero of either is an off switch wearing a tuning knob's name —
+        // floored, not honored, same as the monitor's dial gate.
+        val floored = RouterConfigLoader.parse("visitConcurrency = 0\ntailBudget = 0\n$block")
+        assertEquals(1, floored.visitConcurrency)
+        assertEquals(1, floored.tailBudget)
+    }
+
+    @Test
     fun `a verdict source rides alongside scanned sources during a migration`() {
         val cfg =
             RouterConfigLoader.parse(

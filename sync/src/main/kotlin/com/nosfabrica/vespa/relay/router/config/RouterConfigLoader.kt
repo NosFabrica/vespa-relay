@@ -249,6 +249,21 @@ object RouterConfigLoader {
             ingestBatch,
             negMinEvents,
             monitor = parseMonitor(cfg),
+            // The pool's two socket numbers, floored at 1 for the same reason
+            // the monitor's dial gate is: zero of either is an off switch
+            // wearing a tuning knob's name.
+            visitConcurrency =
+                if (cfg.hasPath("visitConcurrency")) {
+                    cfg.getInt("visitConcurrency").coerceAtLeast(1)
+                } else {
+                    RouterConfig.DEFAULT_VISIT_CONCURRENCY
+                },
+            tailBudget =
+                if (cfg.hasPath("tailBudget")) {
+                    cfg.getInt("tailBudget").coerceAtLeast(1)
+                } else {
+                    RouterConfig.DEFAULT_TAIL_BUDGET
+                },
         )
     }
 

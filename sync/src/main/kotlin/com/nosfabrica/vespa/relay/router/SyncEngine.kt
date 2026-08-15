@@ -538,6 +538,8 @@ class SyncEngine(
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),
             phases = phases,
+            visitConcurrency = config.visitConcurrency,
+            tailBudget = config.tailBudget,
         )
 
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)

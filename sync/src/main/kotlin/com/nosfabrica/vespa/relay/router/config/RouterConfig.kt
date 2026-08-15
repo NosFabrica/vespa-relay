@@ -81,7 +81,38 @@ data class RouterConfig(
      * parsed sources, on the default six-hour clock.
      */
     val monitor: MonitorConfig? = null,
+    /**
+     * The visit pool's dial width: how many relays are visited — and
+     * therefore dialled — at once, across every visit-mode stream. Router-wide
+     * rather than per stream because the pool is one shared engine; the
+     * per-stream `concurrency` knob paces only the legacy fan-out.
+     */
+    val visitConcurrency: Int = DEFAULT_VISIT_CONCURRENCY,
+    /**
+     * The visit pool's steady state: how many live-tail sockets it may hold
+     * open at once. Visit width plus this is the most sockets the pool ever
+     * owns — size the pair against the dispatcher ceiling, leaving room for
+     * the static upstreams, the monitor's dials and the healer.
+     */
+    val tailBudget: Int = DEFAULT_TAIL_BUDGET,
 ) {
+    companion object {
+        /**
+         * Matches the monitor's dial width: the same arithmetic — simultaneous
+         * TLS handshakes against their own connect timeout — sizes both. The
+         * first 440-relay integration run let the pool dial its whole socket
+         * budget at once and watched 436 dials time out inside a minute.
+         */
+        const val DEFAULT_VISIT_CONCURRENCY = 128
+
+        /**
+         * Sized to the measured syncable population (~600 responsive hosts
+         * after folding): the whole point is that every certified relay is
+         * effectively always connected.
+         */
+        const val DEFAULT_TAIL_BUDGET = 600
+    }
+
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.DOWN)
 
