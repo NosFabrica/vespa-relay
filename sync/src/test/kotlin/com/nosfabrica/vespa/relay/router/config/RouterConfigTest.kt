@@ -1187,15 +1187,16 @@ class RouterConfigTest {
                          "authors": ["npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"] } }""",
                 ),
             )
-        assertEquals(
-            listOf("0".repeat(63) + "1"),
+        val namedSource =
             named.streams
                 .single()
                 .dynamic!!
-                .verdictSources
+                .sources
                 .single()
-                .authors,
-        )
+        assertEquals(listOf("0".repeat(63) + "1"), namedSource.verdicts!!.authors)
+        // The stored Filter speaks NIP-01, so it carries the DECODED hex —
+        // the npub is the config spelling, not the wire one.
+        assertEquals(listOf("0".repeat(63) + "1"), namedSource.filter.authors)
         // Absent means this process's own signer — the single-process shape.
         val bare = RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] } }"""))
         assertEquals(

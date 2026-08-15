@@ -563,7 +563,11 @@ object RouterConfigLoader {
             }
         return RelaySource(
             selects = emptyList(),
-            filter = filter,
+            // The filter is restated with the DECODED authors: the operator
+            // writes the npub, but a Filter is a NIP-01 object and NIP-01
+            // speaks hex — a stored filter carrying bech32 text would be
+            // invalid the moment anything ran or serialized it as one.
+            filter = filter.copy(authors = authors.takeIf { it.isNotEmpty() }),
             verdicts = VerdictSource(maxAgeSeconds = maxAge, authors = authors),
         )
     }
