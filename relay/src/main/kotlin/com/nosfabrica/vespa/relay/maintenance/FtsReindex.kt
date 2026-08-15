@@ -38,6 +38,20 @@ import java.nio.file.StandardCopyOption
  * upgrade that changes SearchExtractors or adds fed search fields, which a
  * Vespa reindex cannot produce — only a put can.
  *
+ * IT IS THE WRONG TOOL FOR A *DERIVED* COLUMN, and the two cases look identical
+ * from here, so read the store's release before reaching for this flag. A FED
+ * field (the near tier) only changes on a put, which is what this walk does. A
+ * DERIVED one — `search_text_gram`, added in store e3be81564d with
+ * `indexing: input search_text | … | index` — is produced by Vespa at index
+ * time, so deploying it leaves the column EMPTY on every event already stored,
+ * and this walk does not repair it: the store's drift check compares the search
+ * columns and near arrays, finds both identical, re-puts nothing, and the run
+ * reports success having fixed nothing. Nothing errors, and the corpus keeps
+ * serving whole-word search the whole time, which is why it goes unnoticed.
+ * That class of column is repaired by a Vespa REINDEX on the config server
+ * (`POST /reindex?clusterId=content&documentType=event` — asynchronous, so a
+ * 200 is "pending", not "done") or by a full re-feed.
+ *
  * The walk is resumable: the cursor is persisted to [cursorFile] so a failed
  * page costs a retry, not the 12M events an in-memory cursor once threw away.
  * It runs behind the server and is never awaited — as a startup barrier it
