@@ -242,16 +242,20 @@ class SyncEngine(
     private val dynamicStreams = config.dynamicStreams()
 
     /**
-     * The fork's arithmetic: a dynamic stream whose relay list comes ENTIRELY
-     * from the monitor's verdicts (every relaySource entry a kind-30166
-     * verdict source) is a visit-mode stream; one still scanning relay-list
-     * events keeps the legacy pass machinery. Both shapes in one list is the
-     * union path through the legacy engine, for the deployment mid-crossing.
+     * The fork's arithmetic: a dynamic stream rides the pool when EVERY
+     * relaySource entry answers to the monitor — a kind-30166 verdict source,
+     * or a scan gated `certified` (whose discovered urls must hold a fresh
+     * verdict, and whose bound authors become one ask each). An UNGATED scan
+     * keeps the legacy pass machinery, as does any mix that includes one —
+     * the union path for the deployment mid-crossing.
+     *
+     * `deleteMissing` also holds a stream back, for now: the retraction
+     * comparison still lives in the legacy engine's cycle, and a stream
+     * silently losing its dry-run on migration would be the worst kind of
+     * regression — one that deletes nothing and says nothing. It moves into
+     * the pool's audit next, and this clause moves with it.
      */
-    private val visitStreams =
-        dynamicStreams.filter { s ->
-            s.dynamic != null && s.dynamic.sources.isNotEmpty() && s.dynamic.scanSources.isEmpty()
-        }
+    private val visitStreams = dynamicStreams.filter { VisitPool.ridesThePool(it) }
     private val legacyStreams = dynamicStreams - visitStreams.toSet()
 
     // The relays we hold a live subscription on; a dynamic sync must not drop

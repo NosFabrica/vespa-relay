@@ -20,8 +20,11 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.relay.router.config.DeleteMissing
+import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncStream
+import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
 import com.nosfabrica.vespa.relay.router.heal.Healer
@@ -136,9 +139,31 @@ internal class VisitPool(
      */
     private val tailBudget: Int = DEFAULT_TAIL_BUDGET,
 ) {
-    /** url → the streams that want it, rebuilt on the roster clock. */
+    /**
+     * ONE UNIT OF WORK against one relay: the stream asking, and the exact
+     * filter it asks — the stream's own for a verdict source, or the
+     * scan-paired narrow for a bound scan (one Ask PER BOUND AUTHOR, fixed:
+     * the tag structure already decided the granularity, and a per-author ask
+     * is what keeps a `(relay, provider)` band valid forever — see the
+     * `asksOf` arithmetic). Bands, catch-ups, audits and tails all key on
+     * this filter, which is why the port is a type change and not an engine.
+     */
+    internal data class Ask(
+        val stream: SyncStream,
+        val filter: Filter,
+    )
+
+    /** url → the asks that want it, rebuilt on the roster clock. */
     @Volatile
-    private var roster: Map<NormalizedRelayUrl, List<SyncStream>> = emptyMap()
+    private var roster: Map<NormalizedRelayUrl, List<Ask>> = emptyMap()
+
+    /** One certified scan's discovery, held for its stream's `refreshSeconds` — a store walk is not a poll. */
+    private class ScannedList(
+        val expiresAtMs: Long,
+        val relays: List<DiscoveredRelay>,
+    )
+
+    private val scans = ConcurrentHashMap<String, ScannedList>()
 
     private val queue = Channel<NormalizedRelayUrl>(Channel.UNLIMITED)
     private val queued = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
@@ -251,7 +276,7 @@ internal class VisitPool(
         val phases = phases ?: return
         val current = roster
         for (stream in streams) {
-            val mine = current.entries.filter { stream in it.value }
+            val mine = current.entries.filter { entry -> entry.value.any { it.stream === stream } }
             phases.set(
                 stream.name,
                 StreamPhases.Phase.Rotating(
@@ -314,11 +339,18 @@ internal class VisitPool(
      */
     private suspend fun rosterLoop() {
         val cadence =
-            streams
-                .flatMap { it.dynamic?.verdictSources.orEmpty() }
-                .map { it.maxAgeSeconds }
-                .minOrNull()
-                ?.let { (it * 1000L / 2).coerceAtLeast(60_000L) } ?: 300_000L
+            (
+                streams
+                    .flatMap { it.dynamic?.verdictSources.orEmpty() }
+                    .map { it.maxAgeSeconds * 1000L / 2 } +
+                    // Scan-built halves rebuild on their stream's own refresh
+                    // clock; the loop just has to tick at least that often —
+                    // the walk itself is cached, so the extra ticks are cheap.
+                    streams
+                        .filter { it.dynamic?.scanSources?.isNotEmpty() == true }
+                        .mapNotNull { it.dynamic?.refreshSeconds?.times(1000L) }
+            ).minOrNull()
+                ?.coerceAtLeast(60_000L) ?: 300_000L
         while (scope.isActive) {
             try {
                 rebuildRoster()
@@ -338,7 +370,15 @@ internal class VisitPool(
     }
 
     private suspend fun rebuildRoster() {
-        val next = HashMap<NormalizedRelayUrl, MutableList<SyncStream>>()
+        val next = HashMap<NormalizedRelayUrl, MutableList<Ask>>()
+
+        fun want(
+            url: NormalizedRelayUrl,
+            ask: Ask,
+        ) {
+            val wanting = next.getOrPut(url) { mutableListOf() }
+            if (ask !in wanting) wanting += ask
+        }
         for (stream in streams) {
             val dynamic = stream.dynamic ?: continue
             for (source in dynamic.verdictSources) {
@@ -363,9 +403,11 @@ internal class VisitPool(
                         skip = setOfNotNull(store.relay),
                         allowOnion = tor != null,
                     )
-                for (relay in certified) {
-                    val wanting = next.getOrPut(relay.url) { mutableListOf() }
-                    if (stream !in wanting) wanting += stream
+                for (relay in certified) want(relay.url, Ask(stream, stream.filter))
+            }
+            if (dynamic.scanSources.isNotEmpty()) {
+                for (relay in certifiedScan(stream, dynamic)) {
+                    for (filter in asksOf(stream.filter, relay)) want(relay.url, Ask(stream, filter))
                 }
             }
         }
@@ -395,6 +437,59 @@ internal class VisitPool(
             )
         }
         publishPhases()
+    }
+
+    /**
+     * A certified scan's relay list: the same `discover -> certifiedOnly`
+     * chain the legacy engine runs, cached for the stream's `refreshSeconds`
+     * — deriving a scan is a store walk, and the roster loop ticks far more
+     * often than the list changes. An EMPTY result is cached only briefly:
+     * "no provider lists yet" is the state the next ingested event ends, and
+     * a full refresh period of blindness to it was the legacy engine's
+     * `waiting` retry, relearned.
+     */
+    private suspend fun certifiedScan(
+        stream: SyncStream,
+        dynamic: RelayDiscoveryConfig,
+    ): List<DiscoveredRelay> {
+        val nowMs = System.currentTimeMillis()
+        scans[stream.name]?.takeIf { it.expiresAtMs > nowMs }?.let { return it.relays }
+        val scanned =
+            RelayDiscovery.discover(
+                store,
+                dynamic,
+                skip = setOfNotNull(store.relay),
+                allowOnion = tor != null,
+            )
+        // The fork only admits all-certified scans, but the strictest gate is
+        // taken rather than assumed — same arithmetic as the legacy engine's.
+        val gate = dynamic.scanSources.mapNotNull { it.certified }.minByOrNull { it.maxAgeSeconds }
+        val relays =
+            if (gate == null) {
+                scanned
+            } else {
+                val authors = gate.authors.ifEmpty { listOfNotNull(monitorAuthor) }
+                if (authors.isEmpty()) {
+                    System.err.println(
+                        "router: ${stream.name} gates its scan on verdicts, has no `authors` and no signer — no monitor identity, no relays pass",
+                    )
+                    emptyList()
+                } else {
+                    RelayDiscovery
+                        .certifiedOnly(store, scanned, authors, gate.maxAgeSeconds, allowOnion = tor != null)
+                        .also {
+                            if (it.size != scanned.size) {
+                                System.err.println(
+                                    "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +
+                                        "held out uncertified (no fresh syncable verdict); the monitor's fast lane is their way in",
+                                )
+                            }
+                        }
+                }
+            }
+        val holdMs = if (relays.isEmpty()) EMPTY_ROSTER_RETRY_MS else dynamic.refreshSeconds * 1000L
+        scans[stream.name] = ScannedList(nowMs + holdMs, relays)
+        return relays
     }
 
     private suspend fun workerLoop() {
@@ -436,18 +531,18 @@ internal class VisitPool(
         ongoing[url] = o
         sockets.claim(url)
         try {
-            for (stream in roster[url].orEmpty()) {
-                o.stream = stream.name
-                val clean = catchUp(stream, url)
-                // A refusal ends the whole visit, not just this stream's part:
-                // the next stream's ask is the same conversation with the same
-                // relay, and the monitor's sweep — not a retry loop — is what
+            for (ask in roster[url].orEmpty()) {
+                o.stream = ask.stream.name
+                val clean = catchUp(ask, url)
+                // A refusal ends the whole visit, not just this ask's part:
+                // the next ask is the same conversation with the same relay,
+                // and the monitor's sweep — not a retry loop — is what
                 // re-admits it.
                 if (!clean) {
                     aborted.incrementAndGet()
                     return
                 }
-                auditIfDue(stream, url)
+                auditIfDue(ask, url)
             }
             o.doing = "draining queued heals, then the tail"
             healer.drain(url)
@@ -463,11 +558,12 @@ internal class VisitPool(
      * the relay refused with nothing delivered — the visit's stop signal.
      */
     private suspend fun catchUp(
-        stream: SyncStream,
+        ask: Ask,
         url: NormalizedRelayUrl,
     ): Boolean {
+        val stream = ask.stream
         val o = ongoing[url]
-        for (leg in bands.legs(stream.name, url, stream.filter)) {
+        for (leg in bands.legs(stream.name, url, ask.filter)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
@@ -485,7 +581,7 @@ internal class VisitPool(
                         it.pagingUntil = event.createdAt
                     }
                 }
-                if (stream.filter.match(event)) {
+                if (ask.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
                         seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
@@ -505,12 +601,12 @@ internal class VisitPool(
             bands.record(
                 stream.name,
                 url,
-                stream.filter,
+                ask.filter,
                 seenMin,
                 seenMax,
                 paged = true,
                 observedByKind = seenByKind,
-                drained = drainSettlesThePast(walked, flooredLeg, stream.filter),
+                drained = drainSettlesThePast(walked, flooredLeg, ask.filter),
             )
         }
         return true
@@ -524,12 +620,13 @@ internal class VisitPool(
      * `roster / verifySeconds`, a trickle, and no cap is needed.
      */
     private suspend fun auditIfDue(
-        stream: SyncStream,
+        ask: Ask,
         url: NormalizedRelayUrl,
     ) {
+        val stream = ask.stream
         val verifySeconds = stream.verifySeconds ?: return
         val now = nowSeconds()
-        val band = bands.band(stream.name, url, stream.filter)
+        val band = bands.band(stream.name, url, ask.filter)
         if (!auditDue(band?.fullAt ?: 0L, now, verifySeconds)) return
         val auditStarted = now
         var received = 0
@@ -539,8 +636,8 @@ internal class VisitPool(
             pager.sweep(
                 stream.name,
                 url,
-                stream.filter,
-                stream.filter,
+                ask.filter,
+                ask.filter,
                 // Frames are life. A clean audit downloads NOTHING — every
                 // window already agrees — so without this a relay whose whole
                 // history verifies reads as a worker gone quiet for minutes.
@@ -559,7 +656,7 @@ internal class VisitPool(
                     it.events.incrementAndGet()
                     it.lastActivityMs = System.currentTimeMillis()
                 }
-                if (stream.filter.match(event)) {
+                if (ask.filter.match(event)) {
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
@@ -571,7 +668,7 @@ internal class VisitPool(
             bands.record(
                 stream.name,
                 url,
-                stream.filter,
+                ask.filter,
                 observedMin = null,
                 observedMax = null,
                 paged = false,
@@ -614,7 +711,7 @@ internal class VisitPool(
         if (tails.putIfAbsent(url, subId) != null) return
         sockets.claim(url)
         val since = nowSeconds() - TAIL_OVERLAP_SECONDS
-        val filters = wanting.map { it.filter.copy(since = since) }
+        val filters = wanting.map { it.filter.copy(since = since) }.distinct()
         client.subscribe(
             subId,
             mapOf(url to filters),
@@ -630,13 +727,19 @@ internal class VisitPool(
                     yieldOf(url).arrived.incrementAndGet()
                     // Bind trust per stream, and re-check scope so a broken
                     // relay cannot widen what we ingest — the same rule the
-                    // static tails follow.
+                    // static tails follow. Matching is against each ASK's
+                    // filter: a narrowed ask admits only its own provider's
+                    // events off the tail, exactly as it does off a page.
                     val wanted = roster[url].orEmpty().filter { it.filter.match(event) }
                     if (wanted.isEmpty()) return
                     ingest.submit(
                         event,
-                        wanted.all { it.trusted },
-                        IngestOrigin(url, healContent = wanted.any { it.healContent }, healRetractions = wanted.any { it.healRetractions }),
+                        wanted.all { it.stream.trusted },
+                        IngestOrigin(
+                            url,
+                            healContent = wanted.any { it.stream.healContent },
+                            healRetractions = wanted.any { it.stream.healRetractions },
+                        ),
                     )
                 }
             },
@@ -653,6 +756,22 @@ internal class VisitPool(
 
     companion object {
         /**
+         * Does [stream] ride the pool? Yes when every relaySource entry
+         * answers to the monitor — a verdict source, or a `certified` scan —
+         * and the stream carries no `deleteMissing`: the retraction
+         * comparison still lives in the legacy engine's cycle, and a stream
+         * silently losing its dry-run on migration would be the worst kind
+         * of regression — one that deletes nothing and says nothing. The
+         * clause moves into the audit with it.
+         */
+        internal fun ridesThePool(stream: SyncStream): Boolean {
+            val dynamic = stream.dynamic ?: return false
+            return dynamic.sources.isNotEmpty() &&
+                dynamic.sources.all { it.verdicts != null || it.certified != null } &&
+                stream.deleteMissing == DeleteMissing.OFF
+        }
+
+        /**
          * Is the band's history due its audit? A `fullAt` of zero is a band
          * that has NEVER had a full pass — always due, which is what makes the
          * first audit of a fresh relay happen on its first visit rather than
@@ -663,6 +782,32 @@ internal class VisitPool(
             now: Long,
             verifySeconds: Long,
         ): Boolean = fullAt <= 0L || now - fullAt >= verifySeconds
+
+        /**
+         * The ask filters one discovered relay contributes: ONE PER BOUND
+         * AUTHOR, fixed — no knob. The tag structure already decided the
+         * granularity (a `30382:rank` tag pairs one provider with one relay),
+         * and the per-author split is what keeps each `(relay, provider)`
+         * band's filter — and therefore the band — valid forever: a new
+         * provider naming the relay is a new band beside the old ones, never
+         * an invalidation of them. This is `authorsPerLeg = 1` made
+         * structural; every other value of that knob answered a question the
+         * data answers better. A select that binds nothing keeps one ask with
+         * the stream's whole filter; narrow keys other than `authors` ride
+         * along in every split, sorted by the same argument
+         * [DiscoveredRelay.narrowed] sorts — a band is keyed on the filter's
+         * serialized form.
+         */
+        internal fun asksOf(
+            base: Filter,
+            discovered: DiscoveredRelay,
+        ): List<Filter> {
+            val authors = discovered.narrow["authors"]
+            if (authors.isNullOrEmpty()) return listOf(discovered.narrowed(base))
+            return authors.sorted().map { author ->
+                DiscoveredRelay(discovered.url, discovered.narrow + ("authors" to setOf(author))).narrowed(base)
+            }
+        }
 
         /**
          * Concurrent visits, which is concurrent DIALS — see the constructor

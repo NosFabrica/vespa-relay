@@ -21,6 +21,9 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
+import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
+import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFalse
@@ -78,11 +81,14 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `only a purely verdict-built stream rides the pool`() {
-        // The fork's arithmetic, spelled as config: a relaySource consulting
-        // only the monitor's kind-30166 verdicts is visit-mode; a verdict
-        // source beside a scanned relaySource is the mid-migration union,
-        // which stays on the legacy engine.
+    fun `verdicts and certified scans ride the pool, an ungated scan or a deleteMissing does not`() {
+        // The fork's arithmetic, spelled as config. Four streams, one per
+        // rule: a verdict source rides; a certified scan rides (the gate
+        // answers to the monitor, so the pool can trust every url it is
+        // handed); an ungated scan keeps the legacy engine, and so does a
+        // gated one that deletes on absence — the retraction comparison has
+        // not moved into the audit yet, and losing a dry-run silently would
+        // be the worst kind of regression.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -98,7 +104,19 @@ class VisitPoolTest {
                         ]
                         verifySeconds  = 604800
                     }
-                    mixed {
+                    gatedScan {
+                        dir    = "down"
+                        sync   = "fetch"
+                        filter = { "kinds": [30382] }
+                        relaySource = [
+                            {
+                                select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                                filter = { "kinds": [10040] }
+                                certified = {}
+                            }
+                        ]
+                    }
+                    ungated {
                         dir    = "down"
                         sync   = "fetch"
                         filter = { "kinds": [1] }
@@ -112,20 +130,50 @@ class VisitPoolTest {
                             }
                         ]
                     }
+                    retracting {
+                        dir    = "down"
+                        sync   = "negentropy"
+                        filter = { "kinds": [0, 30382] }
+                        deleteMissing = "dryRun"
+                        ownedKinds = [30382]
+                        relaySource = [
+                            {
+                                select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                                filter = { "kinds": [10040] }
+                                certified = {}
+                            }
+                        ]
+                    }
                 }
                 """.trimIndent(),
             )
-        val visit =
-            cfg.streams.filter { s ->
-                s.dynamic != null && s.dynamic!!.sources.isNotEmpty() && s.dynamic!!.scanSources.isEmpty()
-            }
-        assertEquals(listOf("pure"), visit.map { it.name })
-        assertEquals(604_800L, visit.single().verifySeconds)
-        // The mixed stream keeps BOTH halves: the verdict source for the
-        // certified union, the scan for what the monitor has not covered.
-        val mixed = cfg.streams.single { it.name == "mixed" }.dynamic!!
-        assertEquals(1, mixed.verdictSources.size)
-        assertEquals(1, mixed.scanSources.size)
+        val visit = cfg.streams.filter { VisitPool.ridesThePool(it) }
+        // As a SET: HOCON hands back a map, and the block order is not a promise.
+        assertEquals(setOf("pure", "gatedScan"), visit.map { it.name }.toSet())
+        assertEquals(604_800L, visit.single { it.name == "pure" }.verifySeconds)
+    }
+
+    @Test
+    fun `one ask per bound author, the pairing the tags already made`() {
+        // authorsPerLeg = 1 made structural: a relay two providers name
+        // yields two single-author filters — each its own immortal band —
+        // and a third provider later is a third ask beside them, never an
+        // invalidation. Other narrow keys ride along in every split.
+        val base = Filter(kinds = listOf(0, 30382))
+        val url = RelayUrlNormalizer.normalize("wss://provider.example")
+        val p1 = "a".repeat(64)
+        val p2 = "b".repeat(64)
+        val paired =
+            VisitPool.asksOf(
+                base,
+                DiscoveredRelay(url, narrow = mapOf("authors" to setOf(p2, p1), "kinds" to setOf("30382"))),
+            )
+        assertEquals(2, paired.size)
+        assertEquals(listOf(listOf(p1), listOf(p2)), paired.map { it.authors }, "sorted, so the band's serialized key is stable")
+        assertTrue(paired.all { it.kinds == listOf(30382) }, "the other narrow keys ride along in each split")
+        // A select that binds nothing keeps one ask: the stream's own filter.
+        val unbound = VisitPool.asksOf(base, DiscoveredRelay(url))
+        assertEquals(listOf(base), unbound)
     }
 
     @Test
