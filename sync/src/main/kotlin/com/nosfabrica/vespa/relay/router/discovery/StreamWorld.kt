@@ -58,7 +58,7 @@ internal class StreamWorld(
      * The monitor's OWN url sources — the `monitor { sources = [...] }` block —
      * unioned with whatever the streams' parsed sources yield. This is what
      * lets a deployment move relay-list parsing off the streams entirely: a
-     * stream running on `syncableRelays` alone contributes no candidates, and
+     * stream running on verdict sources alone contributes no candidates, and
      * the monitor block is then the one place urls enter the system.
      */
     private val monitorSources: MonitorConfig? = null,

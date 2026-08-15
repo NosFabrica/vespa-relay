@@ -79,9 +79,10 @@ class VisitPoolTest {
 
     @Test
     fun `only a purely verdict-built stream rides the pool`() {
-        // The fork's arithmetic, spelled as config: syncableRelays alone is
-        // visit-mode; syncableRelays beside a parsed relaySource is the
-        // mid-migration union, which stays on the legacy engine.
+        // The fork's arithmetic, spelled as config: a relaySource consulting
+        // only the monitor's kind-30166 verdicts is visit-mode; a verdict
+        // source beside a scanned relaySource is the mid-migration union,
+        // which stays on the legacy engine.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -90,15 +91,21 @@ class VisitPoolTest {
                         dir    = "down"
                         sync   = "fetch"
                         filter = { "kinds": [1] }
-                        syncableRelays = {}
+                        relaySource = [
+                            {
+                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                            }
+                        ]
                         verifySeconds  = 604800
                     }
                     mixed {
                         dir    = "down"
                         sync   = "fetch"
                         filter = { "kinds": [1] }
-                        syncableRelays = {}
                         relaySource = [
+                            {
+                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                            },
                             {
                                 select = [ { kind = 10009, tag = "group", index = 2 } ]
                                 filter = { "kinds": [10009] }
@@ -108,9 +115,17 @@ class VisitPoolTest {
                 }
                 """.trimIndent(),
             )
-        val visit = cfg.streams.filter { it.dynamic?.syncable != null && it.dynamic!!.sources.isEmpty() }
+        val visit =
+            cfg.streams.filter { s ->
+                s.dynamic != null && s.dynamic!!.sources.isNotEmpty() && s.dynamic!!.scanSources.isEmpty()
+            }
         assertEquals(listOf("pure"), visit.map { it.name })
         assertEquals(604_800L, visit.single().verifySeconds)
+        // The mixed stream keeps BOTH halves: the verdict source for the
+        // certified union, the scan for what the monitor has not covered.
+        val mixed = cfg.streams.single { it.name == "mixed" }.dynamic!!
+        assertEquals(1, mixed.verdictSources.size)
+        assertEquals(1, mixed.scanSources.size)
     }
 
     @Test
@@ -123,7 +138,11 @@ class VisitPoolTest {
                         dir    = "down"
                         sync   = "fetch"
                         filter = { "kinds": [1] }
-                        syncableRelays = {}
+                        relaySource = [
+                            {
+                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                            }
+                        ]
                         verifySeconds  = 5
                     }
                 }

@@ -243,12 +243,15 @@ class SyncEngine(
 
     /**
      * The fork's arithmetic: a dynamic stream whose relay list comes ENTIRELY
-     * from the monitor's verdicts (a syncable source, no parsed sources) is a
-     * visit-mode stream; one still parsing relay lists keeps the legacy pass
-     * machinery. Both at once — `syncableRelays` beside a `relaySource` — is
-     * the union path through the legacy engine, for the deployment mid-crossing.
+     * from the monitor's verdicts (every relaySource entry a kind-30166
+     * verdict source) is a visit-mode stream; one still scanning relay-list
+     * events keeps the legacy pass machinery. Both shapes in one list is the
+     * union path through the legacy engine, for the deployment mid-crossing.
      */
-    private val visitStreams = dynamicStreams.filter { it.dynamic?.syncable != null && it.dynamic.sources.isEmpty() }
+    private val visitStreams =
+        dynamicStreams.filter { s ->
+            s.dynamic != null && s.dynamic.sources.isNotEmpty() && s.dynamic.scanSources.isEmpty()
+        }
     private val legacyStreams = dynamicStreams - visitStreams.toSet()
 
     // The relays we hold a live subscription on; a dynamic sync must not drop

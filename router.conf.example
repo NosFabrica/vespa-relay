@@ -27,9 +27,10 @@
 #             cares about is one tag: ["s", "syncable"]. Everything is measured
 #             on the socket; NIP-11 is never trusted for a decision.
 #
-#   streams   mirror events. A stream with `syncableRelays` builds its relay
-#             list from those verdicts — one indexed query, no relay-list
-#             parsing, no per-worker guards — and rides the rotating pool:
+#   streams   mirror events. A stream whose relaySource consults those
+#             kind-30166 records builds its relay list from the verdicts — one
+#             indexed query, no relay-list parsing, no per-worker guards — and
+#             rides the rotating pool:
 #             socket-owning workers, catch-up pages, then a LIVE TAIL on the
 #             open socket so new events arrive the moment they exist.
 #
@@ -44,7 +45,9 @@
 #   dir             "down" pulls into this relay, "up" pushes ours out
 #   filter          the NIP-01 filter to mirror — kinds, since/until
 #   urls            static relays to talk to (bypass the monitor's verdicts)
-#   syncableRelays  build the relay list from fresh `syncable` verdicts
+#   relaySource     where the relay list comes from: scans of relay-list events
+#                   (10002, 10009, ...), or the monitor's own kind-30166
+#                   verdicts — `filter = { "kinds": [30166], "#s": ["syncable"] }`
 #   sync            how to ask (see below)
 #   verifySeconds   fetch forward, audit the past: when a relay's last verified
 #                   full pass is older than this, its next visit reconciles the
@@ -135,8 +138,18 @@ streams {
         dir  = "down"
         sync = "fetch"
         filter = { "kinds": [0, 10002, 10040] }
-        syncableRelays = {}        # fresh `syncable` verdicts are the relay list
-        verifySeconds  = 604800    # weekly negentropy audit of the covered past
+        # The monitor's verdicts ARE the relay list: our own kind-30166
+        # records, admitting every relay whose indexed `s` tag says syncable
+        # and whose verdict is fresher than maxAgeSeconds (measured on the
+        # verdict tag's own stamp — record createdAt proves nothing). Only OUR
+        # monitor identity is consulted; a stranger's 30166s never enter.
+        relaySource = [
+            {
+                filter = { "kinds": [30166], "#s": ["syncable"] }
+                maxAgeSeconds = 50400  # two 6h sweeps + slack
+            }
+        ]
+        verifySeconds = 604800  # weekly negentropy audit of the covered past
     }
 
     assertions {
@@ -193,7 +206,11 @@ streams {
             34550, 35128, 35129, 36787, 38000, 38192, 38383, 39000, 39089,
             39092, 39701, 40002, 40100, 45001, 45003, 48106
         ] }
-        syncableRelays = {}
-        verifySeconds  = 604800
+        relaySource = [
+            {
+                filter = { "kinds": [30166], "#s": ["syncable"] }
+            }
+        ]
+        verifySeconds = 604800
     }
 }

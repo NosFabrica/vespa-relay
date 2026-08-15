@@ -24,11 +24,12 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelayExcludes
+import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncDirection
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
-import com.nosfabrica.vespa.relay.router.config.SyncableSource
+import com.nosfabrica.vespa.relay.router.config.VerdictSource
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.FitnessPass
@@ -169,11 +170,17 @@ class VisitPoolLiveProbe {
                                     trusted = false,
                                     dynamic =
                                         RelayDiscoveryConfig(
-                                            sources = emptyList(),
+                                            sources =
+                                                listOf(
+                                                    RelaySource(
+                                                        selects = emptyList(),
+                                                        filter = Filter(kinds = listOf(30166), tags = mapOf("s" to listOf("syncable"))),
+                                                        verdicts = VerdictSource(3600),
+                                                    ),
+                                                ),
                                             refreshSeconds = 3600,
                                             concurrency = 4,
                                             exclude = RelayExcludes.NONE,
-                                            syncable = SyncableSource(3600),
                                         ),
                                     sync = SyncMode.FETCH,
                                 ),

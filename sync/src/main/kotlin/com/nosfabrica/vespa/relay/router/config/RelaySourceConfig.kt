@@ -136,21 +136,13 @@ data class RelayDiscoveryConfig(
      * this is only about refusing to read an implausible list at all.
      */
     val maxRelaysPerList: Int? = null,
-    /**
-     * Build the relay list from the monitor's own kind-30166 verdicts instead
-     * of (or alongside) parsing relay-list events: every url whose record
-     * carries a fresh `["s", "syncable", …]` from OUR monitor identity.
-     *
-     * This is not a gate in front of a source — it IS the source. The monitor
-     * plane earns the verdicts on its own clock (the fold, the consistency
-     * pass, [com.nosfabrica.vespa.relay.router.discovery.FitnessPass]); a
-     * stream configured this way never parses a 10002 again and its discovery
-     * collapses to one indexed query. Configured sources still union in, which
-     * is what a migration needs and costs nothing once the monitor covers the
-     * same ground.
-     */
-    val syncable: SyncableSource? = null,
 ) {
+    /** Every source that consults the monitor's kind-30166 verdicts — see [RelaySource.verdicts]. */
+    val verdictSources: List<VerdictSource> get() = sources.mapNotNull { it.verdicts }
+
+    /** Every source that scans relay-list events with selects — the parsed half. */
+    val scanSources: List<RelaySource> get() = sources.filter { it.verdicts == null }
+
     /**
      * How long the stream sleeps after a cycle it actually ran — the recycle
      * gap where one is configured, the refresh period otherwise.
@@ -163,17 +155,18 @@ data class RelayDiscoveryConfig(
 }
 
 /**
- * The one knob a syncable source has: how stale a verdict may be and still
- * admit its relay.
+ * A relaySource that consults the monitor's own NIP-66 records: the verified
+ * read behind a `relaySource` entry whose filter asks for kind 30166.
  *
- * Freshness is read off the VERDICT TAG's own measured-at stamp, never the
- * record's `createdAt` — quartz's passive monitor rewrites the record on every
+ * The knob is how stale a verdict may be and still admit its relay. Freshness
+ * is read off the VERDICT TAG's own measured-at stamp, never the record's
+ * `createdAt` — quartz's passive monitor rewrites the record on every
  * connection it opens, so `createdAt` says "we talked recently", which for a
  * relay in the fan-out is always true and for a verdict is no evidence at all.
  * A stale `syncable` is no verdict: the relay simply waits for the monitor's
  * next sweep, the same as a url the monitor has never seen.
  */
-data class SyncableSource(
+data class VerdictSource(
     val maxAgeSeconds: Long = DEFAULT_MAX_AGE_SECONDS,
 ) {
     companion object {
@@ -277,14 +270,28 @@ internal fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
 }
 
 /**
- * One scan of the store: the [selects] saying which relay urls to pull out,
- * and a NIP-01 [filter] saying which events to pull them from. The filter runs
- * once and every select is applied to what it returns, so a whole shelf of
- * relay-list kinds costs one query rather than one each.
+ * One entry of a stream's `relaySource` list, in one of two shapes.
+ *
+ * A SCAN: the [selects] saying which relay urls to pull out, and a NIP-01
+ * [filter] saying which events to pull them from. The filter runs once and
+ * every select is applied to what it returns, so a whole shelf of relay-list
+ * kinds costs one query rather than one each.
+ *
+ * A VERDICT SOURCE ([verdicts] set): the filter asks for the monitor's own
+ * kind-30166 records — `{ "kinds": [30166], "#s": ["syncable"] }` — and the
+ * relay list is every url whose record carries a fresh `syncable` from OUR
+ * monitor identity. No selects: NIP-66 fixes the url in the `d` tag, and the
+ * read is the VERIFIED path ([discovery.RelayDiscovery.syncable] — epoch,
+ * measured-at freshness, the one admitting value), not a generic tag scan; a
+ * generic scan would admit a verdict whose evidence rules have since changed,
+ * or one nobody has re-taken for a month. This is not a gate in front of a
+ * source — it IS the source: the monitor earns the verdicts on its own clock
+ * and the stream's discovery collapses to one indexed query.
  */
 data class RelaySource(
     val selects: List<RelaySelect>,
     val filter: Filter,
+    val verdicts: VerdictSource? = null,
 )
 
 /**

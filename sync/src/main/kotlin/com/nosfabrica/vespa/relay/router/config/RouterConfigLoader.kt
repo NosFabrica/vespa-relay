@@ -25,6 +25,7 @@ import com.typesafe.config.ConfigFactory
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import java.io.File
 import java.util.regex.PatternSyntaxException
 
@@ -401,17 +402,9 @@ object RouterConfigLoader {
         s: Config,
         defaults: RelaySourceDefaults,
     ): RelayDiscoveryConfig? {
-        // `syncableRelays` is the verdict-built list — a dynamic stream in its
-        // own right, with or without parsed sources beside it.
-        if (!s.hasPath("relaySource") && !s.hasPath("syncableRelays")) return null
-        val sources =
-            if (s.hasPath("relaySource")) {
-                s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
-            } else {
-                emptyList()
-            }
-        val syncable = parseSyncable(stream, s)
-        require(sources.isNotEmpty() || syncable != null) { "router: stream '$stream' has an empty `relaySource` list" }
+        if (!s.hasPath("relaySource")) return null
+        val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
+        require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
         return RelayDiscoveryConfig(
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
@@ -422,30 +415,7 @@ object RouterConfigLoader {
             exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
-            syncable = syncable,
         )
-    }
-
-    /**
-     * `syncableRelays = {}` or `syncableRelays = { maxAgeSeconds = 7200 }` —
-     * build the stream's relay list from the monitor's own fresh `syncable`
-     * verdicts. An empty block is the ordinary spelling: the default freshness
-     * bound is sized to the monitor's sweep, and there is nothing else to say.
-     */
-    private fun parseSyncable(
-        stream: String,
-        s: Config,
-    ): SyncableSource? {
-        if (!s.hasPath("syncableRelays")) return null
-        val block = s.getConfig("syncableRelays")
-        val maxAge =
-            if (block.hasPath("maxAgeSeconds")) {
-                block.getLong("maxAgeSeconds").coerceAtLeast(60L)
-            } else {
-                SyncableSource.DEFAULT_MAX_AGE_SECONDS
-            }
-        require(maxAge >= 60L) { "router: stream '$stream' sets syncableRelays.maxAgeSeconds under a minute — no sweep is that fast" }
-        return SyncableSource(maxAgeSeconds = maxAge)
     }
 
     /**
@@ -469,12 +439,17 @@ object RouterConfigLoader {
             )
         }
 
-    /** One `{ select = [ ], filter = { } }` entry: what to pull out, and the scan to pull it from. */
+    /**
+     * One `{ select = [ ], filter = { } }` entry: what to pull out, and the
+     * scan to pull it from — or, when the filter asks for kind 30166, the
+     * monitor's own verdicts, which take the verified read instead of a scan.
+     */
     private fun parseRelaySource(
         stream: String,
         s: Config,
     ): RelaySource {
         require(s.hasPath("filter")) { "router: stream '$stream' has a relaySource entry with no `filter { }`" }
+        verdictSource(stream, s)?.let { return it }
         require(s.hasPath("select")) { "router: stream '$stream' has a relaySource entry with no `select [ ]`" }
         val filter = parseFilter(s.getConfig("filter"))
         val selects = s.getConfigList("select").map { parseRelaySelect(stream, it) }
@@ -493,6 +468,63 @@ object RouterConfigLoader {
                 "or it would load every matching event in the store at once"
         }
         return RelaySource(selects = selects, filter = filter)
+    }
+
+    /**
+     * A relaySource entry whose filter asks for kind 30166 — the monitor's own
+     * NIP-66 verdicts as the relay list:
+     *
+     *     relaySource = [
+     *         {
+     *             filter = { "kinds": [30166], "#s": ["syncable"] }
+     *             maxAgeSeconds = 50400
+     *         }
+     *     ]
+     *
+     * Returns null when the filter is not a verdict ask, letting the scan
+     * parser take it. The spelling is the same NIP-01 filter every source
+     * uses, but the READ is not a scan — it is the verified path
+     * ([discovery.RelayDiscovery.syncable]: our monitor identity, the verdict
+     * epoch, the tag's own measured-at stamp against `maxAgeSeconds`) — so
+     * everything a scan could express and the verified read cannot honor is
+     * refused here, at the one place a human types it.
+     */
+    private fun verdictSource(
+        stream: String,
+        s: Config,
+    ): RelaySource? {
+        val filter = parseFilter(s.getConfig("filter"))
+        if (filter.kinds != listOf(RelayDiscoveryEvent.KIND)) {
+            require(filter.kinds?.contains(RelayDiscoveryEvent.KIND) != true) {
+                "router: stream '$stream' has a relaySource mixing kind ${RelayDiscoveryEvent.KIND} with others — " +
+                    "verdicts are a verified read, not a scan, so they need their own entry"
+            }
+            return null
+        }
+        require(!s.hasPath("select")) {
+            "router: stream '$stream' has a `select` on its kind-${RelayDiscoveryEvent.KIND} relaySource — " +
+                "NIP-66 fixes the url in the `d` tag and the verdict is verified, not scanned; drop the select"
+        }
+        val verdicts = filter.tags?.get("s")
+        require(verdicts == null || verdicts == listOf("syncable")) {
+            "router: stream '$stream' asks for verdicts $verdicts — `syncable` is the only value that " +
+                "admits a relay to a sync stream; the refusals are diagnoses, not relay lists"
+        }
+        require(filter.authors == null) {
+            "router: stream '$stream' names `authors` on its verdict source — verdicts are trusted from " +
+                "this router's own monitor identity only; third-party monitors are not supported yet"
+        }
+        require(filter.since == null && filter.until == null && filter.limit == null) {
+            "router: stream '$stream' bounds its verdict source with since/until/limit — freshness is " +
+                "measured on the verdict tag's own stamp, so say `maxAgeSeconds` on the source instead"
+        }
+        val maxAge =
+            if (s.hasPath("maxAgeSeconds")) {
+                s.getLong("maxAgeSeconds").coerceAtLeast(60L)
+            } else {
+                VerdictSource.DEFAULT_MAX_AGE_SECONDS
+            }
+        return RelaySource(selects = emptyList(), filter = filter, verdicts = VerdictSource(maxAgeSeconds = maxAge))
     }
 
     /** One `{ kind = ..., tag = ..., index = ..., where = [ ] }` entry of a source's `select` list. */

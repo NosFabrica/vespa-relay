@@ -69,7 +69,10 @@ class RouterConfExamplesTest {
         // and it fails silently — there is no error, just no relays.
         val mirrored = example.streams.flatMap { it.filter.kinds.orEmpty() }.toSet()
         example.dynamicStreams().forEach { stream ->
-            stream.dynamic!!.sources.forEach { source ->
+            // Scans only: a verdict source reads the monitor's own kind-30166
+            // records, which the monitor WRITES into this store — no stream
+            // mirrors them, and none needs to.
+            stream.dynamic!!.scanSources.forEach { source ->
                 source.filter.kinds.orEmpty().forEach { kind ->
                     assertTrue(kind in mirrored, "stream '${stream.name}' scans kind $kind, which no stream mirrors")
                 }
@@ -149,7 +152,7 @@ class RouterConfExamplesTest {
         // stream then asks them for what a group actually holds.
         assertTrue(
             example.streams.any {
-                it.dynamic?.syncable != null &&
+                it.dynamic?.verdictSources?.isNotEmpty() == true &&
                     it.filter.kinds
                         .orEmpty()
                         .containsAll(listOf(9, 11, 1111, 39000))

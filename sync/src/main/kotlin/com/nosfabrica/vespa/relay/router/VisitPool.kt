@@ -99,7 +99,7 @@ internal class VisitPool(
     private val scope: CoroutineScope,
     /** Whose 30166 verdicts build the roster — see [RelayDiscovery.syncable]. */
     private val monitorAuthor: String?,
-    /** The visit-mode streams: dynamic, with a syncable source. */
+    /** The visit-mode streams: every relaySource entry a kind-30166 verdict source. */
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
     /**
@@ -314,7 +314,8 @@ internal class VisitPool(
     private suspend fun rosterLoop() {
         val cadence =
             streams
-                .mapNotNull { it.dynamic?.syncable?.maxAgeSeconds }
+                .flatMap { it.dynamic?.verdictSources.orEmpty() }
+                .map { it.maxAgeSeconds }
                 .minOrNull()
                 ?.let { (it * 1000L / 2).coerceAtLeast(60_000L) } ?: 300_000L
         while (scope.isActive) {
@@ -347,17 +348,21 @@ internal class VisitPool(
         val next = HashMap<NormalizedRelayUrl, MutableList<SyncStream>>()
         for (stream in streams) {
             val dynamic = stream.dynamic ?: continue
-            val source = dynamic.syncable ?: continue
-            val certified =
-                RelayDiscovery.syncable(
-                    store,
-                    monitorAuthor = author,
-                    maxAgeSeconds = source.maxAgeSeconds,
-                    exclude = dynamic.exclude,
-                    skip = setOfNotNull(store.relay),
-                    allowOnion = tor != null,
-                )
-            for (relay in certified) next.getOrPut(relay.url) { mutableListOf() } += stream
+            for (source in dynamic.verdictSources) {
+                val certified =
+                    RelayDiscovery.syncable(
+                        store,
+                        monitorAuthor = author,
+                        maxAgeSeconds = source.maxAgeSeconds,
+                        exclude = dynamic.exclude,
+                        skip = setOfNotNull(store.relay),
+                        allowOnion = tor != null,
+                    )
+                for (relay in certified) {
+                    val wanting = next.getOrPut(relay.url) { mutableListOf() }
+                    if (stream !in wanting) wanting += stream
+                }
+            }
         }
         val previous = roster.keys
         roster = next

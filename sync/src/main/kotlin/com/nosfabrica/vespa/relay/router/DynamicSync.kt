@@ -142,8 +142,8 @@ internal class DynamicSync(
     private val sockets: RelaySockets,
     private val probe: ReachabilityProbe,
     /**
-     * Whose kind-30166 verdicts a [SyncableSource] stream trusts: our own
-     * monitor identity. Null when there is no signer — and then a syncable
+     * Whose kind-30166 verdicts a [VerdictSource] stream trusts: our own
+     * monitor identity. Null when there is no signer — and then a verdict
      * source yields nothing, loudly, because a stream configured to run on
      * verdicts nobody here can write is a stream that would otherwise idle
      * silently forever.
@@ -566,16 +566,16 @@ internal class DynamicSync(
                 // reading when something can dial them.
                 allowOnion = tor != null,
             )
-        // The verdict-built half of the list, where one is configured: every
-        // url our monitor currently certifies syncable, from one indexed
-        // query. Unioned with the parsed sources rather than replacing them —
-        // a migration runs both, and once the monitor covers the same ground
-        // the parsed half contributes nothing but its query cost. Parsed
-        // entries win the union so their narrows survive: the syncable side
-        // never carries one.
+        // The verdict-built half of the list, where a kind-30166 source is
+        // configured: every url our monitor currently certifies syncable,
+        // from one indexed query. Unioned with the scanned sources rather
+        // than replacing them — a migration runs both, and once the monitor
+        // covers the same ground the scanned half contributes nothing but its
+        // query cost. Scanned entries win the union so their narrows survive:
+        // the verdict side never carries one.
         val certified =
-            dynamic.syncable
-                ?.let { source ->
+            dynamic.verdictSources
+                .flatMap { source ->
                     val author = monitorAuthor
                     if (author == null) {
                         // Configured to trust verdicts nobody here can write.
@@ -583,7 +583,7 @@ internal class DynamicSync(
                         // idling on an empty certified list looks exactly like a
                         // network with no syncable relays.
                         System.err.println(
-                            "router: ${stream.name} has a syncable relay source but no signer — no monitor identity, no verdicts, no relays from it",
+                            "router: ${stream.name} has a verdict relay source but no signer — no monitor identity, no verdicts, no relays from it",
                         )
                         emptyList()
                     } else {
@@ -596,7 +596,7 @@ internal class DynamicSync(
                             allowOnion = tor != null,
                         )
                     }
-                }.orEmpty()
+                }.distinctBy { it.url }
         val discovered =
             if (certified.isEmpty()) {
                 parsed
@@ -607,7 +607,7 @@ internal class DynamicSync(
         if (certified.isNotEmpty()) {
             System.err.println(
                 "router: ${stream.name} — ${certified.size} relay(s) certified syncable" +
-                    " (verdicts fresher than ${dynamic.syncable?.maxAgeSeconds}s), ${parsed.size} from parsed sources",
+                    " (verdicts fresher than ${dynamic.verdictSources.minOf { it.maxAgeSeconds }}s), ${parsed.size} from parsed sources",
             )
         }
         // Before the fan-out, and before the snapshot it sizes itself

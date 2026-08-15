@@ -106,7 +106,7 @@ data class RouterConfig(
  * `relaySource` does — every relay list in the protocol is a tag with a url at
  * a fixed offset — but they feed the PROBE PASSES (fold, consistency,
  * fitness), whose verdicts land on kind-30166 records, where a
- * [SyncableSource] stream then finds its relay list. A deployment can thus
+ * [VerdictSource] stream then finds its relay list. A deployment can thus
  * move every ounce of relay-list parsing off the streams and onto this block.
  *
  * Candidates derived here UNION with whatever the streams' own parsed sources

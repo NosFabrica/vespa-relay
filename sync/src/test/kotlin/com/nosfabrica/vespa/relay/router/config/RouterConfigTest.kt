@@ -397,7 +397,7 @@ class RouterConfigTest {
         }
         // Replaceable and addressable kinds are one event per author — safe whole.
         RouterConfigLoader.parse(sourced("""{ "kinds": [10002] }"""))
-        RouterConfigLoader.parse(sourced("""{ "kinds": [30166] }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [30000] }"""))
     }
 
     @Test
@@ -1098,10 +1098,11 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a stream may run entirely on the monitor's syncable verdicts`() {
-        // No relaySource at all: the verdict-built list IS the source, which
-        // is the whole point of the monitor split — this stream never parses
-        // a 10002 again.
+    fun `a relaySource asking for kind 30166 is the monitor's verdicts, verified`() {
+        // The verdict-built list IS a relaySource — the whole point of the
+        // monitor split is that this stream never scans a 10002 again, and
+        // there is no second config shape to learn: the same filter spelling,
+        // routed to the verified read instead of the tag scan.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -1110,14 +1111,60 @@ class RouterConfigTest {
                         dir    = "down"
                         sync   = "fetch"
                         filter = { "kinds": [1] }
-                        syncableRelays = {}
+                        relaySource = [
+                            {
+                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                maxAgeSeconds = 7200
+                            }
+                        ]
                     }
                 }
                 """.trimIndent(),
             )
-        val dynamic = cfg.streams.single().dynamic
-        assertEquals(emptyList(), dynamic!!.sources)
-        assertEquals(SyncableSource.DEFAULT_MAX_AGE_SECONDS, dynamic.syncable!!.maxAgeSeconds)
+        val dynamic = cfg.streams.single().dynamic!!
+        assertEquals(emptyList(), dynamic.scanSources)
+        assertEquals(7200L, dynamic.verdictSources.single().maxAgeSeconds)
+    }
+
+    @Test
+    fun `a verdict source rejects what its verified read cannot honor`() {
+        fun stream(source: String) =
+            """
+            streams {
+                s {
+                    dir    = "down"
+                    sync   = "fetch"
+                    filter = { "kinds": [1] }
+                    relaySource = [ $source ]
+                }
+            }
+            """.trimIndent()
+        // The "#s" left off entirely takes the default and the default age.
+        val bare = RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] } }"""))
+        assertEquals(
+            VerdictSource.DEFAULT_MAX_AGE_SECONDS,
+            bare.streams
+                .single()
+                .dynamic!!
+                .verdictSources
+                .single()
+                .maxAgeSeconds,
+        )
+        // A select would be a scan of records whose reading is verified, an
+        // author would trust a stranger's monitor, and a refusal verdict is a
+        // diagnosis rather than a relay list — each refused where it is typed.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""{ select = [ { tag = "d" } ], filter = { "kinds": [30166] } }"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["deadbeef"] } }"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#s": ["dead"] } }"""))
+        }
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166, 10002] } }"""))
+        }
     }
 
     @Test
@@ -1142,7 +1189,11 @@ class RouterConfigTest {
                         dir    = "down"
                         sync   = "fetch"
                         filter = { "kinds": [1] }
-                        syncableRelays = {}
+                        relaySource = [
+                            {
+                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                            }
+                        ]
                     }
                 }
                 """.trimIndent(),
@@ -1206,7 +1257,7 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `syncableRelays takes a freshness bound and unions with parsed sources`() {
+    fun `a verdict source rides alongside scanned sources during a migration`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -1215,8 +1266,11 @@ class RouterConfigTest {
                         dir    = "down"
                         sync   = "fetch"
                         filter = { "kinds": [1] }
-                        syncableRelays = { maxAgeSeconds = 7200 }
                         relaySource = [
+                            {
+                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                maxAgeSeconds = 7200
+                            },
                             {
                                 select = [ { kind = 10009, tag = "group", index = 2 } ]
                                 filter = { "kinds": [10009] }
@@ -1226,8 +1280,8 @@ class RouterConfigTest {
                 }
                 """.trimIndent(),
             )
-        val dynamic = cfg.streams.single().dynamic
-        assertEquals(7200L, dynamic!!.syncable!!.maxAgeSeconds)
-        assertEquals(1, dynamic.sources.size, "parsed sources ride alongside the verdicts during a migration")
+        val dynamic = cfg.streams.single().dynamic!!
+        assertEquals(7200L, dynamic.verdictSources.single().maxAgeSeconds)
+        assertEquals(1, dynamic.scanSources.size, "scanned sources ride alongside the verdicts during a migration")
     }
 }

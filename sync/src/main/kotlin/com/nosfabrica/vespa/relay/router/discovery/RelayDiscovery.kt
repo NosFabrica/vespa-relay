@@ -94,7 +94,10 @@ object RelayDiscovery {
         // rather than silently applied, because a cap set too low reads from
         // outside exactly like a store that holds nothing.
         var oversizedLists = 0
-        for (source in dynamic.sources) {
+        // Scan sources only: a verdict source's read is [syncable], the
+        // verified path — running its 30166 filter through the tag scan here
+        // would admit records with no freshness or epoch check at all.
+        for (source in dynamic.scanSources) {
             // A named tag with no bindings goes to the store's tags-only
             // projection, which streams one field instead of materializing
             // whole events (a 2.6M-event scan became the projection's walk).
@@ -195,7 +198,7 @@ object RelayDiscovery {
     }
 
     /**
-     * The relay list a [SyncableSource] stream runs on: every url whose
+     * The relay list a [VerdictSource] stream runs on: every url whose
      * kind-30166 record carries a FRESH `["s", "syncable", …]` from
      * [monitorAuthor] — one indexed query where parsing relay lists is a store
      * walk of minutes.
