@@ -1934,6 +1934,39 @@ The seven-day anchor is not there to let a relay converge — it is there to
 remove OUR anchor from the list of explanations, so a failure cannot be blamed
 on new events, indexing lag, or replication.
 
+**Most of a candidate set is never decided, and that is the normal state rather
+than a fault.** A pass dials its whole set — the per-pass budget was dropped —
+and on a discovered corpus it decides a few hundred urls out of several
+thousand, because the rest cannot be measured at all. That ratio on its own
+("595 of 8,172 checked for consistency") reads as a gate that is stuck, so the
+urls with no verdict are counted by REASON — `ConsistencyPass.Unmeasured`, seven
+of them, in two families:
+
+| about us | about the far end |
+|---|---|
+| declined by our own transport | never answered a REQ |
+| the probe failed mid-walk | answered one of the two asks, not both |
+| | refused our credentials |
+| | answered, but served no filter we know |
+| | too few events to judge on |
+
+`report` publishes them as counts of URLS, so the candidate set divides exactly
+once: `candidates = foldedAway + consistent + inconsistent + unmeasured`, and
+`unmeasured` is the sum of those reasons. `ConsistencyReportTest` pins that
+identity and one test per reason; the stats card draws the whole thing as an
+icicle (`funnelOf` in `/web/shared/sync.js`), every level a share of the same
+width so a slice sits under the slice it subdivides. A level whose members do
+not sum draws an `unattributed` slice rather than a gap — which is what a
+router older than the partition produces, and what any future arithmetic slip
+would.
+
+Two things that partition made visible and then fixed. `dialled` was
+`wanted.size`, so urls the transport declined were reported as dials that never
+happened. And an auth refusal fell through to the kinds fallback anyway — two
+more REQs into a wall we had already been shown, per url, per pass — because
+`walkPair` flattened the refusal into "proved nothing" before the caller could
+see it; see `AliasProbe.window`, which is `fingerprint` keeping that one bit.
+
 **Why removal rather than a downgrade**, which is what an earlier draft of this
 section argued for: a relay whose window is a different slice each time holds no
 stable cursor, so its band never closes and every cycle re-downloads what the
@@ -1986,8 +2019,9 @@ is not the current one — which is exactly the "no verdict" state that makes
 Bump `FOLD_EPOCH` (or `CONSISTENCY_EPOCH`, versioned separately because it is a
 separate dial) **in the same commit as any change to what a fingerprint
 concludes**, and never for logging, budget or ordering: the cost is a full
-re-fingerprint of the store, spread over `probesPerCycle` per pass, during which
-every un-re-measured url is dialled unfolded. Nothing has to be deleted and no
+re-fingerprint of the store in ONE pass — there is no per-pass budget to spread
+it over any more — `DEFAULT_CONCURRENCY` urls at a time, during which every
+un-re-measured url is dialled unfolded. Nothing has to be deleted and no
 operator has to intervene — `edit` overwrites the old tag with the new answer as
 each group is decided.
 

@@ -385,6 +385,16 @@ internal object SyncProgressReport {
         return buildJsonObject {
             put("name", name)
             put("candidates", num(o["candidates"]) ?: 0)
+            // The other three members of the partition, carried only where the
+            // router wrote them. NOT defaulted to zero: the alias fold measures
+            // no stability verdicts and a router older than the partition
+            // measured none either, and in both cases a zero here would be a
+            // measurement neither of them took — the card draws "0 refused as
+            // inconsistent" from it, which is a claim. Absent, the funnel reads
+            // it as an unattributed slice and says so.
+            num(o["foldedAway"])?.let { put("foldedAway", it) }
+            num(o["consistent"])?.let { put("consistent", it) }
+            num(o["inconsistent"])?.let { put("inconsistent", it) }
             // The progress number: what still has no verdict. Defaulted to
             // `candidates` rather than to 0 when a file does not say — "nothing
             // left to measure" is a strong claim and an unreadable row must not
@@ -420,6 +430,7 @@ internal object SyncProgressReport {
                     add(
                         buildJsonObject {
                             put("reason", reason)
+                            put("urls", num(row["urls"]) ?: 0)
                             put("hosts", num(row["hosts"]) ?: 0)
                             putJsonArray("examples") {
                                 for (h in (row["examples"] as? JsonArray).orEmpty().take(MAX_UNDECIDED_EXAMPLES)) {
@@ -627,6 +638,10 @@ internal object SyncProgressReport {
             "knownDead",
             // ingest's one loss counter
             "lostToStore",
+            // where the two probe passes' candidate set came from — the funnel's
+            // mouth, above everything their `streams` rows partition
+            "sourced",
+            "heldOutDead",
         )
 
     /**

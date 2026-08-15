@@ -561,6 +561,58 @@ class SyncProgressReportTest {
             }
 
     @Test
+    fun `every member of a probe pass's partition can be drawn by the card`() {
+        // The same drift as the outcome partition below, on the newer one. A
+        // probe pass's row divides its candidate set — folded, consistent,
+        // inconsistent, and what is left — and the funnel on the card is drawn
+        // from members that sum to the total BY CONSTRUCTION. A member the page
+        // never reads does not fail: it lands in the funnel's `unattributed`
+        // slice, which is honest and is not the same as being drawn.
+        val card = card()
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "consistency", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
+                   "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
+                   "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 22, "hosts": 7,
+                                              "examples": ["dead.example"]}], "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val published = row.keys + (row["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject.keys
+        val undrawn = published.filterNot { card.contains(it) }
+        assertEquals(emptyList(), undrawn, "published in the pass's partition, drawn nowhere on the card: $undrawn")
+    }
+
+    @Test
+    fun `a pass that measures no verdicts publishes none, rather than zero of them`() {
+        // The alias fold has no stability verdicts to report, and neither has a
+        // router written before the partition existed. A zero would be a
+        // measurement neither of them took — the card draws `0 refused as
+        // inconsistent` from it, which is a claim about every relay in the
+        // fan-out — so the members are carried only where the router wrote them.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "aliasFold", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        assertEquals(
+            emptyList(),
+            listOf("foldedAway", "consistent", "inconsistent").filter { it in row },
+            "a verdict nobody measured must not be published as zero: $row",
+        )
+        // …and the members it DID write are still there, so this is an absence
+        // rather than a row that failed to read.
+        assertEquals(40, row["candidates"]!!.jsonPrimitive.int)
+    }
+
+    @Test
     fun `every outcome this object publishes can be drawn by the card`() {
         // The drift that produced the bug: `busy` was added to the partition,
         // summed into `accountedFor`, and never added to the card's

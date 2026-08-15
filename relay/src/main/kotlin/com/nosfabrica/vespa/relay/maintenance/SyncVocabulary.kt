@@ -436,7 +436,46 @@ internal object SyncVocabulary {
                 "Dials that pass spent: fingerprints for the alias fold, paired walks for the self-consistency gate. " +
                     "A pass measures its whole candidate set — there is no per-pass total — so `unmeasured` falls to " +
                     "what could not be DECIDED rather than to what there was budget for. What is left after a pass " +
-                    "is a host on a cooldown or one that cannot answer twice, and `undecided` names it.",
+                    "is a host on a cooldown or one that cannot answer twice, and `undecided` names it. Urls a socket " +
+                    "was actually opened for: one the transport declined costs no connection and is not counted here, " +
+                    "though it IS counted under `unmeasured` and named in `undecided`.",
+            )
+            put(
+                "sourced",
+                "Every url the streams' relay lists yielded for a probe pass, before anything was held out — the " +
+                    "widest number this router has about the network it can see, and the one `candidates` is a share " +
+                    "of. Per PASS and over the union of every stream, so it is not the sum of the streams' own " +
+                    "`discovered`: two streams routinely find the same url and it is one url here.",
+            )
+            put(
+                "heldOutDead",
+                "…of those, how many carried a current signed unreachability record and were dropped before either " +
+                    "probe pass saw them. `sourced - heldOutDead = candidates`. Not permanent: the record ages out " +
+                    "(24h) or the host delivers something, and the url is back in the next derivation. Distinct from " +
+                    "the monitor's own `knownDead`, which is the size of the whole dead set rather than its overlap " +
+                    "with what the streams asked for.",
+            )
+            put(
+                "foldedAway",
+                "Urls of the candidate set an ALIAS FOLD has already taken out of the fan-out, and therefore the " +
+                    "first slice of the partition: a folded url is never measured for stability, so it can carry no " +
+                    "verdict here whatever it carried before it folded. First in precedence for that reason — a url " +
+                    "that was measured and later folded counts once, here.",
+            )
+            put(
+                "consistent",
+                "Urls of the candidate set that currently carry a STABLE verdict: measured, and they answered one " +
+                    "filter at a week-old anchor the same way twice. Standing state, not this pass's work — it " +
+                    "includes every verdict read back from the store at boot, which is why it can be large beside a " +
+                    "`decided` of zero. These are the urls the fan-out is allowed to hold a cursor against.",
+            )
+            put(
+                "inconsistent",
+                "…and the ones measured and FAILED: a url that answered the same filter two different ways. Every one " +
+                    "of them is refused by every stream's fan-out, because a relay whose window is a fresh slice " +
+                    "holds no stable cursor and every cycle re-serves what the last one took. The per-cycle count of " +
+                    "the same finding is `refusedUnstable`. Expires with its record, so a server that is fixed " +
+                    "rejoins on its own.",
             )
             put(
                 "decided",
@@ -445,12 +484,17 @@ internal object SyncVocabulary {
             )
             put(
                 "undecided",
-                "WHICH HOSTS a probe pass left with nothing written down, grouped by why. Four causes end a group " +
-                    "that way — cooling down from an earlier failed pass, declined by our own transport, no url that " +
-                    "could be a yardstick, nothing to hold up against one — plus a host that cannot repeat itself, " +
-                    "and only that last one never recovers on its own. From outside the process " +
-                    "all of them are the same silence: a url still being dialled beside eleven siblings that folded. " +
-                    "`hosts` counts them and `examples` names a few, bounded with its own `omitted`.",
+                "WHY a probe pass left urls with nothing written down, grouped by cause and summing to `unmeasured`. " +
+                    "The FOLD ends a group five ways — cooling down from an earlier failed pass, declined by our own " +
+                    "transport, no url that could be a yardstick, nothing to hold up against one, and a host that " +
+                    "cannot repeat itself, of which only the last never recovers on its own. The STABILITY GATE ends " +
+                    "a url seven ways, in two families: about us (declined by our own transport, the probe failed " +
+                    "mid-walk) and about the far end (never answered a REQ, answered one of the two asks not both, " +
+                    "refused our credentials, answered but served no filter we know, too few events to judge on). " +
+                    "From outside the process all of them are the same silence, which is what this exists to end — " +
+                    "a corpus of dead urls being re-asked every six hours reads exactly like a gate that is stuck. " +
+                    "`urls` counts them, `hosts` says how many servers those urls are, `examples` names a few, and " +
+                    "`omitted` carries whatever either side dropped.",
             )
             put(
                 "lastPassAt",

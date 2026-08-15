@@ -54,6 +54,34 @@ internal class StreamWorld(
     override val sockets: AliasFolding.Sockets,
 ) : AliasMonitor.Source {
     /**
+     * What the last derivation started from and what it dropped — the two nodes
+     * ABOVE `candidates`, which nothing could see before.
+     *
+     * The candidate set is where both probe passes begin, so every number they
+     * publish is a share of it — and it is already a filtered set. A url a
+     * signed record calls dead never reaches them, so a reader watching the
+     * gate's coverage had no way to tell a corpus that shrank from one that was
+     * never that big. Held here rather than logged only, because the log line
+     * this pairs with rotates out of a container's buffer within the hour and
+     * the funnel it belongs to is drawn from the published document.
+     *
+     * Read live at snapshot time through [Processors.Handle.counts], for the
+     * reason that class documents: a copy kept in step by hand is the shape that
+     * produces a report disagreeing with the thing it reports on.
+     */
+    @Volatile
+    var lastDerivation: Derivation = Derivation()
+        private set
+
+    /** One derivation's arithmetic: `sourced - heldOutDead = candidates`. */
+    data class Derivation(
+        /** Every url the streams' relay lists yielded, before anything was held out. */
+        val sourced: Int = 0,
+        /** …of those, how many carried a current unreachability record. */
+        val heldOutDead: Int = 0,
+    )
+
+    /**
      * Urls a signed record already calls dead are held out: they cannot be
      * fingerprinted, so they cannot be folded, and dialling them is a connect
      * timeout spent re-learning what the record says. Not permanent — the record
@@ -61,6 +89,7 @@ internal class StreamWorld(
      *
      * Held out HERE rather than declined in [canDial], where the fold would
      * report it as `declined by our own transport` — a false statement about us.
+     * How many, and out of what, is [lastDerivation].
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
         val dead = monitor?.deadSet().orEmpty()
@@ -79,6 +108,7 @@ internal class StreamWorld(
             found.forEach { if (it.url !in dynamic.exclude && it.url != store.relay) all += it.url }
         }
         val live = all.filterNot { it in dead }
+        lastDerivation = Derivation(sourced = all.size, heldOutDead = all.size - live.size)
         System.err.println(
             "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
                 (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else ""),

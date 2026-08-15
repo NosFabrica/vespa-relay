@@ -820,6 +820,40 @@
   .sy-bg b { font-weight: 600; }
   .sy-bg em { font-style: normal; color: var(--muted); }
   .sy-bg s { text-decoration: none; color: var(--warn); }
+  /* EVERY DISCOVERED URL, DIVIDED — one row per level, each level a share of
+     the SAME width so a slice sits under the slice it subdivides. An icicle
+     rather than a stack of independent bars for exactly that: the reasons a url
+     has no verdict are a share of the corpus, and drawn against their own total
+     they would read as wide as it. */
+  .sy-funnel { grid-column: 1 / -1; margin: 8px 0 2px; }
+  .sy-fn-row { position: relative; height: 14px; margin-bottom: 2px; }
+  /* `min-width` because the slice that matters most is the smallest one:
+     `inconsistent` is twelve urls in seventeen thousand — 0.07%, which rounds
+     to nothing — and a fault drawn at zero pixels is a fault nobody sees. Two
+     pixels overlaps a neighbour by at most two pixels and leaves every slice's
+     POSITION exactly true, which is the property the alignment rests on. */
+  .sy-fn-row > i { position: absolute; top: 0; bottom: 0; min-width: 2px; border-radius: 2px; background: var(--bar); }
+  /* The four tones the levels use, and each is a claim: `good` is a relay we
+     can sync against, `warn` is a fault worth an operator's attention, `ours`
+     is a failure on THIS side (a transport we do not have, a probe that broke)
+     and must never colour like a relay misbehaving, and the default is a fact
+     that is neither. */
+  .sy-fn-row > i.good { background: var(--accent); }
+  .sy-fn-row > i.warn { background: var(--warn); }
+  .sy-fn-row > i.ours { background: var(--muted); opacity: .5; }
+  .sy-fn-row > i.mute { background: var(--bar); opacity: .55; }
+  .sy-fn-cap { font-size: 11.5px; color: var(--muted); margin: 1px 0 5px; }
+  .sy-fn-cap b { color: var(--text); font-weight: 600; }
+  .sy-fn-keys { display: flex; flex-wrap: wrap; gap: .1rem .8rem; font-size: 11.5px; color: var(--muted); }
+  .sy-fn-keys span { white-space: nowrap; font-variant-numeric: tabular-nums; }
+  .sy-fn-keys em, .sy-fn-keys i { font-style: normal; }
+  .sy-fn-keys i { color: var(--text); font-weight: 600; }
+  .sy-fn-keys b { display: inline-block; width: .5rem; height: .5rem; border-radius: 2px;
+                  vertical-align: -.01em; margin-right: .3rem; background: var(--bar); }
+  .sy-fn-keys b.good { background: var(--accent); }
+  .sy-fn-keys b.warn { background: var(--warn); }
+  .sy-fn-keys b.ours { background: var(--muted); opacity: .5; }
+  .sy-fn-keys b.mute { background: var(--bar); opacity: .55; }
   /* HOW MANY RELAYS REACH EACH POINT IN THE FRAME — the one picture that says
      whether coverage is deep or only recent, over every row at once. */
   .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
@@ -866,7 +900,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import { STUCK_LEG_SEC, constraintOf, isLive, legsOf, probeProgress } from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf, probeProgress } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1915,6 +1949,71 @@ function backgroundPanel(progress) {
     box.appendChild(el("em", null,
       `${p.phase || "unknown"}${p.nextInSec ? ` · next in ${fmtDur(p.nextInSec)}` : ""}`));
     box.appendChild(processorFact(p));
+    // FULL WIDTH, under the row it belongs to. The funnel divides one pass's
+    // candidate set and there is no version of it that fits in the third column
+    // beside a sentence.
+    const funnel = funnelPanel(p);
+    if (funnel) box.appendChild(funnel);
+  }
+  return box;
+}
+
+/**
+ * THE CANDIDATE SET, DIVIDED — every url the streams named, once, into what
+ * became of it and then into why.
+ *
+ * Drawn under the stability gate's line because that line is a ratio and a
+ * ratio is exactly what cannot be acted on: `595 of 8,172 checked` is the same
+ * number whether the other 7,577 are unreachable, auth-walled, thin or waiting
+ * on a pass that never ran, and those want four different responses. Every
+ * decision behind it — what the width is, where a slice sits, what to do when
+ * the arithmetic does not close — is `funnelOf` in `/web/shared/sync.js`, for
+ * the reason that module's head gives.
+ *
+ * The KEYS carry the numbers, and that is not redundancy with the bars: the
+ * slice that matters most here is `inconsistent`, which on a live corpus is
+ * twelve urls out of seventeen thousand and cannot be drawn at a width anyone
+ * can see. The bar shows the shape, the keys show the values, and neither is
+ * asked to do the other's job.
+ */
+function funnelPanel(p) {
+  const f = funnelOf(p);
+  // One level is the root and nothing else — a bar as wide as its own total,
+  // which says less than the sentence above it already does.
+  if (!f || f.levels.length < 2) return null;
+  const box = el("div", "sy-funnel");
+  for (const level of f.levels) {
+    const row = el("div", "sy-fn-row");
+    const keys = el("div", "sy-fn-keys");
+    for (const s of level.segments) {
+      const bar = el("i", s.tone || null);
+      bar.style.left = `${s.lead * 100}%`;
+      bar.style.width = `${s.share * 100}%`;
+      // The count first, then who they are, then the reason — rather than the
+      // reason inline, which collides with its own wording: several of them end
+      // in a preposition ("too few events to judge on") and read as "…judge on
+      // on 611 host(s)" the moment a host count follows.
+      const who = s.hosts ? ` on ${fmt(s.hosts)} host(s)` : "";
+      const eg = s.examples && s.examples.length ? ` (e.g. ${s.examples.join(", ")})` : "";
+      bar.title = `${fmt(s.value)} url(s)${who}: ${s.label}${eg}`;
+      row.appendChild(bar);
+
+      const key = el("span");
+      key.appendChild(el("b", s.tone || null));
+      key.appendChild(el("em", null, `${s.label} `));
+      key.appendChild(el("i", null, fmt(s.value)));
+      // The document's own words where the slice is one of ours; the router's
+      // free-text reason is its own explanation and needs no gloss.
+      const why = term(s.key);
+      if (why) key.title = why;
+      keys.appendChild(key);
+    }
+    box.appendChild(el("div", "sy-fn-cap", level.title));
+    box.appendChild(row);
+    box.appendChild(keys);
+  }
+  if (f.omitted) {
+    box.appendChild(el("div", "sy-fn-cap", `${fmt(f.omitted)} more reason(s) not drawn — see the JSON`));
   }
   return box;
 }
@@ -1968,6 +2067,18 @@ function processorFact(p) {
     // the one the glossary can be checked against.
     add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} relay(s) ${PROBE_FOR[p.name] || "checked"}` +
         `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
+    // THE VERDICTS, beside the ratio. `checked` on the stability gate counts
+    // urls the FOLD removed as well as urls it measured, so on its own it
+    // overstates what the gate knows — and the count of relays this router
+    // actually refuses, which is the whole point of the pass, appeared nowhere
+    // on this page at all. Drawn only where published, so the fold's row and
+    // any router older than the partition are unchanged.
+    if (probe.consistent != null) add(`${fmt(probe.consistent)} consistent`, "consistent");
+    // LOUD only when it has found something: at zero it is a gate that has
+    // refused nobody, which is not a fault to shout about.
+    if (probe.inconsistent != null) {
+      add(`${fmt(probe.inconsistent)} refused as inconsistent`, "inconsistent", probe.inconsistent > 0);
+    }
     return cell;
   }
   if (p.knownDead != null) {

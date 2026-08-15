@@ -69,12 +69,25 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * ## Cost
  *
- * Two REQs per url, once a month per url, [concurrency] in flight and no
- * per-pass total — see [DEFAULT_PROBES_PER_CYCLE]. Everything downloaded goes to the caller's
+ * Two REQs per url, once a month per url, [concurrency] in flight and NO
+ * per-pass total: the budget this used to carry was dropped so that a pass
+ * measures its whole set. Everything downloaded goes to the caller's
  * ingest, exactly as [AliasProbe]'s own doc describes — on a stable relay the
  * window was worth having, and on an unstable one the store drops it as
  * already-held. The pass is not a tax on the mirror; it is a sync that also
  * decides.
+ *
+ * ## What it says about the urls it could NOT decide
+ *
+ * Everything. A pass over a discovered corpus decides a few hundred urls out of
+ * several thousand, and for a long time the other several thousand were one
+ * undifferentiated number — which reads as a gate that is not getting anywhere,
+ * when most of it is a corpus of dead and unservable urls being re-asked every
+ * six hours. [Unmeasured] names the seven ways a url reaches the end of a pass
+ * with nothing written down, and [report] publishes them as counts of urls, so
+ * `candidates` divides exactly once and a reader can see which fix each slice
+ * needs. That partition is the whole point: three of the seven are about us,
+ * four are about the far end, and they were indistinguishable.
  */
 class ConsistencyPass(
     private val consistency: RelayConsistency,
@@ -90,6 +103,60 @@ class ConsistencyPass(
     /** Urls the last [adopt] saw a fold verdict for — never worth measuring. */
     @Volatile
     private var folded: Set<NormalizedRelayUrl> = emptySet()
+
+    /**
+     * EVERY WAY A URL SURVIVES A PASS WITH NOTHING WRITTEN DOWN.
+     *
+     * One of these is assigned to every url the pass attempted and did not
+     * decide, so the seven counts sum to `unmeasured` exactly — see [report].
+     * They are not interchangeable and that is the reason for having them:
+     *
+     *  - [TRANSPORT] and [FAILED] are about US. A `.onion` on a router with no
+     *    Tor, a host the TCP pre-probe found nothing listening on, our own
+     *    socket giving up. No relay has done anything.
+     *  - [SILENT], [AUTH_REFUSED] and [FILTER_REFUSED] are about the far end
+     *    REFUSING, in three ways that want three different responses: nothing
+     *    came back at all, our credentials were turned down, or the server
+     *    answered every filter we know with nothing.
+     *  - [ONE_SIDED] and [TOO_THIN] are about the far end ANSWERING, just not
+     *    enough to judge on. A relay holding nine events is not misbehaving and
+     *    must never be refused for it — see [RelayConsistency].
+     *
+     * The wording is the log line's, and the fold's where the two passes can
+     * reach the same finding, so a reader meeting both does not have to work out
+     * that they are the same fact.
+     */
+    enum class Unmeasured(
+        val reason: String,
+    ) {
+        /** Our own transport would not carry it — no Tor for a `.onion`, or nothing listening. */
+        TRANSPORT("declined by our own transport"),
+
+        /** Dialled, and nothing came back through any filter. */
+        SILENT("never answered a REQ"),
+
+        /**
+         * One of the concurrent pair answered and the other did not.
+         *
+         * Its own bucket rather than [SILENT], because it is the one reason here
+         * that is itself a finding: the relay was reachable enough to serve one
+         * REQ and not the second one issued at the same instant. That is a
+         * capacity or rate-limit story, not an availability one.
+         */
+        ONE_SIDED("answered one of the two asks, not both"),
+
+        /** NIP-42 came back rejected, or the relay went on demanding auth we cannot satisfy. */
+        AUTH_REFUSED("refused our credentials"),
+
+        /** It answered — with nothing, to both the bare filter and the kinds fallback. */
+        FILTER_REFUSED("answered, but served no filter we know"),
+
+        /** A real window, under [RelayAliases.DEFAULT_MIN_SAMPLE] events. No evidence either way. */
+        TOO_THIN("too few events to judge on"),
+
+        /** The probe threw. Ours to fix, and never a claim about the relay. */
+        FAILED("the probe failed mid-walk"),
+    }
 
     /**
      * Read back what is already known about these urls, WITHOUT dialling.
@@ -137,20 +204,24 @@ class ConsistencyPass(
             // see. Returning without a word left it indistinguishable from a
             // pass that never ran, which is what a monthly TTL looks like for
             // twenty-nine days out of thirty.
-            report(label, candidates, dialled = 0, decided = 0, unmeasurable = emptySet())
+            report(label, candidates, dialled = 0, decided = 0, unmeasurable = emptyMap())
             return 0
         }
 
         val gate = Semaphore(concurrency)
         val decided = AtomicInteger()
         val refused = AtomicInteger()
-        val unmeasurable = AtomicInteger()
-        // The urls that proved nothing, kept rather than only counted: grouped
-        // by host they become the one `undecided` row this pass can publish, and
-        // "which server would not answer twice" is what an operator chases.
-        // Bounded by the candidate set: `wanted` is every url still owed a
-        // measurement, and this keeps only the ones that proved nothing.
-        val silent = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+        // Urls a socket was actually opened for. NOT `wanted.size`, which is
+        // what this used to publish as `dialled`: a url held back by [canDial]
+        // costs no connection, and counting it as one made "we dialled 7,577
+        // and decided 74" a sentence about work that never happened.
+        val walked = AtomicInteger()
+        // The urls that proved nothing AND WHY — grouped by reason they become
+        // the `undecided` rows, and grouped by host within a reason they name
+        // the servers to chase. Bounded by the candidate set: `wanted` is every
+        // url still owed a measurement, and this keeps only the ones that ended
+        // without a verdict.
+        val silent = ConcurrentHashMap<NormalizedRelayUrl, Unmeasured>()
         // ONE anchor for the whole pass, a week behind the clock. Shared for the
         // same reason the fold shares one per group — two urls measured from
         // different anchors are not comparable — though here it matters less,
@@ -161,9 +232,31 @@ class ConsistencyPass(
             for (url in wanted) {
                 launch {
                     gate.withPermit {
-                        if (!canDial(url)) return@withPermit
+                        // Guarded, because it opens a socket of its own: the TCP
+                        // pre-probe is a dial like any other and a throw from it
+                        // used to take the whole `launch` down as an unclassified
+                        // failure. Ours either way — see [Unmeasured.TRANSPORT].
+                        //
+                        // NOT `runCatching`, which catches CancellationException
+                        // too: a pass cancelled at shutdown would record every
+                        // remaining url as a probe failure on its way out, and
+                        // publish that as a measurement.
+                        val reachable =
+                            try {
+                                canDial(url)
+                            } catch (e: CancellationException) {
+                                throw e
+                            } catch (e: Exception) {
+                                silent[url] = Unmeasured.FAILED
+                                return@withPermit
+                            }
+                        if (!reachable) {
+                            silent[url] = Unmeasured.TRANSPORT
+                            return@withPermit
+                        }
+                        walked.incrementAndGet()
                         sockets.claim(url)
-                        val verdict =
+                        val attempt =
                             try {
                                 // THE PAIR, GENUINELY CONCURRENT, over one
                                 // connection — two REQs in flight at the same
@@ -186,8 +279,7 @@ class ConsistencyPass(
                                 // the minority of hosts refusing a bare filter
                                 // pay a second pair. Neither case compares two
                                 // windows taken through different filters.
-                                walkPair(url, anchor, null, onEvent)
-                                    ?: walkPair(url, anchor, AliasProbe.FALLBACK_KINDS, onEvent)
+                                ladder(url, anchor, onEvent)
                             } catch (e: CancellationException) {
                                 throw e
                             } catch (e: Exception) {
@@ -198,14 +290,17 @@ class ConsistencyPass(
                             } finally {
                                 sockets.release(url)
                             }
-                        val answer = consistency.decide(verdict?.first, verdict?.second)
-                        if (answer == RelayConsistency.Verdict.UNMEASURABLE) {
-                            unmeasurable.incrementAndGet()
-                            silent += url
+                        if (attempt == null) {
+                            silent[url] = Unmeasured.FAILED
                             return@withPermit
                         }
-                        val first = verdict!!.first!!
-                        val second = verdict.second!!
+                        val answer = consistency.decide(attempt.best.first.ids, attempt.best.second.ids)
+                        if (answer == RelayConsistency.Verdict.UNMEASURABLE) {
+                            silent[url] = attempt.why()
+                            return@withPermit
+                        }
+                        val first = attempt.best.first.ids!!
+                        val second = attempt.best.second.ids!!
                         consistency.learn(url, answer)
                         decided.incrementAndGet()
                         if (answer == RelayConsistency.Verdict.INCONSISTENT) refused.incrementAndGet()
@@ -231,20 +326,48 @@ class ConsistencyPass(
             }
         }
 
-        if (decided.get() > 0 || unmeasurable.get() > 0) {
+        if (decided.get() > 0 || silent.isNotEmpty()) {
             System.err.println(
-                "router: $label stability measured ${wanted.size} url(s) ? ${decided.get()} decided " +
-                    "(${refused.get()} refused as inconsistent, ${unmeasurable.get()} said too little to judge), " +
-                    "${consistency.refusedCount()} url(s) now refused in total " +
+                "router: $label stability walked ${walked.get()} of ${wanted.size} url(s) ? ${decided.get()} decided " +
+                    "(${refused.get()} refused as inconsistent), ${silent.size} proved nothing" +
+                    // WHY, on the same line, in the order that says which fix is
+                    // worth anyone's time. A single "said too little to judge"
+                    // covered a dead corpus, an auth wall and a thin relay, and
+                    // an operator could not tell which of the three they had.
+                    breakdown(silent).joinToString(prefix = " (", postfix = ")") { "${it.second} ${it.first.reason}" } +
+                    ", ${consistency.refusedCount()} url(s) now refused in total " +
                     "in ${fmtDuration(System.currentTimeMillis() - startedMs)}",
             )
         }
-        report(label, candidates, dialled = wanted.size, decided = decided.get(), unmeasurable = silent)
+        report(label, candidates, dialled = walked.get(), decided = decided.get(), unmeasurable = silent)
         return decided.get()
     }
 
+    /** The undecided urls by reason, commonest first — the log's order and the report's. */
+    private fun breakdown(silent: Map<NormalizedRelayUrl, Unmeasured>): List<Pair<Unmeasured, Int>> =
+        silent.values
+            .groupingBy { it }
+            .eachCount()
+            .entries
+            .sortedWith(compareByDescending<Map.Entry<Unmeasured, Int>> { it.value }.thenBy { it.key.ordinal })
+            .map { it.key to it.value }
+
     /**
      * What this pass reached, where it outlives the log line above.
+     *
+     * **The members are a PARTITION of the candidate set, and that is the whole
+     * design of this method**: `candidates = foldedAway + consistent +
+     * inconsistent + unmeasured`, and `unmeasured` in turn is the sum of the
+     * [Unmeasured] rows. Every url the streams would dial lands in exactly one
+     * leaf, so a reader can subdivide the fan-out without the arithmetic
+     * silently failing to close — the same rule [CycleTally] holds its own
+     * numbers to, for the same reason: a breakdown that does not sum is one
+     * nobody can act on.
+     *
+     * The precedence is FOLD FIRST, then a verdict, then nothing — matching what
+     * the pass actually does, since a folded url is never measured. A url that
+     * folded away after being measured therefore counts as folded here and its
+     * stability verdict is not double-counted.
      *
      * `unmeasured` is re-derived AFTER the walk rather than taken as
      * `wanted.size - decided`: a url that was decided is gone from
@@ -259,45 +382,134 @@ class ConsistencyPass(
         candidates: List<NormalizedRelayUrl>,
         dialled: Int,
         decided: Int,
-        unmeasurable: Set<NormalizedRelayUrl>,
+        unmeasurable: Map<NormalizedRelayUrl, Unmeasured>,
     ) {
         val handle = progress ?: return
-        // By HOST, like the fold's rows: the urls are what was asked, but the
-        // thing that would not answer twice is a server, and one row per url
-        // would be a list of paths that says the same thing forty times.
-        val hosts = unmeasurable.map { RelayAliases.hostOf(it.url) }.distinct().sorted()
+        val kept = candidates.filterNot { it in folded }
+        val rows =
+            breakdown(unmeasurable).map { (reason, urls) ->
+                // Urls AND hosts on the same row. The url count is what makes
+                // the partition close; the host count is what an operator
+                // chases, because the thing that would not answer twice is a
+                // server and forty paths on one host say the same thing forty
+                // times.
+                val hosts =
+                    unmeasurable
+                        .asSequence()
+                        .filter { it.value == reason }
+                        .map { RelayAliases.hostOf(it.key.url) }
+                        .distinct()
+                        .sorted()
+                        .toList()
+                Processors.Undecided(
+                    // The words the log line uses, so a reader meeting both does
+                    // not have to work out that they are the same finding.
+                    reason = reason.reason,
+                    urls = urls,
+                    hosts = hosts.size,
+                    examples = hosts.take(Processors.MAX_UNDECIDED_EXAMPLES),
+                )
+            }
         handle.record(
             Processors.Work(
                 stream = label,
                 candidates = candidates.size,
-                unmeasured = consistency.toProbe(candidates).count { it !in folded },
+                foldedAway = candidates.size - kept.size,
+                consistent = consistency.consistentCount(kept),
+                inconsistent = consistency.inconsistentCount(kept),
+                unmeasured = consistency.toProbe(kept).size,
                 dialled = dialled,
                 decided = decided,
-                undecided =
-                    if (hosts.isEmpty()) {
-                        emptyList()
-                    } else {
-                        listOf(
-                            Processors.Undecided(
-                                // The words the log line uses, so a reader
-                                // meeting both does not have to work out that
-                                // they are the same finding.
-                                reason = "said too little to judge",
-                                hosts = hosts.size,
-                                examples = hosts.take(Processors.MAX_UNDECIDED_EXAMPLES),
-                            ),
-                        )
-                    },
+                undecided = rows.take(Processors.MAX_UNDECIDED_REASONS),
+                undecidedOmitted = (rows.size - Processors.MAX_UNDECIDED_REASONS).coerceAtLeast(0),
             ),
         )
     }
 
     /**
-     * Two walks of [url] through the SAME filter, in flight at the same time.
+     * One url's pair of answers through ONE filter, and how much they are worth.
      *
-     * Null when the pair proves nothing — either walk unanswered, or a window
-     * too short for [RelayConsistency] to judge — so the caller can fall through
-     * to the kinds filter without treating a refused bare filter as a verdict.
+     * A pair rather than two loose windows because the two are only meaningful
+     * together: [RelayConsistency.decide] compares them, and [depth] ranks one
+     * attempt against another when neither could decide — which is what lets the
+     * ladder keep the more informative of two failures instead of whichever ran
+     * last.
+     */
+    private data class Answers(
+        val first: AliasProbe.Window,
+        val second: AliasProbe.Window,
+    ) {
+        val authRefused: Boolean get() = first.authRefused || second.authRefused
+
+        /**
+         * How much this attempt proved, as a single comparable number.
+         *
+         * Ordered so that MORE EVIDENCE always ranks higher: total silence is
+         * the bottom, one side answering beats neither, and past that it is the
+         * thinner of the two windows — the depth any verdict would rest on.
+         * Without the two negative rungs, a bare filter that produced nothing at
+         * all and a kinds filter that produced one real answer would tie, and
+         * the reason reported for the url would depend on argument order.
+         */
+        val depth: Int get() =
+            when {
+                first.ids == null && second.ids == null -> -2
+                first.ids == null || second.ids == null -> -1
+                else -> minOf(first.ids.size, second.ids.size)
+            }
+    }
+
+    /** Both rungs of the filter ladder, and which of them the verdict is read from. */
+    private data class Ladder(
+        val bare: Answers,
+        val fallback: Answers?,
+    ) {
+        /** The attempt that got furthest — the one a verdict, or a reason, is taken from. */
+        val best: Answers get() = if (fallback != null && fallback.depth > bare.depth) fallback else bare
+
+        /**
+         * WHY this url ended the pass undecided, read off the evidence rather
+         * than guessed at.
+         *
+         * Auth first and across BOTH rungs: a credential refusal explains every
+         * thin window under it, and reading it off [best] alone would report a
+         * relay that refused us as one that merely said little.
+         */
+        fun why(): Unmeasured =
+            when {
+                bare.authRefused || fallback?.authRefused == true -> Unmeasured.AUTH_REFUSED
+                best.depth == -2 -> Unmeasured.SILENT
+                best.depth == -1 -> Unmeasured.ONE_SIDED
+                best.depth == 0 -> Unmeasured.FILTER_REFUSED
+                else -> Unmeasured.TOO_THIN
+            }
+    }
+
+    /**
+     * The bare filter, then the kinds fallback — each asked as a concurrent
+     * pair, and the second one only when the first proved nothing.
+     *
+     * **An auth refusal ends the ladder here.** See [AliasProbe.Page.authRefused]:
+     * measured on `filter.nostr.wine`, the first ask is answered in 1.6s with a
+     * refusal and every ask after it on that connection is answered with
+     * nothing at all, so each one waits out the full idle window. This used to
+     * fall through to the kinds pair regardless — two more REQs into a wall we
+     * had already been shown, per url, per pass — because the refusal was
+     * flattened into "proved nothing" before the caller could see it.
+     */
+    private suspend fun ladder(
+        url: NormalizedRelayUrl,
+        anchor: Long,
+        onEvent: suspend (Event) -> Unit,
+    ): Ladder {
+        val bare = walkPair(url, anchor, null, onEvent)
+        val decided = consistency.decide(bare.first.ids, bare.second.ids) != RelayConsistency.Verdict.UNMEASURABLE
+        if (decided || bare.authRefused) return Ladder(bare, null)
+        return Ladder(bare, walkPair(url, anchor, AliasProbe.FALLBACK_KINDS, onEvent))
+    }
+
+    /**
+     * Two walks of [url] through the SAME filter, in flight at the same time.
      *
      * **Neither walk may throw out of here, and that is structural rather than
      * defensive.** `async` reports a failure by cancelling its parent, so an
@@ -305,26 +517,26 @@ class ConsistencyPass(
      * and the `coroutineScope` around the whole pass — one unlucky relay taking
      * down every other url's measurement, with the caller's `catch` running far
      * too late to stop it. Catching inside each child keeps the failure a value.
+     *
+     * A failed walk arrives as a window that never spoke, which is what it is
+     * from here: [Unmeasured.FAILED] is reserved for the probe failing outside
+     * the pair, where nothing was asked at all.
      */
     private suspend fun walkPair(
         url: NormalizedRelayUrl,
         anchor: Long,
         kinds: List<Int>?,
         onEvent: suspend (Event) -> Unit,
-    ): Pair<Set<String>?, Set<String>?>? =
+    ): Answers =
         coroutineScope {
             val walks =
                 List(2) {
                     async {
-                        runCatching { probe.fingerprint(url, anchor, kinds, onEvent) }
-                            .getOrNull()
+                        runCatching { probe.window(url, anchor, kinds, onEvent) }
+                            .getOrDefault(AliasProbe.Window(null))
                     }
                 }.awaitAll()
-            val pair = walks[0] to walks[1]
-            // "Proves nothing" is the pass's own bar, asked here so a bare filter
-            // the relay refused (empty, or a handful of events) falls through to
-            // the fallback instead of being published as a verdict.
-            if (consistency.decide(pair.first, pair.second) == RelayConsistency.Verdict.UNMEASURABLE) null else pair
+            Answers(walks[0], walks[1])
         }
 
     /**

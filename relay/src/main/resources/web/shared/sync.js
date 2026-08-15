@@ -120,13 +120,190 @@ export const MEASURING = "measuring";
 export function probeProgress(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
-  const candidates = streams.reduce((a, w) => a + (w.candidates || 0), 0);
-  const unmeasured = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
+  const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
+  const candidates = sum("candidates");
+  const unmeasured = sum("unmeasured");
   return {
     candidates,
     checked: Math.max(0, candidates - unmeasured),
+    // The two VERDICTS inside that checked count, or null on a pass that does
+    // not publish them (the fold, and any router older than the partition).
+    // Drawn beside it because "checked" on the stability gate silently includes
+    // urls the FOLD removed — they are checked in the sense that nothing more
+    // will be asked of them, and not in the sense a reader assumes — and
+    // because `inconsistent` is the one number on this row that says what the
+    // gate is FOR, and it appeared nowhere on the page at all.
+    consistent: streams.some((w) => w.consistent != null) ? sum("consistent") : null,
+    inconsistent: streams.some((w) => w.inconsistent != null) ? sum("inconsistent") : null,
     tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
   };
+}
+
+/**
+ * What each slice of the funnel MEANS — keyed by the router's own words.
+ *
+ * The partition's members are ours and glossed by the document, but the
+ * `undecided` reasons are free text off the wire, so the tone is looked up
+ * rather than derived: an unrecognised reason draws neutral and still gets its
+ * segment, because a slice the page cannot colour is not a slice it may drop.
+ *
+ * `__proto__: null` for the same reason `PROBE_FOR` has it: the key is a string
+ * a router chose, and `constructor` must not resolve to a function.
+ */
+const FUNNEL_TONE = {
+  __proto__: null,
+  // The two verdicts. Only one of them is a fault, and it is the router's
+  // fault to report rather than the relay's to be blamed for — see the
+  // glossary's `inconsistent`.
+  consistent: "good",
+  inconsistent: "warn",
+  // Neither a fault nor a finding: a duplicate url leaving the fan-out is the
+  // fold working, and a url held out on a signed record is one we already
+  // measured.
+  foldedAway: "mute",
+  heldOutDead: "mute",
+  // Ours, in both senses: we could not carry it, or our probe broke.
+  "declined by our own transport": "ours",
+  "the probe failed mid-walk": "ours",
+  // The arithmetic not closing is neither of those and must LOOK wrong.
+  unattributed: "warn",
+};
+
+/** Every level of the funnel is drawn against one width, so a child sits under its parent. */
+const FUNNEL_LEVELS = [
+  ["reach", "every url the streams named", [["candidates", "in reach"], ["heldOutDead", "known dead, held out"]]],
+  ["verdict", "…what is known about each", [["foldedAway", "folded onto another url"], ["consistent", "consistent"],
+    ["inconsistent", "inconsistent — refused"], ["unmeasured", "no verdict"]]],
+];
+
+/**
+ * THE WHOLE CANDIDATE SET, DIVIDED — every url a stream would dial, once, into
+ * the category that decided its fate, and then into why.
+ *
+ * ## Why this and not the one number beside it
+ *
+ * `probeProgress` answers "how much has a verdict", which on a discovered corpus
+ * sits at a few hundred out of several thousand and reads as a gate that is
+ * stuck. It is not: the pass dials its whole set every time, and most of that
+ * set is urls that cannot be measured at all — dead hosts, auth walls, relays
+ * holding nine events. Those are four different problems with four different
+ * fixes and they were one undifferentiated number, so the honest reading and
+ * the alarming one were indistinguishable. This is the breakdown that separates
+ * them.
+ *
+ * ## The rules it is held to
+ *
+ * **Every level is drawn against the SAME width**, with a `lead` offset, so a
+ * level's segments sit under the parent segment they subdivide. A level scaled
+ * to its own total would draw `unmeasured`'s seven reasons as wide as the whole
+ * corpus, which is the reading this exists to prevent.
+ *
+ * **A level that does not sum gets an `unattributed` slice rather than a gap.**
+ * Three ways that happens and all three are real: a router older than the
+ * partition publishes `candidates` and `unmeasured` and nothing between them; a
+ * reason list truncated by either side leaves urls in no row; and any future
+ * arithmetic slip. A gap reads as "nothing there", a named slice reads as "not
+ * accounted for", and only the second is true. It is toned as a fault so it
+ * cannot be mistaken for a finding.
+ *
+ * **Nothing is invented from a missing member.** Absent reads as zero, never as
+ * a share of something else, and a document with no `sourced` simply loses the
+ * first level instead of having one guessed for it.
+ */
+export function funnelOf(p) {
+  const streams = p?.streams || [];
+  if (!streams.length) return null;
+  const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
+  const candidates = sum("candidates");
+  if (!candidates) return null;
+  const heldOutDead = Math.max(0, p.heldOutDead || 0);
+  // The width every level is a share of. `sourced` is the honest root when the
+  // router publishes it; without it the root is the candidate set itself, and
+  // the level naming what was held out is dropped rather than drawn empty.
+  const total = Math.max(candidates + heldOutDead, p.sourced || 0);
+  const values = {
+    candidates,
+    // As PUBLISHED, never as `total - candidates`. The two numbers are written
+    // by different clocks — the derivation's and the pass's — so a source that
+    // re-derived between them would silently inflate this slice with urls that
+    // were never held out. Any gap shows up as `unattributed`, which is what
+    // that slice is for.
+    heldOutDead,
+    foldedAway: sum("foldedAway"),
+    consistent: sum("consistent"),
+    inconsistent: sum("inconsistent"),
+    unmeasured: sum("unmeasured"),
+  };
+
+  const seg = (key, label, value, lead) => ({
+    key, label, value,
+    share: total ? value / total : 0,
+    lead: total ? lead / total : 0,
+    tone: FUNNEL_TONE[key] || null,
+  });
+
+  const levels = [];
+  for (const [key, title, members] of FUNNEL_LEVELS) {
+    // A level subdivides the FIRST segment of the one above it, so its lead is
+    // whatever that parent's own lead was — zero for both today, and carried
+    // explicitly so a level inserted in the middle cannot silently misalign.
+    let at = 0;
+    const segments = [];
+    for (const [member, label] of members) {
+      const value = Math.max(0, values[member] || 0);
+      if (value > 0) segments.push(seg(member, label, value, at));
+      at += value;
+    }
+    // The parent of this level, as a width: level one divides `total`, and
+    // every level after it divides its predecessor's first member.
+    const parent = key === "reach" ? total : candidates;
+    const short = parent - segments.reduce((a, s) => a + s.value, 0);
+    if (short > 0) segments.push(seg("unattributed", "not accounted for", short, at));
+    if (segments.length) levels.push({ key, title, segments });
+  }
+
+  // …and the reasons, which subdivide `unmeasured` and therefore start where it
+  // starts: after everything that DOES have a verdict.
+  const lead = values.foldedAway + values.consistent + values.inconsistent;
+  const reasons = [];
+  let at = lead;
+  for (const row of firstReasons(streams)) {
+    const value = Math.max(0, row.urls || 0);
+    if (!value) continue;
+    reasons.push({ ...seg(row.reason, row.reason, value, at), hosts: row.hosts || 0, examples: row.examples || [] });
+    at += value;
+  }
+  if (reasons.length) {
+    const short = values.unmeasured - reasons.reduce((a, s) => a + s.value, 0);
+    if (short > 0) reasons.push(seg("unattributed", "not accounted for", short, at));
+    levels.push({ key: "why", title: "…and why the rest has none", segments: reasons });
+  }
+  // A CHART THAT DIVIDES NOTHING IS NOT A CHART. The alias fold publishes
+  // `candidates` and `unmeasured` and counts its undecided rows in HOSTS, so
+  // every level of its funnel is one full-width bar restating the sentence
+  // above it. One level somewhere has to actually split for this to earn the
+  // space.
+  if (!levels.some((l) => l.segments.length > 1)) return null;
+  return { total, candidates, levels, omitted: firstOmitted(streams) };
+}
+
+/**
+ * The `undecided` rows across every stream row, widest first.
+ *
+ * Concatenated rather than merged by reason: the rows are per stream row and
+ * today there is exactly one (the passes measure the union of every stream, and
+ * publish it as `all streams`). Merging would be the right call the moment that
+ * changes, and inventing the merge now would be untested code standing between
+ * a reader and the only shape that exists.
+ */
+function firstReasons(streams) {
+  const rows = streams.flatMap((w) => (w.undecided?.reasons || []).filter((r) => r && r.reason));
+  return rows.sort((a, b) => (b.urls || 0) - (a.urls || 0));
+}
+
+/** Reasons either side dropped, so a truncated breakdown never reads as the whole one. */
+function firstOmitted(streams) {
+  return streams.reduce((a, w) => a + (w.undecided?.omitted || 0), 0);
 }
 
 /**

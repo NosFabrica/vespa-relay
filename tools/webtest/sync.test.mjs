@@ -11,7 +11,7 @@
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
 import {
-  HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, STUCK_LEG_SEC, constraintOf, isLive, legsOf,
+  HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf,
   probeProgress,
 } from "../../relay/src/main/resources/web/shared/sync.js";
 
@@ -184,4 +184,135 @@ const leg = (n, quiet, over = {}) => ({
     assert.equal(c.why, "");
   }
   ok("a bottleneck word this page has not been taught cannot reach Object.prototype");
+}
+
+// ── the candidate set, divided ──────────────────────────────────────────────
+{
+  // A live-shaped document: a corpus mostly made of urls that cannot be
+  // measured at all, which is the reading the whole funnel exists to make
+  // visible. The numbers are the identity `sourced - heldOutDead = candidates`
+  // and `candidates = foldedAway + consistent + inconsistent + unmeasured`.
+  const gate = (over = {}, row = {}) => ({
+    name: "consistency", phase: "idle", lastPassSec: 9720, sourced: 17584, heldOutDead: 832,
+    streams: [{
+      name: "all streams", candidates: 16752, foldedAway: 11429, consistent: 583, inconsistent: 12,
+      unmeasured: 4728, dialled: 4728, decided: 74,
+      undecided: {
+        reasons: [
+          { reason: "never answered a REQ", urls: 3902, hosts: 2201, examples: ["dead.example"] },
+          { reason: "too few events to judge on", urls: 826, hosts: 611, examples: ["thin.example"] },
+        ],
+        omitted: 0,
+      },
+      ...row,
+    }],
+    ...over,
+  });
+
+  const f = funnelOf(gate());
+  assert.equal(f.total, 17584, "the width is every url the streams named, before anything was held out");
+  assert.equal(f.levels.length, 3, "reach, verdict, and why the rest has none");
+
+  // EVERY LEVEL AGAINST ONE WIDTH. Scaled to its own total, `never answered a
+  // REQ` would draw as 83% of the corpus when it is 22% of it — the reading a
+  // per-level denominator produces and the reason for the shared one.
+  const by = (level, key) => f.levels[level].segments.find((s) => s.key === key);
+  assert.equal(by(0, "candidates").share, 16752 / 17584);
+  assert.equal(by(1, "foldedAway").share, 11429 / 17584);
+  assert.equal(by(2, "never answered a REQ").share, 3902 / 17584);
+
+  // A SLICE SITS UNDER WHAT IT SUBDIVIDES. The reasons divide `unmeasured`, so
+  // the first of them starts where everything that HAS a verdict ends — not at
+  // zero, which would draw the corpus's dead urls on top of its folded ones.
+  assert.equal(by(1, "foldedAway").lead, 0);
+  assert.equal(by(2, "never answered a REQ").lead, (11429 + 583 + 12) / 17584);
+  assert.equal(by(2, "too few events to judge on").lead, (11429 + 583 + 12 + 3902) / 17584);
+
+  // Widest reason first, whatever order the router published them in.
+  assert.deepEqual(f.levels[2].segments.map((s) => s.value), [3902, 826]);
+
+  // The tones are claims. A failure on OUR side must not colour like a relay
+  // misbehaving, and only one slice on the whole chart is a fault.
+  assert.equal(by(1, "consistent").tone, "good");
+  assert.equal(by(1, "inconsistent").tone, "warn");
+  assert.equal(by(1, "foldedAway").tone, "mute");
+  assert.equal(by(0, "heldOutDead").tone, "mute");
+  assert.equal(by(2, "never answered a REQ").tone, null, "a relay that will not answer is not our fault");
+  ok("every level is a share of one width, and a slice sits under the slice it subdivides");
+}
+
+{
+  // THE ARITHMETIC THAT DOES NOT CLOSE, which is the normal case for a router
+  // older than the partition: it publishes `candidates` and `unmeasured` and
+  // nothing between them. Drawn as a gap that reads as "nothing there", the
+  // 12,024 urls that DO have a verdict would simply vanish off the chart.
+  const old = {
+    name: "consistency", phase: "idle",
+    streams: [{ name: "all streams", candidates: 16752, unmeasured: 4728 }],
+  };
+  const f = funnelOf(old);
+  assert.equal(f.total, 16752, "with no `sourced`, the root is the candidate set itself");
+  const level = f.levels[1].segments;
+  assert.deepEqual(level.map((s) => s.key), ["unmeasured", "unattributed"]);
+  assert.equal(level[1].value, 16752 - 4728, "what is not accounted for is named, not dropped");
+  assert.equal(level[1].tone, "warn", "an unclosed partition must look wrong");
+
+  // …and the same rule inside a level: reasons that do not sum to `unmeasured`
+  // leave a named remainder rather than a short bar.
+  const short = funnelOf({
+    name: "consistency", sourced: 100, heldOutDead: 0,
+    streams: [{
+      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "never answered a REQ", urls: 40, hosts: 4 }], omitted: 3 },
+    }],
+  });
+  const why = short.levels[2].segments;
+  assert.equal(why[1].key, "unattributed");
+  assert.equal(why[1].value, 50, "the reasons cover 40 of the 90 with no verdict");
+  assert.equal(short.omitted, 3, "and the rows the router itself dropped are carried through");
+  ok("a level that does not sum names the remainder rather than drawing a gap");
+}
+
+{
+  // Nothing is invented from a missing member, and nothing divides by zero.
+  assert.equal(funnelOf(null), null);
+  assert.equal(funnelOf({ name: "consistency" }), null, "a row with no streams has no funnel");
+  assert.equal(funnelOf({ name: "consistency", streams: [{ candidates: 0 }] }), null,
+    "an empty candidate set is not a chart of zeroes");
+
+  // The fold publishes no partition and counts its undecided rows in HOSTS, so
+  // every level of its funnel would be one full-width bar restating the
+  // sentence above it.
+  assert.equal(funnelOf({ name: "aliasFold", streams: [{ candidates: 40, unmeasured: 40 }] }), null,
+    "a row that divides into nothing is not a chart");
+
+  // Summed across rows, never `streams[0]` — the bug that shipped on the line
+  // this chart sits under.
+  const two = funnelOf({
+    name: "consistency", sourced: 60, heldOutDead: 0,
+    streams: [
+      { candidates: 40, foldedAway: 10, consistent: 10, inconsistent: 0, unmeasured: 20 },
+      { candidates: 20, foldedAway: 0, consistent: 5, inconsistent: 5, unmeasured: 10 },
+    ],
+  });
+  assert.equal(two.candidates, 60);
+  assert.equal(two.levels[1].segments.find((s) => s.key === "inconsistent").value, 5);
+  ok("an absent member is a zero, an empty set is no chart, and rows are summed");
+}
+
+{
+  // A reason is free text off the wire, and it is used as a KEY for the tone
+  // lookup. Reaching Object.prototype hands back a function, which renders as
+  // a class name and throws the row's colours away.
+  for (const hostile of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    const f = funnelOf({
+      name: "consistency", sourced: 10, heldOutDead: 0,
+      streams: [{
+        candidates: 10, foldedAway: 0, consistent: 2, inconsistent: 0, unmeasured: 8,
+        undecided: { reasons: [{ reason: hostile, urls: 8, hosts: 1 }], omitted: 0 },
+      }],
+    });
+    assert.equal(f.levels[2].segments[0].tone, null, `${hostile} is an unknown reason, not a prototype member`);
+  }
+  ok("a reason this page has not been taught cannot reach Object.prototype");
 }

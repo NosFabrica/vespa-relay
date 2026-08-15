@@ -228,10 +228,34 @@ class AliasProbe(
          */
         kinds: List<Int>? = null,
         onEvent: suspend (Event) -> Unit,
-    ): Set<String>? = walk(url, anchor, kinds, onEvent).ids
+    ): Set<String>? = window(url, anchor, kinds, onEvent).ids
 
-    /** What one url's window turned out to be, and whether the ladder may go on. */
-    private data class Walk(
+    /**
+     * The same walk as [fingerprint], keeping the ONE fact that call throws
+     * away: whether the relay turned our credentials down.
+     *
+     * [fingerprint] answers `Set<String>?`, in which an auth refusal and an
+     * empty relay and a relay whose window was simply thin are one value. That
+     * is enough for the fold, which only ever asks "can this be compared" — and
+     * it is not enough for a pass that has to say WHY a url could not be
+     * measured, because "it refused our credentials" is the one reason with an
+     * action attached to it and the one that must not cost a second ask. See
+     * [ConsistencyPass.Unmeasured].
+     */
+    suspend fun window(
+        url: NormalizedRelayUrl,
+        anchor: Long? = null,
+        kinds: List<Int>? = null,
+        onEvent: suspend (Event) -> Unit,
+    ): Window = walk(url, anchor, kinds, onEvent)
+
+    /**
+     * What one url's window turned out to be, and whether the ladder may go on.
+     *
+     * [ids] keeps the distinction the whole class is built on — null is a url
+     * that never spoke, empty is one that answered with nothing.
+     */
+    data class Window(
         val ids: Set<String>?,
         val authRefused: Boolean = false,
     )
@@ -241,7 +265,7 @@ class AliasProbe(
         anchor: Long?,
         kinds: List<Int>?,
         onEvent: suspend (Event) -> Unit,
-    ): Walk {
+    ): Window {
         // id -> created_at, because the fingerprint is "the newest [target]",
         // and only the timestamp can say which those are. A page may arrive in
         // any order, and two urls on the same host can page at different sizes
@@ -255,7 +279,7 @@ class AliasProbe(
         var stalls = 0
 
         repeat(maxPages) {
-            if (ids.size >= target) return Walk(newest(ids))
+            if (ids.size >= target) return Window(newest(ids))
             // A FULL page every time, never trimmed to what is still missing.
             // `until` is inclusive, so each page re-reads its boundary and
             // yields one fewer new id than it returned; trimming the last ask
@@ -268,11 +292,11 @@ class AliasProbe(
             if (events == null) {
                 // A refusal with no page at all is still the relay ANSWERING,
                 // so it ends the walk here rather than reading as silence.
-                if (page.authRefused) return Walk(newest(ids), authRefused = true)
+                if (page.authRefused) return Window(newest(ids), authRefused = true)
                 // Mid-walk the transport gave up. Keep what the walk already
                 // proved rather than throwing it away — but a walk that never
                 // got a single page has nothing to stand behind.
-                return if (spoke) Walk(newest(ids)) else Walk(null)
+                return if (spoke) Window(newest(ids)) else Window(null)
             }
             spoke = true
             if (events.isEmpty()) {
@@ -281,12 +305,12 @@ class AliasProbe(
                 // let the next page decide which it was.
                 // Nothing came with the refusal, so there is nothing to keep
                 // and no smaller page worth trying.
-                if (page.authRefused) return Walk(newest(ids), authRefused = true)
+                if (page.authRefused) return Window(newest(ids), authRefused = true)
                 if (ids.isEmpty() && size > fallbackPage) {
                     size = fallbackPage
                     return@repeat
                 }
-                return Walk(newest(ids))
+                return Window(newest(ids))
             }
             val before = ids.size
             for (event in events) {
@@ -301,7 +325,7 @@ class AliasProbe(
             // away a fingerprint the relay had actually served — a partial
             // window is still a window, and the refusal only means there is no
             // point asking for MORE.
-            if (page.authRefused) return Walk(newest(ids), authRefused = true)
+            if (page.authRefused) return Window(newest(ids), authRefused = true)
             // `until` is INCLUSIVE, so the next page re-sees everything sharing
             // the oldest timestamp — harmless for a set, except that a page
             // which is entirely one timestamp cannot move the cursor at all.
@@ -313,13 +337,13 @@ class AliasProbe(
                 until = oldest - 1
                 // Two stalled pages in a row is a relay that is not walking
                 // backwards for us. Take what we have.
-                if (++stalls >= MAX_STALLS) return Walk(newest(ids))
+                if (++stalls >= MAX_STALLS) return Window(newest(ids))
             } else {
                 until = oldest
                 stalls = 0
             }
         }
-        return Walk(newest(ids))
+        return Window(newest(ids))
     }
 
     /** The [target] newest ids of a walk that may have overshot by up to a page. */

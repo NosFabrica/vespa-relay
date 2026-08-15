@@ -89,6 +89,34 @@ class Processors {
          */
         val candidates: Int,
         /**
+         * …of those, how many a FOLD has already taken out of the fan-out.
+         *
+         * First member of the partition and first in precedence, because a
+         * folded url is never measured for stability — see [ConsistencyPass.report].
+         *
+         * **Null rather than zero on a pass that does not measure it**, and the
+         * three members below are nullable for the same reason. The alias fold
+         * publishes no stability verdicts at all, so a zero from its row would
+         * be a measurement it never took: the card would draw "0 consistent · 0
+         * refused" beside the fold, and a reader would have no way to tell that
+         * from a gate that had measured everything and found nothing. Absent is
+         * "this pass does not answer that"; zero is "it does, and the answer is
+         * none".
+         */
+        val foldedAway: Int? = null,
+        /**
+         * …and of the rest, the two standing verdicts.
+         *
+         * STANDING, not "reached by this pass": [decided] counts what this pass
+         * learned, these count what the whole candidate set currently carries,
+         * including verdicts read back from the store at boot. A reader watching
+         * coverage grow wants the second; a reader watching a pass work wants
+         * the first, and conflating them made a pass that decided nothing
+         * indistinguishable from a gate that knows nothing.
+         */
+        val consistent: Int? = null,
+        val inconsistent: Int? = null,
+        /**
          * …of those, how many still have no verdict after this pass.
          *
          * THE PROGRESS NUMBER. A pass measures its whole set, but a group can
@@ -133,6 +161,18 @@ class Processors {
         val hosts: Int,
         /** A couple of them by name, so the reason has a subject to chase. */
         val examples: List<String>,
+        /**
+         * How many URLS ended the pass that way — the count that makes the
+         * partition close.
+         *
+         * Beside [hosts] rather than instead of it, because the two answer
+         * different questions and their gap is itself the disclosure: 4,300 urls
+         * on 900 hosts is a corpus of aliases, 4,300 on 4,300 is not, and only
+         * the url count sums back to [Work.unmeasured]. Zero on a pass that
+         * counts in hosts alone — the fold, whose subject genuinely is the
+         * server — which reads as "not reported" rather than as none.
+         */
+        val urls: Int = 0,
     )
 
     /**
@@ -353,11 +393,15 @@ class Processors {
         /**
          * How many `undecided` reasons a work row publishes.
          *
-         * Six is the whole enumeration the fold can produce today, so this cuts
-         * nothing in practice and still refuses to be unbounded if that list
-         * grows — the same bargain `foldedOnto` and `inFlight` make.
+         * Eight covers both enumerations whole — five from the fold, seven from
+         * the stability gate — so this cuts nothing in practice and still
+         * refuses to be unbounded if either list grows, the same bargain
+         * `foldedOnto` and `inFlight` make. It was six, which fitted the fold
+         * alone and would have silently truncated the gate's reasons the moment
+         * they were named, breaking the one property the url counts are for:
+         * that the rows sum back to [Work.unmeasured].
          */
-        const val MAX_UNDECIDED_REASONS = 6
+        const val MAX_UNDECIDED_REASONS = 8
 
         /** Named hosts per reason. Enough to recognise the pattern, not an inventory. */
         const val MAX_UNDECIDED_EXAMPLES = 3
