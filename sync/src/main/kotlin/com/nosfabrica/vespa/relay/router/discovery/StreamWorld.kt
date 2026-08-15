@@ -22,6 +22,8 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.relay.router.IngestPipeline
 import com.nosfabrica.vespa.relay.router.TorTransport
+import com.nosfabrica.vespa.relay.router.config.MonitorConfig
+import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -52,7 +54,30 @@ internal class StreamWorld(
     private val monitor: RelayMonitor?,
     private val tor: TorTransport?,
     override val sockets: AliasFolding.Sockets,
+    /**
+     * The monitor's OWN url sources — the `monitor { sources = [...] }` block —
+     * unioned with whatever the streams' parsed sources yield. This is what
+     * lets a deployment move relay-list parsing off the streams entirely: a
+     * stream running on `syncableRelays` alone contributes no candidates, and
+     * the monitor block is then the one place urls enter the system.
+     */
+    private val monitorSources: MonitorConfig? = null,
 ) : AliasMonitor.Source {
+    /**
+     * The monitor block dressed as a discovery config, which is all
+     * [RelayDiscovery.discover] reads of one. Cadence fields are inert here —
+     * the monitor's clock belongs to [AliasMonitor].
+     */
+    private val monitorDiscovery: RelayDiscoveryConfig? =
+        monitorSources?.takeIf { it.sources.isNotEmpty() }?.let {
+            RelayDiscoveryConfig(
+                sources = it.sources,
+                refreshSeconds = it.sweepSeconds,
+                concurrency = 1,
+                exclude = it.exclude,
+            )
+        }
+
     /**
      * What the last derivation started from and what it dropped — the two nodes
      * ABOVE `candidates`, which nothing could see before.
@@ -108,15 +133,14 @@ internal class StreamWorld(
         // An operator who excluded a hundred urls and then asks why the fan-out
         // is a hundred short is asking about a number nothing published.
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
-        for (stream in streams) {
-            val dynamic = stream.dynamic ?: continue
+        for ((label, dynamic) in derivations()) {
             val found =
                 try {
                     RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay), allowOnion = tor != null)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
-                    System.err.println("router: alias source could not derive ${stream.name}: ${e.message}")
+                    System.err.println("router: alias source could not derive $label: ${e.message}")
                     emptyList()
                 }
             found.forEach {
@@ -139,6 +163,42 @@ internal class StreamWorld(
                 (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else ""),
         )
         return live
+    }
+
+    /** Every derivation the world runs: each stream's parsed sources, plus the monitor's own block. */
+    private fun derivations(): List<Pair<String, RelayDiscoveryConfig>> =
+        streams.mapNotNull { s -> s.dynamic?.let { s.name to it } } +
+            listOfNotNull(monitorDiscovery?.let { "monitor sources" to it })
+
+    /**
+     * The fast lane's derivation: the same sources, `since`-bounded to
+     * relay-list events ingested at or after [since]. Reads minutes of events
+     * where [candidates] walks the store — which is the whole reason a new
+     * relay can be verdicted in minutes without the lane costing a sweep.
+     *
+     * Known-dead urls are held out on the same reasoning as [candidates];
+     * the exclude lists apply inside [RelayDiscovery.discover] as ever.
+     */
+    override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
+        val dead = monitor?.deadSet().orEmpty()
+        val fresh = LinkedHashSet<NormalizedRelayUrl>()
+        for ((label, dynamic) in derivations()) {
+            val bounded =
+                dynamic.copy(
+                    sources = dynamic.sources.map { it.copy(filter = it.filter.copy(since = since)) },
+                )
+            val found =
+                try {
+                    RelayDiscovery.discover(store, bounded, skip = setOfNotNull(store.relay), allowOnion = tor != null)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    System.err.println("router: fast lane could not derive $label: ${e.message}")
+                    emptyList()
+                }
+            found.forEach { if (it.url !in dynamic.exclude && it.url != store.relay) fresh += it.url }
+        }
+        return fresh.filterNot { it in dead }
     }
 
     override suspend fun canDial(url: NormalizedRelayUrl): Boolean = probe.canDial(url)

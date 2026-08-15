@@ -236,7 +236,49 @@ object RouterConfigLoader {
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                 )
             }
-        return RouterConfig(connTimeout, streams, upIntervalSec, ingestConcurrency, ingestBatch, negMinEvents)
+        return RouterConfig(
+            connTimeout,
+            streams,
+            upIntervalSec,
+            ingestConcurrency,
+            ingestBatch,
+            negMinEvents,
+            monitor = parseMonitor(cfg),
+        )
+    }
+
+    /**
+     * The `monitor { }` block — the plane that owns relay-list parsing and the
+     * probe passes' clocks. Reuses the stream-side parsers on purpose: a
+     * monitor source IS a relay source, just feeding verdicts instead of a
+     * fan-out.
+     */
+    private fun parseMonitor(cfg: Config): MonitorConfig? {
+        if (!cfg.hasPath("monitor")) return null
+        val m = cfg.getConfig("monitor")
+        val sources =
+            if (m.hasPath("sources")) {
+                m.getConfigList("sources").map { parseRelaySource("monitor", it) }
+            } else {
+                emptyList()
+            }
+        return MonitorConfig(
+            sources = sources,
+            exclude = if (m.hasPath("exclude")) parseExcludes("monitor", m.getStringList("exclude")) else RelayExcludes.NONE,
+            sweepSeconds =
+                (if (m.hasPath("sweepSeconds")) m.getLong("sweepSeconds") else MonitorConfig.DEFAULT_SWEEP_SECONDS)
+                    .coerceAtLeast(300L),
+            newUrlSeconds =
+                when {
+                    !m.hasPath("newUrlSeconds") -> MonitorConfig.DEFAULT_NEW_URL_SECONDS
+
+                    // 0 is the documented off switch: a fast lane that fired
+                    // every zero seconds would be a busy loop, not a setting.
+                    m.getLong("newUrlSeconds") <= 0L -> null
+
+                    else -> m.getLong("newUrlSeconds").coerceAtLeast(30L)
+                },
+        )
     }
 
     private fun normalizeUrls(

@@ -1121,6 +1121,70 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `the monitor block parses its sources with the stream-side select syntax`() {
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                monitor {
+                    sources = [
+                        {
+                            select = [ { kind = 10002, tag = "r", marker = "write" } ]
+                            filter = { "kinds": [10002] }
+                        }
+                    ]
+                    exclude       = [ "wss://skip.example" ]
+                    sweepSeconds  = 3600
+                    newUrlSeconds = 60
+                }
+                streams {
+                    content {
+                        dir    = "down"
+                        sync   = "fetch"
+                        filter = { "kinds": [1] }
+                        syncableRelays = {}
+                    }
+                }
+                """.trimIndent(),
+            )
+        val m = cfg.monitor!!
+        assertEquals(1, m.sources.size)
+        assertEquals(3600L, m.sweepSeconds)
+        assertEquals(60L, m.newUrlSeconds)
+    }
+
+    @Test
+    fun `newUrlSeconds zero turns the fast lane off, absent takes the default`() {
+        val off =
+            RouterConfigLoader.parse(
+                """
+                monitor { newUrlSeconds = 0 }
+                streams {
+                    s {
+                        dir    = "down"
+                        filter = { "kinds": [1] }
+                        urls   = ["wss://a.example"]
+                    }
+                }
+                """.trimIndent(),
+            )
+        assertEquals(null, off.monitor!!.newUrlSeconds)
+        val defaulted =
+            RouterConfigLoader.parse(
+                """
+                monitor {}
+                streams {
+                    s {
+                        dir    = "down"
+                        filter = { "kinds": [1] }
+                        urls   = ["wss://a.example"]
+                    }
+                }
+                """.trimIndent(),
+            )
+        assertEquals(MonitorConfig.DEFAULT_NEW_URL_SECONDS, defaulted.monitor!!.newUrlSeconds)
+    }
+
+    @Test
     fun `syncableRelays takes a freshness bound and unions with parsed sources`() {
         val cfg =
             RouterConfigLoader.parse(

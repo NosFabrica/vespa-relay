@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.eventstore.engine.IngestStats
 import com.nosfabrica.vespa.relay.maintenance.ParseAudit
+import com.nosfabrica.vespa.relay.router.config.MonitorConfig
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncUpstream
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
@@ -358,7 +359,7 @@ class SyncEngine(
      * [dynamic]: the monitor is one of that object's constructor arguments, so
      * asking it for the world is a cycle Kotlin can only be talked out of.
      */
-    private val world = StreamWorld(store, dynamicStreams, probe, ingest, monitor, tor, sockets)
+    private val world = StreamWorld(store, dynamicStreams, probe, ingest, monitor, tor, sockets, monitorSources = config.monitor)
 
     /**
      * The verdict the sync plane selects on — `"#s": ["syncable"]` — plus the
@@ -428,7 +429,34 @@ class SyncEngine(
                 }
             },
         ).takeIf { it.isNotEmpty() }
-            ?.let { AliasMonitor(it, scope, source = world) }
+            ?.let { passes ->
+                AliasMonitor(
+                    passes,
+                    scope,
+                    // The monitor block's clock where one is configured; the
+                    // historical six hours otherwise.
+                    intervalMs = (config.monitor?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
+                    source = world,
+                    // The fast lane runs FITNESS alone: a first `syncable` is
+                    // what a new relay waits on; fold and consistency verdicts
+                    // ride the next sweep.
+                    newUrlEveryMs = config.monitor?.newUrlSeconds?.times(1000L),
+                    newUrlPass =
+                        fitness?.let { f ->
+                            object : AliasMonitor.Pass {
+                                override val progress = f.progress
+
+                                override suspend fun measure(
+                                    label: String,
+                                    candidates: List<NormalizedRelayUrl>,
+                                    canDial: suspend (NormalizedRelayUrl) -> Boolean,
+                                    onEvent: suspend (Event) -> Unit,
+                                    sockets: AliasFolding.Sockets,
+                                ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
+                            }
+                        },
+                )
+            }
             // WHERE THE CANDIDATE SET CAME FROM, on both passes' rows.
             //
             // Every number those passes publish is a share of `candidates`, and

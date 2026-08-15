@@ -75,6 +75,12 @@ data class RouterConfig(
     val negPageMin: Int = 1_000,
     val negPageMax: Int = 1_000_000,
     val negPageSlackSec: Long = 60,
+    /**
+     * The monitor plane's own configuration — see [MonitorConfig]. Null runs
+     * the probe passes exactly as before: candidates derived from the streams'
+     * parsed sources, on the default six-hour clock.
+     */
+    val monitor: MonitorConfig? = null,
 ) {
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.DOWN)
@@ -89,6 +95,51 @@ data class RouterConfig(
         streams
             .filter { it.dir == want || it.dir == SyncDirection.BOTH }
             .flatMap { s -> s.urls.map { SyncUpstream(s.name, it, s.filter, s.trusted, s.sync, s.healContent, s.healRetractions) } }
+}
+
+/**
+ * The monitor plane's configuration: where candidate urls come from, and the
+ * clocks its passes run on.
+ *
+ * The `monitor { }` block is what makes the config file "routers + monitor"
+ * rather than router-only. Its [sources] use the same select syntax a stream's
+ * `relaySource` does — every relay list in the protocol is a tag with a url at
+ * a fixed offset — but they feed the PROBE PASSES (fold, consistency,
+ * fitness), whose verdicts land on kind-30166 records, where a
+ * [SyncableSource] stream then finds its relay list. A deployment can thus
+ * move every ounce of relay-list parsing off the streams and onto this block.
+ *
+ * Candidates derived here UNION with whatever the streams' own parsed sources
+ * still yield — the migration posture everywhere in this config.
+ */
+data class MonitorConfig(
+    /** Where candidate urls come from — same shape as a stream's `relaySource`. */
+    val sources: List<RelaySource>,
+    val exclude: RelayExcludes = RelayExcludes.NONE,
+    /**
+     * The full-sweep cadence: how often every candidate is re-verdicted.
+     * The default is the probe passes' historical six hours.
+     */
+    val sweepSeconds: Long = DEFAULT_SWEEP_SECONDS,
+    /**
+     * The fast lane: how often the monitor looks for urls that have NEVER
+     * been measured and verdicts just those. This is what bounds a new
+     * relay's wait for its first `syncable` at minutes instead of a sweep —
+     * the price of "unmeasured urls are not dialled by streams" is paid here.
+     * Null turns the lane off.
+     *
+     * Cheap by construction: the derivation is `since`-bounded to relay-list
+     * events ingested after the last look, so it reads minutes of events, not
+     * the store.
+     */
+    val newUrlSeconds: Long? = DEFAULT_NEW_URL_SECONDS,
+) {
+    companion object {
+        const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
+
+        /** Two minutes: a new relay is syncable before its author refreshes the page. */
+        const val DEFAULT_NEW_URL_SECONDS = 120L
+    }
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */
