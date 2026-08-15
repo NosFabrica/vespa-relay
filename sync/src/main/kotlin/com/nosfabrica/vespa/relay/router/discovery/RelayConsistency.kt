@@ -121,6 +121,20 @@ class RelayConsistency(
     /** How many urls are currently refused. */
     fun refusedCount(): Int = inconsistent.size
 
+    /**
+     * Which verdict this url carries, asked one at a time so a caller can
+     * partition a candidate set in a single walk.
+     *
+     * Asked of the CANDIDATES rather than reported as the sizes of the two sets:
+     * [replace] only rewrites the urls it is handed, so both sets can hold
+     * verdicts about urls no stream discovers any more, and only counting within
+     * the candidate set makes `candidates = folded + consistent + inconsistent +
+     * unmeasured` close — see [ConsistencyPass.report].
+     */
+    fun isConsistent(url: NormalizedRelayUrl): Boolean = url in consistent
+
+    fun isInconsistent(url: NormalizedRelayUrl): Boolean = url in inconsistent
+
     /** Which urls still need measuring: everything with no verdict yet. */
     fun toProbe(candidates: Collection<NormalizedRelayUrl>): List<NormalizedRelayUrl> = candidates.filter { !measured(it) }
 

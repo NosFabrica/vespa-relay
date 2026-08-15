@@ -57,6 +57,16 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 #   …or a group of your own, `;` between groups and `,` within one:
 #   -DliveFoldGroups='wss://relay.example,wss://relay.example/alpha'
 
+# Runs a WHOLE stability pass against real relays — good, dead, unresolvable and
+# auth-gated — and prints the published partition. The only test that can prove
+# `Silence` classifies what OkHttp and the JDK actually say rather than what a
+# fake page says: its unrecognised bucket either is empty or names the strings
+# the table still has to learn. Asserts only what cannot depend on the network —
+# that the partition closes and the rows sum to `unmeasured`.
+./gradlew :sync:test --tests '*ConsistencyLivePassProbe*' -DliveConsistency=true --rerun -i
+#   …or urls of your own:
+#   -DliveConsistencyUrls='wss://relay.example,wss://other.example'
+
 # Walks each url TWICE from one anchor and prints the containment, at anchors of
 # 1min / 1hour / 1day / 7days. Answers whether a relay that fails the
 # reproducibility bar is failing because its window is still moving (an older
@@ -1936,6 +1946,113 @@ The seven-day anchor is not there to let a relay converge — it is there to
 remove OUR anchor from the list of explanations, so a failure cannot be blamed
 on new events, indexing lag, or replication.
 
+**Most of a candidate set is never decided, and that is the normal state rather
+than a fault.** A pass dials its whole set — the per-pass budget was dropped —
+and on a discovered corpus it decides a few hundred urls out of several
+thousand, because the rest cannot be measured at all. That ratio on its own
+("595 of 8,172 checked for consistency") reads as a gate that is stuck, so the
+urls with no verdict are counted by REASON — `ConsistencyPass.Unmeasured`, seven
+of them, in two families:
+
+| about us | about the far end |
+|---|---|
+| declined by our own transport | never answered a REQ |
+| the probe failed mid-walk | answered one of the two asks, not both |
+| | refused our auth |
+| | answered, but served no filter we know |
+| | too few events to judge on |
+
+`report` publishes them as counts of URLS, so the candidate set divides exactly
+once: `candidates = foldedAway + consistent + inconsistent + unmeasured`, and
+`unmeasured` is the sum of those reasons. `ConsistencyReportTest` pins that
+identity and one test per reason.
+
+**The stats card draws the whole thing as a TREE** — `funnelOf` in
+`/web/shared/sync.js`, one row per node, five levels deep:
+
+```
+every url the streams named                                           17,584
+├─ dropped before a pass could see it                                    832
+│  ├─ excluded by config, or our own url                                   3
+│  └─ known dead — a signed unreachability record                        829
+└─ in reach — the candidate set                                       16,752
+   ├─ folded onto another url                                         11,429
+   ├─ consistent                                                         583
+   ├─ inconsistent — refused                                              12
+   └─ no verdict                                                       4,728
+      ├─ never answered a REQ                                          3,902
+      │  ├─ the name does not resolve  on 1,502 host(s), largest 44    2,140
+      │  ├─ it never answered in time  on 611 host(s), largest 61      1,204
+      │  ├─ the connection was refused  on 388 host(s)                   402
+      │  └─ the TLS handshake failed  on 121 host(s)                     156
+      └─ refused our auth  on 4 host(s), largest 600                     826
+```
+
+It was an icicle first — one row per LEVEL, each a share of one width, a child
+drawn under the parent it subdivides. That was correct, and it needed three
+captions and a legend to say what indentation says for free: the nesting was
+carried by horizontal offset, the one visual channel already spent on
+proportion. Rendered on the real card it read as four unrelated bars. Every bar
+is still a share of the ROOT, never of the parent, so a host under a reason
+stays visibly a sliver of the corpus.
+
+A node whose children do not sum to it gets an `unattributed` child in the fault
+tone rather than a short bar — any arithmetic slip, and any reason list either
+side truncated. **Absent is not zero**: a pass publishing none of the three
+verdict members gets NO tree, because read as zeroes every url it checked lands
+in `unattributed`. That one shipped, and a screenshot of the real card is what
+caught it — 12,731 of the fold's 16,752 urls drawn as an arithmetic error on a
+pass that was working perfectly.
+
+**`never answered a REQ` splits again, on what the TRANSPORT said.** It is the
+largest bucket on a discovered corpus and it covers a name that no longer
+resolves, a refused connection, a failed TLS handshake and a window that lapsed
+in silence — four findings with four responses, and only the last is worth
+simply retrying. The evidence already existed: quartz hands us the socket
+layer's own message as the url's terminal reason (`onCannotConnect` →
+`"cannot:" + message`), and it was read once for a `startsWith` and dropped.
+`Silence` classifies it, by substring, because the text is somebody else's
+formatting and not a contract — quartz classifies the same strings the same way.
+**What makes that honest is `Silence.UNKNOWN`**: text the table does not
+recognise is counted as unrecognised and sampled to stderr, so the gap shows up
+on the first pass after a deploy and the table is extended from real strings.
+
+Those rows are published FLAT, each naming the reason it refines (`parent`), so
+the list still sums to `unmeasured` — nesting on the wire would put the one
+property the whole tree rests on at the mercy of a shape. The page nests them
+and SYNTHESISES the parent from its children, because the parent has no urls of
+its own.
+
+**The hosts under a reason are published and NOT drawn as rows** — one row per
+host is one row per SERVER on a corpus of two thousand of them, and the ranked
+head (`undecided[].top`, capped at six) is short only because the router capped
+it. What that ranking is FOR survives as two numbers on the reason's own row:
+`on 1,502 host(s), largest 44`. That is the question `urls` and `hosts` raise
+and cannot settle — 3,902 urls on 2,201 hosts with the largest at 61 is a dead
+network spread thin, the same urls with the largest at 3,000 is three servers —
+answered in a line rather than in forty rows. The names ride along on the row's
+title, and the full ranking with its counts stays in the JSON.
+
+The two probe passes' own lines carry ONE fact each — how far the pass got, and
+how long it took. The verdicts were briefly on the gate's line too, because
+nothing published them anywhere; they are the tree's business now, and a line
+repeating what a chart six rows above it says is a line a reader has to
+reconcile.
+
+Two caps have to move together: `Processors.MAX_UNDECIDED_REASONS` (8) and
+`SyncProgressReport.MAX_UNDECIDED_ROWS`. The relay's job is to bound a list the
+router already bounded, and it sat at 6 against a gate that can reach 7 — cutting
+below the writer is not bounding, it is dropping, and the dropped reason's urls
+then surface as an arithmetic fault on a document that was complete when it
+arrived.
+
+Two things that partition made visible and then fixed. `dialled` was
+`wanted.size`, so urls the transport declined were reported as dials that never
+happened. And an auth refusal fell through to the kinds fallback anyway — two
+more REQs into a wall we had already been shown, per url, per pass — because
+`walkPair` flattened the refusal into "proved nothing" before the caller could
+see it; see `AliasProbe.window`, which is `fingerprint` keeping that one bit.
+
 **Why removal rather than a downgrade**, which is what an earlier draft of this
 section argued for: a relay whose window is a different slice each time holds no
 stable cursor, so its band never closes and every cycle re-downloads what the
@@ -1988,8 +2105,9 @@ is not the current one — which is exactly the "no verdict" state that makes
 Bump `FOLD_EPOCH` (or `CONSISTENCY_EPOCH`, versioned separately because it is a
 separate dial) **in the same commit as any change to what a fingerprint
 concludes**, and never for logging, budget or ordering: the cost is a full
-re-fingerprint of the store, spread over `probesPerCycle` per pass, during which
-every un-re-measured url is dialled unfolded. Nothing has to be deleted and no
+re-fingerprint of the store in ONE pass — there is no per-pass budget to spread
+it over any more — `DEFAULT_CONCURRENCY` urls at a time, during which every
+un-re-measured url is dialled unfolded. Nothing has to be deleted and no
 operator has to intervene — `edit` overwrites the old tag with the new answer as
 each group is decided.
 

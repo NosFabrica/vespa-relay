@@ -393,6 +393,27 @@ class SyncEngine(
             },
         ).takeIf { it.isNotEmpty() }
             ?.let { AliasMonitor(it, scope, source = world) }
+            // WHERE THE CANDIDATE SET CAME FROM, on both passes' rows.
+            //
+            // Every number those passes publish is a share of `candidates`, and
+            // `candidates` is itself already filtered — a url a signed NIP-66
+            // record calls dead is dropped by [StreamWorld] before either pass
+            // sees it. Without these two, a reader has the whole funnel except
+            // its mouth, and no way to tell a corpus that shrank from one that
+            // was never that large. Both rows carry them because both passes
+            // measure the same derived set; a supplier rather than a copy, for
+            // the reason [Processors] gives.
+            ?.also {
+                for (pass in listOfNotNull(folding?.progress, stability?.progress)) {
+                    pass.counts {
+                        listOf(
+                            Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
+                            Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
+                            Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
+                        )
+                    }
+                }
+            }
 
     private val dynamic: DynamicSync =
         DynamicSync(

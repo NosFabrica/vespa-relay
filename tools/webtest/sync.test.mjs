@@ -11,7 +11,7 @@
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
 import {
-  HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, STUCK_LEG_SEC, constraintOf, isLive, legsOf,
+  HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf,
   probeProgress,
 } from "../../relay/src/main/resources/web/shared/sync.js";
 
@@ -184,4 +184,235 @@ const leg = (n, quiet, over = {}) => ({
     assert.equal(c.why, "");
   }
   ok("a bottleneck word this page has not been taught cannot reach Object.prototype");
+}
+
+// ── the candidate set, as a tree ────────────────────────────────────────────
+{
+  // A live-shaped document: a corpus mostly made of urls that cannot be
+  // measured at all, which is the reading the whole tree exists to make
+  // visible. The numbers are the identities
+  // `sourced = excluded + heldOutDead + candidates` and
+  // `candidates = foldedAway + consistent + inconsistent + unmeasured`.
+  const gate = (over = {}, row = {}) => ({
+    name: "consistency", phase: "idle", lastPassSec: 9720,
+    sourced: 17584, excluded: 3, heldOutDead: 829,
+    streams: [{
+      name: "all streams", candidates: 16752, foldedAway: 11429, consistent: 583, inconsistent: 12,
+      unmeasured: 4728, dialled: 4728, decided: 74,
+      undecided: {
+        reasons: [
+          { reason: "never answered a REQ", urls: 3902, hosts: 2201,
+            top: [{ host: "dead.example", urls: 61 }, { host: "gone.example", urls: 44 }] },
+          { reason: "too few events to judge on", urls: 826, hosts: 611,
+            top: [{ host: "thin.example", urls: 12 }] },
+        ],
+        omitted: 0,
+      },
+      ...row,
+    }],
+    ...over,
+  });
+
+  const f = funnelOf(gate());
+  const at = (key) => f.rows.find((r) => r.key === key);
+  assert.equal(f.total, 17584, "the root is every url the streams named");
+
+  // THE SHAPE. Depth is the relationship, so it is the thing to assert: a host
+  // is under its reason, a reason under `no verdict`, that under the candidate
+  // set, and the two dropped kinds under one branch of their own.
+  assert.deepEqual(f.rows.map((r) => [r.depth, r.key]), [
+    [0, "sourced"],
+    [1, "dropped"], [2, "excluded"], [2, "heldOutDead"],
+    [1, "candidates"], [2, "foldedAway"], [2, "consistent"], [2, "inconsistent"], [2, "unmeasured"],
+    [3, "never answered a REQ"],
+    [3, "too few events to judge on"],
+  ]);
+
+  // A REASON IS A LEAF. The hosts under it are published and deliberately not
+  // drawn: one row per host is one row per SERVER on a corpus of two thousand
+  // of them, and the ranked head is short only because the router capped it.
+  assert.equal(f.rows.some((r) => r.key === "dead.example"), false, "no row per host");
+  // What that list was FOR survives as two numbers on the reason's own row —
+  // 3,902 urls on 2,201 hosts with the largest at 61 is a dead network spread
+  // thin; the same urls with the largest at 3,000 would be three servers.
+  assert.equal(at("never answered a REQ").hosts, 2201);
+  assert.equal(at("never answered a REQ").largest, 61, "the widest host's share, not a list of them");
+  assert.deepEqual(at("never answered a REQ").examples, ["dead.example", "gone.example"],
+    "…and the names ride along for the row's title, which costs no height");
+
+  // EVERY BAR AGAINST THE ROOT, never against the parent — against its parent a
+  // host with 61 urls under a reason with 3,902 would draw at the width the
+  // whole corpus gets, contradicting the indentation that already says it is
+  // deep in a subtree.
+  assert.equal(at("candidates").share, 16752 / 17584);
+  assert.equal(at("never answered a REQ").share, 3902 / 17584);
+
+  // THE GUIDES. A `│` is drawn at every ancestor that still has a sibling
+  // below it, which is exactly the fact a flattened list loses — computed from
+  // depth alone the tree still renders, with dangling verticals under the last
+  // branch.
+  assert.equal(at("dropped").prefix, "├─ ");
+  assert.equal(at("excluded").prefix, "│  ├─ ", "inside a branch that is not the last");
+  assert.equal(at("heldOutDead").prefix, "│  └─ ");
+  assert.equal(at("candidates").prefix, "└─ ", "the last child of the root");
+  assert.equal(at("unmeasured").prefix, "   └─ ", "…so nothing is drawn below it");
+  assert.equal(at("never answered a REQ").prefix, "      ├─ ", "its sibling is below it, so the trunk continues");
+  assert.equal(at("too few events to judge on").prefix, "      └─ ");
+
+  // Tones are claims, and only one row on the whole tree is a fault.
+  assert.equal(at("consistent").tone, "good");
+  assert.equal(at("inconsistent").tone, "warn");
+  assert.equal(at("never answered a REQ").tone, null, "a relay that will not answer is not our fault");
+  assert.equal(at("never answered a REQ").hosts, 2201, "the url count's resolution into servers rides along");
+  ok("the tree nests by depth, guides its own branches, and scales every bar to the root");
+}
+
+{
+  // A NODE WHOSE CHILDREN DO NOT SUM TO IT gets a named child rather than a
+  // short bar — any arithmetic slip, and any reason list either side truncated,
+  // surfaces as a row in the fault tone instead of quietly shrinking the tree.
+  const f = funnelOf({
+    name: "consistency", sourced: 100, excluded: 0, heldOutDead: 0,
+    streams: [{ candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "never answered a REQ", urls: 40, hosts: 4 }], omitted: 3 } }],
+  });
+  const short = f.rows.find((r) => r.key === "unattributed");
+  assert.equal(short.value, 50, "the reasons cover 40 of the 90 with no verdict");
+  assert.equal(short.depth, 3, "…and it is a child of the node that did not close, not of the root");
+  assert.equal(short.tone, "warn", "an unclosed partition must look wrong");
+  assert.equal(f.omitted, 3, "and the rows the router itself dropped are carried through");
+  ok("a node whose children do not sum names the remainder rather than drawing a short bar");
+}
+
+{
+  // ABSENT IS NOT ZERO. A pass that publishes none of the three verdict members
+  // measures no verdicts — the alias fold, and any router older than the
+  // partition — and read as zeroes, every url WITH a verdict lands in `not
+  // accounted for`, in the fault tone, on a pass that is working. Caught in a
+  // screenshot of the real card: 12,731 of the fold's 16,752 urls drawn as an
+  // arithmetic error.
+  assert.equal(funnelOf({
+    name: "aliasFold", phase: "idle", sourced: 17584, heldOutDead: 832,
+    streams: [{ name: "all streams", candidates: 16752, unmeasured: 4021, dialled: 2000, decided: 118 }],
+  }), null, "a pass that publishes no partition is not given one");
+
+  assert.equal(funnelOf(null), null);
+  assert.equal(funnelOf({ name: "consistency" }), null, "a row with no streams has no tree");
+  assert.equal(funnelOf({ name: "consistency", streams: [{ candidates: 0, consistent: 0 }] }), null,
+    "an empty candidate set is not a tree of zeroes");
+
+  // With no `sourced` the root is what can still be accounted for, rather than
+  // a mouth invented for it.
+  const bare = funnelOf({ name: "consistency", streams: [{ candidates: 40, consistent: 10, unmeasured: 30 }] });
+  assert.equal(bare.total, 40);
+  assert.equal(bare.rows.find((r) => r.key === "dropped").value, 0);
+
+  // Summed across rows, never `streams[0]` — the bug that shipped on the line
+  // this tree sits under.
+  const two = funnelOf({
+    name: "consistency", sourced: 60,
+    streams: [
+      { candidates: 40, foldedAway: 10, consistent: 10, inconsistent: 0, unmeasured: 20 },
+      { candidates: 20, foldedAway: 0, consistent: 5, inconsistent: 5, unmeasured: 10 },
+    ],
+  });
+  assert.equal(two.candidates, 60);
+  assert.equal(two.rows.find((r) => r.key === "inconsistent").value, 5);
+  ok("an absent partition is no tree, an absent member is a zero, and rows are summed");
+}
+
+{
+  // A reason and a hostname are free text off the wire, and both are used as
+  // KEYS for the tone lookup. Reaching Object.prototype hands back a function,
+  // which renders as a class name and throws the row's colours away.
+  for (const hostile of ["constructor", "toString", "__proto__", "hasOwnProperty"]) {
+    const f = funnelOf({
+      name: "consistency", sourced: 10,
+      streams: [{ candidates: 10, foldedAway: 0, consistent: 2, inconsistent: 0, unmeasured: 8,
+        undecided: { reasons: [{ reason: hostile, urls: 8, hosts: 1, top: [{ host: hostile, urls: 8 }] }], omitted: 0 } }],
+    });
+    const rows = f.rows.filter((r) => r.key === hostile);
+    assert.equal(rows.length, 1, "the reason; its hosts are numbers on it rather than rows");
+    assert.equal(rows[0].tone, null, `${hostile} is unknown text, not a prototype member`);
+  }
+  ok("a reason or host this page has not been taught cannot reach Object.prototype");
+}
+
+// ── a reason that refines another reason ────────────────────────────────────
+{
+  // `never answered a REQ` covers four findings with four different responses,
+  // and the router publishes them as a FLAT list of rows naming the reason they
+  // refine — nesting on the wire would put the one property the tree rests on,
+  // that the rows sum to `unmeasured`, at the mercy of a shape.
+  const f = funnelOf({
+    name: "consistency", sourced: 1000,
+    streams: [{
+      candidates: 1000, foldedAway: 0, consistent: 100, inconsistent: 0, unmeasured: 900,
+      undecided: {
+        reasons: [
+          { reason: "the name does not resolve", parent: "never answered a REQ", urls: 500, hosts: 480,
+            top: [{ host: "gone.example", urls: 20 }] },
+          { reason: "the connection was refused", parent: "never answered a REQ", urls: 200, hosts: 90 },
+          { reason: "too few events to judge on", urls: 200, hosts: 150 },
+        ],
+        omitted: 0,
+      },
+    }],
+  });
+  const at = (key) => f.rows.find((r) => r.key === key);
+
+  // THE PARENT IS SYNTHESISED, because it has no urls of its own: every url it
+  // covers is already in a child, and a published row for it beside them would
+  // double-count the lot.
+  assert.equal(at("never answered a REQ").value, 700, "the sum of its children, not a published number");
+  assert.equal(at("never answered a REQ").depth, 3);
+  assert.equal(at("the name does not resolve").depth, 4, "a refinement sits under what it refines");
+  assert.equal(at("the name does not resolve").largest, 20, "and its widest host is a number on it, not a row under it");
+  assert.equal(f.rows.some((r) => r.depth > 4), false, "a refinement is the deepest thing drawn");
+
+  // Widest first among siblings, and the synthesised parent competes on its own
+  // total rather than on whichever child happened to be published first.
+  assert.deepEqual(
+    f.rows.filter((r) => r.depth === 3).map((r) => r.key),
+    ["never answered a REQ", "too few events to judge on"],
+  );
+
+  // The partition still closes: `unmeasured` is 900 and its children are 700 +
+  // 200, so nothing is unattributed.
+  assert.equal(f.rows.some((r) => r.key === "unattributed"), false);
+  ok("a row that refines another is nested under it, and the parent is summed rather than trusted");
+}
+
+{
+  // A refinement whose parent nothing else claims still stands on its own — a
+  // router that publishes one sub-cause and no siblings must not have it
+  // vanish into a group that was never opened.
+  const f = funnelOf({
+    name: "consistency", sourced: 100,
+    streams: [{
+      candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "the TLS handshake failed", parent: "never answered a REQ", urls: 90, hosts: 9 }], omitted: 0 },
+    }],
+  });
+  assert.equal(f.rows.find((r) => r.key === "never answered a REQ").value, 90);
+  assert.equal(f.rows.find((r) => r.key === "the TLS handshake failed").value, 90);
+  ok("a lone refinement keeps both its own row and the group it belongs to");
+}
+
+// ── does the document still add up ──────────────────────────────────────────
+{
+  // The relay recomputes both identities on the way out, and the tree carries
+  // its verdict — because `unattributed` can only report children that fall
+  // SHORT of their parent. Rows that OVERSHOOT leave no slice at all, which is
+  // the shape a document carrying both a group and its children produces.
+  const doc = (over) => ({
+    name: "consistency", sourced: 100,
+    streams: [{ candidates: 100, foldedAway: 0, consistent: 10, inconsistent: 0, unmeasured: 90,
+      undecided: { reasons: [{ reason: "never answered a REQ", urls: 90, hosts: 9 }], omitted: 0 }, ...over }],
+  });
+  assert.equal(funnelOf(doc({ accountedFor: true })).accountedFor, true);
+  assert.equal(funnelOf(doc({ accountedFor: false })).accountedFor, false);
+  // A router too old to make the claim is not a router making a false one.
+  assert.equal(funnelOf(doc({})).accountedFor, null, "absent is not a verdict either way");
+  ok("the relay's own arithmetic check rides on the tree, and absent is not false");
 }

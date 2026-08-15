@@ -820,6 +820,54 @@
   .sy-bg b { font-weight: 600; }
   .sy-bg em { font-style: normal; color: var(--muted); }
   .sy-bg s { text-decoration: none; color: var(--warn); }
+  /* EVERY DISCOVERED URL, ONCE, INTO WHAT BECAME OF IT — one row per node,
+     nesting carried by indentation.
+
+     This replaced an icicle: one row per LEVEL, each a share of one width, a
+     child drawn under the parent it subdivides. That was correct, and it needed
+     three captions and a legend to say what indentation says for free — the
+     nesting was carried by horizontal offset, which is the one visual channel
+     already spent on proportion. Rendered on the real card it read as four
+     unrelated bars. Here depth IS the relationship and the bar is only ever
+     proportion. */
+  /* CAPPED, and narrower than the card. The three columns are a label, its
+     count and a bar; stretched to a wide card the label and its own number end
+     up an inch apart, which is the one association every row exists to make.
+     The rule down the left edge groups the block: it sits at the HEAD of the
+     section, above a run of one-line processors, and without it the first
+     `alias fold` line reads as one more row of the tree. */
+  .sy-funnel { grid-column: 1 / -1; max-width: 760px; margin: 1px 0 12px;
+               padding-left: 10px; border-left: 2px solid var(--line); }
+  /* Whose numbers these are. The tree is the widest thing on the card and it is
+     still ONE pass's reading, so it is named rather than left to be assumed. */
+  .sy-tr-cap { grid-column: 1 / -1; font-size: 11.5px; color: var(--muted); margin: 2px 0 0; }
+  .sy-tr { display: grid; grid-template-columns: 1fr auto 120px; gap: 0 10px; align-items: center;
+           font-size: 12px; line-height: 1.8; }
+  .sy-tr-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  /* Monospace, and the only monospace on this card: the guides are box-drawing
+     characters that must align vertically down every level, which a
+     proportional face cannot promise. */
+  .sy-tr-guide { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-style: normal;
+                 color: var(--line); white-space: pre; }
+  .sy-tr-dot { display: inline-block; width: .5rem; height: .5rem; border-radius: 2px;
+               vertical-align: -.01em; margin-right: .35rem; background: var(--bar); }
+  /* The four tones, and each is a claim: `good` is a relay we can sync against,
+     `warn` is a fault worth an operator's attention, `ours` is a failure on
+     THIS side (a transport we do not have, a probe that broke) and must never
+     colour like a relay misbehaving, and the default is a fact that is neither. */
+  .sy-tr-dot.good, .sy-tr-track i.good { background: var(--accent); }
+  .sy-tr-dot.warn, .sy-tr-track i.warn { background: var(--warn); }
+  .sy-tr-dot.ours, .sy-tr-track i.ours { background: var(--muted); opacity: .5; }
+  .sy-tr-dot.mute, .sy-tr-track i.mute { background: var(--bar); opacity: .55; }
+  .sy-tr-hosts { font-style: normal; color: var(--muted); }
+  .sy-tr-n { font-variant-numeric: tabular-nums; font-weight: 600; }
+  .sy-tr-track { position: relative; height: 6px; border-radius: 3px; background: var(--grid); overflow: hidden; }
+  /* `min-width` because the row that matters most is the smallest one:
+     `inconsistent` is twelve urls in seventeen thousand — 0.07%, which rounds
+     to nothing — and a fault drawn at zero pixels is a fault nobody sees. */
+  .sy-tr-track i { display: block; height: 100%; min-width: 2px; border-radius: 3px; background: var(--bar); }
+  .sy-tr-note { font-size: 11.5px; color: var(--muted); margin-top: 3px; }
+  .sy-tr-note.warn { color: var(--warn); font-weight: 600; }
   /* HOW MANY RELAYS REACH EACH POINT IN THE FRAME — the one picture that says
      whether coverage is deep or only recent, over every row at once. */
   .sy-depth { display: flex; gap: 1px; height: 26px; align-items: flex-end; margin: 8px 0 3px; }
@@ -866,7 +914,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import { STUCK_LEG_SEC, constraintOf, isLive, legsOf, probeProgress } from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf, probeProgress } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1907,6 +1955,29 @@ function backgroundPanel(progress) {
   const rows = (progress && progress.processors) || [];
   if (!rows.length) return null;
   const box = el("div", "sy-bg");
+  // THE CORPUS FIRST, above every pass's line.
+  //
+  // It was drawn under the row that publishes it, which put the widest thing on
+  // the card — what became of every url this router knows of — below two lines
+  // of clock. Every pass under it works on that same corpus, so it is context
+  // for all of them rather than a detail of the one that happens to measure it,
+  // and a reader arriving at this card is asking "what is out there" before
+  // "when does the next pass run".
+  //
+  // It is still ONE pass's numbers, which is why it is captioned with that
+  // pass's name: `folded onto another url` is the STABILITY GATE's reading of
+  // the fold's verdicts, taken when the gate last ran, and unlabelled at the top
+  // of a section it would read as the card's own arithmetic.
+  for (const p of rows) {
+    const funnel = funnelPanel(p);
+    if (!funnel) continue;
+    const known = BACKGROUND.find((row) => row[0] === p.name);
+    const cap = el("div", "sy-tr-cap", `every relay url this router knows of, as the ${known ? known[1] : p.name} last measured it`);
+    if (known) cap.title = known[2];
+    box.appendChild(cap);
+    box.appendChild(funnel);
+    break;
+  }
   for (const p of rows) {
     const known = BACKGROUND.find((row) => row[0] === p.name);
     const name = el("b", null, known ? known[1] : p.name);
@@ -1915,6 +1986,83 @@ function backgroundPanel(progress) {
     box.appendChild(el("em", null,
       `${p.phase || "unknown"}${p.nextInSec ? ` · next in ${fmtDur(p.nextInSec)}` : ""}`));
     box.appendChild(processorFact(p));
+  }
+  return box;
+}
+
+/**
+ * THE CANDIDATE SET, DIVIDED — every url the streams named, once, into what
+ * became of it and then into why.
+ *
+ * Drawn under the stability gate's line because that line is a ratio and a
+ * ratio is exactly what cannot be acted on: `595 of 8,172 checked` is the same
+ * number whether the other 7,577 are unreachable, auth-walled, thin or waiting
+ * on a pass that never ran, and those want four different responses. Every
+ * decision behind it — what the width is, where a slice sits, what to do when
+ * the arithmetic does not close — is `funnelOf` in `/web/shared/sync.js`, for
+ * the reason that module's head gives.
+ *
+ * The KEYS carry the numbers, and that is not redundancy with the bars: the
+ * slice that matters most here is `inconsistent`, which on a live corpus is
+ * twelve urls out of seventeen thousand and cannot be drawn at a width anyone
+ * can see. The bar shows the shape, the keys show the values, and neither is
+ * asked to do the other's job.
+ */
+function funnelPanel(p) {
+  const f = funnelOf(p);
+  if (!f) return null;
+  const box = el("div", "sy-funnel");
+  for (const r of f.rows) {
+    const row = el("div", "sy-tr");
+
+    // The guides and the label in one cell, so indentation is the label's own
+    // left edge rather than a column that the longest name at any depth would
+    // have to be measured against.
+    const name = el("div", "sy-tr-name");
+    if (r.prefix) name.appendChild(el("i", "sy-tr-guide", r.prefix));
+    name.appendChild(el("b", r.tone ? `sy-tr-dot ${r.tone}` : "sy-tr-dot"));
+    name.appendChild(el("span", null, r.label));
+    // The document's own words where the row is one of ours; a router's
+    // free-text reason and a hostname are their own explanation.
+    const why = term(r.key);
+    if (why) name.title = why;
+    // What a reason's urls resolve to as SERVERS, and how much of it the widest
+    // one is. Beside the label rather than as child rows: they are a different
+    // unit, a unit change inside a tree of url counts reads as a subtotal, and
+    // one row per host would be one row per server on a corpus of thousands.
+    // These two numbers are what that list was for — spread thin, or a handful
+    // of servers — and the names are on the row's title.
+    if (r.hosts) {
+      const spread = r.largest ? ` on ${fmt(r.hosts)} host(s), largest ${fmt(r.largest)}` : ` on ${fmt(r.hosts)} host(s)`;
+      name.appendChild(el("em", "sy-tr-hosts", spread));
+    }
+    row.appendChild(name);
+
+    row.appendChild(el("span", "sy-tr-n", fmt(r.value)));
+
+    // EVERY BAR AGAINST THE ROOT, never against the parent. Against its parent
+    // a host with four urls under a reason with five would draw at 80% of the
+    // width the whole corpus gets, which is the reading the tree's indentation
+    // already carries and the one proportion must not contradict.
+    const track = el("span", "sy-tr-track");
+    const fill = el("i", r.tone || null);
+    fill.style.width = `${Math.min(100, r.share * 100)}%`;
+    track.appendChild(fill);
+    row.appendChild(track);
+    row.title = `${fmt(r.value)} url(s) — ${(r.share * 100).toFixed(r.share < 0.01 ? 2 : 1)}% of ${fmt(f.total)}` +
+      (r.examples && r.examples.length ? ` (e.g. ${r.examples.join(", ")})` : "");
+    box.appendChild(row);
+  }
+  if (f.omitted) {
+    box.appendChild(el("div", "sy-tr-note", `${fmt(f.omitted)} more reason(s) not drawn — see the JSON`));
+  }
+  // The relay's own check on the two identities, drawn LOUD and only when it
+  // fails. The tree's `not accounted for` row covers a parent whose children
+  // fall short; this covers the other direction, where nothing looks wrong.
+  if (f.accountedFor === false) {
+    const bad = el("div", "sy-tr-note warn", "these numbers do not add up — see `accountedFor` in the JSON");
+    bad.title = term("accountedFor");
+    box.appendChild(bad);
   }
   return box;
 }
@@ -1966,6 +2114,12 @@ function processorFact(p) {
   if (probe) {
     // The tooltip hangs on `unmeasured`: the member this is derived from, and
     // the one the glossary can be checked against.
+    // ONE FACT: how far it got, and how long that took. The verdicts behind it
+    // — how many relays are consistent, and the count this router refuses —
+    // were briefly on this line too, because nothing anywhere published them;
+    // they are now the tree at the head of the section, with the rest of the
+    // partition around them. A line that repeats what a chart six rows above it
+    // already says is a line a reader has to reconcile.
     add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} relay(s) ${PROBE_FOR[p.name] || "checked"}` +
         `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
     return cell;

@@ -561,6 +561,168 @@ class SyncProgressReportTest {
             }
 
     @Test
+    fun `every member of a probe pass's partition can be drawn by the card`() {
+        // The same drift as the outcome partition below, on the newer one. A
+        // probe pass's row divides its candidate set — folded, consistent,
+        // inconsistent, and what is left — and the funnel on the card is drawn
+        // from members that sum to the total BY CONSTRUCTION. A member the page
+        // never reads does not fail: it lands in the funnel's `unattributed`
+        // slice, which is honest and is not the same as being drawn.
+        val card = card()
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "consistency", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
+                   "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
+                   "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 22, "hosts": 7,
+                                              "examples": ["dead.example"]}], "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val published = row.keys + (row["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject.keys
+        val undrawn = published.filterNot { card.contains(it) }
+        assertEquals(emptyList(), undrawn, "published in the pass's partition, drawn nowhere on the card: $undrawn")
+    }
+
+    @Test
+    fun `every reason the gate can reach survives this side, and its hosts are ranked as sent`() {
+        // THE CAP THAT WAS ONE SHORT. This side bounds what the router already
+        // bounded, and the two numbers have to be read together: the router
+        // publishes up to `Processors.MAX_UNDECIDED_REASONS` (8) and the
+        // stability gate can reach seven of them, while this side cut at six.
+        // Cutting BELOW the router is not bounding, it is dropping — and the
+        // dropped reason's urls then land in the card's `not accounted for`
+        // slice, which reports an arithmetic fault against a document that was
+        // complete when it arrived.
+        val reasons =
+            listOf(
+                "declined by our own transport",
+                "never answered a REQ",
+                "answered one of the two asks, not both",
+                "refused our auth",
+                "answered, but served no filter we know",
+                "too few events to judge on",
+                "the probe failed mid-walk",
+            )
+        val rows =
+            reasons.joinToString(",") {
+                """{"reason": "$it", "urls": 10, "hosts": 2,
+                 "top": [{"host": "a.example", "urls": 6}, {"host": "b.example", "urls": 4}]}"""
+            }
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "consistency", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 70, "foldedAway": 0, "consistent": 0,
+                   "inconsistent": 0, "unmeasured": 70, "dialled": 70, "decided": 0,
+                   "undecided": {"reasons": [$rows], "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val undecided = row["undecided"]!!.jsonObject
+        val kept = (undecided["reasons"] as JsonArray).map { it.jsonObject["reason"]!!.jsonPrimitive.content }
+        assertEquals(reasons, kept, "every reason the gate can reach must survive the trip")
+        assertEquals(0, undecided["omitted"]!!.jsonPrimitive.int, "and nothing is reported as dropped")
+
+        // The order is the ROUTER's ranking, taken over the whole set it
+        // measured. Re-sorting a capped list here would order the head by a
+        // criterion never applied to the tail, which reads as a top-N and is not.
+        val top = ((undecided["reasons"] as JsonArray)[0].jsonObject["top"] as JsonArray)
+        assertEquals(listOf("a.example", "b.example"), top.map { it.jsonObject["host"]!!.jsonPrimitive.content })
+        assertEquals(6, top[0].jsonObject["urls"]!!.jsonPrimitive.int)
+    }
+
+    @Test
+    fun `a host row with no name is dropped rather than published as an anonymous count`() {
+        // It is the NAME that makes the fourth level worth drawing: a slice
+        // labelled with a number and nothing else is a slice nobody can chase.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "consistency", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 10, "unmeasured": 10,
+                   "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 10, "hosts": 1,
+                     "top": [{"urls": 5}, {"host": "real.example", "urls": 4}]}], "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val top = ((row["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject["top"] as JsonArray)
+        assertEquals(listOf("real.example"), top.map { it.jsonObject["host"]!!.jsonPrimitive.content })
+    }
+
+    @Test
+    fun `a probe pass's numbers are checked for adding up, and a mismatch is published`() {
+        // The same check `cycle` gets, on the other partition this object
+        // publishes — and recomputed here rather than forwarded, so it is a
+        // statement about the document being served.
+        fun row(streams: String) =
+            (
+                (
+                    SyncProgressReport
+                        .build("""{"writtenAt": 900, "processors": [{"name": "consistency", "streams": [$streams]}]}""", nowSeconds = 1_000)!!
+                        ["processors"] as JsonArray
+                )[0].jsonObject["streams"] as JsonArray
+            )[0].jsonObject
+
+        val whole =
+            row(
+                """{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9, "inconsistent": 1,
+                    "unmeasured": 22, "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 22, "hosts": 7}], "omitted": 0}}""",
+            )
+        assertTrue(whole["accountedFor"]!!.jsonPrimitive.booleanOrNull!!, "8 + 9 + 1 + 22 = 40, and the rows cover all 22")
+
+        // The candidate set does not divide.
+        val short =
+            row(
+                """{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9, "inconsistent": 1,
+                    "unmeasured": 20, "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 20, "hosts": 7}], "omitted": 0}}""",
+            )
+        assertFalse(short["accountedFor"]!!.jsonPrimitive.booleanOrNull!!, "38 of 40 urls have a disposition")
+
+        // …and the rows do not cover what has no verdict, which is the identity
+        // the second level of the tree rests on.
+        val gap =
+            row(
+                """{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9, "inconsistent": 1,
+                    "unmeasured": 22, "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 9, "hosts": 7}], "omitted": 0}}""",
+            )
+        assertFalse(gap["accountedFor"]!!.jsonPrimitive.booleanOrNull!!, "9 of the 22 undecided urls are under a reason")
+
+        // A pass that publishes no partition makes no claim about it either.
+        assertFalse("accountedFor" in row("""{"name": "all streams", "candidates": 40, "unmeasured": 22}"""))
+    }
+
+    @Test
+    fun `a pass that measures no verdicts publishes none, rather than zero of them`() {
+        // The alias fold has no stability verdicts to report, and neither has a
+        // router written before the partition existed. A zero would be a
+        // measurement neither of them took — the card draws `0 refused as
+        // inconsistent` from it, which is a claim about every relay in the
+        // fan-out — so the members are carried only where the router wrote them.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "processors": [{"name": "aliasFold", "phase": "idle",
+                 "streams": [{"name": "all streams", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val row = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        assertEquals(
+            emptyList(),
+            listOf("foldedAway", "consistent", "inconsistent").filter { it in row },
+            "a verdict nobody measured must not be published as zero: $row",
+        )
+        // …and the members it DID write are still there, so this is an absence
+        // rather than a row that failed to read.
+        assertEquals(40, row["candidates"]!!.jsonPrimitive.int)
+    }
+
+    @Test
     fun `every outcome this object publishes can be drawn by the card`() {
         // The drift that produced the bug: `busy` was added to the partition,
         // summed into `accountedFor`, and never added to the card's

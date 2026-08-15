@@ -72,6 +72,9 @@ class SyncVocabularyTest {
             "max",
             "complete",
             "fullAt",
+            // A hostname, inside a row whose `urls` is the count a reader looks
+            // up — the same call `relay` gets inside `foldedOnto`.
+            "host",
             "everyKindMin",
             "everyKindMax",
             "sweep",
@@ -133,9 +136,18 @@ class SyncVocabularyTest {
                  "processors": [
                    {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
+                    "sourced": 44, "excluded": 1, "heldOutDead": 3,
                     "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
                       "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
+                   {"name": "consistency", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
+                    "lastPassAt": 880, "lastPassSec": 900, "nextInSec": 20800,
+                    "sourced": 44, "excluded": 1, "heldOutDead": 3,
+                    "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
+                      "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
+                      "undecided": {"reasons": [{"reason": "the connection was refused",
+                                                 "parent": "never answered a REQ", "urls": 22, "hosts": 7,
+                                                 "top": [{"host": "dead.example", "urls": 9}]}], "omitted": 0}}]},
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
                     "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
@@ -233,10 +245,22 @@ class SyncVocabularyTest {
                     "passesRun",
                     "processors",
                     "candidates",
+                    // The candidate set's own partition, and the two nodes above
+                    // it that say where the set came from.
+                    "sourced",
+                    "heldOutDead",
+                    "foldedAway",
+                    "consistent",
+                    "inconsistent",
                     "unmeasured",
                     "dialled",
                     "decided",
                     "undecided",
+                    // The ranked hosts under one reason — the tree's deepest
+                    // level — and the reason a row refines, which is what nests
+                    // the sub-causes of silence under it.
+                    "top",
+                    "parent",
                     "reason",
                     "lastPassAt",
                     "lastPassSec",

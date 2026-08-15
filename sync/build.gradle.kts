@@ -73,4 +73,9 @@ tasks.test {
     System.getProperty("authRefusalProbe")?.let { systemProperty("authRefusalProbe", it) }
     System.getProperty("authRefusalUrls")?.let { systemProperty("authRefusalUrls", it) }
     System.getProperty("authRefusalCensus")?.let { systemProperty("authRefusalCensus", it) }
+    // A whole stability pass over real relays — the only test that can prove
+    // `Silence` classifies what OkHttp and the JDK actually say, rather than
+    // what a fake page says. Same forwarding, same trap.
+    System.getProperty("liveConsistency")?.let { systemProperty("liveConsistency", it) }
+    System.getProperty("liveConsistencyUrls")?.let { systemProperty("liveConsistencyUrls", it) }
 }

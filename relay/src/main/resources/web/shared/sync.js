@@ -120,13 +120,254 @@ export const MEASURING = "measuring";
 export function probeProgress(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
-  const candidates = streams.reduce((a, w) => a + (w.candidates || 0), 0);
-  const unmeasured = streams.reduce((a, w) => a + (w.unmeasured || 0), 0);
+  const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
+  const candidates = sum("candidates");
+  const unmeasured = sum("unmeasured");
   return {
     candidates,
     checked: Math.max(0, candidates - unmeasured),
     tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
   };
+}
+
+/**
+ * What each slice of the funnel MEANS — keyed by the router's own words.
+ *
+ * The partition's members are ours and glossed by the document, but the
+ * `undecided` reasons are free text off the wire, so the tone is looked up
+ * rather than derived: an unrecognised reason draws neutral and still gets its
+ * segment, because a slice the page cannot colour is not a slice it may drop.
+ *
+ * `__proto__: null` for the same reason `PROBE_FOR` has it: the key is a string
+ * a router chose, and `constructor` must not resolve to a function.
+ */
+const FUNNEL_TONE = {
+  __proto__: null,
+  // The two verdicts. Only one of them is a fault, and it is the router's
+  // fault to report rather than the relay's to be blamed for — see the
+  // glossary's `inconsistent`.
+  consistent: "good",
+  inconsistent: "warn",
+  // Neither a fault nor a finding: a duplicate url leaving the fan-out is the
+  // fold working, and a url held out on a signed record is one we already
+  // measured.
+  foldedAway: "mute",
+  heldOutDead: "mute",
+  // Ours, in both senses: we could not carry it, or our probe broke.
+  "declined by our own transport": "ours",
+  "the probe failed mid-walk": "ours",
+  // The arithmetic not closing is neither of those and must LOOK wrong.
+  unattributed: "warn",
+};
+
+/**
+ * EVERY DISCOVERED URL, ONCE, INTO WHAT BECAME OF IT — as a tree.
+ *
+ * ## Why a tree and not the stacked levels this replaces
+ *
+ * It was an icicle: one row per level, every level a share of one width, a
+ * child sitting under the parent it subdivides. It was correct and it needed
+ * three captions and a legend to say what indentation says for free — the
+ * nesting was carried by horizontal offset, which is the one visual channel
+ * already spent on proportion. Rendered on the real card, the levels read as
+ * four unrelated bars.
+ *
+ * The same numbers as `parent → children` need no captions: depth IS the
+ * relationship, the label sits next to its own count, and a fifth level costs
+ * one more indent rather than a new alignment rule. What the icicle was good at
+ * — comparing two slices at a glance — is kept as a bar per row, all against
+ * the SAME root total, so a host under a reason is still visibly a sliver of
+ * the corpus and not of its parent.
+ *
+ * ## Why this and not the one number beside it
+ *
+ * `probeProgress` answers "how much has a verdict", which on a discovered
+ * corpus sits at a few hundred out of several thousand and reads as a gate that
+ * is stuck. It is not: the pass dials its whole set every time, and most of
+ * that set is urls that cannot be measured at all — dead hosts, auth walls,
+ * relays holding nine events. Those are different problems with different
+ * fixes, and they were one undifferentiated number.
+ *
+ * ## The rules it is held to
+ *
+ * **A node whose children do not sum to it gets an `unattributed` child rather
+ * than a short bar.** Any arithmetic slip, and any reason list either side
+ * truncated, surfaces as a named row in the fault tone instead of quietly
+ * shrinking the tree.
+ *
+ * **Absent is not zero.** A pass that publishes none of the three verdict
+ * members measures no verdicts — the alias fold, and any router older than the
+ * partition — and gets NO tree, rather than one claiming every url it checked
+ * is unaccounted for. That bug shipped and a screenshot of the real card caught
+ * it.
+ *
+ * **Nothing is invented from a missing member**, and a subtree nobody can fill
+ * simply does not appear.
+ */
+export function funnelOf(p) {
+  const streams = p?.streams || [];
+  if (!streams.length) return null;
+  const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
+  const candidates = sum("candidates");
+  if (!candidates) return null;
+  // ABSENT IS NOT ZERO, and this is the one place in the module where the
+  // difference is load-bearing — see the header. `sum` cannot tell a missing
+  // member from a real zero, so the question is asked of the rows directly.
+  if (!streams.some((w) => w.foldedAway != null || w.consistent != null || w.inconsistent != null)) return null;
+
+  const excluded = Math.max(0, p.excluded || 0);
+  const heldOutDead = Math.max(0, p.heldOutDead || 0);
+  const dropped = excluded + heldOutDead;
+  // The root: everything the streams named. `sourced` is the honest one when
+  // the router publishes it; without it the root is what we can still account
+  // for, and the tree simply starts lower rather than inventing a mouth.
+  const total = Math.max(candidates + dropped, p.sourced || 0);
+
+  /** One node. `children` is built by the callers below, never inferred. */
+  const node = (key, label, value, children = []) => ({
+    key, label, value,
+    share: total ? value / total : 0,
+    tone: FUNNEL_TONE[key] || null,
+    children,
+  });
+
+  // A REASON IS A LEAF. The hosts under it are published — `undecided[].top`,
+  // ranked, with their url counts — and they are deliberately NOT drawn: a row
+  // per host is a row per SERVER on a corpus of two thousand of them, and the
+  // ranked head is short only because the router capped it. The tree would grow
+  // by a page to say what two numbers on the reason's own row already say.
+  //
+  // So the ranking survives as those two numbers rather than as a list.
+  // `hosts` is how many servers the reason's urls resolve to and `largest` is
+  // the widest one's share, which together answer the question the pair raises
+  // and a list would answer at forty times the height: 3,902 urls on 2,201
+  // hosts with the largest at 61 is a dead network spread thin, and the same
+  // urls with the largest at 3,000 is three servers. The names go on the row's
+  // title, where they cost no space at all.
+  const asReason = (row) => {
+    const value = Math.max(0, row.urls || 0);
+    const top = (row.top || []).filter((h) => h && h.host && h.urls > 0);
+    return {
+      ...node(row.reason, row.reason, value),
+      hosts: row.hosts || 0,
+      largest: top[0]?.urls || 0,
+      examples: row.examples?.length ? row.examples : top.map((h) => h.host),
+    };
+  };
+
+  // ROWS THAT REFINE ANOTHER ROW GO UNDER IT. The router publishes a FLAT list
+  // that sums to `unmeasured` — nesting on the wire would put the one property
+  // the whole tree rests on at the mercy of a shape — and each row names the
+  // reason it refines. `never answered a REQ` has four of those: a name that
+  // does not resolve, a refusal, a failed handshake, a window that lapsed.
+  //
+  // The parent is SYNTHESISED from its children rather than published, because
+  // it has no urls of its own: every url it covers is already in a child, and a
+  // row for the parent beside them would double-count the lot.
+  const all = firstReasons(streams).filter((r) => (r.urls || 0) > 0);
+  const children = new Map();
+  for (const row of all) {
+    if (!row.parent) continue;
+    if (!children.has(row.parent)) children.set(row.parent, []);
+    children.get(row.parent).push(row);
+  }
+  const reasons = [];
+  const drawn = new Set();
+  for (const row of all) {
+    const group = row.parent || (children.has(row.reason) ? row.reason : null);
+    if (group) {
+      // A row whose NAME is also a parent is consumed as that parent rather
+      // than drawn beside it — otherwise a document carrying both the group and
+      // its children counts every url under it twice, and a sum that comes out
+      // OVER its own total is the one error the `unattributed` slice cannot
+      // report. The router never publishes both; the card is served to whoever
+      // asks, and this file's own rule is not to trust the writer.
+      if (drawn.has(group)) continue;
+      drawn.add(group);
+      const kids = children.get(group).map(asReason);
+      reasons.push(node(group, group, kids.reduce((a, k) => a + k.value, 0), kids));
+      continue;
+    }
+    reasons.push(asReason(row));
+  }
+  reasons.sort((a, b) => b.value - a.value);
+
+  const kept = [
+    node("foldedAway", "folded onto another url", sum("foldedAway")),
+    node("consistent", "consistent", sum("consistent")),
+    node("inconsistent", "inconsistent — refused", sum("inconsistent")),
+    node("unmeasured", "no verdict", sum("unmeasured"), reasons),
+  ];
+  const root =
+    node("sourced", "every url the streams named", total, [
+      node("dropped", "dropped before a pass could see it", dropped, [
+        node("excluded", "excluded by config, or our own url", excluded),
+        node("heldOutDead", "known dead — a signed unreachability record", heldOutDead),
+      ]),
+      node("candidates", "in reach — the candidate set", candidates, kept),
+    ]);
+  // WHAT THE RELAY THINKS OF THE ARITHMETIC, which is not the same question as
+  // what this function's own subtraction found. `unattributed` can only report a
+  // parent whose children fall SHORT; rows that overshoot their parent — the
+  // shape a document carrying both a group and its children produces — leave no
+  // slice at all. The relay recomputes both identities on the way out, so a
+  // false here is drawn as a note even when every bar looks whole.
+  const claimed = streams.map((w) => w.accountedFor).filter((v) => v != null);
+  return {
+    total, candidates, root, rows: flatten(root), omitted: firstOmitted(streams),
+    accountedFor: claimed.length ? claimed.every(Boolean) : null,
+  };
+}
+
+/**
+ * The tree as rows a page can draw, depth-first, each carrying the box-drawing
+ * prefix that makes the nesting readable without the page knowing the shape.
+ *
+ * The guides are built HERE rather than from a depth counter in the renderer
+ * because they are not a function of depth alone: a `│` is drawn at every
+ * ancestor that still has a sibling below it, and that is exactly the fact a
+ * flattened list loses. Computed wrong, the tree still renders — with dangling
+ * verticals under the last branch — which is the class of bug this module
+ * exists to keep out of the page.
+ *
+ * A node whose children do not account for it gets an `unattributed` child on
+ * the way out, so the check runs once, on the finished tree, and cannot be
+ * forgotten by whoever adds the next level.
+ */
+function flatten(root) {
+  const rows = [];
+  const walk = (n, depth, prefix, last) => {
+    rows.push({ ...n, depth, prefix: depth === 0 ? "" : prefix + (last ? "└─ " : "├─ ") });
+    const kids = n.children.slice();
+    const named = kids.reduce((a, k) => a + k.value, 0);
+    if (kids.length && n.value > named) {
+      kids.push({ key: "unattributed", label: "not accounted for", value: n.value - named,
+                  share: root.value ? (n.value - named) / root.value : 0, tone: "warn", children: [] });
+    }
+    const below = depth === 0 ? "" : prefix + (last ? "   " : "│  ");
+    kids.forEach((k, i) => walk(k, depth + 1, below, i === kids.length - 1));
+  };
+  walk(root, 0, "", true);
+  return rows;
+}
+
+/**
+ * The `undecided` rows across every stream row, widest first.
+ *
+ * Concatenated rather than merged by reason: the rows are per stream row and
+ * today there is exactly one (the passes measure the union of every stream, and
+ * publish it as `all streams`). Merging would be the right call the moment that
+ * changes, and inventing the merge now would be untested code standing between
+ * a reader and the only shape that exists.
+ */
+function firstReasons(streams) {
+  const rows = streams.flatMap((w) => (w.undecided?.reasons || []).filter((r) => r && r.reason));
+  return rows.sort((a, b) => (b.urls || 0) - (a.urls || 0));
+}
+
+/** Reasons either side dropped, so a truncated breakdown never reads as the whole one. */
+function firstOmitted(streams) {
+  return streams.reduce((a, w) => a + (w.undecided?.omitted || 0), 0);
 }
 
 /**

@@ -385,14 +385,48 @@ internal object SyncProgressReport {
         return buildJsonObject {
             put("name", name)
             put("candidates", num(o["candidates"]) ?: 0)
+            // The other three members of the partition, carried only where the
+            // router wrote them. NOT defaulted to zero: the alias fold measures
+            // no stability verdicts and a router older than the partition
+            // measured none either, and in both cases a zero here would be a
+            // measurement neither of them took — the card draws "0 refused as
+            // inconsistent" from it, which is a claim. Absent, the funnel reads
+            // it as an unattributed slice and says so.
+            num(o["foldedAway"])?.let { put("foldedAway", it) }
+            num(o["consistent"])?.let { put("consistent", it) }
+            num(o["inconsistent"])?.let { put("inconsistent", it) }
             // The progress number: what still has no verdict. Defaulted to
             // `candidates` rather than to 0 when a file does not say — "nothing
             // left to measure" is a strong claim and an unreadable row must not
             // make it.
-            put("unmeasured", num(o["unmeasured"]) ?: num(o["candidates"]) ?: 0)
+            val unmeasured = num(o["unmeasured"]) ?: num(o["candidates"]) ?: 0
+            put("unmeasured", unmeasured)
             put("dialled", num(o["dialled"]) ?: 0)
             put("decided", num(o["decided"]) ?: 0)
-            undecided(o["undecided"] as? JsonObject)?.let { put("undecided", it) }
+            val rows = undecided(o["undecided"] as? JsonObject)
+            rows?.let { put("undecided", it) }
+            // DOES IT STILL ADD UP, in the document being served — the same
+            // check and the same wording `cycle` uses, on the other partition
+            // this object publishes. Two identities have to hold: the candidate
+            // set divides once, and the undecided rows account for everything
+            // with no verdict. Recomputed here rather than forwarded, and a
+            // mismatch is PUBLISHED rather than hidden: the counts are still
+            // worth having, and the flag is what stops a reader treating a
+            // broken partition as a whole one.
+            //
+            // Only claimed where the router published the partition at all. The
+            // alias fold measures no verdicts, and "these numbers add up" is a
+            // statement about numbers that exist.
+            val split = listOf("foldedAway", "consistent", "inconsistent").mapNotNull { num(o[it]) }
+            if (split.size == 3) {
+                val named = rows?.let { r -> (r["reasons"] as? JsonArray).orEmpty().sumOf { num(it.jsonObject["urls"]) ?: 0 } } ?: 0
+                val omitted = rows?.let { num(it["omitted"]) ?: 0 } ?: 0
+                put(
+                    "accountedFor",
+                    split.sum() + unmeasured == (num(o["candidates"]) ?: 0) &&
+                        (rows == null || (named == unmeasured && omitted == 0L)),
+                )
+            }
         }
     }
 
@@ -420,18 +454,55 @@ internal object SyncProgressReport {
                     add(
                         buildJsonObject {
                             put("reason", reason)
+                            // What this row refines, where it refines one. Carried
+                            // as written: the page nests on it, and a name this
+                            // side invented would nest a row under a parent the
+                            // router never claimed.
+                            text(row["parent"])?.let { put("parent", it) }
+                            put("urls", num(row["urls"]) ?: 0)
                             put("hosts", num(row["hosts"]) ?: 0)
-                            putJsonArray("examples") {
-                                for (h in (row["examples"] as? JsonArray).orEmpty().take(MAX_UNDECIDED_EXAMPLES)) {
-                                    text(h)?.let { add(it) }
+                            (row["examples"] as? JsonArray)?.takeIf { it.isNotEmpty() }?.let { names ->
+                                putJsonArray("examples") {
+                                    for (h in names.take(MAX_UNDECIDED_EXAMPLES)) text(h)?.let { add(it) }
                                 }
                             }
+                            // The ranked hosts under this reason, rebuilt row by
+                            // row and capped again here — the same contract
+                            // `foldedOnto` and `inFlight` are held to. A row
+                            // with no host is dropped rather than published as
+                            // an anonymous count: it is the NAME that makes this
+                            // level worth drawing.
+                            topHosts(row["top"] as? JsonArray)?.let { put("top", it) }
                         },
                     )
                 }
             }
             put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
         }
+    }
+
+    /**
+     * The widest hosts under one reason, ranked as the router ranked them.
+     *
+     * The order is NOT re-sorted here. It is the router's ranking, taken over
+     * the whole set it measured, and re-sorting a capped list would order the
+     * head by a criterion that was never applied to the tail — which reads as a
+     * top-N and is not one.
+     */
+    private fun topHosts(rows: JsonArray?): JsonArray? {
+        val kept =
+            rows
+                .orEmpty()
+                .filterIsInstance<JsonObject>()
+                .take(MAX_UNDECIDED_HOSTS)
+                .mapNotNull { row ->
+                    val host = text(row["host"]) ?: return@mapNotNull null
+                    buildJsonObject {
+                        put("host", host)
+                        put("urls", num(row["urls"]) ?: 0)
+                    }
+                }
+        return if (kept.isEmpty()) null else JsonArray(kept)
     }
 
     /**
@@ -627,6 +698,11 @@ internal object SyncProgressReport {
             "knownDead",
             // ingest's one loss counter
             "lostToStore",
+            // where the two probe passes' candidate set came from — the funnel's
+            // mouth, above everything their `streams` rows partition
+            "sourced",
+            "excluded",
+            "heldOutDead",
         )
 
     /**
@@ -692,9 +768,22 @@ internal object SyncProgressReport {
     /** A processor reports per stream, and a router runs a handful of them. */
     private const val MAX_PROCESSOR_STREAMS = 12
 
-    private const val MAX_UNDECIDED_ROWS = 6
+    /**
+     * Undecided reasons kept per row, matching `Processors.MAX_UNDECIDED_REASONS`.
+     *
+     * The two move together. This side bounds a list the router already
+     * bounded; cutting BELOW what the router publishes drops a reason whose
+     * urls the page then draws as `not accounted for` — an arithmetic fault
+     * reported against a document that was complete when it arrived. It has
+     * been short twice, so the number is chosen against the gate's whole
+     * enumeration (thirteen) rather than against today's output.
+     */
+    private const val MAX_UNDECIDED_ROWS = 16
     private const val MAX_REJECTION_ROWS = 4
     private const val MAX_UNDECIDED_EXAMPLES = 3
+
+    /** Ranked hosts kept under one reason, matching `Processors.MAX_UNDECIDED_HOSTS`. */
+    private const val MAX_UNDECIDED_HOSTS = 6
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 

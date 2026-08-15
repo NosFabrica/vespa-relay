@@ -91,10 +91,21 @@ import java.nio.file.StandardCopyOption
  *   "processors": [
  *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
  *      "lastPassAt": 1769998000, "lastPassSec": 812, "nextInSec": 20800,
- *      "streams": [{"name": "content", "subjects": 16752, "outstanding": 4021,
- *                   "measured": 2000, "decided": 118,
+ *      "sourced": 17584, "heldOutDead": 832,
+ *      "streams": [{"name": "all streams", "candidates": 16752, "foldedAway": 0,
+ *                   "consistent": 0, "inconsistent": 0, "unmeasured": 4021,
+ *                   "dialled": 2000, "decided": 118,
  *                   "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass",
- *                                              "hosts": 214, "examples": ["relay.example"]}],
+ *                                              "urls": 0, "hosts": 214, "examples": ["relay.example"]}],
+ *                                 "omitted": 0}}]},
+ *     {"name": "consistency", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
+ *      "lastPassAt": 1769998000, "lastPassSec": 9720, "nextInSec": 11880,
+ *      "sourced": 17584, "heldOutDead": 832,
+ *      "streams": [{"name": "all streams", "candidates": 16752, "foldedAway": 11429,
+ *                   "consistent": 583, "inconsistent": 12, "unmeasured": 4728,
+ *                   "dialled": 4728, "decided": 74,
+ *                   "undecided": {"reasons": [{"reason": "never answered a REQ", "urls": 3902, "hosts": 2201,
+ *                                              "top": [{"host": "dead.example", "urls": 12}]}],
  *                                 "omitted": 0}}]},
  *     {"name": "ingest", "phase": "running", "queued": 12, "capacity": 20000,
  *      "accepted": 3910233, "rejected": 41002}
@@ -505,6 +516,19 @@ class SyncProgress(
                                 buildJsonObject {
                                     put("name", w.stream)
                                     put("candidates", w.candidates)
+                                    // THE PARTITION, in precedence order:
+                                    // `candidates = foldedAway + consistent +
+                                    // inconsistent + unmeasured`, and
+                                    // `unmeasured` is the sum of the `undecided`
+                                    // rows' `urls`. Written at zero, because a
+                                    // member that appears only when non-zero
+                                    // cannot be summed by a reader that has not
+                                    // memorised the schema — but ABSENT from a
+                                    // pass that does not measure them at all,
+                                    // which is the fold. See [Processors.Work].
+                                    w.foldedAway?.let { put("foldedAway", it) }
+                                    w.consistent?.let { put("consistent", it) }
+                                    w.inconsistent?.let { put("inconsistent", it) }
                                     // The one that says whether it is getting
                                     // anywhere. See [Processors.Work].
                                     put("unmeasured", w.unmeasured)
@@ -519,8 +543,31 @@ class SyncProgress(
                                                         add(
                                                             buildJsonObject {
                                                                 put("reason", u.reason)
+                                                                u.parent?.let { put("parent", it) }
+                                                                // Urls first: it is the count that
+                                                                // sums back to `unmeasured`, and
+                                                                // `hosts` beside it is the count
+                                                                // that names who to chase.
+                                                                put("urls", u.urls)
                                                                 put("hosts", u.hosts)
-                                                                putJsonArray("examples") { for (h in u.examples) add(h) }
+                                                                u.examples.takeIf { it.isNotEmpty() }?.let { names ->
+                                                                    putJsonArray("examples") { for (h in names) add(h) }
+                                                                }
+                                                                // The widest few WITH counts, where the pass
+                                                                // counts urls. Ranked, and deliberately not
+                                                                // summing to the row — see [Processors.Undecided.top].
+                                                                u.top.takeIf { it.isNotEmpty() }?.let { rows ->
+                                                                    putJsonArray("top") {
+                                                                        for (h in rows) {
+                                                                            add(
+                                                                                buildJsonObject {
+                                                                                    put("host", h.host)
+                                                                                    put("urls", h.urls)
+                                                                                },
+                                                                            )
+                                                                        }
+                                                                    }
+                                                                }
                                                             },
                                                         )
                                                     }

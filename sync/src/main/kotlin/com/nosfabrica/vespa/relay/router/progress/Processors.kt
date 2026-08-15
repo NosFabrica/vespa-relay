@@ -89,6 +89,34 @@ class Processors {
          */
         val candidates: Int,
         /**
+         * …of those, how many a FOLD has already taken out of the fan-out.
+         *
+         * First member of the partition and first in precedence, because a
+         * folded url is never measured for stability — see [ConsistencyPass.report].
+         *
+         * **Null rather than zero on a pass that does not measure it**, and the
+         * three members below are nullable for the same reason. The alias fold
+         * publishes no stability verdicts at all, so a zero from its row would
+         * be a measurement it never took: the card would draw "0 consistent · 0
+         * refused" beside the fold, and a reader would have no way to tell that
+         * from a gate that had measured everything and found nothing. Absent is
+         * "this pass does not answer that"; zero is "it does, and the answer is
+         * none".
+         */
+        val foldedAway: Int? = null,
+        /**
+         * …and of the rest, the two standing verdicts.
+         *
+         * STANDING, not "reached by this pass": [decided] counts what this pass
+         * learned, these count what the whole candidate set currently carries,
+         * including verdicts read back from the store at boot. A reader watching
+         * coverage grow wants the second; a reader watching a pass work wants
+         * the first, and conflating them made a pass that decided nothing
+         * indistinguishable from a gate that knows nothing.
+         */
+        val consistent: Int? = null,
+        val inconsistent: Int? = null,
+        /**
          * …of those, how many still have no verdict after this pass.
          *
          * THE PROGRESS NUMBER. A pass measures its whole set, but a group can
@@ -125,14 +153,62 @@ class Processors {
         val undecidedOmitted: Int = 0,
     )
 
+    /** One server under a reason, and how many of its urls ended there. */
+    class HostCount(
+        val host: String,
+        val urls: Int,
+    )
+
     /** One reason a pass ended some hosts with nothing written down, and who they were. */
     class Undecided(
         /** The reason, in the words the router's own log uses. */
         val reason: String,
+        /**
+         * …and the reason this one REFINES, where it refines one.
+         *
+         * `never answered a REQ` is the largest thing a probe pass reports and
+         * it covers four different findings — a name that no longer resolves, a
+         * refused connection, a failed TLS handshake, a window that lapsed — so
+         * the rows for those name it here instead of appearing beside it as
+         * peers. The list stays FLAT and still sums to [Work.unmeasured]: naming
+         * the parent is what lets a reader nest the rows without the arithmetic
+         * having to survive a tree on the wire, and a reader that ignores this
+         * member still sees every url exactly once.
+         *
+         * Null on a row that refines nothing, which is most of them.
+         */
+        val parent: String? = null,
         /** How many hosts ended the pass that way. */
         val hosts: Int,
-        /** A couple of them by name, so the reason has a subject to chase. */
-        val examples: List<String>,
+        /**
+         * A couple of them by name, for a pass that has only NAMES to give —
+         * the fold, which decides a host at a time. A pass that can count fills
+         * [top] instead: the same disclosure with the number that ranks it.
+         */
+        val examples: List<String> = emptyList(),
+        /**
+         * …or the widest few WITH their url counts, for a pass that measures
+         * urls: the fourth level of the funnel.
+         *
+         * Bounded at [MAX_UNDECIDED_HOSTS] and never summing to the reason on
+         * its own — the tail is deliberately left for the reader to see as a
+         * remainder, because "3,902 urls on 2,201 hosts and no host above 12"
+         * and "3,902 urls of which one host is 3,000" are opposite findings and
+         * a truncated list that closes would hide the difference.
+         */
+        val top: List<HostCount> = emptyList(),
+        /**
+         * How many URLS ended the pass that way — the count that makes the
+         * partition close.
+         *
+         * Beside [hosts] rather than instead of it, because the two answer
+         * different questions and their gap is itself the disclosure: 4,300 urls
+         * on 900 hosts is a corpus of aliases, 4,300 on 4,300 is not, and only
+         * the url count sums back to [Work.unmeasured]. Zero on a pass that
+         * counts in hosts alone — the fold, whose subject genuinely is the
+         * server — which reads as "not reported" rather than as none.
+         */
+        val urls: Int = 0,
     )
 
     /**
@@ -353,13 +429,31 @@ class Processors {
         /**
          * How many `undecided` reasons a work row publishes.
          *
-         * Six is the whole enumeration the fold can produce today, so this cuts
-         * nothing in practice and still refuses to be unbounded if that list
-         * grows — the same bargain `foldedOnto` and `inFlight` make.
+         * Sixteen covers both enumerations whole with headroom: five from the
+         * fold, and thirteen from the stability gate — six reasons plus the
+         * SEVEN causes `never answered a REQ` splits into. Truncating here does
+         * not merely shorten a list, it breaks the property the url counts
+         * exist for: the rows sum to [Work.unmeasured], and a cut tail surfaces
+         * on the card as `not accounted for` in the fault tone — an arithmetic
+         * error reported against a pass that was working. This has been one
+         * short twice, once at six and once at eight, both times because a
+         * reason list grew and the cap did not.
          */
-        const val MAX_UNDECIDED_REASONS = 6
+        const val MAX_UNDECIDED_REASONS = 16
 
         /** Named hosts per reason. Enough to recognise the pattern, not an inventory. */
         const val MAX_UNDECIDED_EXAMPLES = 3
+
+        /**
+         * …and how many are named WITH their url counts, where a pass can count
+         * them — see [Undecided.top].
+         *
+         * Six rather than three, because these are ranked and a rank of three is
+         * not one: the question they answer is whether a reason is concentrated
+         * on a few servers or spread across thousands, and three rows is too
+         * short a head to see the shape of the tail. Still an inventory nobody
+         * has to scroll, and still bounded twice — the relay re-caps it.
+         */
+        const val MAX_UNDECIDED_HOSTS = 6
     }
 }
