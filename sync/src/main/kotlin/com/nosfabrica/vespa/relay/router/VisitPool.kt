@@ -100,7 +100,17 @@ internal class VisitPool(
     /** The visit-mode streams: dynamic, with a syncable source. */
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
-    private val socketBudget: Int = DEFAULT_SOCKET_BUDGET,
+    /**
+     * How many relays are VISITED — and therefore dialled — at once. This is
+     * the herd control: a fresh roster floods the queue, every worker pulls,
+     * and whatever this number is becomes the count of simultaneous TLS
+     * handshakes. The first 440-relay integration run let it equal the whole
+     * socket budget and watched 436 of the dials time out inside one minute —
+     * a thundering herd against its own connect timeout. A visit is seconds
+     * long, so this bounds the burst, not the throughput; the pool's steady
+     * state — sockets held open — is the tails' budget, not this one.
+     */
+    private val visitConcurrency: Int = DEFAULT_VISIT_CONCURRENCY,
     /**
      * How many live tails may be held at once. The visit half of the pool is
      * bounded by its workers; the tails were not, and a roster past the OkHttp
@@ -110,7 +120,7 @@ internal class VisitPool(
      * tails are EARNED: the relay with more content lately takes the socket of
      * the tail that has delivered least.
      */
-    private val tailBudget: Int = DEFAULT_SOCKET_BUDGET,
+    private val tailBudget: Int = DEFAULT_TAIL_BUDGET,
 ) {
     /** url → the streams that want it, rebuilt on the roster clock. */
     @Volatile
@@ -187,7 +197,7 @@ internal class VisitPool(
             )
         }
         scope.launch { rosterLoop() }
-        repeat(socketBudget) {
+        repeat(visitConcurrency) {
             scope.launch { workerLoop() }
         }
     }
@@ -502,14 +512,22 @@ internal class VisitPool(
         ): Boolean = fullAt <= 0L || now - fullAt >= verifySeconds
 
         /**
-         * Workers, and therefore the ceiling on sockets this pool owns at
-         * once. Sized to the measured syncable population (~600 responsive
-         * hosts after folding) rather than to a per-stream guess — the whole
-         * point is that every syncable relay is effectively always connected.
-         * Bounded well under the OkHttp dispatcher's 1,024 so the static
+         * Concurrent visits, which is concurrent DIALS — see the constructor
+         * parameter for the herd it exists to break up. Matches the monitor's
+         * dial width: the same arithmetic (simultaneous handshakes against
+         * timeouts) sizes both.
+         */
+        const val DEFAULT_VISIT_CONCURRENCY = 128
+
+        /**
+         * Held tails, the pool's steady-state socket count. Sized to the
+         * measured syncable population (~600 responsive hosts after folding)
+         * rather than to a per-stream guess — the whole point is that every
+         * syncable relay is effectively always connected. Tails plus the
+         * visit width stay under the OkHttp dispatcher's 1,024 so the static
          * upstreams, the probe passes and the healer keep theirs.
          */
-        const val DEFAULT_SOCKET_BUDGET = 600
+        const val DEFAULT_TAIL_BUDGET = 600
 
         /**
          * The revisit delay one relay has earned: the base its tail status

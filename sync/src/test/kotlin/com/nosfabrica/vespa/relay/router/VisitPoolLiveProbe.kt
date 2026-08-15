@@ -179,7 +179,7 @@ class VisitPoolLiveProbe {
                                 ),
                             ),
                         progress = processors.of("visits"),
-                        socketBudget = 4,
+                        visitConcurrency = 4,
                         tailBudget = 3,
                     )
                 pool.start()
