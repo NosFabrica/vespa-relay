@@ -81,4 +81,8 @@ tasks.test {
     // The two planes end to end against real relays: fitness verdicts onto
     // records, the roster read back, a small VisitPool run on it.
     System.getProperty("visitPoolProbe")?.let { systemProperty("visitPoolProbe", it) }
+    // Seeds one synthetic 10040 into a LOCAL relay so the `certified` gate
+    // and the monitor's 10040 source can be watched live. Same trap.
+    System.getProperty("seed10040")?.let { systemProperty("seed10040", it) }
+    System.getProperty("seed10040Url")?.let { systemProperty("seed10040Url", it) }
 }
