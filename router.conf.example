@@ -28,6 +28,10 @@
 # relay already holds — a `relaySource`. That is how the last two streams reach
 # tens of thousands of relays without naming any of them.
 #
+# A third way: `presence`, where the relays are whoever is SIGNED IN right now.
+# See the two `authed*` streams at the bottom — they need two settings on each
+# service and are off unless you set them.
+#
 #
 # CHOOSING `sync`
 #
@@ -38,6 +42,10 @@
 #               first fill, and for per-publisher data like NIP-85 scores.
 #   auto        reconcile once we already hold a lot of the filter, else fetch
 #               (the default). Prefer saying which you mean.
+#   live        do not ask for history at all — hold the subscription open and
+#               take what arrives. No paged walk, no reconcile, and no cursor
+#               band, because a tail proves nothing about the span it happened
+#               to be open for.
 
 connectionTimeout = 20
 
@@ -273,4 +281,55 @@ streams {
             }
         ]
     }
+    # ------------------------------------------------------------------------
+    # THE PEOPLE WHO ARE ACTUALLY HERE
+    #
+    # These two follow whoever holds a verified NIP-42 login on this relay right
+    # now, and stop the moment they disconnect. Everything above mirrors a
+    # corpus on a timer; this mirrors a person, on the event of them arriving.
+    #
+    # They are COMMENTED OUT because they need two settings that have no
+    # defaults, one on each service, and the sync process refuses to boot with a
+    # presence stream and no feed rather than mirroring nothing quietly:
+    #
+    #   relay:  RELAY_AUTHED_TOKEN=<a shared secret>
+    #   sync:   SYNC_AUTHED_URL=http://relay:7777/authed
+    #           SYNC_AUTHED_TOKEN=<the same secret>
+    #
+    # The token is not optional. /authed is the one document this relay serves
+    # that names its clients, so with no token the route does not exist at all.
+    #
+    # authedOutbox {
+    #     dir      = "down"
+    #     # Tail plus a one-off paged catch-up per (relay, reader), so somebody
+    #     # signing in gets their backlog and not only their next post. Use
+    #     # "live" for the tail alone.
+    #     sync     = "fetch"
+    #     filter   = { "kinds": [1, 1111, 6, 7, 30023] }
+    #     presence = {
+    #         source = "outbox"          # their kind 10002, write side
+    #         pollSeconds = 30           # how soon after signing in we dial
+    #         concurrency = 4            # catch-ups at once
+    #         maxRelaysPerReader = 8     # a real outbox is single digits
+    #         exclude = [ "wss://this.relay.example/" ]   # do not mirror ourselves
+    #     }
+    # }
+    #
+    # # THE ONE THAT CLOSES THE LOOP ON RANKED SEARCH. The store treats a
+    # # reader's lens as a FILTER, so a signed-in reader whose provider has
+    # # never been mirrored here gets an EMPTY search — which is what
+    # # TrustNotice tells them on login and what readiness.js draws. The
+    # # assertions stream finds providers by scanning stored 10040s every six
+    # # hours; this one finds the provider of the person who is waiting.
+    # authedScores {
+    #     dir      = "down"
+    #     sync     = "fetch"
+    #     filter   = { "kinds": [30382] }
+    #     presence = {
+    #         source = "scores"          # their kind 10040's 30382:rank entries —
+    #                                    # relay AND key both come out of it
+    #         concurrency = 2            # a provider's card set is large
+    #     }
+    # }
+
 }

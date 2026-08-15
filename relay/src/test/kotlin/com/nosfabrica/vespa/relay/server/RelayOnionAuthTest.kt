@@ -267,7 +267,7 @@ class RelayOnionAuthTest {
     fun `a replayed auth authenticates again but is only acted on once`() =
         runBlocking {
             val seen = Collections.synchronizedList(mutableListOf<String>())
-            val policy = MultiAddressAuthPolicy(clearnet, emptySet()) { pubkey, _ -> seen.add(pubkey) }
+            val policy = MultiAddressAuthPolicy(clearnet, emptySet()) { pubkey, _, _ -> seen.add(pubkey) }
             policy.onConnect(
                 object : RequestContext {
                     override val connectionId = 1L
@@ -286,6 +286,35 @@ class RelayOnionAuthTest {
             val other = NostrSignerSync()
             policy.authorize(other.sign(RelayAuthEvent.build(clearnet, policy.challenge)))
             assertEquals(listOf(signer.pubKey, other.pubKey), seen.toList())
+        }
+
+    /**
+     * The login hook carries the CONNECTION, not only the identity.
+     *
+     * Quartz hands `authorize` the AUTH event and nothing else, so without the
+     * id captured in `onConnect` a login could be reported and never ENDED —
+     * `RelayServerListener.onDisconnect` speaks in these ids and nothing else
+     * on this side does. [AuthedReaders] is what depends on it: presence keyed
+     * by anything but the connection cannot survive one of a reader's two
+     * sockets closing, and cannot expire at all except on a timeout.
+     */
+    @Test
+    fun `the login hook is told which connection signed in`() =
+        runBlocking {
+            val seen = Collections.synchronizedList(mutableListOf<Long>())
+            val policy = MultiAddressAuthPolicy(clearnet, emptySet()) { _, connectionId, _ -> seen.add(connectionId) }
+            policy.onConnect(
+                object : RequestContext {
+                    override val connectionId = 4242L
+                    override val policy = policy
+                    override val authenticatedUsers = emptySet<String>()
+                },
+                {},
+            )
+
+            policy.authorize(signer.sign(RelayAuthEvent.build(clearnet, policy.challenge)))
+
+            assertEquals(listOf(4242L), seen.toList())
         }
 
     private fun awaitMessage(

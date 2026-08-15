@@ -36,13 +36,27 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.launch
 
 /**
- * Fires on each successful NIP-42 AUTH with the pubkey that authenticated and
- * this connection's channel to the client. Non-suspend on purpose: it is
- * invoked from quartz's `authorize` hook, which runs BEFORE the `OK` frame —
- * anything that touches the store belongs behind a [CoroutineScope.launch],
- * not in front of a login.
+ * Fires on each successful NIP-42 AUTH with the pubkey that authenticated, the
+ * id of the connection it authenticated on, and that connection's channel to
+ * the client. Non-suspend on purpose: it is invoked from quartz's `authorize`
+ * hook, which runs BEFORE the `OK` frame — anything that touches the store
+ * belongs behind a [CoroutineScope.launch], not in front of a login.
+ *
+ * ONE hook with three arguments rather than two hooks, because there is exactly
+ * one seam here — quartz's `authorize` is the only place a verified AUTH, its
+ * connection and its `send` are all in scope at once — and a second hook on it
+ * would be a second thing to remember to wire. The two listeners want different
+ * halves: [TrustNotice] answers the reader over `send` and has no use for the
+ * connection, while [AuthedReaders] records presence per connection and has no
+ * use for `send`. `RelayMain` is where they are put together, which is what a
+ * composition root is for.
+ *
+ * The connection id is quartz's own (`RequestContext.connectionId`), minted from
+ * one process-wide counter, and the same value the engine hands
+ * `RelayServerListener.onDisconnect` — which is the only reason presence can be
+ * ended when the socket closes rather than guessed at from a timeout.
  */
-typealias AuthNotifier = (HexKey, (Message) -> Unit) -> Unit
+typealias AuthNotifier = (HexKey, Long, (Message) -> Unit) -> Unit
 
 /**
  * What this relay knows about a reader's trust chain, told to them the moment

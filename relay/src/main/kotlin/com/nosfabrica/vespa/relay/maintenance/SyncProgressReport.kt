@@ -625,6 +625,12 @@ internal object SyncProgressReport {
             // the NIP-66 monitor
             "observed",
             "knownDead",
+            // the presence streams: who the mirror is currently working for
+            "readers",
+            "subscriptions",
+            "presenceRelays",
+            // …and the ones it is NOT working for, which nothing else reports
+            "omittedReaders",
             // ingest's one loss counter
             "lostToStore",
         )
@@ -686,7 +692,7 @@ internal object SyncProgressReport {
     /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
     private const val MAX_PASSES = 4
 
-    /** Six today (fold, stability, reachability, ingest, heal, push), with room to grow. */
+    /** Seven today (fold, stability, reachability, ingest, heal, push, presence), with room to grow. */
     private const val MAX_PROCESSORS = 12
 
     /** A processor reports per stream, and a router runs a handful of them. */

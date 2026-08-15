@@ -296,7 +296,11 @@ class RelayProtocolTest {
     fun `signing in reaches the login hook with the connection to answer on`() =
         runBlocking {
             val scope = CoroutineScope(SupervisorJob())
-            val hooked = NostrRelayServer(store, relayUrl, onAuthenticated = TrustNotice(store, scope)::check)
+            // The hook carries the connection id too now, which this notice has
+            // no use for — presence is the consumer of that half. See
+            // [AuthNotifier] for why it is one hook rather than two.
+            val notice = TrustNotice(store, scope)
+            val hooked = NostrRelayServer(store, relayUrl, onAuthenticated = { pubkey, _, send -> notice.check(pubkey, send) })
             try {
                 val out = Collections.synchronizedList(mutableListOf<String>())
                 val session = hooked.connect { out.add(it) }

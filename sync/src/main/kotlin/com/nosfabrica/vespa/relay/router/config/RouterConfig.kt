@@ -85,6 +85,21 @@ data class RouterConfig(
     /** The streams whose relay list is discovered from the store, not configured. */
     fun dynamicStreams(): List<SyncStream> = streams.filter { it.dynamic != null }
 
+    /** The streams whose relay list is whoever is signed in to the served relay. */
+    fun presenceStreams(): List<SyncStream> = streams.filter { it.presence != null }
+
+    /**
+     * The configured upstreams a history catch-up should walk, which is not all
+     * of them: a [SyncMode.LIVE] stream is its tail and nothing else.
+     *
+     * Separate from [downUpstreams] rather than filtered at the call site
+     * because the two answer different questions — which relays get a live
+     * subscription (all of them) and which get backfilled (these) — and reading
+     * one as the other is how a `live` stream would have quietly walked history
+     * anyway.
+     */
+    fun backfillUpstreams(): List<SyncUpstream> = downUpstreams().filter { it.sync != SyncMode.LIVE }
+
     private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
             .filter { it.dir == want || it.dir == SyncDirection.BOTH }
@@ -110,6 +125,9 @@ data class SyncStream(
     val trusted: Boolean,
     // Null for an ordinary stream; set when its relays come out of the store.
     val dynamic: RelayDiscoveryConfig? = null,
+    // Null for an ordinary stream; set when its relays come out of whoever is
+    // signed in to the served relay right now. See [PresenceConfig].
+    val presence: PresenceConfig? = null,
     // Whether this stream's relays share events with each other — see [SyncMode].
     val sync: SyncMode = SyncMode.AUTO,
     // Whether an upstream dropping a record means we drop it too.
@@ -182,6 +200,8 @@ enum class DeleteMissing {
  *    for a near-empty intersection is the expensive way to learn that.
  *  - [AUTO] — decide by size (see [StaticBackfill.worthReconciling]). Safe
  *    only where overlap tracks volume.
+ *  - [LIVE] — do not ask at all. Hold the subscription open and take what
+ *    arrives; walk no history, record no band.
  */
 enum class SyncMode(
     val wire: String,
@@ -189,12 +209,38 @@ enum class SyncMode(
     AUTO("auto"),
     NEGENTROPY("negentropy"),
     FETCH("fetch"),
+
+    /**
+     * THE FOURTH ANSWER, and it is a refusal: this stream never asks for what
+     * it is missing.
+     *
+     * Every `down` stream already holds a live tail from the moment it connects
+     * — that is not what this changes. What it changes is the OTHER half: no
+     * paged walk, no reconcile, no band. The stream is the tail.
+     *
+     * Two places it is the right answer. A [PresenceConfig] stream following
+     * signed-in readers, where "everything they have ever published" is a
+     * different and much larger job than "everything they publish while they are
+     * here" — and where the relay list churns as people come and go, so a walk
+     * would rarely finish before its reason to exist went offline. And a
+     * statically configured upstream an operator wants tailed and not
+     * backfilled, which used to need a `since` on the filter that then also
+     * bounded the tail.
+     *
+     * Recording no band is the load-bearing half rather than an omission. A band
+     * is a claim that a span was WALKED, and a tail proves nothing about the
+     * span it happened to be open for: events reach a relay out of order, an
+     * author back-dates, a socket drops for a minute and quartz reconnects. A
+     * band written from a tail would let a later `fetch` skip history nobody
+     * ever asked for.
+     */
+    LIVE("live"),
     ;
 
     companion object {
         fun parse(raw: String): SyncMode =
             entries.firstOrNull { it.wire.equals(raw.trim(), ignoreCase = true) }
-                ?: error("router: unknown stream sync '$raw' (expected auto / negentropy / fetch)")
+                ?: error("router: unknown stream sync '$raw' (expected ${entries.joinToString(" / ") { it.wire }})")
     }
 }
 

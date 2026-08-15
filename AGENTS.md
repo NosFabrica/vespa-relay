@@ -260,7 +260,30 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
                         posted one". Off the AUTH path entirely: an OK is what
                         a client waits on before it reads, and quartz reads a
                         throw from that hook as a FAILED LOGIN
-    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure
+    AuthedReaders.kt    WHO IS SIGNED IN, served on GET /authed for the sync
+                        process's presence streams. Keyed by CONNECTION rather
+                        than identity — an AUTH frame is replayable for its
+                        whole ten-minute window, and a reader on two sockets
+                        must survive one of them closing — so it is a
+                        RelayServerListener and the engine's own onDisconnect
+                        is what ends presence. The ONLY document either process
+                        serves that names clients (`corpusStats`' KDoc records
+                        the rule it sits outside of, and why /pressure caps its
+                        `samples`), so the token is a CONSTRUCTOR ARGUMENT: a
+                        registry with no credential cannot be built, unset
+                        mounts no route and tracks nothing, and the compare is
+                        MessageDigest.isEqual rather than `==`. Bounded, with
+                        what did not fit COUNTED — those readers are here and
+                        nothing is mirroring for them — and cut newest-first so
+                        a burst of logins cannot displace the subscriptions the
+                        mirror already holds
+    ListenerChain.kt    every connection listener behind the one slot quartz's
+                        engine has. LOG_CONNECTIONS used to own it outright;
+                        with presence needing the same disconnect, the debug
+                        switch would have silently unhooked the mirror's only
+                        way to learn a reader had gone
+    HttpServer.kt       serveRelay: Ktor server + routes, Nip11Info, /pressure,
+                        /authed
     RelayInfo.kt        the NIP-11 document
     RelayWebSocket.kt   the ws route
     Nip86Route.kt       the management API
@@ -329,8 +352,23 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           against this relay is wrong without it
     TorTransport.kt       SYNC_TOR_SOCKS: the second OkHttp client, chosen per
                           url, whose .onion names resolve INSIDE the proxy
+    presence/             the third source of relays: whoever is signed in
+      AuthedFeed.kt         who is here, as this process last heard it. Empty
+                            before the first poll AND after a lost one, told
+                            apart by `everFed`
+      AuthedPoller.kt       the relay's GET /authed, every 10s, with the bearer
+                            token. A lost feed EMPTIES the set rather than
+                            holding it: those readers' sockets live in the relay
+                            we cannot reach
+      PresenceTargets.kt    a reader's own 10002 / 10040 → the (relay, filter)
+                            pairs to listen on. Pure, so the two shapes that
+                            matter are pinned against real events
+      PresenceSync.kt       the loop: diff the desired subscription set against
+                            the open one every `pollSeconds`, plus one paged
+                            catch-up per pair on `sync = "fetch"`
     config/               the declarative side
       RouterConfig.kt       the stream model (streams, directions, sync modes)
+      PresenceConfig.kt     the `presence { }` model (source, pacing, bounds)
       RelaySourceConfig.kt  the relaySource model (sources, selects, bindings)
       RouterConfigLoader.kt HOCON `streams { }` parsing (strfry-shaped)
     discovery/            which relays to dial, and what to believe about them
@@ -622,7 +660,7 @@ relay/src/main/resources/
                         NOW (one disposition bar per RUNNING PASS, so the walk
                         that is finishing and the one that is walking are two
                         rows rather than one blended total), then *Also running*
-                        — the six processors that are not streams, each with the
+                        — the processors that are not streams, each with the
                         same phase-and-clock header a stream gets and a meter for
                         the two that have a denominator — and only then the
                         coverage bars, which are where it has WALKED rather than
@@ -763,6 +801,9 @@ would be a mirror that quietly stopped mirroring. Two kinds of stream:
 - **static** — relays listed in `urls` in `router.conf`
 - **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
   outbox lists, NIP-85 provider lists, relay hints)
+- **presence** — relays belonging to whoever is SIGNED IN right now, via
+  `presence` (see below). Not a third scale of the same thing: the other two are
+  paced by a clock and this one by somebody arriving.
 
 Each stream declares **how** it asks for what it is missing, via `sync`:
 
@@ -771,6 +812,7 @@ Each stream declares **how** it asks for what it is missing, via `sync`:
 | `negentropy` | the same event lives on many relays (kinds 0/3/10002) | reconcile id sets, transfer only the difference |
 | `fetch` | the two sides barely overlap, or the store is empty and there is nothing to compare against | comparing disjoint sets costs more than downloading, and builds a huge local id snapshot to do it |
 | `auto` | unknown | reconcile once WE hold more than `SYNC_NEG_MIN_EVENTS` for the filter, else page. Only our own count — asking the relay too meant a NIP-45 COUNT per relay per cycle, and COUNT is optional, widely unimplemented, and slow where it exists |
+| `live` | the tail is what is wanted and the history is not — a relay to watch, or a presence stream whose relays come and go with their readers | it asks for NOTHING. Every `down` stream already tails; this drops the other half, and records **no band** — a tail proves nothing about the span it was open for, and a band written from one lets a later `fetch` skip history nobody walked |
 
 **It is a property of the data AND of how the stream asks — not of the relay,
 and not measurable from counts.** NIP-85 assertions were the standing example of
@@ -778,6 +820,71 @@ and not measurable from counts.** NIP-85 assertions were the standing example of
 provider) instead of by kind, the same data overlaps almost entirely and
 `negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
 when a stream's filter changes shape rather than trusting the label.
+
+**A `presence` STREAM MIRRORS A PERSON, ON THE EVENT OF THEM ARRIVING.** Both
+older sources answer "what does this corpus say we should mirror", which is the
+right question for a corpus and the wrong one for a reader who just signed in:
+they are one author among millions, their band is one of thousands, and nothing
+in a six-hour rotation knows they are waiting. `PresenceSync` holds a live REQ
+on every relay a currently-signed-in reader's OWN lists name, and drops it when
+they go. Two sources, two streams, because they ask different relays different
+questions — `outbox` reads their kind 10002's write side and asks each url for
+`authors = [that reader]`; `scores` reads their kind 10040's `30382:rank`
+entries, each of which carries a service key AND a relay hint, and asks that
+relay for `authors = [that service]`.
+
+**`scores` is the one that closes a loop this repo could previously only
+report.** The store treats a reader's lens as a FILTER, so a signed-in reader
+whose provider was never mirrored here gets an EMPTY ranked search;
+`TrustNotice` says so on login and `readiness.js` draws it. Neither could fix
+it — the `assertions` stream finds providers by scanning stored 10040s on the
+monitor's clock, so such a reader waits out a cycle that has no idea they exist.
+This finds the provider of the person standing there.
+
+**The set is not knowable in this process, so it crosses by HTTP** — the second
+thing that does, after `ServingPressure`. A NIP-42 AUTH lands on a websocket the
+RELAY owns; `AuthedReaders` holds it per CONNECTION and the engine's own
+`onDisconnect` ends it, and `GET /authed` serves it to `AuthedPoller`. That
+endpoint is the ONLY document either process serves that names clients, which is
+the line `corpusStats`' KDoc draws and the reason `/pressure` caps its `samples`
+— so it is mounted only where `RELAY_AUTHED_TOKEN` is set, wants a bearer token,
+and answers missing, malformed and wrong the same way. A presence stream with no
+`SYNC_AUTHED_URL` REFUSES TO BOOT: it could only hold zero subscriptions on an
+empty relay list, which from outside is a quiet night.
+
+Four decisions in it, each reached by ruling out the obvious shape:
+
+- **Subscriptions are keyed by (relay, question), not by reader.** Four hundred
+  readers whose outboxes all name one popular relay put ONE filter on it. Keying
+  by reader multiplies REQs by readership on exactly the relays everybody names.
+- **The targets of readers already here are recomputed every poll**, not only
+  those of arrivals. A 10002 and a 10040 are replaceable, and the reader most
+  likely to edit theirs is the one who just read a notice saying their trust
+  chain is not mirrored.
+- **A lost feed EMPTIES the set** rather than holding the last one — the same
+  reasoning that lets `PressurePoller` reset the throttle. Those readers' sockets
+  live in the relay we can no longer reach; holding their subscriptions open is
+  mirroring for nobody, which is the thing this stream shape exists to end.
+- **`negentropy` and `auto` are refused at parse time.** A reconcile snapshots
+  our whole side of the filter, and a presence filter is per reader — one full
+  store walk per signed-in person per poll. Not a slow version of the feature.
+
+**The failure it has that is SILENT is `omittedReaders`**, and it is why the
+relay's cap counts rather than truncates. Those readers are signed in, nothing is
+dialling for them, and every stream reads healthy — so it is a published gauge on
+the `presence` processor row, drawn loud on the coverage card, and a line in the
+sync log on every poll. `maxRelaysPerReader` is the bound on the other side, and
+not decorative either: 148 pubkeys on this corpus publish a kind 10002 of
+100–10,591 entries, so without it one of them signing in dials ten thousand
+relays. `exclude` is applied BEFORE that cap, so excluding a url — this relay's
+own, above all — gives the reader another slot rather than spending one.
+
+One interaction worth knowing rather than fixing: a presence stream's kinds go
+into `SYNC_MANIFEST_FILE` like any other stream's, so `sync.mirrors` claims them
+for the whole corpus while they are held only for readers who have been here.
+That is not the over-claim it looks like on the one page that reads it —
+`web/shared/mirrors.js` draws "your own posts, N% mirrored" for a SIGNED-IN
+reader, who is exactly the person an `outbox` presence stream mirrors for.
 
 **`.onion` upstreams go through Tor, chosen per url** (`TorTransport`,
 `SYNC_TOR_SOCKS`). quartz's socket builder takes
@@ -952,7 +1059,7 @@ now, and `inFlight` rows carry `pass`.
 **…and a FIFTH member says what is running that is not a stream at all.**
 `processors` (`Processors`, published under `sync.progress.processors` and drawn
 as *Also running* on the coverage card) is the other half of "what is this
-router doing". A stream is the part an operator CONFIGURED; these six run beside
+router doing". A stream is the part an operator CONFIGURED; these run beside
 them with nothing configured about them, and until they were published the only
 trace any of them left was a stderr line on a container whose logs rotate inside
 the hour:
@@ -965,6 +1072,10 @@ the hour:
 | `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
 | `heal` | `HealQueue` + `Healer` | `queued`, `pushed` — registered only where a stream opted in |
 | `upstreamPush` | `UpstreamPush` | `pushed` |
+| `presence` | `PresenceSync` — who the mirror is currently working FOR | `readers`, `subscriptions`, `presenceRelays`, and `omittedReaders`: readers the relay's own feed could not fit, who are being mirrored for by nobody |
+
+The table says six because six is what it said before `presence`; the rule under
+it is the one that matters — an absent row is a fact.
 
 **Are the fold and NIP-66 the same thing? The RECORDS are; the processors are
 not.** All three of the first group write tags onto the same addressable kind

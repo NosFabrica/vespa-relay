@@ -46,6 +46,7 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   | `negentropy` | the same event lives on many relays — profiles, relay lists, follow lists | reconciling id sets transfers only the difference; fetching re-sends everything the other relays already gave you |
   | `fetch` | each relay holds its own events and nobody else's, or the store is empty and there is nothing to compare against yet | comparing two sets that barely overlap costs more than downloading, and it builds a huge local id snapshot to do it. A sync band answers "what is new since we last asked" instead |
   | `auto` | you genuinely do not know | reconcile once **we** hold more than `SYNC_NEG_MIN_EVENTS` for the filter, otherwise page. A reconcile transfers the difference, so it pays when our set is already most of theirs and loses when we start from nothing — which our own store answers for free. Note it measures the WHOLE filter: on a mixed-kind stream a few large kinds can clear the floor while we hold none of the rest |
+  | `live` | you want the tail and not the history — a relay to watch rather than to fill from, or a [`presence`](#following-the-people-who-are-signed-in) stream whose relays come and go with the people they belong to | it asks for nothing. Every `down` stream already holds a live subscription; this drops the other half, and records **no cursor band** — a tail proves nothing about the span it was open for, and a band written from one would let a later `fetch` skip history nobody walked |
 
   A `fetch` stream never builds the local id set at all, which is the single most
   expensive thing the router does.
@@ -868,6 +869,120 @@ The relay publishes all of it as `sync.progress` on `/stats.json`, beside a
 `sync.terms` glossary defining every number in the section — including the three
 different things the word "done" used to cover: a fan-out leg that *returned*, a
 walk that *settled*, and the span every kind has produced *evidence* for.
+
+## Following the people who are signed in
+
+Everything above mirrors a **corpus** on a timer: relays named in stored events,
+walked every `refreshSeconds`, with a rotation pacing the fan-out. A `presence`
+stream mirrors a **person**, on the event of them arriving.
+
+```hocon
+authedOutbox {
+  dir      = "down"
+  sync     = "fetch"
+  filter   = { "kinds": [1, 1111, 6, 7, 30023] }
+  presence = {
+    source             = "outbox"     # or "scores"
+    pollSeconds        = 30
+    concurrency        = 4
+    maxRelaysPerReader = 8
+    exclude            = [ "wss://this.relay.example/" ]
+  }
+}
+```
+
+Every `pollSeconds` the stream reads who currently holds a verified NIP-42 login,
+resolves each of them to a set of `(relay, question)` pairs out of their own
+lists, and moves its open subscriptions to match — opening what is new, closing
+what no longer has a reason.
+
+Two sources, and they are two streams because they ask different relays
+different questions:
+
+| `source` | reads | asks each relay for |
+|---|---|---|
+| `outbox` | their kind **10002**, write side (quartz's NIP-65 marker rule — `write`, or unmarked, which means both) | the stream's kinds, `authors = [that reader]` |
+| `scores` | their kind **10040**'s `30382:rank` entries, each of which carries a service **key and a relay hint** | the stream's kinds, `authors = [that service]` |
+
+### Why this exists at all
+
+The store treats a reader's web-of-trust lens as a **filter**, so a signed-in
+reader whose trust chain has not been mirrored here gets an **empty** ranked
+search rather than a degraded one. `TrustNotice` tells them so on login and
+`readiness.js` draws it as a bar — but neither could *fix* it. The `assertions`
+stream finds NIP-85 providers by scanning stored 10040s every six hours, so a
+reader whose provider nobody here has ever mirrored waits out that cycle, as one
+author among millions, with nothing in the rotation aware they are waiting. The
+`scores` source finds the provider of the person who is standing there.
+
+### What it does and does not walk
+
+`sync` keeps its ordinary meaning, narrowed to two values:
+
+- **`sync = "live"`** — the tail alone. No paged walk, no reconcile, and **no
+  cursor band**: a tail proves nothing about the span it happened to be open
+  for (events arrive out of order, authors back-date, a socket drops and
+  reconnects), and a band written from one would let a later `fetch` skip
+  history nobody walked. This mode also works on a plain `urls` stream, where it
+  means "tail it, never backfill it".
+- **`sync = "fetch"`** — the tail, plus one paged catch-up per `(relay,
+  question)` pair, recorded in `SYNC_STATE_FILE` like any other walk. That is
+  what makes a returning reader's **backlog** arrive rather than only their next
+  post, and what stops the second visit re-downloading it.
+
+`negentropy` and `auto` are refused by the config loader. A reconcile snapshots
+our whole side of the filter, and a presence filter is per reader — so it would
+be one full store walk per signed-in person per poll. Not a slow version of this
+feature; a different and much worse one.
+
+### The bounds, and the one failure that is silent
+
+- **Subscriptions are keyed by `(relay, question)`, not by reader.** Four hundred
+  readers whose outboxes all name one popular relay put **one** filter on it; two
+  readers naming the same trust provider share its subscription. Keying by reader
+  is the obvious shape and multiplies REQs by readership on exactly the relays
+  everybody names.
+- **`maxRelaysPerReader` is not decorative.** A real NIP-65 outbox is single
+  digits; measured on this corpus, 148 pubkeys publish a kind 10002 of 100–10,591
+  entries. Without the cap, one of them signing in dials ten thousand relays.
+  `exclude` is applied first, so excluding a url gives the reader another slot
+  rather than spending one — put this relay's own url there.
+- **The relay's feed has a cap of its own**, and reaching it is the one failure
+  here that produces no error anywhere: those readers *are* signed in and nothing
+  is mirroring for them, while every stream reads healthy. It is published as
+  `omittedReaders` on the `presence` processor row and drawn loud on the coverage
+  card, and the sync log says it on every poll.
+- **Targets are re-resolved for readers already here**, not only for arrivals. A
+  10002 and a 10040 are replaceable events that change while their author is
+  online — and the reader most likely to edit theirs is the one who just read a
+  notice saying their trust chain is not mirrored.
+
+### Wiring the feed
+
+The set is only knowable in the **relay** process — a NIP-42 AUTH lands on a
+websocket it owns — and the mirror has been its own process since the split, so
+presence crosses the boundary by HTTP exactly as serving latency does. It needs
+one setting on each service:
+
+```bash
+# relay
+RELAY_AUTHED_TOKEN=<a shared secret>
+# sync
+SYNC_AUTHED_URL=http://relay:7777/authed
+SYNC_AUTHED_TOKEN=<the same secret>
+```
+
+`GET /authed` is the **only** document this relay serves that names its clients.
+Every other endpoint here describes stored events or an aggregate — `/pressure`
+caps its `samples` field precisely so that polling it cannot become a
+client-activity feed — so this one is mounted only where a token is set, requires
+`Authorization: Bearer …`, and answers a missing, malformed or wrong credential
+with one 401 and one body. With no token the route does not exist and the relay
+tracks nothing.
+
+A `presence` stream configured with no `SYNC_AUTHED_URL` **refuses to boot**,
+naming the streams. It could only hold zero subscriptions on an empty relay list,
+which from outside is indistinguishable from a quiet night.
 
 ## Enabling it under docker compose
 

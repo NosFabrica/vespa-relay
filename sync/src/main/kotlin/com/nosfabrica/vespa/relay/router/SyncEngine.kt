@@ -37,6 +37,8 @@ import com.nosfabrica.vespa.relay.router.discovery.StreamWorld
 import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
+import com.nosfabrica.vespa.relay.router.presence.AuthedFeed
+import com.nosfabrica.vespa.relay.router.presence.PresenceSync
 import com.nosfabrica.vespa.relay.router.progress.PagingProgress
 import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.nosfabrica.vespa.relay.router.progress.StreamPhases
@@ -134,6 +136,11 @@ class SyncEngine(
     // every url its current cycle took on, written where the relay can publish
     // it. Unset writes nothing — see [SyncProgress].
     private val progressFile: SyncProgress = SyncProgress(null),
+    // Who is signed in to the served relay, kept current by AuthedPoller off
+    // the relay's GET /authed. Null is a deployment with no presence feed
+    // configured — which is fine until a stream declares a `presence` block,
+    // and start() refuses that combination rather than mirroring for nobody.
+    private val authedFeed: AuthedFeed? = null,
 ) : AutoCloseable {
     private val scope = CoroutineScope(Dispatchers.IO + parentContext)
 
@@ -236,8 +243,16 @@ class SyncEngine(
     private val streamGate = Semaphore(1)
 
     private val downUpstreams = config.downUpstreams()
+
+    /**
+     * The subset of [downUpstreams] a history catch-up walks. A
+     * [SyncMode.LIVE] upstream is its tail and nothing else, so it is
+     * subscribed like the rest and never backfilled.
+     */
+    private val backfillUpstreams = config.backfillUpstreams()
     private val upUpstreams = config.upUpstreams()
     private val dynamicStreams = config.dynamicStreams()
+    private val presenceStreams = config.presenceStreams()
 
     // The relays we hold a live subscription on; a dynamic sync must not drop
     // one of these sockets out from under its tail.
@@ -419,10 +434,40 @@ class SyncEngine(
     private val upPush = UpstreamPush(client, store, config.upIntervalSec, streamGate, scope)
     private val pressure = servingPressure
 
+    /**
+     * The streams that follow signed-in readers, and the feed that tells them
+     * who those are.
+     *
+     * Built whether or not a feed was configured, so the boot check below can
+     * be a check rather than a silent absence: a presence stream with no
+     * `SYNC_AUTHED_URL` would otherwise be a configured component that mirrors
+     * nothing and says nothing, which is the failure this codebase names
+     * outright.
+     */
+    private val presence =
+        if (presenceStreams.isEmpty()) {
+            null
+        } else {
+            PresenceSync(client, store, authedFeed ?: AuthedFeed(), bands, ingest, phases, paging, transferring, scope)
+        }
+
     fun start(): SyncEngine {
-        if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {
+        if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty() && presenceStreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
             return this
+        }
+
+        // A presence stream with no feed can only ever hold zero subscriptions,
+        // on a relay list that is by construction empty — the exact shape of a
+        // configured component that is silently inert. Refused at boot, naming
+        // the two settings, because from the outside it is indistinguishable
+        // from a readership nobody has signed in from.
+        if (presenceStreams.isNotEmpty() && authedFeed == null) {
+            error(
+                "router: stream(s) ${presenceStreams.joinToString { it.name }} declare a `presence` block, but " +
+                    "SYNC_AUTHED_URL is unset — there is no way to learn who is signed in, so they would mirror nothing. " +
+                    "Point it at the relay's /authed and set SYNC_AUTHED_TOKEN to match the relay's RELAY_AUTHED_TOKEN.",
+            )
         }
 
         ingest.start()
@@ -470,16 +515,19 @@ class SyncEngine(
         // read as "not configured".
         downUpstreams.map { it.streamName }.distinct().forEach { phases.register(it) }
         dynamicStreams.forEach { phases.register(it.name) }
+        presenceStreams.forEach { phases.register(it.name) }
 
-        if (downUpstreams.isNotEmpty()) {
-            backfill.begin(downUpstreams.size)
-            scope.launch { backfill.run(downUpstreams) }
+        if (backfillUpstreams.isNotEmpty()) {
+            backfill.begin(backfillUpstreams.size)
+            scope.launch { backfill.run(backfillUpstreams) }
             scope.launch { backfill.progressLoop(dynamicStreams.size) }
         }
 
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
 
         dynamicStreams.forEach { stream -> scope.launch { dynamic.loop(stream) } }
+
+        presence?.let { p -> presenceStreams.forEach { stream -> scope.launch { p.loop(stream) } } }
 
         // Only where there is something to fold for. A dynamic stream is what
         // discovers urls off other people's relay lists; a static config names
@@ -503,7 +551,7 @@ class SyncEngine(
                 progressFile.write(phases.snapshot(), processors.snapshot(), health, fatals.get())
             }
         }
-        if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
+        if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty() || presenceStreams.isNotEmpty()) {
             scope.launch {
                 while (scope.isActive) {
                     delay(PROGRESS_INTERVAL_MS)
@@ -516,7 +564,15 @@ class SyncEngine(
 
         System.err.println(
             "router: ${downUpstreams.size} down + ${upUpstreams.size} up relay(s)" +
-                (if (downUpstreams.isNotEmpty()) "; backfilling ${downUpstreams.size}" else "; live-tail only") +
+                (if (backfillUpstreams.isNotEmpty()) "; backfilling ${backfillUpstreams.size}" else "; live-tail only") +
+                (
+                    if (presenceStreams.isNotEmpty()) {
+                        "; ${presenceStreams.size} presence stream(s): " +
+                            presenceStreams.joinToString { "${it.name} (${it.presence?.source?.wire})" }
+                    } else {
+                        ""
+                    }
+                ) +
                 (if (upUpstreams.isNotEmpty()) "; up every ${config.upIntervalSec}s" else "") +
                 (
                     if (dynamicStreams.isNotEmpty()) {
@@ -629,6 +685,26 @@ class SyncEngine(
                         // fact about this router that nothing else records.
                         Processors.Count("dropped", healQueue.dropped.get()),
                         Processors.Count("pushed", healer.pushed.get()),
+                    )
+                }
+            }
+        }
+        // WHO THE MIRROR IS CURRENTLY WORKING FOR. A presence stream's own row
+        // says what it is doing; this one says what it is doing it ON BEHALF
+        // OF, which is the number an operator actually asks about — "is anybody
+        // signed in, and are we listening for them". `omittedReaders` is the
+        // one that has no other home: those readers ARE here and are being
+        // mirrored for by nobody, and every stream looks healthy while it
+        // happens.
+        presence?.let { p ->
+            processors.of(PRESENCE_PROCESSOR).let { row ->
+                row.phase(Processors.RUNNING)
+                row.counts {
+                    listOf(
+                        Processors.Count("readers", p.readersFollowed()),
+                        Processors.Count("subscriptions", p.subscriptions()),
+                        Processors.Count("presenceRelays", p.relays()),
+                        Processors.Count("omittedReaders", p.omittedReaders()),
                     )
                 }
             }
@@ -862,6 +938,9 @@ class SyncEngine(
         // nobody can grep from the document back to the code.
         const val STABILITY_PROCESSOR = "consistency"
         const val REACHABILITY_PROCESSOR = "reachability"
+
+        /** The signed-in readers this router is holding subscriptions for — see [PresenceSync]. */
+        const val PRESENCE_PROCESSOR = "presence"
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"
         const val PUSH_PROCESSOR = "upstreamPush"

@@ -111,6 +111,12 @@ fun serveRelay(
     // the sync process — its own container since the split — can keep yielding
     // ingest to slow reads the way it did when both shared a JVM.
     pressure: ServingPressure? = null,
+    // When set, GET /authed serves WHO IS SIGNED IN, so the sync process can
+    // hold a live subscription on each of their outbox relays and trust
+    // providers for as long as they are here. Unlike /pressure this names
+    // clients, so the route exists only where a token does — see
+    // [AuthedReaders] for why the credential is part of the object.
+    authed: AuthedReaders? = null,
     // The `http://…onion/` this relay also answers at, advertised on every
     // clearnet response. Asked per response rather than captured once: the
     // hidden service can come up after this server did.
@@ -253,6 +259,7 @@ fun serveRelay(
                     )
                 }
             }
+            authedReaders(authed)
             observerStats?.let { page ->
                 get("/observer_stats.html") { call.respondPage(page.page) }
             }
@@ -260,6 +267,44 @@ fun serveRelay(
             admin?.let { nip86Admin(it, info) }
         }
     }.start(wait = wait)
+}
+
+/**
+ * `GET /authed` — the identities holding a verified NIP-42 AUTH right now.
+ *
+ * THE ONE ENDPOINT ON THIS RELAY THAT IS NOT PUBLIC, and the line it sits on
+ * the other side of is drawn in [corpusStats]' own KDoc: `/pressure` publishes
+ * a mean latency and `/stats.json` publishes facts about stored events, neither
+ * of which names a client, and a `samples` field is capped there precisely so
+ * that polling it cannot become a client-activity feed. This document is a list
+ * of the people currently reading — the thing that rule exists to keep out of
+ * the others — and it exists at all only because the mirror runs in a different
+ * process and has to be told.
+ *
+ * So: mounted only where the operator set a token, and every request carries it
+ * as `Authorization: Bearer …`. A missing, malformed or wrong credential is one
+ * 401 with one body, because "your header parsed" is worth nothing to the sync
+ * process and something to everyone else.
+ *
+ * `no-store`, and no ETag. The other documents here are revalidated because
+ * they change rarely and are large; this one changes on every login and is
+ * small, and the saving from a conditional request is not worth a copy of who
+ * was signed in sitting in an intermediary's cache.
+ *
+ * Its own function so a test can mount it without standing up a relay — the
+ * same reason [webModules] is one.
+ */
+internal fun Route.authedReaders(readers: AuthedReaders?) {
+    if (readers == null) return
+    get("/authed") {
+        if (!readers.authorizes(call.request.headers[HttpHeaders.Authorization])) {
+            call.response.header(HttpHeaders.WWWAuthenticate, "Bearer")
+            call.respondText("""{"error":"unauthorized"}""", ContentType.Application.Json, HttpStatusCode.Unauthorized)
+            return@get
+        }
+        call.response.header(HttpHeaders.CacheControl, "no-store")
+        call.respondText(readers.snapshot().toJson(), ContentType.Application.Json)
+    }
 }
 
 /**

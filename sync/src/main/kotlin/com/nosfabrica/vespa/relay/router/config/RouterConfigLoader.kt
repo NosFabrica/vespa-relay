@@ -209,15 +209,42 @@ object RouterConfigLoader {
                 val urls = if (s.hasPath("urls")) normalizeUrls(name, s.getStringList("urls")) else emptyList()
                 val dir = SyncDirection.parse(if (s.hasPath("dir")) s.getString("dir") else "down")
                 val dynamic = parseDynamic(name, s, relaySourceDefaults)
+                val presence = parsePresence(name, s)
+                val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
 
-                require(dynamic != null || s.hasPath("urls")) {
-                    "router: stream '$name' has neither `urls` nor a `relaySource` list"
+                require(dynamic != null || presence != null || s.hasPath("urls")) {
+                    "router: stream '$name' has none of `urls`, a `relaySource` list, or a `presence { }` block"
                 }
                 require(dynamic == null || urls.isEmpty()) {
                     "router: stream '$name' cannot mix `relaySource` with static `urls` — split them into two streams"
                 }
                 require(dynamic == null || dir == SyncDirection.DOWN) {
                     "router: stream '$name' has a `relaySource`, which only pulls down — set dir = \"down\""
+                }
+                // Presence is exclusive with BOTH other sources, unlike the pair
+                // above: one stream name may carry `urls` and `relaySource`
+                // together (the static half and the dynamic half each get their
+                // own pass), and that arrangement rests on both halves walking
+                // the same filter against relays chosen the same way. A presence
+                // stream narrows its filter per reader, so sharing a name would
+                // put two different questions under one band key.
+                require(presence == null || (urls.isEmpty() && dynamic == null)) {
+                    "router: stream '$name' mixes `presence` with `urls`/`relaySource` — a presence stream narrows its " +
+                        "filter per signed-in reader, so it cannot share a stream name with one that does not"
+                }
+                require(presence == null || dir == SyncDirection.DOWN) {
+                    "router: stream '$name' has a `presence` block, which only pulls down — set dir = \"down\""
+                }
+                // The two modes that build a local id set are refused rather
+                // than silently downgraded. A reconcile snapshots OUR side of
+                // the filter, and a presence stream's filter is per reader — so
+                // `negentropy` here would mean one full store walk per signed-in
+                // person per poll, which is not a slow version of this feature,
+                // it is a different and much worse one.
+                require(presence == null || sync == SyncMode.LIVE || sync == SyncMode.FETCH) {
+                    "router: stream '$name' has a `presence` block with sync = \"${sync.wire}\" — use \"live\" (tail only) " +
+                        "or \"fetch\" (tail plus a paged catch-up per reader). A reconcile would snapshot our whole side " +
+                        "of the filter once per signed-in reader"
                 }
 
                 val filter = parseFilter(s.getConfig("filter"))
@@ -229,7 +256,8 @@ object RouterConfigLoader {
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     dynamic = dynamic,
-                    sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO,
+                    presence = presence,
+                    sync = sync,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
@@ -358,6 +386,37 @@ object RouterConfigLoader {
             exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
+        )
+    }
+
+    /**
+     * `presence { source = "outbox" }` — the stream's relays are whoever is
+     * signed in to the served relay right now. See [PresenceConfig].
+     *
+     * `source` is required and has no default. The two sources ask completely
+     * different questions of completely different relays, and a stream that
+     * guessed would mirror the wrong one perfectly quietly.
+     */
+    private fun parsePresence(
+        stream: String,
+        s: Config,
+    ): PresenceConfig? {
+        if (!s.hasPath("presence")) return null
+        val p = s.getConfig("presence")
+        require(p.hasPath("source")) {
+            "router: stream '$stream' has a `presence { }` block with no `source` — " +
+                "write source = \"${PresenceSource.OUTBOX.wire}\" or \"${PresenceSource.SCORES.wire}\""
+        }
+        return PresenceConfig(
+            source = PresenceSource.parse(p.getString("source")),
+            pollSeconds =
+                (if (p.hasPath("pollSeconds")) p.getLong("pollSeconds") else PresenceConfig.DEFAULT_POLL_SECONDS)
+                    .coerceAtLeast(PresenceConfig.MIN_POLL_SECONDS),
+            concurrency = (if (p.hasPath("concurrency")) p.getInt("concurrency") else 4).coerceIn(1, 64),
+            maxRelaysPerReader =
+                (if (p.hasPath("maxRelaysPerReader")) p.getInt("maxRelaysPerReader") else PresenceConfig.DEFAULT_MAX_RELAYS_PER_READER)
+                    .coerceAtLeast(1),
+            exclude = if (p.hasPath("exclude")) parseExcludes(stream, p.getStringList("exclude")) else RelayExcludes.NONE,
         )
     }
 

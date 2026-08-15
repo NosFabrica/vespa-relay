@@ -507,6 +507,33 @@ internal object SyncVocabulary {
                     "configured `dir = up` was missing for the push. The only two paths that write outward.",
             )
             put(
+                "readers",
+                "People holding a verified NIP-42 login on the serving relay right now, as the router last heard it. " +
+                    "This is the only number in this document that is about CLIENTS rather than about the corpus, and " +
+                    "it is here because it is the relay list of the presence streams: they mirror each signed-in " +
+                    "reader's own outbox and their own trust provider, and nobody else's. Zero all night is ordinary.",
+            )
+            put(
+                "subscriptions",
+                "Live REQs the presence streams are holding open on other people's relays. NOT one per reader: a " +
+                    "subscription is keyed by (relay, question), so four hundred readers whose outboxes all name one " +
+                    "popular relay share a single filter on it. Larger than `readers` on a scores stream (one reader " +
+                    "may name two providers) and far smaller on an outbox one.",
+            )
+            put(
+                "presenceRelays",
+                "Distinct relays those subscriptions are spread across. Named apart from the streams' own relay " +
+                    "counts because these are dialled on behalf of a person rather than discovered from the corpus, " +
+                    "and they come and go as people sign in and out.",
+            )
+            put(
+                "omittedReaders",
+                "Signed-in readers the relay's own presence response could not fit, and who are therefore being " +
+                    "mirrored for by NOBODY. The failure this feature has that produces no error anywhere else: every " +
+                    "stream reads healthy while these people's outboxes and providers are never dialled. Non-zero " +
+                    "means the readership has outgrown the relay's cap.",
+            )
+            put(
                 "observed",
                 "Urls this PROCESS has opened a socket to since it started, whatever came of it — quartz's observer " +
                     "holds them in memory and they are gone on a restart. NOT a denominator for `knownDead`: that set " +

@@ -95,6 +95,16 @@ class MultiAddressAuthPolicy(
     @Volatile
     private var send: ((Message) -> Unit)? = null
 
+    /**
+     * This connection's id, captured from the same hook and for the same
+     * reason. [authorize] is handed only the AUTH event, so without this a
+     * login could be reported but never ENDED — the engine's own
+     * `RelayServerListener.onDisconnect` speaks in these ids, and nothing else
+     * on this side does. See [AuthedReaders].
+     */
+    @Volatile
+    private var connectionId: Long = 0
+
     override fun onConnect(
         scope: RequestContext,
         send: (Message) -> Unit,
@@ -103,6 +113,7 @@ class MultiAddressAuthPolicy(
         // that never gets one can never reach [authorize] at all.
         super.onConnect(scope, send)
         this.send = send
+        this.connectionId = scope.connectionId
     }
 
     /**
@@ -135,7 +146,7 @@ class MultiAddressAuthPolicy(
         // the lock for one hash lookup, and the set is per connection.
         if (!synchronized(told) { told.add(event.pubKey) }) return
         try {
-            notify(event.pubKey, send)
+            notify(event.pubKey, connectionId, send)
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {

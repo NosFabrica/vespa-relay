@@ -483,7 +483,16 @@ internal class StaticBackfill(
         // Declared beats measured.
         when (upstream.sync) {
             SyncMode.NEGENTROPY -> return true
+
             SyncMode.FETCH -> return false
+
+            // A `live` upstream never reaches here — RouterConfig.backfillUpstreams
+            // filters it out before this class is handed anything, because the
+            // whole point of the mode is that no history is walked. Answered
+            // rather than left to an `else` so that a future caller passing one
+            // in gets the cheap branch instead of a store walk it must not do.
+            SyncMode.LIVE -> return false
+
             SyncMode.AUTO -> Unit
         }
         // OUR count decides it, and nothing else.

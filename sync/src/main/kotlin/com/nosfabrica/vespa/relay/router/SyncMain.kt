@@ -30,6 +30,8 @@ import com.nosfabrica.vespa.relay.maintenance.deployBundledSchema
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.config.syncEnv
+import com.nosfabrica.vespa.relay.router.presence.AuthedFeed
+import com.nosfabrica.vespa.relay.router.presence.AuthedPoller
 import com.nosfabrica.vespa.relay.router.progress.SyncProgress
 import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.server.ServingPressure
@@ -58,6 +60,10 @@ private const val DEPLOY_RETRY_SECONDS = 5L
  *   SYNC_CONFIG / SYNC_CONFIG_FILE   the streams to mirror (REQUIRED)
  *   SYNC_PRESSURE_URL  the relay's /pressure endpoint; unset ⇒ ingest never
  *                      yields to client reads, and the boot log says so
+ *   SYNC_AUTHED_URL / SYNC_AUTHED_TOKEN   the relay's /authed endpoint and the
+ *                      secret it gates it with (its RELAY_AUTHED_TOKEN).
+ *                      Required by any stream with a `presence { }` block, and
+ *                      refused at boot if one has it and this is missing
  *   SYNC_TOR_SOCKS     a Tor SOCKS5 proxy (host:port); unset ⇒ no transport
  *                      can reach a .onion, so discovery drops them and a
  *                      configured one refuses to boot
@@ -197,6 +203,21 @@ fun main() {
         System.err.println("router: SYNC_PRESSURE_URL unset — ingest will not yield to relay reads")
     }
 
+    // WHO IS SIGNED IN, for the `presence` streams. The second thing that
+    // crosses the process boundary by HTTP, and the only one that needs a
+    // credential: it names clients, so both services have to be told the same
+    // secret before the relay will answer. Built only when both settings are
+    // present — a url with no token could only ever collect 401s, which is a
+    // typo an operator should be told about at boot rather than once every ten
+    // seconds forever.
+    val authedUrl = env["SYNC_AUTHED_URL"]?.trim()?.takeIf { it.isNotEmpty() }
+    val authedToken = env["SYNC_AUTHED_TOKEN"]?.trim()?.takeIf { it.isNotEmpty() }
+    if (authedUrl != null && authedToken == null) {
+        error("SYNC_AUTHED_URL is set but SYNC_AUTHED_TOKEN is not — the relay's /authed needs the token it was given as RELAY_AUTHED_TOKEN.")
+    }
+    val authedFeed = if (authedUrl != null && authedToken != null) AuthedFeed() else null
+    val authedPoller = if (authedFeed != null) AuthedPoller(authedUrl!!, authedToken!!, authedFeed).start() else null
+
     val engine =
         SyncEngine(
             store,
@@ -210,6 +231,7 @@ fun main() {
             servingPressure = servingPressure,
             torSettings = torSettings,
             progressFile = progressFile,
+            authedFeed = authedFeed,
             // The raw engine index, not the trust-projected store: the
             // projection's existingIds delegates straight through, and this is
             // a pure read that counts and never mutates — the use its own
@@ -240,6 +262,7 @@ fun main() {
             parseAudit?.close()
             refusedIds.close()
             poller?.close()
+            authedPoller?.close()
             bands.close()
             sweepState.close()
             store.close()

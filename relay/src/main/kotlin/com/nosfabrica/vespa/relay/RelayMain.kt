@@ -47,7 +47,9 @@ import com.nosfabrica.vespa.relay.maintenance.launchRelayProfile
 import com.nosfabrica.vespa.relay.maintenance.launchStatsRollup
 import com.nosfabrica.vespa.relay.maintenance.reconcileTrustWithRetry
 import com.nosfabrica.vespa.relay.maintenance.vespaConfigUrlFor
+import com.nosfabrica.vespa.relay.server.AuthedReaders
 import com.nosfabrica.vespa.relay.server.ConnectionCountListener
+import com.nosfabrica.vespa.relay.server.ListenerChain
 import com.nosfabrica.vespa.relay.server.Nip11Info
 import com.nosfabrica.vespa.relay.server.Nip86Admin
 import com.nosfabrica.vespa.relay.server.NostrRelayServer
@@ -58,7 +60,6 @@ import com.nosfabrica.vespa.relay.server.openBanStore
 import com.nosfabrica.vespa.relay.server.selfIconUrl
 import com.nosfabrica.vespa.relay.server.serveRelay
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip01Core.relay.server.RelayServerListener
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
@@ -197,12 +198,24 @@ fun main() {
     val adminPubkeys = adminPubkeysFromEnv(env)
     val banStore = if (adminPubkeys.isNotEmpty()) openBanStore(env["RELAY_STATE_FILE"]) else null
 
+    // WHO IS SIGNED IN, for the sync process's presence streams. Built only
+    // where the operator set a token: the document names clients, so a public
+    // one would undo the line every other endpoint here is on the right side
+    // of. Unset, nothing is tracked and no route is mounted — a deployment that
+    // does not run presence streams pays for none of this.
+    val authedReaders = env["RELAY_AUTHED_TOKEN"]?.trim()?.takeIf { it.isNotEmpty() }?.let { AuthedReaders(it) }
+    if (authedReaders != null) {
+        System.err.println("relay: GET /authed is on — the sync process may read who is signed in, with RELAY_AUTHED_TOKEN")
+    }
+    // ONE slot, more than one listener. `LOG_CONNECTIONS` used to own it
+    // outright; with presence needing the same disconnect, turning the debug
+    // switch on would have quietly unhooked the mirror's only way to learn that
+    // a reader had gone. See [ListenerChain].
     val listener =
-        if (env["LOG_CONNECTIONS"]?.toBooleanStrictOrNull() == true) {
-            ConnectionCountListener()
-        } else {
-            RelayServerListener.None
-        }
+        ListenerChain.of(
+            if (env["LOG_CONNECTIONS"]?.toBooleanStrictOrNull() == true) ConnectionCountListener() else null,
+            authedReaders,
+        )
 
     // Deploy the schema this build expects, every boot — see [deployBundledSchema].
     val configUrl = env["VESPA_CONFIG_URL"] ?: vespaConfigUrlFor(vespaUrl)
@@ -320,7 +333,15 @@ fun main() {
             store = store,
             servingPressure = servingPressure,
             relayUrl = relayUrl,
-            onAuthenticated = trustNotice::check,
+            // One login, two consumers, put together here rather than as two
+            // hooks on the one seam that sees a verified AUTH — see
+            // [AuthNotifier]. Presence is recorded FIRST and without a store
+            // read, so a reader is mirrorable from the instant they sign in
+            // even if the notice's walk is slow or the store is unwell.
+            onAuthenticated = { pubkey, connectionId, send ->
+                authedReaders?.signedIn(connectionId, pubkey)
+                trustNotice.check(pubkey, send)
+            },
             alsoServedAt = addresses::alternates,
             listener = listener,
             limits = limits,
@@ -374,6 +395,7 @@ fun main() {
         limits = limits,
         admin = admin,
         pressure = servingPressure,
+        authed = authedReaders,
         // A NIP-86 admin RPC can rename this relay, re-describe it or change
         // its icon while it runs. The doc is the profile's source, so the
         // profile follows it here rather than freezing what the environment

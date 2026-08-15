@@ -1975,6 +1975,19 @@ function processorFact(p) {
     add(`${fmt(p.knownDead)} held out of every fan-out as unreachable`, "knownDead");
     return cell;
   }
+  // WHO THE MIRROR IS WORKING FOR. `readers` can legitimately be 0 all night,
+  // so this row is chosen by `subscriptions` being present rather than by any
+  // count being truthy — a presence processor that exists and is holding
+  // nothing has to say so, not fall through to an empty cell.
+  if (p.subscriptions != null) {
+    add(`${fmt(p.readers || 0)} reader(s) signed in`, "readers");
+    add(`${fmt(p.subscriptions)} live subscription(s) on ${fmt(p.presenceRelays || 0)} relay(s)`, "subscriptions");
+    // Drawn LOUD and only when non-zero, the same rule `lostToStore` follows:
+    // at zero it belongs in the JSON, above zero it is people this relay has
+    // signed in who nothing is mirroring for.
+    if (p.omittedReaders) add(`${fmt(p.omittedReaders)} SIGNED-IN READER(S) MIRRORED FOR BY NOBODY`, "omittedReaders", true);
+    return cell;
+  }
   if (p.pushed != null) {
     add(`${fmt(p.pushed)} event(s) pushed back to relays missing them`, "pushed");
     // The sweep declining to backpressure itself, which is a choice and not a

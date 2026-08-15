@@ -117,6 +117,13 @@ services:
       REJECT_FUTURE_SECONDS: ${REJECT_FUTURE_SECONDS:-}
       EXPIRATION_SWEEP_SECONDS: ${EXPIRATION_SWEEP_SECONDS:-}
       LOG_CONNECTIONS: ${LOG_CONNECTIONS:-}
+      # Turns on GET /authed — who holds a verified NIP-42 login right now — so
+      # the sync process can hold a live subscription on each signed-in
+      # reader's own outbox relays and trust provider while they are here.
+      # THE ONE DOCUMENT THIS RELAY SERVES THAT NAMES ITS CLIENTS, so the route
+      # exists only where this is set and every request must present it as a
+      # bearer token. Give the sync service the same value.
+      RELAY_AUTHED_TOKEN: ${RELAY_AUTHED_TOKEN:-}
       # This relay's own public ws url (NIP-42 identity / NIP-62 vanish scope).
       RELAY_URL: ${RELAY_URL:-ws://localhost:7777}
       # The SECOND address the same relay answers at, when the `onion` profile
@@ -294,6 +301,13 @@ services:
       # read latency on GET /pressure and this process throttles ingest on it.
       # Unset it to mirror at full speed regardless of readers.
       SYNC_PRESSURE_URL: ${SYNC_PRESSURE_URL:-http://relay:7777/pressure}
+      # The other thing that crosses the boundary: WHO IS SIGNED IN, for any
+      # stream with a `presence { }` block. Both halves are needed — a url with
+      # no token could only collect 401s — and a presence stream configured
+      # with neither refuses to boot rather than mirror nothing quietly. The
+      # token must match the relay's RELAY_AUTHED_TOKEN.
+      SYNC_AUTHED_URL: ${SYNC_AUTHED_URL:-}
+      SYNC_AUTHED_TOKEN: ${SYNC_AUTHED_TOKEN:-${RELAY_AUTHED_TOKEN:-}}
       # Mean read latency (ms) above which ingest starts yielding.
       SERVING_PRESSURE_THRESHOLD_MS: ${SERVING_PRESSURE_THRESHOLD_MS:-}
       # How often (seconds) up/both streams re-reconcile to push new local events.

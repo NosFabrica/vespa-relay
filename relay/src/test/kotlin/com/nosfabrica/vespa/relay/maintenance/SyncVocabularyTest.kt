@@ -248,6 +248,12 @@ class SyncVocabularyTest {
                     "pushed",
                     "dropped",
                     "observed",
+                    // …and the presence processor, which reports who the mirror
+                    // is currently working for rather than what it is walking.
+                    "readers",
+                    "subscriptions",
+                    "presenceRelays",
+                    "omittedReaders",
                 ) +
                 // What the phase itself knows, which used to reach a log line
                 // and stop there — plus the two facts about the process rather
