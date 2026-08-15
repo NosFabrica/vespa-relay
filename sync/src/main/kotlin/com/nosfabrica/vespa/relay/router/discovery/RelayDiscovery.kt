@@ -278,7 +278,7 @@ object RelayDiscovery {
      * prefix of it is read — because taking the first N would let the author
      * choose which relays we see by ordering them.
      */
-    private fun oversized(
+    internal fun oversized(
         event: Event,
         selects: List<RelaySelect>,
         cap: Int?,
@@ -296,6 +296,39 @@ object RelayDiscovery {
             }
         }
         return false
+    }
+
+    /**
+     * Every relay ONE event names for [selects], carrying what each tag paired
+     * it with — [discover]'s inner loop, for a caller that already has the
+     * event and does not want a store walk.
+     *
+     * This is the seam the presence streams read through: their scan is one
+     * signed-in reader's own replaceable list, so the paging, the union across
+     * sources and the exclude pass all belong to the caller, while WHICH TAG
+     * MEANS WHAT must not fork from the dynamic path. The pairing survives here
+     * the same way it does there — bindings are merged per url within this
+     * event, never gathered into per-slot sets, or a 10002 naming two relays
+     * for two markers would produce the cross product.
+     *
+     * Returns a list rather than a map so the caller keeps the order the tags
+     * were written in, which is the order a reader's own relay list puts its
+     * relays in and therefore the fairest thing to apply a per-reader cap to.
+     */
+    fun relaysIn(
+        event: Event,
+        selects: List<RelaySelect>,
+        allowOnion: Boolean = false,
+    ): List<DiscoveredRelay> {
+        val narrowing = LinkedHashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
+        for (select in selects) {
+            if (select.kind != null && select.kind != event.kind) continue
+            bindingsIn(event, select, allowOnion) { url, bound ->
+                val per = narrowing.getOrPut(url) { LinkedHashMap() }
+                for ((dest, value) in bound) per.getOrPut(dest) { LinkedHashSet() }.add(value)
+            }
+        }
+        return narrowing.map { (url, bound) -> DiscoveredRelay(url, bound.mapValues { (_, v) -> v.toSet() }) }
     }
 
     /** The distinct relay urls one event advertises across every applicable select. */

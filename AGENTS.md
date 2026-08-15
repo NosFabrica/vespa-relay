@@ -821,17 +821,36 @@ provider) instead of by kind, the same data overlaps almost entirely and
 `negentropy` is right. Narrowing the ask inverted the answer, so re-derive it
 when a stream's filter changes shape rather than trusting the label.
 
-**A `presence` STREAM MIRRORS A PERSON, ON THE EVENT OF THEM ARRIVING.** Both
-older sources answer "what does this corpus say we should mirror", which is the
-right question for a corpus and the wrong one for a reader who just signed in:
-they are one author among millions, their band is one of thousands, and nothing
-in a six-hour rotation knows they are waiting. `PresenceSync` holds a live REQ
-on every relay a currently-signed-in reader's OWN lists name, and drops it when
-they go. Two sources, two streams, because they ask different relays different
-questions — `outbox` reads their kind 10002's write side and asks each url for
-`authors = [that reader]`; `scores` reads their kind 10040's `30382:rank`
-entries, each of which carries a service key AND a relay hint, and asks that
-relay for `authors = [that service]`.
+**A `presence` STREAM MIRRORS A PERSON, ON THE EVENT OF THEM ARRIVING.** The
+other two sources answer "what does this corpus say we should mirror", which is
+the right question for a corpus and the wrong one for a reader who just signed
+in: they are one author among millions, their band is one of thousands, and
+nothing in a six-hour rotation knows they are waiting. `PresenceSync` holds a
+live REQ on every relay a currently-signed-in reader's OWN lists name, and drops
+it when they go.
+
+**It is a SCOPE, not a third source language, and that is the whole design.**
+`presence { }` carries pacing and bounds; WHERE a url lives and WHAT it should
+then be asked for stay in `relaySource`, in the same `select`/`bindings` grammar
+`profileViaOutbox` and `assertions` are written in, read through the same
+`RelayDiscovery` code. The one thing presence changes is that each source's scan
+filter is narrowed to `authors = [one signed-in reader]` and re-run every
+`pollSeconds`. Nothing about NIP-65's marker rule or NIP-85's tag shape is
+re-implemented here — a second reading of either is a second reading that
+silently stops matching the first.
+
+What falls out of that is the pair the feature is actually for. `Slot.EventPubkey`
+means "the scanned event's own author", which under presence is always the
+reader — so `{ kind = 10002, tag = "r", marker = "write", authors = "pubkey" }`
+is their OUTBOX asking for their own posts, and
+`{ kind = 10002, tag = "r", marker = "read", "#p" = "pubkey" }` is their INBOX
+asking for what other people wrote TO them. Same relay list, two markers, two
+questions, and an unmarked `r` tag answers both. The narrowing on the inbox side
+is `#p` and NOT `authors`: a mention is written by somebody else, so
+`authors = [reader]` against an inbox returns nothing — which is the mistake the
+pair exists to make obvious. NIP-85 is the third select, unchanged from the
+`assertions` stream's: `{ kind = 10040, tag = "30382:rank", relay = 2, authors = 1 }`
+keeps the service key and its relay hint PAIRED.
 
 **`scores` is the one that closes a loop this repo could previously only
 report.** The store treats a reader's lens as a FILTER, so a signed-in reader
@@ -868,6 +887,15 @@ Four decisions in it, each reached by ruling out the obvious shape:
 - **`negentropy` and `auto` are refused at parse time.** A reconcile snapshots
   our whole side of the filter, and a presence filter is per reader — one full
   store walk per signed-in person per poll. Not a slow version of the feature.
+- **The rotation's knobs are refused rather than left inert.** `refreshSeconds`,
+  `recycleSeconds`, `concurrency` and `authorsPerLeg` pace the dynamic fan-out
+  and mean nothing here; a `refreshSeconds` copied down from the stream above
+  would sit there while the operator believed they had set the period. A source
+  filter carrying its own `authors` is refused for a sharper reason: presence
+  SETS that, so leaving it would silently resolve the right-looking relays for
+  the wrong person. And a presence stream is not ALSO run as a dynamic one —
+  `dynamicStreams()` subtracts it — or `DynamicSync` would walk every stored
+  relay list through selects written for one reader.
 
 **The failure it has that is SILENT is `omittedReaders`**, and it is why the
 relay's cap counts rather than truncates. Those readers are signed in, nothing is

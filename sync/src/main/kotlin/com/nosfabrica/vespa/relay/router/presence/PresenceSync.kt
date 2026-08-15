@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router.presence
 import com.nosfabrica.vespa.relay.router.IngestPipeline
 import com.nosfabrica.vespa.relay.router.NEG_IDLE_MS
 import com.nosfabrica.vespa.relay.router.SyncBands
+import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.drainSettlesThePast
@@ -106,6 +107,13 @@ internal class PresenceSync(
     private val paging: PagingProgress,
     private val transferring: AtomicInteger,
     private val scope: CoroutineScope,
+    /**
+     * Whether this deployment has a Tor transport, threaded through to the url
+     * filter for the reason `RelayDiscovery` states: with nothing that can
+     * resolve one, a `.onion` in somebody's relay list is a guaranteed failed
+     * dial AND a hidden service name handed to the local resolver.
+     */
+    private val allowOnion: Boolean = false,
 ) {
     /** One open subscription: what it asks, and the id it was opened under. */
     private class Held(
@@ -160,7 +168,7 @@ internal class PresenceSync(
         events[stream.name] = AtomicLong()
         unreadable[stream.name] = AtomicInteger()
         System.err.println(
-            "router: ${stream.name} follows signed-in readers (${presence.source.wire}), " +
+            "router: ${stream.name} follows signed-in readers through ${stream.dynamic?.sources?.size} source(s), " +
                 "reconciling every ${presence.pollSeconds}s, ${if (stream.sync == SyncMode.LIVE) "tail only" else "tail + catch-up"}",
         )
         while (scope.isActive) {
@@ -206,24 +214,45 @@ internal class PresenceSync(
             return
         }
 
+        val sources = stream.dynamic!!.sources
+        var oversized = 0
         val desired = LinkedHashMap<String, PresenceTarget>()
         for (reader in readers) {
-            val list =
-                try {
-                    store.query<Event>(PresenceTargets.listFilter(presence.source, reader)).firstOrNull()
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    // A failed read is NOT "they have no list". Counting it
-                    // separately is what keeps a sick store from reading as a
-                    // readership that publishes nothing — the same distinction
-                    // TrustNotice draws between null and empty.
-                    failures.incrementAndGet()
-                    null
-                } ?: continue
-            for (target in PresenceTargets.of(presence.source, list, stream.filter, presence)) {
-                desired[target.key] = target
+            // One read per (source, reader). The sources are read separately
+            // rather than merged into one filter because each carries its own
+            // selects — the outbox source and the inbox source are the same
+            // kind 10002 read two different ways, and a merged scan could not
+            // say which selects an event arrived for.
+            val lists = mutableListOf<Pair<RelaySource, Event>>()
+            var failed = false
+            for (source in sources) {
+                val found =
+                    try {
+                        store.query<Event>(PresenceTargets.scanFor(source, reader))
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        // A failed read is NOT "they have no list". Counting it
+                        // separately is what keeps a sick store from reading as
+                        // a readership that publishes nothing — the same
+                        // distinction TrustNotice draws between null and empty.
+                        failed = true
+                        emptyList()
+                    }
+                found.forEach { lists += source to it }
             }
+            if (failed) failures.incrementAndGet()
+            if (lists.isEmpty()) continue
+            val targets =
+                PresenceTargets.of(
+                    events = lists,
+                    base = stream.filter,
+                    dynamic = stream.dynamic,
+                    maxRelaysPerReader = presence.maxRelaysPerReader,
+                    allowOnion = allowOnion,
+                    onOversized = { oversized++ },
+                )
+            for (target in targets) desired[target.key] = target
         }
 
         val gone = open.keys - desired.keys
@@ -267,7 +296,14 @@ internal class PresenceSync(
                 "router: $name ${readers.size} reader(s) signed in → ${open.size} subscription(s) " +
                     "(+$opened, -${gone.size})" +
                     (if (feed.omitted > 0) "; ${feed.omitted} reader(s) OMITTED by the feed's own cap" else "") +
-                    (if (failures.get() > 0) "; ${failures.get()} reader(s) whose list could not be read" else ""),
+                    (if (failures.get() > 0) "; ${failures.get()} reader(s) whose list could not be read" else "") +
+                    (
+                        if (oversized > 0) {
+                            "; $oversized list(s) over maxRelaysPerList(${stream.dynamic.maxRelaysPerList}) ignored whole"
+                        } else {
+                            ""
+                        }
+                    ),
             )
         }
     }

@@ -448,7 +448,7 @@ class SyncEngine(
         if (presenceStreams.isEmpty()) {
             null
         } else {
-            PresenceSync(client, store, authedFeed ?: AuthedFeed(), bands, ingest, phases, paging, transferring, scope)
+            PresenceSync(client, store, authedFeed ?: AuthedFeed(), bands, ingest, phases, paging, transferring, scope, allowOnion = tor != null)
         }
 
     fun start(): SyncEngine {
@@ -568,7 +568,7 @@ class SyncEngine(
                 (
                     if (presenceStreams.isNotEmpty()) {
                         "; ${presenceStreams.size} presence stream(s): " +
-                            presenceStreams.joinToString { "${it.name} (${it.presence?.source?.wire})" }
+                            presenceStreams.joinToString { "${it.name} (${it.dynamic?.sources?.size} source(s))" }
                     } else {
                         ""
                     }

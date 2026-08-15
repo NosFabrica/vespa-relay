@@ -24,64 +24,97 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
-import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
- * The third way a stream gets its relays, and the combinations it refuses.
+ * `presence { }` as a SCOPE over a `relaySource`, and the combinations it
+ * refuses.
  *
  * Most of what is here is refusals, and each of them is a configuration that
  * would have RUN — mirroring the wrong thing, or the right thing at a cost
- * nobody signed up for — rather than failed. The loader is the one place a
- * human types this, so it is the one place those can be named.
+ * nobody signed up for — rather than failed. The loader is the one place a human
+ * types this, so it is the one place those can be named.
  */
 class PresenceStreamConfigTest {
-    private fun parse(body: String) = RouterConfigLoader.parse("streams { $body }")
+    private val outbox =
+        """{ select = [ { kind = 10002, tag = "r", marker = "write", authors = "pubkey" } ], filter = { "kinds": [10002] } }"""
 
-    /** The normalizer's own spelling, so an exclude entry is compared the way the router compares it. */
-    private fun normalized(url: String) = RelayUrlNormalizer.normalizeOrNull(url)!!
+    private val inbox =
+        """{ select = [ { kind = 10002, tag = "r", marker = "read", "#p" = "pubkey" } ], filter = { "kinds": [10002] } }"""
+
+    private fun parse(body: String) = RouterConfigLoader.parse("streams { $body }")
 
     private fun stream(body: String) = parse(body).streams.single()
 
+    private fun normalized(url: String) = RelayUrlNormalizer.normalizeOrNull(url)!!
+
     @Test
-    fun `a presence stream reads its source, its pacing and its bounds`() {
+    fun `a presence stream is an ordinary relaySource, paced by presence`() {
         val s =
             stream(
                 """
-                authedOutbox {
+                authedContent {
                     dir      = "down"
                     sync     = "fetch"
-                    filter   = { "kinds": [1, 30023] }
-                    presence = {
-                        source             = "outbox"
-                        pollSeconds        = 45
-                        concurrency        = 6
-                        maxRelaysPerReader = 4
-                        exclude            = [ "wss://ours.example" ]
-                    }
+                    filter   = { "kinds": [1, 1111, 30023] }
+                    presence = { pollSeconds = 45, concurrency = 6, maxRelaysPerReader = 4 }
+                    exclude  = [ "wss://ours.example" ]
+                    relaySource = [ $outbox, $inbox ]
                 }
                 """.trimIndent(),
             )
 
         val presence = requireNotNull(s.presence)
-        assertEquals(PresenceSource.OUTBOX, presence.source)
         assertEquals(45L, presence.pollSeconds)
         assertEquals(6, presence.concurrency)
         assertEquals(4, presence.maxRelaysPerReader)
-        assertTrue(normalized("wss://ours.example/") in presence.exclude)
-        assertEquals(SyncMode.FETCH, s.sync)
-        assertTrue(s.urls.isEmpty())
-        assertNull(s.dynamic)
+        // The sources are the ordinary ones, read by the ordinary code.
+        assertEquals(2, s.dynamic!!.sources.size)
+        assertEquals(
+            listOf(Slot.EventPubkey),
+            s.dynamic!!
+                .sources[0]
+                .selects
+                .single()
+                .bindings.values
+                .toList(),
+        )
+        assertEquals(
+            setOf("#p"),
+            s.dynamic!!
+                .sources[1]
+                .selects
+                .single()
+                .bindings.keys,
+        )
+        assertTrue(normalized("wss://ours.example/") in s.dynamic!!.exclude)
+    }
+
+    @Test
+    fun `a presence stream is not ALSO run as a dynamic one`() {
+        // It carries a relaySource, so `dynamicStreams()` would take it — and
+        // `DynamicSync` would walk every stored relay list through selects
+        // written to be scoped to one reader, fanning the `authors` binding out
+        // over the whole corpus.
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    corpus  { filter = { "kinds": [0] }, relaySource = [ $outbox ] }
+                    authed  { filter = { "kinds": [1] }, sync = "live", presence = { }, relaySource = [ $outbox ] }
+                }
+                """.trimIndent(),
+            )
+
+        assertEquals(listOf("corpus"), cfg.dynamicStreams().map { it.name })
+        assertEquals(listOf("authed"), cfg.presenceStreams().map { it.name })
     }
 
     @Test
     fun `the defaults are the ones the class documents`() {
         val presence =
-            requireNotNull(
-                stream("""a { filter = { "kinds": [30382] }, sync = "live", presence = { source = "scores" } }""").presence,
-            )
+            requireNotNull(stream("""a { filter = { "kinds": [1] }, sync = "live", presence = { }, relaySource = [ $outbox ] }""").presence)
 
-        assertEquals(PresenceSource.SCORES, presence.source)
         assertEquals(PresenceConfig.DEFAULT_POLL_SECONDS, presence.pollSeconds)
         assertEquals(PresenceConfig.DEFAULT_MAX_RELAYS_PER_READER, presence.maxRelaysPerReader)
     }
@@ -90,32 +123,54 @@ class PresenceStreamConfigTest {
     fun `the poll interval has a floor, so a typo cannot turn the feed into load`() {
         val presence =
             requireNotNull(
-                stream("""a { filter = { "kinds": [1] }, sync = "live", presence = { source = "outbox", pollSeconds = 0 } }""").presence,
+                stream(
+                    """a { filter = { "kinds": [1] }, sync = "live", presence = { pollSeconds = 0 }, relaySource = [ $outbox ] }""",
+                ).presence,
             )
 
         assertEquals(PresenceConfig.MIN_POLL_SECONDS, presence.pollSeconds)
     }
 
     @Test
-    fun `a presence block with no source is refused rather than guessed`() {
-        // The two sources ask completely different questions of completely
-        // different relays. A stream that guessed would mirror the wrong one
-        // perfectly quietly.
+    fun `presence with no relaySource is refused, and the message shows one`() {
+        // Presence scopes a source; it is not one. A stream with only the block
+        // names no tag to read a url out of.
         val e =
             assertFailsWith<IllegalArgumentException> {
                 parse("""a { filter = { "kinds": [1] }, sync = "live", presence = { } }""")
             }
-        assertTrue(e.message!!.contains("no `source`"))
+        assertTrue(e.message!!.contains("SCOPES a relaySource"))
+        assertTrue(e.message!!.contains("""authors = "pubkey""""), "the message carries a source that works")
     }
 
     @Test
-    fun `an unknown source names the ones that exist`() {
+    fun `the rotation's knobs are refused rather than left inert beside presence`() {
+        // A `refreshSeconds = 21600` copied down from the stream above would sit
+        // there meaning nothing while the operator believed they had set the
+        // period.
+        for (knob in PresenceConfig.ROTATION_ONLY) {
+            val e =
+                assertFailsWith<IllegalArgumentException>("$knob should be refused") {
+                    parse("""a { filter = { "kinds": [1] }, sync = "live", presence = { }, $knob = 60, relaySource = [ $outbox ] }""")
+                }
+            assertTrue(e.message!!.contains(knob), "the message names $knob")
+            assertTrue(e.message!!.contains("pollSeconds"), "…and says what paces it instead")
+        }
+    }
+
+    @Test
+    fun `a presence source may not pin its own authors`() {
+        // Presence SETS that, to the reader it is resolving. Left alone it would
+        // be silently overwritten — the stream would run, discover the
+        // right-looking relays, and resolve them for somebody else.
+        val pinned =
+            """{ select = [ { kind = 10002, tag = "r" } ], filter = { "kinds": [10002], "authors": ["${"a".repeat(64)}"] } }"""
         val e =
-            assertFailsWith<IllegalStateException> {
-                parse("""a { filter = { "kinds": [1] }, sync = "live", presence = { source = "friends" } }""")
+            assertFailsWith<IllegalArgumentException> {
+                parse("""a { filter = { "kinds": [1] }, sync = "live", presence = { }, relaySource = [ $pinned ] }""")
             }
-        assertTrue(e.message!!.contains("outbox"))
-        assertTrue(e.message!!.contains("scores"))
+
+        assertTrue(e.message!!.contains("presence sets that itself"))
     }
 
     @Test
@@ -125,7 +180,7 @@ class PresenceStreamConfigTest {
         // per poll. Not a slow version of the feature; a different one.
         val e =
             assertFailsWith<IllegalArgumentException> {
-                parse("""a { filter = { "kinds": [1] }, sync = "negentropy", presence = { source = "outbox" } }""")
+                parse("""a { filter = { "kinds": [1] }, sync = "negentropy", presence = { }, relaySource = [ $outbox ] }""")
             }
         assertTrue(e.message!!.contains("once per signed-in reader"))
     }
@@ -133,54 +188,17 @@ class PresenceStreamConfigTest {
     @Test
     fun `auto is refused too, because what it would decide is negentropy`() {
         assertFailsWith<IllegalArgumentException> {
-            parse("""a { filter = { "kinds": [1] }, presence = { source = "outbox" } }""")
+            parse("""a { filter = { "kinds": [1] }, presence = { }, relaySource = [ $outbox ] }""")
         }
     }
 
     @Test
-    fun `presence cannot share a stream with urls or a relaySource`() {
-        // `urls` and `relaySource` may share one name — each half gets its own
-        // pass — and that rests on both walking the same filter. A presence
-        // stream narrows per reader, so sharing a name would put two different
-        // questions under one band key.
-        val withUrls =
-            assertFailsWith<IllegalArgumentException> {
-                parse(
-                    """a { filter = { "kinds": [1] }, sync = "live", urls = ["wss://a.example"], presence = { source = "outbox" } }""",
-                )
-            }
-        assertTrue(withUrls.message!!.contains("per signed-in reader"))
-
-        assertFailsWith<IllegalArgumentException> {
-            parse(
-                """
-                a {
-                    filter = { "kinds": [1] }
-                    sync = "live"
-                    presence = { source = "outbox" }
-                    relaySource = [ { select = [ { kind = 10002, tag = "r" } ], filter = { "kinds": [10002] } } ]
-                }
-                """.trimIndent(),
-            )
-        }
-    }
-
-    @Test
-    fun `presence only pulls down`() {
+    fun `a relaySource still only pulls down, presence or not`() {
         val e =
             assertFailsWith<IllegalArgumentException> {
-                parse("""a { dir = "up", filter = { "kinds": [1] }, sync = "live", presence = { source = "outbox" } }""")
+                parse("""a { dir = "up", filter = { "kinds": [1] }, sync = "live", presence = { }, relaySource = [ $outbox ] }""")
             }
         assertTrue(e.message!!.contains("only pulls down"))
-    }
-
-    @Test
-    fun `a stream with no source of relays at all names all three`() {
-        val e = assertFailsWith<IllegalArgumentException> { parse("""a { filter = { "kinds": [1] } }""") }
-
-        assertTrue(e.message!!.contains("urls"))
-        assertTrue(e.message!!.contains("relaySource"))
-        assertTrue(e.message!!.contains("presence"))
     }
 
     // ---- the mode itself, which is usable without presence ------------------

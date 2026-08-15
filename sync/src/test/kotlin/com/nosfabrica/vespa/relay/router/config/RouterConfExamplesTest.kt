@@ -31,12 +31,71 @@ import kotlin.test.assertTrue
  */
 class RouterConfExamplesTest {
     /** Tests run from the module dir; the example sits at the repo root. */
-    private val example: RouterConfig =
-        RouterConfigLoader.parse(
-            requireNotNull(
-                listOf(File("../router.conf.example"), File("router.conf.example")).firstOrNull { it.isFile },
-            ) { "missing router.conf.example" }.readText(),
+    private val exampleText: String =
+        requireNotNull(
+            listOf(File("../router.conf.example"), File("router.conf.example")).firstOrNull { it.isFile },
+        ) { "missing router.conf.example" }.readText()
+
+    private val example: RouterConfig = RouterConfigLoader.parse(exampleText)
+
+    /**
+     * The example's `presence` streams, uncommented and parsed.
+     *
+     * They ship commented out because they need two settings that have no
+     * defaults, on two services — but a commented-out example is prose, and
+     * prose does not parse. This is what makes them documentation that is
+     * checked: an operator uncomments those exact lines, and a select the
+     * loader would refuse (a bound slot that moved, a knob presence rejects, a
+     * `marker` spelling) fails here rather than at their boot.
+     *
+     * Read from the first block's own name to the end of the file and stripped
+     * of the `    #` this file indents comments with — literal on purpose, so a
+     * block that stops being commented the same way fails loudly rather than
+     * being silently skipped.
+     */
+    private val presenceExample: RouterConfig =
+        exampleText
+            .lines()
+            .dropWhile { !it.contains("# $FIRST_PRESENCE_STREAM {") }
+            .filter { it.startsWith("    #") }
+            .map { it.removePrefix("    #").removePrefix(" ") }
+            .joinToString("\n")
+            .also { require(it.contains("$FIRST_PRESENCE_STREAM {")) { "the example no longer carries a commented `presence` stream" } }
+            .let { RouterConfigLoader.parse("streams {\n$it\n}") }
+
+    @Test
+    fun `the presence streams in the example parse when uncommented`() {
+        val presence = presenceExample.presenceStreams()
+
+        // As a SET: HOCON hands back its object keys in its own order, which
+        // is not the file's, and pinning that order would be pinning the
+        // library rather than the example.
+        assertEquals(setOf(FIRST_PRESENCE_STREAM, "authedScores"), presence.map { it.name }.toSet())
+        // Both halves of the outbox model, which is the pair the block is for:
+        // their own posts from their write relays, and mentions of them from
+        // their read relays. A binding that moved slot would still parse and
+        // would ask an inbox for the reader's own events, which returns nothing.
+        val content = presence.first { it.name == FIRST_PRESENCE_STREAM }
+        assertEquals(
+            listOf(mapOf("authors" to Slot.EventPubkey), mapOf("#p" to Slot.EventPubkey)),
+            content.dynamic!!.sources.map { it.selects.single().bindings },
         )
+        // It mirrors the same corpus the wide fan-out does, reached from the
+        // other end — so a kind list that drifted from contentViaOutbox's is a
+        // presence stream quietly holding less for the person who is waiting.
+        val wide = example.streams.first { it.name == "contentViaOutbox" }
+        assertEquals(wide.filter.kinds, content.filter.kinds, "the presence stream mirrors contentViaOutbox's kinds")
+        // …and the scores one is the assertions select, scoped to one reader.
+        val scores = presence.first { it.name == "authedScores" }
+        assertEquals(listOf(30382), scores.filter.kinds)
+        assertEquals(
+            listOf(10040),
+            scores.dynamic!!
+                .sources
+                .single()
+                .filter.kinds,
+        )
+    }
 
     @Test
     fun `a static stream seeds the store the dynamic scans read from`() {
@@ -221,5 +280,9 @@ class RouterConfExamplesTest {
             assertTrue(d.refreshSeconds > 0, "'${stream.name}' needs a refresh period")
             assertTrue(d.concurrency > 0, "'${stream.name}' needs a fan-out width")
         }
+    }
+
+    private companion object {
+        const val FIRST_PRESENCE_STREAM = "authedContentViaOutbox"
     }
 }

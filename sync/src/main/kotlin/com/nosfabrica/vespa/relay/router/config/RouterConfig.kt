@@ -82,8 +82,17 @@ data class RouterConfig(
     /** Every (stream, url) pair whose direction pushes our events up to the upstream. */
     fun upUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.UP)
 
-    /** The streams whose relay list is discovered from the store, not configured. */
-    fun dynamicStreams(): List<SyncStream> = streams.filter { it.dynamic != null }
+    /**
+     * The streams whose relay list is discovered from the store, not configured.
+     *
+     * A presence stream carries a `relaySource` too — that is the whole point,
+     * it is the same source language — so it is subtracted here explicitly. Both
+     * halves would otherwise run: `DynamicSync` would walk every stored relay
+     * list through selects written to be scoped to one reader, and the `authors`
+     * binding would fan out over the whole corpus rather than over the person
+     * who signed in.
+     */
+    fun dynamicStreams(): List<SyncStream> = streams.filter { it.dynamic != null && it.presence == null }
 
     /** The streams whose relay list is whoever is signed in to the served relay. */
     fun presenceStreams(): List<SyncStream> = streams.filter { it.presence != null }

@@ -876,33 +876,59 @@ Everything above mirrors a **corpus** on a timer: relays named in stored events,
 walked every `refreshSeconds`, with a rotation pacing the fan-out. A `presence`
 stream mirrors a **person**, on the event of them arriving.
 
+**It is not a third source language.** `presence { }` SCOPES a `relaySource` —
+the same selects, the same bindings, read by the same code. The one thing it
+changes is that each source's scan is narrowed to `authors = [one signed-in
+reader]` and re-run every `pollSeconds`, instead of walking the whole corpus
+every six hours.
+
 ```hocon
-authedOutbox {
+authedContentViaOutbox {
   dir      = "down"
   sync     = "fetch"
-  filter   = { "kinds": [1, 1111, 6, 7, 30023] }
-  presence = {
-    source             = "outbox"     # or "scores"
-    pollSeconds        = 30
-    concurrency        = 4
-    maxRelaysPerReader = 8
-    exclude            = [ "wss://this.relay.example/" ]
-  }
+  filter   = { "kinds": [1, 6, 7, 1111, 9735, 30023] }   # contentViaOutbox's own
+  presence = { pollSeconds = 30, concurrency = 4, maxRelaysPerReader = 8 }
+  exclude  = [ "wss://this.relay.example/" ]             # never mirror ourselves
+  maxRelaysPerList = 50
+  relaySource = [
+    # WHAT THEY WROTE, from the relays their own 10002 marks `write`
+    { select = [ { kind = 10002, tag = "r", marker = "write", authors = "pubkey" } ]
+      filter = { "kinds": [10002] } },
+    # WHAT MENTIONS THEM, from the relays that same 10002 marks `read`
+    { select = [ { kind = 10002, tag = "r", marker = "read", "#p" = "pubkey" } ]
+      filter = { "kinds": [10002] } }
+  ]
 }
 ```
 
-Every `pollSeconds` the stream reads who currently holds a verified NIP-42 login,
-resolves each of them to a set of `(relay, question)` pairs out of their own
-lists, and moves its open subscriptions to match — opening what is new, closing
-what no longer has a reason.
+`authors = "pubkey"` and `"#p" = "pubkey"` both bind the **scanned event's own
+author**, which under presence is always the reader. So the first source is
+their outbox asking for their own posts, and the second is their inbox asking
+for what other people wrote *to* them — replies, zaps, reactions, quotes. That
+is NIP-65's model aimed at one person, and it is why the narrowing is `#p` on
+the inbox side and not `authors`: a mention is written by somebody else, so
+`authors = [reader]` on an inbox returns nothing.
 
-Two sources, and they are two streams because they ask different relays
-different questions:
+An unmarked `r` tag is read **and** write, so a relay that is both gets both
+questions and two subscriptions — one relay, two asks, which is correct.
 
-| `source` | reads | asks each relay for |
-|---|---|---|
-| `outbox` | their kind **10002**, write side (quartz's NIP-65 marker rule — `write`, or unmarked, which means both) | the stream's kinds, `authors = [that reader]` |
-| `scores` | their kind **10040**'s `30382:rank` entries, each of which carries a service **key and a relay hint** | the stream's kinds, `authors = [that service]` |
+The NIP-85 source is the `assertions` stream's select, scoped the same way:
+
+```hocon
+authedScores {
+  dir      = "down"
+  sync     = "fetch"
+  filter   = { "kinds": [30382] }
+  presence = { concurrency = 2 }
+  relaySource = [
+    { select = [ { kind = 10040, tag = "30382:rank", relay = 2, authors = 1 } ]
+      filter = { "kinds": [10040] } }
+  ]
+}
+```
+
+The relay *and* the service key both come out of the reader's own tag, paired —
+each relay is asked for that one service and nothing else.
 
 ### Why this exists at all
 
@@ -913,7 +939,7 @@ search rather than a degraded one. `TrustNotice` tells them so on login and
 stream finds NIP-85 providers by scanning stored 10040s every six hours, so a
 reader whose provider nobody here has ever mirrored waits out that cycle, as one
 author among millions, with nothing in the rotation aware they are waiting. The
-`scores` source finds the provider of the person who is standing there.
+scores stream above finds the provider of the person who is standing there.
 
 ### What it does and does not walk
 
@@ -935,6 +961,22 @@ our whole side of the filter, and a presence filter is per reader — so it woul
 be one full store walk per signed-in person per poll. Not a slow version of this
 feature; a different and much worse one.
 
+### What a presence stream may not carry
+
+Refused at parse time rather than ignored, because a setting that is read,
+accepted and does nothing is how this repo has been bitten before:
+
+| refused | why |
+|---|---|
+| `refreshSeconds`, `recycleSeconds`, `concurrency`, `authorsPerLeg` | they pace the dynamic rotation. Presence is paced by `presence.pollSeconds` and asks each relay for one author, so these would sit there meaning nothing while the operator believed they had set the period |
+| a source filter with `authors` | presence SETS that, to the reader it is resolving. Left alone it would be silently overwritten — the stream would run, discover the right-looking relays, and resolve them for somebody else |
+| `presence` with no `relaySource` | presence scopes a source, it is not one. The error carries a working source rather than only naming the mistake |
+
+`exclude` and `maxRelaysPerList` stay where they are and do the same job, and a
+presence stream is **not** also run as a dynamic one — `DynamicSync` would walk
+every stored relay list through selects written for one reader, fanning the
+`authors` binding out over the whole corpus.
+
 ### The bounds, and the one failure that is silent
 
 - **Subscriptions are keyed by `(relay, question)`, not by reader.** Four hundred
@@ -942,20 +984,21 @@ feature; a different and much worse one.
   readers naming the same trust provider share its subscription. Keying by reader
   is the obvious shape and multiplies REQs by readership on exactly the relays
   everybody names.
-- **`maxRelaysPerReader` is not decorative.** A real NIP-65 outbox is single
+- **`maxRelaysPerReader` is not decorative**, and is distinct from
+  `maxRelaysPerList`: that one refuses an implausible *event* whole, this bounds
+  what one *person* costs across every source. A real NIP-65 outbox is single
   digits; measured on this corpus, 148 pubkeys publish a kind 10002 of 100–10,591
-  entries. Without the cap, one of them signing in dials ten thousand relays.
-  `exclude` is applied first, so excluding a url gives the reader another slot
-  rather than spending one — put this relay's own url there.
+  entries. `exclude` is applied first, so excluding a url gives the reader
+  another slot rather than spending one — put this relay's own url there.
 - **The relay's feed has a cap of its own**, and reaching it is the one failure
   here that produces no error anywhere: those readers *are* signed in and nothing
   is mirroring for them, while every stream reads healthy. It is published as
-  `omittedReaders` on the `presence` processor row and drawn loud on the coverage
+  `omittedReaders` on the `presence` processor row, drawn loud on the coverage
   card, and the sync log says it on every poll.
 - **Targets are re-resolved for readers already here**, not only for arrivals. A
-  10002 and a 10040 are replaceable events that change while their author is
-  online — and the reader most likely to edit theirs is the one who just read a
-  notice saying their trust chain is not mirrored.
+  10002 is a replaceable event that changes while its author is online — and the
+  reader most likely to edit theirs is the one who just read a notice saying
+  their trust chain is not mirrored.
 
 ### Wiring the feed
 
