@@ -82,102 +82,98 @@ app = "0.1.0"
 quartz = "1866007e99"
 # The event store this relay serves, from JitPack (vespa-eventstore @ commit).
 #
-# 13326d2ef2 = store main through PR #78. The whole range is four commits, two
-# of them merges: `Document the live staging system agents can pull data from`
-# (that repo's own AGENTS.md, pointed at the same staging box ours now names)
-# and `Stop the query container dying on direct-buffer exhaustion`. Read off
-# `git log --oneline 5e44f1bde8..` and `git diff --stat`, not the titles.
+# e3be81564d = store main through PR #80. Ten commits, two of them merges, and
+# unlike the bump it replaces this one MOVES KOTLIN AND THE SCHEMA: `event.sd`
+# (+139 lines), FuzzyWordGroup, SchemaFallbacks, EventQuery, EventYql,
+# SearchFields, NearText, NostrSemanticsStore. Read off `git log --oneline
+# 13326d2ef2..` and `git diff --stat`, not the titles.
 #
-# NO KOTLIN MAIN SOURCE MOVED AT ALL — not `IEventStore`, not the engine, not
-# anything. The entire diff is `engine/app/services.xml`, two docs, and two
-# tests (`ContainerJvmIT`, `VespaAppTest`). Which makes this the easiest bump
-# here to under-read as a no-op, because what moved is the bundled APPLICATION
-# PACKAGE, and both processes POST that package to the config server on EVERY
-# boot (`deployBundledSchema`, `AUTO_DEPLOY` default true). A store release with
-# no API surface whatsoever still changes this deployment the next time either
-# process starts.
+# WHAT IT ADDS is `search_text_gram` — the BODY's trigram net, and the only
+# partial-word reach a note's content or an article's prose has. It is
+# PHRASE-matched rather than the AND-of-trigrams the schema's three other gram
+# nets use, which is what earns it a place on the 550-point body rung: measured
+# 0.0% false positives at every body length, against up to 4.0% for the AND form
+# on a 2000-word body (that form matched "vitor" against "Take a vitamin and open
+# the editor" — `vit` from vitamin, `ito`/`tor` from editor). Two boundaries
+# worth knowing before promising anyone partial-word search: the floor is
+# MIN_PHRASE_GRAMS = 2 trigrams, so a query word under 4 characters gets no body
+# reach at all — which leaves most two-character CJK vocabulary unreachable — and
+# it does not join compounds ("seedphrase" does not find "seed phrase").
 #
-# What it adds is one line on the stateless container — the JVM serving :8080,
-# which is every query this relay answers AND every write the router makes:
+# IT IS NOT FREE, and every search this relay serves pays it: +18.3%
+# (+2.11 ms/query) measured on 26k real events pulled from search-staging. The
+# store's own caveat travels with that number — read the ABSOLUTE 2.11 ms, not
+# the percentage, because at 26k documents fixed per-query overhead still
+# dominates and the ratio will not hold at this relay's corpus size.
 #
-#   <jvm options="-XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144" />
+# NOTHING HERE NEEDED A SOURCE CHANGE. `EventQuery` gains `bodyGramMatching`
+# with a default and no interface in the range changed at all, so the four sites
+# that construct one (SyncMain, IngestDedupTest, IngestCostBench x2, all with
+# named arguments) compile untouched. It is not a knob for us either: the client
+# flips it off only as a compatibility demotion against a schema that predates
+# the column.
 #
-# That container died 8 times in 18 minutes on `Cannot reserve … bytes of direct
-# buffer memory`. The measurement is the store's, but the box is OURS —
-# search-staging.brainstorm.world, 211,861,351 events when `/stats.json` was
-# asked on 2026-08-14 — and so is the workload it names: ~500 req/s of the
-# store's own dedup, guard and supersession reads, which on that box is this
-# repo's router ingesting, not clients searching. Vespa runs
-# that container with `-XX:+ExitOnOutOfMemoryError` and derives its direct-memory
-# ceiling from the heap (208 MiB at Vespa's 1536m default), so ONE thread failing
-# to reserve a buffer takes :8080 down for reads and writes alike; it exits 1, so
-# a pod stays "healthy" while the sentinel backs off 2s → 126s.
+# THE CONSEQUENCE THAT IS OURS IS A MIGRATION, and this is the second bump
+# running where DEPLOYING IS NOT APPLYING — a different reason from the last
+# one, and a different operator action. `search_text_gram` is DERIVED by Vespa at
+# INDEX time (`indexing: input search_text | normalize | split "\s+" | index`),
+# not fed, so `deployBundledSchema` adds the column and leaves it EMPTY on every
+# event already stored while `search_text` keeps serving. No error, no 400, no
+# blip — just no body partial-word reach for the entire back catalogue. Vespa
+# says so itself in the deploy response: "Non-document field 'search_text_gram'
+# added; this may be populated by reindexing".
 #
-# The saturation is CACHING, not demand: jrt reads into HEAP buffers, so the JDK
-# borrows a temporary DIRECT buffer per socket read and — with
-# `jdk.nio.maxCachedBufferSize` unset — retains it per thread at its high-water
-# size for the life of the thread. Hence two flags rather than a bigger ceiling,
-# which would only move the wall. The full argument is in the store's
-# services.xml and its docs/scaling.md; what matters HERE is that neither flag is
-# ours to keep, tune or drop — we deploy whatever package the pinned store
-# bundles, and nothing in this repo parses or rewrites services.xml.
+# AND `REINDEX_FTS_ON_START` IS NOT THE REPAIR — which is the trap, because it is
+# precisely what this repo's own docs have pointed an operator at after a store
+# upgrade. The direction is INVERTED from the near tier: those columns are FED,
+# so only a re-put can produce them and FtsReindex is the tool; this one is
+# DERIVED, so the re-feed's drift check sees identical search columns and
+# identical near arrays, re-puts NOTHING, and the walk reports success having
+# repaired nothing. What repairs it is a Vespa REINDEX, or a genuine full
+# re-feed. The runnable procedure is docs/migrations.md, written against a real
+# Vespa 8 rather than transcribed: it records the `configChangeActions.reindex`
+# the deploy answers with, the silent gap (whole-word 1 hit, partial-word 0 on
+# the same corpus), and the step that is easy to miss — `POST /reindex` only
+# QUEUES the job, which sat `pending` for over ten minutes here until a redeploy
+# dispatched it and took the same query to 1 hit in ~60s.
 #
-# ONE CONSEQUENCE IS OURS: DEPLOYING THIS DOES NOT APPLY IT. `<jvm options>` is
-# a restart-required change, and Vespa asks rather than acts. Measured here
-# against a real Vespa, deploying the 5e44f1bde8 package and then this one onto
-# the same tenant: prepareandactivate returned `activated: true` with
-# `configChangeActions.restart` naming `default/container.0` — "Startup command
-# for 'container' has changed" — and then left the process alone. Ninety seconds
-# later the container JVM's pid still predated the activation and still ran
-# `-XX:MaxDirectMemorySize=208m` with no cache cap, while :8080 answered 200 for
-# every poll of that window.
+# ONE FIX ARRIVES UNASKED ON EVERY SEARCH WE SERVE. The read-side schema fallback
+# used to flip `nearFieldsAvailable` on any 400 whose text merely CONTAINED a
+# near-field name — and Vespa echoes the query back in some 400s, so a single
+# malformed query could end prefix and typo recall for the LIFE of the client
+# process. It is now anchored on the parser's literal "Field 'x' does not exist".
 #
-# So nothing blips and nothing improves. `deployBundledSchema` cannot tell the
-# difference either — `awaitServing` asks whether an application is live, not
-# whether the live one is the activated one — which means a relay that boots,
-# deploys and reports success is still running the JVM that died 8 times in 18
-# minutes. Restarting the Vespa service is what applies the fix (`docker compose
-# restart vespa`), and on this repo's compose that costs a transaction-log replay
-# on the content node, so it is an operator's call and not a deploy's.
+# THE GATE IS GREEN AT THIS COMMIT — the first time it has been, in this file's
+# record. Ten IT classes, 11 tests, ~11.5 min, `skipped="0"` with no failures and
+# no errors, read off build/test-results/test/*.xml rather than inferred from a
+# green line. Two things resolved since the last pin. `ContainerJvmIT` — red
+# there, and diagnosed there as the store's unbounded `(\S+)` capture swallowing
+# a closing quote — passes here in 57s, fixed upstream by a394d8b exactly as that
+# note predicted, so that concern is closed rather than carried. And the store found
+# its integration suite had been SILENTLY SKIPPING in its own CI: testcontainers
+# offers Docker Remote API 1.32, Engine 29 refuses anything below 1.40,
+# `dockerAvailable()` answers false and `assumeTrue` turns the whole suite green
+# having run nothing. That never applied to the readings recorded in this file —
+# AGENTS.md starts dockerd with `DOCKER_MIN_API_VERSION=1.24`, which lowers the
+# ENGINE's floor instead, so the gate did run here. The store now pins
+# `api.version=1.41` on the test task, so it runs either way.
 #
-# THE STORE'S GATE IS RED AT THIS COMMIT, and the bump is taken anyway. Nine
-# tests, 10m58s, `skipped="0"` read off build/test-results/test/*.xml rather than
-# inferred from a green line; eight pass, and the one that fails is
-# `ContainerJvmIT` — the test this very range added. Its failure message prints
-# the command line it judged:
-#
-#   … -XX:MaxDirectMemorySize=208m … -XX:MaxDirectMemorySize=512m -Djdk.nio.maxCachedBufferSize=262144
-#
-# That IS the fix, in the running container JVM, ours last where HotSpot honours
-# it. What the assertion actually compares against is `declared(CACHE_CAP)`,
-# which greps the value out of the shipped services.xml with `(\S+)` — and a
-# quote is not whitespace, so for the LAST flag inside `options="…"` it captures
-# `262144"` and then hunts a command line for a string carrying a quote that no
-# command line can contain. `-XX:MaxDirectMemorySize` escapes only because a
-# space follows it. Reproduced directly against services.xml, and re-running that
-# same IT with the capture bounded (`[^\s"]+`) turns it green in place, so the
-# claim it was written to make holds and its wiring is what is broken. The bug is
-# the store's to fix — this repo can fetch that repo but not push to it — and
-# until it does, a red gate here is expected on THIS test and on nothing else.
-# `InMemoryEventIndex` has no code path any of this touches, so nothing in this
-# repo could have judged it either way.
-#
-# DIRECTION: 5e44f1bde8 is a strict ancestor of this (`git merge-base
+# DIRECTION: 13326d2ef2 is a strict ancestor of this (`git merge-base
 # --is-ancestor`, not the dates), and the store's own quartz is UNCHANGED at
 # 1866007e99 — the hash pinned above. One pin moves again.
 #
-# LEXICOGRAPHIC: '1332…' < '5e44…' ('1' < '5'), so this sorts BELOW the pin it
-# replaces — the dangerous direction, one bump after a safe one, which is the
-# coin-flip the note at the top of this file describes and not a trend either
-# way. Only `:common` declares the store and nothing else on the graph brings it
-# in, so there is no conflict here for ordering to settle — and ordering was
-# never evidence the pin took. The resolved graph is, per module:
+# LEXICOGRAPHIC: 'e3be…' > '1332…' ('e' > '1'), so this sorts ABOVE the pin it
+# replaces — the safe direction, after two dangerous ones. That is the coin at
+# the top of this file landing the other way, not a trend; it says nothing about
+# the next bump, and it was never evidence the pin took. Only `:common` declares
+# the store and nothing else on the graph brings it in, so there is no conflict
+# here for ordering to settle. The resolved graph is the proof, per module:
 #   ./gradlew :relay:dependencies --configuration runtimeClasspath | grep -E "quartz|eventstore"
 #
 # Bumping this pin is NOT done until the store's own integration gate has run
 # against the commit — see AGENTS.md. `InMemoryEventIndex` cannot see a
 # Vespa-only regression.
-vespaEventStore = "13326d2ef2"
+vespaEventStore = "e3be81564d"
 coroutines = "1.11.0"
 serialization = "1.11.0"
 ktor = "3.5.1"

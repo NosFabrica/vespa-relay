@@ -740,8 +740,10 @@ a fixed set, and it ships in vespa-eventstore, so every new chart would cost a
 store release plus a JitPack pin bump. The duplication is the WHERE clause and
 nothing else.
 
-`docs/configuration.md` documents every environment variable and
-`docs/router.md` the router config format. They are the reference; this file is
+`docs/configuration.md` documents every environment variable, `docs/router.md`
+the router config format, and `docs/migrations.md` the schema changes a store
+bump can need on a cluster that already holds events — the ones a deploy
+reports success for and only half applies. They are the reference; this file is
 the orientation.
 
 ## The router, in one pass
@@ -2738,7 +2740,13 @@ statement about someone else's server.
   - Docker 29 refuses API versions below 1.40; testcontainers 1.20.4 (what the
     store's ITs use) speaks 1.32 and gets `400 client version 1.32 is too old`.
     Every IT then hits its own `assumeTrue(dockerAvailable())` and aborts.
-    Start the daemon as `DOCKER_MIN_API_VERSION=1.24 dockerd`.
+    Start the daemon as `DOCKER_MIN_API_VERSION=1.24 dockerd`. The store hit this
+    in its own CI and fixed it from the other end in `00eb3f2`, which is in the
+    range pinned as of store `e3be81564d` — it now pins
+    `systemProperty("api.version", "1.41")` on the test task, above Engine 29's
+    floor and supported back to 20.10 — so from that commit the gate runs whether
+    or not the daemon's floor was lowered. Keep starting the daemon this way
+    anyway: it costs nothing and it is what makes an OLDER store pin testable.
   - The Gradle daemon inherits the environment it STARTED with, so env vars set
     on the `./gradlew` command line never reach the forked test JVM if a daemon
     from before is reused. Use `--no-daemon` when the env is the point.
@@ -2767,6 +2775,27 @@ statement about someone else's server.
   an application is live, not whether the live one is the activated one. Read the
   deploy's response body, not its status code, and apply the change with a
   deliberate `docker compose restart vespa`.
+- **A deploy adds a derived column; it does not populate it — and
+  `REINDEX_FTS_ON_START` does not either.** The sibling of the trap above, one
+  store bump later, and the reason to check which KIND of field a store release
+  adds. A *fed* field (the near tier) is written by a put, so `FtsReindex` is the
+  repair. A *derived* one — Vespa builds it at index time from another field, as
+  `search_text_gram` does — is left EMPTY on every already-stored event by the
+  deploy that adds it, and the re-feed walk skips the whole corpus: the store's
+  drift check compares search columns and near arrays, finds them identical, and
+  re-puts nothing, so the run logs "reindex complete" having repaired nothing.
+  Nothing errors and whole-word search keeps working, so only the missing feature
+  shows it. Vespa names the column in the deploy response, under
+  `configChangeActions.reindex` ("Non-document field 'search_text_gram' added;
+  this may be populated by reindexing") — a body nothing here reads, so a deploy
+  that wants a migration and one that does not look identical from the log. The
+  repair is a Vespa reindex or a genuine full re-feed, and **`POST /reindex` on
+  its own does nothing**: measured on a real Vespa 8, the job sat `pending` for
+  over ten minutes with the column still empty, and a REDEPLOY of the identical
+  package is what dispatched it (`pending → successful` in ~60s, the partial-word
+  query going 0 → 1 hit on the same corpus). Poll `GET …/reindexing` for
+  `state`, and deploy again if it stays `pending`. Full procedure, with the real
+  endpoint paths: [docs/migrations.md](docs/migrations.md).
 - **Two KDoc blocks in a row** fail ktlint (`standard:kdoc`, "dangling toplevel
   KDoc"). Each doc needs its own declaration.
 - **Vespa's `time.date()` does not zero-pad.** Verified on 8.733: two documents
