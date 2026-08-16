@@ -501,18 +501,23 @@ class SyncEngine(
     private val visitPool =
         VisitPool(
             client = client,
-            store = store,
             bands = bands,
             ingest = ingest,
             pager = pager,
             healer = healer,
             retraction = retraction,
             sockets = sockets,
-            tor = tor,
             scope = scope,
-            monitorAuthor = signer?.pubKey,
-            foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
-            keepBands = pinnedUrls,
+            rosterBuilder =
+                RosterBuilder(
+                    store = store,
+                    streams = visitStreams,
+                    monitorAuthor = signer?.pubKey,
+                    bands = bands,
+                    foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
+                    keepBands = pinnedUrls,
+                    tor = tor,
+                ),
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),
             phases = phases,

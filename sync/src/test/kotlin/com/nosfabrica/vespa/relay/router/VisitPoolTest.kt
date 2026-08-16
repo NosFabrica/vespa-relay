@@ -206,7 +206,7 @@ class VisitPoolTest {
         val p1 = "a".repeat(64)
         val p2 = "b".repeat(64)
         val paired =
-            VisitPool.asksOf(
+            RosterBuilder.asksOf(
                 base,
                 DiscoveredRelay(url, narrow = mapOf("authors" to setOf(p2, p1), "kinds" to setOf("30382"))),
             )
@@ -214,7 +214,7 @@ class VisitPoolTest {
         assertEquals(listOf(listOf(p1), listOf(p2)), paired.map { it.authors }, "sorted, so the band's serialized key is stable")
         assertTrue(paired.all { it.kinds == listOf(30382) }, "the other narrow keys ride along in each split")
         // A select that binds nothing keeps one ask: the stream's own filter.
-        val unbound = VisitPool.asksOf(base, DiscoveredRelay(url))
+        val unbound = RosterBuilder.asksOf(base, DiscoveredRelay(url))
         assertEquals(listOf(base), unbound)
     }
 
@@ -245,13 +245,13 @@ class VisitPoolTest {
         fun ask(
             stream: com.nosfabrica.vespa.relay.router.config.SyncStream,
             vararg authors: String,
-        ) = VisitPool.Ask(stream, Filter(kinds = listOf(30382), authors = authors.toList().ifEmpty { null }))
+        ) = RosterBuilder.Ask(stream, Filter(kinds = listOf(30382), authors = authors.toList().ifEmpty { null }))
 
         val p1 = "a".repeat(64)
         val p2 = "b".repeat(64)
-        assertEquals(VisitPool.wants(listOf(ask(a, p1))), VisitPool.wants(listOf(ask(a, p1))), "same shape, fresh instances — not news")
-        assertTrue(VisitPool.wants(listOf(ask(a, p1))) != VisitPool.wants(listOf(ask(a, p1), ask(a, p2))), "a new bound author is news")
-        assertTrue(VisitPool.wants(listOf(ask(a))) != VisitPool.wants(listOf(ask(b))), "the stream asking is part of the identity")
+        assertEquals(RosterBuilder.wants(listOf(ask(a, p1))), RosterBuilder.wants(listOf(ask(a, p1))), "same shape, fresh instances — not news")
+        assertTrue(RosterBuilder.wants(listOf(ask(a, p1))) != RosterBuilder.wants(listOf(ask(a, p1), ask(a, p2))), "a new bound author is news")
+        assertTrue(RosterBuilder.wants(listOf(ask(a))) != RosterBuilder.wants(listOf(ask(b))), "the stream asking is part of the identity")
     }
 
     @Test

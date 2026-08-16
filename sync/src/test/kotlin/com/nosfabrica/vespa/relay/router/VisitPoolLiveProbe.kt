@@ -141,11 +141,35 @@ class VisitPoolLiveProbe {
                     )
                 ingest.start()
                 val refused = RefusedIds.disabled()
+                val probeStreams =
+                    listOf(
+                        SyncStream(
+                            name = "liveProbe",
+                            dir = SyncDirection.DOWN,
+                            filter = Filter(kinds = listOf(1), limit = 50),
+                            urls = emptyList(),
+                            trusted = false,
+                            dynamic =
+                                RelayDiscoveryConfig(
+                                    sources =
+                                        listOf(
+                                            RelaySource(
+                                                selects = emptyList(),
+                                                filter = Filter(kinds = listOf(30166), tags = mapOf("s" to listOf("syncable"))),
+                                                verdicts = VerdictSource(3600),
+                                            ),
+                                        ),
+                                    refreshSeconds = 3600,
+                                    exclude = RelayExcludes.NONE,
+                                ),
+                            sync = SyncMode.FETCH,
+                        ),
+                    )
+                val bands = SyncBands(null)
                 val pool =
                     VisitPool(
                         client = client,
-                        store = store,
-                        bands = SyncBands(null),
+                        bands = bands,
                         ingest = ingest,
                         pager =
                             NegentropyPager(
@@ -157,33 +181,15 @@ class VisitPoolLiveProbe {
                         healer =
                             Healer(client, store, HealQueue(), WriteCapability(), refused, null),
                         sockets = RelaySockets(client, emptySet()),
-                        tor = null,
                         scope = scope,
-                        monitorAuthor = signer.pubKey,
-                        streams =
-                            listOf(
-                                SyncStream(
-                                    name = "liveProbe",
-                                    dir = SyncDirection.DOWN,
-                                    filter = Filter(kinds = listOf(1), limit = 50),
-                                    urls = emptyList(),
-                                    trusted = false,
-                                    dynamic =
-                                        RelayDiscoveryConfig(
-                                            sources =
-                                                listOf(
-                                                    RelaySource(
-                                                        selects = emptyList(),
-                                                        filter = Filter(kinds = listOf(30166), tags = mapOf("s" to listOf("syncable"))),
-                                                        verdicts = VerdictSource(3600),
-                                                    ),
-                                                ),
-                                            refreshSeconds = 3600,
-                                            exclude = RelayExcludes.NONE,
-                                        ),
-                                    sync = SyncMode.FETCH,
-                                ),
+                        rosterBuilder =
+                            RosterBuilder(
+                                store = store,
+                                streams = probeStreams,
+                                monitorAuthor = signer.pubKey,
+                                bands = bands,
                             ),
+                        streams = probeStreams,
                         progress = processors.of("visits"),
                         visitConcurrency = 4,
                         tailBudget = 3,
