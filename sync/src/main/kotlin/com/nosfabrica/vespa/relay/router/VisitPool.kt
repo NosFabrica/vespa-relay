@@ -40,7 +40,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
-import kotlinx.coroutines.channels.Channel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
@@ -156,20 +155,8 @@ internal class VisitPool(
 
     private val roster: Map<NormalizedRelayUrl, List<RosterBuilder.Ask>> get() = current.asks
 
-    private val queue = Channel<NormalizedRelayUrl>(Channel.UNLIMITED)
-    private val queued = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-    private val inFlight = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
-    /** Urls whose requeue arrived while their visit was running — see [workerLoop]. */
-    private val pendingVisit = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
-
-    /**
-     * Urls with a revisit timer already parked. Without it, an out-of-band
-     * requeue (an eviction, a changed ask set) produced a second visit whose
-     * own timer then ran BESIDE the first — two self-perpetuating chains
-     * revisiting one relay at double cadence.
-     */
-    private val revisitArmed = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+    /** The rotation's bookkeeping — offers, collisions, revisit timers. See [VisitQueue]. */
+    private val queue = VisitQueue(scope)
 
     /**
      * One held live subscription: the id to unsubscribe, and [wants] of the
@@ -310,7 +297,7 @@ internal class VisitPool(
      * drop: a 600-tail boot storm paid ~45M entry visits on the visit
      * workers for numbers nobody reads faster than the report tick.
      */
-    private fun publishPhases() {
+    private fun phasesChanged() {
         phasesDirty.set(true)
     }
 
@@ -350,8 +337,8 @@ internal class VisitPool(
             // adjacent rows is the exact bug the vocabulary test exists for.
             listOf(
                 Processors.Count("roster", roster.size.toLong()),
-                Processors.Count("awaitingVisit", queued.size.toLong()),
-                Processors.Count("visiting", inFlight.size.toLong()),
+                Processors.Count("awaitingVisit", queue.waiting.toLong()),
+                Processors.Count("visiting", queue.visiting.toLong()),
                 Processors.Count("tails", tails.size.toLong()),
                 Processors.Count("visitsRun", visits.get()),
                 // The gauge beside the odometer: audits RUNNING against
@@ -380,7 +367,20 @@ internal class VisitPool(
             }
         }
         repeat(visitConcurrency) {
-            scope.launch { workerLoop() }
+            scope.launch {
+                queue.work(
+                    stillWanted = { current.asks.containsKey(it) },
+                    // Read at finish time: the delay depends on what the
+                    // visit just delivered and whether a tail now carries
+                    // this relay's present. Read, never getOrPut — a roster
+                    // drop prunes the yield, and a finishing visit racing
+                    // that prune must not resurrect the entry.
+                    revisitDelayMs = { url ->
+                        revisitDelayMs(yields[url]?.current(System.currentTimeMillis()) ?: 0.0, tails.containsKey(url))
+                    },
+                    visit = ::guardedVisit,
+                )
+            }
         }
     }
 
@@ -445,10 +445,7 @@ internal class VisitPool(
             // found a new provider pairing on a relay another stream holds).
             // Without the second half, that new ask would wait out the TAILED
             // revisit base for its first catch-up — and its retraction audit.
-            if (previousWants[url] != built.wants[url] && queued.add(url)) {
-                queue.trySend(url)
-                enqueued++
-            }
+            if (previousWants[url] != built.wants[url] && queue.offer(url)) enqueued++
         }
         if (enqueued > 0 || previous.size != next.size) {
             System.err.println(
@@ -456,56 +453,18 @@ internal class VisitPool(
                     (if (enqueued > 0) ", $enqueued newly queued" else ""),
             )
         }
-        publishPhases()
+        phasesChanged()
     }
 
-    private suspend fun workerLoop() {
-        for (url in queue) {
-            queued.remove(url)
-            if (!inFlight.add(url)) {
-                // Someone is mid-visit on this url — usually the rebuild
-                // requeueing a changed ask set. Dropping the entry here
-                // would swallow that promptness promise, so it is parked and
-                // the visit's own worker requeues it the moment it finishes.
-                pendingVisit.add(url)
-                continue
-            }
-            try {
-                if (roster.containsKey(url)) visit(url)
-            } catch (e: CancellationException) {
-                throw e
-            } catch (e: Exception) {
-                aborted.incrementAndGet()
-                System.err.println("router: visit ${url.url} failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
-            } finally {
-                inFlight.remove(url)
-            }
-            if (pendingVisit.remove(url)) {
-                // A requeue arrived mid-visit: back on the queue now, and no
-                // revisit timer — the prompt visit schedules its own.
-                if (queued.add(url)) queue.trySend(url)
-            } else {
-                scheduleRevisit(url)
-            }
-        }
-    }
-
-    /**
-     * Back on the queue, if the roster still wants it — on a delay the relay's
-     * own recent yield sets. A tailed relay's revisit only serves the audit
-     * clock and dropped-tail recovery, so its base is long; an untailed one
-     * carries its whole freshness on this cadence, so its base is short; and
-     * within either, more content lately means sooner ([revisitDelayMs]).
-     */
-    private fun scheduleRevisit(url: NormalizedRelayUrl) {
-        if (!revisitArmed.add(url)) return
-        // Read, never getOrPut: a roster drop prunes this url's yield, and a
-        // finishing visit racing that prune must not resurrect the entry.
-        val score = yields[url]?.current(System.currentTimeMillis()) ?: 0.0
-        scope.launch {
-            delay(revisitDelayMs(score, tails.containsKey(url)))
-            revisitArmed.remove(url)
-            if (roster.containsKey(url) && queued.add(url)) queue.trySend(url)
+    /** One visit, its failures counted and said — the shape [VisitQueue.work] expects. */
+    private suspend fun guardedVisit(url: NormalizedRelayUrl) {
+        try {
+            visit(url)
+        } catch (e: CancellationException) {
+            throw e
+        } catch (e: Exception) {
+            aborted.incrementAndGet()
+            System.err.println("router: visit ${url.url} failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
         }
     }
 
@@ -731,7 +690,10 @@ internal class VisitPool(
         val snapshot = current
         val wanting = snapshot.asks[url].orEmpty()
         if (wanting.isEmpty()) return
-        val asked = snapshot.wants[url] ?: RosterBuilder.wants(wanting)
+        // The rebuild fills `wants` for every url it puts in `asks`, so a
+        // missing entry cannot happen while `wanting` is non-empty; said as
+        // a return rather than carrying a live-looking recompute path.
+        val asked = snapshot.wants[url] ?: return
         val sitting = tails[url]
         if (sitting != null) {
             if (sitting.asked == asked) return
@@ -753,9 +715,7 @@ internal class VisitPool(
             val candidate = yieldOf(url).current(nowMs)
             val weakest = tails.keys.minByOrNull { yieldOf(it).current(nowMs) } ?: return
             if (yieldOf(weakest).current(nowMs) >= candidate) return
-            tailsEvicted.incrementAndGet()
-            dropTail(weakest)
-            if (roster.containsKey(weakest) && queued.add(weakest)) queue.trySend(weakest)
+            evictWeakestTail(sparing = url)
         }
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
         // CLAIM AND SUBSCRIBE BEFORE PUBLISHING: a concurrent dropTail — a
@@ -830,7 +790,7 @@ internal class VisitPool(
             return
         }
         trimTails(keep = url)
-        publishPhases()
+        phasesChanged()
     }
 
     /**
@@ -841,20 +801,32 @@ internal class VisitPool(
      * way in.
      */
     private fun trimTails(keep: NormalizedRelayUrl) {
-        val nowMs = System.currentTimeMillis()
         while (tails.size > tailBudget) {
-            val weakest = tails.keys.filter { it != keep }.minByOrNull { yieldOf(it).current(nowMs) } ?: return
-            tailsEvicted.incrementAndGet()
-            dropTail(weakest)
-            if (roster.containsKey(weakest) && queued.add(weakest)) queue.trySend(weakest)
+            if (!evictWeakestTail(sparing = keep)) return
         }
+    }
+
+    /**
+     * Drop the weakest sitting tail — sparing [sparing], the candidate that
+     * just earned its way in — and requeue it promptly, so its freshness gap
+     * is one queue wait and not a timer. False when there is nothing left to
+     * evict. The one spelling of eviction, for the earn check and the
+     * overshoot trim both.
+     */
+    private fun evictWeakestTail(sparing: NormalizedRelayUrl?): Boolean {
+        val nowMs = System.currentTimeMillis()
+        val weakest = tails.keys.filter { it != sparing }.minByOrNull { yieldOf(it).current(nowMs) } ?: return false
+        tailsEvicted.incrementAndGet()
+        dropTail(weakest)
+        if (roster.containsKey(weakest)) queue.offer(weakest)
+        return true
     }
 
     private fun dropTail(url: NormalizedRelayUrl) {
         val tail = tails.remove(url) ?: return
         runCatching { client.unsubscribe(tail.subId) }
         sockets.release(url)
-        publishPhases()
+        phasesChanged()
     }
 
     companion object {
