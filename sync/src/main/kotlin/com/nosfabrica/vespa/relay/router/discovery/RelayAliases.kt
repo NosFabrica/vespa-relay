@@ -114,10 +114,9 @@ class RelayAliases(
      */
     private val canonicals = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
-    /** The url to dial in place of this one — itself, unless it was folded. */
+    /** The url to dial in place of this one. */
     fun canonicalOf(url: NormalizedRelayUrl): NormalizedRelayUrl = folded[url] ?: url
 
-    /** How many urls are currently folded away. */
     fun size(): Int = folded.size
 
     /** Every verdict held, for the monitor to publish and a restart to reload. */

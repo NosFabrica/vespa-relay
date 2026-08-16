@@ -118,7 +118,6 @@ class RelayConsistency(
     /** The urls of [candidates] this component refuses, in the order given. */
     fun unusable(candidates: Collection<NormalizedRelayUrl>): List<NormalizedRelayUrl> = candidates.filter { !usable(it) }
 
-    /** How many urls are currently refused. */
     fun refusedCount(): Int = inconsistent.size
 
     /**

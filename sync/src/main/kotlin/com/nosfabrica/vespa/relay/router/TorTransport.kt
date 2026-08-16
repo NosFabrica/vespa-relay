@@ -215,7 +215,6 @@ internal class TorTransport(
             ).connectTimeout(Duration.ofSeconds(settings.connectTimeoutSec))
             .build()
 
-    /** Does this url go through Tor? */
     fun routes(url: NormalizedRelayUrl): Boolean = settings.routeAll || isOnion(url)
 
     /** The client to dial [url] with — the whole point of the per-url builder. */

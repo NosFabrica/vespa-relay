@@ -55,10 +55,8 @@ internal class VisitQueue(
     private val parked = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
     private val armed = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
-    /** Urls waiting for a worker. */
     val waiting: Int get() = queued.size
 
-    /** Urls a worker is on right now. */
     val visiting: Int get() = inFlight.size
 
     /** Queue [url] now. False when it is already waiting (running is fine). */

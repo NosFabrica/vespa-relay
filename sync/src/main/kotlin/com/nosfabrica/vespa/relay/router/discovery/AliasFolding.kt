@@ -177,7 +177,6 @@ class AliasFolding(
      */
     suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): Collapsed {
         if (candidates.size < 2) return Collapsed(candidates, emptyMap(), candidates)
-        // What a previous pass — this boot or another — already measured.
         adopt(candidates)
         return collapse(candidates)
     }
@@ -256,7 +255,6 @@ class AliasFolding(
         if (candidates.size < 2) return 0
         val startedMs = System.currentTimeMillis()
 
-        // What a previous pass — this boot or another — already measured.
         adopt(candidates)
 
         // Everything unresolved, minus the hosts a recent pass already dialled

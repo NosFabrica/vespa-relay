@@ -353,8 +353,6 @@ internal class StaticBackfill(
             return 0
         }
         var downloaded = 0
-        // Invariant for this upstream: hoisted out of the per-event
-        // callback, which allocated an identical object per event.
         val origin = originFor(upstream)
         transferring.incrementAndGet()
         return try {
@@ -595,8 +593,6 @@ internal class StaticBackfill(
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
-        // Invariant for this upstream: hoisted out of the per-event
-        // callback, which allocated an identical object per event.
         val origin = originFor(upstream)
         transferring.incrementAndGet()
         return try {
@@ -749,8 +745,6 @@ internal class StaticBackfill(
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
-        // Invariant for this upstream: hoisted out of the per-event
-        // callback, which allocated an identical object per event.
         val origin = originFor(upstream)
         transferring.incrementAndGet()
         try {
@@ -962,6 +956,10 @@ internal class StaticBackfill(
             { id -> !refusedIds.suppressedInWindow(id, window.since, window.until) }
         }
 
-    /** What this upstream's stream lets the healer do about a stale copy. */
+    /**
+     * What this upstream's stream lets the healer do about a stale copy.
+     * Called once per upstream, never inside a per-event callback — built
+     * there, it allocated an identical object per event.
+     */
     private fun originFor(upstream: SyncUpstream) = IngestOrigin(upstream.url, healContent = upstream.healContent, healRetractions = upstream.healRetractions)
 }
