@@ -153,9 +153,9 @@ class CycleTally(
     val hostStruckOut = AtomicLong()
 
     /**
-     * Not dialled because an EARLIER run published a signed NIP-66
-     * unreachability record for it that is still within its TTL (24h by
-     * quartz's default), so this cycle skipped it without asking.
+     * Not dialled because an EARLIER pass of our own monitor published a
+     * signed `dead` verdict for it that is still within its TTL (24h,
+     * [StreamWorld.DEAD_TTL_SECONDS]), so this cycle skipped it without asking.
      *
      * Separate from [hostStruckOut] because the two answer "will it try again,
      * and when" in opposite ways, and reported as one number they are exactly

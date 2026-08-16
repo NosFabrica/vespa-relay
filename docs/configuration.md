@@ -82,7 +82,7 @@ queries, publishes it as a public JSON document, and charts it on a page:
   the ten outcomes under `taken` (including a derived `pending`) sum to `taken`
   while the cycle is still running. The outcomes distinguish states that were one
   number called "skipped as dead" — `hostStruckOut` is retried on the next cycle,
-  `knownDead` waits out a signed NIP-66 record's TTL — and `foldedOnto` names
+  `knownDead` waits out our own signed `dead` verdict's TTL — and `foldedOnto` names
   which urls the alias fold removed and onto which survivor, bounded, with what
   it left out disclosed. `inFlight` does the same for the relays a stream is
   holding RIGHT NOW: `pending` read 2 on a stream that had received two events

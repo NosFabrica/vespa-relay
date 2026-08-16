@@ -26,11 +26,8 @@ import com.nosfabrica.vespa.relay.router.config.MonitorConfig
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.vitorpamplona.quartz.nip01Core.core.Event
-import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
-import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -54,14 +51,18 @@ internal class StreamWorld(
     private val probe: ReachabilityProbe,
     private val ingest: IngestPipeline,
     /**
-     * Whose unreachability records may hold a url out of the candidate set —
-     * this router's signer, plus every monitor npub the config names. NEVER
-     * every author: quartz's own dead set honours any rtt-less 30166 within
-     * the TTL (ForeignMonitorTest pins it), and this router mirrors
-     * strangers' 30166s by design, so unscoped, anyone whose records we
-     * mirror could starve a relay out of the roster indefinitely — held out
-     * of the candidate set, it is never dialled, never re-measured, and
-     * never earns the live record that would clear the mark.
+     * Whose `dead` verdicts may hold a url out of the candidate set — this
+     * router's signer, plus every monitor npub the config names. NEVER every
+     * author, and deliberately NOT the rule the roster read follows: a
+     * `syncable` admits, and everything admitted still has to survive a dial,
+     * so reading those unscoped costs at worst a connect attempt. A hold-out
+     * forecloses. Unscoped, anyone whose 30166s we mirror could starve a relay
+     * out indefinitely — held out of the candidate set it is never dialled,
+     * never re-measured, and never earns the verdict that would clear the mark.
+     *
+     * Empty means nothing is held out, which is the honest answer for a router
+     * with no signer and no named monitors: it has no standing to call
+     * anything dead.
      */
     private val monitorAuthors: List<String>,
     private val tor: TorTransport?,
@@ -123,30 +124,29 @@ internal class StreamWorld(
          * them apart cannot act on either.
          */
         val excluded: Int = 0,
-        /** …and how many carried a current unreachability record. */
+        /** …and how many carried a current `dead` verdict of ours. */
         val heldOutDead: Int = 0,
     )
 
     /**
-     * The author-scoped dead set — see [monitorAuthors] for why quartz's
-     * unscoped one cannot be used here. Same convention as quartz's
-     * [RelayReachabilityStore]: within the TTL, a 30166 WITHOUT `rtt-open`
-     * is "checked and could not open"; kind 30166 is addressable per
-     * (author, url), so the current record is the verdict. The author
-     * re-check on the returned events is one string compare of defence in
-     * depth over the store's own `authors` filter.
+     * The author-scoped dead set — see [monitorAuthors] for why it must be
+     * scoped at all.
+     *
+     * Reads OUR OWN `dead` verdicts, not an absence. It used to infer death
+     * from quartz's convention — within the TTL, a 30166 carrying no
+     * `rtt-open` is "checked and could not open" — which meant every record
+     * quartz's passive monitor wrote about a relay it had merely failed to
+     * reach counted as a verdict, and meant the router depended on a writer it
+     * also had to work around. The fitness pass states it outright now, so the
+     * hold-out reads the same tag the roster does.
      */
-    private suspend fun ownDead(): Set<NormalizedRelayUrl> {
-        if (monitorAuthors.isEmpty()) return emptySet()
-        val since = (System.currentTimeMillis() / 1000) - RelayReachabilityStore.DEFAULT_TTL_SECONDS
-        return store
-            .query<RelayDiscoveryEvent>(
-                Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = monitorAuthors, since = since),
-            ).asSequence()
-            .filter { it.pubKey in monitorAuthors && it.rttOpen() == null }
-            .mapNotNull { it.relay() }
-            .toSet()
-    }
+    private suspend fun ownDead(): Set<NormalizedRelayUrl> =
+        RelayDiscovery.undialable(
+            store,
+            monitorAuthors = monitorAuthors,
+            maxAgeSeconds = DEAD_TTL_SECONDS,
+            allowOnion = tor != null,
+        )
 
     /**
      * Urls a signed record already calls dead are held out: they cannot be
@@ -246,5 +246,16 @@ internal class StreamWorld(
         val wanted = streams.filter { it.filter.match(event) }
         if (wanted.isEmpty()) return
         ingest.submit(event, wanted.all { it.trusted })
+    }
+
+    companion object {
+        /**
+         * How long a `dead` verdict keeps a url out of the candidate set. The
+         * same 24h quartz's `RelayReachabilityStore` used, kept deliberately:
+         * a hold-out is self-healing only because it lapses, and a bound
+         * shorter than a sweep would re-dial the corpse every pass while a
+         * much longer one starves a host that came back.
+         */
+        const val DEAD_TTL_SECONDS = 24L * 60 * 60
     }
 }

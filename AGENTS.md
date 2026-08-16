@@ -1046,24 +1046,32 @@ the hour:
 |---|---|---|
 | `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
 | `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
-| `reachability` | quartz's `RelayMonitor` — watches every socket the client opens | `observed`, and the `knownDead` set every fan-out skips |
 | `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
 | `heal` | `HealQueue` + `Healer` | `queued`, `pushed` — registered only where a stream opted in |
 | `upstreamPush` | `UpstreamPush` | `pushed` |
 
 **Are the fold and NIP-66 the same thing? The RECORDS are; the processors are
-not.** All three of the first group write tags onto the same addressable kind
-30166 record per url — `same-as` from the fold, `self-consistent` from the
-stability gate, quartz's `n`/`rtt-*`/`R` from the monitor — which is why
+not.** The passes write tags onto the same addressable kind 30166 record per url
+— `same-as` from the fold, `self-consistent` from the stability gate, `s` /
+`pageable` / `nip77` from the fitness pass — which is why
 `RelayVerdictRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
 passes SEQUENTIALLY (two writers on one record drop whichever tag was written
 between the other's read and its store, silently, since the result is still a
-valid signed record that simply says less). But they are three different jobs on
-three different clocks: the fold and the gate DIAL, on the monitor's six-hour
-schedule; the reachability monitor never dials on a schedule at all, it rides
-the sockets the fan-out is already opening. The verdicts panel on `/stats.html`
+valid signed record that simply says less). The verdicts panel on `/stats.html`
 is where one url's whole record is read back, and it exists because that merge
 is only pinnable in isolation by `RelayVerdictRecordTest`.
+
+**There is no passive writer any more.** quartz's `RelayMonitor` used to be
+attached to the sync client as a connection listener, signing a 30166 for every
+socket the fan-out opened. It was a second publisher of facts the passes already
+state, and — since every writer edits the same record — it rewrote `created_at`
+on a 5-minute flush for every relay we were actively syncing. Removing it is what
+makes the record's own clock mean "when the monitor last checked this relay",
+which is what every other NIP-66 consumer reads it as, and what lets a stream
+bound verdict freshness with a plain NIP-01 `since` instead of a private
+convention. The passes are the only writers; the fitness pass is the only writer
+of `s`, and it is where the `dead` verdict that holds a url out of the candidate
+set now comes from.
 
 Two rules the processor rows follow, both the same ones the rest of this
 document does. **A processor that is not registered is one this router does not
@@ -1164,7 +1172,7 @@ instead of only counting it.
 two reasons with OPPOSITE retry policies, reported as one number: a
 `hostStruckOut` url is dialled again on the very next cycle (a strike is
 cycle-local, nothing persists), while a `knownDead` one waits out a signed NIP-66
-unreachability record's TTL — 24h, `RelayReachabilityStore.DEFAULT_TTL_SECONDS`
+`dead` verdict's TTL — 24h, `StreamWorld.DEAD_TTL_SECONDS`
 — or its host delivering something. `whyDead` returns which; do not collapse
 them again.
 
@@ -2050,7 +2058,7 @@ identity and one test per reason.
 every url the streams named                                           17,584
 ├─ dropped before a pass could see it                                    832
 │  ├─ excluded by config, or our own url                                   3
-│  └─ known dead — a signed unreachability record                        829
+│  └─ known dead — one of our own signed `dead` verdicts               829
 └─ in reach — the candidate set                                       16,752
    ├─ folded onto another url                                         11,429
    ├─ consistent                                                         583
@@ -2144,17 +2152,24 @@ the monitor picks the lapse up on its next pass, so a re-measure lands within
 `AliasMonitor.DEFAULT_INTERVAL_MS` (6h) of the month mark. Expiry is per url and
 staggered by whenever each was first measured, so there is no day-30 herd.
 
-What it must NOT be aged on is the RECORD's `created_at`, which is what it was
-doing at first. Kind 30166 is addressable and shared: quartz's `RelayMonitor`
-rewrites the record for every relay this client connects to on a 5-minute flush,
-carrying our tags forward. So `created_at` tracks the last time we TALKED to a
-relay, not the last time we MEASURED it — and the effect was exactly backwards.
-A REFUSED relay is never dialled, so nothing refreshed its record and it expired
-on schedule; a KEPT relay is dialled constantly, so its record never aged and
-its verdict was never re-taken. **Measure once, trust forever — for precisely
-the population where "was fine, now degraded" is the case worth catching.** The
-fold's `same-as` had the identical hole: a folded url expires, the canonical it
-folded onto did not.
+What it could NOT be aged on, while a passive writer shared the record, was the
+RECORD's `created_at` — which is what it was doing at first. Kind 30166 is
+addressable and shared, and quartz's `RelayMonitor` rewrote the record for every
+relay this client connected to on a 5-minute flush, carrying our tags forward.
+So `created_at` tracked the last time we TALKED to a relay, not the last time we
+MEASURED it — and the effect was exactly backwards. A REFUSED relay is never
+dialled, so nothing refreshed its record and it expired on schedule; a KEPT
+relay is dialled constantly, so its record never aged and its verdict was never
+re-taken. **Measure once, trust forever — for precisely the population where
+"was fine, now degraded" is the case worth catching.** The fold's `same-as` had
+the identical hole: a folded url expires, the canonical it folded onto did not.
+
+That writer is gone (above), so `created_at` is honest again and the `s` verdict
+reads its freshness off it — the whole-record check date, which is the reading
+the rest of the NIP-66 ecosystem applies and the one a config can express as
+`since`. The per-tag stamps stay: they are public evidence, and the fold and the
+stability gate still age on them through `RelayVerdictRecord.current`, which is
+finer than the record clock when passes on different cadences share one record.
 
 So both verdict tags carry the unix second they were measured, and
 `RelayVerdictRecord.current` ages on that. A tag with NO stamp is stale, and the
@@ -3113,14 +3128,17 @@ statement about someone else's server.
   what a silent one already cost. Do not pass the flag by hand — it was removed
   from every accessory but `fetchAllWithHooks`, and hardcoding it there is how
   you get it wrong when the client changes.
-- **A TTL on a tag is not a TTL on the event carrying it.** Kind 30166 has more
-  than one writer: quartz's `RelayMonitor` rewrites the record for every relay
-  the client connects to, every 5 minutes, preserving our tags. Ageing a verdict
-  on `event.createdAt` therefore measures how recently we TALKED to the relay,
-  and any relay still in the fan-out is always minutes old — so its verdict
-  never expires while the ones we stopped dialling expire on time, which is the
-  wrong way round. Stamp the measurement's own time into the tag and age on
-  that. Applies to anything sharing an addressable event with another writer.
+- **A TTL on a tag is not a TTL on the event carrying it — unless you own every
+  writer.** Kind 30166 used to have a writer we did not control: quartz's
+  `RelayMonitor`, rewriting the record for every relay the client connected to,
+  every 5 minutes, preserving our tags. Ageing a verdict on `event.createdAt`
+  therefore measured how recently we TALKED to the relay, and any relay still in
+  the fan-out is always minutes old — so its verdict never expired while the ones
+  we stopped dialling expired on time, which is the wrong way round. The fix that
+  lasted was not a private stamp but removing the writer; with the monitor's own
+  passes the only ones writing, the record's clock says what it should. Reach for
+  a per-tag stamp when a foreign writer is genuinely unavoidable, and prefer
+  removing it when it is not.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

@@ -72,25 +72,75 @@ class SyncableRelaysTest {
         }
 
     @Test
-    fun `a stale verdict admits nothing, however fresh the record's own clock is`() =
+    fun `freshness is the record's own clock`() =
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(stale, "syncable", "was fine last week", pageable = null, nip77 = null)
 
-            // The freshness bound is read off the tag's measured-at stamp
-            // (element 3). Querying with `now` pushed past it must drop the
-            // verdict even though the EVENT was signed moments ago — that is
-            // the exact difference between the verdict's clock and the
-            // record's.
-            val admitted =
+            // A monitor republishes the record when it re-checks, so `created_at`
+            // dates the check — the reading every other NIP-66 consumer applies,
+            // and the one this could not use while quartz's passive watcher was
+            // rewriting the record for every socket the fan-out opened. Pushing
+            // `now` past the bound must drop the verdict.
+            assertEquals(
+                emptyList(),
                 RelayDiscovery.syncable(
                     store,
                     monitorAuthors = listOf(signer.pubKey),
                     maxAgeSeconds = 3600,
                     now = nowSeconds() + 7200,
-                )
-            assertEquals(emptyList(), admitted)
+                ),
+            )
+            // …and inside it, admit it.
+            assertEquals(
+                listOf(stale),
+                RelayDiscovery
+                    .syncable(store, monitorAuthors = listOf(signer.pubKey), maxAgeSeconds = 3600)
+                    .map { it.url },
+            )
+        }
+
+    @Test
+    fun `a dead verdict is held out, and only a dead one`() =
+        runBlocking {
+            // The hold-out read. `dead` is the transport saying no; every other
+            // refusal was earned by ANSWERING, and holding those out would stop
+            // the fold and the stability gate from re-measuring the very relays
+            // they exist to judge.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(dead, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
+            record.publishFitness(good, "unpageable", "ignored `until`", pageable = false to "ignored", nip77 = null)
+            record.publishFitness(stale, "alias", "folds onto wss://good.example", pageable = null, nip77 = null)
+
+            assertEquals(
+                setOf(dead),
+                RelayDiscovery.undialable(store, monitorAuthors = listOf(signer.pubKey), maxAgeSeconds = 3600),
+            )
+        }
+
+    @Test
+    fun `a stranger cannot hold a relay out`() =
+        runBlocking {
+            // The asymmetry the roster read does NOT follow. Admitting unscoped
+            // costs a dial; holding out unscoped is permanent — held out of the
+            // candidate set a url is never re-measured, so the mark never
+            // clears. Anyone whose 30166s we mirror could starve a relay for
+            // good, so this read stays author-bound however the roster reads.
+            val store = newStore()
+            RelayVerdictRecord(store, stranger)
+                .publishFitness(forged, "dead", "trust me", pageable = null, nip77 = null)
+
+            assertEquals(
+                emptySet(),
+                RelayDiscovery.undialable(store, monitorAuthors = listOf(signer.pubKey), maxAgeSeconds = 3600),
+            )
+            assertEquals(
+                emptySet(),
+                RelayDiscovery.undialable(store, monitorAuthors = emptyList(), maxAgeSeconds = 3600),
+                "no signer and no named monitors is no standing to call anything dead — never every author",
+            )
         }
 
     @Test

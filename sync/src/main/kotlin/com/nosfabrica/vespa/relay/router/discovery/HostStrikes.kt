@@ -63,8 +63,8 @@ class HostStrikes(
      *
      * The two reasons carry different retry policies and were reported as one
      * number, which is unreadable in exactly the way "skipped as dead" was: a
-     * [Skip.KNOWN_DEAD] url is out until a signed unreachability record ages
-     * past its TTL (quartz's `RelayReachabilityStore.DEFAULT_TTL_SECONDS`, 24h)
+     * [Skip.KNOWN_DEAD] url is out until our own signed `dead` verdict ages
+     * past its TTL ([StreamWorld.DEAD_TTL_SECONDS], 24h)
      * or its host delivers something, while a [Skip.STRUCK_OUT] one is out only
      * for the rest of THIS cycle — nothing about a strike persists. An operator
      * asking "will it try again, and when" gets opposite answers.

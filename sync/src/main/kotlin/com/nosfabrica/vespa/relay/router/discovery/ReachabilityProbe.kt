@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.relay.router.TorTransport
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
-import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
@@ -58,32 +57,36 @@ internal fun shouldPreProbe(
  */
 internal class ReachabilityProbe(
     private val tor: TorTransport?,
-    private val monitor: RelayMonitor?,
 ) {
     /**
-     * Only a NEGATIVE result is published, and only for a cause that proves it.
+     * THE PRE-PROBE ONLY SHORT-CIRCUITS ON PROOF. A failure it cannot explain
+     * hands the url on to be dialled, because the dial is a better instrument
+     * than this one and its outcome is the verdict either way.
      *
      * [TcpProber] answers with a Boolean, so a refusal and a timeout arrive as
-     * the same value and they are not the same claim: a refusal proves nobody is
-     * listening, a timeout is as likely to be our own socket budget. Publishing
-     * on the Boolean signed 5,001 unreachable records in an hour, of which 732
-     * urls across 423 hosts answered a REQ perfectly well. So a failure is
-     * re-run once for its cause and published only for what [Unreachability]
-     * accepts — the extra connect is paid on the failing path alone.
+     * the same value and they are not the same claim: a refusal proves nobody
+     * is listening, a timeout is as likely to be our own socket budget. Acting
+     * on the Boolean, this pass called 5,001 urls unreachable in an hour, of
+     * which 732 across 423 hosts answered a REQ perfectly well. So a failure is
+     * re-run once for its cause and believed only for what [Unreachability]
+     * accepts — the extra connect is paid on the failing path alone, and the
+     * unproven remainder costs a dial rather than a false `dead` verdict.
+     *
+     * Nothing is PUBLISHED here. This used to sign its own unreachability
+     * records through quartz's `RelayMonitor.observer`, which made two writers
+     * for one fact and — because that monitor also listened to every socket the
+     * fan-out opened — rewrote the record's `created_at` constantly. The
+     * fitness pass is the single publisher now: it asks this question and
+     * writes the `dead` verdict itself, on the record's own clock.
      */
-    suspend fun probeAndRecord(url: NormalizedRelayUrl): Boolean {
+    suspend fun reachable(url: NormalizedRelayUrl): Boolean {
         if (!shouldPreProbe(url, tor)) return true
-        val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
-        if (!ok) {
-            cause(url)?.takeIf { Unreachability.proves(it) }?.let {
-                monitor?.observer?.record(url, reachable = false, error = "tcp: ${it.javaClass.simpleName}")
-            }
-        }
-        return ok
+        if (runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)) return true
+        return cause(url)?.let { !Unreachability.proves(it) } ?: true
     }
 
     /** Our transport can carry it AND something answers — what a probe pass asks. */
-    suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && probeAndRecord(url)
+    suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && reachable(url)
 
     /**
      * Null when it unexpectedly succeeds — the pre-probe's budget is tight and a
