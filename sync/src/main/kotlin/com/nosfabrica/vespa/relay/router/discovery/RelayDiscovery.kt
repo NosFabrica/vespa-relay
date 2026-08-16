@@ -240,7 +240,12 @@ object RelayDiscovery {
             .asSequence()
             .filter { event ->
                 val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayAliasRecord.STATUS_TAG }
-                s != null &&
+                // The store's `authors` filter is the trust boundary; this
+                // one string compare re-states it on the returned events, so
+                // a query layer that ever treated `authors` as a hint rather
+                // than a predicate cannot hand a stranger's verdict through.
+                event.pubKey in monitorAuthors &&
+                    s != null &&
                     s[1] == FitnessPass.Verdict.SYNCABLE.value &&
                     s.getOrNull(4) == RelayAliasRecord.FITNESS_EPOCH &&
                     (s.getOrNull(3)?.toLongOrNull() ?: 0L) >= floor

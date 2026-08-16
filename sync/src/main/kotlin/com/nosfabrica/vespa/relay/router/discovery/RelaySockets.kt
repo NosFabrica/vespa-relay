@@ -44,12 +44,27 @@ internal class RelaySockets(
     }
 
     override fun release(url: NormalizedRelayUrl) {
-        val stillInUse = held.compute(url) { _, n -> ((n ?: 1) - 1).takeIf { it > 0 } } != null
-        if (!stillInUse && url !in pinnedUrls) {
+        var released = false
+        held.compute(url) { _, n ->
+            if (n == null) {
+                null
+            } else {
+                released = true
+                (n - 1).takeIf { it > 0 }
+            }
+        }
+        // A release nobody claimed used to be treated as a 1-count — which
+        // turned a bookkeeping bug elsewhere into disconnecting a socket its
+        // real holder was still on. Said loudly and dropped instead.
+        if (!released) {
+            System.err.println("router: socket release for ${url.url} that nobody claimed — a claim/release imbalance upstream of this line")
+            return
+        }
+        // Re-checked after the compute: a claim landing in between keeps the
+        // socket. The residual race (claim after this check) costs one
+        // reconnect, not a wrong count.
+        if (held[url] == null && url !in pinnedUrls) {
             runCatching { client.getOrCreateRelay(url).disconnect() }
         }
     }
-
-    /** Urls with at least one holder, for the cross-stream in-flight count. */
-    fun size(): Int = held.size
 }

@@ -260,6 +260,9 @@ internal class NegentropyPager(
     private val state: SweepState,
     private val tuning: NegPageTuning,
 ) {
+    /** How far below `now` a sweep stops — the head its claims must not over-run. */
+    internal val slackSeconds: Long get() = tuning.slackSeconds
+
     /**
      * Reconcile [leg] against [url], one right-sized window at a time.
      *

@@ -268,7 +268,11 @@ internal class RetractionAudit(
         for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
             for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
                 onEvent(event)
-                if (stream.filter.match(event)) {
+                // The OWNED ask's scope, not the stream's whole filter: the
+                // ids came from this ask's reconcile, and a buggy relay that
+                // answers a by-id REQ with extras must not widen what a
+                // trusted stream ingests past the ask's author binding.
+                if (ownedAsk.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
                         observed.min = minOf(observed.min ?: event.createdAt, event.createdAt)
                         observed.max = maxOf(observed.max ?: event.createdAt, event.createdAt)

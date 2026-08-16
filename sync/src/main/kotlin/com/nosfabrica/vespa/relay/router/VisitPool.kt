@@ -152,7 +152,7 @@ internal class VisitPool(
      * shrunken shared set; one snapshot cannot mix generations.
      */
     @Volatile
-    private var current: RosterBuilder.Roster = RosterBuilder.Roster(emptyMap(), emptyMap())
+    private var current: RosterBuilder.Roster = RosterBuilder.Roster(asks = emptyMap(), sharedAuthors = emptyMap())
 
     private val roster: Map<NormalizedRelayUrl, List<RosterBuilder.Ask>> get() = current.asks
 
@@ -303,10 +303,18 @@ internal class VisitPool(
     }
 
     /**
-     * The stream rows' one phase, refreshed wherever the numbers it carries
-     * change hands — the roster rebuild, a tail opening, a tail dropping.
+     * The stream rows' one phase, marked stale wherever its numbers change
+     * hands — the roster rebuild, a tail opening, a tail dropping — and
+     * PUBLISHED by [flushPhases] on the ticker. The publish walks
+     * streams × roster, and it used to run INLINE on every tail open and
+     * drop: a 600-tail boot storm paid ~45M entry visits on the visit
+     * workers for numbers nobody reads faster than the report tick.
      */
     private fun publishPhases() {
+        phasesDirty.set(true)
+    }
+
+    private fun flushPhases() {
         val phases = phases ?: return
         val current = roster
         for (stream in streams) {
@@ -328,6 +336,10 @@ internal class VisitPool(
      * retry loop is not.
      */
     private val auditAttempts = ConcurrentHashMap<String, Long>()
+
+    private val phasesDirty =
+        java.util.concurrent.atomic
+            .AtomicBoolean(false)
 
     private val tailsEvicted = AtomicLong()
 
@@ -367,8 +379,14 @@ internal class VisitPool(
         for (stream in streams) {
             phases?.namesInFlight(stream.name) { inFlightFor(stream.name) }
         }
-        publishPhases()
+        flushPhases()
         scope.launch { rosterLoop() }
+        scope.launch {
+            while (scope.isActive) {
+                delay(PHASE_FLUSH_MS)
+                if (phasesDirty.getAndSet(false)) flushPhases()
+            }
+        }
         repeat(visitConcurrency) {
             scope.launch { workerLoop() }
         }
@@ -416,6 +434,7 @@ internal class VisitPool(
         val built = rosterBuilder.rebuild()
         val next = built.asks
         val previous = current.asks
+        val previousWants = current.wants
         current = built
         // A relay the monitor stopped certifying loses its tail and its socket
         // claim: the verdict is the admission, and holding a connection to a
@@ -434,7 +453,7 @@ internal class VisitPool(
             // found a new provider pairing on a relay another stream holds).
             // Without the second half, that new ask would wait out the TAILED
             // revisit base for its first catch-up — and its retraction audit.
-            if (RosterBuilder.wants(previous[url].orEmpty()) != RosterBuilder.wants(asks) && queued.add(url)) {
+            if (previousWants[url] != built.wants[url] && queued.add(url)) {
                 queue.trySend(url)
                 enqueued++
             }
@@ -673,9 +692,11 @@ internal class VisitPool(
             }
         audits.incrementAndGet()
         if (outcome.complete) {
-            // The audit compared every window, so the whole covered range is
-            // verified as of when it STARTED — events since then belong to the
-            // tail and the next catch-up, not to this claim.
+            // The audit compared every window up to the sweep's own head —
+            // `slackSeconds` below its start, because a window still filling
+            // is not swept — so the claim stops there too. Claiming through
+            // the start over-ran that head by the slack, a seam the tail
+            // only covered while it lived.
             bands.record(
                 stream.name,
                 url,
@@ -683,7 +704,7 @@ internal class VisitPool(
                 observedMin = null,
                 observedMax = null,
                 paged = false,
-                reconciledThrough = auditStarted,
+                reconciledThrough = auditStarted - pager.slackSeconds,
             )
         }
         System.err.println(
@@ -726,9 +747,10 @@ internal class VisitPool(
      * is what "constantly connected" means.
      */
     private fun openTail(url: NormalizedRelayUrl) {
-        val wanting = roster[url].orEmpty()
+        val snapshot = current
+        val wanting = snapshot.asks[url].orEmpty()
         if (wanting.isEmpty()) return
-        val asked = RosterBuilder.wants(wanting)
+        val asked = snapshot.wants[url] ?: RosterBuilder.wants(wanting)
         val sitting = tails[url]
         if (sitting != null) {
             if (sitting.asked == asked) return
@@ -781,17 +803,21 @@ internal class VisitPool(
                         // static tails follow. Matching is against each ASK's
                         // filter: a narrowed ask admits only its own provider's
                         // events off the tail, exactly as it does off a page.
-                        val wanted = roster[url].orEmpty().filter { it.filter.match(event) }
-                        if (wanted.isEmpty()) return
-                        ingest.submit(
-                            event,
-                            wanted.all { it.stream.trusted },
-                            IngestOrigin(
-                                url,
-                                healContent = wanted.any { it.stream.healContent },
-                                healRetractions = wanted.any { it.stream.healRetractions },
-                            ),
-                        )
+                        // One pass, no intermediate list — this runs per event
+                        // on every tail.
+                        var any = false
+                        var allTrusted = true
+                        var healContent = false
+                        var healRetractions = false
+                        for (ask in roster[url].orEmpty()) {
+                            if (!ask.filter.match(event)) continue
+                            any = true
+                            allTrusted = allTrusted && ask.stream.trusted
+                            healContent = healContent || ask.stream.healContent
+                            healRetractions = healRetractions || ask.stream.healRetractions
+                        }
+                        if (!any) return
+                        ingest.submit(event, allTrusted, IngestOrigin(url, healContent, healRetractions))
                     }
                 },
             )
@@ -996,6 +1022,9 @@ internal class VisitPool(
 
         /** An empty roster re-checks the records on this clock, not the freshness bound's. */
         const val EMPTY_ROSTER_RETRY_MS = 60_000L
+
+        /** How often stale phase numbers reach the document — see [publishPhases]. */
+        const val PHASE_FLUSH_MS = 1_000L
 
         /**
          * How far behind now a tail's `since` starts: the seam with the

@@ -961,10 +961,13 @@ class SyncEngine(
         }
         runCatching { monitor?.close() }
         runCatching { authenticator?.destroy() }
+        // Workers before transport: cancelled visits and tails stop touching
+        // the client before it closes, instead of racing it and counting
+        // their own deaths into `aborted`.
+        scope.cancel()
         downUpstreams.indices.forEach { runCatching { client.unsubscribe("vespa-mirror-down-$it") } }
         runCatching { client.close() }
         ingest.closeIntake()
-        scope.cancel()
         // After the scope, so a worker mid-batch is cancelled rather than
         // stranded on a pool that has stopped accepting work.
         ingest.close()

@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
@@ -85,6 +86,13 @@ internal class RosterBuilder(
         /** url → the asks that want it. */
         val asks: Map<NormalizedRelayUrl, List<Ask>>,
         /**
+         * url → [wants] of its asks, computed once here. The pool compares
+         * these across rebuilds and keys tails on them; recomputing both
+         * sides per url per tick serialized every filter to JSON twice for
+         * an answer that is almost always "unchanged".
+         */
+        val wants: Map<NormalizedRelayUrl, Set<String>> = emptyMap(),
+        /**
          * Per stream: authors found at MORE THAN ONE relay. One relay's empty
          * answer does not retract what a sibling relay may still be serving,
          * so the retraction audit never judges their asks — the same rule the
@@ -103,27 +111,45 @@ internal class RosterBuilder(
 
     suspend fun rebuild(): Roster {
         val next = HashMap<NormalizedRelayUrl, MutableList<Ask>>()
+        // One identity set per url, reused three ways: it dedups want() by
+        // VALUE (Ask equality degrades to Filter reference equality, so the
+        // old `ask !in wanting` linear-scanned and matched nothing for
+        // freshly built asks), and it IS the per-url wants set the Roster
+        // carries out.
+        val seen = HashMap<NormalizedRelayUrl, MutableSet<String>>()
 
         fun want(
             url: NormalizedRelayUrl,
             ask: Ask,
         ) {
-            val wanting = next.getOrPut(url) { mutableListOf() }
-            if (ask !in wanting) wanting += ask
+            if (seen.getOrPut(url) { LinkedHashSet() }.add("${ask.stream.name} ${ask.filter.toJson()}")) {
+                next.getOrPut(url) { mutableListOf() } += ask
+            }
+        }
+        // Memoized per rebuild: identical verdict sources across streams are
+        // the common config, and each un-memoized read materializes every
+        // syncable record in the store. Excludes are applied per stream on
+        // the way out — they are the only per-stream part of the read.
+        val syncableMemo = HashMap<Pair<List<String>, Long>, List<DiscoveredRelay>>()
+
+        suspend fun syncableFor(
+            authors: List<String>,
+            maxAgeSeconds: Long,
+        ) = syncableMemo.getOrPut(authors to maxAgeSeconds) {
+            RelayDiscovery.syncable(
+                store,
+                monitorAuthors = authors,
+                maxAgeSeconds = maxAgeSeconds,
+                exclude = RelayExcludes.NONE,
+                skip = setOfNotNull(store.relay),
+                allowOnion = tor != null,
+            )
         }
         for (stream in streams) {
             val dynamic = stream.dynamic ?: continue
             for (source in dynamic.verdictSources) {
                 val authors = monitorIdentity(source.authors, stream.name, "has a verdict source") ?: continue
-                val certified =
-                    RelayDiscovery.syncable(
-                        store,
-                        monitorAuthors = authors,
-                        maxAgeSeconds = source.maxAgeSeconds,
-                        exclude = dynamic.exclude,
-                        skip = setOfNotNull(store.relay),
-                        allowOnion = tor != null,
-                    )
+                val certified = syncableFor(authors, source.maxAgeSeconds).filter { it.url !in dynamic.exclude }
                 for (relay in certified) want(relay.url, Ask(stream, stream.filter))
             }
             if (dynamic.scanSources.isNotEmpty()) {
@@ -148,7 +174,7 @@ internal class RosterBuilder(
             }
         }
         val shared = byAuthor.mapValues { (_, authors) -> authors.filterValues { it.size > 1 }.keys }
-        return Roster(next, shared)
+        return Roster(asks = next, wants = seen, sharedAuthors = shared)
     }
 
     /**
