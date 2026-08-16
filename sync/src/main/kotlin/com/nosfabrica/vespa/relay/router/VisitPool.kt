@@ -277,6 +277,26 @@ internal class VisitPool(
     private val ongoing = ConcurrentHashMap<NormalizedRelayUrl, Ongoing>()
 
     /**
+     * Every arrival's shared bookkeeping, whatever path delivered it: the
+     * pool's odometer, the relay's yield score, and — when a visit is on the
+     * socket — its event count and quiet clock. One helper because four
+     * paths repeated it, and the fifth someone adds must not be able to
+     * forget a counter. Null [o] is a tail: arrivals there belong to no
+     * visit's clocks.
+     */
+    private fun arrived(
+        url: NormalizedRelayUrl,
+        o: Ongoing?,
+    ) {
+        downloaded.incrementAndGet()
+        yieldOf(url).arrived.incrementAndGet()
+        o?.let {
+            it.events.incrementAndGet()
+            it.lastActivityMs = System.currentTimeMillis()
+        }
+    }
+
+    /**
      * The in-flight rows for one stream: every relay whose visit is currently
      * serving it, quietest first — the same ordering argument as
      * [InFlight]'s, because the row worth reading is the one nothing is
@@ -611,7 +631,7 @@ internal class VisitPool(
                     return
                 }
                 o.stream = ask.stream.name
-                val clean = catchUp(ask, url)
+                val clean = catchUp(ask, url, o)
                 // A refusal ends the whole visit, not just this ask's part:
                 // the next ask is the same conversation with the same relay,
                 // and the monitor's sweep — not a retry loop — is what
@@ -620,7 +640,7 @@ internal class VisitPool(
                     aborted.incrementAndGet()
                     return
                 }
-                auditIfDue(ask, url)
+                auditIfDue(ask, url, o)
             }
             o.doing = "draining queued heals, then the tail"
             healer.drain(url)
@@ -638,26 +658,20 @@ internal class VisitPool(
     private suspend fun catchUp(
         ask: Ask,
         url: NormalizedRelayUrl,
+        o: Ongoing,
     ): Boolean {
         val stream = ask.stream
-        val o = ongoing[url]
         for (leg in bands.legs(stream.name, url, ask.filter)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
-            val relayYield = yieldOf(url)
-            o?.doing = STAGE_PAGING
+            o.doing = STAGE_PAGING
             val onEvent: suspend (Event) -> Unit = { event ->
-                downloaded.incrementAndGet()
-                relayYield.arrived.incrementAndGet()
-                o?.let {
-                    it.events.incrementAndGet()
-                    it.lastActivityMs = System.currentTimeMillis()
-                    // Newest-first is the walk's own order, so the oldest event
-                    // seen IS the cursor's depth, near enough for a reader.
-                    if (SyncCoverage.isPlausible(event.createdAt) && event.createdAt < (it.pagingUntil ?: Long.MAX_VALUE)) {
-                        it.pagingUntil = event.createdAt
-                    }
+                arrived(url, o)
+                // Newest-first is the walk's own order, so the oldest event
+                // seen IS the cursor's depth, near enough for a reader.
+                if (SyncCoverage.isPlausible(event.createdAt) && event.createdAt < (o.pagingUntil ?: Long.MAX_VALUE)) {
+                    o.pagingUntil = event.createdAt
                 }
                 if (ask.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
@@ -691,33 +705,46 @@ internal class VisitPool(
     }
 
     /**
+     * Which audit does this ask get? A retracting stream's audit IS the
+     * deleteMissing comparison — the same full-history reconcile, plus the
+     * licence to act on what we hold that the provider no longer serves; the
+     * ordinary sweep would double the round trips to say half as much. Every
+     * other stream with the knob set gets the plain history sweep. No
+     * `verifySeconds`, no audit of either kind.
+     */
+    private suspend fun auditIfDue(
+        ask: Ask,
+        url: NormalizedRelayUrl,
+        o: Ongoing,
+    ) {
+        val verifySeconds = ask.stream.verifySeconds ?: return
+        if (ask.stream.deleteMissing != DeleteMissing.OFF) {
+            retractionIfDue(ask, url, verifySeconds, o)
+        } else {
+            sweepAudit(ask, url, verifySeconds, o)
+        }
+    }
+
+    /**
      * The weekly (or whatever `verifySeconds` says) negentropy audit: when the
      * band's last full pass has aged past the knob, reconcile the covered past
      * in windows and download only the diff. Staggering is free — each relay's
      * band ages on its own clock — so the steady state is
      * `roster / verifySeconds`, a trickle, and no cap is needed.
      */
-    private suspend fun auditIfDue(
+    private suspend fun sweepAudit(
         ask: Ask,
         url: NormalizedRelayUrl,
+        verifySeconds: Long,
+        o: Ongoing,
     ) {
         val stream = ask.stream
-        val verifySeconds = stream.verifySeconds ?: return
-        // A retracting stream's audit IS the deleteMissing comparison: the
-        // same full-history reconcile, plus the licence to act on what we
-        // hold that the provider no longer serves. The ordinary sweep would
-        // double the round trips to say half as much.
-        if (stream.deleteMissing != DeleteMissing.OFF) {
-            retractionIfDue(ask, url, verifySeconds)
-            return
-        }
         val now = nowSeconds()
         val band = bands.band(stream.name, url, ask.filter)
         if (!auditDue(band?.fullAt ?: 0L, now, verifySeconds)) return
         val auditStarted = now
         var received = 0
-        val o = ongoing[url]
-        o?.doing = STAGE_AUDITING
+        o.doing = STAGE_AUDITING
         val outcome =
             pager.sweep(
                 stream.name,
@@ -727,21 +754,14 @@ internal class VisitPool(
                 // Frames are life. A clean audit downloads NOTHING — every
                 // window already agrees — so without this a relay whose whole
                 // history verifies reads as a worker gone quiet for minutes.
-                onProgress = { _, _ -> o?.lastActivityMs = System.currentTimeMillis() },
+                onProgress = { _, _ -> o.lastActivityMs = System.currentTimeMillis() },
                 onWindow = { _, until ->
-                    o?.let {
-                        it.lastActivityMs = System.currentTimeMillis()
-                        it.pagingUntil = until
-                    }
+                    o.lastActivityMs = System.currentTimeMillis()
+                    o.pagingUntil = until
                 },
             ) { event ->
                 received++
-                downloaded.incrementAndGet()
-                yieldOf(url).arrived.incrementAndGet()
-                o?.let {
-                    it.events.incrementAndGet()
-                    it.lastActivityMs = System.currentTimeMillis()
-                }
+                arrived(url, o)
                 if (ask.filter.match(event)) {
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
@@ -769,40 +789,26 @@ internal class VisitPool(
 
     /**
      * The retraction audit for one ask, on the same `verifySeconds` clock as
-     * every other audit — due when the OWNED ask's band ages out, because the
-     * reconcile is what stamps it. See [RetractionAudit] for what runs.
+     * every other audit. The dueness, like the comparison, is
+     * [RetractionAudit]'s own — the owned-ask band that schedules it is the
+     * band the reconcile stamps, so both are derived in one place there.
      */
     private suspend fun retractionIfDue(
         ask: Ask,
         url: NormalizedRelayUrl,
         verifySeconds: Long,
+        o: Ongoing,
     ) {
         val retraction = retraction ?: return
-        val stream = ask.stream
-        val ownedKinds =
-            ask.filter.kinds
-                .orEmpty()
-                .filter { it in stream.ownedKinds }
-        if (ownedKinds.isEmpty()) return
-        val ownedAsk = ask.filter.copy(kinds = ownedKinds)
-        val band = bands.band(stream.name, url, ownedAsk)
-        if (!auditDue(band?.fullAt ?: 0L, nowSeconds(), verifySeconds)) return
-        val o = ongoing[url]
-        o?.doing = STAGE_RETRACTING
+        if (!retraction.due(ask.stream, url, ask.filter, verifySeconds)) return
+        o.doing = STAGE_RETRACTING
         retraction.reconcileAndDelete(
-            stream,
+            ask.stream,
             url,
             ask.filter,
-            sharedAuthors[stream.name].orEmpty(),
-            onActivity = { o?.lastActivityMs = System.currentTimeMillis() },
-        ) { event ->
-            downloaded.incrementAndGet()
-            yieldOf(url).arrived.incrementAndGet()
-            o?.let {
-                it.events.incrementAndGet()
-                it.lastActivityMs = System.currentTimeMillis()
-            }
-        }
+            sharedAuthors[ask.stream.name].orEmpty(),
+            onActivity = { o.lastActivityMs = System.currentTimeMillis() },
+        ) { arrived(url, o) }
         audits.incrementAndGet()
     }
 
@@ -859,8 +865,7 @@ internal class VisitPool(
                     forFilters: List<Filter>?,
                 ) {
                     if (relay != url) return
-                    downloaded.incrementAndGet()
-                    yieldOf(url).arrived.incrementAndGet()
+                    arrived(url, o = null)
                     // Bind trust per stream, and re-check scope so a broken
                     // relay cannot widen what we ingest — the same rule the
                     // static tails follow. Matching is against each ASK's

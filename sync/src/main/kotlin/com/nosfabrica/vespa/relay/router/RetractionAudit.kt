@@ -27,6 +27,7 @@ import com.nosfabrica.vespa.relay.router.refused.RefusedIds
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropyIdDiff
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyncException
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAll
@@ -76,6 +77,38 @@ internal class RetractionAudit(
     val deleted = AtomicLong()
 
     /**
+     * The ask's owned-kind projection — the filter the audit clock, the
+     * reconcile and the deletes all run on. Derived HERE and only here: the
+     * clock that schedules the comparison and the band the comparison stamps
+     * must read one filter, and two derivations in two files is how they
+     * drift apart. Null when the ask carries no owned kind at all — nothing
+     * to compare, nothing to schedule.
+     */
+    private fun ownedAskOf(
+        stream: SyncStream,
+        ask: Filter,
+    ): Filter? {
+        val ownedKinds = ask.kinds.orEmpty().filter { it in stream.ownedKinds }
+        if (ownedKinds.isEmpty()) return null
+        return ask.copy(kinds = ownedKinds)
+    }
+
+    /**
+     * Is this ask's comparison due — the owned band aged past
+     * [verifySeconds], or never stamped? [reconcileAndDelete]'s band record
+     * is what stamps it, on the same [ownedAskOf] filter.
+     */
+    fun due(
+        stream: SyncStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+        verifySeconds: Long,
+    ): Boolean {
+        val ownedAsk = ownedAskOf(stream, ask) ?: return false
+        return VisitPool.auditDue(bands.band(stream.name, url, ownedAsk)?.fullAt ?: 0L, nowSeconds(), verifySeconds)
+    }
+
+    /**
      * Reconcile one ask's OWNED kinds both ways, and act on the difference.
      *
      * The ids are read for THIS ask alone — this is the one place in the
@@ -101,13 +134,11 @@ internal class RetractionAudit(
         onActivity: () -> Unit = {},
         onEvent: suspend (Event) -> Unit = {},
     ) {
-        val ownedKinds = ask.kinds.orEmpty().filter { it in stream.ownedKinds }
-        if (ownedKinds.isEmpty()) return
+        val ownedAsk = ownedAskOf(stream, ask) ?: return
         // A relay this author is not alone at cannot prove a retraction; the
         // catch-up keeps mirroring it, this decides nothing from it.
         if (ask.authors?.any { it in sharedAuthors } == true) return
 
-        val ownedAsk = ask.copy(kinds = ownedKinds)
         val mine = store.snapshotIdsForNegentropy(listOf(ownedAsk))
         // NOT an early return when we hold nothing: an ask we have no records
         // for is exactly a service we have never fetched, and reconciling
@@ -140,32 +171,7 @@ internal class RetractionAudit(
         // drift apart.
         val compared = diff.windows >= 1
 
-        // fetchAll, not fetchAllPages: an id set is not a time range, and
-        // paging it by `until` re-asks for events it just received. The
-        // suppression here saves BANDWIDTH: the diff names ids before
-        // anything is fetched, so a twice-refused id never becomes a REQ.
-        val origin = IngestOrigin(url, stream.healContent, stream.healRetractions)
-        val wanted = diff.needIds.filterNot { refusedIds.suppressedInWindow(it, ownedAsk.since, ownedAsk.until) }
-        val skipped = diff.needIds.size - wanted.size
-        if (skipped > 0) {
-            System.err.println("router: ${stream.name} ${url.url} skipped $skipped id(s) already twice refused")
-        }
-        var seenMin: Long? = null
-        var seenMax: Long? = null
-        val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
-        for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
-            for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
-                onEvent(event)
-                if (stream.filter.match(event)) {
-                    if (SyncCoverage.isPlausible(event.createdAt)) {
-                        seenMin = minOf(seenMin ?: event.createdAt, event.createdAt)
-                        seenMax = maxOf(seenMax ?: event.createdAt, event.createdAt)
-                    }
-                    SyncCoverage.observe(seenByKind, event.kind, event.createdAt)
-                    ingest.submit(event, stream.trusted, origin)
-                }
-            }
-        }
+        val observed = mirrorNeeded(stream, url, ownedAsk, diff.needIds, onEvent)
 
         // The comparison itself proves the two sides are level, so the claim
         // rests on `reconciledThrough` rather than on event times — which is
@@ -177,11 +183,11 @@ internal class RetractionAudit(
                 stream.name,
                 url,
                 ownedAsk,
-                seenMin,
-                seenMax,
+                observed.min,
+                observed.max,
                 paged = false,
                 reconciledThrough = startedAt,
-                observedByKind = seenByKind,
+                observedByKind = observed.byKind,
             )
         }
         if (diff.haveIds.isEmpty()) return
@@ -191,18 +197,80 @@ internal class RetractionAudit(
             )
             return
         }
+        deleteRetracted(stream, url, ask, ownedAsk, mine.size, diff)
+    }
 
-        val retracted = retracts(mine.size, diff.needIds.size, diff.haveIds.size, diff.windows)
+    /** What the download half saw, for the band record. */
+    private class Observed {
+        var min: Long? = null
+        var max: Long? = null
+        val byKind = mutableMapOf<Int, SyncCoverage.Span>()
+    }
+
+    /**
+     * THE DOWNLOAD HALF: fetch what the provider has that we lack, and ingest
+     * it. Runs whatever the delete half later decides — the file's KDoc calls
+     * that independence the point, and a private seam is what makes it
+     * structural. fetchAll, not fetchAllPages: an id set is not a time range,
+     * and paging it by `until` re-asks for events it just received. The
+     * suppression saves BANDWIDTH: the diff names ids before anything is
+     * fetched, so a twice-refused id never becomes a REQ.
+     */
+    private suspend fun mirrorNeeded(
+        stream: SyncStream,
+        url: NormalizedRelayUrl,
+        ownedAsk: Filter,
+        needIds: List<String>,
+        onEvent: suspend (Event) -> Unit,
+    ): Observed {
+        val observed = Observed()
+        val origin = IngestOrigin(url, stream.healContent, stream.healRetractions)
+        val wanted = needIds.filterNot { refusedIds.suppressedInWindow(it, ownedAsk.since, ownedAsk.until) }
+        val skipped = needIds.size - wanted.size
+        if (skipped > 0) {
+            System.err.println("router: ${stream.name} ${url.url} skipped $skipped id(s) already twice refused")
+        }
+        for (chunk in wanted.chunked(ID_FETCH_CHUNK)) {
+            for (event in client.fetchAll(url, listOf(Filter(ids = chunk)), NEG_IDLE_MS)) {
+                onEvent(event)
+                if (stream.filter.match(event)) {
+                    if (SyncCoverage.isPlausible(event.createdAt)) {
+                        observed.min = minOf(observed.min ?: event.createdAt, event.createdAt)
+                        observed.max = maxOf(observed.max ?: event.createdAt, event.createdAt)
+                    }
+                    SyncCoverage.observe(observed.byKind, event.kind, event.createdAt)
+                    ingest.submit(event, stream.trusted, origin)
+                }
+            }
+        }
+        return observed
+    }
+
+    /**
+     * THE DELETE HALF: act on what we hold that a completed reconcile says
+     * the provider no longer serves — dry-run or enforce, cascade on a
+     * wholesale retraction. Only ever called after `compared` held; never
+     * feeds the download.
+     */
+    private suspend fun deleteRetracted(
+        stream: SyncStream,
+        url: NormalizedRelayUrl,
+        ask: Filter,
+        ownedAsk: Filter,
+        mine: Int,
+        diff: NegentropyIdDiff,
+    ) {
+        val retracted = retracts(mine, diff.needIds.size, diff.haveIds.size, diff.windows)
 
         // NO SIZE GUARD, deliberately. A provider that retracts a subject
         // usually does it because the subject turned out to be a scammer —
         // exactly the score that must not survive — and a mass retraction is
         // precisely the case that matters. The completed reconcile above is
         // what makes "empty" trustworthy enough to act on.
-        val share = diff.haveIds.size.toDouble() / mine.size
+        val share = diff.haveIds.size.toDouble() / mine
         if (stream.deleteMissing == DeleteMissing.DRY_RUN) {
             System.err.println(
-                "router: ${stream.name} would delete ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%)" +
+                "router: ${stream.name} would delete ${diff.haveIds.size}/$mine record(s) (${(share * 100).toInt()}%)" +
                     " for ${url.url} after a clean ${diff.windows}-window reconcile — set deleteMissing = true to apply",
             )
             if (retracted) cascade(stream, url, ask, apply = false)
@@ -216,7 +284,7 @@ internal class RetractionAudit(
         }
         deleted.addAndGet(diff.haveIds.size.toLong())
         System.err.println(
-            "router: ${stream.name} deleted ${diff.haveIds.size}/${mine.size} record(s) (${(share * 100).toInt()}%)" +
+            "router: ${stream.name} deleted ${diff.haveIds.size}/$mine record(s) (${(share * 100).toInt()}%)" +
                 " ${url.url} no longer serves, after a clean ${diff.windows}-window reconcile",
         )
         if (retracted) cascade(stream, url, ask, apply = true)
