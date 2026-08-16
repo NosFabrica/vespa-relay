@@ -25,7 +25,6 @@ import com.typesafe.config.ConfigFactory
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import java.io.File
 import java.util.regex.PatternSyntaxException
@@ -609,18 +608,11 @@ object RouterConfigLoader {
         // lives in the `d` tag, and the author is a monitor identity. What the
         // other tags are called and what their values mean is not ours.
         val isNip66Record = kinds == listOf(RelayDiscoveryEvent.KIND)
-        // npub-ONLY where the authors are MONITOR IDENTITIES, for the reason
-        // the relay side's PubKeys spells out: hex has no checksum, so one
-        // mistyped character is a valid-looking key that is nobody, and a
-        // roster or gate built on it is empty with no error anywhere. Other
-        // kinds keep NIP-01's own spelling — a scan's `authors` is an ordinary
-        // filter field and narrowing it is not a trust statement.
-        val filter =
-            if (isNip66Record) {
-                written.copy(authors = decodeNpubs(stream, written.authors.orEmpty()).takeIf { it.isNotEmpty() })
-            } else {
-                written
-            }
+        // No re-spelling of `authors` here or anywhere: [parseFilter] has
+        // already validated them as the raw hex NIP-01 asks for, monitor
+        // identities included. A filter block is the protocol's object, and it
+        // holds the protocol's values.
+        val filter = written
         require(!(s.hasPath("maxAgeSeconds") && (filter.since != null || filter.until != null))) {
             "router: stream '$stream' bounds a $what entry with BOTH `maxAgeSeconds` and since/until — they are " +
                 "two spellings of one bound and the relative one wins, so the absolute one would be read by a " +
@@ -674,36 +666,6 @@ object RouterConfigLoader {
             refreshSeconds = if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds").coerceAtLeast(10L) else null,
         )
     }
-
-    /**
-     * Monitor identities as the operator wrote them — npub-ONLY, for the
-     * reason the relay side's PubKeys spells out: hex has no checksum, so one
-     * mistyped character is a valid-looking key that simply is not anybody,
-     * and a roster or gate built on it is empty with no error anywhere.
-     * Absent is unscoped, never a substituted identity — see
-     * [com.nosfabrica.vespa.relay.router.config.RelaySource.filter]'s authors.
-     */
-    private fun decodeNpubs(
-        stream: String,
-        raw: List<String>,
-    ): List<String> =
-        raw.map { entry ->
-            val trimmed = entry.trim().let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
-            require(!trimmed.startsWith("nsec1")) {
-                "router: stream '$stream' has an nsec where a monitor npub belongs — that is a PRIVATE key; " +
-                    "put the monitor's npub there"
-            }
-            val hex = if (trimmed.startsWith("n")) decodePublicKeyAsHexOrNull(trimmed) else null
-            requireNotNull(hex?.takeIf { it.length == 64 }) {
-                "router: stream '$stream' monitor identity does not decode as an npub — " +
-                    if (entry.trim().length == 64) {
-                        "bare hex has no checksum, so a typo is a nobody with an empty roster and no error; " +
-                            "convert it to its npub form and use that"
-                    } else {
-                        "recopy the monitor's npub1…"
-                    }
-            }
-        }
 
     /** One `{ kind = ..., tag = ..., index = ..., where = [ ] }` entry of a source's `select` list. */
     private fun parseRelaySelect(
@@ -955,8 +917,8 @@ object RouterConfigLoader {
         }
 
         return Filter(
-            ids = strs("ids"),
-            authors = strs("authors"),
+            ids = hexKeys(f, "ids", strs("ids")),
+            authors = hexKeys(f, "authors", strs("authors")),
             kinds = ints("kinds"),
             tags = tags,
             since = since,
@@ -978,6 +940,52 @@ object RouterConfigLoader {
             search = if (f.hasPath("search")) f.getString("search") else null,
         )
     }
+
+    /**
+     * A NIP-01 filter's `ids` and `authors`, VALIDATED AS RAW HEX and left
+     * that way.
+     *
+     * These fields are NIP-01's, not ours: the spec says 64-character
+     * lowercase hex, that is what goes on the wire, and a config that writes
+     * one thing while the protocol carries another makes the operator hold two
+     * spellings of the same value in their head. So a `filter { }` block here
+     * is the filter — copy one out of a REQ and it works, paste one from here
+     * into a REQ and it works.
+     *
+     * Bech32 belongs to the settings that are OURS to define, where a
+     * checksummed spelling is a free guard on a value a human typed. It does
+     * not belong inside a NIP-01 object. An `npub1…` here is refused rather
+     * than decoded, because silently accepting it would make this block
+     * "mostly NIP-01" — the worst of both.
+     *
+     * Uppercase is lowercased rather than refused: the spec says lowercase,
+     * the value is unambiguous either way, and nothing downstream cares. An
+     * `nsec1…` is called out by name — that is a PRIVATE key in a file people
+     * commit.
+     */
+    private fun hexKeys(
+        f: Config,
+        field: String,
+        raw: List<String>?,
+    ): List<String>? =
+        raw?.map { entry ->
+            val key = entry.trim().lowercase()
+            require(!key.startsWith("nsec1")) {
+                "router: filter at ${f.origin().description()} has an nsec in `$field` — that is a PRIVATE key, " +
+                    "and it does not belong in a config at all, let alone in a NIP-01 filter"
+            }
+            require(!key.startsWith("npub1") && !key.startsWith("nprofile1") && !key.startsWith("note1") && !key.startsWith("nevent1")) {
+                "router: filter at ${f.origin().description()} has a bech32 `$field` entry — a `filter { }` block " +
+                    "IS a NIP-01 filter and NIP-01 speaks hex, so this one is the 64-character hex. Bech32 stays " +
+                    "in the settings that are ours to define, not inside the protocol's own object"
+            }
+            require(key.length == 64 && key.all { it in "0123456789abcdef" }) {
+                "router: filter at ${f.origin().description()} has `$field` entry '$entry', which is not " +
+                    "64 characters of hex — NIP-01 matches these exactly, so a malformed one selects nothing " +
+                    "and says nothing"
+            }
+            key
+        }
 
     /** HOCON path segments with dots/hashes/special chars must be quoted for get*(). */
     private fun quote(key: String): String = "\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\""

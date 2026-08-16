@@ -162,26 +162,27 @@ streams {
         filter = { "kinds": [0, 10002, 10040] }
         # The monitor's verdicts ARE the relay list: kind-30166 records,
         # admitting every relay whose indexed `s` tag says syncable and whose
-        # verdict is fresher than maxAgeSeconds (measured on the verdict tag's
-        # own stamp — record createdAt proves nothing).
+        # record is newer than maxAgeSeconds. A monitor republishes the record
+        # when it re-checks, so the event's own clock dates the check — the
+        # reading every other NIP-66 consumer applies.
         #
         # WHOSE verdicts is `authors`, and it means what it means in any other
         # NIP-01 filter: left off, EVERY monitor whose 30166s reached this
         # store. On a stock deployment that is one identity, our own, because
-        # nothing here mirrors anyone else's 30166s — but if you add 30166 to a
-        # stream's kinds, or point one at a public monitor, those verdicts join
-        # this roster and the router says so on startup and on every change:
+        # nothing here mirrors anyone else's 30166s — but add 30166 to a
+        # stream's kinds, or point one at a public monitor, and those verdicts
+        # join this roster too.
         #
-        #   router: unscoped verdict source (maxAge 50400s) — admitting on
-        #   2 monitor identity(ies): npub1…, npub1…
-        #
-        # Name the identities to scope it. npub only — bare hex has no
-        # checksum, so a typo is a nobody with an empty roster and no error:
+        # A `filter { }` block IS a NIP-01 filter, so `authors` is 64-char hex,
+        # exactly as it goes on the wire — copy one out of a REQ and it works.
+        # Bech32 stays in the settings that are ours to define (RELAY_NSEC and
+        # the relay's pubkey lists); it does not go inside the protocol's own
+        # object, and an npub here is refused rather than quietly decoded.
         relaySource = [
             {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
                 # ...naming the monitors to trust, and nobody else:
-                # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["npub1..."] }
+                # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["3bf0c63f…"] }
                 # How stale a verdict may be and still admit its relay, measured
                 # on the record's own clock. There is NO default: nothing in the
                 # router knows which filters describe a measurement that goes
@@ -199,12 +200,12 @@ streams {
                 refreshSeconds = 120
             }
         ]
-        # ROTATING RELAY_NSEC: name the OLD npub here first. The new key starts
+        # ROTATING RELAY_NSEC: name the OLD key's hex here first. The new one starts
         # writing verdicts the moment it boots, but the store's existing ones
         # are the old key's, and a source scoped to the new identity alone
         # selects nothing until a full sweep has run — an empty roster for up
         # to `monitor.sweepSeconds`. Scoped to both, or left unscoped, the
-        # roster never dips and the old npub comes out once the new one covers
+        # roster never dips and the old key comes out once the new one covers
         # the corpus.
         auditSeconds = 604800  # weekly negentropy audit of the covered past
     }
@@ -251,7 +252,7 @@ streams {
         # url waits like any new relay: the fast lane probes it within minutes.
         #
         # Any NIP-01 filter can be the gate. This one is monitor verdicts; add
-        # `"authors": ["npub1..."]` to name whose, or point it at a curated list
+        # `"authors": ["3bf0c63f…"]` to name whose, or point it at a curated list
         # entirely — with a `select` saying where that list keeps its urls,
         # since only kind 30166 has the position fixed by the protocol (the `d`
         # tag). Nothing in the router knows that `s` is the tag or that

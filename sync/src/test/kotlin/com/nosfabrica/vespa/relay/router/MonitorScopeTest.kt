@@ -27,8 +27,6 @@ import com.nosfabrica.vespa.relay.router.discovery.RelayVerdictRecord
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
-import com.vitorpamplona.quartz.nip19Bech32.toNpub
-import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
@@ -104,8 +102,9 @@ class MonitorScopeTest {
     @Test
     fun `naming authors keeps every other monitor out`() =
         runBlocking {
-            val npub = Hex.decode(ours.pubKey).toNpub()
-            val roster = rosterOf(storeWithBothMonitors(), authors = ""","authors": ["$npub"]""").rebuild()
+            // Hex, because a `filter { }` block is a NIP-01 filter and NIP-01
+            // speaks hex. Bech32 stays in the settings that are ours to define.
+            val roster = rosterOf(storeWithBothMonitors(), authors = ""","authors": ["${ours.pubKey}"]""").rebuild()
             assertEquals(
                 setOf(ourRelay),
                 roster.asks.keys,

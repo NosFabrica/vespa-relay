@@ -198,7 +198,7 @@ class RouterConfigTest {
                 streams {
                     s {
                         dir = "down"
-                        filter = { "kinds": [1], "authors": ["abc"], "#t": ["nostr","bitcoin"], "search": "hello" }
+                        filter = { "kinds": [1], "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], "#t": ["nostr","bitcoin"], "search": "hello" }
                         urls = ["wss://x.example"]
                     }
                 }
@@ -206,7 +206,7 @@ class RouterConfigTest {
             )
         val f = cfg.streams.single().filter
         assertEquals(listOf(1), f.kinds)
-        assertEquals(listOf("abc"), f.authors)
+        assertEquals(listOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), f.authors)
         assertEquals("hello", f.search)
         assertEquals(listOf("nostr", "bitcoin"), f.tags?.get("t"))
     }
@@ -234,7 +234,7 @@ class RouterConfigTest {
                             }
                             {
                                 select = [ { tag = "e", index = 2 } ]
-                                filter = { "kinds": [1], "limit": 1000, "authors": ["abc"] }
+                                filter = { "kinds": [1], "limit": 1000, "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }
                             }
                         ]
                     }
@@ -281,7 +281,7 @@ class RouterConfigTest {
         val hints = outbox.sources[1]
         assertEquals(listOf(1), hints.filter.kinds)
         assertEquals(1000, hints.filter.limit)
-        assertEquals(listOf("abc"), hints.filter.authors)
+        assertEquals(listOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), hints.filter.authors)
 
         val assertions = cfg.streams.first { it.name == "assertions" }.discovery!!
         assertNull(
@@ -393,7 +393,7 @@ class RouterConfigTest {
         // Any of limit / since / authors narrows it enough to be safe.
         RouterConfigLoader.parse(sourced("""{ "kinds": [1], "limit": 1000 }"""))
         RouterConfigLoader.parse(sourced("""{ "kinds": [1], "since": 1750000000 }"""))
-        RouterConfigLoader.parse(sourced("""{ "kinds": [1], "authors": ["abc"] }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [1], "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }"""))
         // `until` alone doesn't: it caps the top and leaves all of history below.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [1], "until": 1750000000 }"""))
@@ -890,7 +890,7 @@ class RouterConfigTest {
             RouterConfigLoader.parse(stream("""relaySource = [ { filter = { "kinds": [10002] } } ]"""))
         }
         assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(sourced("""{ "authors": ["abc"] }"""))
+            RouterConfigLoader.parse(sourced("""{ "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }"""))
         }
     }
 
@@ -1222,7 +1222,7 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a verdict source's authors name the monitor to trust, as an npub`() {
+    fun `a filter's authors are raw hex, because a filter block is a NIP-01 filter`() {
         fun stream(source: String) =
             """
             streams {
@@ -1240,7 +1240,7 @@ class RouterConfigTest {
             RouterConfigLoader.parse(
                 stream(
                     """{ filter = { "kinds": [30166], "#s": ["syncable"],
-                         "authors": ["npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"] } }""",
+                         "authors": ["0000000000000000000000000000000000000000000000000000000000000001"] } }""",
                 ),
             )
         val namedSource =
@@ -1249,8 +1249,9 @@ class RouterConfigTest {
                 .discovery!!
                 .sources
                 .single()
-        // The stored Filter speaks NIP-01, so it carries the DECODED hex —
-        // the npub is the config spelling, not the wire one.
+        // Carried through untouched: what the operator wrote IS what goes on
+        // the wire. Copy a filter out of a REQ and it works here; paste one
+        // from here into a REQ and it works there.
         assertEquals(listOf("0".repeat(63) + "1"), namedSource.filter.authors)
         // Absent is the unscoped read, and stays absent on the filter: an
         // EMPTY authors list would be a predicate nothing satisfies.
@@ -1265,17 +1266,36 @@ class RouterConfigTest {
                 .single()
                 .filter.authors,
         )
-        // Bare hex has no checksum — a typo is a nobody with an empty roster
-        // and no error anywhere — and an nsec is a private key in a public
-        // file. Both refused where they are typed, same as PubKeys.
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"a".repeat(64)}"] } }"""))
+        // Bech32 is refused rather than decoded: accepting it would make the
+        // block "mostly NIP-01", which is the worst of both. An nsec is called
+        // out by name — a PRIVATE key in a file people commit. And a value
+        // that is neither is refused for shape, since NIP-01 matches these
+        // exactly and a malformed one selects nothing and says nothing.
+        // …and hex is simply accepted.
+        RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"a".repeat(64)}"] } }"""))
+        for (bad in listOf(
+            "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+            "abc",
+            "z".repeat(64),
+        )) {
+            assertFailsWith<IllegalArgumentException>(bad) {
+                RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["$bad"] } }"""))
+            }
         }
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(
-                stream("""{ filter = { "kinds": [30166], "authors": ["nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"] } }"""),
-            )
-        }
+        // Uppercase is lowercased, not refused: unambiguous, and nothing
+        // downstream cares which case the operator's clipboard held.
+        assertEquals(
+            listOf("a".repeat(64)),
+            RouterConfigLoader
+                .parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"A".repeat(64)}"] } }"""))
+                .streams
+                .single()
+                .discovery!!
+                .sources
+                .single()
+                .filter.authors,
+        )
     }
 
     @Test
@@ -1467,7 +1487,7 @@ class RouterConfigTest {
                     relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]
                     gatedBy = [
                         { select = [ { kind = 10002, tag = "r", marker = "write" } ],
-                          filter = { "kinds": [10002], "authors": ["npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"] } }
+                          filter = { "kinds": [10002], "authors": ["0000000000000000000000000000000000000000000000000000000000000001"] } }
                     ]
                     """.trimIndent(),
                 ),

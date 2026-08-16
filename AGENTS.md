@@ -236,7 +236,8 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     EnvSettings.kt      NIP-11 limits etc. from env, via `env.intOr(...)` rather
                         than `env["..."]` — grep for both or you will conclude a
                         working setting is dead
-    PubKeys.kt          npub-only parsing for every pubkey setting
+    PubKeys.kt          npub-only parsing for every pubkey SETTING — not for
+                        NIP-01 filter fields, see the router's hexKeys
     RelayAddresses.kt   the OTHER addresses this relay answers at — the .onion
                         Tor publishes into RELAY_ONION_HOSTNAME_FILE, read on
                         demand because the address is minted after we boot
@@ -828,7 +829,7 @@ each one was tried and removed. What the loader MAY key on is kind 30166,
 because NIP-66 fixes two things about that kind and neither is a semantic
 guess: the url is in the `d` tag, and the author is a monitor identity. Whose
 verdicts count is the
-source's `authors` npubs, and **absent means unscoped** — every monitor whose
+source's `authors`, and **absent means unscoped** — every monitor whose
 30166s reached the store, exactly as an absent `authors` means on any NIP-01
 filter. There is deliberately no fallback to the router's own signer: it made
 the trust anchor rotate with `RELAY_NSEC` (emptying every roster, silently,
@@ -837,7 +838,7 @@ that had mirrored a foreign monitor's verdicts on purpose. Admitting is safe
 unscoped because everything admitted is still dialled and measured; **the
 hold-out read is the asymmetric one and stays author-bound**. `StreamWorld`'s
 dead query — a rtt-less 30166 inside the TTL means "checked, could not open" —
-is scoped to our signer plus the npubs the config names, because unscoped, one
+is scoped to our signer plus the keys the config names, because unscoped, one
 record from anybody starves a relay out of the candidate set permanently: held
 out it is never dialled, never re-measured, and the mark never clears.
 `ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
@@ -1087,6 +1088,17 @@ the read behind it enforced our own rules epoch — could only ever mean OUR
 monitor's, whatever identity the block named. Both of those are gone, so a
 third-party NIP-66 monitor works as a gate, and so does something that is not a
 monitor at all.
+
+**A `filter { }` block IS a NIP-01 filter, so its `ids` and `authors` are raw
+hex.** Copy one out of a REQ and it works here; paste one from here into a REQ
+and it works there. Bech32 belongs to the settings that are OURS to define —
+`RELAY_NSEC`, `RELAY_ADMIN_PUBKEYS`, `ALLOW_PUBKEYS` — where a checksummed
+spelling is a free guard on a value a human typed. Inside the protocol's own
+object it is a category error, so `RouterConfigLoader.hexKeys` refuses an
+`npub1…` rather than decoding it: accepting it would make the block "mostly
+NIP-01", the worst of both. The guard that survives is shape — 64 characters of
+hex, uppercase lowercased — because NIP-01 matches these exactly and a malformed
+one selects nothing and says nothing.
 
 **Two knobs are not filter fields, and both exist because a config outlives the
 day it was written.** `maxAgeSeconds` is the relative form of `since`, whose
