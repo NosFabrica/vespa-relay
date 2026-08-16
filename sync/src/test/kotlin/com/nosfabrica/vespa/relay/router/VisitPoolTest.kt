@@ -219,6 +219,16 @@ class VisitPoolTest {
     }
 
     @Test
+    fun `an audit that cannot complete is spaced, not retried on the revisit floor`() {
+        // A failed audit records no band and so stays due; the attempt
+        // spacing is what stands between that and a full re-sweep every 60s.
+        // A quarter of the knob, floored at 15 minutes, capped at 6 hours.
+        assertEquals(900L, VisitPool.attemptSpacingSeconds(3600L))
+        assertEquals(21_600L, VisitPool.attemptSpacingSeconds(86_400L))
+        assertEquals(21_600L, VisitPool.attemptSpacingSeconds(604_800L), "a weekly audit still retries within a shift")
+    }
+
+    @Test
     fun `a rebuilt roster with the same asks is not news — one more ask is`() {
         // The pool compares a url's want list across rebuilds with `wants`,
         // and both directions of that comparison carry a failure mode.

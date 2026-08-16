@@ -159,6 +159,33 @@ class SyncBandsTest {
     }
 
     @Test
+    fun `verifiedAt advances with every reconcile and survives a reboot — quartz's fullAt does neither`() {
+        // The audit's clock. quartz's Band.widen keeps the OLD fullAt on
+        // every non-stale merge, so read as "last verified" it freezes and
+        // the audit re-fires on every visit — one relay was measured taking
+        // 13 full history sweeps in 40 minutes. The router's own stamp must
+        // do the two things fullAt cannot: move forward on each completed
+        // reconcile, and come back after a restart.
+        val f = tempFile()
+        val c = SyncBands(f)
+        assertNull(c.verifiedAt(mirror, relay, profiles), "no reconcile yet, no claim")
+        val first = now() - 600
+        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = first)
+        assertEquals(first, c.verifiedAt(mirror, relay, profiles))
+        val second = now() - 60
+        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = second)
+        assertEquals(second, c.verifiedAt(mirror, relay, profiles), "the SECOND reconcile advances the clock")
+        // A paged record is a walk, not a verification — the clock holds.
+        c.record(mirror, relay, profiles, now() - 30, now(), paged = true)
+        assertEquals(second, c.verifiedAt(mirror, relay, profiles))
+        c.flush()
+        val rebooted = SyncBands(f)
+        assertEquals(second, rebooted.verifiedAt(mirror, relay, profiles), "the stamp rides the band file")
+        assertNull(rebooted.verifiedAt(mirror, other, profiles), "per relay, like the band it belongs to")
+        f.delete()
+    }
+
+    @Test
     fun `a reconcile that downloaded nothing still records coverage`() {
         // The empty case is the WHOLE point: nothing came back because we already
         // have it, and that is exactly when the next run should ask for a sliver.

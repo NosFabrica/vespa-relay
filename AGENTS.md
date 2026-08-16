@@ -875,10 +875,17 @@ came back. The `assertions` stream therefore charted the providers that
 happened to hand over an event and none of the ones it was in sync with, which
 is the whole population of a mirror that is keeping up. `RetractionAudit`
 records the reconcile band (`reconciledThrough`), and the band's shape is
-pinned hermetically in `SyncBandsTest`. The same `fullAt` is the audit's
-clock: a completed catch-up stamps it too, so a new ask that DELIVERED pages
-runs its first retraction one `verifySeconds` later, while an ask whose pages
-came back empty (no band) audits on its very first visit.
+pinned hermetically in `SyncBandsTest`. The audit's clock is the router's own
+`SyncBands.verifiedAt` stamp, advanced by every `reconciledThrough` record and
+persisted beside the band — NOT quartz's `fullAt`, which `Band.widen` freezes
+on every non-stale merge (it means "last walk from nothing"; read as "last
+verified" it made every audit re-fire on each visit — 13 sweeps of one relay
+in 40 minutes, measured). Callers fall back to `fullAt` where no stamp exists,
+so a fresh ask that DELIVERED pages still runs its first audit one
+`verifySeconds` after its catch-up, and one whose pages came back empty (no
+band) audits on its very first visit. `VisitPool.attemptSpacingSeconds` is the
+other half: an audit that cannot COMPLETE advances no clock, so attempts
+themselves are spaced instead of retried on the revisit floor.
 
 **The arithmetic is quartz's** — `SyncCoverage`, in
 `nip01Core.relay.client.accessories`, beside `fetchAllPages` and

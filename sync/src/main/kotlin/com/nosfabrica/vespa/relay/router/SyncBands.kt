@@ -128,6 +128,35 @@ class SyncBands(
      */
     private val folded = ConcurrentHashMap<String, Set<String>>()
 
+    /**
+     * THE AUDIT'S OWN CLOCK, because quartz's `fullAt` is not it.
+     *
+     * `Band.widen` keeps the OLD `fullAt` on every non-stale merge — upstream
+     * defines it as "when the last pass that started from nothing finished",
+     * and only a stale replace (the 7-day full resync) restarts it. Read as
+     * "last verified", it freezes: the moment a band aged past
+     * `verifySeconds`, every visit's audit was due again, and one relay was
+     * measured taking 13 full history sweeps in 40 minutes. So the router
+     * keeps its own stamp, advanced by every `reconciledThrough` record and
+     * persisted beside the band it belongs to. Callers fall back to `fullAt`
+     * when no stamp exists yet — a fresh band's paged full walk still defers
+     * the first audit one `verifySeconds`, exactly as before.
+     */
+    private data class VerifiedKey(
+        val stream: String,
+        val filter: String,
+        val relay: String,
+    )
+
+    private val verified = ConcurrentHashMap<VerifiedKey, Long>()
+
+    /** When this ask's history was last VERIFIED by a completed reconcile, or null before its first. */
+    fun verifiedAt(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ): Long? = verified[VerifiedKey(stream, filter.toJson(), url.url)]
+
     init {
         val pruned = load()
         // restore() does not fire onChange, but stay defensive: reopening a
@@ -174,6 +203,10 @@ class SyncBands(
         drained: Boolean = false,
     ) {
         coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
+        if (reconciledThrough != null) {
+            verified[VerifiedKey(stream, filter.toJson(), url.url)] = reconciledThrough
+            dirty = true
+        }
     }
 
     fun coveringWindow(
@@ -387,6 +420,9 @@ class SyncBands(
                         // Straight back into the pair, which is what the two
                         // inner levels have always been.
                         bandOf(band.jsonObject)?.let { restored[SyncCoverage.BandKey(relay, filter)] = it }
+                        band.jsonObject["verifiedAt"]?.jsonPrimitive?.longOrNull?.let {
+                            verified[VerifiedKey(streamOrFlatKey, filter, relay)] = it
+                        }
                     }
                 }
                 if (restored.isNotEmpty()) coverage(streamOrFlatKey).restore(restored)
@@ -413,7 +449,10 @@ class SyncBands(
     }
 
     /** One band, as it is written. */
-    private fun bandOf(band: SyncCoverage.Band): JsonObject =
+    private fun bandOf(
+        band: SyncCoverage.Band,
+        verifiedAt: Long?,
+    ): JsonObject =
         buildJsonObject {
             // min/max are the outer edges across every kind, written for two
             // readers: a human debugging why a relay re-synced, and a ROLLBACK
@@ -423,6 +462,9 @@ class SyncBands(
             put("max", band.maxCreatedAt)
             put("complete", band.complete)
             put("fullAt", band.fullAt)
+            // The router's own audit clock, absent until the ask's first
+            // completed reconcile — see [verified]. An old build ignores it.
+            verifiedAt?.let { put("verifiedAt", it) }
             put(
                 "spans",
                 buildJsonObject {
@@ -521,7 +563,9 @@ class SyncBands(
                                     put(
                                         filter,
                                         buildJsonObject {
-                                            byRelay.forEach { (relay, band) -> put(relay, bandOf(band)) }
+                                            byRelay.forEach { (relay, band) ->
+                                                put(relay, bandOf(band, verified[VerifiedKey(stream, filter, relay)]))
+                                            }
                                         },
                                     )
                                 }
