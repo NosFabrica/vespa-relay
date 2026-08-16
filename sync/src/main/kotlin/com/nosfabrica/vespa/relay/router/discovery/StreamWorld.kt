@@ -26,9 +26,11 @@ import com.nosfabrica.vespa.relay.router.config.MonitorConfig
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -51,7 +53,17 @@ internal class StreamWorld(
     private val streams: List<SyncStream>,
     private val probe: ReachabilityProbe,
     private val ingest: IngestPipeline,
-    private val monitor: RelayMonitor?,
+    /**
+     * Whose unreachability records may hold a url out of the candidate set —
+     * this router's signer, plus every monitor npub the config names. NEVER
+     * every author: quartz's own dead set honours any rtt-less 30166 within
+     * the TTL (ForeignMonitorTest pins it), and this router mirrors
+     * strangers' 30166s by design, so unscoped, anyone whose records we
+     * mirror could starve a relay out of the roster indefinitely — held out
+     * of the candidate set, it is never dialled, never re-measured, and
+     * never earns the live record that would clear the mark.
+     */
+    private val monitorAuthors: List<String>,
     private val tor: TorTransport?,
     override val sockets: AliasFolding.Sockets,
     /**
@@ -116,6 +128,27 @@ internal class StreamWorld(
     )
 
     /**
+     * The author-scoped dead set — see [monitorAuthors] for why quartz's
+     * unscoped one cannot be used here. Same convention as quartz's
+     * [RelayReachabilityStore]: within the TTL, a 30166 WITHOUT `rtt-open`
+     * is "checked and could not open"; kind 30166 is addressable per
+     * (author, url), so the current record is the verdict. The author
+     * re-check on the returned events is one string compare of defence in
+     * depth over the store's own `authors` filter.
+     */
+    private suspend fun ownDead(): Set<NormalizedRelayUrl> {
+        if (monitorAuthors.isEmpty()) return emptySet()
+        val since = (System.currentTimeMillis() / 1000) - RelayReachabilityStore.DEFAULT_TTL_SECONDS
+        return store
+            .query<RelayDiscoveryEvent>(
+                Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = monitorAuthors, since = since),
+            ).asSequence()
+            .filter { it.pubKey in monitorAuthors && it.rttOpen() == null }
+            .mapNotNull { it.relay() }
+            .toSet()
+    }
+
+    /**
      * Urls a signed record already calls dead are held out: they cannot be
      * fingerprinted, so they cannot be folded, and dialling them is a connect
      * timeout spent re-learning what the record says. Not permanent — the record
@@ -126,7 +159,7 @@ internal class StreamWorld(
      * How many, and out of what, is [lastDerivation].
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
-        val dead = monitor?.deadSet().orEmpty()
+        val dead = ownDead()
         val all = LinkedHashSet<NormalizedRelayUrl>()
         // Kept rather than only skipped, so the funnel's first branch divides.
         // An operator who excluded a hundred urls and then asks why the fan-out
@@ -192,7 +225,7 @@ internal class StreamWorld(
      * the exclude lists apply inside [RelayDiscovery.discover] as ever.
      */
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
-        val dead = monitor?.deadSet().orEmpty()
+        val dead = ownDead()
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
         derive("fast lane", { dynamic ->
             dynamic.copy(sources = dynamic.sources.map { it.copy(filter = it.filter.copy(since = since)) })

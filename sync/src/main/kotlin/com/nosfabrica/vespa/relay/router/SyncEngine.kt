@@ -373,7 +373,26 @@ class SyncEngine(
      * [dynamic]: the monitor is one of that object's constructor arguments, so
      * asking it for the world is a cycle Kotlin can only be talked out of.
      */
-    private val world = StreamWorld(store, dynamicStreams, probe, ingest, monitor, tor, sockets, monitorSources = config.monitor)
+    private val world =
+        StreamWorld(
+            store,
+            dynamicStreams,
+            probe,
+            ingest,
+            // Whose unreachability records may hold a candidate out: our own
+            // signer, plus every monitor npub the config's verdict sources
+            // and certified gates name — the operator's trust statements.
+            monitorAuthors =
+                (
+                    listOfNotNull(signer?.pubKey) +
+                        dynamicStreams
+                            .flatMap { it.dynamic?.sources.orEmpty() }
+                            .flatMap { it.verdicts?.authors.orEmpty() + it.certified?.authors.orEmpty() }
+                ).distinct(),
+            tor = tor,
+            sockets = sockets,
+            monitorSources = config.monitor,
+        )
 
     /**
      * The verdict the sync plane selects on — `"#s": ["syncable"]` — plus the
@@ -885,7 +904,7 @@ class SyncEngine(
             // of the network we stopped looking at.
             monitor?.deadSet()?.takeIf { it.isNotEmpty() }?.let { dead ->
                 System.err.println(
-                    "router: health ${dead.size} relay(s) skipped on earlier NIP-66 records" +
+                    "router: health ${dead.size} relay(s) carry current NIP-66 unreachability records (our own hold candidates out)" +
                         " (top: ${dead.take(3).joinToString { it.url }})",
                 )
             }

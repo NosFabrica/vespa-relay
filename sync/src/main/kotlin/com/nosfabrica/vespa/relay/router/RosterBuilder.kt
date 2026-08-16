@@ -174,13 +174,18 @@ internal class RosterBuilder(
     }
 
     /**
-     * A certified scan's relay list: the same `discover -> certifiedOnly`
-     * chain the legacy engine ran, cached for the stream's `refreshSeconds`
+     * A certified scan's relay list, cached for the stream's `refreshSeconds`
      * — deriving a scan is a store walk, and the roster loop ticks far more
      * often than the list changes. An EMPTY result is cached only briefly:
-     * "no provider lists yet" is the state the next ingested event ends, and
-     * a full refresh period of blindness to it was the legacy engine's
-     * `waiting` retry, relearned.
+     * "no provider lists yet" is the state the next ingested event ends.
+     *
+     * Discovered and gated PER SOURCE: each scan's own `certified` block —
+     * its authors AND its freshness — judges only the relays that source
+     * supplied. One gate across the union (the old "strictest" arithmetic,
+     * chosen by maxAge alone) enforced the winning gate's authors against
+     * every source's relays, silently discarding a second source's trust
+     * binding: relays certified only by ITS named monitor were held out for
+     * lacking the other's verdict.
      */
     private suspend fun certifiedScan(
         stream: SyncStream,
@@ -188,47 +193,37 @@ internal class RosterBuilder(
     ): List<DiscoveredRelay> {
         val nowMs = System.currentTimeMillis()
         scans[stream.name]?.takeIf { it.expiresAtMs > nowMs }?.let { return it.relays }
-        val discovered =
-            RelayDiscovery.discover(
-                store,
-                dynamic,
-                skip = setOfNotNull(store.relay),
-                allowOnion = tor != null,
-            )
-        // The fold, applied where the legacy cycle applied it. `dropFolded`
-        // wants the WHOLE fold set every pass — it diffs against last time,
-        // and a url missing from the set un-hides — so it is called here on
-        // the scan clock with the full discovered universe, never with an
-        // increment.
-        val folded = foldedAway(discovered.map { it.url })
+        val perSource =
+            dynamic.scanSources.map { source ->
+                source to
+                    RelayDiscovery.discover(
+                        store,
+                        dynamic.copy(sources = listOf(source)),
+                        skip = setOfNotNull(store.relay),
+                        allowOnion = tor != null,
+                    )
+            }
+        // The fold, applied where the legacy cycle applied it — over the
+        // WHOLE discovered universe, because `dropFolded` diffs against last
+        // time and a url missing from the set un-hides. Called on the scan
+        // clock, never with an increment.
+        val folded = foldedAway(perSource.flatMap { (_, found) -> found.map { it.url } }.distinct())
         bands.dropFolded(stream.name, folded.keys, keep = keepBands)
-        val scanned = if (folded.isEmpty()) discovered else discovered.filter { it.url !in folded }
-        // The fork only admits all-certified scans, but the strictest gate is
-        // taken rather than assumed — same arithmetic as the legacy engine's.
-        val gate = dynamic.scanSources.mapNotNull { it.certified }.minByOrNull { it.maxAgeSeconds }
         val relays =
-            when {
-                gate == null -> {
-                    scanned
-                }
-
-                else -> {
-                    val authors = monitorIdentity(gate.authors, stream.name, "gates its scan on verdicts")
-                    if (authors == null) {
-                        emptyList()
-                    } else {
-                        RelayDiscovery
-                            .certifiedOnly(store, scanned, authors, gate.maxAgeSeconds, allowOnion = tor != null)
-                            .also {
-                                if (it.size != scanned.size) {
-                                    System.err.println(
-                                        "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +
-                                            "held out uncertified (no fresh syncable verdict); the monitor's fast lane is their way in",
-                                    )
-                                }
-                            }
+            perSource.flatMap { (source, found) ->
+                val scanned = if (folded.isEmpty()) found else found.filter { it.url !in folded }
+                val gate = source.certified ?: return@flatMap scanned
+                val authors = monitorIdentity(gate.authors, stream.name, "gates its scan on verdicts") ?: return@flatMap emptyList()
+                RelayDiscovery
+                    .certifiedOnly(store, scanned, authors, gate.maxAgeSeconds, allowOnion = tor != null)
+                    .also {
+                        if (it.size != scanned.size) {
+                            System.err.println(
+                                "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +
+                                    "held out uncertified (no fresh syncable verdict); the monitor's fast lane is their way in",
+                            )
+                        }
                     }
-                }
             }
         val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else dynamic.refreshSeconds * 1000L
         scans[stream.name] = ScannedList(nowMs + holdMs, relays)
