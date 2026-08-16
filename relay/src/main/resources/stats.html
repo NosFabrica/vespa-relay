@@ -812,6 +812,10 @@
   .sy-name { font-weight: 600; }
   .sy-meta, .sy-sub { color: var(--muted); }
   .sy-sub { font-size: 12px; }
+  /* The loud tone inside a stream's sub line, matching `.sy-bg s` below: the
+     tag is `s` because that is what this card marks a fault with, and the
+     browser's own strikethrough is the one thing it must not mean. */
+  .sy-sub s { text-decoration: none; color: var(--warn); }
   /* A LEVEL the reader can compare across streams, so the track is always the
      full width and only the fill moves. */
   .sy-track { position: relative; height: 7px; border-radius: 4px; background: var(--bar); overflow: hidden; margin: 6px 0 4px; }
@@ -914,7 +918,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import { STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf, probeProgress } from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf, measuringOf, probeProgress, rotationOf } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1879,9 +1883,40 @@ function streamBlock(s) {
   const box = el("div", "sy-stream");
   const top = el("div", "sy-top");
   top.appendChild(el("span", "sy-name", s.name));
-  top.appendChild(el("span", "sy-meta",
-    `${s.phase || "idle"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}`));
+  const meta = el("span", "sy-meta",
+    `${s.phase || "idle"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}`);
+  // THE PHASE WORD'S OWN DEFINITION, where the document has one. `rotating` and
+  // `holding` are the two that read as a stall and are not, and both had a
+  // glossary entry with nowhere to hang: the word was drawn as bare text, so
+  // "rotating for 58m" was a sentence a reader could only guess at.
+  const phaseWhy = term(s.phase);
+  if (phaseWhy) meta.title = phaseWhy;
+  top.appendChild(meta);
   box.appendChild(top);
+  // A ROTATING STREAM'S WHOLE STATE. It has no pass, no fraction and no cycle,
+  // so every mark below is absent for it and the row was the phase word alone.
+  const rot = rotationOf(s);
+  if (rot) {
+    const line = el("div", "sy-sub");
+    if (rot.waiting) {
+      // Drawn LOUD, because it is the one rotating state that is not the
+      // stream working: nothing is certified for it yet, and the fitness row
+      // in the section below is where the wait is.
+      const none = el("s", null, "no certified relay yet — waiting on the fitness pass to sign the first `syncable`");
+      none.title = term("roster");
+      line.appendChild(none);
+    } else {
+      const riding = el("span", null, `riding ${fmt(rot.roster)} certified relay(s)`);
+      riding.title = term("roster");
+      line.appendChild(riding);
+      if (rot.tails != null) {
+        const tails = el("span", null, ` · ${fmt(rot.tails)} holding a live tail`);
+        tails.title = term("tails");
+        line.appendChild(tails);
+      }
+    }
+    box.appendChild(line);
+  }
   if (s.fraction != null) {
     const track = el("div", "sy-track");
     const fill = el("i");
@@ -1985,11 +2020,42 @@ function backgroundPanel(progress) {
     const name = el("b", null, known ? known[1] : p.name);
     if (known) name.title = known[2];
     box.appendChild(name);
-    box.appendChild(el("em", null,
-      `${p.phase || "unknown"}${p.nextInSec ? ` · next in ${fmtDur(p.nextInSec)}` : ""}`));
+    box.appendChild(phaseCell(p));
     box.appendChild(processorFact(p));
   }
   return box;
+}
+
+/**
+ * THE CLOCK CELL: what the processor is doing, and either where the pass in
+ * flight has got to or when the next one is due.
+ *
+ * The two are never both there — the monitor unsets its countdown while a pass
+ * runs — and that is exactly why this cell used to go blank on the passes worth
+ * watching: a stability pass runs for hours, and for all of them the line read
+ * `measuring` with the one number on it gone. `measuringOf` is the decision, in
+ * `/web/shared/sync.js`; both branches are appended the same way so a router
+ * publishing neither still gets its phase word.
+ */
+function phaseCell(p) {
+  const cell = el("em", null, p.phase || "unknown");
+  const run = measuringOf(p);
+  if (run) {
+    // The position, then the estimate — and the estimate only when the router
+    // sent one. It is withheld until a unit has landed and once the last one
+    // has, and inventing "~0s left" from its absence is the exact reading the
+    // paging ETA was fixed for.
+    const done = el("span", null,
+      ` · ${fmt(run.attempted)} of ${fmt(run.toProbe)} ${run.unit}(s) this pass` +
+      (run.etaSec != null ? `, ~${fmtDur(run.etaSec)} left` : ""));
+    done.title = term("measuring");
+    cell.appendChild(done);
+  } else if (p.nextInSec) {
+    const next = el("span", null, ` · next in ${fmtDur(p.nextInSec)}`);
+    next.title = term("nextInSec");
+    cell.appendChild(next);
+  }
+  return cell;
 }
 
 /**

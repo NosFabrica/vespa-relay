@@ -175,6 +175,13 @@ class FitnessPass(
             }
 
             val toDial = remaining.filter { it !in shaky }
+            // WHAT THIS PASS IS ABOUT TO WALK, published before the first dial
+            // — see [Processors.Measuring]. The two free refusals above are
+            // deliberately outside it: they cost no socket and are all decided
+            // before this line, so counting them would open every pass at a
+            // position it did not earn and mislead the rate the ETA is drawn
+            // from.
+            progress.measuring(toDial.size, Processors.UNIT_URL)
             val gate = Semaphore(concurrency)
             // A week back, for the same reason the consistency pass anchors
             // there: an anchored ask against a settled window is the only way
@@ -213,7 +220,12 @@ class FitnessPass(
                                 sockets.release(url)
                             }
                         }
-                    }
+                        // FROM THE JOB'S COMPLETION, for the reason the other
+                        // two passes carry: this url is behind the pass
+                        // however it ended, and both of the early returns
+                        // above are verdicts a reader is waiting on as much as
+                        // a `syncable` is.
+                    }.invokeOnCompletion { progress.attempted() }
                 }
             }
 

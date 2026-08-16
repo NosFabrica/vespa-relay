@@ -1016,6 +1016,19 @@ which is why `pending` is five thousand and not a fault), `fraction`, `etaSec`,
 `reached`, `collected`/`collectedTotal`, `slotsFree`/`slotsNeeded`, `nextInSec`,
 `retryInSec` and `reason`. Only what a phase can answer is written.
 
+**`rotating` had no numbers at all until it was given its own two.** A
+visit-mode stream has no pass, no fraction and no cycle — its world is the
+monitor's verdicts and its engine is the pool — so every member above is absent
+for it and the card drew `rotating for 58m` and nothing else, identically for a
+stream riding four hundred relays and for one riding none. It publishes `roster`
+and `tails` now, the pool's own words for both quantities. It used to publish
+the roster size as `running`, which is defined as "relays this stream has a
+WORKER on right now" and is the opposite of what a roster is: the pool visits a
+handful at a time and most of the list sits between visits. **An empty roster is
+the reading worth having** — that is a stream waiting on the fitness pass to
+sign its first `syncable`, which is the state that looked exactly like a busy
+one, and the card says so in the fault tone.
+
 **`reached` is the one that matters**, and it wants drawing on the coverage
 axis rather than in a sentence. It is the oldest `created_at` a stream's paged
 walks have got to: on an unbounded walk `fraction` rounds to zero for hours
@@ -1175,6 +1188,27 @@ whichever stream was last. It strengthens the ordering the passes already
 depended on: the fold now finishes on every stream before the stability gate
 measures anything, so no stability walk is spent on a url another stream's fold
 was about to remove.
+
+**A PASS IN FLIGHT PUBLISHES WHERE IT HAS GOT TO** — `measuring: {unit,
+attempted, toProbe, etaSec}`, and it is the only member of a processor row that
+moves between passes; every other one describes the pass that ENDED. It exists
+because the row went blind exactly when it became interesting: a stability pass
+runs for hours, `lastPassSec` belongs to the pass before it, and `nextInSec` is
+deliberately unset while a pass runs (a pass takes as long as it takes, so
+nothing has computed when the next one is due). What was left was the word
+`measuring` with no size, no position and no end. Each pass declares its set
+with `Processors.Handle.measuring` the moment it derives it and ticks a unit off
+with `attempted` from the job's completion — from `invokeOnCompletion`, not from
+the bottom of the body, because most of a pass over a discovered corpus ends in
+an early return and a position that only counted successes would sit still while
+the pass worked hardest. The `unit` is carried because the passes do not count
+the same thing: the gate and the fitness pass decide a `url`, the fold decides a
+`host` and dials every url of one to do it. `toProbe` is the pass's OWN set, not
+`candidates` — both passes drop everything already carrying a verdict — and
+`etaSec` is withheld until a unit has landed, for the reason the paging ETA is
+remembered for. The fold walks its groups widest-first, so its estimate reads
+long and improves, which is the safe direction for a number someone uses to
+decide whether to wait.
 
 **Three words, and they are not synonyms.** "Done" covered all three, and the
 least meaningful of them was the one being read as progress:

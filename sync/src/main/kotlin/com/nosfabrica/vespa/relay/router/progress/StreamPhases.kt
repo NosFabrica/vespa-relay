@@ -331,6 +331,26 @@ class StreamPhases {
         val retrySec: Long? = null,
         /** What the last attempt threw, when it threw. A stream that FAILED said only "failed". */
         val reason: String? = null,
+        /**
+         * CERTIFIED RELAYS THIS STREAM IS RIDING, and of those how many hold a
+         * live tail — the only two numbers a [Phase.Rotating] stream has.
+         *
+         * Its own pair rather than `running`/`transferring`, which is what this
+         * used to borrow. It reads well and it is not true: `running` is
+         * "relays this stream has a WORKER on right now" and a roster is the
+         * opposite — the pool visits a handful at a time and most of the list
+         * is between visits, so a stream riding 400 relays with 6 workers
+         * published 400 under a word defined as the 6. `roster` and `tails` are
+         * the pool's own words for both quantities and already carry entries in
+         * the published glossary.
+         *
+         * Zero is a REPORT here and not an absence: a visit stream whose roster
+         * is empty is one waiting on the fitness pass to certify its first
+         * relay, and that state — a stream that looks busy and is dialling
+         * nothing — is the one this pair was added to make visible.
+         */
+        val roster: Int? = null,
+        val tails: Int? = null,
     )
 
     /**
@@ -561,12 +581,11 @@ class StreamPhases {
             }
 
             is Phase.Rotating -> {
-                // `running`'s glossary entry — relays with a worker on them —
-                // is exactly what the pool's visit set is, so the member is
-                // reused rather than a synonym invented beside it. The tailed
-                // count is NOT forced into `transferring`: a held tail is not
-                // a transfer slot, and the pool's own row already counts it.
-                Detail(running = phase.relays)
+                // The pool's own two words, not the fan-out's — see
+                // [Detail.roster] for why `running` was the wrong one and what
+                // it claimed. The tailed count is not forced into
+                // `transferring` either: a held tail is not a transfer slot.
+                Detail(roster = phase.relays, tails = phase.tailed)
             }
 
             is Phase.Queued, is Phase.Discovering, is Phase.Starting -> {

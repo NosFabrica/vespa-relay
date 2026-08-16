@@ -131,6 +131,62 @@ export function probeProgress(p) {
 }
 
 /**
+ * WHERE THE PASS RUNNING RIGHT NOW HAS GOT TO — the live half of `probeProgress`.
+ *
+ * `probeProgress` reads the row the last pass LEFT, which is the right answer
+ * for twenty-nine days of a monthly TTL and the wrong one for the hours a pass
+ * is actually running: the numbers stand still, `lastPassSec` is withheld
+ * because it belongs to the pass before, and `nextInSec` is unset because
+ * nothing has computed when the next pass is due. The row said `measuring` and
+ * carried no size, no position and no end.
+ *
+ * Returns null unless the router published a real denominator. A share of zero
+ * candidates is the division this module exists to keep out of the page, and a
+ * position with nothing to be a position IN is worse than the phase word alone.
+ *
+ * `attempted` is clamped INTO the denominator rather than trusted: the two are
+ * read at the same instant from the same entry, but they are read off a live
+ * pass, and a bar past its own track is a rendering bug rather than a finding.
+ */
+export function measuringOf(p) {
+  const m = p?.measuring;
+  if (!m || !(m.toProbe > 0)) return null;
+  const attempted = Math.max(0, Math.min(m.attempted || 0, m.toProbe));
+  return {
+    unit: m.unit || "url",
+    attempted,
+    toProbe: m.toProbe,
+    share: attempted / m.toProbe,
+    // `??`, not `||`: the router omits this until a unit has landed and again
+    // once the last one has, and both absences are "no estimate" — where a
+    // zero would be a claim that the pass is done.
+    etaSec: m.etaSec ?? null,
+  };
+}
+
+/** The phase word a visit-mode stream carries — `StreamPhases.Phase.Rotating`. */
+export const ROTATING = "rotating";
+
+/**
+ * WHAT A ROTATING STREAM IS ACTUALLY RIDING, which its row could not say.
+ *
+ * A visit-mode stream has no pass, no fraction and no cycle — its world is the
+ * monitor's verdicts and its engine is the pool — so every mark `streamBlock`
+ * draws is absent and the row rendered as `rotating for 58m` and nothing else.
+ * That line is the same whether the stream is riding four hundred relays or
+ * none, and "none" is the state worth seeing: before the fitness pass has
+ * signed its first `syncable`, a visit stream is a stream with an empty world.
+ *
+ * So `waiting` is called here rather than left to the page: it is the one
+ * reading that changes what an operator does next, and it is a judgement about
+ * a number rather than a number.
+ */
+export function rotationOf(s) {
+  if (s?.phase !== ROTATING || s.roster == null) return null;
+  return { roster: s.roster, tails: s.tails ?? null, waiting: s.roster === 0 };
+}
+
+/**
  * What each slice of the funnel MEANS — keyed by the router's own words.
  *
  * The partition's members are ours and glossed by the document, but the

@@ -11,8 +11,8 @@
 // Each assertion below is written in the direction its bug failed.
 import assert from "node:assert/strict";
 import {
-  HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf,
-  probeProgress,
+  HEARTBEAT_STALE_SEC, IN_FLIGHT_SHOWN, MEASURING, ROTATING, STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf,
+  measuringOf, probeProgress, rotationOf,
 } from "../../relay/src/main/resources/web/shared/sync.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -158,6 +158,75 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(probeProgress({ name: "aliasFold", streams: [] }), null);
   assert.equal(probeProgress(null), null);
   ok("the duration is the last FINISHED pass, absent while one runs and before the first");
+}
+
+// ── where the pass RUNNING right now has got to ──────────────────────────────
+{
+  // The gap this fills, and the reason it is a second function rather than a
+  // member of the one above: `probeProgress` reads the row the LAST pass left,
+  // which stands still for the hours the next one takes. With the countdown
+  // unset while a pass runs — the monitor cannot promise a time nobody has
+  // computed — the row carried the word `measuring` and no number at all.
+  const gate = (over) => ({ name: "consistency", phase: MEASURING, measuring: over });
+
+  const run = measuringOf(gate({ unit: "url", attempted: 604, toProbe: 4728, etaSec: 2724 }));
+  assert.equal(run.attempted, 604);
+  assert.equal(run.toProbe, 4728, "the denominator is what this PASS set out to walk, not the candidate set");
+  assert.equal(run.etaSec, 2724);
+  assert.equal(Math.round(run.share * 1000) / 1000, 0.128);
+
+  // No denominator is no position. A share of zero is the division this module
+  // exists to keep out of the page, and the phase word alone is the better draw.
+  assert.equal(measuringOf(gate({ unit: "url", attempted: 0, toProbe: 0 })), null);
+  assert.equal(measuringOf({ name: "consistency", phase: MEASURING }), null, "a router too old to publish one says nothing");
+  assert.equal(measuringOf({ name: "ingest", queued: 12, capacity: 20000 }), null, "the counter-shaped rows fall past it");
+  assert.equal(measuringOf(null), null);
+
+  // The estimate is WITHHELD until a unit has landed and once the last one has,
+  // and both absences mean "no estimate" — where a zero would claim the pass is
+  // finished. This is the failure `paging progress` in AGENTS.md is remembered
+  // for: a predecessor divided a number by itself and printed `ETA ~0:00` for
+  // hours.
+  assert.equal(measuringOf(gate({ unit: "url", attempted: 0, toProbe: 4728 })).etaSec, null);
+  assert.equal(measuringOf(gate({ unit: "url", attempted: 4728, toProbe: 4728 })).etaSec, null);
+  assert.equal(measuringOf(gate({ unit: "url", attempted: 12, toProbe: 4728, etaSec: 0 })).etaSec, 0,
+    "a real zero from the router is a pass about to end, not a missing estimate");
+
+  // Read off a LIVE pass, so the two halves can be a tick apart. A bar past its
+  // own track is a rendering fault rather than a finding.
+  assert.equal(measuringOf(gate({ unit: "host", attempted: 99, toProbe: 10 })).share, 1);
+  assert.equal(measuringOf(gate({ unit: "host", attempted: -4, toProbe: 10 })).attempted, 0);
+
+  // The unit is the router's, because the passes do not count the same thing —
+  // the fold decides a HOST and dials every url of one to do it.
+  assert.equal(measuringOf(gate({ unit: "host", attempted: 37, toProbe: 214 })).unit, "host");
+  assert.equal(measuringOf(gate({ attempted: 1, toProbe: 2 })).unit, "url", "a row with no unit still renders a sentence");
+  ok("the pass in flight publishes both halves of its position, and no estimate it has not earned");
+}
+
+// ── what a rotating stream is riding ────────────────────────────────────────
+{
+  // THE COMPLAINT: `rotating for 58m` and nothing else. A visit stream has no
+  // pass, no fraction and no cycle, so every other mark on its row is absent —
+  // and the line reads the same whether it is riding four hundred relays or
+  // none.
+  const riding = rotationOf({ name: "visits", phase: ROTATING, roster: 412, tails: 300 });
+  assert.equal(riding.roster, 412);
+  assert.equal(riding.tails, 300);
+  assert.equal(riding.waiting, false);
+
+  // ZERO IS THE READING WORTH HAVING: before the fitness pass signs its first
+  // `syncable`, a visit stream is a stream with an empty world — busy-looking
+  // and dialling nothing.
+  assert.equal(rotationOf({ phase: ROTATING, roster: 0, tails: 0 }).waiting, true);
+  assert.equal(rotationOf({ phase: ROTATING, roster: 0 }).tails, null, "no tail count is not a claim of none");
+
+  // Every other phase draws the marks it already had.
+  assert.equal(rotationOf({ phase: "fetching", running: 128 }), null);
+  assert.equal(rotationOf({ phase: ROTATING }), null, "a router too old to publish the pair says nothing");
+  assert.equal(rotationOf(null), null);
+  assert.equal(ROTATING, "rotating", "the word `StreamPhases.Phase.Rotating` publishes");
+  ok("a rotating stream says what it is riding, and an empty roster says so loudest");
 }
 
 // ── where a paging leg's cursor is ──────────────────────────────────────────

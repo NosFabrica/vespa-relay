@@ -140,8 +140,9 @@ class SyncVocabularyTest {
                     "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
                       "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
-                   {"name": "consistency", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
-                    "lastPassAt": 880, "lastPassSec": 900, "nextInSec": 20800,
+                   {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
+                    "lastPassAt": 880, "lastPassSec": 900,
+                    "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300},
                     "sourced": 44, "excluded": 1, "heldOutDead": 3,
                     "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
                       "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
@@ -207,6 +208,10 @@ class SyncVocabularyTest {
                     "unnamed",
                     "outcome",
                     "holding",
+                    // The other phase word that reads as a stall and is not —
+                    // a visit stream has no pass to be a phase OF, so the word
+                    // simply lasts and its numbers are the whole story.
+                    "rotating",
                     "accountedFor",
                     "staleForSec",
                 ) +
@@ -272,6 +277,12 @@ class SyncVocabularyTest {
                     "lastPassAt",
                     "lastPassSec",
                     "nextInSec",
+                    // …and the countdown's opposite half: where the pass
+                    // RUNNING right now has got to, in units it names itself.
+                    "measuring",
+                    "attempted",
+                    "toProbe",
+                    "unit",
                     "queued",
                     "capacity",
                     "accepted",

@@ -137,6 +137,55 @@ class SyncProgressTest {
     }
 
     @Test
+    fun `a rotating stream publishes what it is riding, zero included`() {
+        // The row that said `rotating for 58m` and nothing else, because a visit
+        // stream has no pass, no fraction and no cycle for the rest of the
+        // document to describe. Zero is the reading worth having: a stream with
+        // an empty roster is one waiting on the fitness pass to certify its
+        // first relay, and it looked exactly like a stream riding four hundred.
+        val riding = StreamPhases.Stream("visits", "rotating", 3_480, emptyList(), StreamPhases.Detail(roster = 412, tails = 300))
+        val waiting = StreamPhases.Stream("cold", "rotating", 3_480, emptyList(), StreamPhases.Detail(roster = 0, tails = 0))
+
+        val rows = SyncProgress.document(listOf(riding, waiting), nowSeconds = 1_000)["streams"] as kotlinx.serialization.json.JsonArray
+
+        assertEquals(412L, rows[0].jsonObject["roster"]!!.jsonPrimitive.long)
+        assertEquals(300L, rows[0].jsonObject["tails"]!!.jsonPrimitive.long)
+        assertEquals(0L, rows[1].jsonObject["roster"]!!.jsonPrimitive.long, "an empty roster is a report, not an absence")
+    }
+
+    @Test
+    fun `a pass in flight publishes its position instead of a countdown`() {
+        // The two are never both there — the monitor unsets the due time while a
+        // pass runs — and that is why this had to exist: for the hours a
+        // stability pass takes, the row's one number was gone and `measuring`
+        // stood alone with no size, no position and no end.
+        val running =
+            Processors.Snapshot(
+                name = "consistency",
+                phase = "measuring",
+                phaseForSec = 400,
+                passes = 3,
+                lastPassAt = 900,
+                lastPassSec = 9_720,
+                nextInSec = null,
+                measuring = Processors.Measuring(unit = Processors.UNIT_URL, attempted = 604, toProbe = 4_728, etaSec = 2_724),
+                work = emptyList(),
+                counts = emptyList(),
+            )
+
+        val row =
+            (SyncProgress.document(emptyList(), listOf(running), nowSeconds = 1_000)["processors"] as kotlinx.serialization.json.JsonArray)[0]
+                .jsonObject
+
+        assertNull(row["nextInSec"], "a pass takes as long as it takes; nothing has computed when the next one is due")
+        val measuring = row["measuring"]!!.jsonObject
+        assertEquals("url", measuring["unit"]!!.jsonPrimitive.content)
+        assertEquals(604L, measuring["attempted"]!!.jsonPrimitive.long)
+        assertEquals(4_728L, measuring["toProbe"]!!.jsonPrimitive.long)
+        assertEquals(2_724L, measuring["etaSec"]!!.jsonPrimitive.long)
+    }
+
+    @Test
     fun `an unset path writes nothing and says it writes nothing`() {
         val progress = SyncProgress(null)
 

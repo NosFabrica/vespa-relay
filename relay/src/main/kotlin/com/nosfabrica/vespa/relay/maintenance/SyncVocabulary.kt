@@ -553,6 +553,44 @@ internal object SyncVocabulary {
                     "nothing submitted retries in a minute, and a long pass pushes the next one back by its own length.",
             )
             put(
+                "measuring",
+                "WHERE THE PASS RUNNING RIGHT NOW HAS GOT TO, and the only number on a processor's row that moves " +
+                    "between passes — every other one describes the pass that ENDED. Present exactly while a pass is " +
+                    "dialling, and it replaces `nextInSec`, which is deliberately unset then: a pass takes as long as " +
+                    "it takes, so nothing has computed when the next one is due until this one returns. Before it, a " +
+                    "stability pass spent hours saying `measuring` and nothing else — no size, no position, no end.",
+            )
+            put(
+                "attempted",
+                "Units of the current pass that are BEHIND it, however they ended — including a url our own transport " +
+                    "declined and a host with nothing to compare against. Not a success count: what a pass LEARNED is " +
+                    "`decided`, and on a discovered corpus most of a pass is spent on urls that cannot be measured at " +
+                    "all, so a position that only moved on success would sit still while the pass worked hardest.",
+            )
+            put(
+                "toProbe",
+                "How many units the pass now running set out to walk — the denominator `attempted` is a share of. NOT " +
+                    "`candidates`: both probe passes drop every url already carrying a current verdict before dialling " +
+                    "anything, so on a settled corpus this is a small fraction of the candidate set, and it is the " +
+                    "ratio to watch while a pass runs.",
+            )
+            put(
+                "unit",
+                "What `attempted` and `toProbe` are counts OF, because the passes do not decide the same thing: the " +
+                    "stability gate and the fitness pass answer about a `url`, the alias fold answers about a `host` " +
+                    "and dials every url of one to do it. A fold position counted in urls would jump by 55 for one " +
+                    "verdict and by 1 for the next.",
+            )
+            put(
+                "rotating",
+                "A `phase` value, and the one that says least without its numbers. The stream does not walk a relay " +
+                    "list at all: its world is the monitor's `syncable` verdicts and its engine is the visit pool, " +
+                    "which turns over that roster — a catch-up visit, a history audit where due, then a live tail on " +
+                    "the open socket — so there is no pass to be a phase OF and the phase simply lasts. `roster` and " +
+                    "`tails` are what it is doing; a roster of ZERO is a stream waiting on the fitness pass to certify " +
+                    "its first relay, which is the state that looked identical to a busy one.",
+            )
+            put(
                 "queued",
                 "Items waiting in a processor's queue right now — a DEPTH, on both of the queues that publish it. For " +
                     "ingest, read it against `capacity`: full means ingest is the limit and every download is " +
@@ -817,7 +855,9 @@ internal object SyncVocabulary {
                 "roster",
                 "Relays currently certified syncable and in rotation: the pool's whole world, rebuilt from the " +
                     "monitor's records on half the tightest freshness bound. A relay the monitor stops certifying " +
-                    "leaves the roster, its tail and its socket on the next rebuild.",
+                    "leaves the roster, its tail and its socket on the next rebuild. On a STREAM's row it is that " +
+                    "stream's share — the roster relays carrying at least one of its asks — and zero there is a " +
+                    "stream with nothing certified for it yet, not a stream that has stopped.",
             )
             put(
                 "awaitingVisit",
@@ -835,7 +875,8 @@ internal object SyncVocabulary {
                     "stream's filter. This is what \"constantly connected\" means: new events arrive the moment they " +
                     "exist, and the revisit only covers what a dropped tail missed. Bounded by the tail budget: past " +
                     "it a tail is EARNED, and the relay with more content lately takes the socket of the one that " +
-                    "has delivered least.",
+                    "has delivered least. On a STREAM's row it counts the tails held on that stream's `roster` " +
+                    "share; on the pool's row, every tail this router holds.",
             )
             put(
                 "evictedTails",
