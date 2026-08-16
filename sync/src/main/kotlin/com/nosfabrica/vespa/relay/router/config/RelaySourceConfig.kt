@@ -23,6 +23,7 @@ package com.nosfabrica.vespa.relay.router.config
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 
 /**
  * A stream's relay list, read from events our own store already holds instead
@@ -45,11 +46,18 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
  * Every refresh the pool re-derives each scan, unions the relays they name,
  * gates them on the monitor's verdicts, and asks — nothing truncates the set.
  *
- * @param sources every source to read relay urls from, merged: kind-30166
- *   verdict sources and `certified`-gated scans.
- * @param refreshSeconds how often a scan's relay list is READ OUT OF THE
- *   STORE again — deriving one is a store walk, so the pool caches it this
- *   long. The verdict half rebuilds on its own freshness clock.
+ * @param sources every source to read relay urls from, merged.
+ * @param gatedBy the urls this stream may dial AT ALL — every source's
+ *   discovery is intersected with what these find. Stream-level, beside
+ *   [exclude], because it answers the same kind of question: `exclude` says
+ *   which urls are forbidden however many sources name them, `gatedBy` says
+ *   which are permitted however many sources found them. Neither is a
+ *   property of HOW a url was discovered, which is all a source describes.
+ *   Empty gates nothing.
+ * @param refreshSeconds how often a source's relay list is READ OUT OF THE
+ *   STORE again — deriving one can be a store walk, so the pool caches it
+ *   this long. A source may set its own; see [RelaySource.refreshSeconds] for
+ *   why the cheap ones must be allowed to run far more often than this.
  * @param exclude patterns for relays to skip however many sources name them —
  *   see [RelayExcludes] for how an entry matches.
  */
@@ -57,6 +65,7 @@ data class RelayDiscoveryConfig(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
     val exclude: RelayExcludes,
+    val gatedBy: List<RelaySource> = emptyList(),
     /**
      * The most relays one event may name before the whole event is ignored as
      * a relay list, or null for no limit.
@@ -75,54 +84,7 @@ data class RelayDiscoveryConfig(
      * this is only about refusing to read an implausible list at all.
      */
     val maxRelaysPerList: Int? = null,
-) {
-    /** Every source that consults the monitor's kind-30166 verdicts — see [RelaySource.verdicts]. */
-    val verdictSources: List<VerdictSource> get() = sources.mapNotNull { it.verdicts }
-
-    /** Every source that scans relay-list events with selects — the certified-scan half. */
-    val scanSources: List<RelaySource> get() = sources.filter { it.verdicts == null }
-}
-
-/**
- * A relaySource that consults the monitor's own NIP-66 records: the verified
- * read behind a `relaySource` entry whose filter asks for kind 30166.
- *
- * The knob is how stale a verdict may be and still admit its relay. Freshness
- * is read off the VERDICT TAG's own measured-at stamp, never the record's
- * `createdAt` — quartz's passive monitor rewrites the record on every
- * connection it opens, so `createdAt` says "we talked recently", which for a
- * relay in the fan-out is always true and for a verdict is no evidence at all.
- * A stale `syncable` is no verdict: the relay simply waits for the monitor's
- * next sweep, the same as a url the monitor has never seen.
- */
-data class VerdictSource(
-    val maxAgeSeconds: Long = DEFAULT_MAX_AGE_SECONDS,
-    /**
-     * Whose verdicts to trust, as 64-char lowercase hex — decoded from the
-     * `authors = ["npub1…"]` the operator wrote. EMPTY is UNSCOPED, the same
-     * as leaving `authors` off any other NIP-01 filter: every monitor whose
-     * 30166s reached this store. It does not mean this process's own signer —
-     * that fallback existed, and silently emptied every roster the moment
-     * `RELAY_NSEC` rotated, while narrowing the one deployment that had
-     * deliberately mirrored somebody else's verdicts. See
-     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.syncable].
-     *
-     * Named explicitly, it is a deliberate trust statement: the deployment
-     * where the monitor runs as its own process under its own key, and every
-     * router consuming its verdicts writes that key here.
-     */
-    val authors: List<String> = emptyList(),
-) {
-    companion object {
-        /**
-         * Two of the monitor's 6h sweeps plus slack: one missed sweep must not
-         * empty a stream's relay list, and three missed sweeps is a monitor
-         * whose silence SHOULD empty it — mirroring off verdicts nobody is
-         * re-taking is how a dead relay gets dialled for a month.
-         */
-        const val DEFAULT_MAX_AGE_SECONDS = 14 * 60 * 60L
-    }
-}
+)
 
 /**
  * A stream's `exclude` list compiled. Two kinds of entry, told apart by
@@ -233,68 +195,91 @@ internal fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
  * and the stream's discovery collapses to one indexed query.
  */
 data class RelaySource(
-    val selects: List<RelaySelect>,
-    val filter: Filter,
-    val verdicts: VerdictSource? = null,
-    /**
-     * A GATE on a scan: keep only the discovered urls that ALSO appear in what
-     * these filters find. Intersection with the scan, union across the entries
-     * — the scan supplies the pairing (which relay, narrowed to which authors)
-     * and the gate supplies the right to be dialled at all.
-     *
-     * This is what makes an author-bound source safe at scale. A 10040 is as
-     * writable as a 10002 — the same dead hosts and spammed urls, multiplied
-     * by every future user — and without the gate each of them costs the
-     * stream a dial and a timeout per cycle, forever. With it, an ungated url
-     * waits exactly as a new relay does: the monitor's fast lane probes it
-     * within minutes, and its first `syncable` is its admission.
-     *
-     * This was `certified = {}`, which could only ever mean "a fresh
-     * `syncable`", and — because the read behind it enforced our own rules
-     * epoch and our own measured-at stamp — could only ever mean OUR
-     * monitor's, whatever identity the block named. Both of those are gone
-     * (the epoch is retracted at the source by
-     * [com.nosfabrica.vespa.relay.router.discovery.FitnessPass.retireStaleEpochs],
-     * and freshness is the record's own clock), so there is nothing left for a
-     * bespoke block to say that a filter cannot. A third-party NIP-66
-     * monitor's records work here now, and so does a gate that has nothing to
-     * do with monitors — a curated relay list, a NIP-51 set, whatever the
-     * operator can name with a filter and a select.
-     *
-     * Empty is no gate: every url the scan found is dialled.
-     */
-    val resultsFilteredBy: List<ResultFilter> = emptyList(),
-)
-
-/**
- * One entry of [RelaySource.resultsFilteredBy]: a plain NIP-01 filter, the
- * selects that say where in the matched events a url sits, and the one bound
- * NIP-01 cannot express in a file that outlives the moment it was written.
- */
-data class ResultFilter(
     /**
      * Where the url sits in what [filter] returns. Defaults, when the operator
      * writes none, to NIP-66's own answer — the `d` tag of a kind-30166 record
-     * — because that is the gate nearly everyone wants and the one place the
-     * protocol fixes the position for us.
+     * — which is the only position the protocol fixes for us. Everything else
+     * has to say, because every relay list in the wild puts the url somewhere
+     * of its own choosing and a guessed index reads the wrong slot in silence.
      */
     val selects: List<RelaySelect>,
     val filter: Filter,
     /**
      * How recently the event must have been published, as a span rather than
-     * an instant. A NIP-01 `since` is an absolute timestamp, which is exactly
-     * what a config file cannot hold — written on Tuesday it means Tuesday
-     * forever — so the one relative knob stays out here and becomes
-     * `since = now - maxAgeSeconds` at read time.
+     * an instant, or NULL for no bound at all. A NIP-01 `since` is an absolute
+     * timestamp, which is exactly what a config file cannot hold — written on
+     * Tuesday it means Tuesday forever — so the relative knob stays out here
+     * and becomes `since = now - maxAgeSeconds` at read time.
+     *
+     * UNBOUNDED IS THE RIGHT DEFAULT AND A BOUND WOULD BE A BUG, because the
+     * question has no answer that holds across sources. A NIP-65 relay list is
+     * timeless: it is replaceable, the newest version is the truth, and one
+     * published in 2023 that nobody has revised says exactly what its author
+     * still means. A verdict is the opposite — it is a measurement, and one
+     * nobody has re-taken for a month is how a dead relay stays in the fan-out
+     * for a month. So the loader supplies [DEFAULT_MAX_AGE_SECONDS] for a
+     * source that IS a verdict query ([vouchesForItself]) and leaves everything
+     * else unbounded, and either can be written explicitly.
      *
      * It bounds the EVENT's own clock, which for a monitor record is when that
      * monitor last re-checked the relay. That reading only became available
      * when the passive NIP-66 writer went away; before it, a 30166's
-     * `created_at` tracked the last time we opened a socket to the relay. See
-     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.syncable].
+     * `created_at` tracked the last time we opened a socket to the relay.
      */
-    val maxAgeSeconds: Long = VerdictSource.DEFAULT_MAX_AGE_SECONDS,
-)
+    val maxAgeSeconds: Long? = null,
+    /**
+     * How often to READ THIS SOURCE OUT OF THE STORE again, or null for the
+     * stream's [RelayDiscoveryConfig.refreshSeconds].
+     *
+     * It exists because the sources differ in cost by orders of magnitude and
+     * the difference is not a matter of taste. A kind-30166 read is one
+     * indexed query bounded by [maxAgeSeconds]; a 10002 scan walks a corpus.
+     * Cached alike at the stream's default of six hours, the cheap one would
+     * hold a newly-certified relay out of the fan-out for six hours — against
+     * a monitor fast lane that earns it a verdict in two minutes, and a
+     * documented promise that it joins on its first `syncable`. Set it short
+     * on the reads that are cheap.
+     */
+    val refreshSeconds: Long? = null,
+) {
+    /**
+     * Is this source ALREADY a permission statement — a query for monitor
+     * verdicts admitting relays — rather than a scan of whatever urls happen
+     * to be in somebody's relay list?
+     *
+     * Derived, never declared. This used to be a type (`VerdictSource`) and a
+     * second read path beside the scan one, which made "where do urls come
+     * from" and "may we dial them" look like two kinds of source instead of
+     * two questions about every source. All that survives of the distinction
+     * is this predicate, and it is used for exactly one thing: letting a
+     * stream whose sources all say `syncable` skip a
+     * [RelayDiscoveryConfig.gatedBy] that would only restate them.
+     */
+    val vouchesForItself: Boolean
+        get() =
+            filter.kinds == listOf(RelayDiscoveryEvent.KIND) &&
+                filter.tags?.get(RelayVerdictStatus.TAG) == listOf(RelayVerdictStatus.SYNCABLE)
+
+    companion object {
+        /**
+         * Two of the monitor's 6h sweeps plus slack: one missed sweep must not
+         * empty a stream's relay list, and three missed sweeps is a monitor
+         * whose silence SHOULD empty it — mirroring off verdicts nobody is
+         * re-taking is how a dead relay gets dialled for a month.
+         */
+        const val DEFAULT_MAX_AGE_SECONDS = 14 * 60 * 60L
+    }
+}
+
+/**
+ * The two strings the config layer needs to recognise a verdict query without
+ * depending on the monitor that writes one. Kept here rather than reached for
+ * across the package boundary: `discovery` already depends on `config`.
+ */
+object RelayVerdictStatus {
+    const val TAG = "s"
+    const val SYNCABLE = "syncable"
+}
 
 /**
  * Where a relay url sits in a tag. Every relay list in the protocol is some

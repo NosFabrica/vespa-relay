@@ -44,7 +44,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # records, the roster read back off them, and a small VisitPool run on it.
 ./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i
 
-# Seeds one signed 10040 into a LOCAL relay so the `resultsFilteredBy` gate and the
+# Seeds one signed 10040 into a LOCAL relay so the `gatedBy` gate and the
 # monitor's 10040 source can be watched live against a sandbox stack.
 ./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true \
   -Dseed10040Url=ws://localhost:7777 --rerun -i
@@ -811,9 +811,15 @@ records — culminating in the `["s","syncable",…]` verdict a relay earns by
 answering a settled-anchor probe. The SYNC plane (`VisitPool`) never decides
 whether a relay is worth dialling; it reads the verdicts back. A relaySource
 entry is either a **verdict source** (`filter = { "kinds": [30166],
-"#s": ["syncable"] }` — the verdict list IS the relay list) or a **gated
-scan** (`select` over stored lists like 10002/10040, gated by
-`resultsFilteredBy` so only urls something vouches for pass). Whose verdicts count is the
+"#s": ["syncable"] }` — the verdict list IS the relay list) or a **scan**
+(`select` over stored lists like 10002/10040). They are ONE TYPE and one read
+path: a verdict query is a scan whose select is NIP-66's `d` tag, which the
+loader supplies. `VerdictSource` and its separate verified read are gone —
+they differed in the questions they were allowed to answer and in almost
+nothing else once the epoch and the tag-stamp freshness left. What survives is
+a derived predicate, `RelaySource.vouchesForItself`, used for exactly one
+thing: letting a stream whose sources all say `syncable` skip a `gatedBy` that
+would only restate them. Whose verdicts count is the
 source's `authors` npubs, and **absent means unscoped** — every monitor whose
 30166s reached the store, exactly as an absent `authors` means on any NIP-01
 filter. There is deliberately no fallback to the router's own signer: it made
@@ -1061,16 +1067,40 @@ valid signed record that simply says less). The verdicts panel on `/stats.html`
 is where one url's whole record is read back, and it exists because that merge
 is only pinnable in isolation by `RelayVerdictRecordTest`.
 
-**The gate on a scan is an ordinary filter.** `resultsFilteredBy` takes NIP-01
-filters plus the `select` saying where each one's urls sit (defaulting to
-NIP-66's `d` tag for a kind-30166 filter), unions their urls, and intersects
-that with the scan. It replaced `certified = {}`, which could only ever mean "a
-fresh `syncable`" and — because the read behind it enforced our own rules epoch
-— could only ever mean OUR monitor's, whatever identity the block named. Both of
-those are gone, so a third-party NIP-66 monitor works as a gate, and so does
-something that is not a monitor at all. The one knob that is not a filter field
-is `maxAgeSeconds`: NIP-01's `since` is an absolute instant, and a config file
-outlives the day it was written.
+**The gate is stream-level and it is an ordinary source.** `gatedBy` sits beside
+`exclude` and takes the same `{ select, filter, maxAgeSeconds }` entries a
+`relaySource` does; every source's discovery is intersected with the union of
+what they find. Beside `exclude` for a reason: `exclude` says which urls are
+forbidden however many sources name them, `gatedBy` says which are permitted
+however many sources found them, and **neither is a property of HOW a url was
+discovered** — which is all a source describes. It replaced per-source
+`certified = {}`, which could only ever mean "a fresh `syncable`" and — because
+the read behind it enforced our own rules epoch — could only ever mean OUR
+monitor's, whatever identity the block named. Both of those are gone, so a
+third-party NIP-66 monitor works as a gate, and so does something that is not a
+monitor at all.
+
+**Two knobs are not filter fields, and both exist because a config outlives the
+day it was written.** `maxAgeSeconds` is the relative form of `since`, whose
+absolute instant a file cannot hold; writing both is refused, since the relative
+one wins and the other would be read by a human and by nothing else. It defaults
+to UNBOUNDED, and a bound would be a bug: a NIP-65 relay list is replaceable and
+timeless, so one published in 2023 that nobody revised says what its author
+still means, while a verdict nobody has re-taken for a month is how a dead relay
+stays in the fan-out for a month. The loader therefore supplies the 14h default
+for a verdict query and leaves every other source unbounded. `refreshSeconds` is
+per source for the same kind of reason — see the cadence note below.
+
+**Cheap sources must be allowed to run far more often than expensive ones.** A
+kind-30166 read is one indexed query bounded by `maxAgeSeconds`; a 10002 scan
+walks a corpus. Cached alike at the stream's six-hour default, the cheap one
+would hold a newly-certified relay out of the fan-out for six hours — against a
+monitor fast lane that verdicts a new url in two minutes and a documented promise
+that it joins on its first `syncable`. So `refreshSeconds` is settable per
+source and the shipped config sets 120 on its verdict queries. This used to be
+implicit: verdict sources bypassed the scan cache entirely because they were a
+different type, and collapsing the types without stating the cadence would have
+turned "minutes" into "six hours" silently.
 
 **The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
 runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the

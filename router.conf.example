@@ -183,6 +183,13 @@ streams {
                 # ...naming the monitors to trust, and nobody else:
                 # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["npub1..."] }
                 maxAgeSeconds = 50400  # two 6h sweeps + slack
+                # How often to RE-READ this source. One indexed query, so it can
+                # run far more often than a relay-list scan — and it has to: this
+                # is what bounds a newly-certified relay's wait to join the
+                # fan-out. Left off it would inherit the stream's refreshSeconds,
+                # six hours by default, against a fast lane that verdicts a new
+                # url in two minutes.
+                refreshSeconds = 120
             }
         ]
         # ROTATING RELAY_NSEC: name the OLD npub here first. The new key starts
@@ -221,24 +228,29 @@ streams {
                     { tag = "30382:followers", relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
-                # Only relays something vouches for are dialled — the scan
-                # supplies the (relay, provider) pairing, the gate the right to
-                # be dialled at all. 300 users write 10040s today; millions
-                # will, with the same spammed dead urls a 10002 carries, and
-                # without this gate each of them costs a dial and a timeout per
-                # cycle forever. An ungated url waits like any new relay: the
-                # fast lane probes it within minutes.
-                #
-                # Any NIP-01 filter can be the gate. This one is our monitor's
-                # verdicts; add `"authors": ["npub1..."]` to name whose, or
-                # point it at a curated list entirely — with a `select` saying
-                # where that list keeps its urls, since only kind 30166 has the
-                # position fixed by the protocol (the `d` tag). Entries UNION,
-                # and the union is intersected with the scan.
-                resultsFilteredBy = [
-                    { filter = { "kinds": [30166], "#s": ["syncable"] } }
-                ]
             }
+        ]
+        # WHICH URLS THIS STREAM MAY DIAL AT ALL. Beside `exclude` and for the
+        # same reason: `exclude` says which urls are forbidden however many
+        # sources name them, `gatedBy` says which are permitted however many
+        # sources found them. Neither is a property of how a url was found,
+        # which is all a relaySource entry describes. Every source's discovery
+        # is intersected with the union of these.
+        #
+        # The scan above supplies the (relay, provider) pairing; this supplies
+        # the right to be dialled. 300 users write 10040s today; millions will,
+        # with the same spammed dead urls a 10002 carries, and without a gate
+        # each of them costs a dial and a timeout per cycle forever. An ungated
+        # url waits like any new relay: the fast lane probes it within minutes.
+        #
+        # Any NIP-01 filter can be the gate. This one is monitor verdicts; add
+        # `"authors": ["npub1..."]` to name whose, or point it at a curated list
+        # entirely — with a `select` saying where that list keeps its urls,
+        # since only kind 30166 has the position fixed by the protocol (the `d`
+        # tag). A stream whose sources are all `syncable` queries needs no
+        # gate: they already are one.
+        gatedBy = [
+            { filter = { "kinds": [30166], "#s": ["syncable"] }, refreshSeconds = 120 }
         ]
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
@@ -272,6 +284,7 @@ streams {
         relaySource = [
             {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
+                refreshSeconds = 120  # see profileViaOutbox
             }
         ]
         auditSeconds = 604800

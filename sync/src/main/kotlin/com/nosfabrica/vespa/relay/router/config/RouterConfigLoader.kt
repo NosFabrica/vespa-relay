@@ -242,12 +242,10 @@ object RouterConfigLoader {
                     // bind `authors`. A verdict source cannot carry it: it
                     // fans the stream's one filter to every certified relay.
                     discovery.sources.forEach { source ->
-                        require(source.verdicts == null) {
-                            "router: stream '$name' sets deleteMissing on a verdict-source relaySource — a verdict " +
-                                "source fans one unbound filter to every certified relay, and an unbound ask would let " +
-                                "one relay's answer retract every provider's records. Use a certified scan whose " +
-                                "selects bind `authors` (e.g. { tag = \"30382:rank\", relay = 2, authors = 1 })"
-                        }
+                        // Catches the kind-30166 source too, and by the rule
+                        // that matters rather than by its shape: its `d`-tag
+                        // select binds nothing, so it fans the stream's one
+                        // unbound filter to every relay it admits.
                         require(source.selects.isNotEmpty() && source.selects.all { it.bindings.containsKey("authors") }) {
                             "router: stream '$name' sets deleteMissing but a relaySource select binds no `authors` — " +
                                 "the retraction only ever judges a (relay, provider) pairing, and a select without an " +
@@ -520,14 +518,31 @@ object RouterConfigLoader {
         }
         val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
         require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
-        require(sources.all { it.verdicts != null || it.resultsFilteredBy.isNotEmpty() }) {
-            "router: stream '$stream' has an ungated scan in its relaySource — the pool dials only relays " +
-                "something vouches for. Gate it with `resultsFilteredBy = [ { filter = { \"kinds\": " +
-                "[${RelayDiscoveryEvent.KIND}], \"#s\": [\"syncable\"] } } ]`, or use a kind-${RelayDiscoveryEvent.KIND} " +
-                "verdict source"
+        val gatedBy =
+            if (s.hasPath("gatedBy")) {
+                s.getConfigList("gatedBy").map { parseRelaySource(stream, it, what = "gatedBy") }.also {
+                    require(it.isNotEmpty()) {
+                        "router: stream '$stream' has an empty `gatedBy` — leave it off to gate on nothing, since " +
+                            "an empty list and no list would otherwise be the same text for opposite intents"
+                    }
+                }
+            } else {
+                emptyList()
+            }
+        // The pool dials only relays something vouches for. A source that IS a
+        // verdict query vouches for its own urls, so a stream built entirely
+        // out of those needs no gate — restating the same query as `gatedBy`
+        // would be a tautology the operator has to type. Anything else scans
+        // whatever urls happen to be in somebody's relay list, and needs one.
+        require(gatedBy.isNotEmpty() || sources.all { it.vouchesForItself }) {
+            "router: stream '$stream' scans relay lists without a `gatedBy` — those urls are as writable as the " +
+                "events naming them, and each dead one costs a dial and a timeout every cycle forever. Gate the " +
+                "stream with `gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], " +
+                "\"#s\": [\"${RelayVerdictStatus.SYNCABLE}\"] } } ]`"
         }
         return RelayDiscoveryConfig(
             sources = sources,
+            gatedBy = gatedBy,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
@@ -556,118 +571,122 @@ object RouterConfigLoader {
         }
 
     /**
-     * One `{ select = [ ], filter = { } }` entry: what to pull out, and the
-     * scan to pull it from — or, when the filter asks for kind 30166, the
-     * monitor's own verdicts, which take the verified read instead of a scan.
+     * ONE `{ select = [ ], filter = { } }` ENTRY, and there is only one kind.
+     *
+     * It used to be two. A filter asking for kind 30166 was parsed into a
+     * `VerdictSource` and read back through a separate verified path, while
+     * everything else was a scan; the two differed in the questions they were
+     * allowed to answer and in almost nothing else. Now that the verified read
+     * has nothing private left in it — no rules epoch, no tag-stamp freshness
+     * — a verdict query is a scan whose select is the `d` tag, and saying so
+     * removes a type, a read path, and a set of rules that applied to one of
+     * them for reasons that no longer hold.
+     *
+     * Used both for a stream's `relaySource` entries and for the entries of
+     * its `gatedBy`: "where urls come from" and "which urls are permitted" are
+     * the same shape of question asked at two points, so they take the same
+     * shape of answer.
      */
     private fun parseRelaySource(
         stream: String,
         s: Config,
+        what: String = "relaySource",
     ): RelaySource {
-        require(s.hasPath("filter")) { "router: stream '$stream' has a relaySource entry with no `filter { }`" }
-        verdictSource(stream, s)?.let { return it }
-        require(s.hasPath("select")) { "router: stream '$stream' has a relaySource entry with no `select [ ]`" }
-        val filter = parseFilter(s.getConfig("filter"))
-        val selects = s.getConfigList("select").map { parseRelaySelect(stream, it) }
-        require(selects.isNotEmpty()) { "router: stream '$stream' has a relaySource entry with an empty `select`" }
-
-        val kinds = filter.kinds
-        require(!kinds.isNullOrEmpty()) { "router: stream '$stream' relaySource filter needs `kinds`" }
+        require(s.hasPath("filter")) { "router: stream '$stream' has a $what entry with no `filter { }`" }
+        // Same npub-only rule everywhere a key is typed, restated as hex for
+        // the Filter: bare hex has no checksum, so a typo is a nobody whose
+        // source is empty and whose gate holds everything out, with no error.
+        val written = parseFilter(s.getConfig("filter"))
+        val kinds = written.kinds
+        require(!kinds.isNullOrEmpty()) { "router: stream '$stream' $what filter needs `kinds`" }
+        val isVerdictQuery = kinds == listOf(RelayDiscoveryEvent.KIND)
+        // npub-ONLY where the authors are MONITOR IDENTITIES, for the reason
+        // the relay side's PubKeys spells out: hex has no checksum, so one
+        // mistyped character is a valid-looking key that is nobody, and a
+        // roster or gate built on it is empty with no error anywhere. Other
+        // kinds keep NIP-01's own spelling — a scan's `authors` is an ordinary
+        // filter field and narrowing it is not a trust statement.
+        val filter =
+            if (isVerdictQuery) {
+                written.copy(authors = decodeNpubs(stream, written.authors.orEmpty()).takeIf { it.isNotEmpty() })
+            } else {
+                written
+            }
+        require(!(s.hasPath("maxAgeSeconds") && (filter.since != null || filter.until != null))) {
+            "router: stream '$stream' bounds a $what entry with BOTH `maxAgeSeconds` and since/until — they are " +
+                "two spellings of one bound and the relative one wins, so the absolute one would be read by a " +
+                "human and by nothing else"
+        }
         // A regular kind is unbounded — scanning all of kind 1 means loading
         // every note in the store into one list. Replaceable/addressable kinds
         // are one event per author, which is what makes them safe to scan
-        // whole. `until` alone doesn't narrow: it leaves all of history below.
-        val narrowed = filter.limit != null || filter.since != null || filter.authors != null || filter.ids != null
+        // whole. Checked on what the operator WROTE: `maxAgeSeconds` becomes a
+        // `since` at read time, and letting that satisfy the bound would make
+        // this guard vacuous for every source.
+        val narrowed =
+            filter.limit != null || filter.since != null || filter.authors != null || filter.ids != null || s.hasPath("maxAgeSeconds")
         require(narrowed || kinds.all { isBoundedKind(it) }) {
-            "router: stream '$stream' relaySource filter ${kinds.joinToString("/")} scans a regular kind unbounded — " +
-                "add `limit` (the bound that stays meaningful on a repeating cycle), `since`, or `authors`, " +
-                "or it would load every matching event in the store at once"
+            "router: stream '$stream' $what filter ${kinds.joinToString("/")} scans a regular kind unbounded — " +
+                "add `limit` (the bound that stays meaningful on a repeating cycle), `maxAgeSeconds`, `since` or " +
+                "`authors`, or it would load every matching event in the store at once"
         }
-        return RelaySource(selects = selects, filter = filter, resultsFilteredBy = parseResultFilters(stream, s))
-    }
 
-    /**
-     * A relaySource entry whose filter asks for kind 30166 — the monitor's own
-     * NIP-66 verdicts as the relay list:
-     *
-     *     relaySource = [
-     *         {
-     *             filter = { "kinds": [30166], "#s": ["syncable"] }
-     *             maxAgeSeconds = 50400
-     *         }
-     *     ]
-     *
-     * Returns null when the filter is not a verdict ask, letting the scan
-     * parser take it. The spelling is the same NIP-01 filter every source
-     * uses, but the READ is not a scan — it is the verified path
-     * ([discovery.RelayDiscovery.syncable]: our monitor identity, the verdict
-     * epoch, the tag's own measured-at stamp against `maxAgeSeconds`) — so
-     * everything a scan could express and the verified read cannot honor is
-     * refused here, at the one place a human types it.
-     */
-    private fun verdictSource(
-        stream: String,
-        s: Config,
-    ): RelaySource? {
-        val filter = parseFilter(s.getConfig("filter"))
-        if (filter.kinds != listOf(RelayDiscoveryEvent.KIND)) {
-            require(filter.kinds?.contains(RelayDiscoveryEvent.KIND) != true) {
-                "router: stream '$stream' has a relaySource mixing kind ${RelayDiscoveryEvent.KIND} with others — " +
-                    "verdicts are a verified read, not a scan, so they need their own entry"
+        val selects =
+            if (s.hasPath("select")) {
+                s.getConfigList("select").map { parseRelaySelect(stream, it) }.also {
+                    require(it.isNotEmpty()) { "router: stream '$stream' has a $what entry with an empty `select`" }
+                }
+            } else {
+                require(kinds == listOf(RelayDiscoveryEvent.KIND)) {
+                    "router: stream '$stream' has a $what entry over kinds ${kinds.joinToString("/")} with no " +
+                        "`select` — only kind ${RelayDiscoveryEvent.KIND} has its url fixed by the protocol " +
+                        "(the `d` tag); say where the urls sit"
+                }
+                listOf(RelaySelect(kind = RelayDiscoveryEvent.KIND, tag = "d", urlIndex = 1))
             }
-            return null
+        // The one refusal that outlived the verdict/scan split, because it is
+        // about what a value MEANS rather than how it is read: the refusals
+        // are diagnoses of a relay, not a list of relays to sync from.
+        filter.tags?.get(RelayVerdictStatus.TAG)?.let { verdicts ->
+            require(verdicts == listOf(RelayVerdictStatus.SYNCABLE)) {
+                "router: stream '$stream' asks for verdicts $verdicts — `${RelayVerdictStatus.SYNCABLE}` is the " +
+                    "only value that admits a relay to a sync stream; the refusals are diagnoses, not relay lists"
+            }
         }
-        require(!s.hasPath("select")) {
-            "router: stream '$stream' has a `select` on its kind-${RelayDiscoveryEvent.KIND} relaySource — " +
-                "NIP-66 fixes the url in the `d` tag and the verdict is verified, not scanned; drop the select"
-        }
-        val verdicts = filter.tags?.get("s")
-        require(verdicts == null || verdicts == listOf("syncable")) {
-            "router: stream '$stream' asks for verdicts $verdicts — `syncable` is the only value that " +
-                "admits a relay to a sync stream; the refusals are diagnoses, not relay lists"
-        }
-        // WHOSE verdicts. The operator who set the monitor's nsec knows its
-        // npub, so naming it is one copy-paste — and npub-ONLY, for the reason
-        // the relay side's PubKeys spells out: hex has no checksum, so one
-        // mistyped character is a valid-looking key that simply is not anybody,
-        // and a roster built on it is empty with no error anywhere. Absent is
-        // UNSCOPED — every monitor whose 30166s are in the store — and is left
-        // that way rather than substituted with our own signer, which is the
-        // config saying one thing and the read doing another.
-        val authors = decodeMonitorNpubs(stream, filter.authors.orEmpty())
-        // Both spellings of a gate, refused rather than ignored. A verdict
-        // source's relay list IS the verdict query, and the roster reads it
-        // through [RelayDiscovery.syncable] — which never looks at
-        // [RelaySource.resultsFilteredBy]. Accepted and dropped, an operator
-        // would be reading a config line that nothing runs.
+        // A kind-30166 read with no `#s` at all would take the refusals too —
+        // dialling every relay the monitor called dead. It has only ever meant
+        // `syncable`, back when a separate read hardcoded that, so it says so
+        // now instead of depending on one.
+        val bounded =
+            if (isVerdictQuery && filter.tags?.containsKey(RelayVerdictStatus.TAG) != true) {
+                filter.copy(tags = (filter.tags ?: emptyMap()) + (RelayVerdictStatus.TAG to listOf(RelayVerdictStatus.SYNCABLE)))
+            } else {
+                filter
+            }
         require(!s.hasPath("certified")) {
-            "router: stream '$stream' puts `certified` on its verdict source — that key is gone, and a " +
-                "verdict source was never gated by it: its filter IS the gate. Drop it, or narrow the " +
-                "filter itself with `authors` / `maxAgeSeconds`"
+            "router: stream '$stream' uses `certified { }`, which is gone — it could only ever mean `a fresh " +
+                "syncable from our own monitor`, and both halves of that are now expressible. Write the gate as " +
+                "a stream-level `gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], " +
+                "\"#s\": [\"${RelayVerdictStatus.SYNCABLE}\"] } } ]`"
         }
         require(!s.hasPath("resultsFilteredBy")) {
-            "router: stream '$stream' puts `resultsFilteredBy` on a kind-${RelayDiscoveryEvent.KIND} verdict " +
-                "source, where nothing reads it — the verdict filter already IS the relay list. Narrow that " +
-                "filter instead, or put the gate on the scan whose results you meant to filter"
+            "router: stream '$stream' puts `resultsFilteredBy` on a $what entry — it was renamed to `gatedBy` and " +
+                "moved beside `exclude` on the stream, because which urls may be dialled is not a property of " +
+                "how one was discovered"
         }
-        require(filter.since == null && filter.until == null && filter.limit == null) {
-            "router: stream '$stream' bounds its verdict source with since/until/limit — a config outlives " +
-                "the day it was written, so say `maxAgeSeconds` on the source instead"
-        }
-        val maxAge =
-            if (s.hasPath("maxAgeSeconds")) {
-                s.getLong("maxAgeSeconds").coerceAtLeast(60L)
-            } else {
-                VerdictSource.DEFAULT_MAX_AGE_SECONDS
-            }
         return RelaySource(
-            selects = emptyList(),
-            // The filter is restated with the DECODED authors: the operator
-            // writes the npub, but a Filter is a NIP-01 object and NIP-01
-            // speaks hex — a stored filter carrying bech32 text would be
-            // invalid the moment anything ran or serialized it as one.
-            filter = filter.copy(authors = authors.takeIf { it.isNotEmpty() }),
-            verdicts = VerdictSource(maxAgeSeconds = maxAge, authors = authors),
+            selects = selects,
+            filter = bounded,
+            // Unbounded unless this source is a verdict query, which is the
+            // one shape where age changes what the data MEANS — see
+            // [RelaySource.maxAgeSeconds].
+            maxAgeSeconds =
+                when {
+                    s.hasPath("maxAgeSeconds") -> s.getLong("maxAgeSeconds").coerceAtLeast(60L)
+                    isVerdictQuery -> RelaySource.DEFAULT_MAX_AGE_SECONDS
+                    else -> null
+                },
+            refreshSeconds = if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds").coerceAtLeast(10L) else null,
         )
     }
 
@@ -677,9 +696,9 @@ object RouterConfigLoader {
      * mistyped character is a valid-looking key that simply is not anybody,
      * and a roster or gate built on it is empty with no error anywhere.
      * Absent is unscoped, never a substituted identity — see
-     * [com.nosfabrica.vespa.relay.router.config.VerdictSource.authors].
+     * [com.nosfabrica.vespa.relay.router.config.RelaySource.filter]'s authors.
      */
-    private fun decodeMonitorNpubs(
+    private fun decodeNpubs(
         stream: String,
         raw: List<String>,
     ): List<String> =
@@ -691,7 +710,7 @@ object RouterConfigLoader {
             }
             val hex = if (trimmed.startsWith("n")) decodePublicKeyAsHexOrNull(trimmed) else null
             requireNotNull(hex?.takeIf { it.length == 64 }) {
-                "router: stream '$stream' monitor authors entry does not decode as an npub — " +
+                "router: stream '$stream' monitor identity does not decode as an npub — " +
                     if (entry.trim().length == 64) {
                         "bare hex has no checksum, so a typo is a nobody with an empty roster and no error; " +
                             "convert it to its npub form and use that"
@@ -700,72 +719,6 @@ object RouterConfigLoader {
                     }
             }
         }
-
-    /**
-     * The `resultsFilteredBy [ ]` gate on a scan source — see
-     * [RelaySource.resultsFilteredBy]. Each entry is an ordinary source
-     * spelling (`filter`, optional `select`) plus `maxAgeSeconds`, and the
-     * urls they find are unioned before being intersected with the scan.
-     */
-    private fun parseResultFilters(
-        stream: String,
-        s: Config,
-    ): List<ResultFilter> {
-        require(!s.hasPath("certified")) {
-            "router: stream '$stream' uses `certified { }`, which is gone — it could only ever mean `a fresh syncable " +
-                "from our own monitor`, and both halves of that are now expressible. Write it as " +
-                "`resultsFilteredBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], \"#s\": [\"syncable\"] } } ]`, " +
-                "adding `\"authors\": [\"npub1…\"]` to name whose verdicts and `maxAgeSeconds` to bound their age"
-        }
-        if (!s.hasPath("resultsFilteredBy")) return emptyList()
-        val entries = s.getConfigList("resultsFilteredBy")
-        require(entries.isNotEmpty()) {
-            "router: stream '$stream' has an empty `resultsFilteredBy` — leave it off to gate on nothing, " +
-                "since an empty list and no list would otherwise be the same text for opposite intents"
-        }
-        return entries.map { c ->
-            require(c.hasPath("filter")) { "router: stream '$stream' has a `resultsFilteredBy` entry with no `filter { }`" }
-            // Same npub-only rule as a verdict source, and restated as hex
-            // for the same reason: a Filter is a NIP-01 object and NIP-01
-            // speaks hex, but bare hex has no checksum, so a typo is a nobody
-            // whose gate holds everything out with no error anywhere.
-            val written = parseFilter(c.getConfig("filter"))
-            val authors = decodeMonitorNpubs(stream, written.authors.orEmpty())
-            val filter = written.copy(authors = authors.takeIf { it.isNotEmpty() })
-            require(filter.since == null && filter.until == null) {
-                "router: stream '$stream' bounds a `resultsFilteredBy` entry with since/until — those are absolute " +
-                    "instants and a config outlives the day it was written; say `maxAgeSeconds` instead"
-            }
-            val selects =
-                if (c.hasPath("select")) {
-                    c.getConfigList("select").map { parseRelaySelect(stream, it) }.also {
-                        require(it.isNotEmpty()) { "router: stream '$stream' has a `resultsFilteredBy` entry with an empty `select`" }
-                    }
-                } else {
-                    // NIP-66 fixes the url in the `d` tag, which is the gate
-                    // nearly everyone writes; anything else has to say where
-                    // its urls live, because nothing else in the protocol
-                    // agrees on a position.
-                    require(filter.kinds == listOf(RelayDiscoveryEvent.KIND)) {
-                        "router: stream '$stream' has a `resultsFilteredBy` entry over kinds " +
-                            "${filter.kinds?.joinToString("/") ?: "(none)"} with no `select` — only kind " +
-                            "${RelayDiscoveryEvent.KIND} has its url fixed by the protocol (the `d` tag); " +
-                            "say where the urls sit"
-                    }
-                    listOf(RelaySelect(kind = RelayDiscoveryEvent.KIND, tag = "d", urlIndex = 1))
-                }
-            ResultFilter(
-                selects = selects,
-                filter = filter,
-                maxAgeSeconds =
-                    if (c.hasPath("maxAgeSeconds")) {
-                        c.getLong("maxAgeSeconds").coerceAtLeast(60L)
-                    } else {
-                        VerdictSource.DEFAULT_MAX_AGE_SECONDS
-                    },
-            )
-        }
-    }
 
     /** One `{ kind = ..., tag = ..., index = ..., where = [ ] }` entry of a source's `select` list. */
     private fun parseRelaySelect(

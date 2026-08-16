@@ -90,11 +90,11 @@ class VisitPoolTest {
                     gatedScan {
                         dir    = "down"
                         filter = { "kinds": [30382] }
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                                 filter = { "kinds": [10040] }
-                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                         ]
                     }
@@ -104,11 +104,11 @@ class VisitPoolTest {
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
                         auditSeconds = 86400
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                                 filter = { "kinds": [10040] }
-                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                         ]
                     }
@@ -135,11 +135,11 @@ class VisitPoolTest {
                         filter = { "kinds": [0, 30382] }
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                                 filter = { "kinds": [10040] }
-                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                         ]
                     }

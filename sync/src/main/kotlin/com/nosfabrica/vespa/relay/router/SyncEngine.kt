@@ -397,8 +397,8 @@ class SyncEngine(
                 (
                     listOfNotNull(signer?.pubKey) +
                         discoveryStreams
-                            .flatMap { it.discovery?.sources.orEmpty() }
-                            .flatMap { it.verdicts?.authors.orEmpty() + it.resultsFilteredBy.flatMap { g -> g.filter.authors.orEmpty() } }
+                            .flatMap { it.discovery?.let { d -> d.sources + d.gatedBy }.orEmpty() }
+                            .flatMap { it.filter.authors.orEmpty() }
                 ).distinct(),
             tor = tor,
             sockets = sockets,

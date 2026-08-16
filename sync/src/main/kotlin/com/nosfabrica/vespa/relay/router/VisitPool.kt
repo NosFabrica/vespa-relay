@@ -385,24 +385,18 @@ internal class VisitPool(
     }
 
     /**
-     * Rebuild the roster from the monitor's verdicts and feed the queue. Half
-     * the tightest freshness bound, so a verdict never expires between two
-     * looks at it; the floor keeps an aggressive bound from turning this into
-     * a poll.
+     * Rebuild the roster and feed the queue, on the tightest clock any source
+     * asks for. Each source's own read is cached for its `refreshSeconds`, so
+     * a tick that finds nothing expired costs a map lookup — the loop only has
+     * to run often enough that no source's cache outlives its bound. The floor
+     * keeps an aggressive setting from turning this into a poll.
      */
     private suspend fun rosterLoop() {
         val cadence =
-            (
-                streams
-                    .flatMap { it.discovery?.verdictSources.orEmpty() }
-                    .map { it.maxAgeSeconds * 1000L / 2 } +
-                    // Scan-built halves rebuild on their stream's own refresh
-                    // clock; the loop just has to tick at least that often —
-                    // the walk itself is cached, so the extra ticks are cheap.
-                    streams
-                        .filter { it.discovery?.scanSources?.isNotEmpty() == true }
-                        .mapNotNull { it.discovery?.refreshSeconds?.times(1000L) }
-            ).minOrNull()
+            streams
+                .flatMap { s -> s.discovery?.let { d -> (d.sources + d.gatedBy).map { it.refreshSeconds ?: d.refreshSeconds } }.orEmpty() }
+                .minOrNull()
+                ?.times(1000L)
                 ?.coerceAtLeast(60_000L) ?: 300_000L
         while (scope.isActive) {
             try {
@@ -831,16 +825,16 @@ internal class VisitPool(
 
     companion object {
         /**
-         * Does [stream] ride the pool? Yes when every relaySource entry
-         * answers to the monitor — a verdict source, or a `certified` scan.
-         * A retracting stream rides too: its `deleteMissing` comparison IS
-         * its audit ([RetractionAudit]), on the `auditSeconds` clock the
-         * loader requires it to set.
+         * Does [stream] ride the pool? Yes when something vouches for every
+         * url it would dial — a stream-level `gatedBy`, or sources that are
+         * themselves verdict queries. A retracting stream rides too: its
+         * `deleteMissing` comparison IS its audit ([RetractionAudit]), on the
+         * `auditSeconds` clock the loader requires it to set.
          */
         internal fun ridesThePool(stream: SyncStream): Boolean {
             val discovery = stream.discovery ?: return false
             return discovery.sources.isNotEmpty() &&
-                discovery.sources.all { it.verdicts != null || it.resultsFilteredBy.isNotEmpty() }
+                (discovery.gatedBy.isNotEmpty() || discovery.sources.all { it.vouchesForItself })
         }
 
         /**

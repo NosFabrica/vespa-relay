@@ -32,7 +32,6 @@ import com.vitorpamplona.quartz.utils.Hex
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
-import kotlin.test.assertTrue
 
 /**
  * **WHOSE 30166 VERDICTS BUILD THE ROSTER WHEN THE CONFIG NAMES NOBODY?**
@@ -40,7 +39,7 @@ import kotlin.test.assertTrue
  * Everybody's. An absent `authors` is the unscoped read it is on any other
  * NIP-01 filter, and the router does not substitute its own signer for it.
  *
- * The substitution used to be there ([RosterBuilder]'s `ifEmpty`) and cost
+ * The substitution used to be there (`RosterBuilder`'s `ifEmpty`) and cost
  * more than it bought. It welded the trust anchor to `RELAY_NSEC`: rotating
  * the key re-pointed every verdict source at an identity that had signed
  * nothing, so all of them selected zero records and every roster emptied
@@ -52,7 +51,8 @@ import kotlin.test.assertTrue
  *
  * Unscoped is safe for THIS read because admitting is a positive claim that
  * still has to survive a dial. The hold-out read is not symmetric with it and
- * stays author-bound — `ForeignMonitorTest` and [discovery.StreamWorld].
+ * stays author-bound — see `RelayDiscovery.undialable` and
+ * [discovery.StreamWorld].
  */
 class MonitorScopeTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
@@ -143,37 +143,10 @@ class MonitorScopeTest {
     @Test
     fun `the roster is unchanged by a second rebuild`() =
         runBlocking {
-            // The memo and the scan cache are per-rebuild state; an unscoped
-            // read must be idempotent across them, or the reporting hook that
-            // rides on it would flap a line per roster tick.
+            // Each source's read is cached for its own refreshSeconds, so the
+            // second rebuild is served from that cache — and must answer the
+            // same thing the read did.
             val builder = rosterOf(storeWithBothMonitors())
             assertEquals(builder.rebuild().asks.keys, builder.rebuild().asks.keys)
-        }
-
-    @Test
-    fun `an unscoped read reports the identities it admitted on`() =
-        runBlocking {
-            // The one number that separates "the union is just me" from "the
-            // union is me and four strangers" — the same absent field from the
-            // config's side, and a mirroring decision made somewhere else.
-            val seen = mutableListOf<Set<String>>()
-            com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
-                .syncable(
-                    storeWithBothMonitors(),
-                    monitorAuthors = emptyList(),
-                    maxAgeSeconds = 3600,
-                    admitting = { seen += it },
-                )
-            assertEquals(listOf(setOf(ours.pubKey, stranger.pubKey)), seen)
-
-            val scoped = mutableListOf<Set<String>>()
-            com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
-                .syncable(
-                    storeWithBothMonitors(),
-                    monitorAuthors = listOf(ours.pubKey),
-                    maxAgeSeconds = 3600,
-                    admitting = { scoped += it },
-                )
-            assertTrue(scoped.isEmpty(), "a scoped read has nothing to report — the config already said whose")
         }
 }

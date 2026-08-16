@@ -69,10 +69,10 @@ class RouterConfExamplesTest {
         // and it fails silently — there is no error, just no relays.
         val mirrored = example.streams.flatMap { it.filter.kinds.orEmpty() }.toSet()
         example.discoveryStreams().forEach { stream ->
-            // Scans only: a verdict source reads the monitor's own kind-30166
+            // Verdict queries excepted: they read the monitor's own kind-30166
             // records, which the monitor WRITES into this store — no stream
             // mirrors them, and none needs to.
-            stream.discovery!!.scanSources.forEach { source ->
+            stream.discovery!!.sources.filterNot { it.vouchesForItself }.forEach { source ->
                 source.filter.kinds.orEmpty().forEach { kind ->
                     assertTrue(kind in mirrored, "stream '${stream.name}' scans kind $kind, which no stream mirrors")
                 }
@@ -152,7 +152,7 @@ class RouterConfExamplesTest {
         // stream then asks them for what a group actually holds.
         assertTrue(
             example.streams.any {
-                it.discovery?.verdictSources?.isNotEmpty() == true &&
+                it.discovery?.sources?.any { s -> s.vouchesForItself } == true &&
                     it.filter.kinds
                         .orEmpty()
                         .containsAll(listOf(9, 11, 1111, 39000))
@@ -205,7 +205,14 @@ class RouterConfExamplesTest {
         // and at millions of provider lists the spammed dead urls in them must
         // cost the monitor one probe each — never this stream a dial and a
         // timeout per cycle forever.
-        assertTrue(source.resultsFilteredBy.isNotEmpty(), "the assertions scan dials only relays a verdict vouches for")
+        assertTrue(
+            example.streams
+                .single { it.name == "assertions" }
+                .discovery!!
+                .gatedBy
+                .isNotEmpty(),
+            "the assertions stream dials only relays a verdict vouches for",
+        )
         // ...which only works if those urls EARN verdicts: the monitor must
         // read the same 10040 tags as candidates.
         val monitor10040 = example.monitor!!.sources.filter { it.filter.kinds == listOf(10040) }
