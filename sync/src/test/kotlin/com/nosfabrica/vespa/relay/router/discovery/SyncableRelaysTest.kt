@@ -157,7 +157,11 @@ class SyncableRelaysTest {
             // one entry over our own 30166s, one over a hand-curated relay
             // list, and a url either appears in the union or does not.
             val store = newStore()
-            RelayVerdictRecord(store, signer).publishFitness(good, "syncable", "answers and pages", pageable = null, nip77 = null)
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(good, "syncable", "answers and pages", pageable = null, nip77 = null)
+            // A refusal on the same kind, from the same monitor: the gate's
+            // `#s` has to be doing the work, not the kind alone.
+            record.publishFitness(dead, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
             store.insert(
                 NostrSignerInternal(KeyPair()).sign(
                     EventTemplate(nowSeconds(), 10002, arrayOf(arrayOf("r", stale.url, "write")), ""),
@@ -174,7 +178,11 @@ class SyncableRelaysTest {
                     selects = listOf(RelaySelect(kind = 10002, tag = "r", urlIndex = 1)),
                     filter = Filter(kinds = listOf(10002)),
                 )
-            assertEquals(setOf(good), RelayDiscovery.urlsMatching(store, listOf(verdictGate)))
+            assertEquals(
+                setOf(good),
+                RelayDiscovery.urlsMatching(store, listOf(verdictGate)),
+                "the `dead` record is the same kind from the same monitor — only `#s` separates them",
+            )
             assertEquals(setOf(stale), RelayDiscovery.urlsMatching(store, listOf(listGate)))
             assertEquals(
                 setOf(good, stale),

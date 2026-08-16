@@ -1514,6 +1514,28 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `a gate on a verdict source is refused, not dropped`() {
+        // A verdict source's filter IS its relay list, and the roster reads it
+        // through `RelayDiscovery.syncable`, which never looks at the gate.
+        // Parsed and discarded, this was a config line nothing ran — the one
+        // failure mode a loader exists to prevent.
+        for (key in listOf("resultsFilteredBy = [ { filter = { \"kinds\": [30166], \"#s\": [\"syncable\"] } } ]", "certified = {}")) {
+            val e =
+                assertFailsWith<IllegalArgumentException>(key) {
+                    RouterConfigLoader.parse(
+                        stream(
+                            """relaySource = [ {
+                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                $key
+                            } ]""",
+                        ),
+                    )
+                }
+            assertTrue("verdict source" in e.message!!, e.message!!)
+        }
+    }
+
+    @Test
     fun `certified names its replacement`() {
         // It shipped in configs people are running, so the error has to say
         // what to write instead, not merely that the key is unknown.

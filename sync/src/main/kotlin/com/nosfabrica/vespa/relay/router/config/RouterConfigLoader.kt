@@ -635,13 +635,24 @@ object RouterConfigLoader {
         // that way rather than substituted with our own signer, which is the
         // config saying one thing and the read doing another.
         val authors = decodeMonitorNpubs(stream, filter.authors.orEmpty())
+        // Both spellings of a gate, refused rather than ignored. A verdict
+        // source's relay list IS the verdict query, and the roster reads it
+        // through [RelayDiscovery.syncable] — which never looks at
+        // [RelaySource.resultsFilteredBy]. Accepted and dropped, an operator
+        // would be reading a config line that nothing runs.
         require(!s.hasPath("certified")) {
-            "router: stream '$stream' puts `certified` on its verdict source — a verdict source IS the " +
-                "certification; the gate belongs on a scan"
+            "router: stream '$stream' puts `certified` on its verdict source — that key is gone, and a " +
+                "verdict source was never gated by it: its filter IS the gate. Drop it, or narrow the " +
+                "filter itself with `authors` / `maxAgeSeconds`"
+        }
+        require(!s.hasPath("resultsFilteredBy")) {
+            "router: stream '$stream' puts `resultsFilteredBy` on a kind-${RelayDiscoveryEvent.KIND} verdict " +
+                "source, where nothing reads it — the verdict filter already IS the relay list. Narrow that " +
+                "filter instead, or put the gate on the scan whose results you meant to filter"
         }
         require(filter.since == null && filter.until == null && filter.limit == null) {
-            "router: stream '$stream' bounds its verdict source with since/until/limit — freshness is " +
-                "measured on the verdict tag's own stamp, so say `maxAgeSeconds` on the source instead"
+            "router: stream '$stream' bounds its verdict source with since/until/limit — a config outlives " +
+                "the day it was written, so say `maxAgeSeconds` on the source instead"
         }
         val maxAge =
             if (s.hasPath("maxAgeSeconds")) {
