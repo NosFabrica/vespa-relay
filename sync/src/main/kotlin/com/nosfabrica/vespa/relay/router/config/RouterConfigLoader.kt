@@ -215,6 +215,28 @@ object RouterConfigLoader {
                         "router: stream '$name' sets deleteMissing without `verifySeconds` — " +
                             "the retraction comparison runs as the history audit, and that knob is its clock"
                     }
+                    // The delete's whole licence is per (relay, provider):
+                    // "this relay no longer serves this provider" is the only
+                    // retraction one relay can prove. An UNBOUND ask would
+                    // reconcile EVERY author's owned records against a single
+                    // relay and delete whatever that relay happens not to
+                    // hold — so every source must be a scan whose selects
+                    // bind `authors`. A verdict source cannot carry it: it
+                    // fans the stream's one filter to every certified relay.
+                    dynamic.sources.forEach { source ->
+                        require(source.verdicts == null) {
+                            "router: stream '$name' sets deleteMissing on a verdict-source relaySource — a verdict " +
+                                "source fans one unbound filter to every certified relay, and an unbound ask would let " +
+                                "one relay's answer retract every provider's records. Use a certified scan whose " +
+                                "selects bind `authors` (e.g. { tag = \"30382:rank\", relay = 2, authors = 1 })"
+                        }
+                        require(source.selects.isNotEmpty() && source.selects.all { it.bindings.containsKey("authors") }) {
+                            "router: stream '$name' sets deleteMissing but a relaySource select binds no `authors` — " +
+                                "the retraction only ever judges a (relay, provider) pairing, and a select without an " +
+                                "`authors` binding produces an unbound ask that would judge every provider at once. " +
+                                "Add `authors = <tag slot>` to every select on this stream"
+                        }
+                    }
                 }
                 SyncStream(
                     name = name,

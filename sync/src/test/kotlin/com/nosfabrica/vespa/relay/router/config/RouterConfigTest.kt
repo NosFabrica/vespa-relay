@@ -690,6 +690,52 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `a retracting stream's every ask must be author-bound — the delete's whole licence is per provider`() {
+        // An UNBOUND ask on a retracting stream would reconcile EVERY
+        // provider's owned records against one relay and delete whatever that
+        // relay happens not to hold — one config mistake away from store-wide
+        // destruction. Two shapes produce one: a verdict source (fans the
+        // stream's single filter to every certified relay), and a scan whose
+        // select binds no `authors`. Both refused by name.
+        fun stream(source: String) =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                  s {
+                    dir = "down"
+                    filter = { "kinds": [30382] }
+                    ownedKinds = [30382]
+                    deleteMissing = true
+                    verifySeconds = 86400
+                    relaySource = [ $source ]
+                  }
+                }
+                """.trimIndent(),
+            )
+        assertFailsWith<IllegalArgumentException>("verdict source") {
+            stream("""{ filter = { "kinds": [30166], "#s": ["syncable"] } }""")
+        }
+        assertFailsWith<IllegalArgumentException>("select without authors") {
+            stream(
+                """{
+                    select = [ { tag = "30382:rank", relay = 2 } ]
+                    filter = { "kinds": [10040] }
+                    certified = {}
+                }""",
+            )
+        }
+        // The bound shape stays parseable — the refusals are about binding,
+        // not about retracting streams as such.
+        stream(
+            """{
+                select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                filter = { "kinds": [10040] }
+                certified = {}
+            }""",
+        )
+    }
+
+    @Test
     fun `deleting requires naming what it may delete`() {
         fun stream(
             kinds: String,

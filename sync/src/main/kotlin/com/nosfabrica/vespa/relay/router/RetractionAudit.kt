@@ -135,9 +135,21 @@ internal class RetractionAudit(
         onEvent: suspend (Event) -> Unit = {},
     ) {
         val ownedAsk = ownedAskOf(stream, ask) ?: return
+        // NEVER an unbound ask. The loader refuses configs that could produce
+        // one, but this is the line where a wrong filter destroys data, so
+        // the boundary is enforced where the deletion happens too: an ask
+        // with no authors would reconcile EVERY provider's owned records
+        // against this one relay and delete whatever it happens not to hold.
+        val bound = ask.authors
+        if (bound.isNullOrEmpty()) {
+            System.err.println(
+                "router: ${stream.name} ${url.url} retraction ask binds no authors — refusing to judge every provider at once",
+            )
+            return
+        }
         // A relay this author is not alone at cannot prove a retraction; the
         // catch-up keeps mirroring it, this decides nothing from it.
-        if (ask.authors?.any { it in sharedAuthors } == true) return
+        if (bound.any { it in sharedAuthors }) return
 
         val mine = store.snapshotIdsForNegentropy(listOf(ownedAsk))
         // NOT an early return when we hold nothing: an ask we have no records
