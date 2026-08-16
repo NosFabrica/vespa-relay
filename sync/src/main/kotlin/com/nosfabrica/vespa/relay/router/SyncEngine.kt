@@ -67,6 +67,7 @@ import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
@@ -108,8 +109,9 @@ class SyncEngine(
     // Disabled by default: the filter answers no to everything and records
     // nothing until SYNC_REFUSED_DIR is set.
     private val refusedIds: RefusedIds = RefusedIds.disabled(),
-    // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
-    signer: NostrSigner? = null,
+    // Answers NIP-42 challenges from upstreams that gate reads behind AUTH,
+    // and signs every verdict the monitor passes publish.
+    private val signer: NostrSigner? = null,
     // SYNC_WIRE_LOG: "" (errors only) / "sent" / "full".
     wireLogMode: String = "",
     // Fed by PressurePoller from the relay's GET /pressure: ingest yields
@@ -396,7 +398,7 @@ class SyncEngine(
                     listOfNotNull(signer?.pubKey) +
                         discoveryStreams
                             .flatMap { it.discovery?.sources.orEmpty() }
-                            .flatMap { it.verdicts?.authors.orEmpty() + it.certified?.authors.orEmpty() }
+                            .flatMap { it.verdicts?.authors.orEmpty() + it.resultsFilteredBy.flatMap { g -> g.filter.authors.orEmpty() } }
                 ).distinct(),
             tor = tor,
             sockets = sockets,
@@ -560,6 +562,23 @@ class SyncEngine(
 
         ingest.start()
         registerProcessors()
+
+        // BEFORE any pass reads a verdict and before the roster's first
+        // rebuild, which is why it blocks: the reads downstream ask only
+        // whether a url holds a verdict, so a record standing under rules this
+        // build no longer applies would be acted on as current. See
+        // [FitnessPass.retireStaleEpochs] for why the retraction belongs here
+        // rather than in every reader.
+        //
+        // Costs one indexed query returning nothing on every boot but the one
+        // after an epoch bump, and on that one it costs a signed edit per
+        // standing verdict — paid once, at a deploy the operator chose, in
+        // exchange for never serving on a verdict we would not re-take.
+        signer?.let { s ->
+            runCatching {
+                runBlocking { FitnessPass.retireStaleEpochs(store, RelayVerdictRecord(store, s), s.pubKey) }
+            }.onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
+        }
 
         // Said at boot, both ways: a transport that is configured but not
         // answering must not be discovered later, one silent onion relay at a

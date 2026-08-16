@@ -238,23 +238,22 @@ internal class RosterBuilder(
         val relays =
             perSource.flatMap { (source, found) ->
                 val scanned = if (folded.isEmpty()) found else found.filter { it.url !in folded }
-                val gate = source.certified ?: return@flatMap scanned
-                RelayDiscovery
-                    .certifiedOnly(
-                        store,
-                        scanned,
-                        gate.authors,
-                        gate.maxAgeSeconds,
-                        allowOnion = tor != null,
-                        admitting = { reportUnscoped(gate.maxAgeSeconds, it) },
-                    ).also {
-                        if (it.size != scanned.size) {
-                            System.err.println(
-                                "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +
-                                    "held out uncertified (no fresh syncable verdict); the monitor's fast lane is their way in",
-                            )
-                        }
+                if (source.resultsFilteredBy.isEmpty()) return@flatMap scanned
+                // INTERSECTION with the scan, union across the gate's entries:
+                // the scan supplied the pairing, the gate the right to be
+                // dialled at all. The narrows ride through untouched, which is
+                // the whole reason this filters the scan's own relays rather
+                // than rebuilding a list from the gate.
+                val vouched = RelayDiscovery.urlsMatching(store, source.resultsFilteredBy, allowOnion = tor != null)
+                scanned.filter { it.url in vouched }.also {
+                    if (it.size != scanned.size) {
+                        System.err.println(
+                            "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +
+                                "held out by `resultsFilteredBy`; an ungated url waits like any new relay, " +
+                                "for the monitor's fast lane and its first verdict",
+                        )
                     }
+                }
             }
         val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else discovery.refreshSeconds * 1000L
         scans[stream.name] = ScannedList(nowMs + holdMs, relays)

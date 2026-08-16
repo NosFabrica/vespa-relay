@@ -44,7 +44,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # records, the roster read back off them, and a small VisitPool run on it.
 ./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i
 
-# Seeds one signed 10040 into a LOCAL relay so the `certified` gate and the
+# Seeds one signed 10040 into a LOCAL relay so the `resultsFilteredBy` gate and the
 # monitor's 10040 source can be watched live against a sandbox stack.
 ./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true \
   -Dseed10040Url=ws://localhost:7777 --rerun -i
@@ -811,9 +811,9 @@ records — culminating in the `["s","syncable",…]` verdict a relay earns by
 answering a settled-anchor probe. The SYNC plane (`VisitPool`) never decides
 whether a relay is worth dialling; it reads the verdicts back. A relaySource
 entry is either a **verdict source** (`filter = { "kinds": [30166],
-"#s": ["syncable"] }` — the verdict list IS the relay list) or a **certified
-scan** (`select` over stored lists like 10002/10040, gated by `certified = {}`
-so only urls holding a fresh verdict pass). Whose verdicts count is the
+"#s": ["syncable"] }` — the verdict list IS the relay list) or a **gated
+scan** (`select` over stored lists like 10002/10040, gated by
+`resultsFilteredBy` so only urls something vouches for pass). Whose verdicts count is the
 source's `authors` npubs, and **absent means unscoped** — every monitor whose
 30166s reached the store, exactly as an absent `authors` means on any NIP-01
 filter. There is deliberately no fallback to the router's own signer: it made
@@ -1060,6 +1060,29 @@ between the other's read and its store, silently, since the result is still a
 valid signed record that simply says less). The verdicts panel on `/stats.html`
 is where one url's whole record is read back, and it exists because that merge
 is only pinnable in isolation by `RelayVerdictRecordTest`.
+
+**The gate on a scan is an ordinary filter.** `resultsFilteredBy` takes NIP-01
+filters plus the `select` saying where each one's urls sit (defaulting to
+NIP-66's `d` tag for a kind-30166 filter), unions their urls, and intersects
+that with the scan. It replaced `certified = {}`, which could only ever mean "a
+fresh `syncable`" and — because the read behind it enforced our own rules epoch
+— could only ever mean OUR monitor's, whatever identity the block named. Both of
+those are gone, so a third-party NIP-66 monitor works as a gate, and so does
+something that is not a monitor at all. The one knob that is not a filter field
+is `maxAgeSeconds`: NIP-01's `since` is an absolute instant, and a config file
+outlives the day it was written.
+
+**The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
+runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the
+constant is a source edit and a source edit is a restart — and strips `s` /
+`pageable` / `nip77` from every record of ours written under older rules. Those
+urls then read as unmeasured, which is the state that gets a candidate
+re-measured on the next sweep and correctly stops admitting one that has left
+every relay list. It was a check on every READ, which put our private versioning
+scheme in front of everybody's records: a standard NIP-66 record carries no such
+element, so no foreign verdict could pass however the config was written. **A
+claim you no longer stand behind is yours to withdraw; do not ask every reader
+to know why it is worthless.**
 
 **There is no passive writer any more.** quartz's `RelayMonitor` used to be
 attached to the sync client as a connection listener, signing a 30166 for every

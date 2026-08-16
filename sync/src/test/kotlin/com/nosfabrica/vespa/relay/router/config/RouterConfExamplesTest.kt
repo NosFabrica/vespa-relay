@@ -205,7 +205,7 @@ class RouterConfExamplesTest {
         // and at millions of provider lists the spammed dead urls in them must
         // cost the monitor one probe each — never this stream a dial and a
         // timeout per cycle forever.
-        assertTrue(source.certified != null, "the assertions scan dials only relays the monitor certifies")
+        assertTrue(source.resultsFilteredBy.isNotEmpty(), "the assertions scan dials only relays a verdict vouches for")
         // ...which only works if those urls EARN verdicts: the monitor must
         // read the same 10040 tags as candidates.
         val monitor10040 = example.monitor!!.sources.filter { it.filter.kinds == listOf(10040) }

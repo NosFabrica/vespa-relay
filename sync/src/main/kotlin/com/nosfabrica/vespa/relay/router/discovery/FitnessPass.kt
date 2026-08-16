@@ -28,6 +28,8 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.NegentropySyn
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyReconcileIds
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
+import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.launch
@@ -351,6 +353,61 @@ class FitnessPass(
     }
 
     companion object {
+        /**
+         * TAKE BACK EVERY VERDICT THIS BUILD NO LONGER STANDS BEHIND — the
+         * rules-epoch change, applied at the one moment it can happen.
+         *
+         * A verdict is a measurement, and a measurement means what the
+         * procedure that took it meant. Bump [RelayVerdictRecord.FITNESS_EPOCH]
+         * in the same commit as a rule change and every record signed under
+         * the old one is not a stale reading of the current rule, it is a
+         * reading of a different rule that no amount of waiting reconciles.
+         *
+         * This used to be a check on every READ — `s[4] == FITNESS_EPOCH`,
+         * evaluated by every consumer of every record. That put our private
+         * versioning scheme in the way of anyone else's records: a standard
+         * NIP-66 monitor carries no such element, so no foreign verdict could
+         * ever pass, whatever the config said about whose verdicts to trust.
+         * The claim is ours to retract, so we retract it, and the read is left
+         * to ask the one question it should: does this url hold a verdict.
+         *
+         * Runs at boot and nowhere else, because that is the only moment the
+         * epoch can have changed — the constant is a source edit, and a source
+         * edit is a restart. A store walk over our own records, no dials.
+         * Candidates re-earn their verdict on the next sweep; a url that has
+         * left every relay list does not, which is correct — nothing is
+         * measuring it, so nothing should be admitting it either.
+         */
+        suspend fun retireStaleEpochs(
+            store: IEventStore,
+            record: RelayVerdictRecord,
+            author: String,
+        ): Int {
+            val stale =
+                store
+                    .query<RelayDiscoveryEvent>(
+                        Filter(
+                            kinds = listOf(RelayDiscoveryEvent.KIND),
+                            authors = listOf(author),
+                            tags = mapOf(RelayVerdictRecord.STATUS_TAG to Verdict.entries.map { it.value }),
+                        ),
+                    ).filter { event ->
+                        val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayVerdictRecord.STATUS_TAG }
+                        // A tag carrying no epoch is such a record by
+                        // definition — nothing has ever written one but an
+                        // older build.
+                        s != null && s.getOrNull(4) != RelayVerdictRecord.FITNESS_EPOCH
+                    }.mapNotNull { it.relay() }
+            for (url in stale) record.retireFitness(url)
+            if (stale.isNotEmpty()) {
+                System.err.println(
+                    "router: fitness — retired ${stale.size} verdict(s) taken under older rules; " +
+                        "they read as unmeasured until the next sweep re-takes them",
+                )
+            }
+            return stale.size
+        }
+
         /**
          * Events per fitness ask. A verdict needs "answers and pages", which
          * twenty events prove as well as the fold's five hundred — and this

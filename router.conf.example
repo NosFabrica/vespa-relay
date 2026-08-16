@@ -99,7 +99,7 @@ monitor {
             # NIP-85 provider relays (10040 service tags carry the url at 2).
             # As writable as a 10002 — same dead hosts, same spammed urls — so
             # they earn verdicts here and the assertions stream dials only the
-            # certified ones.
+            # ones a verdict vouches for.
             select = [
                 { tag = "30382:rank",      relay = 2 }
                 { tag = "30382:followers", relay = 2 }
@@ -108,7 +108,7 @@ monitor {
         }
     ]
 
-    # Urls or regexes never probed, never certified. A plain url matches by
+    # Urls or regexes never probed, never verdicted. A plain url matches by
     # normalized equality; an entry with a regex metacharacter (* + ? [ ] etc —
     # a dot does not count) must match a discovered url in full, ignoring case.
     exclude = [
@@ -221,18 +221,23 @@ streams {
                     { tag = "30382:followers", relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
-                # Only relays certified syncable are dialled — the scan
-                # supplies the (relay, provider) pairing, the verdicts the
-                # right to be dialled at all. 300 users write 10040s today;
-                # millions will, with the same spammed dead urls a 10002
-                # carries, and without this gate each of them costs a dial and
-                # a timeout per cycle forever. An uncertified url waits like
-                # any new relay: the fast lane probes it within minutes.
+                # Only relays something vouches for are dialled — the scan
+                # supplies the (relay, provider) pairing, the gate the right to
+                # be dialled at all. 300 users write 10040s today; millions
+                # will, with the same spammed dead urls a 10002 carries, and
+                # without this gate each of them costs a dial and a timeout per
+                # cycle forever. An ungated url waits like any new relay: the
+                # fast lane probes it within minutes.
                 #
-                # An empty block is the default freshness bound and the same
-                # unscoped read a verdict source does — `authors = ["npub1..."]`
-                # here scopes the gate to named monitors.
-                certified = {}
+                # Any NIP-01 filter can be the gate. This one is our monitor's
+                # verdicts; add `"authors": ["npub1..."]` to name whose, or
+                # point it at a curated list entirely — with a `select` saying
+                # where that list keeps its urls, since only kind 30166 has the
+                # position fixed by the protocol (the `d` tag). Entries UNION,
+                # and the union is intersected with the scan.
+                resultsFilteredBy = [
+                    { filter = { "kinds": [30166], "#s": ["syncable"] } }
+                ]
             }
         ]
         # The deleteMissing comparison runs as this stream's history audit —

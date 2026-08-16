@@ -36,7 +36,7 @@ import java.time.Duration
 import kotlin.test.Test
 
 /**
- * SEEDS ONE SIGNED KIND-10040 into a relay under test, so the `certified`
+ * SEEDS ONE SIGNED KIND-10040 into a relay under test, so the `resultsFilteredBy`
  * gate and the monitor's 10040 source can be watched doing their jobs on a
  * live stack: the provider list names one real relay (which the monitor
  * should certify) and one dead url (which the gate should hold out of the

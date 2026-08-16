@@ -23,7 +23,10 @@ package com.nosfabrica.vespa.relay.router.discovery
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.router.config.BindingSlot
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
+import com.nosfabrica.vespa.relay.router.config.RelaySource
+import com.nosfabrica.vespa.relay.router.config.ResultFilter
 import com.nosfabrica.vespa.relay.router.config.withoutDefaultPort
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -303,11 +306,15 @@ object RelayDiscovery {
      * identities, re-checked since the floor" — the shared core of [syncable]
      * and [undialable].
      *
-     * The rules epoch (tag element 4) is still read here, and only here: a
-     * verdict is a measurement, and a measurement means what the procedure
-     * that took it meant, so a record signed under older rules is not a stale
-     * reading of the current rule but a reading of a different one. See
-     * [RelayVerdictRecord.FITNESS_EPOCH].
+     * NOTHING PRIVATE IS READ HERE. There was a rules-epoch check on the tag's
+     * fifth element, which meant every read enforced our own versioning scheme
+     * and no standard NIP-66 record could ever satisfy it — the gate stayed
+     * shut against foreign monitors however the config was written. A verdict
+     * we no longer stand behind is ours to RETRACT, and
+     * [FitnessPass.retireStaleEpochs] does exactly that at boot, so what
+     * survives to be read is a claim its author still makes. The question left
+     * here is the only one a reader should ask: does this url hold this
+     * verdict, from someone we trust, recently enough.
      */
     private suspend fun verdicts(
         store: IEventStore,
@@ -338,8 +345,7 @@ object RelayDiscovery {
                 // verdict through. Unscoped there is nothing to re-state.
                 (monitorAuthors.isEmpty() || event.pubKey in monitorAuthors) &&
                     s != null &&
-                    s[1] == verdict.value &&
-                    s.getOrNull(4) == RelayVerdictRecord.FITNESS_EPOCH
+                    s[1] == verdict.value
             }
 
     /** A verdict record's subject: the `d` tag, normalized like every other discovered url. */
@@ -353,34 +359,43 @@ object RelayDiscovery {
             ?.let { normalize(it, allowOnion) }
 
     /**
-     * [discovered] with every url that holds no fresh `syncable` verdict held
-     * out — the `certified { }` gate on a scan source. INTERSECTION, never
-     * union: the scan supplied the pairing (which relay, narrowed to which
-     * authors — the narrows ride through untouched), and the verdicts supply
-     * the right to be dialled at all. An uncertified url is not refused
-     * forever; it waits exactly as a new relay does, for the monitor's fast
-     * lane and its first `syncable`.
+     * Every url [gates] vouch for — the `resultsFilteredBy` read, UNIONED
+     * across the entries. A caller intersects this with its own scan; see
+     * [RelaySource.resultsFilteredBy] for why the gate is an intersection and
+     * the entries a union.
+     *
+     * Ordinary discovery, not a verified path: each entry is a filter and the
+     * selects saying where its urls sit, run through [discover] like any other
+     * source. That is the point of the shape — a gate can be our monitor's
+     * `syncable` records, a foreign NIP-66 monitor's, a curated relay list, or
+     * anything else an operator can name — and it is only possible because
+     * nothing private is left in the verdict read: the rules epoch is
+     * retracted at the source ([FitnessPass.retireStaleEpochs]) and freshness
+     * is the event's own clock.
+     *
+     * [ResultFilter.maxAgeSeconds] becomes the `since` here, which is the one
+     * bound a config cannot write for itself — an absolute instant in a file
+     * means the same instant forever.
      */
-    suspend fun certifiedOnly(
+    suspend fun urlsMatching(
         store: IEventStore,
-        discovered: List<DiscoveredRelay>,
-        monitorAuthors: List<String>,
-        maxAgeSeconds: Long,
+        gates: List<ResultFilter>,
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
-        admitting: (Set<String>) -> Unit = {},
-    ): List<DiscoveredRelay> {
-        if (discovered.isEmpty()) return discovered
-        val live =
-            syncable(
+    ): Set<NormalizedRelayUrl> {
+        val found = HashSet<NormalizedRelayUrl>()
+        for (gate in gates) {
+            discover(
                 store,
-                monitorAuthors = monitorAuthors,
-                maxAgeSeconds = maxAgeSeconds,
+                RelayDiscoveryConfig(
+                    sources = listOf(RelaySource(selects = gate.selects, filter = gate.filter.copy(since = now - gate.maxAgeSeconds))),
+                    refreshSeconds = gate.maxAgeSeconds,
+                    exclude = RelayExcludes.NONE,
+                ),
                 allowOnion = allowOnion,
-                now = now,
-                admitting = admitting,
-            ).mapTo(HashSet()) { it.url }
-        return discovered.filter { it.url in live }
+            ).mapTo(found) { it.url }
+        }
+        return found
     }
 
     /**

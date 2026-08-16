@@ -840,7 +840,7 @@ internal class VisitPool(
         internal fun ridesThePool(stream: SyncStream): Boolean {
             val discovery = stream.discovery ?: return false
             return discovery.sources.isNotEmpty() &&
-                discovery.sources.all { it.verdicts != null || it.certified != null }
+                discovery.sources.all { it.verdicts != null || it.resultsFilteredBy.isNotEmpty() }
         }
 
         /**

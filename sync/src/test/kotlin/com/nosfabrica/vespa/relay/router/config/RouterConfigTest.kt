@@ -230,12 +230,12 @@ class RouterConfigTest {
                                     { tag = "relay" }
                                 ]
                                 filter = { "kinds": [10002, 10040, 10050] }
-                                certified = {}
+                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                             {
                                 select = [ { tag = "e", index = 2 } ]
                                 filter = { "kinds": [1], "limit": 1000, "authors": ["abc"] }
-                                certified = {}
+                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                         ]
                     }
@@ -245,7 +245,7 @@ class RouterConfigTest {
                             {
                                 filter = { "kinds": [10040] }
                                 select = [ { index = 2 } ]
-                                certified = {}
+                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                         ]
                     }
@@ -314,7 +314,7 @@ class RouterConfigTest {
                             {
                                 select = [ { tag = "r" } ]
                                 filter = { "kinds": [10002] }
-                                certified = {}
+                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                         ]
                     }
@@ -359,7 +359,7 @@ class RouterConfigTest {
                                 {
                                     select = [ { tag = "r" } ]
                                     filter = { "kinds": [10002] }
-                                    certified = {}
+                                    resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                                 }
                             ]
                         }
@@ -381,7 +381,7 @@ class RouterConfigTest {
             {
                 select = [ $select ]
                 filter = $filter
-                certified = {}
+                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
             }
         ]
         """.trimIndent(),
@@ -641,7 +641,7 @@ class RouterConfigTest {
                 {
                     select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                     filter = { "kinds": [10040] }
-                    certified = {}
+                    resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                 }
             ]
         """
@@ -749,7 +749,7 @@ class RouterConfigTest {
                 """{
                     select = [ { tag = "30382:rank", relay = 2 } ]
                     filter = { "kinds": [10040] }
-                    certified = {}
+                    resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                 }""",
             )
         }
@@ -759,7 +759,7 @@ class RouterConfigTest {
             """{
                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                 filter = { "kinds": [10040] }
-                certified = {}
+                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
             }""",
         )
     }
@@ -781,7 +781,7 @@ class RouterConfigTest {
                         {
                             select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                             filter = { "kinds": [10040] }
-                            certified = {}
+                            resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         }
                     ]
                     $extra
@@ -910,7 +910,7 @@ class RouterConfigTest {
                                     {
                                         select = [ { tag = "r" } ]
                                         filter = { "kinds": [10002] }
-                                        certified = {}
+                                        resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                                     }
                                 ]
                             }
@@ -938,7 +938,7 @@ class RouterConfigTest {
                         {
                             select = [ { tag = "r" } ]
                             filter = { "kinds": [10002] }
-                            certified = {}
+                            resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         }
                     ]
                 }
@@ -968,7 +968,7 @@ class RouterConfigTest {
                     """.trimIndent(),
                 )
             }
-        assertTrue("certified" in e.message!!, "the error says how to migrate: ${e.message}")
+        assertTrue("resultsFilteredBy" in e.message!!, "the error says how to gate it: ${e.message}")
     }
 
     /** A one-stream config, with [body] as the stream's keys. */
@@ -1399,33 +1399,39 @@ class RouterConfigTest {
             }
             """.trimIndent()
         // The 10040 shape: the scan supplies the (relay, provider) pairing,
-        // `certified = {}` supplies the right to be dialled at all.
+        // `resultsFilteredBy` supplies the right to be dialled at all.
         val gated =
             RouterConfigLoader.parse(
                 stream(
                     """{
                         select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                         filter = { "kinds": [10040] }
-                        certified = { maxAgeSeconds = 7200 }
+                        resultsFilteredBy = [
+                            { filter = { "kinds": [30166], "#s": ["syncable"] }, maxAgeSeconds = 7200 }
+                        ]
                     }""",
                 ),
             )
-        val source =
+        val gate =
             gated.streams
                 .single()
                 .discovery!!
                 .scanSources
                 .single()
-        assertEquals(7200L, source.certified!!.maxAgeSeconds)
-        assertEquals(emptyList(), source.certified!!.authors, "absent authors is this process's own monitor")
-        // An empty block is the ordinary spelling.
+                .resultsFilteredBy
+                .single()
+        assertEquals(7200L, gate.maxAgeSeconds)
+        assertEquals(null, gate.filter.authors, "absent authors is the unscoped read, not a substituted identity")
+        // NIP-66 fixes the url in the `d` tag, so a 30166 gate needs no select.
+        assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), gate.selects)
+        // …and the default bound applies where none is written.
         val bare =
             RouterConfigLoader.parse(
                 stream(
                     """{
                         select = [ { tag = "30382:rank", relay = 2 } ]
                         filter = { "kinds": [10040] }
-                        certified = {}
+                        resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                     }""",
                 ),
             )
@@ -1436,13 +1442,94 @@ class RouterConfigTest {
                 .discovery!!
                 .scanSources
                 .single()
-                .certified!!
+                .resultsFilteredBy
+                .single()
                 .maxAgeSeconds,
         )
-        // On a verdict source the gate is a tautology — refused where typed.
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] }, certified = {} }"""))
-        }
+    }
+
+    @Test
+    fun `a gate over anything but kind 30166 has to say where its urls sit`() {
+        // Only NIP-66 fixes the position. Every other relay list puts the url
+        // somewhere of its own choosing, so guessing an index would gate on
+        // the wrong slot — an empty gate that holds everything out.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    stream(
+                        """relaySource = [ {
+                            select = [ { tag = "r" } ]
+                            filter = { "kinds": [10002] }
+                            resultsFilteredBy = [ { filter = { "kinds": [10002] } } ]
+                        } ]""",
+                    ),
+                )
+            }
+        assertTrue("select" in e.message!!, e.message!!)
+        // Said explicitly, it parses.
+        val ok =
+            RouterConfigLoader.parse(
+                stream(
+                    """relaySource = [ {
+                        select = [ { tag = "r" } ]
+                        filter = { "kinds": [10002] }
+                        resultsFilteredBy = [
+                            { select = [ { kind = 10002, tag = "r", marker = "write" } ], filter = { "kinds": [10002] } }
+                        ]
+                    } ]""",
+                ),
+            )
+        assertEquals(
+            1,
+            ok.streams
+                .single()
+                .discovery!!
+                .scanSources
+                .single()
+                .resultsFilteredBy
+                .single()
+                .selects
+                .size,
+        )
+    }
+
+    @Test
+    fun `a gate cannot be bounded with an absolute since`() {
+        // A config outlives the day it was written; `since` written on Tuesday
+        // means Tuesday forever. `maxAgeSeconds` is the span that keeps saying
+        // what it said.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    stream(
+                        """relaySource = [ {
+                            select = [ { tag = "30382:rank", relay = 2 } ]
+                            filter = { "kinds": [10040] }
+                            resultsFilteredBy = [ { filter = { "kinds": [30166], "since": 1700000000 } } ]
+                        } ]""",
+                    ),
+                )
+            }
+        assertTrue("maxAgeSeconds" in e.message!!, e.message!!)
+    }
+
+    @Test
+    fun `certified names its replacement`() {
+        // It shipped in configs people are running, so the error has to say
+        // what to write instead, not merely that the key is unknown.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    stream(
+                        """relaySource = [ {
+                            select = [ { tag = "30382:rank", relay = 2 } ]
+                            filter = { "kinds": [10040] }
+                            certified = {}
+                        } ]""",
+                    ),
+                )
+            }
+        assertTrue("resultsFilteredBy" in e.message!!, e.message!!)
     }
 
     @Test
@@ -1462,7 +1549,7 @@ class RouterConfigTest {
                             {
                                 select = [ { kind = 10009, tag = "group", index = 2 } ]
                                 filter = { "kinds": [10009] }
-                                certified = {}
+                                resultsFilteredBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             }
                         ]
                     }

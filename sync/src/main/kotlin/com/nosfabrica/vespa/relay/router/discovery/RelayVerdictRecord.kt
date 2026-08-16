@@ -253,6 +253,22 @@ class RelayVerdictRecord(
     }
 
     /**
+     * Take the fitness verdict back: the same owned set as [publishFitness]
+     * with nothing to add, so the three tags leave the record and everyone
+     * else's — the fold's `same-as`, the gate's `self-consistent`, another
+     * monitor's — ride through untouched.
+     *
+     * This is how a rules change reaches readers now. The epoch used to be
+     * checked on every read, which meant every consumer of our records had to
+     * know our versioning scheme existed and no foreign NIP-66 monitor could
+     * ever satisfy it. Retracting the claim ourselves is the same guarantee
+     * stated where it belongs: a verdict taken under rules we no longer apply
+     * stops being a verdict, and the url reads as one we have not measured —
+     * which is exactly the state that gets it re-measured.
+     */
+    suspend fun retireFitness(url: NormalizedRelayUrl): Event? = edit(url, owned = setOf(STATUS_TAG, PAGEABLE_TAG, NIP77_TAG), add = emptyList())
+
+    /**
      * Sign and store one verdict. Returns the event so a caller can push it
      * upstream; null when there is no signer, which is also when the router
      * runs without a NIP-66 monitor at all.
@@ -640,6 +656,13 @@ class RelayVerdictRecord(
          * The fitness verdict's own rules version, separate from the fold's
          * and the consistency pass's for the same reason those two are
          * separate: each is its own measurement with its own re-take cost.
+         *
+         * Unlike those two it is never READ by a consumer — it is written so
+         * that [FitnessPass.retireStaleEpochs] can find, at the next boot, the
+         * verdicts this build would no longer draw and take them back. Bump it
+         * in the same commit as the rule change and that is the whole
+         * migration; nothing downstream has to learn that an epoch exists,
+         * which is what lets a stream read a foreign monitor's records at all.
          *
          * **1** — the vocabulary and checks as first shipped.
          */

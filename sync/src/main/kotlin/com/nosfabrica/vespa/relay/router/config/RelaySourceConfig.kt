@@ -237,21 +237,63 @@ data class RelaySource(
     val filter: Filter,
     val verdicts: VerdictSource? = null,
     /**
-     * A LIVENESS GATE on a scan: keep only the discovered urls that ALSO hold
-     * a fresh `syncable` verdict — the monitor's, or the identity the block
-     * names. Intersection, never union: the scan supplies the pairing (which
-     * relay, narrowed to which authors) and the verdicts supply the right to
-     * be dialled at all.
+     * A GATE on a scan: keep only the discovered urls that ALSO appear in what
+     * these filters find. Intersection with the scan, union across the entries
+     * — the scan supplies the pairing (which relay, narrowed to which authors)
+     * and the gate supplies the right to be dialled at all.
      *
      * This is what makes an author-bound source safe at scale. A 10040 is as
      * writable as a 10002 — the same dead hosts and spammed urls, multiplied
      * by every future user — and without the gate each of them costs the
-     * stream a dial and a timeout per cycle, forever. With it, an uncertified
-     * url waits exactly as a new relay does: the monitor's fast lane probes
-     * it within minutes, and its first `syncable` is its admission. Meaningless
-     * beside [verdicts] — a verdict source IS certified.
+     * stream a dial and a timeout per cycle, forever. With it, an ungated url
+     * waits exactly as a new relay does: the monitor's fast lane probes it
+     * within minutes, and its first `syncable` is its admission.
+     *
+     * This was `certified = {}`, which could only ever mean "a fresh
+     * `syncable`", and — because the read behind it enforced our own rules
+     * epoch and our own measured-at stamp — could only ever mean OUR
+     * monitor's, whatever identity the block named. Both of those are gone
+     * (the epoch is retracted at the source by
+     * [com.nosfabrica.vespa.relay.router.discovery.FitnessPass.retireStaleEpochs],
+     * and freshness is the record's own clock), so there is nothing left for a
+     * bespoke block to say that a filter cannot. A third-party NIP-66
+     * monitor's records work here now, and so does a gate that has nothing to
+     * do with monitors — a curated relay list, a NIP-51 set, whatever the
+     * operator can name with a filter and a select.
+     *
+     * Empty is no gate: every url the scan found is dialled.
      */
-    val certified: VerdictSource? = null,
+    val resultsFilteredBy: List<ResultFilter> = emptyList(),
+)
+
+/**
+ * One entry of [RelaySource.resultsFilteredBy]: a plain NIP-01 filter, the
+ * selects that say where in the matched events a url sits, and the one bound
+ * NIP-01 cannot express in a file that outlives the moment it was written.
+ */
+data class ResultFilter(
+    /**
+     * Where the url sits in what [filter] returns. Defaults, when the operator
+     * writes none, to NIP-66's own answer — the `d` tag of a kind-30166 record
+     * — because that is the gate nearly everyone wants and the one place the
+     * protocol fixes the position for us.
+     */
+    val selects: List<RelaySelect>,
+    val filter: Filter,
+    /**
+     * How recently the event must have been published, as a span rather than
+     * an instant. A NIP-01 `since` is an absolute timestamp, which is exactly
+     * what a config file cannot hold — written on Tuesday it means Tuesday
+     * forever — so the one relative knob stays out here and becomes
+     * `since = now - maxAgeSeconds` at read time.
+     *
+     * It bounds the EVENT's own clock, which for a monitor record is when that
+     * monitor last re-checked the relay. That reading only became available
+     * when the passive NIP-66 writer went away; before it, a 30166's
+     * `created_at` tracked the last time we opened a socket to the relay. See
+     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.syncable].
+     */
+    val maxAgeSeconds: Long = VerdictSource.DEFAULT_MAX_AGE_SECONDS,
 )
 
 /**

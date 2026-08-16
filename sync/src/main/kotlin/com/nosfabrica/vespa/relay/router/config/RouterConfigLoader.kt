@@ -520,9 +520,11 @@ object RouterConfigLoader {
         }
         val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
         require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
-        require(sources.all { it.verdicts != null || it.certified != null }) {
-            "router: stream '$stream' has an ungated scan in its relaySource — the pool dials only relays the " +
-                "monitor answers for. Gate it with `certified = {}`, or use a kind-30166 verdict source"
+        require(sources.all { it.verdicts != null || it.resultsFilteredBy.isNotEmpty() }) {
+            "router: stream '$stream' has an ungated scan in its relaySource — the pool dials only relays " +
+                "something vouches for. Gate it with `resultsFilteredBy = [ { filter = { \"kinds\": " +
+                "[${RelayDiscoveryEvent.KIND}], \"#s\": [\"syncable\"] } } ]`, or use a kind-${RelayDiscoveryEvent.KIND} " +
+                "verdict source"
         }
         return RelayDiscoveryConfig(
             sources = sources,
@@ -581,7 +583,7 @@ object RouterConfigLoader {
                 "add `limit` (the bound that stays meaningful on a repeating cycle), `since`, or `authors`, " +
                 "or it would load every matching event in the store at once"
         }
-        return RelaySource(selects = selects, filter = filter, certified = parseCertified(stream, s))
+        return RelaySource(selects = selects, filter = filter, resultsFilteredBy = parseResultFilters(stream, s))
     }
 
     /**
@@ -689,25 +691,69 @@ object RouterConfigLoader {
         }
 
     /**
-     * The `certified { }` liveness gate on a scan source — see
-     * [RelaySource.certified]. An empty block is the ordinary spelling: the
-     * default freshness bound and this process's own monitor identity.
+     * The `resultsFilteredBy [ ]` gate on a scan source — see
+     * [RelaySource.resultsFilteredBy]. Each entry is an ordinary source
+     * spelling (`filter`, optional `select`) plus `maxAgeSeconds`, and the
+     * urls they find are unioned before being intersected with the scan.
      */
-    private fun parseCertified(
+    private fun parseResultFilters(
         stream: String,
         s: Config,
-    ): VerdictSource? {
-        if (!s.hasPath("certified")) return null
-        val c = s.getConfig("certified")
-        return VerdictSource(
-            maxAgeSeconds =
-                if (c.hasPath("maxAgeSeconds")) {
-                    c.getLong("maxAgeSeconds").coerceAtLeast(60L)
+    ): List<ResultFilter> {
+        require(!s.hasPath("certified")) {
+            "router: stream '$stream' uses `certified { }`, which is gone — it could only ever mean `a fresh syncable " +
+                "from our own monitor`, and both halves of that are now expressible. Write it as " +
+                "`resultsFilteredBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], \"#s\": [\"syncable\"] } } ]`, " +
+                "adding `\"authors\": [\"npub1…\"]` to name whose verdicts and `maxAgeSeconds` to bound their age"
+        }
+        if (!s.hasPath("resultsFilteredBy")) return emptyList()
+        val entries = s.getConfigList("resultsFilteredBy")
+        require(entries.isNotEmpty()) {
+            "router: stream '$stream' has an empty `resultsFilteredBy` — leave it off to gate on nothing, " +
+                "since an empty list and no list would otherwise be the same text for opposite intents"
+        }
+        return entries.map { c ->
+            require(c.hasPath("filter")) { "router: stream '$stream' has a `resultsFilteredBy` entry with no `filter { }`" }
+            // Same npub-only rule as a verdict source, and restated as hex
+            // for the same reason: a Filter is a NIP-01 object and NIP-01
+            // speaks hex, but bare hex has no checksum, so a typo is a nobody
+            // whose gate holds everything out with no error anywhere.
+            val written = parseFilter(c.getConfig("filter"))
+            val authors = decodeMonitorNpubs(stream, written.authors.orEmpty())
+            val filter = written.copy(authors = authors.takeIf { it.isNotEmpty() })
+            require(filter.since == null && filter.until == null) {
+                "router: stream '$stream' bounds a `resultsFilteredBy` entry with since/until — those are absolute " +
+                    "instants and a config outlives the day it was written; say `maxAgeSeconds` instead"
+            }
+            val selects =
+                if (c.hasPath("select")) {
+                    c.getConfigList("select").map { parseRelaySelect(stream, it) }.also {
+                        require(it.isNotEmpty()) { "router: stream '$stream' has a `resultsFilteredBy` entry with an empty `select`" }
+                    }
                 } else {
-                    VerdictSource.DEFAULT_MAX_AGE_SECONDS
-                },
-            authors = if (c.hasPath("authors")) decodeMonitorNpubs(stream, c.getStringList("authors")) else emptyList(),
-        )
+                    // NIP-66 fixes the url in the `d` tag, which is the gate
+                    // nearly everyone writes; anything else has to say where
+                    // its urls live, because nothing else in the protocol
+                    // agrees on a position.
+                    require(filter.kinds == listOf(RelayDiscoveryEvent.KIND)) {
+                        "router: stream '$stream' has a `resultsFilteredBy` entry over kinds " +
+                            "${filter.kinds?.joinToString("/") ?: "(none)"} with no `select` — only kind " +
+                            "${RelayDiscoveryEvent.KIND} has its url fixed by the protocol (the `d` tag); " +
+                            "say where the urls sit"
+                    }
+                    listOf(RelaySelect(kind = RelayDiscoveryEvent.KIND, tag = "d", urlIndex = 1))
+                }
+            ResultFilter(
+                selects = selects,
+                filter = filter,
+                maxAgeSeconds =
+                    if (c.hasPath("maxAgeSeconds")) {
+                        c.getLong("maxAgeSeconds").coerceAtLeast(60L)
+                    } else {
+                        VerdictSource.DEFAULT_MAX_AGE_SECONDS
+                    },
+            )
+        }
     }
 
     /** One `{ kind = ..., tag = ..., index = ..., where = [ ] }` entry of a source's `select` list. */
