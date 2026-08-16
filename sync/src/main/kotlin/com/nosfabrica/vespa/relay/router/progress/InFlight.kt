@@ -70,7 +70,7 @@ package com.nosfabrica.vespa.relay.router.progress
  * disclose the truncation reads as the whole answer.
  */
 class InFlight(
-    /** The quietest relays, at most [RelayRotation.DEFAULT_IN_FLIGHT_ROWS] of them. */
+    /** The quietest relays, bounded by whoever built the list — see [VisitPool.MAX_IN_FLIGHT_ROWS][com.nosfabrica.vespa.relay.router.VisitPool]. */
     val relays: List<Relay>,
     /** How many more had a worker and are not named here. Never silently dropped. */
     val omitted: Int,

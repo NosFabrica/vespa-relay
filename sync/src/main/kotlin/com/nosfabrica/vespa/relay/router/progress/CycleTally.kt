@@ -119,7 +119,7 @@ class CycleTally(
      * began. 0 means discovery ran for this cycle.
      *
      * Published because without it `discovered` silently changes meaning. A
-     * stream with `recycleSeconds` set derives its fan-out set once and runs
+     * static stream derives its upstream set once and runs
      * several cycles on it, so "16,752 urls discovered" can describe a store
      * walk that happened five hours ago — and an operator reading two
      * consecutive documents with identical url counts has no way to tell a

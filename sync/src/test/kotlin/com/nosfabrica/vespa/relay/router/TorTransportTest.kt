@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
+import com.nosfabrica.vespa.relay.router.discovery.shouldPreProbe
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import okhttp3.OkHttpClient
 import okhttp3.Request

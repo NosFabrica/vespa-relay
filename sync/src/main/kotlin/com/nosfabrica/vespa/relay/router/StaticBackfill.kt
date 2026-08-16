@@ -379,7 +379,7 @@ internal class StaticBackfill(
                 // The walk's own account of why it stopped. Only `DRAINED` — the
                 // relay EOSEd an empty page, so there is nothing older — earns the
                 // band the right to close its older leg. See `drainSettlesThePast`.
-                // In a try/finally for the same reason as DynamicSync's: the
+                // In a try/finally for the usual walk reason: the
                 // caller catches Exception, and a throw between begin and
                 // finish strands this walk in PagingProgress at 0%, which
                 // `fraction` then averages into the stream's number forever.

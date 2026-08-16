@@ -221,7 +221,6 @@ class RouterConfigTest {
                         dir            = "down"
                         filter         = { "kinds": [0, 3, 10002] }
                         refreshSeconds     = 3600
-                        concurrency        = 4
                         exclude            = [ "wss://skip.example" ]
                         relaySource = [
                             {
@@ -231,10 +230,12 @@ class RouterConfigTest {
                                     { tag = "relay" }
                                 ]
                                 filter = { "kinds": [10002, 10040, 10050] }
+                                certified = {}
                             }
                             {
                                 select = [ { tag = "e", index = 2 } ]
                                 filter = { "kinds": [1], "limit": 1000, "authors": ["abc"] }
+                                certified = {}
                             }
                         ]
                     }
@@ -244,6 +245,7 @@ class RouterConfigTest {
                             {
                                 filter = { "kinds": [10040] }
                                 select = [ { index = 2 } ]
+                                certified = {}
                             }
                         ]
                     }
@@ -253,7 +255,6 @@ class RouterConfigTest {
 
         val outbox = cfg.streams.first { it.name == "outbox" }.dynamic!!
         assertEquals(3600L, outbox.refreshSeconds)
-        assertEquals(4, outbox.concurrency)
         assertEquals(listOf("wss://skip.example/"), outbox.exclude.urls.map { it.url })
         assertEquals(2, outbox.sources.size)
 
@@ -313,6 +314,7 @@ class RouterConfigTest {
                             {
                                 select = [ { tag = "r" } ]
                                 filter = { "kinds": [10002] }
+                                certified = {}
                             }
                         ]
                     }
@@ -357,6 +359,7 @@ class RouterConfigTest {
                                 {
                                     select = [ { tag = "r" } ]
                                     filter = { "kinds": [10002] }
+                                    certified = {}
                                 }
                             ]
                         }
@@ -378,6 +381,7 @@ class RouterConfigTest {
             {
                 select = [ $select ]
                 filter = $filter
+                certified = {}
             }
         ]
         """.trimIndent(),
@@ -612,7 +616,11 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `deleteMissing needs a reconcile, because a fetch never asks inside its band`() {
+    fun `deleteMissing needs the pool's audit — a relay source and its clock`() {
+        // The comparison runs as the history audit over asks a scan paired
+        // with their owners, so the config must supply both halves: the
+        // relaySource (a static stream has no discovery to pair authors
+        // with) and verifySeconds (the audit's clock).
         fun stream(extra: String) =
             RouterConfigLoader
                 .parse(
@@ -621,7 +629,6 @@ class RouterConfigTest {
                       s {
                         dir = "down"
                         filter = { "kinds": [30382] }
-                        urls = [ "wss://a.example" ]
                         $extra
                       }
                     }
@@ -629,46 +636,55 @@ class RouterConfigTest {
                 ).streams
                 .single()
 
-        assertEquals(DeleteMissing.OFF, stream("""sync = "negentropy"""").deleteMissing)
+        val gated = """
+            relaySource = [
+                {
+                    select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                    filter = { "kinds": [10040] }
+                    certified = {}
+                }
+            ]
+        """
         assertEquals(
             DeleteMissing.ON,
             stream(
-                """sync = "negentropy"
-                ownedKinds = [30382]
-                deleteMissing = true""",
+                """ownedKinds = [30382]
+                deleteMissing = true
+                verifySeconds = 86400
+                $gated""",
             ).deleteMissing,
         )
         assertEquals(
             DeleteMissing.DRY_RUN,
             stream(
-                """sync = "negentropy"
-                ownedKinds = [30382]
-                deleteMissing = "dryRun"""",
+                """ownedKinds = [30382]
+                deleteMissing = "dryRun"
+                verifySeconds = 86400
+                $gated""",
             ).deleteMissing,
         )
-
-        // A paged fetch asks only OUTSIDE its band, so everything below
-        // the band is "not asked for" rather than "not there" — deleting on that
-        // would take the whole history the band already covers.
+        // No relaySource: nothing pairs the owned kinds with their owners.
         assertFailsWith<IllegalArgumentException> {
             stream(
-                """sync = "fetch"
+                """urls = [ "wss://a.example" ]
                 ownedKinds = [30382]
                 deleteMissing = true""",
             )
         }
-        // auto can silently BE a fetch, so it is refused for the same reason.
+        // No verifySeconds: the one decision that destroys data has no clock.
         assertFailsWith<IllegalArgumentException> {
             stream(
                 """ownedKinds = [30382]
-                deleteMissing = true""",
+                deleteMissing = true
+                $gated""",
             )
         }
         assertFailsWith<IllegalArgumentException> {
             stream(
-                """sync = "negentropy"
-                ownedKinds = [30382]
-                deleteMissing = "sometimes"""",
+                """ownedKinds = [30382]
+                deleteMissing = "sometimes"
+                verifySeconds = 86400
+                $gated""",
             )
         }
     }
@@ -684,9 +700,15 @@ class RouterConfigTest {
                 streams {
                   s {
                     dir = "down"
-                    sync = "negentropy"
                     filter = { $kinds }
-                    urls = [ "wss://a.example" ]
+                    verifySeconds = 86400
+                    relaySource = [
+                        {
+                            select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                            filter = { "kinds": [10040] }
+                            certified = {}
+                        }
+                    ]
                     $extra
                   }
                 }
@@ -813,106 +835,65 @@ class RouterConfigTest {
                                     {
                                         select = [ { tag = "r" } ]
                                         filter = { "kinds": [10002] }
+                                        certified = {}
                                     }
                                 ]
                             }
                         }
                         """.trimIndent(),
                     "SYNC_DYNAMIC_REFRESH_SECONDS" to "900",
-                    "SYNC_DYNAMIC_CONCURRENCY" to "16",
-                    "SYNC_DYNAMIC_RECYCLE_SECONDS" to "30",
                 ),
             )
         val dynamic = cfg!!.dynamicStreams().single().dynamic!!
         assertEquals(900L, dynamic.refreshSeconds)
-        assertEquals(16, dynamic.concurrency)
-        assertEquals(30L, dynamic.recycleSeconds)
-        assertEquals(30L, dynamic.nextCycleSeconds, "the sleep must be the gap the operator asked for")
     }
 
     @Test
-    fun `recycleSeconds separates the cycle period from the rediscovery period`() {
-        val cfg =
-            RouterConfigLoader.parse(
-                """
-                streams {
-                    outbox {
-                        filter         = { "kinds": [1] }
-                        refreshSeconds = 21600
-                        recycleSeconds = 10
-                        relaySource = [
-                            {
-                                select = [ { tag = "r" } ]
-                                filter = { "kinds": [10002] }
-                            }
-                        ]
-                    }
+    fun `the cycle engine's knobs are refused by name, with the migration note`() {
+        // Silently ignoring a legacy knob is a silently different deployment.
+        // Each one is refused naming its replacement.
+        fun gated(extra: String) =
+            """
+            streams {
+                s {
+                    dir    = "down"
+                    filter = { "kinds": [1] }
+                    $extra
+                    relaySource = [
+                        {
+                            select = [ { tag = "r" } ]
+                            filter = { "kinds": [10002] }
+                            certified = {}
+                        }
+                    ]
                 }
-                """.trimIndent(),
-            )
-        val dynamic = cfg.dynamicStreams().single().dynamic!!
-        assertEquals(21_600L, dynamic.refreshSeconds, "the relay list is still re-read every 6h")
-        assertEquals(10L, dynamic.recycleSeconds)
-        assertEquals(10L, dynamic.nextCycleSeconds)
-    }
-
-    @Test
-    fun `an unset recycleSeconds keeps a rediscovery per cycle`() {
-        // Not a long default TTL: null means the stream never holds a relay
-        // list, which is what this router did before it could. A default would
-        // change every existing deployment's dial rate on upgrade.
-        val cfg =
-            RouterConfigLoader.parse(
-                """
-                streams {
-                    outbox {
-                        filter         = { "kinds": [1] }
-                        refreshSeconds = 3600
-                        relaySource = [
-                            {
-                                select = [ { tag = "r" } ]
-                                filter = { "kinds": [10002] }
-                            }
-                        ]
+            }
+            """.trimIndent()
+        for (knob in listOf("authorsPerLeg = 1", "concurrency = 8", "recycleSeconds = 30")) {
+            val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(gated(knob)) }
+            assertTrue(knob.substringBefore(" ") in e.message!!, "the error names the knob: ${e.message}")
+        }
+        // ...and an ungated scan is refused with the way in.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    """
+                    streams {
+                        s {
+                            dir    = "down"
+                            filter = { "kinds": [1] }
+                            relaySource = [
+                                {
+                                    select = [ { tag = "r" } ]
+                                    filter = { "kinds": [10002] }
+                                }
+                            ]
+                        }
                     }
-                }
-                """.trimIndent(),
-            )
-        val dynamic = cfg.dynamicStreams().single().dynamic!!
-        assertNull(dynamic.recycleSeconds)
-        assertEquals(3600L, dynamic.nextCycleSeconds)
-    }
-
-    @Test
-    fun `recycleSeconds has a floor, and it is not the refresh floor`() {
-        // 60s is right for a store walk and wrong for the pause after a fan-out
-        // that just took hours. Zero is refused too: an empty relay list or a
-        // cycle that fails instantly would spin.
-        val cfg =
-            RouterConfigLoader.parse(
-                """
-                streams {
-                    outbox {
-                        filter         = { "kinds": [1] }
-                        recycleSeconds = 0
-                        relaySource = [
-                            {
-                                select = [ { tag = "r" } ]
-                                filter = { "kinds": [10002] }
-                            }
-                        ]
-                    }
-                }
-                """.trimIndent(),
-            )
-        assertEquals(
-            RouterConfigLoader.MIN_RECYCLE_SECONDS,
-            cfg
-                .dynamicStreams()
-                .single()
-                .dynamic!!
-                .recycleSeconds,
-        )
+                    """.trimIndent(),
+                )
+            }
+        assertTrue("certified" in e.message!!, "the error says how to migrate: ${e.message}")
     }
 
     /** A one-stream config, with [body] as the stream's keys. */
@@ -1395,7 +1376,7 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a verdict source rides alongside scanned sources during a migration`() {
+    fun `a verdict source rides alongside certified scans in one stream`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -1412,6 +1393,7 @@ class RouterConfigTest {
                             {
                                 select = [ { kind = 10009, tag = "group", index = 2 } ]
                                 filter = { "kinds": [10009] }
+                                certified = {}
                             }
                         ]
                     }
@@ -1420,6 +1402,6 @@ class RouterConfigTest {
             )
         val dynamic = cfg.streams.single().dynamic!!
         assertEquals(7200L, dynamic.verdictSources.single().maxAgeSeconds)
-        assertEquals(1, dynamic.scanSources.size, "scanned sources ride alongside the verdicts during a migration")
+        assertEquals(1, dynamic.scanSources.size, "certified scans ride alongside the verdicts in one stream")
     }
 }

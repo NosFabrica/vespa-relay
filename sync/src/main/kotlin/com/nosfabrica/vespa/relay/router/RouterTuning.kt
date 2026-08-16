@@ -35,7 +35,7 @@ internal const val NEG_IDLE_MS = 30_000L
  * for the next pass.
  *
  * [NEG_IDLE_MS] bounds a single ask; this bounds the SEQUENCE of them. A stream
- * with `authorsPerLeg` set asks one relay once per author chunk, and a relay
+ * with author-bound asks visits one relay once per bound author, and a relay
  * that answers each chunk with a full idle window costs `chunks * NEG_IDLE_MS`
  * of a transfer slot and a socket — measured at 5h00m on one url, of which
  * 4h56m arrived nothing.

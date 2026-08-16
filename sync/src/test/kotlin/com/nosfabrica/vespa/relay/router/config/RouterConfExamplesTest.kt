@@ -199,9 +199,8 @@ class RouterConfExamplesTest {
             source.selects.all { it.bindings["authors"] == Slot.OfTag(1) },
             "each service tag binds its own provider as the authors to ask for",
         )
-        // A band per (relay, service) rather than per relay, so a new provider
-        // list does not invalidate the ones already walked.
-        assertEquals(1, assertions.dynamic!!.authorsPerLeg)
+        // A band per (relay, service) rather than per relay — the pool makes
+        // one ask per bound author, structurally.
         // GATED on the monitor's verdicts: a 10040 is as writable as a 10002,
         // and at millions of provider lists the spammed dead urls in them must
         // cost the monitor one probe each — never this stream a dial and a
@@ -222,14 +221,12 @@ class RouterConfExamplesTest {
     }
 
     @Test
-    fun `a dynamic cycle paces its fan-out without deadlining a relay`() {
-        // A dead relay is caught by the client's idle timeout in seconds, so what
-        // the example has to state is how the cycle repeats and how wide it runs —
-        // NOT a wall clock, which could only ever cut off a relay still sending.
+    fun `every dynamic stream states how often its list is re-derived`() {
+        // A dead relay is caught by the client's idle timeout in seconds; the
+        // one clock the config owes discovery is how often a scan's list is
+        // re-read from the store.
         example.dynamicStreams().forEach { stream ->
-            val d = stream.dynamic!!
-            assertTrue(d.refreshSeconds > 0, "'${stream.name}' needs a refresh period")
-            assertTrue(d.concurrency > 0, "'${stream.name}' needs a fan-out width")
+            assertTrue(stream.dynamic!!.refreshSeconds > 0, "'${stream.name}' needs a refresh period")
         }
     }
 }

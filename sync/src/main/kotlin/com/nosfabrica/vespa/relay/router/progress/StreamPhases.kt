@@ -486,7 +486,7 @@ class StreamPhases {
          * themselves the moment their last worker returns, so the ordinary
          * steady state is one or two. What this bounds is the pathological case
          * — a leg that never returns keeps its pass alive forever, and a stream
-         * on a short `recycleSeconds` would then accumulate one row per pass for
+         * repassing quickly would then accumulate one row per pass for
          * the life of the process.
          */
         const val MAX_TRACKED_CYCLES = 4

@@ -64,9 +64,6 @@ class ExampleMatchesLiveConfTest {
             s.sync,
             s.deleteMissing,
             s.dynamic?.refreshSeconds,
-            s.dynamic?.recycleSeconds,
-            s.dynamic?.concurrency,
-            s.dynamic?.authorsPerLeg,
             s.dynamic
                 ?.exclude
                 ?.let { ex -> ex.urls.map { it.url }.sorted() + ex.patterns.map { it.pattern }.sorted() },

@@ -34,7 +34,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
  *       dir            = "down"
  *       filter         = { "kinds": [0, 3, 10002] }
  *       refreshSeconds = 21600
- *       concurrency    = 8
  *       relaySource = [
  *         {
  *           select = [ { kind = 10002, tag = "r", marker = "write" } ]
@@ -43,81 +42,21 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
  *       ]
  *     }
  *
- * Every refresh the router runs each scan, unions the relays they name, and
- * syncs the stream filter against every one of them — nothing truncates the
- * set, [concurrency] only paces it. There is no live tail: a set this size is
- * synced on a period, not held open.
+ * Every refresh the pool re-derives each scan, unions the relays they name,
+ * gates them on the monitor's verdicts, and asks — nothing truncates the set.
  *
- * @param sources every scan to read relay urls from, merged.
- * @param refreshSeconds how often the relay list is READ OUT OF THE STORE
- *   again. With [recycleSeconds] unset this is also the cycle period, because
- *   every cycle rediscovers.
- * @param concurrency how many relays sync at the same time. A relay's sync has
- *   no wall-clock cap: every client timeout is measured from the last message,
- *   so a silent relay is dropped in seconds and a delivering one is doing the
- *   work the slot exists for.
+ * @param sources every source to read relay urls from, merged: kind-30166
+ *   verdict sources and `certified`-gated scans.
+ * @param refreshSeconds how often a scan's relay list is READ OUT OF THE
+ *   STORE again — deriving one is a store walk, so the pool caches it this
+ *   long. The verdict half rebuilds on its own freshness clock.
  * @param exclude patterns for relays to skip however many sources name them —
  *   see [RelayExcludes] for how an entry matches.
  */
 data class RelayDiscoveryConfig(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
-    val concurrency: Int,
     val exclude: RelayExcludes,
-    /**
-     * How soon after a pass finishes HANDING OUT its relay list the next one
-     * starts, on the list the last one used. Null keeps the old behaviour
-     * exactly: one pass per [refreshSeconds], each of them rediscovering.
-     *
-     * **"Finishes handing out" is not "finishes".** A pass ends when the walk
-     * has given its last url to a worker; the slow relays keep their slots and
-     * run on into the next pass, which is the entire point of the rotation. So
-     * this is a FLOOR ON THE GAP between laps and not a cycle period — the
-     * period is the walk plus this, and the walk is paced by the worker pool
-     * rather than by any clock. Measured on live relays, 18,687 urls took 26:29
-     * to hand out; against that a 30-second gap is a tail. Setting it to 5 does
-     * not buy a five-second cycle, it buys a five-second pause between laps as
-     * long as the network makes them.
-     *
-     * Two consequences worth knowing before tuning it. A pass whose whole list
-     * is still busy hands out NOTHING and ends immediately — ordinary on a short
-     * list, where every url is still with a worker from the last pass — and the
-     * loop then ticks at this interval until slots free, which is why the floor
-     * is seconds rather than zero. And the walk can still block, at the
-     * admission gate: a stream stops only when every one of its 128–512 slots is
-     * held at once, where the join this replaced needed exactly one straggler.
-     *
-     * The two knobs answer different questions, and conflating them is what
-     * made a 6h refresh mean 6h of idling. Deriving the fan-out set is a store
-     * walk (every relay-list event, or the tag projection over them), a
-     * normalisation pass over tens of thousands of strings, and one `#d` query
-     * per 500 urls to read the alias verdicts back — minutes on a full store,
-     * paid to produce a list that is nearly identical to the previous cycle's.
-     * The DOWNLOAD is what should repeat often; the derivation is what should
-     * not. So the list is held in memory for [refreshSeconds], and every pass
-     * inside that window runs on it.
-     *
-     * What it does NOT stale, because neither is derived here: the NIP-66
-     * known-dead set is re-read at the top of every pass from the monitor's own
-     * memory, and host strikes are pass-local and rebuilt each time. A cached
-     * list is a list of urls to consider, not a decision to dial them.
-     *
-     * The floor is 5s rather than the 60s [refreshSeconds] carries: this paces
-     * the pause between laps, not a store walk, and "start again shortly" is the
-     * whole point of setting it.
-     */
-    val recycleSeconds: Long? = null,
-    /**
-     * How many bound `authors` go into ONE ask, and therefore into one cursor
-     * band. Null keeps them all in a single filter.
-     *
-     * A band is keyed on its filter, so an author set that changes invalidates
-     * it and re-walks that relay's history. At 1 the band is `(relay, one
-     * author)` and stays valid forever — right for a small pairing like NIP-85
-     * providers. An outbox stream pairing millions of authors has to chunk,
-     * and accept that a chunk re-walks when its membership shifts.
-     */
-    val authorsPerLeg: Int? = null,
     /**
      * The most relays one event may name before the whole event is ignored as
      * a relay list, or null for no limit.
@@ -140,18 +79,8 @@ data class RelayDiscoveryConfig(
     /** Every source that consults the monitor's kind-30166 verdicts — see [RelaySource.verdicts]. */
     val verdictSources: List<VerdictSource> get() = sources.mapNotNull { it.verdicts }
 
-    /** Every source that scans relay-list events with selects — the parsed half. */
+    /** Every source that scans relay-list events with selects — the certified-scan half. */
     val scanSources: List<RelaySource> get() = sources.filter { it.verdicts == null }
-
-    /**
-     * How long the stream sleeps after a cycle it actually ran — the recycle
-     * gap where one is configured, the refresh period otherwise.
-     *
-     * One property because it is also what the router SAYS it will do ("next in
-     * Ns", `Phase.Idle`), and a countdown that names a different number from the
-     * one the loop sleeps is worse than no countdown.
-     */
-    val nextCycleSeconds: Long get() = recycleSeconds ?: refreshSeconds
 }
 
 /**
@@ -399,10 +328,7 @@ data class TagCondition(
     }
 }
 
-/** Env-level fallbacks for the per-stream dynamic-relay knobs. */
+/** Env-level fallback for the one per-stream discovery knob that survived the pool. */
 data class RelaySourceDefaults(
     val refreshSeconds: Long = 21_600,
-    val concurrency: Int = 8,
-    /** Null keeps a rediscovery per cycle — see [RelayDiscoveryConfig.recycleSeconds]. */
-    val recycleSeconds: Long? = null,
 )

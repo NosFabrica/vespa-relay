@@ -35,6 +35,7 @@ import com.nosfabrica.vespa.relay.router.refused.IngestOrigin
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.client.NostrClient
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.fetchAllPages
 import com.vitorpamplona.quartz.nip01Core.relay.client.reqs.SubscriptionListener
@@ -86,7 +87,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * quartz's own endings, believed: every page ends inside one idle window, and
  * a walk that was refused with nothing delivered
- * ([DynamicSync.refusedOutright]) ends the visit rather than re-opening the
+ * ([refusedOutright]) ends the visit rather than re-opening the
  * same conversation once per remaining leg. A wedged relay costs one worker
  * one bounded visit, not one slot for hours — and the monitor's next sweep is
  * what decides whether it stays on the roster at all.
@@ -616,7 +617,7 @@ internal class VisitPool(
             }
             val flooredLeg = leg.flooredForPaging()
             val walked = client.fetchAllPages(url, listOf(flooredLeg), NEG_IDLE_MS, onEvent = onEvent)
-            if (DynamicSync.refusedOutright(walked)) {
+            if (refusedOutright(walked)) {
                 // No band for the refused leg: nothing was observed, nothing
                 // drained, and a record would re-stamp a walk that never
                 // happened. Same rule as the legacy engine's.
@@ -838,6 +839,28 @@ internal class VisitPool(
             return dynamic.sources.isNotEmpty() &&
                 dynamic.sources.all { it.verdicts != null || it.certified != null }
         }
+
+        /**
+         * Did this leg's walk end in a way that makes the NEXT leg futile?
+         *
+         * Only when it delivered nothing: a walk that carried events did real
+         * work whatever ended it, and the later legs may fare the same.
+         * [PagedFetchResult.End.DRAINED] is the opposite of a refusal — an
+         * empty page the relay honestly EOSEd — and LIMIT_REACHED stopped on
+         * our own instruction; every other ending is the relay (or the path
+         * to it) declining the conversation the next leg would re-open, at
+         * the price of an idle window of silence per leg.
+         */
+        internal fun refusedOutright(walked: PagedFetchResult): Boolean =
+            walked.downloaded == 0 &&
+                when (walked.end) {
+                    PagedFetchResult.End.DRAINED, PagedFetchResult.End.LIMIT_REACHED -> false
+
+                    PagedFetchResult.End.IDLE, PagedFetchResult.End.CLOSED,
+                    PagedFetchResult.End.AUTH_REQUIRED, PagedFetchResult.End.CANNOT_CONNECT,
+                    PagedFetchResult.End.UNPAGEABLE,
+                    -> true
+                }
 
         /**
          * Is the band's history due its audit? A `fullAt` of zero is a band

@@ -76,7 +76,6 @@ class RelayDiscoveryTest {
     ) = RelayDiscoveryConfig(
         sources = sources.toList(),
         refreshSeconds = 3_600,
-        concurrency = 4,
         // Production compilation, so these tests exercise the same entry
         // classification and case rules the loader produces.
         exclude = RelayExcludes.parse(exclude.toList()),

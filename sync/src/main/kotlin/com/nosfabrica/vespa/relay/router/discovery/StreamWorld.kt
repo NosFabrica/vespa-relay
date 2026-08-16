@@ -73,7 +73,6 @@ internal class StreamWorld(
             RelayDiscoveryConfig(
                 sources = it.sources,
                 refreshSeconds = it.sweepSeconds,
-                concurrency = 1,
                 exclude = it.exclude,
             )
         }

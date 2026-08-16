@@ -86,8 +86,8 @@ import kotlin.coroutines.CoroutineContext
  * the store through [IngestPipeline]; [StaticBackfill] catches up on history
  * first. Up (`dir = up`/`both`): [UpstreamPush] periodically reconciles the
  * store against the upstream and publishes what it is missing. Dynamic
- * (`relaySource = [...]`): [DynamicSync] discovers relays from the store's
- * own relay-list events and syncs them on a period.
+ * (`relaySource = [...]`): [VisitPool] builds its roster from the monitor's
+ * kind-30166 verdicts and rides it — constantly connected, audited weekly.
  *
  * This class owns the shared plumbing — the websocket client, the NIP-66
  * monitor, NIP-42 auth, the health and stats lines — and hands the work to
@@ -230,7 +230,7 @@ class SyncEngine(
     // is a full store walk and concurrent ones sum on the heap.
     //
     // It used to be held for a whole run, which was the same thing while a
-    // dynamic fan-out ended in a join. It cannot be now: `DynamicSync` is a
+    // dynamic fan-out ended in a join. It cannot be now: the pool is a
     // rotation with no join, so "the whole run" is forever and every other
     // id-set stream would queue behind it for the life of the process. What
     // bounds RESIDENCY on that side is `SharedIdSet`, which never lets a stream
@@ -249,7 +249,6 @@ class SyncEngine(
      * audit ([RetractionAudit]).
      */
     private val visitStreams = dynamicStreams.filter { VisitPool.ridesThePool(it) }
-    private val legacyStreams = dynamicStreams - visitStreams.toSet()
 
     // The relays we hold a live subscription on; a dynamic sync must not drop
     // one of these sockets out from under its tail.
@@ -495,30 +494,6 @@ class SyncEngine(
                 }
             }
 
-    private val dynamic: DynamicSync =
-        DynamicSync(
-            client,
-            store,
-            bands,
-            ingest,
-            phases,
-            paging,
-            streamGate,
-            transferring,
-            monitor,
-            pinnedUrls,
-            folding,
-            stability,
-            aliasMonitor,
-            tor,
-            scope,
-            healer,
-            refusedIds,
-            sockets,
-            probe,
-            monitorAuthor = signer?.pubKey,
-        )
-
     /** The deleteMissing comparison for the pool's retracting asks — see [RetractionAudit]. */
     private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
 
@@ -611,7 +586,6 @@ class SyncEngine(
         // tails, the audit clock. Everything else keeps the legacy pass
         // machinery, which is the migration posture: both engines run side by
         // side until every stream has crossed.
-        legacyStreams.forEach { stream -> scope.launch { dynamic.loop(stream) } }
         visitPool.start()
 
         // Only where there is something to fold for. A dynamic stream is what
@@ -886,7 +860,8 @@ class SyncEngine(
                     ", $open connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
                     (
-                        (dynamic.deleted.get() + retraction.deleted.get())
+                        retraction.deleted
+                            .get()
                             .takeIf { it > 0 }
                             ?.let { ", $it record(s) DELETED as retracted upstream" } ?: ""
                     ) +

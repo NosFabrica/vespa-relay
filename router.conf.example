@@ -181,7 +181,6 @@ streams {
 
     assertions {
         dir = "down"
-        sync   = "negentropy"
         deleteMissing = "dryRun"
         # The provider's relay is the source of truth for its OWN scores, and
         # for nothing else here. Kind 0/10002 ride along so we pick them up if
@@ -191,12 +190,10 @@ streams {
         ownedKinds = [30382]
         filter = { "kinds": [0, 10002, 30382] }
         refreshSeconds = 21600
-        concurrency = 8
-        exclude = []
-        # Still a parsed source, and still author-bound: a provider stream's
+        # Still a scanned source, and still author-bound: a provider stream's
         # whole meaning is "THIS service's records from THIS relay", which is
-        # the one place narrowing earns its keep. authorsPerLeg = 1 keeps each
-        # (relay, service) band valid forever.
+        # the one place narrowing earns its keep. The pool makes one ask per
+        # bound author, so each (relay, service) band stays valid forever.
         relaySource = [
             {
                 select = [
@@ -214,7 +211,6 @@ streams {
                 certified = {}
             }
         ]
-        authorsPerLeg = 1
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
         # deletion decision deserves the audited full-history reconcile.

@@ -179,7 +179,6 @@ class VisitPoolLiveProbe {
                                                     ),
                                                 ),
                                             refreshSeconds = 3600,
-                                            concurrency = 4,
                                             exclude = RelayExcludes.NONE,
                                         ),
                                     sync = SyncMode.FETCH,

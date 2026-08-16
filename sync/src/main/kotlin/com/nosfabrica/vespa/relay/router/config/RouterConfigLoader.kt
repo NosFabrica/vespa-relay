@@ -55,20 +55,6 @@ internal fun Map<String, String>.syncEnv(
  * of the config's streams (see [select]).
  */
 object RouterConfigLoader {
-    /**
-     * The floor under `recycleSeconds`, well below the 60s `refreshSeconds`
-     * carries.
-     *
-     * They bound different things. `refreshSeconds` paces a store walk, and one
-     * a minute is already more than any relay list changes. This paces the gap
-     * between two fan-outs, i.e. the pause after work that took as long as
-     * dialling every discovered relay — "start again shortly" is what an
-     * operator setting it is asking for, and a 60s floor would refuse it. Not
-     * zero: an empty relay list or a cycle that fails instantly would otherwise
-     * spin.
-     */
-    const val MIN_RECYCLE_SECONDS = 5L
-
     fun fromEnv(env: Map<String, String>): RouterConfig? {
         val inline = env.syncEnv("SYNC_CONFIG", "ROUTER_CONFIG")?.takeIf { it.isNotBlank() }
         val fromFile = env.syncEnv("SYNC_CONFIG_FILE", "ROUTER_CONFIG_FILE")?.takeIf { it.isNotBlank() }?.let { File(it).readText() }
@@ -107,21 +93,6 @@ object RouterConfigLoader {
                         ?.trim()
                         ?.toLongOrNull()
                         ?.coerceAtLeast(60L) ?: fallback.refreshSeconds,
-                concurrency =
-                    env
-                        .syncEnv("SYNC_DYNAMIC_CONCURRENCY", "ROUTER_DYNAMIC_CONCURRENCY")
-                        ?.trim()
-                        ?.toIntOrNull()
-                        ?.coerceIn(1, 256) ?: fallback.concurrency,
-                // Unset means "rediscover every cycle", which is what this
-                // router did before the relay list was cacheable at all — so
-                // there is no default to fall back to and `?:` would be wrong.
-                recycleSeconds =
-                    env
-                        .syncEnv("SYNC_DYNAMIC_RECYCLE_SECONDS", "ROUTER_DYNAMIC_RECYCLE_SECONDS")
-                        ?.trim()
-                        ?.toLongOrNull()
-                        ?.coerceAtLeast(MIN_RECYCLE_SECONDS) ?: fallback.recycleSeconds,
             )
         // Window sizing for the automatic negentropy pager. Applied with copy()
         // rather than threaded through parse(): they are runtime tuning, not
@@ -230,26 +201,19 @@ object RouterConfigLoader {
                 // wearing an audit's name.
                 val verifySeconds = if (s.hasPath("verifySeconds")) s.getLong("verifySeconds").coerceAtLeast(3600L) else null
                 if (deleteMissing != DeleteMissing.OFF) {
-                    // Where the comparison runs decides what the config must
-                    // say. A pool stream's comparison is its audit, so the
-                    // audit's clock is the requirement; a legacy stream's is
-                    // its reconcile, so the mode is. A paged fetch could
-                    // never carry it either way: it asks only outside its
+                    // The comparison runs as the pool's history audit, so the
+                    // config must give it a relay list the monitor answers
+                    // for and the audit clock it runs on. Nothing else can
+                    // carry it: a static stream has no discovery to pair
+                    // authors with, and a paged fetch asks only outside its
                     // band, so "not seen" there means "not asked for".
-                    val poolShaped =
-                        dynamic != null && dynamic.sources.isNotEmpty() &&
-                            dynamic.sources.all { it.verdicts != null || it.certified != null }
-                    if (poolShaped) {
-                        require(verifySeconds != null) {
-                            "router: stream '$name' sets deleteMissing on a pool stream without `verifySeconds` — " +
-                                "the retraction comparison runs as the history audit, and that knob is its clock"
-                        }
-                    } else {
-                        require(sync == SyncMode.NEGENTROPY) {
-                            "router: stream '$name' sets deleteMissing with sync = \"${sync.name.lowercase()}\" — it needs sync = \"negentropy\". " +
-                                "A paged fetch asks only outside its band, so \"not seen\" there means \"not asked for\", " +
-                                "and deleting on it would take the whole history below the band"
-                        }
+                    require(dynamic != null) {
+                        "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
+                            "comparison runs as the pool's audit, over asks a scan paired with their owners"
+                    }
+                    require(verifySeconds != null) {
+                        "router: stream '$name' sets deleteMissing without `verifySeconds` — " +
+                            "the retraction comparison runs as the history audit, and that knob is its clock"
                     }
                 }
                 SyncStream(
@@ -429,24 +393,46 @@ object RouterConfigLoader {
         return declared
     }
 
-    /** The `relaySource = [ ... ]` list plus the stream-level knobs pacing its cycle. */
+    /**
+     * The `relaySource = [ ... ]` list plus the stream-level knobs pacing its
+     * discovery. Every source must answer to the monitor — a kind-30166
+     * verdict source, or a scan gated `certified` — because the pool is the
+     * only engine: an ungated scan has nothing to run it, and admitting it
+     * silently would dial every dead url every relay list ever spammed.
+     *
+     * The legacy fan-out's knobs are refused BY NAME rather than ignored: a
+     * config that still says them was written for the cycle engine, and the
+     * operator deserves the migration note, not a silently different
+     * behavior.
+     */
     private fun parseDynamic(
         stream: String,
         s: Config,
         defaults: RelaySourceDefaults,
     ): RelayDiscoveryConfig? {
         if (!s.hasPath("relaySource")) return null
+        require(!s.hasPath("authorsPerLeg")) {
+            "router: stream '$stream' sets authorsPerLeg — gone with the cycle engine. The pool makes one ask " +
+                "per bound author, which is what authorsPerLeg = 1 configured; other values invalidated bands"
+        }
+        require(!s.hasPath("concurrency")) {
+            "router: stream '$stream' sets a per-stream concurrency — gone with the cycle engine. The pool's " +
+                "dial width is the top-level `visitConcurrency`, shared by every stream"
+        }
+        require(!s.hasPath("recycleSeconds")) {
+            "router: stream '$stream' sets recycleSeconds — gone with the cycle engine. The pool has no laps: " +
+                "revisits are paced per relay by recent yield, and `refreshSeconds` paces rediscovery"
+        }
         val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
         require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
+        require(sources.all { it.verdicts != null || it.certified != null }) {
+            "router: stream '$stream' has an ungated scan in its relaySource — the pool dials only relays the " +
+                "monitor answers for. Gate it with `certified = {}`, or use a kind-30166 verdict source"
+        }
         return RelayDiscoveryConfig(
             sources = sources,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
-            concurrency = (if (s.hasPath("concurrency")) s.getInt("concurrency") else defaults.concurrency).coerceIn(1, 256),
-            recycleSeconds =
-                (if (s.hasPath("recycleSeconds")) s.getLong("recycleSeconds") else defaults.recycleSeconds)
-                    ?.coerceAtLeast(MIN_RECYCLE_SECONDS),
             exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
-            authorsPerLeg = if (s.hasPath("authorsPerLeg")) s.getInt("authorsPerLeg").coerceAtLeast(1) else null,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
         )
     }

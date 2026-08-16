@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
+import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
@@ -82,14 +83,12 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `verdicts, certified scans and retracting streams ride the pool — an ungated scan does not`() {
-        // The fork's arithmetic, spelled as config. Four streams, one per
-        // rule: a verdict source rides; a certified scan rides (the gate
-        // answers to the monitor, so the pool can trust every url it is
-        // handed); a retracting stream rides too, its deleteMissing
-        // comparison running as its verifySeconds audit; only an ungated
-        // scan keeps the legacy engine — the union path for the deployment
-        // mid-crossing.
+    fun `every dynamic stream rides the pool — verdicts, certified scans, retracting streams`() {
+        // The fork is gone with the engine it forked to: the loader refuses
+        // an ungated scan outright, so every dynamic stream that parses
+        // rides the pool. Three shapes, one per rule: a verdict source; a
+        // certified scan; a retracting stream whose deleteMissing comparison
+        // runs as its verifySeconds audit.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -114,20 +113,6 @@ class VisitPoolTest {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                                 filter = { "kinds": [10040] }
                                 certified = {}
-                            }
-                        ]
-                    }
-                    ungated {
-                        dir    = "down"
-                        sync   = "fetch"
-                        filter = { "kinds": [1] }
-                        relaySource = [
-                            {
-                                filter = { "kinds": [30166], "#s": ["syncable"] }
-                            },
-                            {
-                                select = [ { kind = 10009, tag = "group", index = 2 } ]
-                                filter = { "kinds": [10009] }
                             }
                         ]
                     }
@@ -180,6 +165,36 @@ class VisitPoolTest {
                 """.trimIndent(),
             )
         }
+    }
+
+    @Test
+    fun `a walk that was refused with nothing delivered ends the relay's visit`() {
+        // quartz already names why each walk ended; this is believing it. A
+        // refusal ends the whole visit rather than re-opening the same
+        // conversation once per remaining ask — an idle window of silence
+        // apiece.
+        for (end in listOf(
+            PagedFetchResult.End.IDLE,
+            PagedFetchResult.End.CLOSED,
+            PagedFetchResult.End.AUTH_REQUIRED,
+            PagedFetchResult.End.CANNOT_CONNECT,
+            PagedFetchResult.End.UNPAGEABLE,
+        )) {
+            assertTrue(VisitPool.refusedOutright(PagedFetchResult(0, end)), "$end with nothing delivered is a refusal")
+        }
+    }
+
+    @Test
+    fun `a drained or self-limited walk is not a refusal, and neither is one that delivered`() {
+        // DRAINED is the relay honestly EOSEing an empty page — the one ending
+        // that proves absence — and LIMIT_REACHED stopped on our own
+        // instruction. Neither says the next ask is futile. And a walk that
+        // carried events did real work whatever ended it: a CLOSED after 4,000
+        // events is a rate limit, not a dead relay.
+        assertFalse(VisitPool.refusedOutright(PagedFetchResult(0, PagedFetchResult.End.DRAINED)))
+        assertFalse(VisitPool.refusedOutright(PagedFetchResult(0, PagedFetchResult.End.LIMIT_REACHED)))
+        assertFalse(VisitPool.refusedOutright(PagedFetchResult(4_000, PagedFetchResult.End.CLOSED)))
+        assertFalse(VisitPool.refusedOutright(PagedFetchResult(1, PagedFetchResult.End.IDLE)))
     }
 
     @Test
