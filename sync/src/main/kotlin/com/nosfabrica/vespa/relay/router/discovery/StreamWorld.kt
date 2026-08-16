@@ -73,15 +73,15 @@ internal class StreamWorld(
      * stream running on verdict sources alone contributes no candidates, and
      * the monitor block is then the one place urls enter the system.
      */
-    private val monitorSources: MonitorConfig? = null,
-) : AliasMonitor.Source {
+    private val monitorConfig: MonitorConfig? = null,
+) : AliasMonitor.CandidateSource {
     /**
      * The monitor block dressed as a discovery config, which is all
      * [RelayDiscovery.discover] reads of one. Cadence fields are inert here —
      * the monitor's clock belongs to [AliasMonitor].
      */
     private val monitorDiscovery: RelayDiscoveryConfig? =
-        monitorSources?.takeIf { it.sources.isNotEmpty() }?.let {
+        monitorConfig?.takeIf { it.sources.isNotEmpty() }?.let {
             RelayDiscoveryConfig(
                 sources = it.sources,
                 refreshSeconds = it.sweepSeconds,

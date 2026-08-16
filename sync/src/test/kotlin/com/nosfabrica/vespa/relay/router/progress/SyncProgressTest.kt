@@ -189,7 +189,7 @@ class SyncProgressTest {
                                             transferringForSec = 41_390,
                                             events = 2,
                                             quietForSec = 41_000,
-                                            doing = "paging",
+                                            stage = "paging",
                                             pagingUntil = 1_689_857_148L,
                                         ),
                                         InFlight.Relay("wss://probing.example/", heldForSec = 4, transferringForSec = null, events = 0, quietForSec = 4),

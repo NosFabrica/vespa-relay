@@ -71,10 +71,10 @@ class AliasMonitorTest {
         vararg urls: NormalizedRelayUrl,
     ) = sourced(pass, World(urls.toList()))
 
-    /** A [AliasMonitor.Source] over a fixed world, standing in for the engine's derivation. */
+    /** A [AliasMonitor.CandidateSource] over a fixed world, standing in for the engine's derivation. */
     private class World(
         private val urls: List<NormalizedRelayUrl>,
-    ) : AliasMonitor.Source {
+    ) : AliasMonitor.CandidateSource {
         val derivations = AtomicInteger()
 
         override suspend fun candidates(): List<NormalizedRelayUrl> {
@@ -91,7 +91,7 @@ class AliasMonitorTest {
 
     private fun sourced(
         pass: AliasMonitor.Pass,
-        source: AliasMonitor.Source,
+        source: AliasMonitor.CandidateSource,
     ) = AliasMonitor(listOf(pass), CoroutineScope(Dispatchers.Unconfined), source = source)
 
     @Test
@@ -167,7 +167,7 @@ class AliasMonitorTest {
             // boot with the most to learn.
             val pass = Recording()
             val filling =
-                object : AliasMonitor.Source {
+                object : AliasMonitor.CandidateSource {
                     val asked = AtomicInteger()
 
                     override suspend fun candidates() = if (asked.incrementAndGet() > 1) listOf(a, b) else emptyList()

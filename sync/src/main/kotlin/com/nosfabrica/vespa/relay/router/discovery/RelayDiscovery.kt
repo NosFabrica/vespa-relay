@@ -21,9 +21,9 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.relay.router.config.BindingSlot
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
-import com.nosfabrica.vespa.relay.router.config.Slot
 import com.nosfabrica.vespa.relay.router.config.withoutDefaultPort
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -456,9 +456,9 @@ object RelayDiscovery {
             for ((dest, slot) in select.bindings) {
                 val raw =
                     when (slot) {
-                        is Slot.OfTag -> tag.getOrNull(slot.index)
-                        Slot.EventPubkey -> event.pubKey
-                        Slot.EventId -> event.id
+                        is BindingSlot.OfTag -> tag.getOrNull(slot.index)
+                        BindingSlot.EventPubkey -> event.pubKey
+                        BindingSlot.EventId -> event.id
                     }
                 // A tag that cannot fill a binding is dropped WHOLE rather
                 // than half-applied: a `["30382:rank", relay]` missing its

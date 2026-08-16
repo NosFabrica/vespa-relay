@@ -109,20 +109,20 @@ internal class RosterBuilder(
     private val scans = ConcurrentHashMap<String, ScannedList>()
 
     suspend fun rebuild(): Roster {
-        val next = HashMap<NormalizedRelayUrl, MutableList<Ask>>()
+        val asksByUrl = HashMap<NormalizedRelayUrl, MutableList<Ask>>()
         // One identity set per url, reused three ways: it dedups want() by
         // VALUE (Ask equality degrades to Filter reference equality, so the
         // old `ask !in wanting` linear-scanned and matched nothing for
         // freshly built asks), and it IS the per-url wants set the Roster
         // carries out.
-        val seen = HashMap<NormalizedRelayUrl, MutableSet<String>>()
+        val wantsByUrl = HashMap<NormalizedRelayUrl, MutableSet<String>>()
 
         fun want(
             url: NormalizedRelayUrl,
             ask: Ask,
         ) {
-            if (seen.getOrPut(url) { LinkedHashSet() }.add("${ask.stream.name} ${ask.filter.toJson()}")) {
-                next.getOrPut(url) { mutableListOf() } += ask
+            if (wantsByUrl.getOrPut(url) { LinkedHashSet() }.add("${ask.stream.name} ${ask.filter.toJson()}")) {
+                asksByUrl.getOrPut(url) { mutableListOf() } += ask
             }
         }
         // Memoized per rebuild: identical verdict sources across streams are
@@ -164,7 +164,7 @@ internal class RosterBuilder(
         // verdict source ran its retraction audits with an empty shared set,
         // and one relay's answer could retract what its siblings still serve.
         val byAuthor = HashMap<String, HashMap<String, MutableSet<NormalizedRelayUrl>>>()
-        for ((url, asks) in next) {
+        for ((url, asks) in asksByUrl) {
             for (ask in asks) {
                 ask.filter.authors?.forEach { author ->
                     byAuthor.getOrPut(ask.stream.name) { HashMap() }.getOrPut(author) { mutableSetOf() } += url
@@ -172,7 +172,7 @@ internal class RosterBuilder(
             }
         }
         val shared = byAuthor.mapValues { (_, authors) -> authors.filterValues { it.size > 1 }.keys }
-        return Roster(asks = next, wants = seen, sharedAuthors = shared)
+        return Roster(asks = asksByUrl, wants = wantsByUrl, sharedAuthors = shared)
     }
 
     /**

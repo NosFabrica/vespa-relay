@@ -278,7 +278,7 @@ data class RelaySelect(
      * collecting the slots independently would produce the cross product
      * (measured: 5,928 asks standing in for the 256 pairs that exist).
      */
-    val bindings: Map<String, Slot> = emptyMap(),
+    val bindings: Map<String, BindingSlot> = emptyMap(),
 )
 
 /**
@@ -286,17 +286,17 @@ data class RelaySelect(
  * read; [EventPubkey] is what makes NIP-65's outbox model expressible — "fetch
  * THIS AUTHOR's events from the relays their own 10002 marks write".
  */
-sealed interface Slot {
+sealed interface BindingSlot {
     /** Element [index] of the tag this select matched. */
     data class OfTag(
         val index: Int,
-    ) : Slot
+    ) : BindingSlot
 
     /** The scanned event's own author. */
-    data object EventPubkey : Slot
+    data object EventPubkey : BindingSlot
 
     /** The scanned event's own id. */
-    data object EventId : Slot
+    data object EventId : BindingSlot
 }
 
 /**

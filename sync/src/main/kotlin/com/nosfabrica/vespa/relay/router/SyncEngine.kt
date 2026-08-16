@@ -131,7 +131,7 @@ class SyncEngine(
     // The newest stored version of each (kind, author) address, so a stale
     // replaceable is dropped before it is verified. Same reason as knownIds:
     // the query is the store's, the pipeline takes a function.
-    newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
+    newestVersions: (suspend (Int, List<String>) -> Map<String, AddressVersion>)? = null,
     // SYNC_PROGRESS_FILE: what each stream is doing, and the disposition of
     // every url its current cycle took on, written where the relay can publish
     // it. Unset writes nothing — see [SyncProgress].
@@ -395,7 +395,7 @@ class SyncEngine(
                 ).distinct(),
             tor = tor,
             sockets = sockets,
-            monitorSources = config.monitor,
+            monitorConfig = config.monitor,
         )
 
     /**
@@ -411,8 +411,8 @@ class SyncEngine(
                 record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
-                foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
-                inconsistent = { urls -> consistencyPass?.apply(urls)?.toSet() ?: emptySet() },
+                foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
+                inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
                 concurrency = monitorConcurrency,
             )
@@ -534,7 +534,7 @@ class SyncEngine(
                     streams = visitStreams,
                     monitorAuthor = signer?.pubKey,
                     bands = bands,
-                    foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
+                    foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                     keepBands = pinnedUrls,
                     tor = tor,
                 ),
@@ -565,7 +565,7 @@ class SyncEngine(
             val reach = if (it.socksAnswers()) "answering" else "NOT answering — .onion relays will be skipped until it does"
             System.err.println(
                 "router: tor SOCKS ${it.settings.socksAddress} $reach" +
-                    (if (it.settings.everything) "; SYNC_TOR_ALL is on — EVERY upstream goes through it" else " (.onion upstreams only)"),
+                    (if (it.settings.routeAll) "; SYNC_TOR_ALL is on — EVERY upstream goes through it" else " (.onion upstreams only)"),
             )
         }
 

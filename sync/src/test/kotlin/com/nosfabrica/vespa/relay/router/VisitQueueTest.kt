@@ -54,7 +54,7 @@ class VisitQueueTest {
             val visits = AtomicInteger()
             repeat(2) {
                 scope.launch {
-                    q.work(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) {
+                    q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) {
                         visits.incrementAndGet()
                         entered.send(Unit)
                         release.receive()
@@ -91,7 +91,7 @@ class VisitQueueTest {
             assertTrue(q.offer(url))
             assertFalse(q.offer(url), "already waiting — the offer dedups")
             scope.launch {
-                q.work(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) {
+                q.visitLoop(stillWanted = { true }, revisitDelayMs = { 3_600_000L }) {
                     visits.incrementAndGet()
                 }
             }
@@ -113,7 +113,7 @@ class VisitQueueTest {
             val q = VisitQueue(scope)
             val visits = AtomicInteger()
             scope.launch {
-                q.work(stillWanted = { false }, revisitDelayMs = { 1L }) {
+                q.visitLoop(stillWanted = { false }, revisitDelayMs = { 1L }) {
                     visits.incrementAndGet()
                 }
             }

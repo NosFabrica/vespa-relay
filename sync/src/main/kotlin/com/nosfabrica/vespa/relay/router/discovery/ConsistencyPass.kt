@@ -188,7 +188,7 @@ class ConsistencyPass(
      * the fold's `adopt`, and deliberately: there, losing a verdict costs a
      * duplicate dial; here it would cost a relay.
      */
-    suspend fun apply(candidates: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
+    suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
         if (candidates.isEmpty()) return emptyList()
         adopt(candidates)
         return consistency.unusable(candidates)

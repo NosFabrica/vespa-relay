@@ -55,7 +55,7 @@ data class TorSettings(
     // different deployment (nothing learns our address), not a better default:
     // a 20k-relay dynamic cycle over Tor is a fraction of the throughput, and
     // several large relays refuse exit traffic outright.
-    val everything: Boolean,
+    val routeAll: Boolean,
     val connectTimeoutSec: Long,
     val maxSockets: Int,
 ) {
@@ -108,7 +108,7 @@ data class TorSettings(
             return TorSettings(
                 socksHost = host,
                 socksPort = port,
-                everything = env["SYNC_TOR_ALL"]?.trim()?.toBooleanStrictOrNull() ?: false,
+                routeAll = env["SYNC_TOR_ALL"]?.trim()?.toBooleanStrictOrNull() ?: false,
                 connectTimeoutSec =
                     env["SYNC_TOR_CONNECT_TIMEOUT_SECONDS"]?.trim()?.toLongOrNull()?.coerceAtLeast(5L)
                         ?: DEFAULT_CONNECT_TIMEOUT_SEC,
@@ -216,7 +216,7 @@ internal class TorTransport(
             .build()
 
     /** Does this url go through Tor? */
-    fun routes(url: NormalizedRelayUrl): Boolean = settings.everything || isOnion(url)
+    fun routes(url: NormalizedRelayUrl): Boolean = settings.routeAll || isOnion(url)
 
     /** The client to dial [url] with — the whole point of the per-url builder. */
     fun clientFor(url: NormalizedRelayUrl): OkHttpClient = if (routes(url)) client else direct

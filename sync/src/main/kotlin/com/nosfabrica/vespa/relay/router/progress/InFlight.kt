@@ -149,7 +149,7 @@ class InFlight(
          * the rest; nothing separated the last two. Null before a leg reaches a
          * stage worth the word.
          */
-        val doing: String? = null,
+        val stage: String? = null,
         /**
          * WHERE IN TIME its paged walk has got to — the `created_at` second the
          * cursor is reading now.

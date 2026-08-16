@@ -227,7 +227,7 @@ fun main() {
                     .search(EventQuery(kinds = listOf(kind), authors = authors))
                     .groupBy { it.pubkey }
                     .mapValues { (_, docs) ->
-                        docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { Version(it.createdAt, it.id) }
+                        docs.maxWith(compareBy<EventDoc> { it.createdAt }.thenByDescending { it.id }).let { AddressVersion(it.createdAt, it.id) }
                     }
             },
         ).start()

@@ -22,11 +22,11 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.router.config.BindingSlot
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
-import com.nosfabrica.vespa.relay.router.config.Slot
 import com.nosfabrica.vespa.relay.router.config.TagCondition
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -413,8 +413,8 @@ class RelayDiscoveryTest {
                                 10040,
                                 selects =
                                     listOf(
-                                        RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to Slot.OfTag(1))),
-                                        RelaySelect(kind = null, tag = "30382:followers", urlIndex = 2, bindings = mapOf("authors" to Slot.OfTag(1))),
+                                        RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1))),
+                                        RelaySelect(kind = null, tag = "30382:followers", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1))),
                                     ),
                             ),
                         ),
@@ -440,7 +440,7 @@ class RelayDiscoveryTest {
                         dynamic(
                             source(
                                 10040,
-                                selects = listOf(RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to Slot.OfTag(1)))),
+                                selects = listOf(RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1)))),
                             ),
                         ),
                     ).single()
@@ -473,7 +473,7 @@ class RelayDiscoveryTest {
                                             tag = "r",
                                             urlIndex = 1,
                                             where = marker("write"),
-                                            bindings = mapOf("authors" to Slot.EventPubkey),
+                                            bindings = mapOf("authors" to BindingSlot.EventPubkey),
                                         ),
                                     ),
                             ),
@@ -501,7 +501,7 @@ class RelayDiscoveryTest {
                     dynamic(
                         source(
                             10040,
-                            selects = listOf(RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to Slot.OfTag(1)))),
+                            selects = listOf(RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1)))),
                         ),
                     ),
                 )

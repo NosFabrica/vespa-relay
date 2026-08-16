@@ -92,7 +92,7 @@ class AliasMonitor(
      * Where the candidate set comes from, or null to fall back on whatever the
      * streams have pushed through [submit] — see [Source].
      */
-    private val source: Source? = null,
+    private val source: CandidateSource? = null,
     /**
      * The fast lane: how often to look for urls named by relay-list events
      * ingested since the last look, and the ONE pass to run over them —
@@ -142,7 +142,7 @@ class AliasMonitor(
      * six hours for a pass they missed by three minutes. A source is derived by
      * the pass itself, so there is no race to lose.
      */
-    interface Source {
+    interface CandidateSource {
         /** Every url worth measuring, across every configured stream. */
         suspend fun candidates(): List<NormalizedRelayUrl>
 

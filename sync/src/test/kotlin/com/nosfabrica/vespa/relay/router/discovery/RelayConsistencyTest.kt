@@ -245,7 +245,7 @@ class RelayConsistencyTest {
             val decided = pass.measure("t", listOf(steady, shuffler), canDial = { true })
 
             assertEquals(2, decided, "both urls should have reached a verdict")
-            assertEquals(listOf(shuffler), pass.apply(listOf(steady, shuffler)))
+            assertEquals(listOf(shuffler), pass.applyVerdicts(listOf(steady, shuffler)))
 
             // …and a second pass costs nothing: the verdicts are in the store.
             val afterFirst = dials.get()
@@ -272,7 +272,7 @@ class RelayConsistencyTest {
                         ),
                 )
 
-            assertEquals(emptyList(), pass.apply(listOf(steady, shuffler)))
+            assertEquals(emptyList(), pass.applyVerdicts(listOf(steady, shuffler)))
             assertEquals(0, dials.get(), "apply() opened ${dials.get()} socket(s)")
         }
 
@@ -290,7 +290,7 @@ class RelayConsistencyTest {
                 )
 
             assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
-            assertEquals(emptyList(), pass.apply(listOf(steady, shuffler)))
+            assertEquals(emptyList(), pass.applyVerdicts(listOf(steady, shuffler)))
         }
 
     @Test

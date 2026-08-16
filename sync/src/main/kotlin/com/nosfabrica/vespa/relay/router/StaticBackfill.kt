@@ -925,10 +925,10 @@ internal class StaticBackfill(
             need[idx] = maxOf(need[idx] ?: 0L, downloaded.toLong())
         }
 
-        fun snapshot(): Snapshot {
+        fun snapshot(): ProgressSnapshot {
             val need = need.values.sum()
             val got = got.values.sum()
-            return Snapshot(
+            return ProgressSnapshot(
                 need = need,
                 downloaded = got,
                 done = finished.size,
@@ -939,7 +939,7 @@ internal class StaticBackfill(
         }
     }
 
-    private data class Snapshot(
+    private data class ProgressSnapshot(
         val need: Long,
         val downloaded: Long,
         val done: Int,

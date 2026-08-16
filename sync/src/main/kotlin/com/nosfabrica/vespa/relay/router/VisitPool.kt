@@ -151,9 +151,9 @@ internal class VisitPool(
      * shrunken shared set; one snapshot cannot mix generations.
      */
     @Volatile
-    private var current: RosterBuilder.Roster = RosterBuilder.Roster(asks = emptyMap(), sharedAuthors = emptyMap())
+    private var currentRoster: RosterBuilder.Roster = RosterBuilder.Roster(asks = emptyMap(), sharedAuthors = emptyMap())
 
-    private val roster: Map<NormalizedRelayUrl, List<RosterBuilder.Ask>> get() = current.asks
+    private val roster: Map<NormalizedRelayUrl, List<RosterBuilder.Ask>> get() = currentRoster.asks
 
     /** The rotation's bookkeeping — offers, collisions, revisit timers. See [VisitQueue]. */
     private val queue = VisitQueue(scope)
@@ -168,7 +168,7 @@ internal class VisitPool(
      */
     private class Tail(
         val subId: String,
-        val asked: Set<String>,
+        val wantsAtOpen: Set<String>,
     )
 
     private val tails = ConcurrentHashMap<NormalizedRelayUrl, Tail>()
@@ -216,13 +216,13 @@ internal class VisitPool(
      * a worker, and listing 400 held tails as in-flight rows would bury the
      * one wedged visit the list exists to name.
      */
-    private class Ongoing(
+    private class OngoingVisit(
         val startedMs: Long,
     ) {
-        /** Which stream's asks the visit is on right now — visitsRun serve streams in turn. */
+        /** Which stream's asks the visit is on right now — visits serve streams in turn. */
         @Volatile var stream: String? = null
 
-        @Volatile var doing: String = "claiming the socket"
+        @Volatile var stage: String = "claiming the socket"
 
         /** The `created_at` second the walk or audit window is at — time-axis progress. */
         @Volatile var pagingUntil: Long? = null
@@ -233,23 +233,23 @@ internal class VisitPool(
         @Volatile var lastActivityMs: Long = startedMs
     }
 
-    private val ongoing = ConcurrentHashMap<NormalizedRelayUrl, Ongoing>()
+    private val ongoing = ConcurrentHashMap<NormalizedRelayUrl, OngoingVisit>()
 
     /**
      * Every arrival's shared bookkeeping, whatever path delivered it: the
      * pool's odometer, the relay's yield score, and — when a visit is on the
      * socket — its event count and quiet clock. One helper because four
      * paths repeated it, and the fifth someone adds must not be able to
-     * forget a counter. Null [o] is a tail: arrivals there belong to no
+     * forget a counter. A null [ongoingVisit] is a tail: arrivals there belong to no
      * visit's clocks.
      */
     private fun arrived(
         url: NormalizedRelayUrl,
-        o: Ongoing?,
+        ongoingVisit: OngoingVisit?,
     ) {
         poolReceived.incrementAndGet()
         yieldOf(url).arrived.incrementAndGet()
-        o?.let {
+        ongoingVisit?.let {
             it.events.incrementAndGet()
             it.lastActivityMs = System.currentTimeMillis()
         }
@@ -268,19 +268,19 @@ internal class VisitPool(
             ongoing
                 .entries
                 .filter { it.value.stream == stream }
-                .map { (url, o) ->
+                .map { (url, row) ->
                     InFlight.Relay(
                         relay = url.url,
-                        heldForSec = ((nowMs - o.startedMs) / 1000).coerceAtLeast(0),
+                        heldForSec = ((nowMs - row.startedMs) / 1000).coerceAtLeast(0),
                         // A visit IS on the socket from its first moment — the
                         // claim and the dial are inside it — so the two clocks
                         // agree by construction. Published anyway: this is the
                         // member the card reads as "has a transfer slot".
-                        transferringForSec = ((nowMs - o.startedMs) / 1000).coerceAtLeast(0),
-                        events = o.events.get(),
-                        quietForSec = ((nowMs - o.lastActivityMs) / 1000).coerceAtLeast(0),
-                        doing = o.doing,
-                        pagingUntil = o.pagingUntil,
+                        transferringForSec = ((nowMs - row.startedMs) / 1000).coerceAtLeast(0),
+                        events = row.events.get(),
+                        quietForSec = ((nowMs - row.lastActivityMs) / 1000).coerceAtLeast(0),
+                        stage = row.stage,
+                        pagingUntil = row.pagingUntil,
                     )
                 }.sortedWith(compareByDescending<InFlight.Relay> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
         return InFlight(
@@ -294,7 +294,7 @@ internal class VisitPool(
      * hands — the roster rebuild, a tail opening, a tail dropping — and
      * PUBLISHED by [flushPhases] on the ticker. The publish walks
      * streams × roster, and it used to run INLINE on every tail open and
-     * drop: a 600-tail boot storm paid ~45M entry visitsRun on the visit
+     * drop: a 600-tail boot storm paid ~45M entry visits on the visit
      * workers for numbers nobody reads faster than the report tick.
      */
     private fun phasesChanged() {
@@ -303,9 +303,9 @@ internal class VisitPool(
 
     private fun flushPhases() {
         val phases = phases ?: return
-        val current = roster
+        val currentRoster = roster
         for (stream in streams) {
-            val mine = current.entries.filter { entry -> entry.value.any { it.stream === stream } }
+            val mine = currentRoster.entries.filter { entry -> entry.value.any { it.stream === stream } }
             phases.set(
                 stream.name,
                 StreamPhases.Phase.Rotating(
@@ -341,11 +341,11 @@ internal class VisitPool(
                 Processors.Count("visiting", queue.visiting.toLong()),
                 Processors.Count("tails", tails.size.toLong()),
                 Processors.Count("visitsRun", visitsRun.get()),
-                // The gauge beside the odometer: auditsRun RUNNING against
+                // The gauge beside the odometer: audits RUNNING against
                 // auditsRun's total. A deep history's audit holds a worker for
                 // minutes, and without this the only trace was one unit of
                 // `visiting` that could not be told from a catch-up.
-                Processors.Count("auditing", ongoing.values.count { it.doing == STAGE_AUDITING || it.doing == STAGE_RETRACTING }.toLong()),
+                Processors.Count("auditing", ongoing.values.count { it.stage == STAGE_AUDITING || it.stage == STAGE_RETRACTING }.toLong()),
                 Processors.Count("auditsRun", auditsRun.get()),
                 Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
                 Processors.Count("abortedVisits", abortedVisits.get()),
@@ -368,8 +368,8 @@ internal class VisitPool(
         }
         repeat(visitConcurrency) {
             scope.launch {
-                queue.work(
-                    stillWanted = { current.asks.containsKey(it) },
+                queue.visitLoop(
+                    stillWanted = { currentRoster.asks.containsKey(it) },
                     // Read at finish time: the delay depends on what the
                     // visit just delivered and whether a tail now carries
                     // this relay's present. Read, never getOrPut — a roster
@@ -425,9 +425,9 @@ internal class VisitPool(
     private suspend fun rebuildRoster() {
         val built = rosterBuilder.rebuild()
         val next = built.asks
-        val previous = current.asks
-        val previousWants = current.wants
-        current = built
+        val previous = currentRoster.asks
+        val previousWants = currentRoster.wants
+        currentRoster = built
         // A relay the monitor stopped certifying loses its tail and its socket
         // claim: the verdict is the admission, and holding a connection to a
         // relay we no longer trust to sync is the old machine's habit.
@@ -456,7 +456,7 @@ internal class VisitPool(
         phasesChanged()
     }
 
-    /** One visit, its failures counted and said — the shape [VisitQueue.work] expects. */
+    /** One visit, its failures counted and said — the shape [VisitQueue.visitLoop] expects. */
     private suspend fun guardedVisit(url: NormalizedRelayUrl) {
         try {
             visit(url)
@@ -471,12 +471,12 @@ internal class VisitPool(
     /** One relay's turn: every stream's catch-up, the audit where due, the heal drain, then the tail. */
     private suspend fun visit(url: NormalizedRelayUrl) {
         visitsRun.incrementAndGet()
-        val o = Ongoing(System.currentTimeMillis())
-        ongoing[url] = o
+        val ongoingVisit = OngoingVisit(System.currentTimeMillis())
+        ongoing[url] = ongoingVisit
         sockets.claim(url)
         // One generation for the whole visit: the asks below and the shared
         // authors the retraction consults were computed together.
-        val snapshot = current
+        val snapshot = currentRoster
         try {
             for (ask in snapshot.asks[url].orEmpty()) {
                 // The legacy leg give-up, kept across the port: [NEG_IDLE_MS]
@@ -484,18 +484,18 @@ internal class VisitPool(
                 // with hundreds of bound authors that answers each with a
                 // full, empty idle window costs `asks * NEG_IDLE_MS` of a
                 // worker — measured at 5h00m on one url. Silence, not a
-                // deadline: any sign of life resets [Ongoing.lastActivityMs],
+                // deadline: any sign of life resets [OngoingVisit.lastActivityMs],
                 // so a visit that is delivering is never cut, and the clock
                 // starts at the claim so it cannot fire before the first ask.
-                if (System.currentTimeMillis() - o.lastActivityMs > LEG_QUIET_GIVE_UP_MS) {
+                if (System.currentTimeMillis() - ongoingVisit.lastActivityMs > LEG_QUIET_GIVE_UP_MS) {
                     abortedVisits.incrementAndGet()
                     System.err.println(
                         "router: visit ${url.url} gave up after ${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s) — the revisit takes the remaining asks",
                     )
                     return
                 }
-                o.stream = ask.stream.name
-                val clean = catchUp(ask, url, o)
+                ongoingVisit.stream = ask.stream.name
+                val clean = catchUp(ask, url, ongoingVisit)
                 // A refusal ends the whole visit, not just this ask's part:
                 // the next ask is the same conversation with the same relay,
                 // and the monitor's sweep — not a retry loop — is what
@@ -504,9 +504,9 @@ internal class VisitPool(
                     abortedVisits.incrementAndGet()
                     return
                 }
-                auditIfDue(ask, url, o, snapshot.sharedAuthors[ask.stream.name].orEmpty())
+                auditIfDue(ask, url, ongoingVisit, snapshot.sharedAuthors[ask.stream.name].orEmpty())
             }
-            o.doing = "draining queued heals, then the tail"
+            ongoingVisit.stage = "draining queued heals, then the tail"
             healer.drain(url)
             openTail(url)
         } finally {
@@ -522,20 +522,20 @@ internal class VisitPool(
     private suspend fun catchUp(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
-        o: Ongoing,
+        ongoingVisit: OngoingVisit,
     ): Boolean {
         val stream = ask.stream
         for (leg in bands.legs(stream.name, url, ask.filter)) {
             var seenMin: Long? = null
             var seenMax: Long? = null
             val seenByKind = mutableMapOf<Int, SyncCoverage.Span>()
-            o.doing = STAGE_PAGING
+            ongoingVisit.stage = STAGE_PAGING
             val onEvent: suspend (Event) -> Unit = { event ->
-                arrived(url, o)
+                arrived(url, ongoingVisit)
                 // Newest-first is the walk's own order, so the oldest event
                 // seen IS the cursor's depth, near enough for a reader.
-                if (SyncCoverage.isPlausible(event.createdAt) && event.createdAt < (o.pagingUntil ?: Long.MAX_VALUE)) {
-                    o.pagingUntil = event.createdAt
+                if (SyncCoverage.isPlausible(event.createdAt) && event.createdAt < (ongoingVisit.pagingUntil ?: Long.MAX_VALUE)) {
+                    ongoingVisit.pagingUntil = event.createdAt
                 }
                 if (ask.filter.match(event)) {
                     if (SyncCoverage.isPlausible(event.createdAt)) {
@@ -579,14 +579,14 @@ internal class VisitPool(
     private suspend fun auditIfDue(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
-        o: Ongoing,
+        ongoingVisit: OngoingVisit,
         sharedAuthors: Set<String>,
     ) {
         val verifySeconds = ask.stream.verifySeconds ?: return
         if (ask.stream.deleteMissing != DeleteMissing.OFF) {
-            retractionIfDue(ask, url, verifySeconds, o, sharedAuthors)
+            retractionIfDue(ask, url, verifySeconds, ongoingVisit, sharedAuthors)
         } else {
-            sweepAudit(ask, url, verifySeconds, o)
+            sweepAudit(ask, url, verifySeconds, ongoingVisit)
         }
     }
 
@@ -601,14 +601,14 @@ internal class VisitPool(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         verifySeconds: Long,
-        o: Ongoing,
+        ongoingVisit: OngoingVisit,
     ) {
         val stream = ask.stream
         val now = nowSeconds()
         if (!bands.claimAudit(stream.name, url, ask.filter, verifySeconds, now)) return
         val auditStarted = now
         var received = 0
-        o.doing = STAGE_AUDITING
+        ongoingVisit.stage = STAGE_AUDITING
         val outcome =
             pager.sweep(
                 stream.name,
@@ -618,14 +618,14 @@ internal class VisitPool(
                 // Frames are life. A clean audit downloads NOTHING — every
                 // window already agrees — so without this a relay whose whole
                 // history verifies reads as a worker gone quiet for minutes.
-                onProgress = { _, _ -> o.lastActivityMs = System.currentTimeMillis() },
+                onProgress = { _, _ -> ongoingVisit.lastActivityMs = System.currentTimeMillis() },
                 onWindow = { _, until ->
-                    o.lastActivityMs = System.currentTimeMillis()
-                    o.pagingUntil = until
+                    ongoingVisit.lastActivityMs = System.currentTimeMillis()
+                    ongoingVisit.pagingUntil = until
                 },
             ) { event ->
                 received++
-                arrived(url, o)
+                arrived(url, ongoingVisit)
                 if (ask.filter.match(event)) {
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
@@ -663,19 +663,19 @@ internal class VisitPool(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         verifySeconds: Long,
-        o: Ongoing,
+        ongoingVisit: OngoingVisit,
         sharedAuthors: Set<String>,
     ) {
         val retraction = retraction ?: return
         if (!retraction.claimAudit(ask.stream, url, ask.filter, verifySeconds)) return
-        o.doing = STAGE_RETRACTING
+        ongoingVisit.stage = STAGE_RETRACTING
         retraction.reconcileAndDelete(
             ask.stream,
             url,
             ask.filter,
             sharedAuthors,
-            onActivity = { o.lastActivityMs = System.currentTimeMillis() },
-        ) { arrived(url, o) }
+            onActivity = { ongoingVisit.lastActivityMs = System.currentTimeMillis() },
+        ) { arrived(url, ongoingVisit) }
         auditsRun.incrementAndGet()
     }
 
@@ -687,16 +687,16 @@ internal class VisitPool(
      * is what "constantly connected" means.
      */
     private fun openTail(url: NormalizedRelayUrl) {
-        val snapshot = current
-        val wanting = snapshot.asks[url].orEmpty()
-        if (wanting.isEmpty()) return
+        val snapshot = currentRoster
+        val urlAsks = snapshot.asks[url].orEmpty()
+        if (urlAsks.isEmpty()) return
         // The rebuild fills `wants` for every url it puts in `asks`, so a
         // missing entry cannot happen while `wanting` is non-empty; said as
         // a return rather than carrying a live-looking recompute path.
-        val asked = snapshot.wants[url] ?: return
+        val wantsNow = snapshot.wants[url] ?: return
         val sitting = tails[url]
         if (sitting != null) {
-            if (sitting.asked == asked) return
+            if (sitting.wantsAtOpen == wantsNow) return
             // The live subscription upstream still carries the want list from
             // when it was opened; the roster has since changed its mind about
             // this relay. Re-opened below on the current asks — a tail that
@@ -729,7 +729,7 @@ internal class VisitPool(
         try {
             client.subscribe(
                 subId,
-                mapOf(url to tailFilters(wanting, nowSeconds() - TAIL_OVERLAP_SECONDS)),
+                mapOf(url to tailFilters(urlAsks, nowSeconds() - TAIL_OVERLAP_SECONDS)),
                 object : SubscriptionListener {
                     override suspend fun onEvent(
                         event: Event,
@@ -738,7 +738,7 @@ internal class VisitPool(
                         forFilters: List<Filter>?,
                     ) {
                         if (relay != url) return
-                        arrived(url, o = null)
+                        arrived(url, ongoingVisit = null)
                         // Bind trust per stream, and re-check scope so a broken
                         // relay cannot widen what we ingest — the same rule the
                         // static tails follow. Matching is against each ASK's
@@ -773,7 +773,7 @@ internal class VisitPool(
             System.err.println("router: tail ${url.url} failed to open: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
             return
         }
-        if (tails.putIfAbsent(url, Tail(subId, asked)) != null) {
+        if (tails.putIfAbsent(url, Tail(subId, wantsNow)) != null) {
             // Another opener won this url. Visits are inFlight-guarded, so
             // this is nearly unreachable — handled because ours would
             // otherwise leak a subscription and a claim.
@@ -891,7 +891,7 @@ internal class VisitPool(
         }
 
         /**
-         * Concurrent visitsRun, which is concurrent DIALS — see the constructor
+         * Concurrent visits, which is concurrent DIALS — see the constructor
          * parameter for the herd it exists to break up. The default lives on
          * the config: `visitConcurrency` in router.conf is the operator's
          * knob, and [RouterConfig.DEFAULT_VISIT_CONCURRENCY] carries the

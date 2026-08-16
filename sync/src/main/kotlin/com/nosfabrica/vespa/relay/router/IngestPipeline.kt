@@ -86,7 +86,7 @@ internal class IngestPipeline(
      * verified. Null disables it; the store then resolves supersession itself,
      * as it always did. See [dropSuperseded].
      */
-    private val newestVersions: (suspend (Int, List<String>) -> Map<String, Version>)? = null,
+    private val newestVersions: (suspend (Int, List<String>) -> Map<String, AddressVersion>)? = null,
     /**
      * Where store refusals are reported and where suppression is asked about.
      * Defaults to off, so every existing caller and test behaves exactly as it
@@ -695,9 +695,9 @@ internal class IngestPipeline(
 
     /** One query per kind per chunk of authors, same width and fan-out the store's version stage uses. */
     private suspend fun readNewestVersions(
-        probe: suspend (Int, List<String>) -> Map<String, Version>,
+        probe: suspend (Int, List<String>) -> Map<String, AddressVersion>,
         addresses: Set<Pair<Int, String>>,
-    ): Map<Pair<Int, String>, Version> =
+    ): Map<Pair<Int, String>, AddressVersion> =
         try {
             IngestStats.timed("versions.pre") {
                 addresses
@@ -928,7 +928,7 @@ internal class IngestPipeline(
 }
 
 /** The newest stored version of one address — what an arriving replaceable has to beat. */
-data class Version(
+data class AddressVersion(
     val createdAt: Long,
     val id: String,
 )

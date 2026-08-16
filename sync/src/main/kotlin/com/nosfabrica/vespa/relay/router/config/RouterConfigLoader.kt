@@ -128,7 +128,7 @@ object RouterConfigLoader {
                 negPageMax = pageMax.coerceAtLeast(pageMin),
                 negPageSlackSec = pageSlack,
             ).let {
-                if (only == null) it else it.copy(streams = select(it.streams, only))
+                if (only == null) it else it.copy(streams = narrowToStreams(it.streams, only))
             }
     }
 
@@ -139,7 +139,7 @@ object RouterConfigLoader {
      * error: a typo would otherwise look exactly like a relay that mirrors
      * nothing.
      */
-    fun select(
+    fun narrowToStreams(
         streams: List<SyncStream>,
         only: String,
     ): List<SyncStream> {
@@ -719,8 +719,8 @@ object RouterConfigLoader {
     private fun parseBindings(
         stream: String,
         s: Config,
-    ): Map<String, Slot> {
-        val out = LinkedHashMap<String, Slot>()
+    ): Map<String, BindingSlot> {
+        val out = LinkedHashMap<String, BindingSlot>()
         for (entry in s.root().keys) {
             if (!isBindable(entry)) continue
             // Quoted: a `#p` key is a HOCON path expression otherwise, and `#`
@@ -733,15 +733,15 @@ object RouterConfigLoader {
                         require(i >= 1) {
                             "router: stream '$stream' binds `$entry` to tag element $i — element 0 is the tag name, so a value is at 1 or later"
                         }
-                        Slot.OfTag(i)
+                        BindingSlot.OfTag(i)
                     }
 
                     "pubkey" -> {
-                        Slot.EventPubkey
+                        BindingSlot.EventPubkey
                     }
 
                     "id" -> {
-                        Slot.EventId
+                        BindingSlot.EventId
                     }
 
                     else -> {

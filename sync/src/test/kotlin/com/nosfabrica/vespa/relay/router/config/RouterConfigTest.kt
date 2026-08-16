@@ -823,17 +823,17 @@ class RouterConfigTest {
 
         val nip85 = selectOf("""{ tag = "30382:rank", relay = 2, authors = 1 }""")
         assertEquals(2, nip85.urlIndex, "`relay` names the slot `index` used to")
-        assertEquals(mapOf("authors" to Slot.OfTag(1)), nip85.bindings)
+        assertEquals(mapOf("authors" to BindingSlot.OfTag(1)), nip85.bindings)
 
         // The scanned event's own author — the outbox model, where the author is
         // nowhere in the tag.
         assertEquals(
-            mapOf("authors" to Slot.EventPubkey),
+            mapOf("authors" to BindingSlot.EventPubkey),
             selectOf("""{ tag = "r", relay = 1, authors = "pubkey" }""").bindings,
         )
         // Tag filters, for any single letter NIP-01 allows.
         assertEquals(
-            mapOf("#p" to Slot.OfTag(1)),
+            mapOf("#p" to BindingSlot.OfTag(1)),
             selectOf("""{ tag = "p", relay = 2, "#p" = 1 }""").bindings,
         )
         // No bindings is the shape every config had before they existed.

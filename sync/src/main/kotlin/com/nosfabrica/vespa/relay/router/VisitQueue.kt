@@ -42,7 +42,7 @@ import java.util.concurrent.ConcurrentHashMap
  *   revisit timer, however many out-of-band offers (evictions, rebuilds)
  *   landed meanwhile.
  *
- * The queue knows nothing about relays, rosters or tails: [work]'s three
+ * The queue knows nothing about relays, rosters or tails: [visitLoop]'s three
  * callbacks are the whole contract, which is what makes the invariants a
  * hermetically testable surface rather than probe-only choreography.
  */
@@ -76,7 +76,7 @@ internal class VisitQueue(
      * quietly. [visit] is expected to contain its own failure handling; a
      * throw that escapes it (cancellation) ends the worker.
      */
-    suspend fun work(
+    suspend fun visitLoop(
         stillWanted: (NormalizedRelayUrl) -> Boolean,
         revisitDelayMs: (NormalizedRelayUrl) -> Long,
         visit: suspend (NormalizedRelayUrl) -> Unit,

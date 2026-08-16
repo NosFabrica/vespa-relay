@@ -127,7 +127,7 @@ class RelaySelfConsistencyProbe {
                         probe = probe,
                     )
                 val decided = runBlocking { withTimeoutOrNull(PER_WALK_MS * 3) { pass.measure("live", listOf(url), canDial = { true }) } }
-                val refused = runBlocking { pass.apply(listOf(url)) }
+                val refused = runBlocking { pass.applyVerdicts(listOf(url)) }
                 println(
                     "    VERDICT  " +
                         when {

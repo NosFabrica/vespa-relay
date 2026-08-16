@@ -196,7 +196,7 @@ class RouterConfExamplesTest {
         // two travel together; binding it from anywhere else would be the cross
         // product wearing the right shape.
         assertTrue(
-            source.selects.all { it.bindings["authors"] == Slot.OfTag(1) },
+            source.selects.all { it.bindings["authors"] == BindingSlot.OfTag(1) },
             "each service tag binds its own provider as the authors to ask for",
         )
         // A band per (relay, service) rather than per relay — the pool makes

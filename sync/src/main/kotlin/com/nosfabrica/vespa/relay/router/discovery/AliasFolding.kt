@@ -175,7 +175,7 @@ class AliasFolding(
      * This is the half that runs in front of a fan-out. It must stay cheap: one
      * `#d` query per 500 urls and no network at all.
      */
-    suspend fun apply(candidates: List<NormalizedRelayUrl>): Collapsed {
+    suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): Collapsed {
         if (candidates.size < 2) return Collapsed(candidates, emptyMap(), candidates)
         // What a previous pass — this boot or another — already measured.
         adopt(candidates)
