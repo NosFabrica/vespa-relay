@@ -590,7 +590,7 @@ class RelayVerdictRecord(
          *
          * Do NOT bump it for a change that leaves the conclusion alone —
          * logging, budget, ordering, the socket refcount. The cost is a full
-         * re-fingerprint of the store — one pass, [AliasFolding.DEFAULT_CONCURRENCY]
+         * re-fingerprint of the store — one pass, [AliasFolding.DEFAULT_DIAL_CONCURRENCY]
          * at a time, however many urls that is — and while it runs every
          * un-re-measured url is dialled unfolded. That is the correct price for
          * a rule change and pure waste for anything else.

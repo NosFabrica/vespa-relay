@@ -35,7 +35,7 @@
 #             open socket so new events arrive the moment they exist.
 #
 # A new url is probed by the monitor's fast lane within minutes
-# (monitor.newUrlSeconds) and joins the fan-out on its first `syncable`.
+# (monitor.fastLaneSeconds) and joins the fan-out on its first `syncable`.
 #
 #
 # HOW A STREAM WORKS
@@ -49,16 +49,18 @@
 #                   (10002, 10009, ...), or the monitor's own kind-30166
 #                   verdicts — `filter = { "kinds": [30166], "#s": ["syncable"] }`
 #   sync            how to ask (see below)
-#   verifySeconds   fetch forward, audit the past: when a relay's last verified
+#   auditSeconds   fetch forward, audit the past: when a relay's last verified
 #                   full pass is older than this, its next visit reconciles the
 #                   covered history over NIP-77 in windows and downloads only
 #                   the diff. A week keeps history honest for the cost of a
 #                   trickle — each relay's clock is its own, so audits stagger
-#                   themselves at roster/verifySeconds per second.
+#                   themselves at roster/auditSeconds per second.
 #
+# NOTE `sync` chooses the TRANSPORT of a static stream (negentropy vs paged
+# fetch), not whether it syncs — kept as `sync` for strfry familiarity.
 # CHOOSING `sync` — static `urls` streams only. A relaySource stream has one
 # shape and no choice to make: page forward from the band's edge, live-tail
-# the present, reconcile the covered past on the verifySeconds audit.
+# the present, reconcile the covered past on the auditSeconds audit.
 #
 #   negentropy  the relays hold much the same events we do. Compares the two
 #               sets and transfers only the difference.
@@ -73,7 +75,7 @@ connectionTimeout = 20
 # therefore TLS-handshaking — at once; a visit is seconds long, so this bounds
 # the burst, not the throughput. tailBudget is the steady state: how many live
 # tails stay open, which is what "constantly connected" means; past it, tails
-# are earned by recent yield. Their sum plus monitor.concurrency and the
+# are earned by recent yield. Their sum plus monitor.dialConcurrency and the
 # static upstreams must stay under the dispatcher's 1,024.
 visitConcurrency = 128
 tailBudget = 600
@@ -120,13 +122,13 @@ monitor {
     # ingested since the last look, and run the fitness probe over just those.
     # This is what bounds a NEW relay's wait for its first `syncable` at
     # minutes. 0 turns the lane off.
-    newUrlSeconds = 120
+    fastLaneSeconds = 120
 
     # Relays a probe pass dials at once — the sweep's wall clock, since most
     # of a discovered corpus is dead and a dead relay costs a full timeout.
     # Also the most sockets the monitor ever holds (its passes run one at a
     # time), so size it against the socket budget the sync plane leaves free.
-    concurrency = 128
+    dialConcurrency = 128
 }
 
 streams {
@@ -175,7 +177,7 @@ streams {
                 maxAgeSeconds = 50400  # two 6h sweeps + slack
             }
         ]
-        verifySeconds = 604800  # weekly negentropy audit of the covered past
+        auditSeconds = 604800  # weekly negentropy audit of the covered past
     }
 
     assertions {
@@ -217,7 +219,7 @@ streams {
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
         # deletion decision deserves the audited full-history reconcile.
-        verifySeconds = 86400
+        auditSeconds = 86400
     }
 
     # The content mirror: every public kind worth searching, from every relay
@@ -248,6 +250,6 @@ streams {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
             }
         ]
-        verifySeconds = 604800
+        auditSeconds = 604800
     }
 }

@@ -857,9 +857,9 @@ internal object SyncVocabulary {
             )
             put(
                 "auditsRun",
-                "History audits run since boot: the windowed negentropy reconcile a stream's `verifySeconds` " +
+                "History audits run since boot: the windowed negentropy reconcile a stream's `auditSeconds` " +
                     "schedules when a relay's last verified full pass ages out. Each relay's clock is its own, so " +
-                    "this climbs as a trickle — roster over verifySeconds — never a herd.",
+                    "this climbs as a trickle — roster over auditSeconds — never a herd.",
             )
             put(
                 "retracted",

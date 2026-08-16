@@ -344,7 +344,7 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           (catch-up, audit, heal drain), earned live tails,
                           yield-paced revisits
     RetractionAudit.kt    the deleteMissing comparison, run as a retracting
-                          ask's verifySeconds audit: reconcile both ways,
+                          ask's auditSeconds audit: reconcile both ways,
                           delete what the provider no longer serves
     NegentropyPager.kt    the windowed history sweep the pool's non-retracting
                           audits run
@@ -816,7 +816,7 @@ scan** (`select` over stored lists like 10002/10040, gated by `certified = {}`
 so only urls holding a fresh verdict pass). Verdicts are trusted from OUR OWN
 monitor only: the configured `authors` npubs, or the router's signer where none
 are named — a foreign monitor's 30166s can never admit a relay here. The pool
-then rotates VISITS (per-ask catch-up, the `verifySeconds` audit, the heal
+then rotates VISITS (per-ask catch-up, the `auditSeconds` audit, the heal
 drain) across `visitConcurrency` workers and holds up to `tailBudget` live
 tails, revisit-paced by each relay's recent yield. A scan whose select binds
 `authors` becomes ONE ASK PER BOUND AUTHOR (`VisitPool.asksOf`) — the
@@ -883,7 +883,7 @@ on every non-stale merge (it means "last walk from nothing"; read as "last
 verified" it made every audit re-fire on each visit — 13 sweeps of one relay
 in 40 minutes, measured). Callers fall back to `fullAt` where no stamp exists,
 so a fresh ask that DELIVERED pages still runs its first audit one
-`verifySeconds` after its catch-up, and one whose pages came back empty (no
+`auditSeconds` after its catch-up, and one whose pages came back empty (no
 band) audits on its very first visit. `VisitPool.attemptSpacingSeconds` is the
 other half: an audit that cannot COMPLETE advances no clock, so attempts
 themselves are spaced instead of retried on the revisit floor.

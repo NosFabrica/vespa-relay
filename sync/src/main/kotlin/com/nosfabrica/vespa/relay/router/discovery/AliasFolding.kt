@@ -78,7 +78,7 @@ class AliasFolding(
     private val aliases: RelayAliases,
     private val record: RelayVerdictRecord,
     private val probe: AliasProbe,
-    private val concurrency: Int = DEFAULT_CONCURRENCY,
+    private val concurrency: Int = DEFAULT_DIAL_CONCURRENCY,
     /** How long a host that could not be decided is left alone — see [undecidable]. */
     private val undecidableCooldownMs: Long = DEFAULT_UNDECIDABLE_COOLDOWN_MS,
     /**
@@ -1026,10 +1026,10 @@ class AliasFolding(
         /**
          * Probes in flight, for every monitor pass that dials. The default
          * lives on the config — `monitor { concurrency }` is the operator's
-         * knob — and [MonitorConfig.DEFAULT_CONCURRENCY] carries the sizing
+         * knob — and [MonitorConfig.DEFAULT_DIAL_CONCURRENCY] carries the sizing
          * argument; this constant only serves callers built without one.
          */
-        const val DEFAULT_CONCURRENCY = MonitorConfig.DEFAULT_CONCURRENCY
+        const val DEFAULT_DIAL_CONCURRENCY = MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
         /**
          * How far down a group's preference order the search for a yardstick

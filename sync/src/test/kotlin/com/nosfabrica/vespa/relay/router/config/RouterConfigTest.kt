@@ -620,7 +620,7 @@ class RouterConfigTest {
         // The comparison runs as the history audit over asks a scan paired
         // with their owners, so the config must supply both halves: the
         // relaySource (a static stream has no discovery to pair authors
-        // with) and verifySeconds (the audit's clock).
+        // with) and auditSeconds (the audit's clock).
         fun stream(extra: String) =
             RouterConfigLoader
                 .parse(
@@ -650,7 +650,7 @@ class RouterConfigTest {
             stream(
                 """ownedKinds = [30382]
                 deleteMissing = true
-                verifySeconds = 86400
+                auditSeconds = 86400
                 $gated""",
             ).deleteMissing,
         )
@@ -659,7 +659,7 @@ class RouterConfigTest {
             stream(
                 """ownedKinds = [30382]
                 deleteMissing = "dryRun"
-                verifySeconds = 86400
+                auditSeconds = 86400
                 $gated""",
             ).deleteMissing,
         )
@@ -671,7 +671,7 @@ class RouterConfigTest {
                 deleteMissing = true""",
             )
         }
-        // No verifySeconds: the one decision that destroys data has no clock.
+        // No auditSeconds: the one decision that destroys data has no clock.
         assertFailsWith<IllegalArgumentException> {
             stream(
                 """ownedKinds = [30382]
@@ -683,10 +683,39 @@ class RouterConfigTest {
             stream(
                 """ownedKinds = [30382]
                 deleteMissing = "sometimes"
-                verifySeconds = 86400
+                auditSeconds = 86400
                 $gated""",
             )
         }
+    }
+
+    @Test
+    fun `the renamed knobs still answer to their old names, loudly`() {
+        // verifySeconds -> auditSeconds, newUrlSeconds -> fastLaneSeconds,
+        // concurrency -> dialConcurrency. A renamed key must never silently
+        // turn a deployment's audits or fast lane off — the old spelling
+        // parses, warns, and means the same thing.
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                monitor {
+                    sources = [ { select = [ { tag = "r", relay = 1 } ], filter = { "kinds": [10002] } } ]
+                    newUrlSeconds = 90
+                    concurrency = 7
+                }
+                streams {
+                    s {
+                        dir = "down"
+                        filter = { "kinds": [1] }
+                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        verifySeconds = 604800
+                    }
+                }
+                """.trimIndent(),
+            )
+        assertEquals(604_800L, cfg.streams.single().auditSeconds)
+        assertEquals(90L, cfg.monitor!!.fastLaneSeconds)
+        assertEquals(7, cfg.monitor!!.dialConcurrency)
     }
 
     @Test
@@ -706,7 +735,7 @@ class RouterConfigTest {
                     filter = { "kinds": [30382] }
                     ownedKinds = [30382]
                     deleteMissing = true
-                    verifySeconds = 86400
+                    auditSeconds = 86400
                     relaySource = [ $source ]
                   }
                 }
@@ -747,7 +776,7 @@ class RouterConfigTest {
                   s {
                     dir = "down"
                     filter = { $kinds }
-                    verifySeconds = 86400
+                    auditSeconds = 86400
                     relaySource = [
                         {
                             select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
@@ -1259,7 +1288,7 @@ class RouterConfigTest {
                     ]
                     exclude       = [ "wss://skip.example" ]
                     sweepSeconds  = 3600
-                    newUrlSeconds = 60
+                    fastLaneSeconds = 60
                     concurrency   = 32
                 }
                 streams {
@@ -1278,8 +1307,8 @@ class RouterConfigTest {
         val m = cfg.monitor!!
         assertEquals(1, m.sources.size)
         assertEquals(3600L, m.sweepSeconds)
-        assertEquals(60L, m.newUrlSeconds)
-        assertEquals(32, m.concurrency)
+        assertEquals(60L, m.fastLaneSeconds)
+        assertEquals(32, m.dialConcurrency)
     }
 
     @Test
@@ -1294,19 +1323,19 @@ class RouterConfigTest {
             }
         """
         val absent = RouterConfigLoader.parse("monitor { sweepSeconds = 3600 }\n$block")
-        assertEquals(MonitorConfig.DEFAULT_CONCURRENCY, absent.monitor!!.concurrency)
+        assertEquals(MonitorConfig.DEFAULT_DIAL_CONCURRENCY, absent.monitor!!.dialConcurrency)
         // Zero dials is an off switch wearing a tuning knob's name — floored,
         // not honored.
         val floored = RouterConfigLoader.parse("monitor { concurrency = 0 }\n$block")
-        assertEquals(1, floored.monitor!!.concurrency)
+        assertEquals(1, floored.monitor!!.dialConcurrency)
     }
 
     @Test
-    fun `newUrlSeconds zero turns the fast lane off, absent takes the default`() {
+    fun `fastLaneSeconds zero turns the fast lane off, absent takes the default`() {
         val off =
             RouterConfigLoader.parse(
                 """
-                monitor { newUrlSeconds = 0 }
+                monitor { fastLaneSeconds = 0 }
                 streams {
                     s {
                         dir    = "down"
@@ -1316,7 +1345,7 @@ class RouterConfigTest {
                 }
                 """.trimIndent(),
             )
-        assertEquals(null, off.monitor!!.newUrlSeconds)
+        assertEquals(null, off.monitor!!.fastLaneSeconds)
         val defaulted =
             RouterConfigLoader.parse(
                 """
@@ -1330,7 +1359,7 @@ class RouterConfigTest {
                 }
                 """.trimIndent(),
             )
-        assertEquals(MonitorConfig.DEFAULT_NEW_URL_SECONDS, defaulted.monitor!!.newUrlSeconds)
+        assertEquals(MonitorConfig.DEFAULT_FAST_LANE_SECONDS, defaulted.monitor!!.fastLaneSeconds)
     }
 
     @Test

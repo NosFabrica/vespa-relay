@@ -93,7 +93,7 @@ class ConsistencyPass(
     private val consistency: RelayConsistency,
     private val record: RelayVerdictRecord,
     private val probe: AliasProbe,
-    private val concurrency: Int = DEFAULT_CONCURRENCY,
+    private val concurrency: Int = DEFAULT_DIAL_CONCURRENCY,
     /**
      * Where each pass reports how far it got — see [AliasFolding.progress] for
      * the argument. Null says nothing, which is every caller but the router.
@@ -614,8 +614,8 @@ class ConsistencyPass(
     }
 
     companion object {
-        /** Urls in flight. Matches the fold's — see [AliasFolding.DEFAULT_CONCURRENCY] for the sizing. */
-        const val DEFAULT_CONCURRENCY = AliasFolding.DEFAULT_CONCURRENCY
+        /** Urls in flight. Matches the fold's — see [AliasFolding.DEFAULT_DIAL_CONCURRENCY] for the sizing. */
+        const val DEFAULT_DIAL_CONCURRENCY = AliasFolding.DEFAULT_DIAL_CONCURRENCY
 
         /**
          * Distinct unclassified terminal reasons sampled per pass — see

@@ -299,7 +299,7 @@ class SyncEngine(
     private val backfill = StaticBackfill(client, store, config, bands, ingest, phases, paging, pager, streamGate, transferring, scope, healer, refusedIds)
 
     /** The `monitor { concurrency }` knob, applied to every pass that dials — see [MonitorConfig.concurrency]. */
-    private val monitorConcurrency = config.monitor?.concurrency ?: MonitorConfig.DEFAULT_CONCURRENCY
+    private val monitorConcurrency = config.monitor?.dialConcurrency ?: MonitorConfig.DEFAULT_DIAL_CONCURRENCY
 
     /**
      * The duplicate-url fold, built only when there is a signer — the verdict
@@ -475,8 +475,8 @@ class SyncEngine(
                     // The fast lane runs FITNESS alone: a first `syncable` is
                     // what a new relay waits on; fold and consistency verdicts
                     // ride the next sweep.
-                    newUrlEveryMs = config.monitor?.newUrlSeconds?.times(1000L),
-                    newUrlPass =
+                    fastLaneEveryMs = config.monitor?.fastLaneSeconds?.times(1000L),
+                    fastLanePass =
                         fitness?.let { f ->
                             object : AliasMonitor.Pass {
                                 override val progress = f.progress

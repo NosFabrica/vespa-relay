@@ -198,8 +198,26 @@ object RouterConfigLoader {
                 val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
                 // An hour is the floor because the audit re-reconciles the
                 // WHOLE covered history: a knob under it is a re-walk loop
-                // wearing an audit's name.
-                val verifySeconds = if (s.hasPath("verifySeconds")) s.getLong("verifySeconds").coerceAtLeast(3600L) else null
+                // wearing an audit's name. `verifySeconds` is the knob's old
+                // name, honored with a nudge — a renamed key must never
+                // silently turn a deployment's audits off.
+                val auditSeconds =
+                    when {
+                        s.hasPath("auditSeconds") -> {
+                            s.getLong("auditSeconds")
+                        }
+
+                        s.hasPath("verifySeconds") -> {
+                            System.err.println(
+                                "router: stream '$name' uses verifySeconds — renamed to auditSeconds (it clocks the history audit); the old name still works",
+                            )
+                            s.getLong("verifySeconds")
+                        }
+
+                        else -> {
+                            null
+                        }
+                    }?.coerceAtLeast(3600L)
                 if (deleteMissing != DeleteMissing.OFF) {
                     // The comparison runs as the pool's history audit, so the
                     // config must give it a relay list the monitor answers
@@ -211,8 +229,8 @@ object RouterConfigLoader {
                         "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
                             "comparison runs as the pool's audit, over asks a scan paired with their owners"
                     }
-                    require(verifySeconds != null) {
-                        "router: stream '$name' sets deleteMissing without `verifySeconds` — " +
+                    require(auditSeconds != null) {
+                        "router: stream '$name' sets deleteMissing without `auditSeconds` — " +
                             "the retraction comparison runs as the history audit, and that knob is its clock"
                     }
                     // The delete's whole licence is per (relay, provider):
@@ -250,7 +268,7 @@ object RouterConfigLoader {
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
-                    verifySeconds = verifySeconds,
+                    auditSeconds = auditSeconds,
                 )
             }
         // Advisory, never a refusal — the overlap can be deliberate. A kind a
@@ -321,25 +339,53 @@ object RouterConfigLoader {
             sweepSeconds =
                 (if (m.hasPath("sweepSeconds")) m.getLong("sweepSeconds") else MonitorConfig.DEFAULT_SWEEP_SECONDS)
                     .coerceAtLeast(300L),
-            newUrlSeconds =
-                when {
-                    !m.hasPath("newUrlSeconds") -> MonitorConfig.DEFAULT_NEW_URL_SECONDS
+            fastLaneSeconds =
+                run {
+                    // `newUrlSeconds` is the knob's old name — every log line
+                    // and progress row already says "fast lane".
+                    val key =
+                        when {
+                            m.hasPath("fastLaneSeconds") -> {
+                                "fastLaneSeconds"
+                            }
 
-                    // 0 is the documented off switch: a fast lane that fired
-                    // every zero seconds would be a busy loop, not a setting.
-                    m.getLong("newUrlSeconds") <= 0L -> null
+                            m.hasPath("newUrlSeconds") -> {
+                                System.err.println("router: monitor uses newUrlSeconds — renamed to fastLaneSeconds; the old name still works")
+                                "newUrlSeconds"
+                            }
 
-                    else -> m.getLong("newUrlSeconds").coerceAtLeast(30L)
+                            else -> {
+                                null
+                            }
+                        }
+                    when {
+                        key == null -> MonitorConfig.DEFAULT_FAST_LANE_SECONDS
+
+                        // 0 is the documented off switch: a fast lane that fired
+                        // every zero seconds would be a busy loop, not a setting.
+                        m.getLong(key) <= 0L -> null
+
+                        else -> m.getLong(key).coerceAtLeast(30L)
+                    }
                 },
             // Floored at 1: zero dials is a monitor that never certifies
             // anything, which is an off switch no operator asked this knob
             // to be. The ceiling is the operator's own arithmetic — the
             // dispatcher budget minus the pool's — and is not second-guessed.
-            concurrency =
-                if (m.hasPath("concurrency")) {
-                    m.getInt("concurrency").coerceAtLeast(1)
-                } else {
-                    MonitorConfig.DEFAULT_CONCURRENCY
+            dialConcurrency =
+                when {
+                    m.hasPath("dialConcurrency") -> {
+                        m.getInt("dialConcurrency").coerceAtLeast(1)
+                    }
+
+                    m.hasPath("concurrency") -> {
+                        System.err.println("router: monitor uses concurrency — renamed to dialConcurrency (it bounds the probe passes' dials); the old name still works")
+                        m.getInt("concurrency").coerceAtLeast(1)
+                    }
+
+                    else -> {
+                        MonitorConfig.DEFAULT_DIAL_CONCURRENCY
+                    }
                 },
         )
     }
@@ -468,7 +514,7 @@ object RouterConfigLoader {
         }
         require(!s.hasPath("sync")) {
             "router: stream '$stream' sets `sync` beside a relaySource — the pool has one shape for every " +
-                "stream: page forward from the band's edge, reconcile the covered past on the verifySeconds " +
+                "stream: page forward from the band's edge, reconcile the covered past on the auditSeconds " +
                 "audit. `sync` chooses transport for static `urls` streams only; writing it here would claim " +
                 "a choice nothing reads"
         }

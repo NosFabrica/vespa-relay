@@ -100,8 +100,8 @@ class AliasMonitor(
      * waiting on where a fold or consistency verdict can ride the next sweep.
      * Null (either of them) turns the lane off.
      */
-    private val newUrlEveryMs: Long? = null,
-    private val newUrlPass: Pass? = null,
+    private val fastLaneEveryMs: Long? = null,
+    private val fastLanePass: Pass? = null,
 ) {
     /**
      * All this needs of the fold: measure one stream's urls, say how many new
@@ -254,8 +254,8 @@ class AliasMonitor(
         // Sharing the mutex serializes them; a lane tick that lands mid-sweep
         // simply waits, and its since-bound means it then reads the same
         // minutes of events it would have.
-        val everyMs = newUrlEveryMs
-        val lane = newUrlPass
+        val everyMs = fastLaneEveryMs
+        val lane = fastLanePass
         if (everyMs != null && lane != null && source != null) {
             scope.launch {
                 delay(startupDelayMs)

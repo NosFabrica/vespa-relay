@@ -135,12 +135,12 @@ class SyncBands(
      * defines it as "when the last pass that started from nothing finished",
      * and only a stale replace (the 7-day full resync) restarts it. Read as
      * "last verified", it freezes: the moment a band aged past
-     * `verifySeconds`, every visit's audit was due again, and one relay was
+     * `auditSeconds`, every visit's audit was due again, and one relay was
      * measured taking 13 full history sweeps in 40 minutes. So the router
      * keeps its own stamp, advanced by every `reconciledThrough` record and
      * persisted beside the band it belongs to. Callers fall back to `fullAt`
      * when no stamp exists yet — a fresh band's paged full walk still defers
-     * the first audit one `verifySeconds`, exactly as before.
+     * the first audit one `auditSeconds`, exactly as before.
      */
     private data class VerifiedKey(
         val stream: String,
@@ -159,7 +159,7 @@ class SyncBands(
 
     /**
      * THE AUDIT GATE, both halves in one place: is this ask's history due —
-     * the [verifiedAt] clock aged past [verifySeconds], falling back to the
+     * the [verifiedAt] clock aged past [auditSeconds], falling back to the
      * band's `fullAt` so a fresh catch-up still defers the first audit — and
      * is the ask outside its attempt spacing? TRUE CLAIMS THE ATTEMPT: the
      * caller is expected to run the audit, and an audit that cannot complete
@@ -172,13 +172,13 @@ class SyncBands(
         stream: String,
         url: NormalizedRelayUrl,
         filter: Filter,
-        verifySeconds: Long,
+        auditSeconds: Long,
         now: Long = System.currentTimeMillis() / 1000,
     ): Boolean {
         val key = VerifiedKey(stream, filter.toJson(), url.url)
         val clock = verified[key] ?: band(stream, url, filter)?.fullAt ?: 0L
-        if (!auditDue(clock, now, verifySeconds)) return false
-        if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(verifySeconds)) return false
+        if (!auditDue(clock, now, auditSeconds)) return false
+        if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(auditSeconds)) return false
         attempts[key] = now
         return true
     }
@@ -635,8 +635,8 @@ class SyncBands(
         internal fun auditDue(
             fullAt: Long,
             now: Long,
-            verifySeconds: Long,
-        ): Boolean = fullAt <= 0L || now - fullAt >= verifySeconds
+            auditSeconds: Long,
+        ): Boolean = fullAt <= 0L || now - fullAt >= auditSeconds
 
         /**
          * How long after an audit RAN before the same ask may try again,
@@ -646,7 +646,7 @@ class SyncBands(
          * floor and capped so a weekly audit still retries within the shift
          * an operator is watching.
          */
-        internal fun attemptSpacingSeconds(verifySeconds: Long): Long = (verifySeconds / 4).coerceIn(900L, 21_600L)
+        internal fun attemptSpacingSeconds(auditSeconds: Long): Long = (auditSeconds / 4).coerceIn(900L, 21_600L)
 
         // Often enough that a kill costs little, rare enough to be free.
         private const val DEFAULT_FLUSH_SECONDS = 30L

@@ -70,7 +70,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * Per stream, a visit is: catch-up pages over the band's outstanding legs
  * (kinds-only — no author narrowing, so the asks are a few hundred bytes),
- * then — when the stream sets `verifySeconds` and the band's last full pass
+ * then — when the stream sets `auditSeconds` and the band's last full pass
  * has aged past it — a windowed negentropy audit of the covered history that
  * downloads only the diff. After the asks, the visit leaves a LIVE TAIL on the
  * open socket: new events arrive the moment they exist, and freshness stops
@@ -574,7 +574,7 @@ internal class VisitPool(
      * licence to act on what we hold that the provider no longer serves; the
      * ordinary sweep would double the round trips to say half as much. Every
      * other stream with the knob set gets the plain history sweep. No
-     * `verifySeconds`, no audit of either kind.
+     * `auditSeconds`, no audit of either kind.
      */
     private suspend fun auditIfDue(
         ask: RosterBuilder.Ask,
@@ -582,30 +582,30 @@ internal class VisitPool(
         ongoingVisit: OngoingVisit,
         sharedAuthors: Set<String>,
     ) {
-        val verifySeconds = ask.stream.verifySeconds ?: return
+        val auditSeconds = ask.stream.auditSeconds ?: return
         if (ask.stream.deleteMissing != DeleteMissing.OFF) {
-            retractionIfDue(ask, url, verifySeconds, ongoingVisit, sharedAuthors)
+            retractionIfDue(ask, url, auditSeconds, ongoingVisit, sharedAuthors)
         } else {
-            sweepAudit(ask, url, verifySeconds, ongoingVisit)
+            sweepAudit(ask, url, auditSeconds, ongoingVisit)
         }
     }
 
     /**
-     * The weekly (or whatever `verifySeconds` says) negentropy audit: when the
+     * The weekly (or whatever `auditSeconds` says) negentropy audit: when the
      * band's last full pass has aged past the knob, reconcile the covered past
      * in windows and download only the diff. Staggering is free — each relay's
      * band ages on its own clock — so the steady state is
-     * `roster / verifySeconds`, a trickle, and no cap is needed.
+     * `roster / auditSeconds`, a trickle, and no cap is needed.
      */
     private suspend fun sweepAudit(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
-        verifySeconds: Long,
+        auditSeconds: Long,
         ongoingVisit: OngoingVisit,
     ) {
         val stream = ask.stream
         val now = nowSeconds()
-        if (!bands.claimAudit(stream.name, url, ask.filter, verifySeconds, now)) return
+        if (!bands.claimAudit(stream.name, url, ask.filter, auditSeconds, now)) return
         val auditStarted = now
         var received = 0
         ongoingVisit.stage = STAGE_AUDITING
@@ -654,7 +654,7 @@ internal class VisitPool(
     }
 
     /**
-     * The retraction audit for one ask, on the same `verifySeconds` clock as
+     * The retraction audit for one ask, on the same `auditSeconds` clock as
      * every other audit. The dueness, like the comparison, is
      * [RetractionAudit]'s own — the owned-ask band that schedules it is the
      * band the reconcile stamps, so both are derived in one place there.
@@ -662,12 +662,12 @@ internal class VisitPool(
     private suspend fun retractionIfDue(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
-        verifySeconds: Long,
+        auditSeconds: Long,
         ongoingVisit: OngoingVisit,
         sharedAuthors: Set<String>,
     ) {
         val retraction = retraction ?: return
-        if (!retraction.claimAudit(ask.stream, url, ask.filter, verifySeconds)) return
+        if (!retraction.claimAudit(ask.stream, url, ask.filter, auditSeconds)) return
         ongoingVisit.stage = STAGE_RETRACTING
         retraction.reconcileAndDelete(
             ask.stream,
@@ -834,7 +834,7 @@ internal class VisitPool(
          * Does [stream] ride the pool? Yes when every relaySource entry
          * answers to the monitor — a verdict source, or a `certified` scan.
          * A retracting stream rides too: its `deleteMissing` comparison IS
-         * its audit ([RetractionAudit]), on the `verifySeconds` clock the
+         * its audit ([RetractionAudit]), on the `auditSeconds` clock the
          * loader requires it to set.
          */
         internal fun ridesThePool(stream: SyncStream): Boolean {

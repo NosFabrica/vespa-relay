@@ -163,7 +163,7 @@ data class MonitorConfig(
      * events ingested after the last look, so it reads minutes of events, not
      * the store.
      */
-    val newUrlSeconds: Long? = DEFAULT_NEW_URL_SECONDS,
+    val fastLaneSeconds: Long? = DEFAULT_FAST_LANE_SECONDS,
     /**
      * How many relays a probe pass dials at once — the sweep's wall clock,
      * since the corpus is mostly dead relays whose cost is a timeout. Shared
@@ -171,13 +171,13 @@ data class MonitorConfig(
      * most sockets the monitor plane ever holds; size it against the
      * dispatcher ceiling minus the visit pool's budget.
      */
-    val concurrency: Int = DEFAULT_CONCURRENCY,
+    val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
 ) {
     companion object {
         const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
 
         /** Two minutes: a new relay is syncable before its author refreshes the page. */
-        const val DEFAULT_NEW_URL_SECONDS = 120L
+        const val DEFAULT_FAST_LANE_SECONDS = 120L
 
         /**
          * This was 16, with a note calling the probe work "a side quest"
@@ -188,7 +188,7 @@ data class MonitorConfig(
          * measured at 16 spent half an hour in the fitness dials alone,
          * nearly all of it waiting.
          */
-        const val DEFAULT_CONCURRENCY = 128
+        const val DEFAULT_DIAL_CONCURRENCY = 128
     }
 }
 
@@ -237,7 +237,7 @@ data class SyncStream(
      * Null audits nothing, which leaves history exactly as complete as the
      * paged walks left it.
      */
-    val verifySeconds: Long? = null,
+    val auditSeconds: Long? = null,
     /**
      * The kinds this stream's upstreams are the source of truth for — the only
      * kinds [deleteMissing] may delete on their own absence. Required whenever

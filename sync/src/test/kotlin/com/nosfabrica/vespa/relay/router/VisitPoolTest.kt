@@ -72,7 +72,7 @@ class VisitPoolTest {
         // an ungated scan outright, so every dynamic stream that parses
         // rides the pool. Three shapes, one per rule: a verdict source; a
         // certified scan; a retracting stream whose deleteMissing comparison
-        // runs as its verifySeconds audit.
+        // runs as its auditSeconds audit.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -85,7 +85,7 @@ class VisitPoolTest {
                                 filter = { "kinds": [30166], "#s": ["syncable"] }
                             }
                         ]
-                        verifySeconds  = 604800
+                        auditSeconds  = 604800
                     }
                     gatedScan {
                         dir    = "down"
@@ -103,7 +103,7 @@ class VisitPoolTest {
                         filter = { "kinds": [0, 30382] }
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
-                        verifySeconds = 86400
+                        auditSeconds = 86400
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
@@ -118,12 +118,12 @@ class VisitPoolTest {
         val visit = cfg.streams.filter { VisitPool.ridesThePool(it) }
         // As a SET: HOCON hands back a map, and the block order is not a promise.
         assertEquals(setOf("pure", "gatedScan", "retracting"), visit.map { it.name }.toSet())
-        assertEquals(604_800L, visit.single { it.name == "pure" }.verifySeconds)
+        assertEquals(604_800L, visit.single { it.name == "pure" }.auditSeconds)
     }
 
     @Test
     fun `a retracting pool stream must say when its comparison runs`() {
-        // The deleteMissing comparison rides the verifySeconds audit, so a
+        // The deleteMissing comparison rides the auditSeconds audit, so a
         // pool-shaped retracting stream without the knob has no clock for the
         // one decision that destroys data — refused where it is typed.
         assertFailsWith<IllegalArgumentException> {
@@ -288,7 +288,7 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `verifySeconds has an hour floor, an audit is not a re-walk loop`() {
+    fun `auditSeconds has an hour floor, an audit is not a re-walk loop`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -301,11 +301,11 @@ class VisitPoolTest {
                                 filter = { "kinds": [30166], "#s": ["syncable"] }
                             }
                         ]
-                        verifySeconds  = 5
+                        auditSeconds  = 5
                     }
                 }
                 """.trimIndent(),
             )
-        assertEquals(3600L, cfg.streams.single().verifySeconds)
+        assertEquals(3600L, cfg.streams.single().auditSeconds)
     }
 }

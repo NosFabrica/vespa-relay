@@ -94,7 +94,7 @@ class FitnessPass(
     /** The consistency pass's standing refusals — same bargain. */
     private val inconsistent: suspend (List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl>,
     val progress: Processors.Handle,
-    private val concurrency: Int = AliasFolding.DEFAULT_CONCURRENCY,
+    private val concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
     /**
      * The verdict vocabulary. [SYNCABLE] is the only admitting value; every
