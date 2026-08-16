@@ -32,11 +32,22 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # identical run is SKIPPED and prints nothing, which reads as a silent pass.
 ./gradlew :sync:test --tests '*RealRelayDrainProbe*' -DrealRelayProbe=true --rerun -i
 
-# Discovers live NIP-85 providers off the example config's indexers and runs the
-# REAL deleteMissing path against each twice: pass 1 fills an in-memory store,
-# pass 2 is the empty reconcile that used to record no coverage. Read-only and
-# dryRun, but it downloads a provider's whole score set (~150k events, ~3 min).
-./gradlew :sync:test --tests '*DeleteMissingBandProbe*' -DdeleteMissingBandProbe=true --rerun -i
+# Stages the enforce-mode retraction against a live stack: an ephemeral
+# provider's two real scores on a real relay, one PHANTOM score only in our
+# store, and the 10040 naming the pairing — then the running router must
+# delete exactly the phantom on the ask's retraction audit. The probe only
+# stages and prints ids; the sync log and a REQ afterwards are the verdict.
+./gradlew :sync:test --tests '*EnforceRetractionProbe*' \
+  -DenforceProbe=true -DenforceProviderRelay=wss://... --rerun -i
+
+# The two planes end to end against real relays: fitness verdicts onto 30166
+# records, the roster read back off them, and a small VisitPool run on it.
+./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i
+
+# Seeds one signed 10040 into a LOCAL relay so the `certified` gate and the
+# monitor's 10040 source can be watched live against a sandbox stack.
+./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true \
+  -Dseed10040Url=ws://localhost:7777 --rerun -i
 
 # Asks a hidden service whether the fold could ever measure it: fingerprints
 # every url of one onion host through the operator's own Tor, at the old
@@ -328,8 +339,15 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                           which phase a stream is in
     BisectingInsert.kt    the batch-bisecting write
     StaticBackfill.kt     history catch-up for configured upstreams
-    DynamicSync.kt        relaySource streams: discover, fan out, sync each relay
-    DeleteMissingSync.kt  the deleteMissing path: reconcile both ways, delete retractions
+    VisitPool.kt          relaySource streams' whole engine: the roster the
+                          monitor's 30166 verdicts admit to, rotating visits
+                          (catch-up, audit, heal drain), earned live tails,
+                          yield-paced revisits
+    RetractionAudit.kt    the deleteMissing comparison, run as a retracting
+                          ask's verifySeconds audit: reconcile both ways,
+                          delete what the provider no longer serves
+    NegentropyPager.kt    the windowed history sweep the pool's non-retracting
+                          audits run
     UpstreamPush.kt       dir = up: reconcile and publish what the upstream lacks
     SyncBands.kt          covered created_at bands per (relay, filter)
     SyncManifest.kt       what this router is CONFIGURED to mirror — the running
@@ -350,8 +368,21 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       RelayAliases.kt       which discovered urls are ONE relay (see below)
       AliasProbe.kt         the fingerprint: a relay's newest events, as ids
       AliasFolding.kt       apply() reads verdicts; measure() earns them
-      AliasMonitor.kt       the schedule measure() runs on, off the sync cycle
+      AliasMonitor.kt       the schedule the probe passes run on, off the sync
+                            plane entirely: fold, then stability, then fitness
       RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `same-as` tag
+      RelayConsistency.kt   which relays answer one filter the same way twice
+      ConsistencyPass.kt    the pass that measures it (the stability gate)
+      Silence.kt            classifying what a quiet socket actually said
+      FitnessPass.kt        the syncable verdict: `["s","syncable",…]` on the
+                            30166 record, earned by answering a settled-anchor
+                            probe — the tag [VisitPool]'s roster selects on
+      ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
+      RelaySockets.kt       WHO IS STILL USING THIS SOCKET — the one refcount
+                            across streams and probe passes; quartz closes
+                            none of its own connections
+      StreamWorld.kt        the url universe the monitor measures: every
+                            stream's sources, plus the monitor's own
     progress/             observability
       StreamPhases.kt       per-stream progress reporting, and the snapshot the
                             progress file is written from
@@ -361,8 +392,6 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                             not a bag of counters
       InFlight.kt           WHICH relays a stream is holding right now, which
                             those counts never said; bounded to the longest-held
-      LegProgress.kt        one running leg's event clock — the thing that tells
-                            a real backlog from a walk that cannot end
       Processors.kt         the work that is NOT a stream: the alias fold, the
                             stability gate, the NIP-66 monitor, ingest, the
                             healer, the push. Same shape as a stream — a phase
@@ -774,7 +803,29 @@ would be a mirror that quietly stopped mirroring. Two kinds of stream:
 - **dynamic** — relays discovered from stored events via `relaySource` (NIP-65
   outbox lists, NIP-85 provider lists, relay hints)
 
-Each stream declares **how** it asks for what it is missing, via `sync`:
+**Dynamic streams run on two planes.** The MONITOR plane (`AliasMonitor`'s
+passes: the fold, then stability, then `FitnessPass`) measures every url the
+streams' sources surface and writes what it finds on signed NIP-66 kind-30166
+records — culminating in the `["s","syncable",…]` verdict a relay earns by
+answering a settled-anchor probe. The SYNC plane (`VisitPool`) never decides
+whether a relay is worth dialling; it reads the verdicts back. A relaySource
+entry is either a **verdict source** (`filter = { "kinds": [30166],
+"#s": ["syncable"] }` — the verdict list IS the relay list) or a **certified
+scan** (`select` over stored lists like 10002/10040, gated by `certified = {}`
+so only urls holding a fresh verdict pass). Verdicts are trusted from OUR OWN
+monitor only: the configured `authors` npubs, or the router's signer where none
+are named — a foreign monitor's 30166s can never admit a relay here. The pool
+then rotates VISITS (per-ask catch-up, the `verifySeconds` audit, the heal
+drain) across `visitConcurrency` workers and holds up to `tailBudget` live
+tails, revisit-paced by each relay's recent yield. A scan whose select binds
+`authors` becomes ONE ASK PER BOUND AUTHOR (`VisitPool.asksOf`) — the
+`(relay, provider)` granularity NIP-85's tags already chose, and the band key
+that stays valid however many providers join. A retracting stream
+(`deleteMissing`) runs its comparison as its audit — `RetractionAudit`, below.
+
+Each **static** stream declares **how** it asks for what it is missing, via
+`sync` — a dynamic stream's cadence belongs to the pool (catch-up pages; the
+audit reconciles), so the loader refuses `sync` beside `relaySource`:
 
 | mode | when | why |
 |---|---|---|
@@ -816,15 +867,18 @@ records `complete = false`; only a finished negentropy reconcile records
 is evidence, not bookkeeping: a completed reconcile compared both sides and
 proved them level, so it can claim coverage through the moment it started even
 with nothing to show for it, while an empty page only proves that one window
-was empty. `DeleteMissingSync` used to fall in the crack between them — it
-reconciles through `negentropyReconcileIds` (a different quartz call, because
-the delete side needs `haveIds`) and recorded nothing on that branch, so only
-its paging fallbacks ever wrote a band and only when events came back. The
-`assertions` stream therefore charted the providers that happened to hand over
-an event and none of the ones it was in sync with, which is the whole population
-of a mirror that is keeping up. `DeleteMissingBandProbe` is what proves it
-against real providers; the band's shape — floor from pass 1's oldest event,
-ceiling advancing on the empty pass — is pinned hermetically in `SyncBandsTest`.
+was empty. The legacy deleteMissing engine used to fall in the crack between
+them — it reconciled through `negentropyReconcileIds` (a different quartz
+call, because the delete side needs `haveIds`) and recorded nothing on that
+branch, so only its paging fallbacks ever wrote a band and only when events
+came back. The `assertions` stream therefore charted the providers that
+happened to hand over an event and none of the ones it was in sync with, which
+is the whole population of a mirror that is keeping up. `RetractionAudit`
+records the reconcile band (`reconciledThrough`), and the band's shape is
+pinned hermetically in `SyncBandsTest`. The same `fullAt` is the audit's
+clock: a completed catch-up stamps it too, so a new ask that DELIVERED pages
+runs its first retraction one `verifySeconds` later, while an ask whose pages
+came back empty (no band) audits on its very first visit.
 
 **The arithmetic is quartz's** — `SyncCoverage`, in
 `nip01Core.relay.client.accessories`, beside `fetchAllPages` and
@@ -1028,7 +1082,7 @@ that leg has received, counted as they ARRIVE rather than when the leg returns �
 the leg worth watching is the one that has not returned, so a boundary counter
 reports zero for exactly as long as the fault lasts; and `quietForSec` is the one
 that decides, running from the last event or from the claim if none ever came.
-The measured shapes, from `InFlightReportProbe` against live relays:
+The measured shapes, from a live in-flight report probe against real relays:
 directory.yabu.me streamed **84,359 events in 42s** (~2,000/s) with `quietForSec`
 pinned at 0 for the whole run — a real backlog, slot well spent — while the
 purplepag.es loop is `transferring` for hours with `events` frozen and
@@ -1064,15 +1118,16 @@ productively.
 **`transferringForSec` is the transfer SLOT, not the socket, and the probe is
 what caught the difference.** A url that could not be connected to at all
 reported `transferring 0s` for its whole life and ended `CANNOT_CONNECT`: the
-websocket connect happens INSIDE the block `RelayRotation.transferring` wraps.
+websocket connect happens INSIDE the span the transfer clock wraps.
 So ABSENT means "not admitted to the pool" — in the guards, or queued behind
 other legs — and absent with a long `heldForSec` is a statement about OUR pool
 being saturated, not about their server. The docs said the opposite before the
 probe ran, which is the whole argument for running one: the plumbing was right
 and the description was not, and no hermetic test can tell those apart.
 
-**The next pass will not start until half the transfer pool is free**
-(`DynamicSync.poolHeadroom`, `awaitPoolHeadroom`). Passes overlap by design, but
+**The legacy engine's next pass would not start until half the transfer pool
+was free** (`poolHeadroom`, `awaitPoolHeadroom` — gone with it, kept here for
+the failure mode). Passes overlap by design, but
 a pass started against a COMMITTED pool is not parallelism: it re-derives the
 relay list, opens a tally, walks the whole list and hands every url to a slot
 that does not exist. At `recycleSeconds = 1` against `concurrency = 100` that is
@@ -1125,10 +1180,10 @@ what a sweep varies) while the band file's keeps them, so joining the two still
 means reducing both to a common shape; a band's `min`/`max` are the outer edges
 across every kind — the card draws the per-kind *intersection* on top, which is
 the multi-kind bug below made visible rather than charted as coverage; and **one
-stream is many filters**. A `relaySource` whose select binds `authors` narrows
-the filter per discovered relay (`DiscoveredRelay.narrowed`), and `authorsPerLeg`
-chops that again, so a stream configured as one filter reaches the file as
-thousands of them, all under its one name. The report groups by that name,
+stream is many filters**. A `relaySource` whose select binds `authors` becomes
+one ask PER BOUND AUTHOR per discovered relay (`VisitPool.asksOf`, via
+`DiscoveredRelay.narrowed`), so a stream configured as one filter reaches the
+file as thousands of them, all under its one name. The report groups by that name,
 publishes the members every leg *agrees on* (never `authors`/`ids`/tag values —
 they are named in `narrowedBy` instead), and merges the legs that land on one
 relay (edges union, `complete` ANDs).
@@ -2135,8 +2190,8 @@ under `minSample`, or on a failed store read — only a positive measurement
 counts, because a wrong exclusion is invisible while a wrong inclusion costs one
 relay's duplicates until the next re-measure. And it does not detect the "feed
 us events forever" attack at all: a relay returning a consistent 500 passes.
-That one is novelty and drain (`PagedFetchResult.drained`, `LegProgress`,
-`LEG_QUIET_GIVE_UP_MS`), not identity.
+That one is novelty and drain (`PagedFetchResult.drained`, the visit's
+activity clock, `LEG_QUIET_GIVE_UP_MS`), not identity.
 
 **A replaceable event has one address and more than one writer, so writing it
 is always an EDIT.** NIP-66's relay record is addressed by `d` = the relay url,
@@ -2345,8 +2400,22 @@ was in memory only: a fold persisted, "this url is its own relay" did not, so
 every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
 that — see the verdict section above for the shape and what it does not claim.
 
+> **The engine this next stretch describes is DELETED.** `DynamicSync`,
+> `DeleteMissingSync`, `RelayRotation`, `CachedRelayList` and `LegProgress`
+> went with the two-plane split: dynamic streams ride `VisitPool` (see the
+> router intro above), retraction is `RetractionAudit`, and the loader refuses
+> the era's knobs by name — `concurrency`, `recycleSeconds`, `authorsPerLeg`,
+> `sync` beside `relaySource`, an ungated scan — each with a migration note.
+> The war stories are KEPT because their lessons transferred: the two gates
+> became `visitConcurrency` against `tailBudget`; the leg give-up
+> (`LEG_QUIET_GIVE_UP_MS`) bounds a visit's quiet ask sequence; the fold's
+> `dropFolded` runs in `certifiedScan`; `refusedOutright` ends a visit as it
+> ended a leg; `SharedIdSet`, bands and `CycleTally` survive unchanged. Read
+> what follows as the record of WHY those rules exist, not as a map of the
+> current code.
+
 **The fan-out no longer JOINS, and that is the change to understand before
-touching `DynamicSync`.** A dynamic stream used to launch every discovered relay,
+touching the dynamic engine.** A dynamic stream used to launch every discovered relay,
 await all of them, and only then start the next cycle. One relay could therefore
 stop a mirror: measured, `fetchAllPages` against purplepag.es never returned at
 all before the paging floor landed, and a 16,752-relay stream sat at "cycle in
@@ -2381,7 +2450,7 @@ and nothing else. Four consequences, each with its own home:
   the busy set: `take` is the claim, `release` goes in a `finally`, and a url a
   worker still holds is passed over and counted as `busy` — a tally outcome of
   its own, because "still going from last time" and "never reached" are the same
-  silence otherwise. It is per STREAM; `DynamicSync.inFlight` is the wider,
+  silence otherwise. It is per STREAM; `RelaySockets` is the wider,
   cross-stream socket refcount and stays what it was.
 
   **It is also the only thing that knows WHICH relays are running**, so the
@@ -2517,8 +2586,9 @@ url again, so the bands it earned before the fold can never advance — but they
 stay in `SYNC_STATE_FILE`, and that file is what `SyncCoverageReport` charts. The
 symptom is a working fold that reads as one that never happened: `/stats.json`
 listing twelve urls of one host as separately walked while exactly one of them is
-being synced. `SyncBands.dropFolded`, called from `DynamicSync` as the fold is
-applied, leaves them out of the file. Three decisions in it, all of which have a
+being synced. `SyncBands.dropFolded`, called from `VisitPool.certifiedScan` as
+the fold is applied to a scan's discovered universe, leaves them out of the
+file. Three decisions in it, all of which have a
 silent failure on the other side:
 
 - **Dropped, not merged onto the survivor.** A band is a claim about a url we
@@ -2693,15 +2763,15 @@ above and all the same silence from outside:**
 
 **A fingerprint is a websocket, and quartz closes none of its own.** `fetchAll`
 unsubscribes and leaves the connection in the pool; the client's keep-alive only
-ever RECONNECTS. `DynamicSync.releaseSocket` is the only thing in this repo that
-closes a dynamic relay's socket, and the fold never called it — so a pass left
-one socket per url it measured, up to `probesPerCycle`, against a dispatcher
-budget of 1024 for the whole process and **20 per host**. The fold probes widest
-group first, which is precisely the host wearing 55 urls. `AliasFolding.Sockets`
-is the stream's own refcount handed to the pass: claim before the dial, release
-in a `finally`. It has to be the stream's, because that refcount is what stops a
-probe closing a socket a fan-out leg is transferring on — the failure
-`DynamicSync.inFlight` was added for in the first place.
+ever RECONNECTS. `RelaySockets` (the `AliasFolding.Sockets` implementation) is
+the only thing in this repo that closes a dynamic relay's socket, and the fold
+originally never called it — so a pass left one socket per url it measured, up
+to `probesPerCycle`, against a dispatcher budget of 1024 for the whole process
+and **20 per host**. The fold probes widest group first, which is precisely the
+host wearing 55 urls. The refcount is claimed before the dial and released in a
+`finally`, and it has to be SHARED — one count across every stream, probe pass
+and pool visit — because that refcount is what stops a probe closing a socket
+a transfer is still running on.
 
 **The other half of that question needs no probe, and answer it FIRST.** The
 verdict is a signed kind-30166 addressed by the url, served by this relay:
@@ -2990,20 +3060,21 @@ statement about someone else's server.
   146 asks: a 15s deadline scored 55 answered and 91 "timed out" with a median
   answer of 75ms — and **zero** of those 91 were ever refused. Size an idle
   window by the slowest SINGLE answer, not by the queue.
-- **…but an idle window bounds ONE ask, and a leg is a sequence of them.** A
-  stream with `authorsPerLeg` set asks a relay once per author chunk, in
-  sequence, and nothing bounded the sequence — so a relay answering every chunk
-  with a full `NEG_IDLE_MS` window costs `chunks × 30s` of a transfer slot, a
-  socket and a rotation claim, and the url is skipped by every pass meanwhile.
+- **…but an idle window bounds ONE ask, and a visit is a sequence of them.** A
+  stream with author-bound asks (`VisitPool.asksOf` — one per provider) asks a
+  relay once per author, in sequence, and nothing bounded the sequence — so a
+  relay answering every ask with a full `NEG_IDLE_MS` window costs
+  `asks × 30s` of a worker, a socket and a claim, and the url is skipped by
+  every pass meanwhile.
   Measured in production: `wss://fiatjaf.com/xenon-lima` held **5h00m** having
   delivered 85 events, quiet for the last 4h56m — 600 empty asks. The fix is
   `LEG_QUIET_GIVE_UP_MS`, and note what it is NOT: it fires on SILENCE, not on
   elapsed time, so it cannot cut a leg that is working (every event resets the
   clock). A wall-clock deadline here was tried and removed for exactly that —
-  it truncated four healthy upstreams at its 4h mark. `DynamicSync.givesUp` is
-  the predicate; it also never fires before the first ask, because the quiet
-  clock starts at the CLAIM and a leg that queued behind a saturated pool
-  arrives already "quiet".
+  it truncated four healthy upstreams at its 4h mark. The check lives in
+  `VisitPool.visit` now, between asks; it also never fires before the first
+  ask, because the quiet clock starts at the CLAIM and a visit that queued
+  behind a saturated pool arrives already "quiet".
 - **An auth-gated relay used to read as an EMPTY one, on every sync path.** A
   relay gating reads answers the REQ with `CLOSED auth-required:` before sending
   anything, and every fetch accessory took that as terminal — so the fetch
