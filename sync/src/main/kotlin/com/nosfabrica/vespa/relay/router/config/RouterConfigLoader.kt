@@ -253,6 +253,27 @@ object RouterConfigLoader {
                     verifySeconds = verifySeconds,
                 )
             }
+        // Advisory, never a refusal — the overlap can be deliberate. A kind a
+        // retracting stream deletes and another stream mirrors oscillates:
+        // the audit deletes it, the other stream re-mirrors it, the next
+        // audit deletes it again. Nothing broken, endlessly busy — said at
+        // boot so the operator who configured it can recognize the churn.
+        for (retracting in streams.filter { it.deleteMissing != DeleteMissing.OFF }) {
+            for (other in streams) {
+                if (other.name == retracting.name) continue
+                val overlap =
+                    retracting.ownedKinds intersect
+                        other.filter.kinds
+                            .orEmpty()
+                            .toSet()
+                if (overlap.isNotEmpty()) {
+                    System.err.println(
+                        "router: stream '${retracting.name}' deletes kind(s) $overlap that stream '${other.name}' also mirrors — " +
+                            "a retracted record can be re-mirrored there and re-deleted on every audit",
+                    )
+                }
+            }
+        }
         return RouterConfig(
             connTimeout,
             streams,
