@@ -72,7 +72,7 @@ class RelayIconTest {
     }
 
     @Test
-    fun `our own url is not an override — the redirect would point at itself`() {
+    fun `our own url is not an override, the redirect would point at itself`() {
         val self = "https://relay.example.com/favicon.ico"
         // The trap this function exists for: with RELAY_ICON unset the doc
         // carries our own url, and treating that as an override sends

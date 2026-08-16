@@ -293,7 +293,7 @@ class StreamPhasesTest {
     }
 
     @Test
-    fun `one stream name, two owners — each half's pass is its own, and neither closes the other`() {
+    fun `one stream name, two owners, each half's pass is its own, and neither closes the other`() {
         // A stream can carry BOTH `urls` and `relaySource`, so StaticBackfill and
         // DynamicSync open a cycle under the same name, at boot, at once. With
         // one slot that had to be arbitrated — first writer wins, the loser

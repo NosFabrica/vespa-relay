@@ -160,7 +160,7 @@ class SyncBandsTest {
     }
 
     @Test
-    fun `verifiedAt advances with every reconcile and survives a reboot — quartz's fullAt does neither`() {
+    fun `verifiedAt advances with every reconcile and survives a reboot, quartz's fullAt does neither`() {
         // The audit's clock. quartz's Band.widen keeps the OLD fullAt on
         // every non-stale merge, so read as "last verified" it freezes and
         // the audit re-fires on every visit — one relay was measured taking

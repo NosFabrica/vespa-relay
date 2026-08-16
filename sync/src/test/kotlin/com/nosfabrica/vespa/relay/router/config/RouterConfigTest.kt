@@ -432,7 +432,7 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a zero limit stays legal — it is the live-only idiom, not a mistake`() {
+    fun `a zero limit stays legal, it is the live-only idiom, not a mistake`() {
         // Worth pinning with its reason, because the paged path makes zero look
         // broken from one side: quartz's `stillNeedsMore` is
         // `matchCountPerFilter[i] < filter.limit`, so `0 < 0` drops the filter
@@ -616,7 +616,7 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `deleteMissing needs the pool's audit — a relay source and its clock`() {
+    fun `deleteMissing needs the pool's audit, a relay source and its clock`() {
         // The comparison runs as the history audit over asks a scan paired
         // with their owners, so the config must supply both halves: the
         // relaySource (a static stream has no discovery to pair authors
@@ -690,7 +690,7 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a retracting stream's every ask must be author-bound — the delete's whole licence is per provider`() {
+    fun `a retracting stream's every ask must be author-bound, the delete's whole licence is per provider`() {
         // An UNBOUND ask on a retracting stream would reconcile EVERY
         // provider's owned records against one relay and delete whatever that
         // relay happens not to hold — one config mistake away from store-wide

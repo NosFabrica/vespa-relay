@@ -67,7 +67,7 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `every dynamic stream rides the pool — verdicts, certified scans, retracting streams`() {
+    fun `every dynamic stream rides the pool, verdicts, certified scans, retracting streams`() {
         // The fork is gone with the engine it forked to: the loader refuses
         // an ungated scan outright, so every dynamic stream that parses
         // rides the pool. Three shapes, one per rule: a verdict source; a
@@ -252,7 +252,7 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `a rebuilt roster with the same asks is not news — one more ask is`() {
+    fun `a rebuilt roster with the same asks is not news, one more ask is`() {
         // The pool compares a url's want list across rebuilds with `wants`,
         // and both directions of that comparison carry a failure mode.
         // quartz's Filter has no equals, so the fresh-but-identical filters
@@ -288,7 +288,7 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `verifySeconds has an hour floor — an audit is not a re-walk loop`() {
+    fun `verifySeconds has an hour floor, an audit is not a re-walk loop`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
