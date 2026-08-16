@@ -1187,6 +1187,13 @@ class RouterConfigTest {
                 .single()
         assertEquals(null, bare.maxAgeSeconds, "no bound is inferred from the kind, or from any tag in the filter")
         assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), bare.selects)
+        // A WIDE CONFIG STAYS WIDE. This used to have `#s: ["syncable"]` put on
+        // it — first by a read that hardcoded the value, then by the loader
+        // making that explicit — so a filter asking for every verdict quietly
+        // asked for one. Narrowing what the operator wrote is the same mistake
+        // whichever layer does it, and this filter now means what it says: all
+        // of them, `dead` included.
+        assertEquals(null, bare.filter.tags, "no tag predicate is added to a filter that carries none")
         // …and a select written by hand is honoured rather than refused: there
         // is no verified read left for it to be incompatible with.
         assertEquals(
