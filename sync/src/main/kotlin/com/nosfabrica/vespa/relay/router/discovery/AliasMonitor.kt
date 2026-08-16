@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
-import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -186,7 +185,7 @@ class AliasMonitor(
      * dialling it.
      *
      * A stream that holds its discovered relay list in memory across cycles
-     * ([RelayDiscoveryConfig.recycleSeconds]) is holding a list the fold has
+     * ([the certified scans' refresh cache]) is holding a list the fold has
      * since had something to say about: a url that folded away between two
      * cycles goes on being dialled, taking a socket and a band for events its
      * survivor already delivers, until the list is rebuilt. This number

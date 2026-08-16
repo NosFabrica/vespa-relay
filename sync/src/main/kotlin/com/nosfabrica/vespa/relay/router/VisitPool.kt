@@ -954,7 +954,7 @@ internal class VisitPool(
         /** An empty roster re-checks the records on this clock, not the freshness bound's. */
         const val EMPTY_ROSTER_RETRY_MS = 60_000L
 
-        /** How often stale phase numbers reach the document — see [publishPhases]. */
+        /** How often stale phase numbers reach the document — see [phasesChanged]. */
         const val PHASE_FLUSH_MS = 1_000L
 
         /**

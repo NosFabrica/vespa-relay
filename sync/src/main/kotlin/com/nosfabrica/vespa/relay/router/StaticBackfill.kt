@@ -45,8 +45,6 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -197,7 +195,7 @@ internal class StaticBackfill(
         // reconcile-or-page decision.
         val ours = runCatching { store.count(filter) }.getOrNull() ?: 0
         val (reconcilers, pagers) =
-            group.partitionSuspend { worthReconciling(it.value, filter, ours) }
+            group.partition { worthReconciling(it.value, ours) }
         System.err.println(
             "router: $name ${reconcilers.size} relay(s) will reconcile, ${pagers.size} will fetch" +
                 " [sync=${group.first().value.sync.wire}]" +
@@ -475,9 +473,8 @@ internal class StaticBackfill(
      * redundant id exchange; guessing wrong the other way re-downloads
      * everything.
      */
-    private suspend fun worthReconciling(
+    private fun worthReconciling(
         upstream: SyncUpstream,
-        filter: Filter,
         ours: Int,
     ): Boolean {
         // Declared beats measured.
@@ -968,14 +965,3 @@ internal class StaticBackfill(
     /** What this upstream's stream lets the healer do about a stale copy. */
     private fun originFor(upstream: SyncUpstream) = IngestOrigin(upstream.url, healContent = upstream.healContent, healRetractions = upstream.healRetractions)
 }
-
-/**
- * [List.partition] where the predicate suspends, evaluated concurrently — the
- * predicate this exists for is a NIP-45 COUNT round trip with its own
- * timeout, and serially, twelve silent relays would be a minute of dead wait.
- */
-private suspend fun <T> List<T>.partitionSuspend(predicate: suspend (T) -> Boolean): Pair<List<T>, List<T>> =
-    coroutineScope {
-        val marked = map { item -> async { item to predicate(item) } }.awaitAll()
-        marked.filter { it.second }.map { it.first } to marked.filterNot { it.second }.map { it.first }
-    }

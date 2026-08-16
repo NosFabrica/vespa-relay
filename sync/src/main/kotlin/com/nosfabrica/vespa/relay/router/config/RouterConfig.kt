@@ -56,9 +56,9 @@ data class RouterConfig(
     // From SYNC_INGEST_CONCURRENCY / SYNC_INGEST_BATCH.
     val ingestConcurrency: Int = 2,
     val ingestBatch: Int = 1000,
-    // How much overlap makes a negentropy reconcile worth its id exchange, and
-    // how long a relay gets to answer the NIP-45 COUNT that measures it.
-    // From SYNC_NEG_MIN_EVENTS.
+    // How many matching events WE must already hold before a negentropy
+    // reconcile beats paging — our own count decides alone; the NIP-45 COUNT
+    // round trip this once paired with was removed. From SYNC_NEG_MIN_EVENTS.
     val negMinEvents: Int = 5_000,
     /**
      * Automatic negentropy paging: how many events one reconcile window aims to
