@@ -21,6 +21,7 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
@@ -33,8 +34,8 @@ import java.util.concurrent.ConcurrentHashMap
  * WHAT THE POOL SHOULD BE SYNCING — the roster derivation, apart from the
  * machinery that runs it.
  *
- * One [rebuild] reads the monitor's standing verdicts and the streams'
- * certified scans out of the store and answers url → asks. No sockets, ever:
+ * One [rebuild] reads every stream's sources out of the store, intersects
+ * them with that stream's gate, and answers url → asks. No sockets, ever:
  * everything here is store walks and record reads, which is what makes the
  * derivation testable without a client and keeps [VisitPool] itself a
  * scheduler — the pool calls [rebuild] on its roster clock and owns
@@ -42,14 +43,9 @@ import java.util.concurrent.ConcurrentHashMap
  */
 internal class RosterBuilder(
     private val store: IEventStore,
-    /** The visit-mode streams: every relaySource entry a kind-30166 verdict source or a certified scan. */
+    /** The visit-mode streams — every one of them carrying at least one relaySource. */
     private val streams: List<SyncStream>,
-    /**
-     * Whose 30166 verdicts admit a relay where a source names no `authors` —
-     * this process's own signer. See [RelayDiscovery.syncable].
-     */
-    private val monitorAuthor: String?,
-    /** For [SyncBands.dropFolded], as the fold is applied to a scan — see [certifiedScan]. */
+    /** For [SyncBands.dropFolded], as the fold is applied to a stream's discovery — see [discovered]. */
     private val bands: SyncBands,
     /**
      * The duplicate-url fold, applied READ-ONLY: url → the survivor standing
@@ -68,8 +64,8 @@ internal class RosterBuilder(
 ) {
     /**
      * ONE UNIT OF WORK against one relay: the stream asking, and the exact
-     * filter it asks — the stream's own for a verdict source, or the
-     * scan-paired narrow for a bound scan (one Ask PER BOUND AUTHOR, fixed:
+     * filter it asks — the stream's own where the source binds nothing, or
+     * the paired narrow where it does (one Ask PER BOUND AUTHOR, fixed:
      * the tag structure already decided the granularity, and a per-author ask
      * is what keeps a `(relay, provider)` band valid forever — see the
      * `asksOf` arithmetic). Bands, catch-ups, audits and tails all key on
@@ -100,7 +96,7 @@ internal class RosterBuilder(
         val sharedAuthors: Map<String, Set<String>>,
     )
 
-    /** One certified scan's discovery, held for its stream's `refreshSeconds` — a store walk is not a poll. */
+    /** One source's discovery, held for its own `refreshSeconds` — a store walk is not a poll. */
     private class ScannedList(
         val expiresAtMs: Long,
         val relays: List<DiscoveredRelay>,
@@ -125,44 +121,17 @@ internal class RosterBuilder(
                 asksByUrl.getOrPut(url) { mutableListOf() } += ask
             }
         }
-        // Memoized per rebuild: identical verdict sources across streams are
-        // the common config, and each un-memoized read materializes every
-        // syncable record in the store. Excludes are applied per stream on
-        // the way out — they are the only per-stream part of the read.
-        val syncableMemo = HashMap<Pair<List<String>, Long>, List<DiscoveredRelay>>()
-
-        suspend fun syncableFor(
-            authors: List<String>,
-            maxAgeSeconds: Long,
-        ) = syncableMemo.getOrPut(authors to maxAgeSeconds) {
-            RelayDiscovery.syncable(
-                store,
-                monitorAuthors = authors,
-                maxAgeSeconds = maxAgeSeconds,
-                skip = setOfNotNull(store.relay),
-                allowOnion = tor != null,
-            )
-        }
         for (stream in streams) {
             val discovery = stream.discovery ?: continue
-            for (source in discovery.verdictSources) {
-                val authors = monitorIdentity(source.authors, stream.name, "has a verdict source") ?: continue
-                val certified = syncableFor(authors, source.maxAgeSeconds).filter { it.url !in discovery.exclude }
-                for (relay in certified) want(relay.url, Ask(stream, stream.filter))
-            }
-            if (discovery.scanSources.isNotEmpty()) {
-                for (relay in certifiedScan(stream, discovery)) {
-                    for (filter in asksOf(stream.filter, relay)) {
-                        want(relay.url, Ask(stream, filter))
-                    }
-                }
+            for (relay in permitted(stream, discovery)) {
+                for (filter in asksOf(stream.filter, relay)) want(relay.url, Ask(stream, filter))
             }
         }
-        // Shared authors are read off EVERY ask in the built roster — verdict
-        // sources and scans alike. They used to be counted only in the scan
-        // branch, so an author-bound stream filter fanned to N relays by a
-        // verdict source ran its retraction audits with an empty shared set,
-        // and one relay's answer could retract what its siblings still serve.
+        // Shared authors are read off EVERY ask in the built roster. They used
+        // to be counted only in the scan branch, so an author-bound stream
+        // filter fanned to N relays by a verdict source ran its retraction
+        // audits with an empty shared set, and one relay's answer could
+        // retract what its siblings still serve.
         val byAuthor = HashMap<String, HashMap<String, MutableSet<NormalizedRelayUrl>>>()
         for ((url, asks) in asksByUrl) {
             for (ask in asks) {
@@ -176,83 +145,100 @@ internal class RosterBuilder(
     }
 
     /**
-     * The verdict-writing identity one source trusts: its configured
-     * `authors`, or our own signer where none are named. Null — with the
-     * warning said on EVERY rebuild rather than once ever, so an operator
-     * fixing the signer sees it take effect — when there is neither:
-     * verdicts nobody here can write admit nothing.
-     */
-    private fun monitorIdentity(
-        named: List<String>,
-        stream: String,
-        what: String,
-    ): List<String>? {
-        val authors = named.ifEmpty { listOfNotNull(monitorAuthor) }
-        if (authors.isEmpty()) {
-            System.err.println(
-                "router: $stream $what, no `authors` and no signer — no monitor identity, nothing is admitted",
-            )
-            return null
-        }
-        return authors
-    }
-
-    /**
-     * A certified scan's relay list, cached for the stream's `refreshSeconds`
-     * — deriving a scan is a store walk, and the roster loop ticks far more
-     * often than the list changes. An EMPTY result is cached only briefly:
-     * "no provider lists yet" is the state the next ingested event ends.
+     * ONE STREAM'S DIALLABLE RELAYS: everything its sources found, intersected
+     * with what its [RelayDiscoveryConfig.gatedBy] vouches for.
      *
-     * Discovered and gated PER SOURCE: each scan's own `certified` block —
-     * its authors AND its freshness — judges only the relays that source
-     * supplied. One gate across the union (the old "strictest" arithmetic,
-     * chosen by maxAge alone) enforced the winning gate's authors against
-     * every source's relays, silently discarding a second source's trust
-     * binding: relays certified only by ITS named monitor were held out for
-     * lacking the other's verdict.
+     * There is one read path here now. A kind-30166 verdict query used to take
+     * a separate verified read and skip the gate entirely, which made "where
+     * urls come from" and "which urls may be dialled" look like two kinds of
+     * source rather than two questions about every source. Both are ordinary
+     * discovery, and the gate applies to whatever any of them produced.
      */
-    private suspend fun certifiedScan(
+    private suspend fun permitted(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
     ): List<DiscoveredRelay> {
-        val nowMs = System.currentTimeMillis()
-        scans[stream.name]?.takeIf { it.expiresAtMs > nowMs }?.let { return it.relays }
-        val perSource =
-            discovery.scanSources.map { source ->
-                source to
-                    RelayDiscovery.discover(
-                        store,
-                        discovery.copy(sources = listOf(source)),
-                        skip = setOfNotNull(store.relay),
-                        allowOnion = tor != null,
-                    )
-            }
-        // The fold, applied where the legacy cycle applied it — over the
-        // WHOLE discovered universe, because `dropFolded` diffs against last
-        // time and a url missing from the set un-hides. Called on the scan
-        // clock, never with an increment.
-        val folded = foldedAway(perSource.flatMap { (_, found) -> found.map { it.url } }.distinct())
-        bands.dropFolded(stream.name, folded.keys, keep = keepBands)
-        val relays =
-            perSource.flatMap { (source, found) ->
-                val scanned = if (folded.isEmpty()) found else found.filter { it.url !in folded }
-                val gate = source.certified ?: return@flatMap scanned
-                val authors = monitorIdentity(gate.authors, stream.name, "gates its scan on verdicts") ?: return@flatMap emptyList()
-                RelayDiscovery
-                    .certifiedOnly(store, scanned, authors, gate.maxAgeSeconds, allowOnion = tor != null)
-                    .also {
-                        if (it.size != scanned.size) {
-                            System.err.println(
-                                "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +
-                                    "held out uncertified (no fresh syncable verdict); the monitor's fast lane is their way in",
-                            )
-                        }
-                    }
-            }
-        val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else discovery.refreshSeconds * 1000L
-        scans[stream.name] = ScannedList(nowMs + holdMs, relays)
-        return relays
+        val found = discovered(stream, discovery)
+        if (discovery.gatedBy.isEmpty()) return found
+        // Cached on the same per-source clock the sources use. It was not, and
+        // a gate is a store read like any other: re-derived every roster tick
+        // it ignored its own `refreshSeconds`, which for a 30166 gate is an
+        // extra indexed query a minute and for one pointed at a curated 10002
+        // list is a corpus walk a minute.
+        val vouched = cached(stream.name, "gate", discovery.gatedBy, discovery).mapTo(HashSet()) { it.url }
+        val kept = found.filter { it.url in vouched }
+        if (kept.size != found.size) {
+            System.err.println(
+                "router: ${stream.name} — ${found.size - kept.size} of ${found.size} discovered relay(s) held out " +
+                    "by `gatedBy`; an ungated url waits like any new relay, for the monitor's fast lane and its " +
+                    "first verdict",
+            )
+        }
+        return kept
     }
+
+    /**
+     * A stream's discovery, cached PER SOURCE for that source's own
+     * `refreshSeconds` — see [RelaySource.refreshSeconds] for why one clock
+     * across a stream cannot be right: a 30166 read is one indexed query and
+     * a 10002 scan walks a corpus, and holding the first behind the second's
+     * six hours would keep a newly-certified relay out of the fan-out for six
+     * hours against a fast lane that verdicts it in two minutes.
+     *
+     * An EMPTY result is cached only briefly: "no lists yet" is the state the
+     * next ingested event ends.
+     */
+    private suspend fun discovered(
+        stream: SyncStream,
+        discovery: RelayDiscoveryConfig,
+    ): List<DiscoveredRelay> {
+        val perSource = cached(stream.name, "source", discovery.sources, discovery)
+        // The fold, applied where the legacy cycle applied it — over the WHOLE
+        // discovered universe, because `dropFolded` diffs against last time
+        // and a url missing from the set un-hides. Called on the scan clock,
+        // never with an increment.
+        val all = perSource
+        val folded = foldedAway(all.map { it.url }.distinct())
+        bands.dropFolded(stream.name, folded.keys, keep = keepBands)
+        return if (folded.isEmpty()) all else all.filter { it.url !in folded }
+    }
+
+    /**
+     * [sources] read out of the store, each held for its own
+     * `refreshSeconds`, unioned. [what] separates a stream's sources from its
+     * gate in the cache — they are different reads on different clocks and a
+     * shared key would serve one the other's answer.
+     */
+    private suspend fun cached(
+        streamName: String,
+        what: String,
+        sources: List<RelaySource>,
+        discovery: RelayDiscoveryConfig,
+    ): List<DiscoveredRelay> {
+        val nowMs = System.currentTimeMillis()
+        return sources.flatMapIndexed { index, source ->
+            val key = "$streamName#$what$index"
+            scans[key]?.takeIf { it.expiresAtMs > nowMs }?.relays ?: run {
+                val relays = urlsFound(listOf(source), discovery)
+                val ttl = source.refreshSeconds ?: discovery.refreshSeconds
+                val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else ttl * 1000L
+                scans[key] = ScannedList(nowMs + holdMs, relays)
+                relays
+            }
+        }
+    }
+
+    /** Every relay [sources] name, unioned, with the stream's excludes and this relay itself dropped. */
+    private suspend fun urlsFound(
+        sources: List<RelaySource>,
+        discovery: RelayDiscoveryConfig,
+    ): List<DiscoveredRelay> =
+        RelayDiscovery.discover(
+            store,
+            discovery.copy(sources = sources, gatedBy = emptyList()),
+            skip = setOfNotNull(store.relay),
+            allowOnion = tor != null,
+        )
 
     companion object {
         /**

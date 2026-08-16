@@ -44,7 +44,7 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # records, the roster read back off them, and a small VisitPool run on it.
 ./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i
 
-# Seeds one signed 10040 into a LOCAL relay so the `certified` gate and the
+# Seeds one signed 10040 into a LOCAL relay so the `gatedBy` gate and the
 # monitor's 10040 source can be watched live against a sandbox stack.
 ./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true \
   -Dseed10040Url=ws://localhost:7777 --rerun -i
@@ -236,7 +236,8 @@ relay/src/main/kotlin/com/nosfabrica/vespa/relay/
     EnvSettings.kt      NIP-11 limits etc. from env, via `env.intOr(...)` rather
                         than `env["..."]` — grep for both or you will conclude a
                         working setting is dead
-    PubKeys.kt          npub-only parsing for every pubkey setting
+    PubKeys.kt          npub-only parsing for every pubkey SETTING — not for
+                        NIP-01 filter fields, see the router's hexKeys
     RelayAddresses.kt   the OTHER addresses this relay answers at — the .onion
                         Tor publishes into RELAY_ONION_HOSTNAME_FILE, read on
                         demand because the address is minted after we boot
@@ -811,11 +812,38 @@ records — culminating in the `["s","syncable",…]` verdict a relay earns by
 answering a settled-anchor probe. The SYNC plane (`VisitPool`) never decides
 whether a relay is worth dialling; it reads the verdicts back. A relaySource
 entry is either a **verdict source** (`filter = { "kinds": [30166],
-"#s": ["syncable"] }` — the verdict list IS the relay list) or a **certified
-scan** (`select` over stored lists like 10002/10040, gated by `certified = {}`
-so only urls holding a fresh verdict pass). Verdicts are trusted from OUR OWN
-monitor only: the configured `authors` npubs, or the router's signer where none
-are named — a foreign monitor's 30166s can never admit a relay here. The pool
+"#s": ["syncable"] }` — the verdict list IS the relay list) or a **scan**
+(`select` over stored lists like 10002/10040). They are ONE TYPE and one read
+path: a verdict query is a scan whose select is NIP-66's `d` tag, which the
+loader supplies. `VerdictSource` and its separate verified read are gone —
+they differed in the questions they were allowed to answer and in almost
+nothing else once the epoch and the tag-stamp freshness left.
+
+**NOTHING IN THE SYNC PLANE KNOWS THAT `s` IS THE TAG OR THAT `syncable` IS THE
+VALUE.** That is the whole point of a gate being a filter: another monitor
+spelling its opinion `["l", "live"]` needs no code here, only a different
+filter. Keying anything on `s`/`syncable` — a default tag, a refusal of other
+values, an inferred freshness bound, a "this source vouches for itself"
+predicate — hands our vocabulary back to every operator who wanted theirs, and
+each one was tried and removed. What the loader MAY key on is kind 30166,
+because NIP-66 fixes two things about that kind and neither is a semantic
+guess: the url is in the `d` tag, and the author is a monitor identity. Whose
+verdicts count is the
+source's `authors`, and **absent means unscoped** — every monitor whose
+30166s reached the store, exactly as an absent `authors` means on any NIP-01
+filter. There is deliberately no fallback to the router's own signer: it made
+the trust anchor rotate with `RELAY_NSEC` (emptying every roster, silently,
+until the new identity finished a sweep) and it narrowed the one deployment
+that had mirrored a foreign monitor's verdicts on purpose. Admitting is safe
+unscoped because everything admitted is still dialled and measured; **the
+hold-out read is the asymmetric one and stays author-bound**. `StreamWorld`'s
+dead query — a rtt-less 30166 inside the TTL means "checked, could not open" —
+is scoped to our signer plus the keys the config names, because unscoped, one
+record from anybody starves a relay out of the candidate set permanently: held
+out it is never dialled, never re-measured, and the mark never clears.
+`ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
+why the router does its own author-bound read instead of using it. **Admitting
+widens, holding out forecloses — do not give them the same default.** The pool
 then rotates VISITS (per-ask catch-up, the `auditSeconds` audit, the heal
 drain) across `visitConcurrency` workers and holds up to `tailBudget` live
 tails, revisit-paced by each relay's recent yield. A scan whose select binds
@@ -1033,24 +1061,101 @@ the hour:
 |---|---|---|
 | `aliasFold` | `AliasFolding.measure` — fingerprints one host's urls against each other and signs `same-as` | `outstanding` of `subjects`, plus `undecided` by reason |
 | `stability` | `ConsistencyPass.measure` — asks one relay the same filter twice and refuses the ones that answer differently | same, and it reaches `outstanding = 0` for most of its monthly TTL |
-| `reachability` | quartz's `RelayMonitor` — watches every socket the client opens | `observed`, and the `knownDead` set every fan-out skips |
 | `ingest` | `IngestPipeline` | `queued` against `capacity`, `accepted`, `rejected` |
 | `heal` | `HealQueue` + `Healer` | `queued`, `pushed` — registered only where a stream opted in |
 | `upstreamPush` | `UpstreamPush` | `pushed` |
 
 **Are the fold and NIP-66 the same thing? The RECORDS are; the processors are
-not.** All three of the first group write tags onto the same addressable kind
-30166 record per url — `same-as` from the fold, `self-consistent` from the
-stability gate, quartz's `n`/`rtt-*`/`R` from the monitor — which is why
+not.** The passes write tags onto the same addressable kind 30166 record per url
+— `same-as` from the fold, `self-consistent` from the stability gate, `s` /
+`pageable` / `nip77` from the fitness pass — which is why
 `RelayVerdictRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
 passes SEQUENTIALLY (two writers on one record drop whichever tag was written
 between the other's read and its store, silently, since the result is still a
-valid signed record that simply says less). But they are three different jobs on
-three different clocks: the fold and the gate DIAL, on the monitor's six-hour
-schedule; the reachability monitor never dials on a schedule at all, it rides
-the sockets the fan-out is already opening. The verdicts panel on `/stats.html`
+valid signed record that simply says less). The verdicts panel on `/stats.html`
 is where one url's whole record is read back, and it exists because that merge
 is only pinnable in isolation by `RelayVerdictRecordTest`.
+
+**The gate is stream-level and it is an ordinary source.** `gatedBy` sits beside
+`exclude` and takes the same `{ select, filter, maxAgeSeconds }` entries a
+`relaySource` does; every source's discovery is intersected with the union of
+what they find. Beside `exclude` for a reason: `exclude` says which urls are
+forbidden however many sources name them, `gatedBy` says which are permitted
+however many sources found them, and **neither is a property of HOW a url was
+discovered** — which is all a source describes. It replaced per-source
+`certified = {}`, which could only ever mean "a fresh `syncable`" and — because
+the read behind it enforced our own rules epoch — could only ever mean OUR
+monitor's, whatever identity the block named. Both of those are gone, so a
+third-party NIP-66 monitor works as a gate, and so does something that is not a
+monitor at all.
+
+**A `filter { }` block IS a NIP-01 filter, so its `ids` and `authors` are raw
+hex.** Copy one out of a REQ and it works here; paste one from here into a REQ
+and it works there. Bech32 belongs to the settings that are OURS to define —
+`RELAY_NSEC`, `RELAY_ADMIN_PUBKEYS`, `ALLOW_PUBKEYS` — where a checksummed
+spelling is a free guard on a value a human typed. Inside the protocol's own
+object it is a category error, so `RouterConfigLoader.hexKeys` refuses an
+`npub1…` rather than decoding it: accepting it would make the block "mostly
+NIP-01", the worst of both. The guard that survives is shape — 64 characters of
+hex, uppercase lowercased — because NIP-01 matches these exactly and a malformed
+one selects nothing and says nothing.
+
+**Two knobs are not filter fields, and both exist because a config outlives the
+day it was written.** `maxAgeSeconds` is the relative form of `since`, whose
+absolute instant a file cannot hold; writing both is refused, since the relative
+one wins and the other would be read by a human and by nothing else. It defaults
+to UNBOUNDED and nothing infers otherwise: a NIP-65 relay list is replaceable and
+timeless, so one published in 2023 that nobody revised says what its author
+still means, while a verdict nobody has re-taken for a month is how a dead relay
+stays in the fan-out for a month — and which of those a given filter is asking
+for is the operator's knowledge, not a thing to read off a kind or a tag.
+`RelaySource.DEFAULT_MAX_AGE_SECONDS` is a documented number to reach for, and
+the shipped config writes it explicitly on every verdict read. `refreshSeconds` is
+per source for the same kind of reason — see the cadence note below.
+
+**An ungated stream is a warning, not a parse error.** The old rule — a scan
+needs `certified`/`gatedBy` unless every source is a verdict query — could only
+be stated by deciding which tag and which value constitute a vouching, which is
+exactly the operator's call. A filter that gates and a filter that scans are
+indistinguishable from here, so the loader says which streams have no `gatedBy`
+at boot and the config is the authority. **This is a deliberate safety
+downgrade**: it was a hard error and is now a line on stderr, bought in exchange
+for gates the router does not have to understand.
+
+**Cheap sources must be allowed to run far more often than expensive ones.** A
+kind-30166 read is one indexed query bounded by `maxAgeSeconds`; a 10002 scan
+walks a corpus. Cached alike at the stream's six-hour default, the cheap one
+would hold a newly-certified relay out of the fan-out for six hours — against a
+monitor fast lane that verdicts a new url in two minutes and a documented promise
+that it joins on its first `syncable`. So `refreshSeconds` is settable per
+source and the shipped config sets 120 on its verdict queries. This used to be
+implicit: verdict sources bypassed the scan cache entirely because they were a
+different type, and collapsing the types without stating the cadence would have
+turned "minutes" into "six hours" silently.
+
+**The rules epoch is retracted, not re-checked.** `FitnessPass.retireStaleEpochs`
+runs at boot — the only moment `FITNESS_EPOCH` can have changed, since the
+constant is a source edit and a source edit is a restart — and strips `s` /
+`pageable` / `nip77` from every record of ours written under older rules. Those
+urls then read as unmeasured, which is the state that gets a candidate
+re-measured on the next sweep and correctly stops admitting one that has left
+every relay list. It was a check on every READ, which put our private versioning
+scheme in front of everybody's records: a standard NIP-66 record carries no such
+element, so no foreign verdict could pass however the config was written. **A
+claim you no longer stand behind is yours to withdraw; do not ask every reader
+to know why it is worthless.**
+
+**There is no passive writer any more.** quartz's `RelayMonitor` used to be
+attached to the sync client as a connection listener, signing a 30166 for every
+socket the fan-out opened. It was a second publisher of facts the passes already
+state, and — since every writer edits the same record — it rewrote `created_at`
+on a 5-minute flush for every relay we were actively syncing. Removing it is what
+makes the record's own clock mean "when the monitor last checked this relay",
+which is what every other NIP-66 consumer reads it as, and what lets a stream
+bound verdict freshness with a plain NIP-01 `since` instead of a private
+convention. The passes are the only writers; the fitness pass is the only writer
+of `s`, and it is where the `dead` verdict that holds a url out of the candidate
+set now comes from.
 
 Two rules the processor rows follow, both the same ones the rest of this
 document does. **A processor that is not registered is one this router does not
@@ -1151,7 +1256,7 @@ instead of only counting it.
 two reasons with OPPOSITE retry policies, reported as one number: a
 `hostStruckOut` url is dialled again on the very next cycle (a strike is
 cycle-local, nothing persists), while a `knownDead` one waits out a signed NIP-66
-unreachability record's TTL — 24h, `RelayReachabilityStore.DEFAULT_TTL_SECONDS`
+`dead` verdict's TTL — 24h, `StreamWorld.DEAD_TTL_SECONDS`
 — or its host delivering something. `whyDead` returns which; do not collapse
 them again.
 
@@ -2037,7 +2142,7 @@ identity and one test per reason.
 every url the streams named                                           17,584
 ├─ dropped before a pass could see it                                    832
 │  ├─ excluded by config, or our own url                                   3
-│  └─ known dead — a signed unreachability record                        829
+│  └─ known dead — one of our own signed `dead` verdicts               829
 └─ in reach — the candidate set                                       16,752
    ├─ folded onto another url                                         11,429
    ├─ consistent                                                         583
@@ -2131,17 +2236,24 @@ the monitor picks the lapse up on its next pass, so a re-measure lands within
 `AliasMonitor.DEFAULT_INTERVAL_MS` (6h) of the month mark. Expiry is per url and
 staggered by whenever each was first measured, so there is no day-30 herd.
 
-What it must NOT be aged on is the RECORD's `created_at`, which is what it was
-doing at first. Kind 30166 is addressable and shared: quartz's `RelayMonitor`
-rewrites the record for every relay this client connects to on a 5-minute flush,
-carrying our tags forward. So `created_at` tracks the last time we TALKED to a
-relay, not the last time we MEASURED it — and the effect was exactly backwards.
-A REFUSED relay is never dialled, so nothing refreshed its record and it expired
-on schedule; a KEPT relay is dialled constantly, so its record never aged and
-its verdict was never re-taken. **Measure once, trust forever — for precisely
-the population where "was fine, now degraded" is the case worth catching.** The
-fold's `same-as` had the identical hole: a folded url expires, the canonical it
-folded onto did not.
+What it could NOT be aged on, while a passive writer shared the record, was the
+RECORD's `created_at` — which is what it was doing at first. Kind 30166 is
+addressable and shared, and quartz's `RelayMonitor` rewrote the record for every
+relay this client connected to on a 5-minute flush, carrying our tags forward.
+So `created_at` tracked the last time we TALKED to a relay, not the last time we
+MEASURED it — and the effect was exactly backwards. A REFUSED relay is never
+dialled, so nothing refreshed its record and it expired on schedule; a KEPT
+relay is dialled constantly, so its record never aged and its verdict was never
+re-taken. **Measure once, trust forever — for precisely the population where
+"was fine, now degraded" is the case worth catching.** The fold's `same-as` had
+the identical hole: a folded url expires, the canonical it folded onto did not.
+
+That writer is gone (above), so `created_at` is honest again and the `s` verdict
+reads its freshness off it — the whole-record check date, which is the reading
+the rest of the NIP-66 ecosystem applies and the one a config can express as
+`since`. The per-tag stamps stay: they are public evidence, and the fold and the
+stability gate still age on them through `RelayVerdictRecord.current`, which is
+finer than the record clock when passes on different cadences share one record.
 
 So both verdict tags carry the unix second they were measured, and
 `RelayVerdictRecord.current` ages on that. A tag with NO stamp is stale, and the
@@ -3100,14 +3212,17 @@ statement about someone else's server.
   what a silent one already cost. Do not pass the flag by hand — it was removed
   from every accessory but `fetchAllWithHooks`, and hardcoding it there is how
   you get it wrong when the client changes.
-- **A TTL on a tag is not a TTL on the event carrying it.** Kind 30166 has more
-  than one writer: quartz's `RelayMonitor` rewrites the record for every relay
-  the client connects to, every 5 minutes, preserving our tags. Ageing a verdict
-  on `event.createdAt` therefore measures how recently we TALKED to the relay,
-  and any relay still in the fan-out is always minutes old — so its verdict
-  never expires while the ones we stopped dialling expire on time, which is the
-  wrong way round. Stamp the measurement's own time into the tag and age on
-  that. Applies to anything sharing an addressable event with another writer.
+- **A TTL on a tag is not a TTL on the event carrying it — unless you own every
+  writer.** Kind 30166 used to have a writer we did not control: quartz's
+  `RelayMonitor`, rewriting the record for every relay the client connected to,
+  every 5 minutes, preserving our tags. Ageing a verdict on `event.createdAt`
+  therefore measured how recently we TALKED to the relay, and any relay still in
+  the fan-out is always minutes old — so its verdict never expired while the ones
+  we stopped dialling expired on time, which is the wrong way round. The fix that
+  lasted was not a private stamp but removing the writer; with the monitor's own
+  passes the only ones writing, the record's clock says what it should. Reach for
+  a per-tag stamp when a foreign writer is genuinely unavoidable, and prefer
+  removing it when it is not.
 - **Verify under load, not while idle.** A schema fix was "confirmed" by counting
   zero rejections during a window with no writes flowing. It was the wrong fix.
 - **When editing quartz/amethyst alongside this repo**, that project *is*

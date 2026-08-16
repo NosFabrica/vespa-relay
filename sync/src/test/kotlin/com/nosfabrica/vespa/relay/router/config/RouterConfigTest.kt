@@ -198,7 +198,7 @@ class RouterConfigTest {
                 streams {
                     s {
                         dir = "down"
-                        filter = { "kinds": [1], "authors": ["abc"], "#t": ["nostr","bitcoin"], "search": "hello" }
+                        filter = { "kinds": [1], "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"], "#t": ["nostr","bitcoin"], "search": "hello" }
                         urls = ["wss://x.example"]
                     }
                 }
@@ -206,7 +206,7 @@ class RouterConfigTest {
             )
         val f = cfg.streams.single().filter
         assertEquals(listOf(1), f.kinds)
-        assertEquals(listOf("abc"), f.authors)
+        assertEquals(listOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), f.authors)
         assertEquals("hello", f.search)
         assertEquals(listOf("nostr", "bitcoin"), f.tags?.get("t"))
     }
@@ -222,6 +222,7 @@ class RouterConfigTest {
                         filter         = { "kinds": [0, 3, 10002] }
                         refreshSeconds     = 3600
                         exclude            = [ "wss://skip.example" ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [
@@ -230,22 +231,20 @@ class RouterConfigTest {
                                     { tag = "relay" }
                                 ]
                                 filter = { "kinds": [10002, 10040, 10050] }
-                                certified = {}
                             }
                             {
                                 select = [ { tag = "e", index = 2 } ]
-                                filter = { "kinds": [1], "limit": 1000, "authors": ["abc"] }
-                                certified = {}
+                                filter = { "kinds": [1], "limit": 1000, "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }
                             }
                         ]
                     }
                     assertions {
                         filter = { "kinds": [30382] }
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 filter = { "kinds": [10040] }
                                 select = [ { index = 2 } ]
-                                certified = {}
                             }
                         ]
                     }
@@ -282,7 +281,7 @@ class RouterConfigTest {
         val hints = outbox.sources[1]
         assertEquals(listOf(1), hints.filter.kinds)
         assertEquals(1000, hints.filter.limit)
-        assertEquals(listOf("abc"), hints.filter.authors)
+        assertEquals(listOf("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"), hints.filter.authors)
 
         val assertions = cfg.streams.first { it.name == "assertions" }.discovery!!
         assertNull(
@@ -310,11 +309,11 @@ class RouterConfigTest {
                     outbox {
                         filter  = { "kinds": [10002] }
                         exclude = [ "PURPLEPAG.ES", "wss://DIRECTORY.YABU.ME:443", "wss://filter.nostr.wine/npub.*" ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "r" } ]
                                 filter = { "kinds": [10002] }
-                                certified = {}
                             }
                         ]
                     }
@@ -355,11 +354,11 @@ class RouterConfigTest {
                         outbox {
                             filter  = { "kinds": [10002] }
                             exclude = [ "wss://filter.nostr.wine/[" ]
+                            gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                             relaySource = [
                                 {
                                     select = [ { tag = "r" } ]
                                     filter = { "kinds": [10002] }
-                                    certified = {}
                                 }
                             ]
                         }
@@ -377,11 +376,11 @@ class RouterConfigTest {
         select: String = """{ tag = "r" }""",
     ) = stream(
         """
+        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
         relaySource = [
             {
                 select = [ $select ]
                 filter = $filter
-                certified = {}
             }
         ]
         """.trimIndent(),
@@ -394,7 +393,7 @@ class RouterConfigTest {
         // Any of limit / since / authors narrows it enough to be safe.
         RouterConfigLoader.parse(sourced("""{ "kinds": [1], "limit": 1000 }"""))
         RouterConfigLoader.parse(sourced("""{ "kinds": [1], "since": 1750000000 }"""))
-        RouterConfigLoader.parse(sourced("""{ "kinds": [1], "authors": ["abc"] }"""))
+        RouterConfigLoader.parse(sourced("""{ "kinds": [1], "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }"""))
         // `until` alone doesn't: it caps the top and leaves all of history below.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(sourced("""{ "kinds": [1], "until": 1750000000 }"""))
@@ -637,11 +636,11 @@ class RouterConfigTest {
                 .single()
 
         val gated = """
+            gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
             relaySource = [
                 {
                     select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                     filter = { "kinds": [10040] }
-                    certified = {}
                 }
             ]
         """
@@ -736,6 +735,7 @@ class RouterConfigTest {
                     ownedKinds = [30382]
                     deleteMissing = true
                     auditSeconds = 86400
+                    gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                     relaySource = [ $source ]
                   }
                 }
@@ -749,7 +749,6 @@ class RouterConfigTest {
                 """{
                     select = [ { tag = "30382:rank", relay = 2 } ]
                     filter = { "kinds": [10040] }
-                    certified = {}
                 }""",
             )
         }
@@ -759,7 +758,6 @@ class RouterConfigTest {
             """{
                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                 filter = { "kinds": [10040] }
-                certified = {}
             }""",
         )
     }
@@ -777,11 +775,11 @@ class RouterConfigTest {
                     dir = "down"
                     filter = { $kinds }
                     auditSeconds = 86400
+                    gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                     relaySource = [
                         {
                             select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                             filter = { "kinds": [10040] }
-                            certified = {}
                         }
                     ]
                     $extra
@@ -892,7 +890,7 @@ class RouterConfigTest {
             RouterConfigLoader.parse(stream("""relaySource = [ { filter = { "kinds": [10002] } } ]"""))
         }
         assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(sourced("""{ "authors": ["abc"] }"""))
+            RouterConfigLoader.parse(sourced("""{ "authors": ["aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"] }"""))
         }
     }
 
@@ -906,11 +904,11 @@ class RouterConfigTest {
                         streams {
                             outbox {
                                 filter = { "kinds": [1] }
+                                gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                                 relaySource = [
                                     {
                                         select = [ { tag = "r" } ]
                                         filter = { "kinds": [10002] }
-                                        certified = {}
                                     }
                                 ]
                             }
@@ -934,11 +932,11 @@ class RouterConfigTest {
                     dir    = "down"
                     filter = { "kinds": [1] }
                     $extra
+                    gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                     relaySource = [
                         {
                             select = [ { tag = "r" } ]
                             filter = { "kinds": [10002] }
-                            certified = {}
                         }
                     ]
                 }
@@ -948,27 +946,6 @@ class RouterConfigTest {
             val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(gated(knob)) }
             assertTrue(knob.substringBefore(" ") in e.message!!, "the error names the knob: ${e.message}")
         }
-        // ...and an ungated scan is refused with the way in.
-        val e =
-            assertFailsWith<IllegalArgumentException> {
-                RouterConfigLoader.parse(
-                    """
-                    streams {
-                        s {
-                            dir    = "down"
-                            filter = { "kinds": [1] }
-                            relaySource = [
-                                {
-                                    select = [ { tag = "r" } ]
-                                    filter = { "kinds": [10002] }
-                                }
-                            ]
-                        }
-                    }
-                    """.trimIndent(),
-                )
-            }
-        assertTrue("certified" in e.message!!, "the error says how to migrate: ${e.message}")
     }
 
     /** A one-stream config, with [body] as the stream's keys. */
@@ -1176,13 +1153,18 @@ class RouterConfigTest {
                 }
                 """.trimIndent(),
             )
-        val discovery = cfg.streams.single().discovery!!
-        assertEquals(emptyList(), discovery.scanSources)
-        assertEquals(7200L, discovery.verdictSources.single().maxAgeSeconds)
+        val source =
+            cfg.streams
+                .single()
+                .discovery!!
+                .sources
+                .single()
+        assertEquals(7200L, source.maxAgeSeconds)
+        assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), source.selects, "the `d` tag NIP-66 fixes")
     }
 
     @Test
-    fun `a verdict source rejects what its verified read cannot honor`() {
+    fun `a verdict query is an ordinary source with a default select`() {
         fun stream(source: String) =
             """
             streams {
@@ -1193,33 +1175,54 @@ class RouterConfigTest {
                 }
             }
             """.trimIndent()
-        // The "#s" left off entirely takes the default and the default age.
-        val bare = RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] } }"""))
-        assertEquals(
-            VerdictSource.DEFAULT_MAX_AGE_SECONDS,
-            bare.streams
+        // The "#s" left off entirely takes the default age, and the `d`-tag
+        // select NIP-66 fixes for us.
+        val bare =
+            RouterConfigLoader
+                .parse(stream("""{ filter = { "kinds": [30166] } }"""))
+                .streams
                 .single()
                 .discovery!!
-                .verdictSources
+                .sources
                 .single()
-                .maxAgeSeconds,
+        assertEquals(null, bare.maxAgeSeconds, "no bound is inferred from the kind, or from any tag in the filter")
+        assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), bare.selects)
+        // A WIDE CONFIG STAYS WIDE. This used to have `#s: ["syncable"]` put on
+        // it — first by a read that hardcoded the value, then by the loader
+        // making that explicit — so a filter asking for every verdict quietly
+        // asked for one. Narrowing what the operator wrote is the same mistake
+        // whichever layer does it, and this filter now means what it says: all
+        // of them, `dead` included.
+        assertEquals(null, bare.filter.tags, "no tag predicate is added to a filter that carries none")
+        // …and a select written by hand is honoured rather than refused: there
+        // is no verified read left for it to be incompatible with.
+        assertEquals(
+            listOf(RelaySelect(kind = null, tag = "d", urlIndex = 1)),
+            RouterConfigLoader
+                .parse(stream("""{ select = [ { tag = "d" } ], filter = { "kinds": [30166] } }"""))
+                .streams
+                .single()
+                .discovery!!
+                .sources
+                .single()
+                .selects,
         )
-        // A select would be a scan of records whose reading is verified, and a
-        // refusal verdict is a diagnosis rather than a relay list — each
-        // refused where it is typed.
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ select = [ { tag = "d" } ], filter = { "kinds": [30166] } }"""))
-        }
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#s": ["dead"] } }"""))
-        }
+        // Any tag value parses. `#s: ["dead"]` as a SOURCE is a stream that
+        // syncs from relays our monitor called dead, which is odd but is the
+        // operator's odd; refusing it would mean this loader having an opinion
+        // about what values in what tag mean, which is the opinion the whole
+        // shape exists to avoid holding.
+        RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#s": ["dead"] } }"""))
+        // Mixing 30166 with another kind still fails, and for a reason that is
+        // not about semantics: the `d`-tag default is a NIP-66 fact about kind
+        // 30166 and says nothing about where kind 10002 keeps its urls.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166, 10002] } }"""))
         }
     }
 
     @Test
-    fun `a verdict source's authors name the monitor to trust, as an npub`() {
+    fun `a filter's authors are raw hex, because a filter block is a NIP-01 filter`() {
         fun stream(source: String) =
             """
             streams {
@@ -1237,7 +1240,7 @@ class RouterConfigTest {
             RouterConfigLoader.parse(
                 stream(
                     """{ filter = { "kinds": [30166], "#s": ["syncable"],
-                         "authors": ["npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2"] } }""",
+                         "authors": ["0000000000000000000000000000000000000000000000000000000000000001"] } }""",
                 ),
             )
         val namedSource =
@@ -1246,32 +1249,53 @@ class RouterConfigTest {
                 .discovery!!
                 .sources
                 .single()
-        assertEquals(listOf("0".repeat(63) + "1"), namedSource.verdicts!!.authors)
-        // The stored Filter speaks NIP-01, so it carries the DECODED hex —
-        // the npub is the config spelling, not the wire one.
+        // Carried through untouched: what the operator wrote IS what goes on
+        // the wire. Copy a filter out of a REQ and it works here; paste one
+        // from here into a REQ and it works there.
         assertEquals(listOf("0".repeat(63) + "1"), namedSource.filter.authors)
-        // Absent means this process's own signer — the single-process shape.
-        val bare = RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] } }"""))
+        // Absent is the unscoped read, and stays absent on the filter: an
+        // EMPTY authors list would be a predicate nothing satisfies.
         assertEquals(
-            emptyList(),
-            bare.streams
+            null,
+            RouterConfigLoader
+                .parse(stream("""{ filter = { "kinds": [30166] } }"""))
+                .streams
                 .single()
                 .discovery!!
-                .verdictSources
+                .sources
                 .single()
-                .authors,
+                .filter.authors,
         )
-        // Bare hex has no checksum — a typo is a nobody with an empty roster
-        // and no error anywhere — and an nsec is a private key in a public
-        // file. Both refused where they are typed, same as PubKeys.
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"a".repeat(64)}"] } }"""))
+        // Bech32 is refused rather than decoded: accepting it would make the
+        // block "mostly NIP-01", which is the worst of both. An nsec is called
+        // out by name — a PRIVATE key in a file people commit. And a value
+        // that is neither is refused for shape, since NIP-01 matches these
+        // exactly and a malformed one selects nothing and says nothing.
+        // …and hex is simply accepted.
+        RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"a".repeat(64)}"] } }"""))
+        for (bad in listOf(
+            "npub1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqshp52w2",
+            "nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq",
+            "abc",
+            "z".repeat(64),
+        )) {
+            assertFailsWith<IllegalArgumentException>(bad) {
+                RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "authors": ["$bad"] } }"""))
+            }
         }
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(
-                stream("""{ filter = { "kinds": [30166], "authors": ["nsec1qqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqqq"] } }"""),
-            )
-        }
+        // Uppercase is lowercased, not refused: unambiguous, and nothing
+        // downstream cares which case the operator's clipboard held.
+        assertEquals(
+            listOf("a".repeat(64)),
+            RouterConfigLoader
+                .parse(stream("""{ filter = { "kinds": [30166], "authors": ["${"A".repeat(64)}"] } }"""))
+                .streams
+                .single()
+                .discovery!!
+                .sources
+                .single()
+                .filter.authors,
+        )
     }
 
     @Test
@@ -1387,66 +1411,174 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `a scan source may gate its relays on the monitor's verdicts`() {
-        fun stream(source: String) =
-            """
-            streams {
-                s {
-                    dir    = "down"
-                    filter = { "kinds": [30382] }
-                    relaySource = [ $source ]
-                }
-            }
-            """.trimIndent()
+    fun `gatedBy is a stream-level filter over any kind`() {
         // The 10040 shape: the scan supplies the (relay, provider) pairing,
-        // `certified = {}` supplies the right to be dialled at all.
-        val gated =
+        // `gatedBy` supplies the right to be dialled at all — and it sits on
+        // the stream, beside `exclude`, because it is not a property of how a
+        // url was discovered.
+        val cfg =
             RouterConfigLoader.parse(
                 stream(
-                    """{
+                    """
+                    relaySource = [ {
                         select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                         filter = { "kinds": [10040] }
-                        certified = { maxAgeSeconds = 7200 }
-                    }""",
+                    } ]
+                    gatedBy = [
+                        { filter = { "kinds": [30166], "#s": ["syncable"] }, maxAgeSeconds = 7200 }
+                    ]
+                    """.trimIndent(),
                 ),
             )
-        val source =
-            gated.streams
+        val gate =
+            cfg.streams
                 .single()
                 .discovery!!
-                .scanSources
+                .gatedBy
                 .single()
-        assertEquals(7200L, source.certified!!.maxAgeSeconds)
-        assertEquals(emptyList(), source.certified!!.authors, "absent authors is this process's own monitor")
-        // An empty block is the ordinary spelling.
-        val bare =
+        assertEquals(7200L, gate.maxAgeSeconds)
+        assertEquals(null, gate.filter.authors, "absent authors is the unscoped read, not a substituted identity")
+        // NIP-66 fixes the url in the `d` tag, so a 30166 gate needs no select.
+        assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), gate.selects)
+        // …and NOTHING is inferred where none is written: which filters
+        // describe a measurement that goes stale is the operator's knowledge.
+        assertEquals(
+            null,
+            RouterConfigLoader
+                .parse(
+                    stream(
+                        """
+                        relaySource = [ { select = [ { tag = "30382:rank", relay = 2 } ], filter = { "kinds": [10040] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        """.trimIndent(),
+                    ),
+                ).streams
+                .single()
+                .discovery!!
+                .gatedBy
+                .single()
+                .maxAgeSeconds,
+        )
+    }
+
+    @Test
+    fun `a source or gate over anything but kind 30166 has to say where its urls sit`() {
+        // Only NIP-66 fixes the position. Every other relay list puts the url
+        // somewhere of its own choosing, so guessing an index would read the
+        // wrong slot in silence.
+        val e =
+            assertFailsWith<IllegalArgumentException> {
+                RouterConfigLoader.parse(
+                    stream(
+                        """
+                        relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]
+                        gatedBy = [ { filter = { "kinds": [10002] } } ]
+                        """.trimIndent(),
+                    ),
+                )
+            }
+        assertTrue("select" in e.message!!, e.message!!)
+        // Said explicitly, it parses — and a gate need not be about monitors
+        // at all: a curated relay list is a perfectly good one.
+        val ok =
             RouterConfigLoader.parse(
                 stream(
-                    """{
-                        select = [ { tag = "30382:rank", relay = 2 } ]
-                        filter = { "kinds": [10040] }
-                        certified = {}
-                    }""",
+                    """
+                    relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]
+                    gatedBy = [
+                        { select = [ { kind = 10002, tag = "r", marker = "write" } ],
+                          filter = { "kinds": [10002], "authors": ["0000000000000000000000000000000000000000000000000000000000000001"] } }
+                    ]
+                    """.trimIndent(),
                 ),
             )
         assertEquals(
-            VerdictSource.DEFAULT_MAX_AGE_SECONDS,
-            bare.streams
+            1,
+            ok.streams
                 .single()
                 .discovery!!
-                .scanSources
+                .gatedBy
                 .single()
-                .certified!!
-                .maxAgeSeconds,
+                .selects.size,
         )
-        // On a verdict source the gate is a tautology — refused where typed.
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166] }, certified = {} }"""))
+    }
+
+    @Test
+    fun `an absolute and a relative bound cannot both be written`() {
+        // Two spellings of one bound, and the relative one wins at read time —
+        // so the absolute one would be read by a human and by nothing else.
+        // Either alone is fine: `since` is a static floor a corpus may really
+        // want, `maxAgeSeconds` is the one that keeps meaning what it said.
+        for (body in listOf(
+            """relaySource = [ { filter = { "kinds": [30166], "since": 1700000000 }, maxAgeSeconds = 3600 } ]""",
+            """relaySource = [ { filter = { "kinds": [30166] } } ]
+               gatedBy = [ { filter = { "kinds": [30166], "since": 1700000000 }, maxAgeSeconds = 3600 } ]""",
+        )) {
+            val e = assertFailsWith<IllegalArgumentException>(body) { RouterConfigLoader.parse(stream(body)) }
+            assertTrue("maxAgeSeconds" in e.message!!, e.message!!)
+        }
+        RouterConfigLoader.parse(stream("""relaySource = [ { filter = { "kinds": [30166], "since": 1700000000 } } ]"""))
+        RouterConfigLoader.parse(stream("""relaySource = [ { filter = { "kinds": [30166] }, maxAgeSeconds = 3600 } ]"""))
+    }
+
+    @Test
+    fun `an ungated stream parses, because nothing here can tell a gate from a scan`() {
+        // This was a parse error, on the rule "unless every source is a verdict
+        // query". Stating that rule meant the loader deciding which tag, and
+        // which value in it, constitutes a vouching — the operator's choice and
+        // another monitor's spelling. A monitor writing `["status", "live"]` is
+        // as good a gate as ours and the config is the only thing that knows,
+        // so an ungated stream parses and says so at boot instead.
+        val ungated =
+            RouterConfigLoader.parse(
+                stream("""relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]"""),
+            )
+        assertEquals(
+            emptyList(),
+            ungated.streams
+                .single()
+                .discovery!!
+                .gatedBy,
+        )
+        // …and a gate spelled somebody else's way is an ordinary filter here.
+        val foreign =
+            RouterConfigLoader.parse(
+                stream(
+                    """
+                    relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]
+                    gatedBy = [ { filter = { "kinds": [30166], "#l": ["live"] }, maxAgeSeconds = 3600 } ]
+                    """.trimIndent(),
+                ),
+            )
+        assertEquals(
+            mapOf("l" to listOf("live")),
+            foreign.streams
+                .single()
+                .discovery!!
+                .gatedBy
+                .single()
+                .filter.tags,
+            "no tag and no value is privileged; NIP-01 only indexes single-letter tags, which bounds the " +
+                "spellings a monitor can pick but not which one this router understands",
+        )
+    }
+
+    @Test
+    fun `the old spellings name their replacements`() {
+        // Both shipped in configs people are running, so the errors have to
+        // say what to write instead, not merely that a key is unknown.
+        for ((body, expect) in listOf(
+            """relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] }, certified = {} } ]""" to "gatedBy",
+            """relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] },
+                 resultsFilteredBy = [ { filter = { "kinds": [30166] } } ] } ]""" to "gatedBy",
+        )) {
+            val e = assertFailsWith<IllegalArgumentException>(body) { RouterConfigLoader.parse(stream(body)) }
+            assertTrue(expect in e.message!!, e.message!!)
         }
     }
 
     @Test
-    fun `a verdict source rides alongside certified scans in one stream`() {
+    fun `a verdict query and a scan ride in one stream, under one gate`() {
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -1462,15 +1594,24 @@ class RouterConfigTest {
                             {
                                 select = [ { kind = 10009, tag = "group", index = 2 } ]
                                 filter = { "kinds": [10009] }
-                                certified = {}
                             }
                         ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                     }
                 }
                 """.trimIndent(),
             )
         val discovery = cfg.streams.single().discovery!!
-        assertEquals(7200L, discovery.verdictSources.single().maxAgeSeconds)
-        assertEquals(1, discovery.scanSources.size, "certified scans ride alongside the verdicts in one stream")
+        assertEquals(2, discovery.sources.size, "two ways of finding urls, one list")
+        assertEquals(7200L, discovery.sources.first().maxAgeSeconds)
+        // One gate over both. The scan needs it; the verdict query does not,
+        // and gets it anyway — which is the point of hoisting it: permission
+        // is a question about the stream, not about how a url was found.
+        assertEquals(1, discovery.gatedBy.size)
+        assertEquals(
+            listOf(listOf(30166), listOf(10009)),
+            discovery.sources.map { it.filter.kinds },
+            "two ways of finding urls; the gate above does not care which is which",
+        )
     }
 }

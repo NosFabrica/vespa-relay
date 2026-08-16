@@ -67,11 +67,11 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `every dynamic stream rides the pool, verdicts, certified scans, retracting streams`() {
+    fun `every dynamic stream rides the pool, verdicts, gated scans, retracting streams`() {
         // The fork is gone with the engine it forked to: the loader refuses
         // an ungated scan outright, so every dynamic stream that parses
         // rides the pool. Three shapes, one per rule: a verdict source; a
-        // certified scan; a retracting stream whose deleteMissing comparison
+        // gated scan; a retracting stream whose deleteMissing comparison
         // runs as its auditSeconds audit.
         val cfg =
             RouterConfigLoader.parse(
@@ -90,11 +90,11 @@ class VisitPoolTest {
                     gatedScan {
                         dir    = "down"
                         filter = { "kinds": [30382] }
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                                 filter = { "kinds": [10040] }
-                                certified = {}
                             }
                         ]
                     }
@@ -104,11 +104,11 @@ class VisitPoolTest {
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
                         auditSeconds = 86400
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                                 filter = { "kinds": [10040] }
-                                certified = {}
                             }
                         ]
                     }
@@ -135,11 +135,11 @@ class VisitPoolTest {
                         filter = { "kinds": [0, 30382] }
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
+                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
                                 filter = { "kinds": [10040] }
-                                certified = {}
                             }
                         ]
                     }

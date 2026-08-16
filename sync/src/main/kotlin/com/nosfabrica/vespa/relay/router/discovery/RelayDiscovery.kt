@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.router.config.BindingSlot
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
+import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.withoutDefaultPort
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
@@ -85,6 +86,7 @@ object RelayDiscovery {
         // clearnet answer so a caller that has not thought about it drops
         // them, which is what dialling them without Tor amounts to anyway.
         allowOnion: Boolean = false,
+        now: Long = nowSeconds(),
     ): List<DiscoveredRelay> {
         val found = LinkedHashSet<NormalizedRelayUrl>()
         // url -> destination -> values, unioned across every select and source.
@@ -93,10 +95,25 @@ object RelayDiscovery {
         // rather than silently applied, because a cap set too low reads from
         // outside exactly like a store that holds nothing.
         var oversizedLists = 0
-        // Scan sources only: a verdict source's read is [syncable], the
-        // verified path — running its 30166 filter through the tag scan here
-        // would admit records with no freshness or epoch check at all.
-        for (source in dynamic.scanSources) {
+        for (source in dynamic.sources) {
+            // [RelaySource.maxAgeSeconds] applied, here and once: a config
+            // cannot write an absolute `since` that keeps meaning what it said,
+            // so a source carries the span and the read turns it into the
+            // instant. Null is no bound — see there for why a relay list is
+            // timeless and a verdict is not.
+            //
+            // COMBINED with any `since` the caller already set, never
+            // overwriting it. The loader refuses both in one config entry, but
+            // [StreamWorld.candidatesSince] narrows these filters at RUN time —
+            // the fast lane asking "what arrived in the last two minutes" — and
+            // a bound that replaced that one turned the lane into a full sweep:
+            // every source carrying `maxAgeSeconds` handed back its whole
+            // window, so the fitness pass re-dialled the entire roster every
+            // `fastLaneSeconds` instead of the handful of new urls. Two floors
+            // on one field mean the later one.
+            val floor = source.maxAgeSeconds?.let { now - it }
+            val bounded =
+                if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
             // A named tag with no bindings goes to the store's tags-only
             // projection, which streams one field instead of materializing
             // whole events (a 2.6M-event scan became the projection's walk).
@@ -125,7 +142,7 @@ object RelayDiscovery {
                 for (select in named) {
                     // A select naming a kind narrows the scan to it; the
                     // source filter already carries the rest.
-                    val filter = select.kind?.let { source.filter.copy(kinds = listOf(it)) } ?: source.filter
+                    val filter = select.kind?.let { bounded.copy(kinds = listOf(it)) } ?: bounded
                     val raw =
                         semantics.distinctTagValues(
                             filter = filter,
@@ -142,7 +159,7 @@ object RelayDiscovery {
             // the projection cannot express. Those keep the paging scan.
             val stillPaged = if (semantics == null) source.selects else anyTag
             if (stillPaged.isNotEmpty()) {
-                scan(store, source.filter, pageSize) { event ->
+                scan(store, bounded, pageSize) { event ->
                     if (oversized(event, stillPaged, dynamic.maxRelaysPerList)) {
                         oversizedLists++
                         return@scan
@@ -197,96 +214,104 @@ object RelayDiscovery {
     }
 
     /**
-     * The relay list a [VerdictSource] stream runs on: every url whose
-     * kind-30166 record carries a FRESH `["s", "syncable", …]` from one of
-     * [monitorAuthors] — one indexed query where parsing relay lists is a
-     * store walk of minutes. The authors are the trust boundary: the source's
-     * configured monitor keys, or this process's own signer where none are
-     * named — never unscoped, so a stranger's records are queried out before
-     * verification even starts.
+     * The hold-out read: urls one of [monitorAuthors] currently calls `dead`,
+     * so a probe pass does not spend a connect timeout re-learning what a
+     * record already says.
      *
-     * Freshness and rules come from the TAG, not the event. The record's
-     * `createdAt` is rewritten by quartz's passive monitor on every connection
-     * it opens, so it says "we talked recently" — true of every relay in the
-     * fan-out and evidence of nothing. The verdict's own measured-at stamp
-     * (element 3) and epoch (element 4) are what age and version it; a stale
-     * or foreign-epoch `syncable` admits nothing, exactly as no verdict does.
+     * THE ONE PLACE A VERDICT VALUE IS NAMED IN CODE, and it is not a config
+     * surface: this is the MONITOR plane reading records the monitor itself
+     * wrote, in the vocabulary it defines ([FitnessPass.Verdict]), to decide
+     * what its own next pass should dial. Nothing an operator writes reaches
+     * it, and no foreign monitor's spelling has to. The STREAM plane — which
+     * relays a sync stream may dial — names nothing: it is filters all the way
+     * down, and see [RelayDiscoveryConfig.gatedBy].
      *
-     * The url is taken from the `d` tag and put through the same [normalize]
-     * as every other source — the record's OWN address is our monitor's, but
-     * defence in depth costs one function call.
+     * Not symmetric with admitting, which is the asymmetry
+     * [StreamWorld.monitorAuthors] exists to state: this stays scoped where a
+     * gate may be unscoped.
+     *
+     * `dead` alone, never the other refusals: `alias`, `inconsistent`,
+     * `unpageable`, `auth-refused` and `restricted` are all verdicts a relay
+     * earned by ANSWERING, and holding those out would stop the fold and the
+     * stability gate from ever re-measuring the relays they exist to judge.
+     * Only the transport saying no is a reason not to dial.
+     *
+     * EMPTY AUTHORS HOLDS NOTHING OUT — the opposite of what an absent
+     * `authors` means to a gate, and settled here rather than left to each
+     * caller to remember. Unscoped, this is the starvation vector: any stranger whose
+     * 30166s we mirror could take a relay out of every pass for good. A router
+     * with no signer and no named monitors has no standing to call anything
+     * dead, and dialling a corpse costs one timeout — which is the cheaper of
+     * the two mistakes available here.
      */
-    suspend fun syncable(
+    suspend fun undialable(
         store: IEventStore,
         monitorAuthors: List<String>,
         maxAgeSeconds: Long,
-        skip: Set<NormalizedRelayUrl> = emptySet(),
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
-    ): List<DiscoveredRelay> {
-        if (monitorAuthors.isEmpty()) return emptyList()
-        val records =
-            store.query<Event>(
-                Filter(
-                    kinds = listOf(RelayDiscoveryEvent.KIND),
-                    authors = monitorAuthors,
-                    tags = mapOf(RelayVerdictRecord.STATUS_TAG to listOf(FitnessPass.Verdict.SYNCABLE.value)),
-                ),
-            )
-        val floor = now - maxAgeSeconds
-        return records
-            .asSequence()
-            .filter { event ->
-                val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayVerdictRecord.STATUS_TAG }
-                // The store's `authors` filter is the trust boundary; this
-                // one string compare re-states it on the returned events, so
-                // a query layer that ever treated `authors` as a hint rather
-                // than a predicate cannot hand a stranger's verdict through.
-                event.pubKey in monitorAuthors &&
-                    s != null &&
-                    s[1] == FitnessPass.Verdict.SYNCABLE.value &&
-                    s.getOrNull(4) == RelayVerdictRecord.FITNESS_EPOCH &&
-                    (s.getOrNull(3)?.toLongOrNull() ?: 0L) >= floor
-            }.mapNotNull { event ->
-                event.tags
-                    .firstOrNull { it.size > 1 && it[0] == "d" }
-                    ?.get(1)
-                    ?.let { normalize(it, allowOnion) }
-            }.filter { it !in skip }
-            .distinct()
-            .map { DiscoveredRelay(it) }
-            .sortedBy { it.url.url }
-            .toList()
+    ): Set<NormalizedRelayUrl> {
+        if (monitorAuthors.isEmpty()) return emptySet()
+        return verdicts(store, FitnessPass.Verdict.DEAD, monitorAuthors, maxAgeSeconds, now)
+            .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
     }
 
     /**
-     * [discovered] with every url that holds no fresh `syncable` verdict held
-     * out — the `certified { }` gate on a scan source. INTERSECTION, never
-     * union: the scan supplied the pairing (which relay, narrowed to which
-     * authors — the narrows ride through untouched), and the verdicts supply
-     * the right to be dialled at all. An uncertified url is not refused
-     * forever; it waits exactly as a new relay does, for the monitor's fast
-     * lane and its first `syncable`.
+     * One indexed query for "records carrying THIS verdict, signed by these
+     * identities, re-checked since the floor" — the shared core of [syncable]
+     * and [undialable].
+     *
+     * NOTHING PRIVATE IS READ HERE. There was a rules-epoch check on the tag's
+     * fifth element, which meant every read enforced our own versioning scheme
+     * and no standard NIP-66 record could ever satisfy it — the gate stayed
+     * shut against foreign monitors however the config was written. A verdict
+     * we no longer stand behind is ours to RETRACT, and
+     * [FitnessPass.retireStaleEpochs] does exactly that at boot, so what
+     * survives to be read is a claim its author still makes. The question left
+     * here is the only one a reader should ask: does this url hold this
+     * verdict, from someone we trust, recently enough.
      */
-    suspend fun certifiedOnly(
+    private suspend fun verdicts(
         store: IEventStore,
-        discovered: List<DiscoveredRelay>,
+        verdict: FitnessPass.Verdict,
         monitorAuthors: List<String>,
         maxAgeSeconds: Long,
-        allowOnion: Boolean = false,
-        now: Long = nowSeconds(),
-    ): List<DiscoveredRelay> {
-        if (discovered.isEmpty()) return discovered
-        val live =
-            syncable(
-                store,
-                monitorAuthors = monitorAuthors,
-                maxAgeSeconds = maxAgeSeconds,
-                allowOnion = allowOnion,
-                now = now,
-            ).mapTo(HashSet()) { it.url }
-        return discovered.filter { it.url in live }
-    }
+        now: Long,
+    ): List<Event> =
+        store
+            .query<Event>(
+                Filter(
+                    kinds = listOf(RelayDiscoveryEvent.KIND),
+                    // Absent, not empty: a NIP-01 filter with no `authors` key
+                    // is the unscoped read. An EMPTY list would be a predicate
+                    // nothing satisfies.
+                    authors = monitorAuthors.takeIf { it.isNotEmpty() },
+                    tags = mapOf(RelayVerdictRecord.STATUS_TAG to listOf(verdict.value)),
+                    // The freshness bound, indexed — see the note on [syncable]
+                    // about why the record's own clock is the right one again.
+                    since = now - maxAgeSeconds,
+                ),
+            ).filter { event ->
+                val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayVerdictRecord.STATUS_TAG }
+                // Where the read IS scoped, the store's `authors` filter is the
+                // trust boundary and this one string compare re-states it on the
+                // returned events, so a query layer that ever treated `authors`
+                // as a hint rather than a predicate cannot hand a stranger's
+                // verdict through. Unscoped there is nothing to re-state.
+                (monitorAuthors.isEmpty() || event.pubKey in monitorAuthors) &&
+                    s != null &&
+                    s[1] == verdict.value
+            }
+
+    /** A verdict record's subject: the `d` tag, normalized like every other discovered url. */
+    private fun urlOf(
+        event: Event,
+        allowOnion: Boolean,
+    ): NormalizedRelayUrl? =
+        event.tags
+            .firstOrNull { it.size > 1 && it[0] == "d" }
+            ?.get(1)
+            ?.let { normalize(it, allowOnion) }
 
     /**
      * Walk everything [filter] matches, a page at a time, oldest-ward, so

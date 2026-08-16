@@ -46,8 +46,8 @@
 #   filter          the NIP-01 filter to mirror — kinds, since/until
 #   urls            static relays to talk to (bypass the monitor's verdicts)
 #   relaySource     where the relay list comes from: scans of relay-list events
-#                   (10002, 10009, ...), or the monitor's own kind-30166
-#                   verdicts — `filter = { "kinds": [30166], "#s": ["syncable"] }`
+#                   (10002, 10009, ...), or monitor kind-30166 verdicts —
+#                   `filter = { "kinds": [30166], "#s": ["syncable"] }`
 #   sync            how to ask (see below)
 #   auditSeconds   fetch forward, audit the past: when a relay's last verified
 #                   full pass is older than this, its next visit reconciles the
@@ -99,7 +99,7 @@ monitor {
             # NIP-85 provider relays (10040 service tags carry the url at 2).
             # As writable as a 10002 — same dead hosts, same spammed urls — so
             # they earn verdicts here and the assertions stream dials only the
-            # certified ones.
+            # ones a verdict vouches for.
             select = [
                 { tag = "30382:rank",      relay = 2 }
                 { tag = "30382:followers", relay = 2 }
@@ -108,7 +108,7 @@ monitor {
         }
     ]
 
-    # Urls or regexes never probed, never certified. A plain url matches by
+    # Urls or regexes never probed, never verdicted. A plain url matches by
     # normalized equality; an entry with a regex metacharacter (* + ? [ ] etc —
     # a dot does not count) must match a discovered url in full, ignoring case.
     exclude = [
@@ -162,21 +162,51 @@ streams {
         filter = { "kinds": [0, 10002, 10040] }
         # The monitor's verdicts ARE the relay list: kind-30166 records,
         # admitting every relay whose indexed `s` tag says syncable and whose
-        # verdict is fresher than maxAgeSeconds (measured on the verdict tag's
-        # own stamp — record createdAt proves nothing). `authors` names the
-        # monitor identity to trust, as its npub (npub only: bare hex has no
-        # checksum, so a typo is a nobody with an empty roster and no error).
-        # Left off, it is this process's own signer — RELAY_NSEC's npub — which
-        # is the single-process deployment this file ships as. A stranger's
-        # 30166s never enter either way.
+        # record is newer than maxAgeSeconds. A monitor republishes the record
+        # when it re-checks, so the event's own clock dates the check — the
+        # reading every other NIP-66 consumer applies.
+        #
+        # WHOSE verdicts is `authors`, and it means what it means in any other
+        # NIP-01 filter: left off, EVERY monitor whose 30166s reached this
+        # store. On a stock deployment that is one identity, our own, because
+        # nothing here mirrors anyone else's 30166s — but add 30166 to a
+        # stream's kinds, or point one at a public monitor, and those verdicts
+        # join this roster too.
+        #
+        # A `filter { }` block IS a NIP-01 filter, so `authors` is 64-char hex,
+        # exactly as it goes on the wire — copy one out of a REQ and it works.
+        # Bech32 stays in the settings that are ours to define (RELAY_NSEC and
+        # the relay's pubkey lists); it does not go inside the protocol's own
+        # object, and an npub here is refused rather than quietly decoded.
         relaySource = [
             {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
-                # ...naming a split-process monitor's identity explicitly:
-                # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["npub1..."] }
-                maxAgeSeconds = 50400  # two 6h sweeps + slack
+                # ...naming the monitors to trust, and nobody else:
+                # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["3bf0c63f…"] }
+                # How stale a verdict may be and still admit its relay, measured
+                # on the record's own clock. There is NO default: nothing in the
+                # router knows which filters describe a measurement that goes
+                # stale and which describe a list that does not, so an unwritten
+                # bound is no bound. Two 6h sweeps + slack — one missed sweep
+                # must not empty the roster, three missed sweeps is a monitor
+                # whose silence should.
+                maxAgeSeconds = 50400
+                # How often to RE-READ this source. One indexed query, so it can
+                # run far more often than a relay-list scan — and it has to: this
+                # is what bounds a newly-certified relay's wait to join the
+                # fan-out. Left off it would inherit the stream's refreshSeconds,
+                # six hours by default, against a fast lane that verdicts a new
+                # url in two minutes.
+                refreshSeconds = 120
             }
         ]
+        # ROTATING RELAY_NSEC: name the OLD key's hex here first. The new one starts
+        # writing verdicts the moment it boots, but the store's existing ones
+        # are the old key's, and a source scoped to the new identity alone
+        # selects nothing until a full sweep has run — an empty roster for up
+        # to `monitor.sweepSeconds`. Scoped to both, or left unscoped, the
+        # roster never dips and the old key comes out once the new one covers
+        # the corpus.
         auditSeconds = 604800  # weekly negentropy audit of the covered past
     }
 
@@ -206,15 +236,32 @@ streams {
                     { tag = "30382:followers", relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
-                # Only relays the monitor certifies syncable are dialled — the
-                # scan supplies the (relay, provider) pairing, the verdicts the
-                # right to be dialled at all. 300 users write 10040s today;
-                # millions will, with the same spammed dead urls a 10002
-                # carries, and without this gate each of them costs a dial and
-                # a timeout per cycle forever. An uncertified url waits like
-                # any new relay: the fast lane probes it within minutes.
-                certified = {}
             }
+        ]
+        # WHICH URLS THIS STREAM MAY DIAL AT ALL. Beside `exclude` and for the
+        # same reason: `exclude` says which urls are forbidden however many
+        # sources name them, `gatedBy` says which are permitted however many
+        # sources found them. Neither is a property of how a url was found,
+        # which is all a relaySource entry describes. Every source's discovery
+        # is intersected with the union of these.
+        #
+        # The scan above supplies the (relay, provider) pairing; this supplies
+        # the right to be dialled. 300 users write 10040s today; millions will,
+        # with the same spammed dead urls a 10002 carries, and without a gate
+        # each of them costs a dial and a timeout per cycle forever. An ungated
+        # url waits like any new relay: the fast lane probes it within minutes.
+        #
+        # Any NIP-01 filter can be the gate. This one is monitor verdicts; add
+        # `"authors": ["3bf0c63f…"]` to name whose, or point it at a curated list
+        # entirely — with a `select` saying where that list keeps its urls,
+        # since only kind 30166 has the position fixed by the protocol (the `d`
+        # tag). Nothing in the router knows that `s` is the tag or that
+        # `syncable` is the value — a monitor spelling its opinion
+        # `["status", "live"]` needs no code change here, only this filter
+        # written differently. A stream with no `gatedBy` dials whatever its
+        # sources name and says so at boot.
+        gatedBy = [
+            { filter = { "kinds": [30166], "#s": ["syncable"] }, maxAgeSeconds = 50400, refreshSeconds = 120 }
         ]
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
@@ -248,6 +295,8 @@ streams {
         relaySource = [
             {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
+                maxAgeSeconds = 50400
+                refreshSeconds = 120  # see profileViaOutbox
             }
         ]
         auditSeconds = 604800

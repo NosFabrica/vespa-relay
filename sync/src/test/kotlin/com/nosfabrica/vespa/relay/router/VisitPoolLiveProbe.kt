@@ -24,12 +24,12 @@ import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelayExcludes
+import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.SyncDirection
 import com.nosfabrica.vespa.relay.router.config.SyncMode
 import com.nosfabrica.vespa.relay.router.config.SyncStream
-import com.nosfabrica.vespa.relay.router.config.VerdictSource
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.FitnessPass
@@ -78,6 +78,14 @@ import kotlin.test.Test
  * ```
  */
 class VisitPoolLiveProbe {
+    /** The kind-30166 source the loader writes for `filter = { "kinds": [30166], "#s": ["syncable"] }`. */
+    private fun probeSource(monitor: String) =
+        RelaySource(
+            selects = listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)),
+            filter = Filter(kinds = listOf(30166), authors = listOf(monitor), tags = mapOf("s" to listOf("syncable"))),
+            maxAgeSeconds = 3600,
+        )
+
     private val candidates =
         listOf(
             "wss://nos.lol",
@@ -118,12 +126,7 @@ class VisitPoolLiveProbe {
                 fitness.measure("live probe", candidates, canDial = { true }, onEvent = {}, sockets = AliasFolding.Sockets.NONE)
                 println("=".repeat(78))
                 println("fitness pass over ${candidates.size} url(s) in ${System.currentTimeMillis() - started}ms — records now say:")
-                val roster =
-                    RelayDiscovery.syncable(
-                        store,
-                        monitorAuthors = listOf(signer.pubKey),
-                        maxAgeSeconds = 3600,
-                    )
+                val roster = RelayDiscovery.discover(store, RelayDiscoveryConfig(listOf(probeSource(signer.pubKey)), 3600, RelayExcludes.NONE))
                 println("  syncable roster read back: ${roster.map { it.url.url }}")
                 println("=".repeat(78))
 
@@ -152,11 +155,10 @@ class VisitPoolLiveProbe {
                                 RelayDiscoveryConfig(
                                     sources =
                                         listOf(
-                                            RelaySource(
-                                                selects = emptyList(),
-                                                filter = Filter(kinds = listOf(30166), tags = mapOf("s" to listOf("syncable"))),
-                                                verdicts = VerdictSource(3600),
-                                            ),
+                                            // The same source the roster printed above
+                                            // read, identity and all: the two halves of
+                                            // the probe have to be about one thing.
+                                            probeSource(signer.pubKey),
                                         ),
                                     refreshSeconds = 3600,
                                     exclude = RelayExcludes.NONE,
@@ -185,7 +187,6 @@ class VisitPoolLiveProbe {
                             RosterBuilder(
                                 store = store,
                                 streams = probeStreams,
-                                monitorAuthor = signer.pubKey,
                                 bands = bands,
                             ),
                         streams = probeStreams,

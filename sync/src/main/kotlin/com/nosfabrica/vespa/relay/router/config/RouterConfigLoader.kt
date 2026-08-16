@@ -25,7 +25,6 @@ import com.typesafe.config.ConfigFactory
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip19Bech32.decodePublicKeyAsHexOrNull
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import java.io.File
 import java.util.regex.PatternSyntaxException
@@ -242,12 +241,10 @@ object RouterConfigLoader {
                     // bind `authors`. A verdict source cannot carry it: it
                     // fans the stream's one filter to every certified relay.
                     discovery.sources.forEach { source ->
-                        require(source.verdicts == null) {
-                            "router: stream '$name' sets deleteMissing on a verdict-source relaySource — a verdict " +
-                                "source fans one unbound filter to every certified relay, and an unbound ask would let " +
-                                "one relay's answer retract every provider's records. Use a certified scan whose " +
-                                "selects bind `authors` (e.g. { tag = \"30382:rank\", relay = 2, authors = 1 })"
-                        }
+                        // Catches the kind-30166 source too, and by the rule
+                        // that matters rather than by its shape: its `d`-tag
+                        // select binds nothing, so it fans the stream's one
+                        // unbound filter to every relay it admits.
                         require(source.selects.isNotEmpty() && source.selects.all { it.bindings.containsKey("authors") }) {
                             "router: stream '$name' sets deleteMissing but a relaySource select binds no `authors` — " +
                                 "the retraction only ever judges a (relay, provider) pairing, and a select without an " +
@@ -520,12 +517,36 @@ object RouterConfigLoader {
         }
         val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
         require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
-        require(sources.all { it.verdicts != null || it.certified != null }) {
-            "router: stream '$stream' has an ungated scan in its relaySource — the pool dials only relays the " +
-                "monitor answers for. Gate it with `certified = {}`, or use a kind-30166 verdict source"
+        val gatedBy =
+            if (s.hasPath("gatedBy")) {
+                s.getConfigList("gatedBy").map { parseRelaySource(stream, it, what = "gatedBy") }.also {
+                    require(it.isNotEmpty()) {
+                        "router: stream '$stream' has an empty `gatedBy` — leave it off to gate on nothing, since " +
+                            "an empty list and no list would otherwise be the same text for opposite intents"
+                    }
+                }
+            } else {
+                emptyList()
+            }
+        // SAID, NOT REFUSED. An ungated stream dials whatever its sources name,
+        // and relay lists are as writable as the events carrying them — each
+        // dead url costs a dial and a timeout every cycle forever. That used
+        // to be a parse error, on the rule "unless every source is a verdict
+        // query"; stating that rule meant this module deciding which tag, and
+        // which value in it, constitutes a vouching — the operator's choice
+        // and another monitor's spelling. A filter that gates and a filter
+        // that scans are indistinguishable from here, so the config is the
+        // authority and this is a line at boot naming the stream.
+        if (gatedBy.isEmpty()) {
+            System.err.println(
+                "router: stream '$stream' has no `gatedBy` — every url its relaySource names will be dialled, " +
+                    "and a relay list is as writable as the event carrying it. Right where the sources are " +
+                    "already somebody's vetted list; otherwise gate the stream.",
+            )
         }
         return RelayDiscoveryConfig(
             sources = sources,
+            gatedBy = gatedBy,
             refreshSeconds = (if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds") else defaults.refreshSeconds).coerceAtLeast(60L),
             exclude = if (s.hasPath("exclude")) parseExcludes(stream, s.getStringList("exclude")) else RelayExcludes.NONE,
             maxRelaysPerList = if (s.hasPath("maxRelaysPerList")) s.getInt("maxRelaysPerList").coerceAtLeast(1) else null,
@@ -554,158 +575,95 @@ object RouterConfigLoader {
         }
 
     /**
-     * One `{ select = [ ], filter = { } }` entry: what to pull out, and the
-     * scan to pull it from — or, when the filter asks for kind 30166, the
-     * monitor's own verdicts, which take the verified read instead of a scan.
+     * ONE `{ select = [ ], filter = { } }` ENTRY, and there is only one kind.
+     *
+     * It used to be two. A filter asking for kind 30166 was parsed into a
+     * `VerdictSource` and read back through a separate verified path, while
+     * everything else was a scan; the two differed in the questions they were
+     * allowed to answer and in almost nothing else. Now that the verified read
+     * has nothing private left in it — no rules epoch, no tag-stamp freshness
+     * — a verdict query is a scan whose select is the `d` tag, and saying so
+     * removes a type, a read path, and a set of rules that applied to one of
+     * them for reasons that no longer hold.
+     *
+     * Used both for a stream's `relaySource` entries and for the entries of
+     * its `gatedBy`: "where urls come from" and "which urls are permitted" are
+     * the same shape of question asked at two points, so they take the same
+     * shape of answer.
      */
     private fun parseRelaySource(
         stream: String,
         s: Config,
+        what: String = "relaySource",
     ): RelaySource {
-        require(s.hasPath("filter")) { "router: stream '$stream' has a relaySource entry with no `filter { }`" }
-        verdictSource(stream, s)?.let { return it }
-        require(s.hasPath("select")) { "router: stream '$stream' has a relaySource entry with no `select [ ]`" }
-        val filter = parseFilter(s.getConfig("filter"))
-        val selects = s.getConfigList("select").map { parseRelaySelect(stream, it) }
-        require(selects.isNotEmpty()) { "router: stream '$stream' has a relaySource entry with an empty `select`" }
-
-        val kinds = filter.kinds
-        require(!kinds.isNullOrEmpty()) { "router: stream '$stream' relaySource filter needs `kinds`" }
+        require(s.hasPath("filter")) { "router: stream '$stream' has a $what entry with no `filter { }`" }
+        // Same npub-only rule everywhere a key is typed, restated as hex for
+        // the Filter: bare hex has no checksum, so a typo is a nobody whose
+        // source is empty and whose gate holds everything out, with no error.
+        val written = parseFilter(s.getConfig("filter"))
+        val kinds = written.kinds
+        require(!kinds.isNullOrEmpty()) { "router: stream '$stream' $what filter needs `kinds`" }
+        // KIND, not semantics. NIP-66 fixes two things about a 30166 that this
+        // module may rely on without guessing anyone's vocabulary: the url
+        // lives in the `d` tag, and the author is a monitor identity. What the
+        // other tags are called and what their values mean is not ours.
+        val isNip66Record = kinds == listOf(RelayDiscoveryEvent.KIND)
+        // No re-spelling of `authors` here or anywhere: [parseFilter] has
+        // already validated them as the raw hex NIP-01 asks for, monitor
+        // identities included. A filter block is the protocol's object, and it
+        // holds the protocol's values.
+        val filter = written
+        require(!(s.hasPath("maxAgeSeconds") && (filter.since != null || filter.until != null))) {
+            "router: stream '$stream' bounds a $what entry with BOTH `maxAgeSeconds` and since/until — they are " +
+                "two spellings of one bound and the relative one wins, so the absolute one would be read by a " +
+                "human and by nothing else"
+        }
         // A regular kind is unbounded — scanning all of kind 1 means loading
         // every note in the store into one list. Replaceable/addressable kinds
         // are one event per author, which is what makes them safe to scan
-        // whole. `until` alone doesn't narrow: it leaves all of history below.
-        val narrowed = filter.limit != null || filter.since != null || filter.authors != null || filter.ids != null
+        // whole. Checked on what the operator WROTE: `maxAgeSeconds` becomes a
+        // `since` at read time, and letting that satisfy the bound would make
+        // this guard vacuous for every source.
+        val narrowed =
+            filter.limit != null || filter.since != null || filter.authors != null || filter.ids != null || s.hasPath("maxAgeSeconds")
         require(narrowed || kinds.all { isBoundedKind(it) }) {
-            "router: stream '$stream' relaySource filter ${kinds.joinToString("/")} scans a regular kind unbounded — " +
-                "add `limit` (the bound that stays meaningful on a repeating cycle), `since`, or `authors`, " +
-                "or it would load every matching event in the store at once"
+            "router: stream '$stream' $what filter ${kinds.joinToString("/")} scans a regular kind unbounded — " +
+                "add `limit` (the bound that stays meaningful on a repeating cycle), `maxAgeSeconds`, `since` or " +
+                "`authors`, or it would load every matching event in the store at once"
         }
-        return RelaySource(selects = selects, filter = filter, certified = parseCertified(stream, s))
-    }
 
-    /**
-     * A relaySource entry whose filter asks for kind 30166 — the monitor's own
-     * NIP-66 verdicts as the relay list:
-     *
-     *     relaySource = [
-     *         {
-     *             filter = { "kinds": [30166], "#s": ["syncable"] }
-     *             maxAgeSeconds = 50400
-     *         }
-     *     ]
-     *
-     * Returns null when the filter is not a verdict ask, letting the scan
-     * parser take it. The spelling is the same NIP-01 filter every source
-     * uses, but the READ is not a scan — it is the verified path
-     * ([discovery.RelayDiscovery.syncable]: our monitor identity, the verdict
-     * epoch, the tag's own measured-at stamp against `maxAgeSeconds`) — so
-     * everything a scan could express and the verified read cannot honor is
-     * refused here, at the one place a human types it.
-     */
-    private fun verdictSource(
-        stream: String,
-        s: Config,
-    ): RelaySource? {
-        val filter = parseFilter(s.getConfig("filter"))
-        if (filter.kinds != listOf(RelayDiscoveryEvent.KIND)) {
-            require(filter.kinds?.contains(RelayDiscoveryEvent.KIND) != true) {
-                "router: stream '$stream' has a relaySource mixing kind ${RelayDiscoveryEvent.KIND} with others — " +
-                    "verdicts are a verified read, not a scan, so they need their own entry"
-            }
-            return null
-        }
-        require(!s.hasPath("select")) {
-            "router: stream '$stream' has a `select` on its kind-${RelayDiscoveryEvent.KIND} relaySource — " +
-                "NIP-66 fixes the url in the `d` tag and the verdict is verified, not scanned; drop the select"
-        }
-        val verdicts = filter.tags?.get("s")
-        require(verdicts == null || verdicts == listOf("syncable")) {
-            "router: stream '$stream' asks for verdicts $verdicts — `syncable` is the only value that " +
-                "admits a relay to a sync stream; the refusals are diagnoses, not relay lists"
-        }
-        // WHOSE verdicts. The operator who set the monitor's nsec knows its
-        // npub, so naming it is one copy-paste — and npub-ONLY, for the reason
-        // the relay side's PubKeys spells out: hex has no checksum, so one
-        // mistyped character is a valid-looking key that simply is not anybody,
-        // and a roster built on it is empty with no error anywhere. Absent
-        // means this process's own signer — the single-process deployment,
-        // where monitor and router share one identity.
-        val authors = decodeMonitorNpubs(stream, filter.authors.orEmpty())
-        require(!s.hasPath("certified")) {
-            "router: stream '$stream' puts `certified` on its verdict source — a verdict source IS the " +
-                "certification; the gate belongs on a scan"
-        }
-        require(filter.since == null && filter.until == null && filter.limit == null) {
-            "router: stream '$stream' bounds its verdict source with since/until/limit — freshness is " +
-                "measured on the verdict tag's own stamp, so say `maxAgeSeconds` on the source instead"
-        }
-        val maxAge =
-            if (s.hasPath("maxAgeSeconds")) {
-                s.getLong("maxAgeSeconds").coerceAtLeast(60L)
+        val selects =
+            if (s.hasPath("select")) {
+                s.getConfigList("select").map { parseRelaySelect(stream, it) }.also {
+                    require(it.isNotEmpty()) { "router: stream '$stream' has a $what entry with an empty `select`" }
+                }
             } else {
-                VerdictSource.DEFAULT_MAX_AGE_SECONDS
+                require(isNip66Record) {
+                    "router: stream '$stream' has a $what entry over kinds ${kinds.joinToString("/")} with no " +
+                        "`select` — only kind ${RelayDiscoveryEvent.KIND} has its url fixed by the protocol " +
+                        "(the `d` tag); say where the urls sit"
+                }
+                listOf(RelaySelect(kind = RelayDiscoveryEvent.KIND, tag = "d", urlIndex = 1))
             }
-        return RelaySource(
-            selects = emptyList(),
-            // The filter is restated with the DECODED authors: the operator
-            // writes the npub, but a Filter is a NIP-01 object and NIP-01
-            // speaks hex — a stored filter carrying bech32 text would be
-            // invalid the moment anything ran or serialized it as one.
-            filter = filter.copy(authors = authors.takeIf { it.isNotEmpty() }),
-            verdicts = VerdictSource(maxAgeSeconds = maxAge, authors = authors),
-        )
-    }
-
-    /**
-     * Monitor identities as the operator wrote them — npub-ONLY, for the
-     * reason the relay side's PubKeys spells out: hex has no checksum, so one
-     * mistyped character is a valid-looking key that simply is not anybody,
-     * and a roster or gate built on it is empty with no error anywhere.
-     * Absent means this process's own signer — the single-process deployment,
-     * where monitor and router share one identity.
-     */
-    private fun decodeMonitorNpubs(
-        stream: String,
-        raw: List<String>,
-    ): List<String> =
-        raw.map { entry ->
-            val trimmed = entry.trim().let { if (it.none(Char::isLowerCase)) it.lowercase() else it }
-            require(!trimmed.startsWith("nsec1")) {
-                "router: stream '$stream' has an nsec where a monitor npub belongs — that is a PRIVATE key; " +
-                    "put the monitor's npub there"
-            }
-            val hex = if (trimmed.startsWith("n")) decodePublicKeyAsHexOrNull(trimmed) else null
-            requireNotNull(hex?.takeIf { it.length == 64 }) {
-                "router: stream '$stream' monitor authors entry does not decode as an npub — " +
-                    if (entry.trim().length == 64) {
-                        "bare hex has no checksum, so a typo is a nobody with an empty roster and no error; " +
-                            "convert it to its npub form and use that"
-                    } else {
-                        "recopy the monitor's npub1…"
-                    }
-            }
+        require(!s.hasPath("certified")) {
+            "router: stream '$stream' uses `certified { }`, which is gone — it could only ever mean `a fresh " +
+                "syncable from our own monitor`, and both halves of that are now expressible. Write the gate as " +
+                "a stream-level `gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], " +
+                "\"#s\": [\"syncable\"] } } ]` — naming whatever tag and value the monitor you trust writes"
         }
-
-    /**
-     * The `certified { }` liveness gate on a scan source — see
-     * [RelaySource.certified]. An empty block is the ordinary spelling: the
-     * default freshness bound and this process's own monitor identity.
-     */
-    private fun parseCertified(
-        stream: String,
-        s: Config,
-    ): VerdictSource? {
-        if (!s.hasPath("certified")) return null
-        val c = s.getConfig("certified")
-        return VerdictSource(
-            maxAgeSeconds =
-                if (c.hasPath("maxAgeSeconds")) {
-                    c.getLong("maxAgeSeconds").coerceAtLeast(60L)
-                } else {
-                    VerdictSource.DEFAULT_MAX_AGE_SECONDS
-                },
-            authors = if (c.hasPath("authors")) decodeMonitorNpubs(stream, c.getStringList("authors")) else emptyList(),
+        require(!s.hasPath("resultsFilteredBy")) {
+            "router: stream '$stream' puts `resultsFilteredBy` on a $what entry — it was renamed to `gatedBy` and " +
+                "moved beside `exclude` on the stream, because which urls may be dialled is not a property of " +
+                "how one was discovered"
+        }
+        return RelaySource(
+            selects = selects,
+            filter = filter,
+            // Unbounded unless written. Which filters describe a measurement
+            // that goes stale, and which describe a list that does not, is the
+            // operator's knowledge — see [RelaySource.maxAgeSeconds].
+            maxAgeSeconds = if (s.hasPath("maxAgeSeconds")) s.getLong("maxAgeSeconds").coerceAtLeast(60L) else null,
+            refreshSeconds = if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds").coerceAtLeast(10L) else null,
         )
     }
 
@@ -959,8 +917,8 @@ object RouterConfigLoader {
         }
 
         return Filter(
-            ids = strs("ids"),
-            authors = strs("authors"),
+            ids = hexKeys(f, "ids", strs("ids")),
+            authors = hexKeys(f, "authors", strs("authors")),
             kinds = ints("kinds"),
             tags = tags,
             since = since,
@@ -982,6 +940,52 @@ object RouterConfigLoader {
             search = if (f.hasPath("search")) f.getString("search") else null,
         )
     }
+
+    /**
+     * A NIP-01 filter's `ids` and `authors`, VALIDATED AS RAW HEX and left
+     * that way.
+     *
+     * These fields are NIP-01's, not ours: the spec says 64-character
+     * lowercase hex, that is what goes on the wire, and a config that writes
+     * one thing while the protocol carries another makes the operator hold two
+     * spellings of the same value in their head. So a `filter { }` block here
+     * is the filter — copy one out of a REQ and it works, paste one from here
+     * into a REQ and it works.
+     *
+     * Bech32 belongs to the settings that are OURS to define, where a
+     * checksummed spelling is a free guard on a value a human typed. It does
+     * not belong inside a NIP-01 object. An `npub1…` here is refused rather
+     * than decoded, because silently accepting it would make this block
+     * "mostly NIP-01" — the worst of both.
+     *
+     * Uppercase is lowercased rather than refused: the spec says lowercase,
+     * the value is unambiguous either way, and nothing downstream cares. An
+     * `nsec1…` is called out by name — that is a PRIVATE key in a file people
+     * commit.
+     */
+    private fun hexKeys(
+        f: Config,
+        field: String,
+        raw: List<String>?,
+    ): List<String>? =
+        raw?.map { entry ->
+            val key = entry.trim().lowercase()
+            require(!key.startsWith("nsec1")) {
+                "router: filter at ${f.origin().description()} has an nsec in `$field` — that is a PRIVATE key, " +
+                    "and it does not belong in a config at all, let alone in a NIP-01 filter"
+            }
+            require(!key.startsWith("npub1") && !key.startsWith("nprofile1") && !key.startsWith("note1") && !key.startsWith("nevent1")) {
+                "router: filter at ${f.origin().description()} has a bech32 `$field` entry — a `filter { }` block " +
+                    "IS a NIP-01 filter and NIP-01 speaks hex, so this one is the 64-character hex. Bech32 stays " +
+                    "in the settings that are ours to define, not inside the protocol's own object"
+            }
+            require(key.length == 64 && key.all { it in "0123456789abcdef" }) {
+                "router: filter at ${f.origin().description()} has `$field` entry '$entry', which is not " +
+                    "64 characters of hex — NIP-01 matches these exactly, so a malformed one selects nothing " +
+                    "and says nothing"
+            }
+            key
+        }
 
     /** HOCON path segments with dots/hashes/special chars must be quoted for get*(). */
     private fun quote(key: String): String = "\"" + key.replace("\\", "\\\\").replace("\"", "\\\"") + "\""

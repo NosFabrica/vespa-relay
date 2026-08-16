@@ -58,7 +58,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.sockets.okhttp.BasicOkHttpWebSocket
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSigner
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.utils.Log
 import com.vitorpamplona.quartz.utils.LogLevel
 import kotlinx.coroutines.CoroutineScope
@@ -70,7 +69,6 @@ import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.sync.Semaphore
-import kotlinx.coroutines.withTimeoutOrNull
 import okhttp3.Dispatcher
 import okhttp3.OkHttpClient
 import java.time.Duration
@@ -111,8 +109,9 @@ class SyncEngine(
     // Disabled by default: the filter answers no to everything and records
     // nothing until SYNC_REFUSED_DIR is set.
     private val refusedIds: RefusedIds = RefusedIds.disabled(),
-    // Answers NIP-42 challenges from upstreams that gate reads behind AUTH.
-    signer: NostrSigner? = null,
+    // Answers NIP-42 challenges from upstreams that gate reads behind AUTH,
+    // and signs every verdict the monitor passes publish.
+    private val signer: NostrSigner? = null,
     // SYNC_WIRE_LOG: "" (errors only) / "sent" / "full".
     wireLogMode: String = "",
     // Fed by PressurePoller from the relay's GET /pressure: ingest yields
@@ -169,20 +168,19 @@ class SyncEngine(
     // over the transport that can reach it.
     private val client = NostrClient(BasicOkHttpWebSocket.Builder { url -> tor?.clientFor(url) ?: okhttp }, scope)
 
-    // NIP-66: watches every connection this client makes, measures round
-    // trips, signs them as kind 30166 into this same store, and hands back a
-    // cheap dead-relay set for the fan-out to skip. Only built when there is
-    // an identity to sign with — publishing is the whole point.
-    private val monitor =
-        signer?.let {
-            RelayMonitor(
-                client = client,
-                store = store,
-                scope = scope,
-                signer = it,
-                onError = { message -> System.err.println("router: $message") },
-            )
-        }
+    // NO PASSIVE NIP-66 WRITER. quartz's `RelayMonitor` used to live here,
+    // attached to this client as a connection listener, signing a kind-30166
+    // for every socket the fan-out opened. Two things followed, both bad. It
+    // was a second publisher of facts the monitor passes already state, and
+    // because a 30166 is addressable per (author, url) and every writer edits
+    // the same record, it rewrote `created_at` on a 5-minute flush for every
+    // relay we were actively syncing — so the record's own clock said "we
+    // talked recently" instead of "we checked this", and every consumer needed
+    // a private freshness convention to work around it.
+    //
+    // The monitor's passes are the only writers now. `created_at` means what
+    // every other NIP-66 consumer takes it to mean, and a stream can bound
+    // verdict freshness with a plain NIP-01 `since`.
 
     // NIP-42: relays that gate reads behind AUTH serve nothing until we answer
     // their challenge — and an unanswered challenge looks exactly like an
@@ -370,7 +368,7 @@ class SyncEngine(
      * that pays for work it throws away.
      */
     private val sockets = RelaySockets(client, pinnedUrls)
-    private val probe = ReachabilityProbe(tor, monitor)
+    private val probe = ReachabilityProbe(tor)
 
     /**
      * What the probe passes measure. Built here rather than reached for through
@@ -383,15 +381,24 @@ class SyncEngine(
             discoveryStreams,
             probe,
             ingest,
-            // Whose unreachability records may hold a candidate out: our own
+            // Whose `dead` verdicts may hold a candidate out: our own
             // signer, plus every monitor npub the config's verdict sources
             // and certified gates name — the operator's trust statements.
+            //
+            // DELIBERATELY NOT the roster's rule. A source that names no
+            // `authors` reads verdicts unscoped, because admitting is a
+            // positive claim that still has to survive a dial. Holding out is
+            // the opposite: unscoped, one rtt-less 30166 from anybody starves
+            // a relay out of the candidate set for good — never dialled, never
+            // re-measured, so the mark never clears. So an unscoped source
+            // contributes nothing here, and the set stays the identities the
+            // operator actually vouched for. See ForeignMonitorTest.
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +
                         discoveryStreams
-                            .flatMap { it.discovery?.sources.orEmpty() }
-                            .flatMap { it.verdicts?.authors.orEmpty() + it.certified?.authors.orEmpty() }
+                            .flatMap { it.discovery?.let { d -> d.sources + d.gatedBy }.orEmpty() }
+                            .flatMap { it.filter.authors.orEmpty() }
                 ).distinct(),
             tor = tor,
             sockets = sockets,
@@ -532,7 +539,6 @@ class SyncEngine(
                 RosterBuilder(
                     store = store,
                     streams = visitStreams,
-                    monitorAuthor = signer?.pubKey,
                     bands = bands,
                     foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                     keepBands = pinnedUrls,
@@ -556,6 +562,23 @@ class SyncEngine(
 
         ingest.start()
         registerProcessors()
+
+        // BEFORE any pass reads a verdict and before the roster's first
+        // rebuild, which is why it blocks: the reads downstream ask only
+        // whether a url holds a verdict, so a record standing under rules this
+        // build no longer applies would be acted on as current. See
+        // [FitnessPass.retireStaleEpochs] for why the retraction belongs here
+        // rather than in every reader.
+        //
+        // Costs one indexed query returning nothing on every boot but the one
+        // after an epoch bump, and on that one it costs a signed edit per
+        // standing verdict — paid once, at a deploy the operator chose, in
+        // exchange for never serving on a verdict we would not re-take.
+        signer?.let { s ->
+            runCatching {
+                runBlocking { FitnessPass.retireStaleEpochs(store, RelayVerdictRecord(store, s), s.pubKey) }
+            }.onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
+        }
 
         // Said at boot, both ways: a transport that is configured but not
         // answering must not be discovered later, one silent onion relay at a
@@ -714,36 +737,11 @@ class SyncEngine(
                 )
             }
         }
-        // NIP-66, and the answer to "is that the same thing as the alias fold":
-        // the records are, the processors are not. This one watches every socket
-        // the client opens and signs what it learns about REACHABILITY; the fold
-        // and the stability gate dial deliberately and write IDENTITY and
-        // USABILITY tags. All three land on the same addressable kind-30166
-        // record per url, which is why a verdict panel shows them together and
-        // why they must not write one at the same moment.
-        monitor?.let { m ->
-            processors.of(REACHABILITY_PROCESSOR).let { p ->
-                p.phase(Processors.WATCHING)
-                p.counts {
-                    listOf(
-                        // Relays it has an observation for at all — the set it
-                        // could publish about.
-                        Processors.Count(
-                            "observed",
-                            m.observer
-                                .all()
-                                .size
-                                .toLong(),
-                        ),
-                        // …and the ones a current unreachability record takes
-                        // out of every fan-out until the TTL lapses. This is the
-                        // number that makes a stream's `knownDead` outcome
-                        // explicable rather than mysterious.
-                        Processors.Count("knownDead", m.deadSet().size.toLong()),
-                    )
-                }
-            }
-        }
+        // There is no `reachability` processor any more. It reported a passive
+        // NIP-66 watcher that no longer exists, and its two numbers already
+        // have homes that mean more: the fitness pass publishes a count per
+        // verdict (`dead` among them), and the urls a `dead` verdict holds out
+        // of a pass are `heldOutDead` on the alias source's own row.
         // Repairs discovered by ingest and handed back to the relays serving
         // them. Registered only where a stream opted in: with neither switch on,
         // the queue refuses everything and a row of zeros would look like a
@@ -903,10 +901,9 @@ class SyncEngine(
             )
             // Named, because "16,248 skipped" says nothing about which corner
             // of the network we stopped looking at.
-            monitor?.deadSet()?.takeIf { it.isNotEmpty() }?.let { dead ->
+            world.lastDerivation.heldOutDead.takeIf { it > 0 }?.let { dead ->
                 System.err.println(
-                    "router: health ${dead.size} relay(s) carry current NIP-66 unreachability records (our own hold candidates out)" +
-                        " (top: ${dead.take(3).joinToString { it.url }})",
+                    "router: health $dead relay(s) carry a current `dead` verdict of ours and are held out of the probe passes",
                 )
             }
         }
@@ -951,16 +948,9 @@ class SyncEngine(
         // The same reasoning one level finer — a sweep killed between windows
         // resumes at the window it reached, not at the top of the range.
         runCatching { sweepState.flush() }
-        // Bounded flush of the monitor's liveness records: the engine being
-        // unreachable is a normal way for a relay to be going down, and that
-        // client has no read deadline — unbounded would hang exactly when it
-        // is most likely to.
-        runCatching {
-            runBlocking {
-                withTimeoutOrNull(SHUTDOWN_FLUSH_MS) { monitor?.flush() }
-            }
-        }
-        runCatching { monitor?.close() }
+        // No monitor flush here any more: the passes write their verdicts
+        // synchronously as they measure, so there is no buffered liveness to
+        // lose on the way down.
         runCatching { authenticator?.destroy() }
         // Workers before transport: cancelled visits and tails stop touching
         // the client before it closes, instead of racing it and counting
@@ -1009,15 +999,11 @@ class SyncEngine(
 
         /** The rotating pool — roster, tails, audits, visits. See [VisitPool]. */
         const val VISITS_PROCESSOR = "visits"
-        const val REACHABILITY_PROCESSOR = "reachability"
         const val INGEST_PROCESSOR = "ingest"
         const val HEAL_PROCESSOR = "heal"
         const val PUSH_PROCESSOR = "upstreamPush"
 
         private const val MAX_CONCURRENT_SOCKETS = 1024
         private const val MAX_CONCURRENT_SOCKETS_PER_HOST = 20
-
-        /** How long a shutdown will wait on the monitor's last write before giving up. */
-        private const val SHUTDOWN_FLUSH_MS = 5_000L
     }
 }

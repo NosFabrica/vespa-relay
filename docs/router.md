@@ -816,7 +816,7 @@ Two pairs in there are deliberately not one number, because each pair answers
 | outcome | dialled? | retried |
 |---|---|---|
 | `hostStruckOut` | no | **next cycle** — a strike is cycle-local and nothing about it persists |
-| `knownDead` | no | when a signed NIP-66 unreachability record ages past its TTL (24h by quartz's default), or immediately if anything on its host delivers |
+| `knownDead` | no | when our own signed `dead` verdict ages past `StreamWorld.DEAD_TTL_SECONDS` (24h), or immediately if anything on its host delivers |
 | `noRoute` | no — the TCP pre-probe was refused | next cycle |
 | `torUnavailable` | no — *our* proxy was down | as soon as the SOCKS port answers, within the running cycle |
 | `unreachable` | yes, and it never answered | next cycle; this is the only one published about |
