@@ -98,6 +98,13 @@ internal class VisitPool(
     private val ingest: IngestPipeline,
     private val pager: NegentropyPager,
     private val healer: Healer,
+    /**
+     * The deleteMissing comparison, run in the audit slot of a retracting
+     * stream's asks — see [RetractionAudit]. Null for callers with no
+     * refused-ids plumbing (the probes): their retracting asks audit nothing
+     * and delete nothing, loudly ordinary.
+     */
+    private val retraction: RetractionAudit? = null,
     private val sockets: RelaySockets,
     private val tor: TorTransport?,
     private val scope: CoroutineScope,
@@ -156,6 +163,15 @@ internal class VisitPool(
     /** url → the asks that want it, rebuilt on the roster clock. */
     @Volatile
     private var roster: Map<NormalizedRelayUrl, List<Ask>> = emptyMap()
+
+    /**
+     * Per stream: authors the roster found at MORE THAN ONE relay. One
+     * relay's empty answer does not retract what a sibling relay may still
+     * be serving, so the retraction audit never judges their asks — the same
+     * rule the legacy cycle applied, computed here on the roster clock.
+     */
+    @Volatile
+    private var sharedAuthors: Map<String, Set<String>> = emptyMap()
 
     /** One certified scan's discovery, held for its stream's `refreshSeconds` — a store walk is not a poll. */
     private class ScannedList(
@@ -312,8 +328,9 @@ internal class VisitPool(
                 // auditsRun's total. A deep history's audit holds a worker for
                 // minutes, and without this the only trace was one unit of
                 // `visiting` that could not be told from a catch-up.
-                Processors.Count("auditing", ongoing.values.count { it.doing == STAGE_AUDITING }.toLong()),
+                Processors.Count("auditing", ongoing.values.count { it.doing == STAGE_AUDITING || it.doing == STAGE_RETRACTING }.toLong()),
                 Processors.Count("auditsRun", audits.get()),
+                Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
                 Processors.Count("abortedVisits", aborted.get()),
                 Processors.Count("evictedTails", tailsEvicted.get()),
                 Processors.Count("poolReceived", downloaded.get()),
@@ -371,6 +388,7 @@ internal class VisitPool(
 
     private suspend fun rebuildRoster() {
         val next = HashMap<NormalizedRelayUrl, MutableList<Ask>>()
+        val shared = HashMap<String, Set<String>>()
 
         fun want(
             url: NormalizedRelayUrl,
@@ -406,11 +424,17 @@ internal class VisitPool(
                 for (relay in certified) want(relay.url, Ask(stream, stream.filter))
             }
             if (dynamic.scanSources.isNotEmpty()) {
+                val urlsByAuthor = HashMap<String, MutableSet<NormalizedRelayUrl>>()
                 for (relay in certifiedScan(stream, dynamic)) {
-                    for (filter in asksOf(stream.filter, relay)) want(relay.url, Ask(stream, filter))
+                    for (filter in asksOf(stream.filter, relay)) {
+                        want(relay.url, Ask(stream, filter))
+                        filter.authors?.forEach { urlsByAuthor.getOrPut(it) { mutableSetOf() } += relay.url }
+                    }
                 }
+                shared[stream.name] = urlsByAuthor.filterValues { it.size > 1 }.keys
             }
         }
+        sharedAuthors = shared
         val previous = roster.keys
         roster = next
         // A relay the monitor stopped certifying loses its tail and its socket
@@ -625,6 +649,14 @@ internal class VisitPool(
     ) {
         val stream = ask.stream
         val verifySeconds = stream.verifySeconds ?: return
+        // A retracting stream's audit IS the deleteMissing comparison: the
+        // same full-history reconcile, plus the licence to act on what we
+        // hold that the provider no longer serves. The ordinary sweep would
+        // double the round trips to say half as much.
+        if (stream.deleteMissing != DeleteMissing.OFF) {
+            retractionIfDue(ask, url, verifySeconds)
+            return
+        }
         val now = nowSeconds()
         val band = bands.band(stream.name, url, ask.filter)
         if (!auditDue(band?.fullAt ?: 0L, now, verifySeconds)) return
@@ -679,6 +711,45 @@ internal class VisitPool(
             "router: audit ${stream.name} ${url.url} — $received event(s) recovered, " +
                 (if (outcome.complete) "history verified" else "incomplete (negentropy usable: ${outcome.negentropyUsable})"),
         )
+    }
+
+    /**
+     * The retraction audit for one ask, on the same `verifySeconds` clock as
+     * every other audit — due when the OWNED ask's band ages out, because the
+     * reconcile is what stamps it. See [RetractionAudit] for what runs.
+     */
+    private suspend fun retractionIfDue(
+        ask: Ask,
+        url: NormalizedRelayUrl,
+        verifySeconds: Long,
+    ) {
+        val retraction = retraction ?: return
+        val stream = ask.stream
+        val ownedKinds =
+            ask.filter.kinds
+                .orEmpty()
+                .filter { it in stream.ownedKinds }
+        if (ownedKinds.isEmpty()) return
+        val ownedAsk = ask.filter.copy(kinds = ownedKinds)
+        val band = bands.band(stream.name, url, ownedAsk)
+        if (!auditDue(band?.fullAt ?: 0L, nowSeconds(), verifySeconds)) return
+        val o = ongoing[url]
+        o?.doing = STAGE_RETRACTING
+        retraction.reconcileAndDelete(
+            stream,
+            url,
+            ask.filter,
+            sharedAuthors[stream.name].orEmpty(),
+            onActivity = { o?.lastActivityMs = System.currentTimeMillis() },
+        ) { event ->
+            downloaded.incrementAndGet()
+            yieldOf(url).arrived.incrementAndGet()
+            o?.let {
+                it.events.incrementAndGet()
+                it.lastActivityMs = System.currentTimeMillis()
+            }
+        }
+        audits.incrementAndGet()
     }
 
     /**
@@ -757,18 +828,15 @@ internal class VisitPool(
     companion object {
         /**
          * Does [stream] ride the pool? Yes when every relaySource entry
-         * answers to the monitor — a verdict source, or a `certified` scan —
-         * and the stream carries no `deleteMissing`: the retraction
-         * comparison still lives in the legacy engine's cycle, and a stream
-         * silently losing its dry-run on migration would be the worst kind
-         * of regression — one that deletes nothing and says nothing. The
-         * clause moves into the audit with it.
+         * answers to the monitor — a verdict source, or a `certified` scan.
+         * A retracting stream rides too: its `deleteMissing` comparison IS
+         * its audit ([RetractionAudit]), on the `verifySeconds` clock the
+         * loader requires it to set.
          */
         internal fun ridesThePool(stream: SyncStream): Boolean {
             val dynamic = stream.dynamic ?: return false
             return dynamic.sources.isNotEmpty() &&
-                dynamic.sources.all { it.verdicts != null || it.certified != null } &&
-                stream.deleteMissing == DeleteMissing.OFF
+                dynamic.sources.all { it.verdicts != null || it.certified != null }
         }
 
         /**
@@ -825,6 +893,7 @@ internal class VisitPool(
          */
         const val STAGE_PAGING = "paging"
         const val STAGE_AUDITING = "auditing history (negentropy)"
+        const val STAGE_RETRACTING = "reconciling the provider's own records (negentropy)"
 
         /** In-flight rows published per stream — matches the report side's own ceiling. */
         const val MAX_IN_FLIGHT_ROWS = 20

@@ -380,25 +380,12 @@ internal class DeleteMissingSync(
         /** Ids per by-id REQ, and per delete. The store's own bulk chunk. */
         private const val ID_FETCH_CHUNK = 500
 
-        /**
-         * Does this reconcile say the author's owned set was RETRACTED, as
-         * opposed to rewritten, partly dropped, or never held? Only a
-         * retraction may take the attached kinds down with it.
-         *
-         * An addressable record a provider replaces arrives as its old id
-         * retracted and a new id offered, which is why [need] must be zero:
-         * that one field is the whole difference between "this provider
-         * published a fresh score" and "this provider is gone". [mine] > 0
-         * keeps it to real losses — a service we never held scores for has
-         * retracted nothing, whatever its relay serves today — and [windows]
-         * repeats the reconcile-completed check the caller already made,
-         * because the cost of getting this wrong is someone else's profile.
-         */
+        /** One source of truth for the retraction arithmetic — see [RetractionAudit.retracts], the pool-side home it moved to. */
         internal fun retracts(
             mine: Int,
             need: Int,
             have: Int,
             windows: Int,
-        ): Boolean = windows >= 1 && mine > 0 && need == 0 && have == mine
+        ): Boolean = RetractionAudit.retracts(mine, need, have, windows)
     }
 }

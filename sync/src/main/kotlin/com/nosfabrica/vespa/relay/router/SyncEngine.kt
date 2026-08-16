@@ -242,18 +242,11 @@ class SyncEngine(
     private val dynamicStreams = config.dynamicStreams()
 
     /**
-     * The fork's arithmetic: a dynamic stream rides the pool when EVERY
-     * relaySource entry answers to the monitor — a kind-30166 verdict source,
-     * or a scan gated `certified` (whose discovered urls must hold a fresh
-     * verdict, and whose bound authors become one ask each). An UNGATED scan
-     * keeps the legacy pass machinery, as does any mix that includes one —
-     * the union path for the deployment mid-crossing.
-     *
-     * `deleteMissing` also holds a stream back, for now: the retraction
-     * comparison still lives in the legacy engine's cycle, and a stream
-     * silently losing its dry-run on migration would be the worst kind of
-     * regression — one that deletes nothing and says nothing. It moves into
-     * the pool's audit next, and this clause moves with it.
+     * The fork's arithmetic — see [VisitPool.ridesThePool]: every relaySource
+     * entry answers to the monitor, or the stream keeps the legacy pass
+     * machinery (the union path for the deployment mid-crossing). A
+     * retracting stream rides the pool too, its comparison running as its
+     * audit ([RetractionAudit]).
      */
     private val visitStreams = dynamicStreams.filter { VisitPool.ridesThePool(it) }
     private val legacyStreams = dynamicStreams - visitStreams.toSet()
@@ -526,6 +519,9 @@ class SyncEngine(
             monitorAuthor = signer?.pubKey,
         )
 
+    /** The deleteMissing comparison for the pool's retracting asks — see [RetractionAudit]. */
+    private val retraction = RetractionAudit(client, store, bands, ingest, refusedIds)
+
     /** The rotating pool — the visit-mode streams' whole engine. Inert when none are configured. */
     private val visitPool =
         VisitPool(
@@ -535,6 +531,7 @@ class SyncEngine(
             ingest = ingest,
             pager = pager,
             healer = healer,
+            retraction = retraction,
             sockets = sockets,
             tor = tor,
             scope = scope,
@@ -889,8 +886,7 @@ class SyncEngine(
                     ", $open connected" +
                     (if (fatals.get() > 0) ", ${fatals.get()} FATAL error(s) — threads were killed" else "") +
                     (
-                        dynamic.deleted
-                            .get()
+                        (dynamic.deleted.get() + retraction.deleted.get())
                             .takeIf { it > 0 }
                             ?.let { ", $it record(s) DELETED as retracted upstream" } ?: ""
                     ) +

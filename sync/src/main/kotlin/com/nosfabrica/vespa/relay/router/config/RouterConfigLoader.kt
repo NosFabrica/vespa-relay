@@ -224,6 +224,34 @@ object RouterConfigLoader {
 
                 val filter = parseFilter(s.getConfig("filter"))
                 val deleteMissing = parseDeleteMissing(name, s)
+                val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
+                // An hour is the floor because the audit re-reconciles the
+                // WHOLE covered history: a knob under it is a re-walk loop
+                // wearing an audit's name.
+                val verifySeconds = if (s.hasPath("verifySeconds")) s.getLong("verifySeconds").coerceAtLeast(3600L) else null
+                if (deleteMissing != DeleteMissing.OFF) {
+                    // Where the comparison runs decides what the config must
+                    // say. A pool stream's comparison is its audit, so the
+                    // audit's clock is the requirement; a legacy stream's is
+                    // its reconcile, so the mode is. A paged fetch could
+                    // never carry it either way: it asks only outside its
+                    // band, so "not seen" there means "not asked for".
+                    val poolShaped =
+                        dynamic != null && dynamic.sources.isNotEmpty() &&
+                            dynamic.sources.all { it.verdicts != null || it.certified != null }
+                    if (poolShaped) {
+                        require(verifySeconds != null) {
+                            "router: stream '$name' sets deleteMissing on a pool stream without `verifySeconds` — " +
+                                "the retraction comparison runs as the history audit, and that knob is its clock"
+                        }
+                    } else {
+                        require(sync == SyncMode.NEGENTROPY) {
+                            "router: stream '$name' sets deleteMissing with sync = \"${sync.name.lowercase()}\" — it needs sync = \"negentropy\". " +
+                                "A paged fetch asks only outside its band, so \"not seen\" there means \"not asked for\", " +
+                                "and deleting on it would take the whole history below the band"
+                        }
+                    }
+                }
                 SyncStream(
                     name = name,
                     dir = dir,
@@ -231,15 +259,12 @@ object RouterConfigLoader {
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
                     dynamic = dynamic,
-                    sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO,
+                    sync = sync,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
-                    // An hour is the floor because the audit re-reconciles the
-                    // WHOLE covered history: a knob under it is a re-walk loop
-                    // wearing an audit's name.
-                    verifySeconds = if (s.hasPath("verifySeconds")) s.getLong("verifySeconds").coerceAtLeast(3600L) else null,
+                    verifySeconds = verifySeconds,
                 )
             }
         return RouterConfig(
@@ -356,14 +381,6 @@ object RouterConfigLoader {
                     )
                 }
             }
-        if (mode != DeleteMissing.OFF) {
-            val sync = if (s.hasPath("sync")) SyncMode.parse(s.getString("sync")) else SyncMode.AUTO
-            require(sync == SyncMode.NEGENTROPY) {
-                "router: stream '$stream' sets deleteMissing with sync = \"${sync.name.lowercase()}\" — it needs sync = \"negentropy\". " +
-                    "A paged fetch asks only outside its band, so \"not seen\" there means \"not asked for\", " +
-                    "and deleting on it would take the whole history below the band"
-            }
-        }
         return mode
     }
 

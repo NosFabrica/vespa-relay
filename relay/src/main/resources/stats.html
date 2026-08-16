@@ -2134,6 +2134,7 @@ function processorFact(p) {
     if (p.visitsRun) add(`${fmt(p.visitsRun)} visit(s) run`, "visitsRun");
     if (p.auditing) add(`${fmt(p.auditing)} auditing now`, "auditing");
     if (p.auditsRun) add(`${fmt(p.auditsRun)} history audit(s)`, "auditsRun");
+    if (p.retracted) add(`${fmt(p.retracted)} RETRACTED upstream`, "retracted", true);
     if (p.abortedVisits) add(`${fmt(p.abortedVisits)} aborted`, "abortedVisits");
     if (p.evictedTails) add(`${fmt(p.evictedTails)} tail(s) rotated out`, "evictedTails");
     if (p.poolReceived) add(`${short(p.poolReceived)} events in`, "poolReceived");

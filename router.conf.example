@@ -215,6 +215,10 @@ streams {
             }
         ]
         authorsPerLeg = 1
+        # The deleteMissing comparison runs as this stream's history audit —
+        # daily: each (relay, provider) band ages on its own clock, and a
+        # deletion decision deserves the audited full-history reconcile.
+        verifySeconds = 86400
     }
 
     # The content mirror: every public kind worth searching, from every relay

@@ -862,6 +862,13 @@ internal object SyncVocabulary {
                     "this climbs as a trickle — roster over verifySeconds — never a herd.",
             )
             put(
+                "retracted",
+                "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
+                    "retracted scores, and the cascade of a wholly-retracted service's profile. The only number in " +
+                    "the router that goes DOWN, decided only by a completed negentropy comparison on the audit's " +
+                    "clock; a failed reconcile deletes nothing.",
+            )
+            put(
                 "abortedVisits",
                 "Visits ended early because the relay refused with nothing delivered — a CLOSED, an auth wall, a " +
                     "dead subscription. One bounded visit is all a wedged relay can cost; whether it stays on the " +

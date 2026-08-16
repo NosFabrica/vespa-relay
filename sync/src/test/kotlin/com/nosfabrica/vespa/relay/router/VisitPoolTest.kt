@@ -26,6 +26,7 @@ import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
 import kotlin.test.assertTrue
 
@@ -81,14 +82,14 @@ class VisitPoolTest {
     }
 
     @Test
-    fun `verdicts and certified scans ride the pool, an ungated scan or a deleteMissing does not`() {
+    fun `verdicts, certified scans and retracting streams ride the pool — an ungated scan does not`() {
         // The fork's arithmetic, spelled as config. Four streams, one per
         // rule: a verdict source rides; a certified scan rides (the gate
         // answers to the monitor, so the pool can trust every url it is
-        // handed); an ungated scan keeps the legacy engine, and so does a
-        // gated one that deletes on absence — the retraction comparison has
-        // not moved into the audit yet, and losing a dry-run silently would
-        // be the worst kind of regression.
+        // handed); a retracting stream rides too, its deleteMissing
+        // comparison running as its verifySeconds audit; only an ungated
+        // scan keeps the legacy engine — the union path for the deployment
+        // mid-crossing.
         val cfg =
             RouterConfigLoader.parse(
                 """
@@ -132,7 +133,38 @@ class VisitPoolTest {
                     }
                     retracting {
                         dir    = "down"
-                        sync   = "negentropy"
+                        filter = { "kinds": [0, 30382] }
+                        deleteMissing = "dryRun"
+                        ownedKinds = [30382]
+                        verifySeconds = 86400
+                        relaySource = [
+                            {
+                                select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
+                                filter = { "kinds": [10040] }
+                                certified = {}
+                            }
+                        ]
+                    }
+                }
+                """.trimIndent(),
+            )
+        val visit = cfg.streams.filter { VisitPool.ridesThePool(it) }
+        // As a SET: HOCON hands back a map, and the block order is not a promise.
+        assertEquals(setOf("pure", "gatedScan", "retracting"), visit.map { it.name }.toSet())
+        assertEquals(604_800L, visit.single { it.name == "pure" }.verifySeconds)
+    }
+
+    @Test
+    fun `a retracting pool stream must say when its comparison runs`() {
+        // The deleteMissing comparison rides the verifySeconds audit, so a
+        // pool-shaped retracting stream without the knob has no clock for the
+        // one decision that destroys data — refused where it is typed.
+        assertFailsWith<IllegalArgumentException> {
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    s {
+                        dir    = "down"
                         filter = { "kinds": [0, 30382] }
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
@@ -147,10 +179,7 @@ class VisitPoolTest {
                 }
                 """.trimIndent(),
             )
-        val visit = cfg.streams.filter { VisitPool.ridesThePool(it) }
-        // As a SET: HOCON hands back a map, and the block order is not a promise.
-        assertEquals(setOf("pure", "gatedScan"), visit.map { it.name }.toSet())
-        assertEquals(604_800L, visit.single { it.name == "pure" }.verifySeconds)
+        }
     }
 
     @Test

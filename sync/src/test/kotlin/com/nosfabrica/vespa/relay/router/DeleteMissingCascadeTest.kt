@@ -35,19 +35,19 @@ class DeleteMissingCascadeTest {
         // We held 40 scores, the provider's own relay now serves none of them
         // and offers nothing in their place. That is the case the cascade
         // exists for.
-        assertTrue(DeleteMissingSync.retracts(mine = 40, need = 0, have = 40, windows = 3))
+        assertTrue(RetractionAudit.retracts(mine = 40, need = 0, have = 40, windows = 3))
 
         // The ordinary republish, and the reason `need` is in the test at all:
         // an addressable score REPLACED gets a new id, so the old ids come
         // back as ours-only. Same `have == mine`, entirely different event.
-        assertFalse(DeleteMissingSync.retracts(mine = 40, need = 40, have = 40, windows = 3))
-        assertFalse(DeleteMissingSync.retracts(mine = 40, need = 1, have = 40, windows = 3))
+        assertFalse(RetractionAudit.retracts(mine = 40, need = 40, have = 40, windows = 3))
+        assertFalse(RetractionAudit.retracts(mine = 40, need = 1, have = 40, windows = 3))
 
         // Retracting some subjects is routine — a scammer scored and dropped.
         // The service is alive and keeps its profile.
-        assertFalse(DeleteMissingSync.retracts(mine = 40, need = 0, have = 39, windows = 3))
-        assertFalse(DeleteMissingSync.retracts(mine = 40, need = 0, have = 1, windows = 3))
-        assertFalse(DeleteMissingSync.retracts(mine = 40, need = 0, have = 0, windows = 3))
+        assertFalse(RetractionAudit.retracts(mine = 40, need = 0, have = 39, windows = 3))
+        assertFalse(RetractionAudit.retracts(mine = 40, need = 0, have = 1, windows = 3))
+        assertFalse(RetractionAudit.retracts(mine = 40, need = 0, have = 0, windows = 3))
     }
 
     @Test
@@ -56,15 +56,15 @@ class DeleteMissingCascadeTest {
         // we hold nothing, it serves nothing, and the two agree. Agreement on
         // emptiness is not a withdrawal, and this is the shape that would
         // otherwise delete the profile of every service on its first cycle.
-        assertFalse(DeleteMissingSync.retracts(mine = 0, need = 0, have = 0, windows = 3))
-        assertFalse(DeleteMissingSync.retracts(mine = 0, need = 0, have = 0, windows = 1))
+        assertFalse(RetractionAudit.retracts(mine = 0, need = 0, have = 0, windows = 3))
+        assertFalse(RetractionAudit.retracts(mine = 0, need = 0, have = 0, windows = 1))
     }
 
     @Test
     fun `a reconcile that compared no range decides nothing`() {
         // Zero windows means nothing was compared, so "the relay has none of
         // ours" is an artefact of the reconcile, not an answer from the relay.
-        assertFalse(DeleteMissingSync.retracts(mine = 40, need = 0, have = 40, windows = 0))
-        assertTrue(DeleteMissingSync.retracts(mine = 40, need = 0, have = 40, windows = 1))
+        assertFalse(RetractionAudit.retracts(mine = 40, need = 0, have = 40, windows = 0))
+        assertTrue(RetractionAudit.retracts(mine = 40, need = 0, have = 40, windows = 1))
     }
 }
