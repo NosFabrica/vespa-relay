@@ -39,12 +39,12 @@ class RouterConfExamplesTest {
         )
 
     @Test
-    fun `a static stream seeds the store the dynamic scans read from`() {
+    fun `a static stream seeds the store the discovery scans read from`() {
         // A relaySource stream reads its relays out of events we already hold, so
         // something with hand-written urls has to put the first ones there. Only
-        // static streams can: a store with no relay lists gives every dynamic
+        // static streams can: a store with no relay lists gives every discovery
         // stream an empty fan-out, forever.
-        val static = example.streams.filter { it.dynamic == null }
+        val static = example.streams.filter { it.discovery == null }
         assertTrue(static.isNotEmpty(), "the example needs at least one statically-addressed stream")
         assertTrue(static.any { it.urls.isNotEmpty() }, "a static stream must name real urls")
         assertEquals(
@@ -58,21 +58,21 @@ class RouterConfExamplesTest {
                 .map { it.name }
                 .distinct()
                 .sorted(),
-            "downUpstreams() is the static streams only — a dynamic one resolves its relays at run time",
+            "downUpstreams() is the static streams only — a discovery one resolves its relays at run time",
         )
     }
 
     @Test
-    fun `every dynamic scan reads a kind some stream actually mirrors`() {
+    fun `every discovery scan reads a kind some stream actually mirrors`() {
         // The chain in the example is static(10002) -> outbox(10040) -> assertions.
         // A scan for a kind nothing mirrors is a stream that can never fan out,
         // and it fails silently — there is no error, just no relays.
         val mirrored = example.streams.flatMap { it.filter.kinds.orEmpty() }.toSet()
-        example.dynamicStreams().forEach { stream ->
+        example.discoveryStreams().forEach { stream ->
             // Scans only: a verdict source reads the monitor's own kind-30166
             // records, which the monitor WRITES into this store — no stream
             // mirrors them, and none needs to.
-            stream.dynamic!!.scanSources.forEach { source ->
+            stream.discovery!!.scanSources.forEach { source ->
                 source.filter.kinds.orEmpty().forEach { kind ->
                     assertTrue(kind in mirrored, "stream '${stream.name}' scans kind $kind, which no stream mirrors")
                 }
@@ -98,7 +98,7 @@ class RouterConfExamplesTest {
             // is where a user's own events land, which is what an outbox mirror wants.
             // The example says `marker = "write"`, which is sugar for exactly this:
             // marked write, marked empty, or too short to carry a marker at all.
-            assertEquals(1, nip65.index)
+            assertEquals(1, nip65.urlIndex)
             assertEquals(
                 listOf(
                     TagCondition(index = 2, equals = "write"),
@@ -130,7 +130,7 @@ class RouterConfExamplesTest {
             val select = source.selects.single()
             assertEquals(10009, select.kind, "the scan is narrowed to the group list kind")
             assertEquals("group", select.tag)
-            assertEquals(2, select.index, "a `group` tag carries the host relay at element 2, after the id")
+            assertEquals(2, select.urlIndex, "a `group` tag carries the host relay at element 2, after the id")
             assertTrue(select.where.isEmpty(), "a group tag has no marker to test — every entry names a host")
             assertTrue(
                 select.bindings.isEmpty(),
@@ -152,7 +152,7 @@ class RouterConfExamplesTest {
         // stream then asks them for what a group actually holds.
         assertTrue(
             example.streams.any {
-                it.dynamic?.verdictSources?.isNotEmpty() == true &&
+                it.discovery?.verdictSources?.isNotEmpty() == true &&
                     it.filter.kinds
                         .orEmpty()
                         .containsAll(listOf(9, 11, 1111, 39000))
@@ -181,12 +181,12 @@ class RouterConfExamplesTest {
 
     @Test
     fun `the assertions stream names the NIP-85 services it wants`() {
-        val assertions = example.dynamicStreams().first { it.name == "assertions" }
-        val source = assertions.dynamic!!.sources.single()
+        val assertions = example.discoveryStreams().first { it.name == "assertions" }
+        val source = assertions.discovery!!.sources.single()
         assertTrue(assertions.urls.isEmpty(), "a relaySource stream carries no static urls")
         assertEquals(listOf(10040), source.filter.kinds)
         // Every select is a service tag with the url AFTER the provider pubkey.
-        assertTrue(source.selects.all { it.index == 2 })
+        assertTrue(source.selects.all { it.urlIndex == 2 })
         assertTrue(source.selects.any { it.tag == "30382:rank" })
         assertTrue(source.selects.any { it.tag == "30382:followers" })
         // Mirroring 30382 is the point: the scores those services publish.
@@ -215,7 +215,7 @@ class RouterConfExamplesTest {
             "the monitor reads the service tags the assertions stream scans",
         )
         assertTrue(
-            monitor10040.flatMap { it.selects }.all { it.index == 2 },
+            monitor10040.flatMap { it.selects }.all { it.urlIndex == 2 },
             "the service tag carries the url at element 2 — reading 1 would probe provider pubkeys as urls",
         )
     }
@@ -225,8 +225,8 @@ class RouterConfExamplesTest {
         // A dead relay is caught by the client's idle timeout in seconds; the
         // one clock the config owes discovery is how often a scan's list is
         // re-read from the store.
-        example.dynamicStreams().forEach { stream ->
-            assertTrue(stream.dynamic!!.refreshSeconds > 0, "'${stream.name}' needs a refresh period")
+        example.discoveryStreams().forEach { stream ->
+            assertTrue(stream.discovery!!.refreshSeconds > 0, "'${stream.name}' needs a refresh period")
         }
     }
 }

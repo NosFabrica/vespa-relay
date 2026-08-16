@@ -28,7 +28,7 @@ import kotlin.test.assertTrue
  * The verdict vocabulary is a WIRE CONTRACT, not an implementation detail: a
  * stream's whole relay list is the filter `"#s": ["syncable"]` against records
  * this pass signed, and records live for weeks. Renaming a value strands every
- * standing record on the old word — which is [RelayAliasRecord.FITNESS_EPOCH]'s
+ * standing record on the old word — which is [RelayVerdictRecord.FITNESS_EPOCH]'s
  * job to handle, so a rename without an epoch bump is the bug these pins exist
  * to catch.
  */
@@ -36,7 +36,7 @@ class FitnessVocabularyTest {
     @Test
     fun `syncable is the only admitting value, spelled exactly as streams filter for it`() {
         assertEquals("syncable", FitnessPass.Verdict.SYNCABLE.value)
-        assertEquals("s", RelayAliasRecord.STATUS_TAG, "the status tag must stay single-letter — it is the one tag streams can filter on")
+        assertEquals("s", RelayVerdictRecord.STATUS_TAG, "the status tag must stay single-letter — it is the one tag streams can filter on")
     }
 
     @Test

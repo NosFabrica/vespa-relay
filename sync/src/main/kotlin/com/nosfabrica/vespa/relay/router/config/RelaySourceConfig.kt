@@ -258,7 +258,7 @@ data class RelaySource(
  *   everything the filter returned.
  * @param tag the tag name to read, or null for any tag — at the cost of a
  *   stricter url check, see [RelayDiscovery].
- * @param index which element of the tag holds the url. 1 for nearly
+ * @param urlIndex which element of the tag holds the url. 1 for nearly
  *   everything; 2 for NIP-85 service tags and `e`/`p`/`a`/`q` relay hints.
  * @param where conditions on the rest of the tag, see [TagCondition]. The
  *   config's `marker = "write" / "read" / "any"` is sugar that expands into
@@ -267,7 +267,7 @@ data class RelaySource(
 data class RelaySelect(
     val kind: Int?,
     val tag: String?,
-    val index: Int,
+    val urlIndex: Int,
     val where: List<TagCondition> = emptyList(),
     /**
      * Extra NIP-01 filter fields read out of the SAME tag, so the relay this

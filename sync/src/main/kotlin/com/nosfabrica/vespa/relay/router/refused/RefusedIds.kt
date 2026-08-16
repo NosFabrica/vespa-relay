@@ -26,7 +26,7 @@ import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /** What [RefusedIds.record] did with one refusal. */
-enum class Recorded {
+enum class RecordOutcome {
     /** First refusal seen for this id. Downloaded again next time, on purpose. */
     CANDIDATE,
 
@@ -185,9 +185,9 @@ class RefusedIds(
     fun record(
         id: String,
         createdAt: Long,
-    ): Recorded {
+    ): RecordOutcome {
         val epoch = openEpoch(epochOf(createdAt))
-        if (epoch.suppress.contains(id)) return Recorded.ALREADY
+        if (epoch.suppress.contains(id)) return RecordOutcome.ALREADY
         if (epoch.candidate.contains(id)) {
             return when (epoch.suppress.add(id)) {
                 AddResult.FULL -> {
@@ -196,11 +196,11 @@ class RefusedIds(
 
                 else -> {
                     suppressionsAdded.incrementAndGet()
-                    Recorded.SUPPRESSED
+                    RecordOutcome.SUPPRESSED
                 }
             }
         }
-        if (epoch.sealedOff) return Recorded.REFUSED_FULL
+        if (epoch.sealedOff) return RecordOutcome.REFUSED_FULL
         return when (epoch.candidate.add(id)) {
             AddResult.FULL -> {
                 seal(epochOf(createdAt), "candidate")
@@ -208,7 +208,7 @@ class RefusedIds(
 
             else -> {
                 candidatesAdded.incrementAndGet()
-                Recorded.CANDIDATE
+                RecordOutcome.CANDIDATE
             }
         }
     }
@@ -222,10 +222,10 @@ class RefusedIds(
     fun suppressNow(
         id: String,
         createdAt: Long,
-    ): Recorded {
+    ): RecordOutcome {
         val key = epochOf(createdAt)
         val epoch = openEpoch(key)
-        if (epoch.suppress.contains(id)) return Recorded.ALREADY
+        if (epoch.suppress.contains(id)) return RecordOutcome.ALREADY
         return when (epoch.suppress.add(id)) {
             AddResult.FULL -> {
                 seal(key, "suppress")
@@ -233,7 +233,7 @@ class RefusedIds(
 
             else -> {
                 suppressionsAdded.incrementAndGet()
-                Recorded.SUPPRESSED
+                RecordOutcome.SUPPRESSED
             }
         }
     }
@@ -316,8 +316,8 @@ class RefusedIds(
     private fun seal(
         key: Long,
         which: String,
-    ): Recorded {
-        val epoch = epochs[key] ?: return Recorded.REFUSED_FULL
+    ): RecordOutcome {
+        val epoch = epochs[key] ?: return RecordOutcome.REFUSED_FULL
         if (!epoch.sealedOff) {
             epoch.sealedOff = true
             // The table's REAL ceiling, not the configured request. Bucket
@@ -332,7 +332,7 @@ class RefusedIds(
                     "or shorten SYNC_REFUSED_EPOCH_SECONDS.",
             )
         }
-        return Recorded.REFUSED_FULL
+        return RecordOutcome.REFUSED_FULL
     }
 
     private fun openEpoch(key: Long): Epoch =

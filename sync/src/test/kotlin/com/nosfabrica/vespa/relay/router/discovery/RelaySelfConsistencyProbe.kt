@@ -123,7 +123,7 @@ class RelaySelfConsistencyProbe {
                 val pass =
                     ConsistencyPass(
                         consistency = consistency,
-                        record = RelayAliasRecord(store, signer),
+                        record = RelayVerdictRecord(store, signer),
                         probe = probe,
                     )
                 val decided = runBlocking { withTimeoutOrNull(PER_WALK_MS * 3) { pass.measure("live", listOf(url), canDial = { true }) } }

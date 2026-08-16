@@ -71,7 +71,7 @@ class AliasMonitor(
      *
      * Sequential because they share a destination: both [AliasFolding] and
      * [ConsistencyPass] write tags onto the same addressable kind-30166 record
-     * for a url, and [RelayAliasRecord.edit] is a read-modify-write with no
+     * for a url, and [RelayVerdictRecord.edit] is a read-modify-write with no
      * compare-and-set. Two of them writing one url at once would drop whichever
      * tag was written between the other's read and its store — silently, since
      * the result is still a valid signed record that simply says less. Running

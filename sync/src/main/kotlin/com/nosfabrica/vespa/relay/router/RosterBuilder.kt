@@ -144,14 +144,14 @@ internal class RosterBuilder(
             )
         }
         for (stream in streams) {
-            val dynamic = stream.dynamic ?: continue
-            for (source in dynamic.verdictSources) {
+            val discovery = stream.discovery ?: continue
+            for (source in discovery.verdictSources) {
                 val authors = monitorIdentity(source.authors, stream.name, "has a verdict source") ?: continue
-                val certified = syncableFor(authors, source.maxAgeSeconds).filter { it.url !in dynamic.exclude }
+                val certified = syncableFor(authors, source.maxAgeSeconds).filter { it.url !in discovery.exclude }
                 for (relay in certified) want(relay.url, Ask(stream, stream.filter))
             }
-            if (dynamic.scanSources.isNotEmpty()) {
-                for (relay in certifiedScan(stream, dynamic)) {
+            if (discovery.scanSources.isNotEmpty()) {
+                for (relay in certifiedScan(stream, discovery)) {
                     for (filter in asksOf(stream.filter, relay)) {
                         want(relay.url, Ask(stream, filter))
                     }
@@ -213,16 +213,16 @@ internal class RosterBuilder(
      */
     private suspend fun certifiedScan(
         stream: SyncStream,
-        dynamic: RelayDiscoveryConfig,
+        discovery: RelayDiscoveryConfig,
     ): List<DiscoveredRelay> {
         val nowMs = System.currentTimeMillis()
         scans[stream.name]?.takeIf { it.expiresAtMs > nowMs }?.let { return it.relays }
         val perSource =
-            dynamic.scanSources.map { source ->
+            discovery.scanSources.map { source ->
                 source to
                     RelayDiscovery.discover(
                         store,
-                        dynamic.copy(sources = listOf(source)),
+                        discovery.copy(sources = listOf(source)),
                         skip = setOfNotNull(store.relay),
                         allowOnion = tor != null,
                     )
@@ -249,7 +249,7 @@ internal class RosterBuilder(
                         }
                     }
             }
-        val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else dynamic.refreshSeconds * 1000L
+        val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else discovery.refreshSeconds * 1000L
         scans[stream.name] = ScannedList(nowMs + holdMs, relays)
         return relays
     }
@@ -274,10 +274,10 @@ internal class RosterBuilder(
             base: Filter,
             discovered: DiscoveredRelay,
         ): List<Filter> {
-            val authors = discovered.narrow["authors"]
+            val authors = discovered.bindings["authors"]
             if (authors.isNullOrEmpty()) return listOf(discovered.narrowed(base))
             return authors.sorted().map { author ->
-                DiscoveredRelay(discovered.url, discovered.narrow + ("authors" to setOf(author))).narrowed(base)
+                DiscoveredRelay(discovered.url, discovered.bindings + ("authors" to setOf(author))).narrowed(base)
             }
         }
 

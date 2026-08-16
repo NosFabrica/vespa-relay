@@ -59,7 +59,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * The cost of [measure] is bounded by [concurrency] alone — 16 permits, and
  * therefore 16 sockets, however large the candidate set. There is no per-pass
  * total: a pass measures its whole set, worst case first, and every verdict is
- * written down for [RelayAliasRecord.DEFAULT_TTL_SECONDS], so the run is paid
+ * written down for [RelayVerdictRecord.DEFAULT_TTL_SECONDS], so the run is paid
  * once per url per month rather than once per pass. A steady-state
  * pass probes only the urls that appeared since the last one.
  *
@@ -76,7 +76,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class AliasFolding(
     private val aliases: RelayAliases,
-    private val record: RelayAliasRecord,
+    private val record: RelayVerdictRecord,
     private val probe: AliasProbe,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
     /** How long a host that could not be decided is left alone — see [undecidable]. */
@@ -154,7 +154,7 @@ class AliasFolding(
      * it stands. Kept separate from [dial] so that policy is the caller's
      * explicit choice rather than a silent default inside here.
      */
-    data class Cleaned(
+    data class Collapsed(
         /** The urls worth dialling: canonical, plus everything still unmeasured. */
         val dial: List<NormalizedRelayUrl>,
         /** Folded url -> the url that stands in for it. */
@@ -169,14 +169,14 @@ class AliasFolding(
      * Reads back the verdicts already published — by an earlier pass of
      * [measure], an earlier boot, or another router signing with the same key —
      * and collapses the candidate set against them. Everything with no verdict
-     * yet comes back in [Cleaned.dial] and [Cleaned.unmeasured], because the
+     * yet comes back in [Collapsed.dial] and [Collapsed.unmeasured], because the
      * only safe reading of "not measured" is "dial it as it stands".
      *
      * This is the half that runs in front of a fan-out. It must stay cheap: one
      * `#d` query per 500 urls and no network at all.
      */
-    suspend fun apply(candidates: List<NormalizedRelayUrl>): Cleaned {
-        if (candidates.size < 2) return Cleaned(candidates, emptyMap(), candidates)
+    suspend fun apply(candidates: List<NormalizedRelayUrl>): Collapsed {
+        if (candidates.size < 2) return Collapsed(candidates, emptyMap(), candidates)
         // What a previous pass — this boot or another — already measured.
         adopt(candidates)
         return collapse(candidates)
@@ -768,7 +768,7 @@ class AliasFolding(
                         for ((alias, v) in verdicts) {
                             runCatching {
                                 // Each verdict published with the argument it was
-                                // actually made on — see [RelayAliasRecord.publishSecureTwin].
+                                // actually made on — see [RelayVerdictRecord.publishSecureTwin].
                                 if (v.secureTwin) {
                                     // Both flags can be set at once — a `ws://`
                                     // pair on a NIP-29 host — and the twin form
@@ -957,7 +957,7 @@ class AliasFolding(
         val secureTwin: Boolean,
         /**
          * Decided on the host's list of groups rather than on a slice of its
-         * feed — see [RelayAliasRecord.publishGroupList]. Same reason
+         * feed — see [RelayVerdictRecord.publishGroupList]. Same reason
          * [secureTwin] is carried: it changes nothing about the fold and
          * everything about the sentence published with it.
          */
@@ -1016,10 +1016,10 @@ class AliasFolding(
      * Pure — no store, no network — so both halves end the same way and the
      * numbers [measure] logs are the numbers the next [apply] will produce.
      */
-    private fun collapse(candidates: List<NormalizedRelayUrl>): Cleaned {
+    private fun collapse(candidates: List<NormalizedRelayUrl>): Collapsed {
         val dial = candidates.map { aliases.canonicalOf(it) }.distinct()
         val map = candidates.filter { aliases.canonicalOf(it) != it }.associateWith { aliases.canonicalOf(it) }
-        return Cleaned(dial, map, dial.filter { !aliases.measured(it) })
+        return Collapsed(dial, map, dial.filter { !aliases.measured(it) })
     }
 
     companion object {
@@ -1065,7 +1065,7 @@ class AliasFolding(
          * seconds, short enough that a relay which was merely having a bad
          * afternoon — mid-restart, briefly serving a shuffled window — is back
          * in the fold within a day rather than waiting out
-         * [RelayAliasRecord.DEFAULT_TTL_SECONDS].
+         * [RelayVerdictRecord.DEFAULT_TTL_SECONDS].
          *
          * Deliberately far shorter than that TTL: this is the weakest thing the
          * fold records, so it gets the shortest memory. A verdict is a

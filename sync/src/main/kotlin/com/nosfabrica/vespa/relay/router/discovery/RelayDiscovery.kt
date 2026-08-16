@@ -35,12 +35,12 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired
- * it with. [narrow] is empty for a select that binds nothing but the url, and
+ * it with. [bindings] is empty for a select that binds nothing but the url, and
  * the stream then asks this relay for its whole filter.
  */
 data class DiscoveredRelay(
     val url: NormalizedRelayUrl,
-    val narrow: Map<String, Set<String>> = emptyMap(),
+    val bindings: Map<String, Set<String>> = emptyMap(),
 ) {
     /**
      * [base] narrowed by everything this relay was paired with. Values are
@@ -49,13 +49,13 @@ data class DiscoveredRelay(
      * and re-walk history for nothing.
      */
     fun narrowed(base: Filter): Filter {
-        if (narrow.isEmpty()) return base
+        if (bindings.isEmpty()) return base
         var f = base
-        narrow["authors"]?.let { f = f.copy(authors = it.sorted()) }
-        narrow["ids"]?.let { f = f.copy(ids = it.sorted()) }
-        narrow["kinds"]?.let { v -> f = f.copy(kinds = v.mapNotNull { it.toIntOrNull() }.sorted()) }
+        bindings["authors"]?.let { f = f.copy(authors = it.sorted()) }
+        bindings["ids"]?.let { f = f.copy(ids = it.sorted()) }
+        bindings["kinds"]?.let { v -> f = f.copy(kinds = v.mapNotNull { it.toIntOrNull() }.sorted()) }
         // Filter.tags keys drop the '#' — `#p` on the wire is `p` in the map.
-        val tags = narrow.filterKeys { it.startsWith("#") }
+        val tags = bindings.filterKeys { it.startsWith("#") }
         if (tags.isNotEmpty()) {
             f = f.copy(tags = (f.tags ?: emptyMap()) + tags.map { (k, v) -> k.substring(1) to v.sorted() })
         }
@@ -130,7 +130,7 @@ object RelayDiscovery {
                         semantics.distinctTagValues(
                             filter = filter,
                             tagName = select.tag!!,
-                            valueIndex = select.index,
+                            valueIndex = select.urlIndex,
                             // The whole tag, so a positional condition on
                             // another element still applies (NIP-65's marker).
                             where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
@@ -230,14 +230,14 @@ object RelayDiscovery {
                 Filter(
                     kinds = listOf(RelayDiscoveryEvent.KIND),
                     authors = monitorAuthors,
-                    tags = mapOf(RelayAliasRecord.STATUS_TAG to listOf(FitnessPass.Verdict.SYNCABLE.value)),
+                    tags = mapOf(RelayVerdictRecord.STATUS_TAG to listOf(FitnessPass.Verdict.SYNCABLE.value)),
                 ),
             )
         val floor = now - maxAgeSeconds
         return records
             .asSequence()
             .filter { event ->
-                val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayAliasRecord.STATUS_TAG }
+                val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayVerdictRecord.STATUS_TAG }
                 // The store's `authors` filter is the trust boundary; this
                 // one string compare re-states it on the returned events, so
                 // a query layer that ever treated `authors` as a hint rather
@@ -245,7 +245,7 @@ object RelayDiscovery {
                 event.pubKey in monitorAuthors &&
                     s != null &&
                     s[1] == FitnessPass.Verdict.SYNCABLE.value &&
-                    s.getOrNull(4) == RelayAliasRecord.FITNESS_EPOCH &&
+                    s.getOrNull(4) == RelayVerdictRecord.FITNESS_EPOCH &&
                     (s.getOrNull(3)?.toLongOrNull() ?: 0L) >= floor
             }.mapNotNull { event ->
                 event.tags
@@ -385,7 +385,7 @@ object RelayDiscovery {
         for (tag in event.tags) {
             for (select in selects) {
                 if (select.kind != null && select.kind != event.kind) continue
-                if (tag.size <= select.index) continue
+                if (tag.size <= select.urlIndex) continue
                 if (select.tag != null && tag[0] != select.tag) continue
                 seen++
                 if (seen > cap) return true
@@ -440,13 +440,13 @@ object RelayDiscovery {
         onMatch: (NormalizedRelayUrl, Map<String, String>) -> Unit,
     ) {
         for (tag in event.tags) {
-            if (tag.size <= select.index) continue
+            if (tag.size <= select.urlIndex) continue
             if (select.tag != null && tag[0] != select.tag) continue
             // `where` entries OR together and each ANDs its own fields.
             if (select.where.isNotEmpty() && select.where.none { it.matches(tag) }) continue
             // With no tag name to go on, only take values that already say
             // they are a relay.
-            val url = normalize(tag[select.index], allowOnion) ?: continue
+            val url = normalize(tag[select.urlIndex], allowOnion) ?: continue
             if (select.bindings.isEmpty()) {
                 onMatch(url, emptyMap())
                 continue

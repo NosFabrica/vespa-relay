@@ -53,13 +53,13 @@ class SyncableRelaysTest {
     fun `admits exactly the fresh syncable verdicts our monitor signed`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             record.publishFitness(good, "syncable", "answered 20 events at a settled anchor", pageable = true to "all at or below", nip77 = null)
             record.publishFitness(dead, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
             // A stranger's certificate for a url our monitor never passed: the
             // authors filter is what keeps somebody else's 30166s from
             // steering our fan-out.
-            RelayAliasRecord(store, stranger).publishFitness(forged, "syncable", "trust me", pageable = null, nip77 = null)
+            RelayVerdictRecord(store, stranger).publishFitness(forged, "syncable", "trust me", pageable = null, nip77 = null)
 
             val admitted =
                 RelayDiscovery.syncable(
@@ -68,14 +68,14 @@ class SyncableRelaysTest {
                     maxAgeSeconds = 3600,
                 )
             assertEquals(listOf(good), admitted.map { it.url })
-            assertEquals(emptyMap(), admitted.single().narrow, "a certified relay carries no narrow — the ask is the stream's whole filter")
+            assertEquals(emptyMap(), admitted.single().bindings, "a certified relay carries no narrow — the ask is the stream's whole filter")
         }
 
     @Test
     fun `a stale verdict admits nothing, however fresh the record's own clock is`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             record.publishFitness(stale, "syncable", "was fine last week", pageable = null, nip77 = null)
 
             // The freshness bound is read off the tag's measured-at stamp
@@ -97,7 +97,7 @@ class SyncableRelaysTest {
     fun `the certified gate holds out unverdicted urls and lets the narrows ride through`() =
         runBlocking {
             val store = newStore()
-            RelayAliasRecord(store, signer).publishFitness(good, "syncable", "answers and pages", pageable = null, nip77 = null)
+            RelayVerdictRecord(store, signer).publishFitness(good, "syncable", "answers and pages", pageable = null, nip77 = null)
 
             // What a gated 10040 scan hands over: the pairing is the point —
             // each relay narrowed to its provider — and the gate must filter
@@ -105,8 +105,8 @@ class SyncableRelaysTest {
             val provider = "a".repeat(64)
             val scanned =
                 listOf(
-                    DiscoveredRelay(good, narrow = mapOf("authors" to setOf(provider))),
-                    DiscoveredRelay(dead, narrow = mapOf("authors" to setOf(provider))),
+                    DiscoveredRelay(good, bindings = mapOf("authors" to setOf(provider))),
+                    DiscoveredRelay(dead, bindings = mapOf("authors" to setOf(provider))),
                 )
             val gated =
                 RelayDiscovery.certifiedOnly(
@@ -116,7 +116,7 @@ class SyncableRelaysTest {
                     maxAgeSeconds = 3600,
                 )
             assertEquals(listOf(good), gated.map { it.url }, "no fresh verdict, no dial — however many 10040s name the url")
-            assertEquals(mapOf("authors" to setOf(provider)), gated.single().narrow, "the (relay, provider) pairing survives the gate")
+            assertEquals(mapOf("authors" to setOf(provider)), gated.single().bindings, "the (relay, provider) pairing survives the gate")
         }
 
     @Test
@@ -128,7 +128,7 @@ class SyncableRelaysTest {
             // change. FITNESS_EPOCH is the lever that forces the re-measure;
             // this pin is what makes forgetting to read it a test failure
             // instead of a month of stale admissions.
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             record.publishFitness(good, "syncable", "current rules", pageable = null, nip77 = null)
             val fresh =
                 RelayDiscovery.syncable(

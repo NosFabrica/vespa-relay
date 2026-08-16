@@ -300,10 +300,10 @@ class StreamPhasesTest {
         // published nothing at all — and with a list it does not: they are two
         // passes with two partitions, and `owner` says which is which.
         val p = StreamPhases()
-        val dynamic = CycleTally(discovered = 300, foldedOntoAnother = 0, hosts = 300)
+        val discovery = CycleTally(discovered = 300, foldedOntoAnother = 0, hosts = 300)
         val static = CycleTally(discovered = 2, foldedOntoAnother = 0, hosts = 2)
 
-        p.beginCycle("both", StreamPhases.DYNAMIC, 1, dynamic, nowSeconds = 1_000)
+        p.beginCycle("both", StreamPhases.DYNAMIC, 1, discovery, nowSeconds = 1_000)
         p.beginCycle("both", StreamPhases.STATIC, 1, static, nowSeconds = 1_010)
         assertEquals(
             listOf(300 to StreamPhases.DYNAMIC, 2 to StreamPhases.STATIC),

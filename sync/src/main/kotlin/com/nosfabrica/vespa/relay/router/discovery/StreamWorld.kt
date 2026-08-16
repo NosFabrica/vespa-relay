@@ -186,7 +186,7 @@ internal class StreamWorld(
 
     /** Every derivation the world runs: each stream's parsed sources, plus the monitor's own block. */
     private fun derivations(): List<Pair<String, RelayDiscoveryConfig>> =
-        streams.mapNotNull { s -> s.dynamic?.let { s.name to it } } +
+        streams.mapNotNull { s -> s.discovery?.let { s.name to it } } +
             listOfNotNull(monitorDiscovery?.let { "monitor sources" to it })
 
     /**
@@ -201,17 +201,17 @@ internal class StreamWorld(
         bound: (RelayDiscoveryConfig) -> RelayDiscoveryConfig,
         onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
     ) {
-        for ((label, dynamic) in derivations()) {
+        for ((label, discovery) in derivations()) {
             val found =
                 try {
-                    RelayDiscovery.discover(store, bound(dynamic), skip = setOfNotNull(store.relay), allowOnion = tor != null)
+                    RelayDiscovery.discover(store, bound(discovery), skip = setOfNotNull(store.relay), allowOnion = tor != null)
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
                     System.err.println("router: $what could not derive $label: ${e.message}")
                     emptyList()
                 }
-            found.forEach { onUrl(it.url, it.url !in dynamic.exclude && it.url != store.relay) }
+            found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
         }
     }
 
@@ -227,8 +227,8 @@ internal class StreamWorld(
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
         val dead = ownDead()
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
-        derive("fast lane", { dynamic ->
-            dynamic.copy(sources = dynamic.sources.map { it.copy(filter = it.filter.copy(since = since)) })
+        derive("fast lane", { discovery ->
+            discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
         }) { url, kept -> if (kept) fresh += url }
         return fresh.filterNot { it in dead }
     }

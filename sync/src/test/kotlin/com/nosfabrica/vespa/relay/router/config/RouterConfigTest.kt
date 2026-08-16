@@ -253,7 +253,7 @@ class RouterConfigTest {
                 """.trimIndent(),
             )
 
-        val outbox = cfg.streams.first { it.name == "outbox" }.dynamic!!
+        val outbox = cfg.streams.first { it.name == "outbox" }.discovery!!
         assertEquals(3600L, outbox.refreshSeconds)
         assertEquals(listOf("wss://skip.example/"), outbox.exclude.urls.map { it.url })
         assertEquals(2, outbox.sources.size)
@@ -267,13 +267,13 @@ class RouterConfigTest {
         val nip65 = lists.selects[0]
         assertEquals(10002, nip65.kind)
         assertEquals("r", nip65.tag)
-        assertEquals(1, nip65.index)
+        assertEquals(1, nip65.urlIndex)
         assertEquals(nip65Write, nip65.where)
 
         // A NIP-85 service tag, named exactly, with the url after the pubkey.
         val provider = lists.selects[1]
         assertEquals("30382:rank", provider.tag)
-        assertEquals(2, provider.index)
+        assertEquals(2, provider.urlIndex)
         assertTrue(provider.where.isEmpty())
 
         assertNull(lists.selects[2].kind, "no kind = every event the filter collected")
@@ -284,7 +284,7 @@ class RouterConfigTest {
         assertEquals(1000, hints.filter.limit)
         assertEquals(listOf("abc"), hints.filter.authors)
 
-        val assertions = cfg.streams.first { it.name == "assertions" }.dynamic!!
+        val assertions = cfg.streams.first { it.name == "assertions" }.discovery!!
         assertNull(
             assertions.sources
                 .single()
@@ -296,7 +296,7 @@ class RouterConfigTest {
         assertEquals(21_600L, assertions.refreshSeconds) // the built-in defaults
 
         // Dynamic streams have no static urls, so they are not down/up upstreams.
-        assertEquals(2, cfg.dynamicStreams().size)
+        assertEquals(2, cfg.discoveryStreams().size)
         assertTrue(cfg.downUpstreams().isEmpty())
         assertTrue(cfg.upUpstreams().isEmpty())
     }
@@ -324,7 +324,7 @@ class RouterConfigTest {
         val exclude =
             cfg.streams
                 .single()
-                .dynamic!!
+                .discovery!!
                 .exclude
         // No regex metacharacter (a dot is not one), so the first two entries
         // are plain urls: normalized like a `urls` entry — covering the
@@ -450,9 +450,9 @@ class RouterConfigTest {
         assertEquals(
             0,
             cfg
-                .dynamicStreams()
+                .discoveryStreams()
                 .single()
-                .dynamic!!
+                .discovery!!
                 .sources
                 .single()
                 .filter.limit,
@@ -470,9 +470,9 @@ class RouterConfigTest {
         val cfg = RouterConfigLoader.parse(sourced("""{ "kinds": [10002], "since": 0 }"""))
         assertNull(
             cfg
-                .dynamicStreams()
+                .discoveryStreams()
                 .single()
-                .dynamic!!
+                .discovery!!
                 .sources
                 .single()
                 .filter.since,
@@ -482,9 +482,9 @@ class RouterConfigTest {
         assertEquals(
             1577836800L,
             real
-                .dynamicStreams()
+                .discoveryStreams()
                 .single()
-                .dynamic!!
+                .discovery!!
                 .sources
                 .single()
                 .filter.since,
@@ -543,9 +543,9 @@ class RouterConfigTest {
             )
         val select =
             cfg
-                .dynamicStreams()
+                .discoveryStreams()
                 .single()
-                .dynamic!!
+                .discovery!!
                 .sources
                 .single()
                 .selects
@@ -566,9 +566,9 @@ class RouterConfigTest {
         fun whereOf(select: String) =
             RouterConfigLoader
                 .parse(sourced("""{ "kinds": [10002] }""", select))
-                .dynamicStreams()
+                .discoveryStreams()
                 .single()
-                .dynamic!!
+                .discovery!!
                 .sources
                 .single()
                 .selects
@@ -813,16 +813,16 @@ class RouterConfigTest {
         fun selectOf(select: String) =
             RouterConfigLoader
                 .parse(sourced("""{ "kinds": [10040] }""", select))
-                .dynamicStreams()
+                .discoveryStreams()
                 .single()
-                .dynamic!!
+                .discovery!!
                 .sources
                 .single()
                 .selects
                 .single()
 
         val nip85 = selectOf("""{ tag = "30382:rank", relay = 2, authors = 1 }""")
-        assertEquals(2, nip85.index, "`relay` names the slot `index` used to")
+        assertEquals(2, nip85.urlIndex, "`relay` names the slot `index` used to")
         assertEquals(mapOf("authors" to Slot.OfTag(1)), nip85.bindings)
 
         // The scanned event's own author — the outbox model, where the author is
@@ -890,8 +890,8 @@ class RouterConfigTest {
                     "SYNC_DYNAMIC_REFRESH_SECONDS" to "900",
                 ),
             )
-        val dynamic = cfg!!.dynamicStreams().single().dynamic!!
-        assertEquals(900L, dynamic.refreshSeconds)
+        val discovery = cfg!!.discoveryStreams().single().discovery!!
+        assertEquals(900L, discovery.refreshSeconds)
     }
 
     @Test
@@ -1147,9 +1147,9 @@ class RouterConfigTest {
                 }
                 """.trimIndent(),
             )
-        val dynamic = cfg.streams.single().dynamic!!
-        assertEquals(emptyList(), dynamic.scanSources)
-        assertEquals(7200L, dynamic.verdictSources.single().maxAgeSeconds)
+        val discovery = cfg.streams.single().discovery!!
+        assertEquals(emptyList(), discovery.scanSources)
+        assertEquals(7200L, discovery.verdictSources.single().maxAgeSeconds)
     }
 
     @Test
@@ -1170,7 +1170,7 @@ class RouterConfigTest {
             VerdictSource.DEFAULT_MAX_AGE_SECONDS,
             bare.streams
                 .single()
-                .dynamic!!
+                .discovery!!
                 .verdictSources
                 .single()
                 .maxAgeSeconds,
@@ -1214,7 +1214,7 @@ class RouterConfigTest {
         val namedSource =
             named.streams
                 .single()
-                .dynamic!!
+                .discovery!!
                 .sources
                 .single()
         assertEquals(listOf("0".repeat(63) + "1"), namedSource.verdicts!!.authors)
@@ -1227,7 +1227,7 @@ class RouterConfigTest {
             emptyList(),
             bare.streams
                 .single()
-                .dynamic!!
+                .discovery!!
                 .verdictSources
                 .single()
                 .authors,
@@ -1384,7 +1384,7 @@ class RouterConfigTest {
         val source =
             gated.streams
                 .single()
-                .dynamic!!
+                .discovery!!
                 .scanSources
                 .single()
         assertEquals(7200L, source.certified!!.maxAgeSeconds)
@@ -1404,7 +1404,7 @@ class RouterConfigTest {
             VerdictSource.DEFAULT_MAX_AGE_SECONDS,
             bare.streams
                 .single()
-                .dynamic!!
+                .discovery!!
                 .scanSources
                 .single()
                 .certified!!
@@ -1440,8 +1440,8 @@ class RouterConfigTest {
                 }
                 """.trimIndent(),
             )
-        val dynamic = cfg.streams.single().dynamic!!
-        assertEquals(7200L, dynamic.verdictSources.single().maxAgeSeconds)
-        assertEquals(1, dynamic.scanSources.size, "certified scans ride alongside the verdicts in one stream")
+        val discovery = cfg.streams.single().discovery!!
+        assertEquals(7200L, discovery.verdictSources.single().maxAgeSeconds)
+        assertEquals(1, discovery.scanSources.size, "certified scans ride alongside the verdicts in one stream")
     }
 }

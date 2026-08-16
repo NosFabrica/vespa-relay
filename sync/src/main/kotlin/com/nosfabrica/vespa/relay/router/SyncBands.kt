@@ -104,7 +104,7 @@ class SyncBands(
 
     @Volatile private var flusher: Thread? = null
 
-    private val streams = ConcurrentHashMap<String, SyncCoverage>()
+    private val coverageByStream = ConcurrentHashMap<String, SyncCoverage>()
 
     /**
      * stream -> the relays it currently folds away, whose bands are left out of
@@ -204,7 +204,7 @@ class SyncBands(
      * The bands of one stream. Created on first use: a stream that never syncs
      * costs nothing, and the engine does not announce its stream list here.
      */
-    private fun coverage(stream: String): SyncCoverage = streams.computeIfAbsent(stream) { SyncCoverage(fullResyncSeconds, onChange = { dirty = true }) }
+    private fun coverage(stream: String): SyncCoverage = coverageByStream.computeIfAbsent(stream) { SyncCoverage(fullResyncSeconds, onChange = { dirty = true }) }
 
     // ---- the band arithmetic, upstream's ------------------------------------
     // Delegated rather than exposing `coverage` directly: these five calls are
@@ -261,7 +261,7 @@ class SyncBands(
         filter: Filter,
     ): SyncCoverage.Band? = coverage(stream).band(url, filter)
 
-    fun size(): Int = streams.values.sumOf { it.size() }
+    fun size(): Int = coverageByStream.values.sumOf { it.size() }
 
     /**
      * Stop keeping band state for urls the alias fold proved are another url's
@@ -343,7 +343,7 @@ class SyncBands(
         // asking is the difference between reporting what changed and
         // reporting the whole verdict set back at every boot.
         val held =
-            streams[stream]
+            coverageByStream[stream]
                 ?.export()
                 ?.keys
                 ?.mapTo(HashSet()) { it.relay }
@@ -571,7 +571,7 @@ class SyncBands(
         return runCatching {
             val snapshot: JsonObject =
                 buildJsonObject {
-                    streams.forEach { (stream, coverage) ->
+                    coverageByStream.forEach { (stream, coverage) ->
                         // The key's own two halves become the two inner levels.
                         val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
                         // A url this stream folded away is skipped rather than

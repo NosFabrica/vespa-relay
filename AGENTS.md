@@ -370,7 +370,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       AliasFolding.kt       apply() reads verdicts; measure() earns them
       AliasMonitor.kt       the schedule the probe passes run on, off the sync
                             plane entirely: fold, then stability, then fitness
-      RelayAliasRecord.kt   the verdict as a signed NIP-66 30166 `same-as` tag
+      RelayVerdictRecord.kt the signed 30166 edit every pass writes through:
+                            `same-as`, the consistency tag, the fitness verdict
       RelayConsistency.kt   which relays answer one filter the same way twice
       ConsistencyPass.kt    the pass that measures it (the stability gate)
       Silence.kt            classifying what a quiet socket actually said
@@ -688,7 +689,7 @@ relay/src/main/resources/
                         that will not fold, and a row showing `same-as` and
                         nothing else is what a CLOBBERED record looks like, so
                         the panel is the production-side check on the tag merge
-                        that `RelayAliasRecordTest` can only pin in isolation.
+                        that `RelayVerdictRecordTest` can only pin in isolation.
                         Every verdict it draws is tested for BOTH expiry rules —
                         age and rules epoch — and both forms are tested, which
                         the cleared half was not: it drew `keep` off the tag's
@@ -1041,7 +1042,7 @@ the hour:
 not.** All three of the first group write tags onto the same addressable kind
 30166 record per url — `same-as` from the fold, `self-consistent` from the
 stability gate, quartz's `n`/`rtt-*`/`R` from the monitor — which is why
-`RelayAliasRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
+`RelayVerdictRecord.edit` is a read-modify-write and why `AliasMonitor` runs its
 passes SEQUENTIALLY (two writers on one record drop whichever tag was written
 between the other's read and its store, silently, since the result is still a
 valid signed record that simply says less). But they are three different jobs on
@@ -1049,7 +1050,7 @@ three different clocks: the fold and the gate DIAL, on the monitor's six-hour
 schedule; the reachability monitor never dials on a schedule at all, it rides
 the sockets the fan-out is already opening. The verdicts panel on `/stats.html`
 is where one url's whole record is read back, and it exists because that merge
-is only pinnable in isolation by `RelayAliasRecordTest`.
+is only pinnable in isolation by `RelayVerdictRecordTest`.
 
 Two rules the processor rows follow, both the same ones the rest of this
 document does. **A processor that is not registered is one this router does not
@@ -1578,7 +1579,7 @@ host is dialled on one pass in four, and a host that is merely dead returns null
 twice and is never asked at all.
 
 **A fold decided on a group list says so, and does not borrow the sentence the
-containment form uses.** `RelayAliasRecord.publishGroupList` writes *"same group
+containment form uses.** `RelayVerdictRecord.publishGroupList` writes *"same group
 list as wss://x: 7 of 7 group definitions shared"* rather than `publish`'s *"7
 newest events, 7 shared"*. The numbers are identical; what changes is that a
 reader is not invited to check seven against a relay serving thousands and read
@@ -1852,7 +1853,7 @@ wrong as the number until someone re-measures it.
 touching it.** A url nothing can be read from is mirroring nothing, so a wrong
 fold here costs no stream TODAY — only the day the relay starts answering us,
 until the verdict expires. And the record says so in words rather than quoting a
-number it does not have: `RelayAliasRecord.publishUnreadable` writes *"nothing
+number it does not have: `RelayVerdictRecord.publishUnreadable` writes *"nothing
 readable at any of N url(s) on this host; folded on the shared name, not on a
 measurement"*.
 
@@ -1901,7 +1902,7 @@ is the argument; nine events are plenty to show they do not contradict it) and
 not symmetric (a `ws://` serving 500 events beside a `wss://` serving nine is
 refused, whatever the two urls are called).
 
-The verdict is published through `RelayAliasRecord.publishSecureTwin` rather
+The verdict is published through `RelayVerdictRecord.publishSecureTwin` rather
 than `publish`, because the evidence is different in kind — *"same endpoint as
 wss://x over TLS, both answered; 9 newest events here"*, not a containment. These
 folds happen where the containment could not decide, so quoting one would offer
@@ -2125,7 +2126,7 @@ a property of the server, not of the operator — and it expires in a month, so 
 server that is fixed rejoins on its own with nobody intervening.
 
 **When a relay is tested again, and the trap that made half of them immortal.**
-The verdict ages out after `RelayAliasRecord.DEFAULT_TTL_SECONDS` (30 days) and
+The verdict ages out after `RelayVerdictRecord.DEFAULT_TTL_SECONDS` (30 days) and
 the monitor picks the lapse up on its next pass, so a re-measure lands within
 `AliasMonitor.DEFAULT_INTERVAL_MS` (6h) of the month mark. Expiry is per url and
 staggered by whenever each was first measured, so there is no day-30 herd.
@@ -2143,7 +2144,7 @@ fold's `same-as` had the identical hole: a folded url expires, the canonical it
 folded onto did not.
 
 So both verdict tags carry the unix second they were measured, and
-`RelayAliasRecord.current` ages on that. A tag with NO stamp is stale, and the
+`RelayVerdictRecord.current` ages on that. A tag with NO stamp is stale, and the
 fallback to the event's clock that used to cover those records is gone: it was
 the same trap in a smaller costume, since the clock it fell back to is the one
 the flush rewrites, so a pre-stamp verdict on any relay still being dialled
@@ -2175,7 +2176,7 @@ each group is decided.
 
 Both expiry rules live in the tag's tail, so every other writer on that shared
 address has to carry five elements forward, not just the tag's name.
-`RelayAliasRecordTest` asserts what `load` DECIDES after quartz's passive monitor
+`RelayVerdictRecordTest` asserts what `load` DECIDES after quartz's passive monitor
 and our own stability pass have each rewritten the record — a writer that kept
 the name and dropped the tail would leave a verdict that reads as stale forever,
 re-fingerprinting the url every pass while the record on screen looked healthy.
@@ -2206,8 +2207,8 @@ and quartz's monitor updates it passively every time a connection is opened —
 so the fold and the monitor aim at the same slot. A writer that rebuilds the
 record from its own tags deletes everyone else's, and nothing about the result
 looks wrong: still signed, still a valid NIP-66 record, just saying less than it
-did. Measured in `RelayAliasRecordTest`, `[d, n, rtt-open]` became
-`[d, same-as]`. `RelayAliasRecord.edit` is the shape to copy — read what is
+did. Measured in `RelayVerdictRecordTest`, `[d, n, rtt-open]` became
+`[d, same-as]`. `RelayVerdictRecord.edit` is the shape to copy — read what is
 there, keep every tag this writer does not own, and stamp
 `max(now, existing + 1)`, because a store enforcing replaceable semantics
 REJECTS an edit that is not strictly newer and two writers inside one second are
@@ -2217,7 +2218,7 @@ Both quartz writers on that address — `RelayReachabilityStore` and
 `RelayProber.toDiscoveryEventTemplate` — used to rebuild too, so their next
 flush dropped our verdict tag. Fixed upstream in amethyst #3882 and #3883 and
 taken here with the `4f41f16db5` pin; the local repair pass that used to restore
-a clobbered verdict on the next fold is gone with it. `RelayAliasRecordTest`
+a clobbered verdict on the next fold is gone with it. `RelayVerdictRecordTest`
 holds the merge from both directions, so a pin that regressed it would fail the
 build rather than quietly lose verdicts again.
 
@@ -2251,7 +2252,7 @@ folded url was *paired with* moves onto the survivor — drop
 asking for those authors entirely.
 
 The verdict is a signed **NIP-66 kind 30166** carrying one tag in two forms
-(`RelayAliasRecord`) — the same monitor that already signs "I could not reach
+(`RelayVerdictRecord`) — the same monitor that already signs "I could not reach
 this relay" saying the other thing a dial can prove:
 
 ```json
@@ -2763,7 +2764,7 @@ above and all the same silence from outside:**
 - **A failed store read unfolded the fan-out, silently.** `AliasFolding.adopt`
   forgets every verdict before adopting what comes back — that is what makes the
   store authoritative and the 30-day TTL mean anything — on the documented
-  promise that a failure arrives AS a failure. `RelayAliasRecord.load` swallowed
+  promise that a failure arrives AS a failure. `RelayVerdictRecord.load` swallowed
   a failed chunk into an empty result instead, so one unlucky query silently
   unfolded up to 500 urls for that cycle. `load` throws now, and
   `AliasFoldingTest` pins it against a store that refuses every read.

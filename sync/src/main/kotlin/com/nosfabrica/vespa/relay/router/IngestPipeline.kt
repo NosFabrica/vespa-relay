@@ -164,7 +164,7 @@ internal class IngestPipeline(
     // Bad signatures, separated because on a wide fan-out "already have it"
     // routinely dwarfs accepts and reads like an emergency when it is the
     // system working — while a bad signature means an upstream serves junk.
-    private val unverified = AtomicLong()
+    private val badSignatures = AtomicLong()
 
     /** Rejections by reason. Only ever written through [noteRejection] — see there for why the ceiling matters. */
     private val rejectReasons = ConcurrentHashMap<String, Long>()
@@ -332,7 +332,7 @@ internal class IngestPipeline(
             }
             if (verifyRejected > 0) {
                 rejected.addAndGet(verifyRejected.toLong())
-                unverified.addAndGet(verifyRejected.toLong())
+                badSignatures.addAndGet(verifyRejected.toLong())
             }
             if (valid.isEmpty()) continue
             // Before the batch write: the store feeds Vespa in parallel, so a
@@ -839,7 +839,7 @@ internal class IngestPipeline(
     fun rejectionReasons(limit: Int = REJECTION_ROWS): List<Pair<String, Long>> =
         (
             rejectReasons.entries.map { it.key to it.value } +
-                listOfNotNull(unverified.get().takeIf { it > 0 }?.let { "bad signature" to it })
+                listOfNotNull(badSignatures.get().takeIf { it > 0 }?.let { "bad signature" to it })
         ).sortedByDescending { it.second }
             .take(limit)
 
@@ -854,7 +854,7 @@ internal class IngestPipeline(
                 .sortedByDescending { it.value }
                 .take(2)
                 .joinToString { "${it.key} x${it.value}" }
-        val bad = if (unverified.get() > 0) "bad signature x${unverified.get()}" else ""
+        val bad = if (badSignatures.get() > 0) "bad signature x${badSignatures.get()}" else ""
         val parts = listOf(bad, why).filter { it.isNotEmpty() }
         return if (parts.isEmpty()) "" else " [${parts.joinToString("; ")}]"
     }

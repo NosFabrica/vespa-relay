@@ -192,7 +192,7 @@ class VisitPoolTest {
         val paired =
             RosterBuilder.asksOf(
                 base,
-                DiscoveredRelay(url, narrow = mapOf("authors" to setOf(p2, p1), "kinds" to setOf("30382"))),
+                DiscoveredRelay(url, bindings = mapOf("authors" to setOf(p2, p1), "kinds" to setOf("30382"))),
             )
         assertEquals(2, paired.size)
         assertEquals(listOf(listOf(p1), listOf(p2)), paired.map { it.authors }, "sorted, so the band's serialized key is stable")

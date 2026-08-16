@@ -518,7 +518,7 @@ class RelayAliasesTest {
         assertEquals(nos, folded.single().url)
         // Dropping the url without carrying its authors would stop asking for
         // author b entirely — a fold that loses data, not duplicates.
-        assertEquals(setOf("a", "b"), folded.single().narrow["authors"])
+        assertEquals(setOf("a", "b"), folded.single().bindings["authors"])
     }
 
     @Test
@@ -561,7 +561,7 @@ class RelayAliasesTest {
     @Test
     fun `replace clears the urls the store no longer has a verdict for`() {
         // The other half, and the reason this is not simply an adopt: the TTL
-        // and the rules epoch expire verdicts inside `RelayAliasRecord.load`,
+        // and the rules epoch expire verdicts inside `RelayVerdictRecord.load`,
         // so a url dropping OUT of what the store returns is how a re-measure
         // is scheduled. Left in memory it would answer `measured` forever.
         val aliases = RelayAliases()

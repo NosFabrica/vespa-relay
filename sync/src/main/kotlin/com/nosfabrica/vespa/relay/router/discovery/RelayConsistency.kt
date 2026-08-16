@@ -51,7 +51,7 @@ import java.util.concurrent.ConcurrentHashMap
  * does; it says the relay cannot be synced against, which is a property of the
  * server and not of the person, and it is the property the fan-out actually
  * needs. A relay that starts answering consistently is picked up on the next
- * re-measure, because the verdict expires — see [RelayAliasRecord].
+ * re-measure, because the verdict expires — see [RelayVerdictRecord].
  *
  * ## The three answers, and why the third is not the second
  *
@@ -205,7 +205,7 @@ class RelayConsistency(
     }
 
     /**
-     * Adopt verdicts a previous run published. [RelayAliasRecord] drops the
+     * Adopt verdicts a previous run published. [RelayVerdictRecord] drops the
      * stale ones before they get here, so anything arriving is still current.
      */
     fun adopt(

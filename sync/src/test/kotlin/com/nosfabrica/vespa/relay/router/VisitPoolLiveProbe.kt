@@ -33,9 +33,9 @@ import com.nosfabrica.vespa.relay.router.config.VerdictSource
 import com.nosfabrica.vespa.relay.router.discovery.AliasFolding
 import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.FitnessPass
-import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
+import com.nosfabrica.vespa.relay.router.discovery.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
 import com.nosfabrica.vespa.relay.router.heal.WriteCapability
@@ -99,7 +99,7 @@ class VisitPoolLiveProbe {
         val client = NostrClient(BasicOkHttpWebSocket.Builder { okhttp }, scope)
         val signer = NostrSignerInternal(KeyPair())
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-        val record = RelayAliasRecord(store, signer)
+        val record = RelayVerdictRecord(store, signer)
         val processors = Processors()
 
         try {
@@ -111,7 +111,7 @@ class VisitPoolLiveProbe {
                         probe = AliasProbe.over(client, FitnessPass.FITNESS_TARGET) { 15_000L },
                         client = client,
                         foldedAway = { emptyMap() },
-                        unstable = { emptySet() },
+                        inconsistent = { emptySet() },
                         progress = processors.of("fitness"),
                     )
                 val started = System.currentTimeMillis()
@@ -148,7 +148,7 @@ class VisitPoolLiveProbe {
                             filter = Filter(kinds = listOf(1), limit = 50),
                             urls = emptyList(),
                             trusted = false,
-                            dynamic =
+                            discovery =
                                 RelayDiscoveryConfig(
                                     sources =
                                         listOf(

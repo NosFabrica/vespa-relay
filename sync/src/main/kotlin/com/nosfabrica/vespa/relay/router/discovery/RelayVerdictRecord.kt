@@ -79,7 +79,7 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
  * anything measured by SUPERSEDED RULES too — see [FOLD_EPOCH], which is the
  * lever for forcing exactly that.
  */
-class RelayAliasRecord(
+class RelayVerdictRecord(
     private val store: IEventStore,
     private val signer: NostrSigner?,
     private val ttlSeconds: Long = DEFAULT_TTL_SECONDS,
@@ -99,9 +99,9 @@ class RelayAliasRecord(
         /** Urls proven to be their own relay. Never a key in [aliases]. */
         val distinct: Set<NormalizedRelayUrl> = emptySet(),
         /** Urls measured as answering one filter the same way twice. */
-        val stable: Set<NormalizedRelayUrl> = emptySet(),
+        val consistent: Set<NormalizedRelayUrl> = emptySet(),
         /** Urls measured as NOT doing so — the ones the fan-out refuses. */
-        val unstable: Set<NormalizedRelayUrl> = emptySet(),
+        val inconsistent: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /**
@@ -133,8 +133,8 @@ class RelayAliasRecord(
         val floor = nowSeconds() - ttlSeconds
         val aliases = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val distinct = HashSet<NormalizedRelayUrl>()
-        val stable = HashSet<NormalizedRelayUrl>()
-        val unstable = HashSet<NormalizedRelayUrl>()
+        val consistent = HashSet<NormalizedRelayUrl>()
+        val inconsistent = HashSet<NormalizedRelayUrl>()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
             val held: List<Event> =
                 store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
@@ -157,9 +157,9 @@ class RelayAliasRecord(
                     ?.get(1)
                     ?.let { answer ->
                         when (answer) {
-                            CONSISTENT_YES -> stable += from
+                            CONSISTENT_YES -> consistent += from
 
-                            CONSISTENT_NO -> unstable += from
+                            CONSISTENT_NO -> inconsistent += from
 
                             // An answer this writer does not recognise is not a
                             // verdict. Ignored rather than guessed at: guessing
@@ -169,7 +169,7 @@ class RelayAliasRecord(
                     }
             }
         }
-        return Verdicts(aliases, distinct, stable, unstable)
+        return Verdicts(aliases, distinct, consistent, inconsistent)
     }
 
     /**

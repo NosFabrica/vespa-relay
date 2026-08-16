@@ -41,7 +41,7 @@ import java.util.concurrent.ConcurrentHashMap
  * depth. Two urls whose newest window is the same window are the same relay.
  *
  * The verdict is a measurement, not a guess about someone's config, which is
- * what makes it publishable: see [RelayAliasRecord] for the NIP-66 record the
+ * what makes it publishable: see [RelayVerdictRecord] for the NIP-66 record the
  * monitor signs. The fold is deliberately hard to trigger — see [sameRelay] —
  * because a wrong one silently stops mirroring a relay nobody will notice is
  * missing.
@@ -233,7 +233,7 @@ class RelayAliases(
      * Drop every verdict held about these urls.
      *
      * The store is the record; this map is a cache of it, and a cache with no
-     * expiry quietly outlives what it caches. [RelayAliasRecord.load] already
+     * expiry quietly outlives what it caches. [RelayVerdictRecord.load] already
      * refuses anything past its TTL, but a verdict adopted before it expired
      * stayed here for the life of the process: `measured` kept answering true,
      * so the url was never re-probed and the expired verdict was never
@@ -266,7 +266,7 @@ class RelayAliases(
          * shared ids: a path serving `{a, b, x}` scores 0.667 against a leader
          * serving `{a, b, c, d, e, f, g}` and folds — taking `x`, a group
          * nothing else on the host serves, out of the fan-out for
-         * [RelayAliasRecord.DEFAULT_TTL_SECONDS]. That is the fold's one
+         * [RelayVerdictRecord.DEFAULT_TTL_SECONDS]. That is the fold's one
          * unforgivable failure, silently not mirroring something, bought for a
          * two-id coincidence.
          */
@@ -526,7 +526,7 @@ class RelayAliases(
         // NIP-29 host handed over its complete list of groups and two of its
         // urls returned the same list. It cannot support "this url is a relay in
         // its own right", which is a signed statement about somebody else's
-        // server that stands for [RelayAliasRecord.DEFAULT_TTL_SECONDS] — and
+        // server that stands for [RelayVerdictRecord.DEFAULT_TTL_SECONDS] — and
         // which a thin window manufactures for free, since sharing none of three
         // ids is exactly what a url that answered almost nothing looks like.
         // That is the `relay.damus.io/lantern-oscar-dynamo` lie in miniature.
@@ -981,7 +981,7 @@ class RelayAliases(
             val merged = LinkedHashMap<NormalizedRelayUrl, MutableMap<String, MutableSet<String>>>()
             for (relay in relays) {
                 val into = merged.getOrPut(aliases[relay.url] ?: relay.url) { HashMap() }
-                for ((dest, values) in relay.narrow) into.getOrPut(dest) { HashSet() }.addAll(values)
+                for ((dest, values) in relay.bindings) into.getOrPut(dest) { HashSet() }.addAll(values)
             }
             return merged.map { (url, narrow) -> DiscoveredRelay(url, narrow.mapValues { (_, v) -> v.toSet() }) }
         }

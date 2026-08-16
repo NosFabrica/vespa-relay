@@ -120,7 +120,7 @@ data class RouterConfig(
     fun upUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.UP)
 
     /** The streams whose relay list is discovered from the store, not configured. */
-    fun dynamicStreams(): List<SyncStream> = streams.filter { it.dynamic != null }
+    fun discoveryStreams(): List<SyncStream> = streams.filter { it.discovery != null }
 
     private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
@@ -210,7 +210,7 @@ data class SyncStream(
     val urls: List<NormalizedRelayUrl>,
     val trusted: Boolean,
     // Null for an ordinary stream; set when its relays come out of the store.
-    val dynamic: RelayDiscoveryConfig? = null,
+    val discovery: RelayDiscoveryConfig? = null,
     // Whether this stream's relays share events with each other — see [SyncMode].
     val sync: SyncMode = SyncMode.AUTO,
     // Whether an upstream dropping a record means we drop it too.

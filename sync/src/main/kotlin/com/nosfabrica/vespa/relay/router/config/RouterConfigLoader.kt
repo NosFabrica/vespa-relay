@@ -181,15 +181,15 @@ object RouterConfigLoader {
                 val s = streamsCfg.getConfig(quote(name))
                 val urls = if (s.hasPath("urls")) normalizeUrls(name, s.getStringList("urls")) else emptyList()
                 val dir = SyncDirection.parse(if (s.hasPath("dir")) s.getString("dir") else "down")
-                val dynamic = parseDynamic(name, s, relaySourceDefaults)
+                val discovery = parseDiscovery(name, s, relaySourceDefaults)
 
-                require(dynamic != null || s.hasPath("urls")) {
+                require(discovery != null || s.hasPath("urls")) {
                     "router: stream '$name' has neither `urls` nor a `relaySource` list"
                 }
-                require(dynamic == null || urls.isEmpty()) {
+                require(discovery == null || urls.isEmpty()) {
                     "router: stream '$name' cannot mix `relaySource` with static `urls` — split them into two streams"
                 }
-                require(dynamic == null || dir == SyncDirection.DOWN) {
+                require(discovery == null || dir == SyncDirection.DOWN) {
                     "router: stream '$name' has a `relaySource`, which only pulls down — set dir = \"down\""
                 }
 
@@ -207,7 +207,7 @@ object RouterConfigLoader {
                     // carry it: a static stream has no discovery to pair
                     // authors with, and a paged fetch asks only outside its
                     // band, so "not seen" there means "not asked for".
-                    require(dynamic != null) {
+                    require(discovery != null) {
                         "router: stream '$name' sets deleteMissing without a `relaySource` — the retraction " +
                             "comparison runs as the pool's audit, over asks a scan paired with their owners"
                     }
@@ -223,7 +223,7 @@ object RouterConfigLoader {
                     // hold — so every source must be a scan whose selects
                     // bind `authors`. A verdict source cannot carry it: it
                     // fans the stream's one filter to every certified relay.
-                    dynamic.sources.forEach { source ->
+                    discovery.sources.forEach { source ->
                         require(source.verdicts == null) {
                             "router: stream '$name' sets deleteMissing on a verdict-source relaySource — a verdict " +
                                 "source fans one unbound filter to every certified relay, and an unbound ask would let " +
@@ -244,7 +244,7 @@ object RouterConfigLoader {
                     filter = filter,
                     urls = urls,
                     trusted = s.hasPath("trusted") && s.getBoolean("trusted"),
-                    dynamic = dynamic,
+                    discovery = discovery,
                     sync = sync,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
@@ -448,7 +448,7 @@ object RouterConfigLoader {
      * operator deserves the migration note, not a silently different
      * behavior.
      */
-    private fun parseDynamic(
+    private fun parseDiscovery(
         stream: String,
         s: Config,
         defaults: RelaySourceDefaults,
@@ -585,7 +585,7 @@ object RouterConfigLoader {
         // and a roster built on it is empty with no error anywhere. Absent
         // means this process's own signer — the single-process deployment,
         // where monitor and router share one identity.
-        val authors = monitorNpubs(stream, filter.authors.orEmpty())
+        val authors = decodeMonitorNpubs(stream, filter.authors.orEmpty())
         require(!s.hasPath("certified")) {
             "router: stream '$stream' puts `certified` on its verdict source — a verdict source IS the " +
                 "certification; the gate belongs on a scan"
@@ -619,7 +619,7 @@ object RouterConfigLoader {
      * Absent means this process's own signer — the single-process deployment,
      * where monitor and router share one identity.
      */
-    private fun monitorNpubs(
+    private fun decodeMonitorNpubs(
         stream: String,
         raw: List<String>,
     ): List<String> =
@@ -659,7 +659,7 @@ object RouterConfigLoader {
                 } else {
                     VerdictSource.DEFAULT_MAX_AGE_SECONDS
                 },
-            authors = if (c.hasPath("authors")) monitorNpubs(stream, c.getStringList("authors")) else emptyList(),
+            authors = if (c.hasPath("authors")) decodeMonitorNpubs(stream, c.getStringList("authors")) else emptyList(),
         )
     }
 
@@ -695,7 +695,7 @@ object RouterConfigLoader {
             // No kind: the select applies to everything the filter collected.
             kind = if (s.hasPath("kind")) s.getInt("kind") else null,
             tag = if (s.hasPath("tag")) s.getString("tag").trim().takeIf { it.isNotEmpty() } else null,
-            index = index,
+            urlIndex = index,
             where = where,
             bindings = parseBindings(stream, s),
         )

@@ -52,7 +52,7 @@ class RefusedIdsTest {
         // The property that keeps a candidate-filter false positive costing one
         // download instead of a permanent suppression.
         refused().use { r ->
-            assertEquals(Recorded.CANDIDATE, r.record(id(1), 5_000))
+            assertEquals(RecordOutcome.CANDIDATE, r.record(id(1), 5_000))
             assertFalse(r.suppressed(id(1), 5_000), "one refusal must never suppress")
         }
     }
@@ -61,7 +61,7 @@ class RefusedIdsTest {
     fun `a second refusal suppresses`() {
         refused().use { r ->
             r.record(id(1), 5_000)
-            assertEquals(Recorded.SUPPRESSED, r.record(id(1), 5_000))
+            assertEquals(RecordOutcome.SUPPRESSED, r.record(id(1), 5_000))
             assertTrue(r.suppressed(id(1), 5_000))
         }
     }
@@ -71,7 +71,7 @@ class RefusedIdsTest {
         refused().use { r ->
             r.record(id(1), 5_000)
             r.record(id(1), 5_000)
-            assertEquals(Recorded.ALREADY, r.record(id(1), 5_000))
+            assertEquals(RecordOutcome.ALREADY, r.record(id(1), 5_000))
         }
     }
 
@@ -80,7 +80,7 @@ class RefusedIdsTest {
         // The relay has told us outright it will never take the repair, so a
         // second sighting would buy nothing.
         refused().use { r ->
-            assertEquals(Recorded.SUPPRESSED, r.suppressNow(id(2), 5_000))
+            assertEquals(RecordOutcome.SUPPRESSED, r.suppressNow(id(2), 5_000))
             assertTrue(r.suppressed(id(2), 5_000))
         }
     }
@@ -157,7 +157,7 @@ class RefusedIdsTest {
             for (i in 0 until 20_000) {
                 // Two refusals each, so both tables fill.
                 r.record(id(i), 5_000)
-                if (r.record(id(i), 5_000) == Recorded.REFUSED_FULL) {
+                if (r.record(id(i), 5_000) == RecordOutcome.REFUSED_FULL) {
                     sealedAt = i
                     break
                 }

@@ -194,7 +194,7 @@ internal class VisitPool(
         @Volatile var foldedAtMs: Long = System.currentTimeMillis()
 
         /** Fold what arrived into the decayed score and read it, cheaply racy — a priority hint, not a ledger. */
-        fun current(nowMs: Long): Double {
+        fun foldedScore(nowMs: Long): Double {
             val fresh = arrived.getAndSet(0)
             val dtMs = (nowMs - foldedAtMs).coerceAtLeast(0)
             if (fresh > 0 || dtMs > YIELD_HALF_LIFE_MS / 8) {
@@ -219,7 +219,7 @@ internal class VisitPool(
     private class Ongoing(
         val startedMs: Long,
     ) {
-        /** Which stream's asks the visit is on right now — visits serve streams in turn. */
+        /** Which stream's asks the visit is on right now — visitsRun serve streams in turn. */
         @Volatile var stream: String? = null
 
         @Volatile var doing: String = "claiming the socket"
@@ -247,7 +247,7 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         o: Ongoing?,
     ) {
-        downloaded.incrementAndGet()
+        poolReceived.incrementAndGet()
         yieldOf(url).arrived.incrementAndGet()
         o?.let {
             it.events.incrementAndGet()
@@ -294,7 +294,7 @@ internal class VisitPool(
      * hands — the roster rebuild, a tail opening, a tail dropping — and
      * PUBLISHED by [flushPhases] on the ticker. The publish walks
      * streams × roster, and it used to run INLINE on every tail open and
-     * drop: a 600-tail boot storm paid ~45M entry visits on the visit
+     * drop: a 600-tail boot storm paid ~45M entry visitsRun on the visit
      * workers for numbers nobody reads faster than the report tick.
      */
     private fun phasesChanged() {
@@ -320,12 +320,12 @@ internal class VisitPool(
         java.util.concurrent.atomic
             .AtomicBoolean(false)
 
-    private val tailsEvicted = AtomicLong()
+    private val evictedTails = AtomicLong()
 
-    private val downloaded = AtomicLong()
-    private val visits = AtomicLong()
-    private val audits = AtomicLong()
-    private val aborted = AtomicLong()
+    private val poolReceived = AtomicLong()
+    private val visitsRun = AtomicLong()
+    private val auditsRun = AtomicLong()
+    private val abortedVisits = AtomicLong()
 
     fun start() {
         if (streams.isEmpty()) return
@@ -340,17 +340,17 @@ internal class VisitPool(
                 Processors.Count("awaitingVisit", queue.waiting.toLong()),
                 Processors.Count("visiting", queue.visiting.toLong()),
                 Processors.Count("tails", tails.size.toLong()),
-                Processors.Count("visitsRun", visits.get()),
-                // The gauge beside the odometer: audits RUNNING against
+                Processors.Count("visitsRun", visitsRun.get()),
+                // The gauge beside the odometer: auditsRun RUNNING against
                 // auditsRun's total. A deep history's audit holds a worker for
                 // minutes, and without this the only trace was one unit of
                 // `visiting` that could not be told from a catch-up.
                 Processors.Count("auditing", ongoing.values.count { it.doing == STAGE_AUDITING || it.doing == STAGE_RETRACTING }.toLong()),
-                Processors.Count("auditsRun", audits.get()),
+                Processors.Count("auditsRun", auditsRun.get()),
                 Processors.Count("retracted", retraction?.deleted?.get() ?: 0L),
-                Processors.Count("abortedVisits", aborted.get()),
-                Processors.Count("evictedTails", tailsEvicted.get()),
-                Processors.Count("poolReceived", downloaded.get()),
+                Processors.Count("abortedVisits", abortedVisits.get()),
+                Processors.Count("evictedTails", evictedTails.get()),
+                Processors.Count("poolReceived", poolReceived.get()),
             )
         }
         // The streams' own rows: the pool's one phase, and the source that
@@ -376,7 +376,7 @@ internal class VisitPool(
                     // drop prunes the yield, and a finishing visit racing
                     // that prune must not resurrect the entry.
                     revisitDelayMs = { url ->
-                        revisitDelayMs(yields[url]?.current(System.currentTimeMillis()) ?: 0.0, tails.containsKey(url))
+                        revisitDelayMs(yields[url]?.foldedScore(System.currentTimeMillis()) ?: 0.0, tails.containsKey(url))
                     },
                     visit = ::guardedVisit,
                 )
@@ -394,14 +394,14 @@ internal class VisitPool(
         val cadence =
             (
                 streams
-                    .flatMap { it.dynamic?.verdictSources.orEmpty() }
+                    .flatMap { it.discovery?.verdictSources.orEmpty() }
                     .map { it.maxAgeSeconds * 1000L / 2 } +
                     // Scan-built halves rebuild on their stream's own refresh
                     // clock; the loop just has to tick at least that often —
                     // the walk itself is cached, so the extra ticks are cheap.
                     streams
-                        .filter { it.dynamic?.scanSources?.isNotEmpty() == true }
-                        .mapNotNull { it.dynamic?.refreshSeconds?.times(1000L) }
+                        .filter { it.discovery?.scanSources?.isNotEmpty() == true }
+                        .mapNotNull { it.discovery?.refreshSeconds?.times(1000L) }
             ).minOrNull()
                 ?.coerceAtLeast(60_000L) ?: 300_000L
         while (scope.isActive) {
@@ -463,14 +463,14 @@ internal class VisitPool(
         } catch (e: CancellationException) {
             throw e
         } catch (e: Exception) {
-            aborted.incrementAndGet()
+            abortedVisits.incrementAndGet()
             System.err.println("router: visit ${url.url} failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
         }
     }
 
     /** One relay's turn: every stream's catch-up, the audit where due, the heal drain, then the tail. */
     private suspend fun visit(url: NormalizedRelayUrl) {
-        visits.incrementAndGet()
+        visitsRun.incrementAndGet()
         val o = Ongoing(System.currentTimeMillis())
         ongoing[url] = o
         sockets.claim(url)
@@ -488,7 +488,7 @@ internal class VisitPool(
                 // so a visit that is delivering is never cut, and the clock
                 // starts at the claim so it cannot fire before the first ask.
                 if (System.currentTimeMillis() - o.lastActivityMs > LEG_QUIET_GIVE_UP_MS) {
-                    aborted.incrementAndGet()
+                    abortedVisits.incrementAndGet()
                     System.err.println(
                         "router: visit ${url.url} gave up after ${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s) — the revisit takes the remaining asks",
                     )
@@ -501,7 +501,7 @@ internal class VisitPool(
                 // and the monitor's sweep — not a retry loop — is what
                 // re-admits it.
                 if (!clean) {
-                    aborted.incrementAndGet()
+                    abortedVisits.incrementAndGet()
                     return
                 }
                 auditIfDue(ask, url, o, snapshot.sharedAuthors[ask.stream.name].orEmpty())
@@ -630,7 +630,7 @@ internal class VisitPool(
                     ingest.submit(event, stream.trusted, IngestOrigin(url, healContent = stream.healContent, healRetractions = stream.healRetractions))
                 }
             }
-        audits.incrementAndGet()
+        auditsRun.incrementAndGet()
         if (outcome.complete) {
             // The audit compared every window up to the sweep's own head —
             // `slackSeconds` below its start, because a window still filling
@@ -676,7 +676,7 @@ internal class VisitPool(
             sharedAuthors,
             onActivity = { o.lastActivityMs = System.currentTimeMillis() },
         ) { arrived(url, o) }
-        audits.incrementAndGet()
+        auditsRun.incrementAndGet()
     }
 
     /**
@@ -712,9 +712,9 @@ internal class VisitPool(
         // one queue wait and not a timer.
         if (tails.size >= tailBudget) {
             val nowMs = System.currentTimeMillis()
-            val candidate = yieldOf(url).current(nowMs)
-            val weakest = tails.keys.minByOrNull { yieldOf(it).current(nowMs) } ?: return
-            if (yieldOf(weakest).current(nowMs) >= candidate) return
+            val candidate = yieldOf(url).foldedScore(nowMs)
+            val weakest = tails.keys.minByOrNull { yieldOf(it).foldedScore(nowMs) } ?: return
+            if (yieldOf(weakest).foldedScore(nowMs) >= candidate) return
             evictWeakestTail(sparing = url)
         }
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
@@ -815,8 +815,8 @@ internal class VisitPool(
      */
     private fun evictWeakestTail(sparing: NormalizedRelayUrl?): Boolean {
         val nowMs = System.currentTimeMillis()
-        val weakest = tails.keys.filter { it != sparing }.minByOrNull { yieldOf(it).current(nowMs) } ?: return false
-        tailsEvicted.incrementAndGet()
+        val weakest = tails.keys.filter { it != sparing }.minByOrNull { yieldOf(it).foldedScore(nowMs) } ?: return false
+        evictedTails.incrementAndGet()
         dropTail(weakest)
         if (roster.containsKey(weakest)) queue.offer(weakest)
         return true
@@ -838,9 +838,9 @@ internal class VisitPool(
          * loader requires it to set.
          */
         internal fun ridesThePool(stream: SyncStream): Boolean {
-            val dynamic = stream.dynamic ?: return false
-            return dynamic.sources.isNotEmpty() &&
-                dynamic.sources.all { it.verdicts != null || it.certified != null }
+            val discovery = stream.discovery ?: return false
+            return discovery.sources.isNotEmpty() &&
+                discovery.sources.all { it.verdicts != null || it.certified != null }
         }
 
         /**
@@ -891,7 +891,7 @@ internal class VisitPool(
         }
 
         /**
-         * Concurrent visits, which is concurrent DIALS — see the constructor
+         * Concurrent visitsRun, which is concurrent DIALS — see the constructor
          * parameter for the herd it exists to break up. The default lives on
          * the config: `visitConcurrency` in router.conf is the operator's
          * knob, and [RouterConfig.DEFAULT_VISIT_CONCURRENCY] carries the

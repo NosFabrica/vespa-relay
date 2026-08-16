@@ -61,7 +61,7 @@ import java.util.concurrent.atomic.AtomicInteger
  * ## What is written down
  *
  * One `self-consistent` tag per measured url on its NIP-66 30166 record, good
- * for [RelayAliasRecord.DEFAULT_TTL_SECONDS] — a month, after which the relay is
+ * for [RelayVerdictRecord.DEFAULT_TTL_SECONDS] — a month, after which the relay is
  * measured again and a server that has been fixed comes back into the fan-out on
  * its own. Nothing is written for a url that could not be measured: an
  * unreachable relay and one holding nine events have proved nothing, and a
@@ -91,7 +91,7 @@ import java.util.concurrent.atomic.AtomicInteger
  */
 class ConsistencyPass(
     private val consistency: RelayConsistency,
-    private val record: RelayAliasRecord,
+    private val record: RelayVerdictRecord,
     private val probe: AliasProbe,
     private val concurrency: Int = DEFAULT_CONCURRENCY,
     /**
@@ -602,7 +602,7 @@ class ConsistencyPass(
                 // is the failure this whole pass exists to prevent.
                 return
             }
-        consistency.replace(candidates, held.stable, held.unstable)
+        consistency.replace(candidates, held.consistent, held.inconsistent)
         // Urls a FOLD has already taken out of the fan-out. They will never be
         // dialled, so measuring their stability is budget spent on a question
         // nobody asks: on a polluted store two thirds of a candidate set folds

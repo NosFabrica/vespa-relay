@@ -31,10 +31,10 @@ import com.nosfabrica.vespa.relay.router.discovery.AliasProbe
 import com.nosfabrica.vespa.relay.router.discovery.ConsistencyPass
 import com.nosfabrica.vespa.relay.router.discovery.FitnessPass
 import com.nosfabrica.vespa.relay.router.discovery.ReachabilityProbe
-import com.nosfabrica.vespa.relay.router.discovery.RelayAliasRecord
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayConsistency
 import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
+import com.nosfabrica.vespa.relay.router.discovery.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.router.discovery.StreamWorld
 import com.nosfabrica.vespa.relay.router.heal.HealQueue
 import com.nosfabrica.vespa.relay.router.heal.Healer
@@ -226,11 +226,11 @@ class SyncEngine(
     /** Relays with a transfer actually running, across every path. */
     private val transferring = AtomicInteger()
 
-    // One stream BUILDS its id set at a time, static and dynamic both: the set
+    // One stream BUILDS its id set at a time, static and discovery both: the set
     // is a full store walk and concurrent ones sum on the heap.
     //
     // It used to be held for a whole run, which was the same thing while a
-    // dynamic fan-out ended in a join. It cannot be now: the pool is a
+    // discovery fan-out ended in a join. It cannot be now: the pool is a
     // rotation with no join, so "the whole run" is forever and every other
     // id-set stream would queue behind it for the life of the process. What
     // bounds RESIDENCY on that side is `SharedIdSet`, which never lets a stream
@@ -239,7 +239,7 @@ class SyncEngine(
 
     private val downUpstreams = config.downUpstreams()
     private val upUpstreams = config.upUpstreams()
-    private val dynamicStreams = config.dynamicStreams()
+    private val discoveryStreams = config.discoveryStreams()
 
     /**
      * The fork's arithmetic — see [VisitPool.ridesThePool]: every relaySource
@@ -248,9 +248,9 @@ class SyncEngine(
      * retracting stream rides the pool too, its comparison running as its
      * audit ([RetractionAudit]).
      */
-    private val visitStreams = dynamicStreams.filter { VisitPool.ridesThePool(it) }
+    private val visitStreams = discoveryStreams.filter { VisitPool.ridesThePool(it) }
 
-    // The relays we hold a live subscription on; a dynamic sync must not drop
+    // The relays we hold a live subscription on; a discovery sync must not drop
     // one of these sockets out from under its tail.
     private val pinnedUrls = (downUpstreams + upUpstreams).map { it.url }.toSet()
 
@@ -316,7 +316,7 @@ class SyncEngine(
         signer?.let {
             AliasFolding(
                 aliases = RelayAliases(),
-                record = RelayAliasRecord(store, it),
+                record = RelayVerdictRecord(store, it),
                 // Per url, not per process: a `.onion` fingerprint that is only
                 // given the clearnet handshake budget times out while its
                 // circuit is still being built, and comes back as an empty
@@ -339,11 +339,11 @@ class SyncEngine(
      * depths for different reasons and one is not a cache of the other.
      */
     private val consistency = RelayConsistency()
-    private val stability =
+    private val consistencyPass =
         signer?.let {
             ConsistencyPass(
                 consistency = consistency,
-                record = RelayAliasRecord(store, it),
+                record = RelayVerdictRecord(store, it),
                 probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(STABILITY_PROCESSOR),
@@ -374,13 +374,13 @@ class SyncEngine(
 
     /**
      * What the probe passes measure. Built here rather than reached for through
-     * [dynamic]: the monitor is one of that object's constructor arguments, so
+     * [discovery]: the monitor is one of that object's constructor arguments, so
      * asking it for the world is a cycle Kotlin can only be talked out of.
      */
     private val world =
         StreamWorld(
             store,
-            dynamicStreams,
+            discoveryStreams,
             probe,
             ingest,
             // Whose unreachability records may hold a candidate out: our own
@@ -389,8 +389,8 @@ class SyncEngine(
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +
-                        dynamicStreams
-                            .flatMap { it.dynamic?.sources.orEmpty() }
+                        discoveryStreams
+                            .flatMap { it.discovery?.sources.orEmpty() }
                             .flatMap { it.verdicts?.authors.orEmpty() + it.certified?.authors.orEmpty() }
                 ).distinct(),
             tor = tor,
@@ -408,11 +408,11 @@ class SyncEngine(
     private val fitness =
         signer?.let { s ->
             FitnessPass(
-                record = RelayAliasRecord(store, s),
+                record = RelayVerdictRecord(store, s),
                 probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
                 foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
-                unstable = { urls -> stability?.apply(urls)?.toSet() ?: emptySet() },
+                inconsistent = { urls -> consistencyPass?.apply(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
                 concurrency = monitorConcurrency,
             )
@@ -437,7 +437,7 @@ class SyncEngine(
                     ): Int = f.measure(label, candidates, canDial, onEvent, sockets)
                 }
             },
-            stability?.let { g ->
+            consistencyPass?.let { g ->
                 object : AliasMonitor.Pass {
                     override val progress = g.progress
 
@@ -503,7 +503,7 @@ class SyncEngine(
             // measure the same derived set; a supplier rather than a copy, for
             // the reason [Processors] gives.
             ?.also {
-                for (pass in listOfNotNull(folding?.progress, stability?.progress)) {
+                for (pass in listOfNotNull(folding?.progress, consistencyPass?.progress)) {
                     pass.counts {
                         listOf(
                             Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
@@ -549,7 +549,7 @@ class SyncEngine(
     private val pressure = servingPressure
 
     fun start(): SyncEngine {
-        if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && dynamicStreams.isEmpty()) {
+        if (downUpstreams.isEmpty() && upUpstreams.isEmpty() && discoveryStreams.isEmpty()) {
             System.err.println("router: no upstreams configured; nothing to mirror")
             return this
         }
@@ -598,12 +598,12 @@ class SyncEngine(
         // appear in the report from the first tick, so silence can never be
         // read as "not configured".
         downUpstreams.map { it.streamName }.distinct().forEach { phases.register(it) }
-        dynamicStreams.forEach { phases.register(it.name) }
+        discoveryStreams.forEach { phases.register(it.name) }
 
         if (downUpstreams.isNotEmpty()) {
             backfill.begin(downUpstreams.size)
             scope.launch { backfill.run(downUpstreams) }
-            scope.launch { backfill.progressLoop(dynamicStreams.size) }
+            scope.launch { backfill.progressLoop(discoveryStreams.size) }
         }
 
         upUpstreams.forEach { up -> scope.launch { upPush.loop(up) } }
@@ -618,10 +618,10 @@ class SyncEngine(
         // Only where there is something to fold for. A dynamic stream is what
         // discovers urls off other people's relay lists; a static config names
         // its upstreams by hand and has no duplicates to find.
-        if (dynamicStreams.isNotEmpty()) aliasMonitor?.start()
+        if (discoveryStreams.isNotEmpty()) aliasMonitor?.start()
 
         // The phase report runs for the life of the engine, not inside the
-        // static backfill's progress loop: a dynamic-only config has no
+        // static backfill's progress loop: a discovery-only config has no
         // backfill loop at all, and everyone else's dynamic streams — the
         // larger half of the fill — outlive it.
         // The heartbeat is its own loop, NOT a passenger on the phase report.
@@ -637,7 +637,7 @@ class SyncEngine(
                 progressFile.write(phases.snapshot(), processors.snapshot(), health, fatals.get())
             }
         }
-        if (downUpstreams.isNotEmpty() || dynamicStreams.isNotEmpty()) {
+        if (downUpstreams.isNotEmpty() || discoveryStreams.isNotEmpty()) {
             scope.launch {
                 while (scope.isActive) {
                     delay(PROGRESS_INTERVAL_MS)
@@ -653,9 +653,9 @@ class SyncEngine(
                 (if (downUpstreams.isNotEmpty()) "; backfilling ${downUpstreams.size}" else "; live-tail only") +
                 (if (upUpstreams.isNotEmpty()) "; up every ${config.upIntervalSec}s" else "") +
                 (
-                    if (dynamicStreams.isNotEmpty()) {
-                        "; ${dynamicStreams.size} dynamic stream(s): " +
-                            dynamicStreams.joinToString { "${it.name} (${it.dynamic?.sources?.size} source(s))" }
+                    if (discoveryStreams.isNotEmpty()) {
+                        "; ${discoveryStreams.size} dynamic stream(s): " +
+                            discoveryStreams.joinToString { "${it.name} (${it.discovery?.sources?.size} source(s))" }
                     } else {
                         ""
                     }
@@ -684,9 +684,9 @@ class SyncEngine(
         // by hand and has no duplicate urls to find, so `aliasMonitor.start()`
         // is never called. Said out loud, because a row left at `starting` for
         // the life of the process reads as a pass that is about to run.
-        if (dynamicStreams.isEmpty()) {
+        if (discoveryStreams.isEmpty()) {
             folding?.progress?.phase(Processors.OFF)
-            stability?.progress?.phase(Processors.OFF)
+            consistencyPass?.progress?.phase(Processors.OFF)
         }
         // WHERE EVERY MIRRORED EVENT ACTUALLY LANDS, and the first thing to look
         // at when the streams read busy and the store is not growing. The queue
@@ -919,11 +919,11 @@ class SyncEngine(
                 "router: ingested ${ingest.accepted.get()} accepted, ${ingest.rejected.get()} rejected" +
                     ingest.rejectionBreakdown() + ingest.suppressionBreakdown() +
                     (if (upUpstreams.isNotEmpty()) ", pushed ${upPush.pushed.get()} up" else "") +
-                    // A dynamic cycle connects relays that are in no upstream
+                    // A discovery cycle connects relays that are in no upstream
                     // list, so the connected count is reported against the
                     // pinned ones rather than as a fraction of them.
                     "; ${client.connectedRelaysFlow().value.size} relay(s) connected, ${pinnedUrls.size} pinned" +
-                    (if (dynamicStreams.isNotEmpty()) " + dynamic" else "") +
+                    (if (discoveryStreams.isNotEmpty()) " + discovery" else "") +
                     (if (refusedIds.enabled) "; ${refusedIds.summary()}" else "") +
                     (if (healQueue.enqueued.get() > 0 || healer.pushed.get() > 0) "; ${healer.summary()}" else ""),
             )
@@ -943,7 +943,7 @@ class SyncEngine(
     fun upstreamCount(): Int = pinnedUrls.size
 
     /** Number of streams whose relays are discovered from the store, not configured. */
-    fun dynamicStreamCount(): Int = dynamicStreams.size
+    fun dynamicStreamCount(): Int = discoveryStreams.size
 
     override fun close() {
         // First: a backfill killed mid-flight still keeps the ground it gained.

@@ -129,7 +129,7 @@ class AliasFoldingTest {
         foldUnreadableGroups: Boolean = AliasFolding.DEFAULT_FOLD_UNREADABLE_GROUPS,
     ) = AliasFolding(
         aliases = aliases,
-        record = RelayAliasRecord(store, signer),
+        record = RelayVerdictRecord(store, signer),
         probe = AliasProbe(fetch = upstreams::fetch, target = 40, page = 40, fallbackPage = 40),
         undecidableCooldownMs = undecidableCooldownMs,
         foldUnreadableGroups = foldUnreadableGroups,
@@ -494,7 +494,7 @@ class AliasFoldingTest {
             val blind =
                 AliasFolding(
                     aliases = aliases,
-                    record = RelayAliasRecord(Unreadable(store), signer),
+                    record = RelayVerdictRecord(Unreadable(store), signer),
                     probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
                 )
 
@@ -611,7 +611,7 @@ class AliasFoldingTest {
 
             // The negative claim is the one that used to be published here: two
             // urls of one host, cleared as separate relays, for 30 days.
-            val held = RelayAliasRecord(store, signer).load(listOf(a, b))
+            val held = RelayVerdictRecord(store, signer).load(listOf(a, b))
             assertTrue(held.aliases.isEmpty(), "a fold was published against a yardstick that cannot repeat itself")
             assertTrue(held.distinct.isEmpty(), "published ${held.distinct.size} url(s) as their own relay on unreproducible evidence")
             // And nothing is held in memory either, so the next pass re-measures
@@ -705,7 +705,7 @@ class AliasFoldingTest {
                 }
 
             val pass = launch { folding(store, up).measure("t", listOf(fast, fastAlias, slow, slowAlias), canDial = { true }) }
-            val reader = RelayAliasRecord(store, signer)
+            val reader = RelayVerdictRecord(store, signer)
             try {
                 withTimeout(10_000) {
                     while (reader.load(listOf(fast, fastAlias)).aliases.isEmpty()) delay(20)
@@ -791,7 +791,7 @@ class AliasFoldingTest {
                 store
                     .query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey), tags = mapOf("d" to listOf(plain.url))))
                     .single()
-            val sameAs = record.tags.single { it[0] == RelayAliasRecord.SAME_AS_TAG }
+            val sameAs = record.tags.single { it[0] == RelayVerdictRecord.SAME_AS_TAG }
             assertEquals(secure.url, sameAs[1])
             assertTrue(sameAs[2].startsWith("same endpoint as ${secure.url} over TLS, both answered"), "the evidence reads: ${sameAs[2]}")
         }

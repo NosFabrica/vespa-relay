@@ -76,12 +76,12 @@ import java.util.concurrent.atomic.AtomicInteger
  * This pass owns `s`, `pageable` and `nip77` and nothing else; the fold's
  * `same-as` and the consistency pass's tag are read, never written, and
  * everything else on the record is carried forward untouched by
- * [RelayAliasRecord]'s edit. The alias and inconsistency REFUSALS therefore
+ * [RelayVerdictRecord]'s edit. The alias and inconsistency REFUSALS therefore
  * cost no dial at all — those passes already paid for the evidence, and this
  * one turns their standing verdicts into the one value a stream filters on.
  */
 class FitnessPass(
-    private val record: RelayAliasRecord,
+    private val record: RelayVerdictRecord,
     /**
      * The small-target ladder — see [AliasProbe]. Sized for a verdict, not a
      * fingerprint: [FITNESS_TARGET] events say "answers and pages" as well as
@@ -92,7 +92,7 @@ class FitnessPass(
     /** The fold's standing verdicts over these candidates — read, never earned here. */
     private val foldedAway: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl>,
     /** The consistency pass's standing refusals — same bargain. */
-    private val unstable: suspend (List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl>,
+    private val inconsistent: suspend (List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl>,
     val progress: Processors.Handle,
     private val concurrency: Int = AliasFolding.DEFAULT_CONCURRENCY,
 ) {
@@ -167,7 +167,7 @@ class FitnessPass(
                 outcomes[alias] = Outcome(Verdict.ALIAS, "folds onto ${canonical.url}")
             }
             val remaining = candidates.filter { it !in folded }
-            val shaky = unstable(remaining)
+            val shaky = inconsistent(remaining)
             for (url in shaky) {
                 outcomes[url] = Outcome(Verdict.INCONSISTENT, "failed the reproducibility bar; see the consistency tag")
             }

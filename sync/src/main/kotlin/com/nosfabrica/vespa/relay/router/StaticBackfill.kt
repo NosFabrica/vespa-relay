@@ -77,7 +77,7 @@ internal class StaticBackfill(
     private val paging: PagingProgress,
     // Windowed reconciliation for streams too big to snapshot in one piece.
     private val pager: NegentropyPager,
-    // One stream reconciles at a time, across static and dynamic both: a
+    // One stream reconciles at a time, across static and discovery both: a
     // stream holds its whole id set from snapshot start to its last relay, so
     // concurrent streams would hold their sets simultaneously (measured: three
     // at once heading for ~9 GiB). Serialising costs little wall clock — they
@@ -99,7 +99,7 @@ internal class StaticBackfill(
      *
      * A static stream folds nothing and discovers nothing — its urls are in
      * `router.conf` — so `discovered` is the configured count and
-     * `foldedOntoAnother` is 0. The partition is otherwise the dynamic one, and
+     * `foldedOntoAnother` is 0. The partition is otherwise the discovery one, and
      * that is the point: a reader must not need to know which kind of stream it
      * is looking at to read the numbers.
      */
@@ -116,7 +116,7 @@ internal class StaticBackfill(
      * `nothingNew` covers both "answered, we were in sync" and "its band already
      * covers the filter, so nothing was asked": neither downloaded anything and
      * neither is a failure, and splitting them would need a fourth outcome the
-     * dynamic side has no equivalent for.
+     * discovery side has no equivalent for.
      */
     private fun settle(
         upstream: SyncUpstream,
@@ -847,7 +847,7 @@ internal class StaticBackfill(
     }
 
     /** Print overall progress until every upstream is done, then a closing line. */
-    suspend fun progressLoop(dynamicStreams: Int) {
+    suspend fun progressLoop(discoveryStreams: Int) {
         while (scope.isActive) {
             delay(PROGRESS_INTERVAL_MS)
             val s = progress.snapshot()
@@ -858,7 +858,7 @@ internal class StaticBackfill(
                 System.err.println(
                     "router: static backfill complete — ${s.downloaded} events from ${s.total} relay(s)" +
                         " in ${fmtDuration(s.elapsedMs)}; live tail now streaming" +
-                        if (dynamicStreams > 0) "; $dynamicStreams dynamic stream(s) still syncing" else "",
+                        if (discoveryStreams > 0) "; $discoveryStreams dynamic stream(s) still syncing" else "",
                 )
                 return
             }

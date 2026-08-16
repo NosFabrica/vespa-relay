@@ -71,7 +71,7 @@ internal class ReachabilityProbe(
      * re-run once for its cause and published only for what [Unreachability]
      * accepts — the extra connect is paid on the failing path alone.
      */
-    suspend fun reachable(url: NormalizedRelayUrl): Boolean {
+    suspend fun probeAndRecord(url: NormalizedRelayUrl): Boolean {
         if (!shouldPreProbe(url, tor)) return true
         val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
         if (!ok) {
@@ -83,7 +83,7 @@ internal class ReachabilityProbe(
     }
 
     /** Our transport can carry it AND something answers — what a probe pass asks. */
-    suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && reachable(url)
+    suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && probeAndRecord(url)
 
     /**
      * Null when it unexpectedly succeeds — the pre-probe's budget is tight and a

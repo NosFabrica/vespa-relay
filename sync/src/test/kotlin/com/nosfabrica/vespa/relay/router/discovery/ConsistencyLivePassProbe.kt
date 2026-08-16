@@ -105,7 +105,7 @@ class ConsistencyLivePassProbe {
         val gate =
             ConsistencyPass(
                 consistency = RelayConsistency(),
-                record = RelayAliasRecord(store, signer),
+                record = RelayVerdictRecord(store, signer),
                 probe = AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { IDLE_MS },
                 progress = processors.of("consistency"),
             )
