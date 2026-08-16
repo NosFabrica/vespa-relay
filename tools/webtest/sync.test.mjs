@@ -123,6 +123,19 @@ const leg = (n, quiet, over = {}) => ({
   });
   assert.equal(probeProgress(fold()).checked, 4147, "checked is candidates MINUS unmeasured");
   assert.equal(probeProgress(fold()).candidates, 11693, "the denominator is the candidate set");
+
+  // A FOLDED URL IS NOT A CHECKED ONE. The gate never dials one — it is another
+  // relay's second address — so it belongs to neither half. Drawn from the bare
+  // complement, the real card read `12,024 of 16,752 checked for consistency`
+  // beside its own tree showing 583 consistent and 12 inconsistent.
+  const gate = probeProgress({
+    name: "consistency", phase: "idle",
+    streams: [{ candidates: 16752, foldedAway: 11429, consistent: 583, inconsistent: 12, unmeasured: 4728 }],
+  });
+  assert.equal(gate.candidates, 5323, "the folded urls leave the denominator");
+  assert.equal(gate.checked, 595, "…and the numerator, where they are exactly the two verdict counts");
+  // The fold's own row measures no folds away from itself, so nothing moves.
+  assert.equal(probeProgress(fold()).checked, 4147, "a row with no partition is the plain complement");
   assert.equal(probeProgress(fold({ streams: [{ candidates: 40, unmeasured: 0 }] })).checked, 40);
   assert.equal(probeProgress(fold({ streams: [{ candidates: 40, unmeasured: 40 }] })).checked, 0);
 

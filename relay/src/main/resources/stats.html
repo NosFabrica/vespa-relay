@@ -2101,7 +2101,12 @@ function funnelPanel(p) {
     // These two numbers are what that list was for — spread thin, or a handful
     // of servers — and the names are on the row's title.
     if (r.hosts) {
-      const spread = r.largest ? ` on ${fmt(r.hosts)} host(s), largest ${fmt(r.largest)}` : ` on ${fmt(r.hosts)} host(s)`;
+      // ` — 501 host(s)`, not ` on 501 host(s)`: the label is the ROUTER's own
+      // sentence and two of the gate's seven end in a preposition, so the card
+      // was rendering `too few events to judge on on 501 host(s)`. A dash joins
+      // any of them, and the reasons are free text off the wire — a separator
+      // that only works for the words we happen to ship today is not one.
+      const spread = r.largest ? ` — ${fmt(r.hosts)} host(s), largest ${fmt(r.largest)}` : ` — ${fmt(r.hosts)} host(s)`;
       name.appendChild(el("em", "sy-tr-hosts", spread));
     }
     row.appendChild(name);

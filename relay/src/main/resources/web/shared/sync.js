@@ -116,12 +116,26 @@ export const MEASURING = "measuring";
  * `candidates` on an unreadable row. Summed rather than `streams[0]`, which once
  * reported a 16-url stream's residue as the whole picture. `lastPassSec` is
  * withheld while a pass runs: it belongs to the previous one.
+ *
+ * **A FOLDED URL IS NOT A CHECKED ONE, and is out of BOTH halves.** The row's
+ * partition is `candidates = foldedAway + consistent + inconsistent +
+ * unmeasured`, so the bare complement of `unmeasured` counts every url the fold
+ * removed as one the stability gate checked — which is the opposite of what the
+ * gate does with them: a folded url is deliberately never dialled, because it is
+ * another relay's second address. On the real card that read `12,024 of 16,752
+ * relay(s) checked for consistency` beside a tree showing 583 consistent and 12
+ * inconsistent, from the same document, in the same tick. The gate's own line is
+ * `595 of 5,323`, and the missing 11,429 are named one row above it.
+ *
+ * Only where the row publishes `foldedAway` at all — the fold's own row measures
+ * no folds away from itself, and there the complement is exactly right.
  */
 export function probeProgress(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
   const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
-  const candidates = sum("candidates");
+  const folded = sum("foldedAway");
+  const candidates = Math.max(0, sum("candidates") - folded);
   const unmeasured = sum("unmeasured");
   return {
     candidates,

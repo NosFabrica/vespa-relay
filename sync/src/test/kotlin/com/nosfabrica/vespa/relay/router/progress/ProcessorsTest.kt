@@ -108,7 +108,9 @@ class ProcessorsTest {
         val p = Processors()
         val gate = p.of("consistency")
         gate.begin(nowMs = 1_000)
-        gate.measuring(10, Processors.UNIT_URL)
+        // The walk's own clock starts here, not at `begin` — the pass spends
+        // its first stretch reading stored verdicts, and that is not dialling.
+        gate.measuring(10, Processors.UNIT_URL, nowMs = 1_000)
 
         assertNull(
             p
@@ -139,7 +141,7 @@ class ProcessorsTest {
         val p = Processors()
         val fold = p.of("aliasFold")
         fold.begin(nowMs = 1_000)
-        fold.measuring(10, Processors.UNIT_HOST)
+        fold.measuring(10, Processors.UNIT_HOST, nowMs = 1_000)
         fold.attempted(10)
         fold.finish(nowMs = 11_000)
 
@@ -150,6 +152,25 @@ class ProcessorsTest {
             p.snapshot(nowMs = 20_001).single().measuring,
             "a pass derives its set some way in — until it does, the last pass's position is not this one's",
         )
+    }
+
+    @Test
+    fun `a pass that brackets itself inside another bracket is one pass, not two`() {
+        // The fitness pass brackets its own `measure` — it must, because the
+        // fast lane calls it outside the monitor's loop — and the sweep
+        // brackets every pass it runs. Both finishes landed, so the row
+        // reported two `passesRun` per sweep and the clock came from the loop
+        // rather than from the measure.
+        val p = Processors()
+        val fitness = p.of("fitness")
+        fitness.begin(nowMs = 1_000) // the monitor's bracket
+        fitness.begin("measuring fitness", nowMs = 2_000) // the pass's own
+        fitness.finish(nowMs = 8_000) // …which ends it
+        fitness.finish(nowMs = 8_100) // and the monitor's, arriving after
+
+        val row = p.snapshot(nowMs = 9_000).single()
+        assertEquals(1L, row.passes, "one pass ran")
+        assertEquals(6L, row.lastPassSec, "and it is timed from the measure, not from the loop around it")
     }
 
     @Test
