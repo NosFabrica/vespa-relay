@@ -95,7 +95,6 @@ class VisitPoolTest {
                 streams {
                     pure {
                         dir    = "down"
-                        sync   = "fetch"
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
@@ -106,7 +105,6 @@ class VisitPoolTest {
                     }
                     gatedScan {
                         dir    = "down"
-                        sync   = "fetch"
                         filter = { "kinds": [30382] }
                         relaySource = [
                             {
@@ -228,7 +226,6 @@ class VisitPoolTest {
                 streams {
                     s {
                         dir    = "down"
-                        sync   = "fetch"
                         filter = { "kinds": [1] }
                         relaySource = [
                             {

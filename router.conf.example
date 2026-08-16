@@ -56,14 +56,14 @@
 #                   trickle — each relay's clock is its own, so audits stagger
 #                   themselves at roster/verifySeconds per second.
 #
-# CHOOSING `sync`
+# CHOOSING `sync` — static `urls` streams only. A relaySource stream has one
+# shape and no choice to make: page forward from the band's edge, live-tail
+# the present, reconcile the covered past on the verifySeconds audit.
 #
 #   negentropy  the relays hold much the same events we do. Compares the two
 #               sets and transfers only the difference.
 #   fetch       the relays hold events nobody else has, or the overlap is
-#               unknown. Pages forward from the band's edge. With a live tail
-#               carrying the present and `verifySeconds` auditing the past,
-#               fetch is the right default for wide fan-outs.
+#               unknown. Pages forward from the band's edge.
 #   auto        reconcile once we already hold a lot of the filter, else fetch.
 
 connectionTimeout = 20
@@ -157,7 +157,6 @@ streams {
     # bytes against every relay's message cap.
     profileViaOutbox {
         dir  = "down"
-        sync = "fetch"
         filter = { "kinds": [0, 10002, 10040] }
         # The monitor's verdicts ARE the relay list: kind-30166 records,
         # admitting every relay whose indexed `s` tag says syncable and whose
@@ -181,7 +180,11 @@ streams {
 
     assertions {
         dir = "down"
-        deleteMissing = "dryRun"
+        # ENFORCED: the provider's relay is the source of truth, and a score
+        # it stopped serving is deleted here after — and only after — a clean
+        # full reconcile. Start a new deployment at "dryRun" and read the
+        # would-delete lines for a few days before flipping this.
+        deleteMissing = true
         # The provider's relay is the source of truth for its OWN scores, and
         # for nothing else here. Kind 0/10002 ride along so we pick them up if
         # it serves them (NIP-85 says it should; measured, none do) — they are
@@ -225,7 +228,6 @@ streams {
     # source and as the monitor's group-host source.
     contentViaOutbox {
         dir  = "down"
-        sync = "fetch"
         filter = { "kinds": [
             0, 1, 5, 9, 11, 14, 20, 21, 22, 24, 40, 41, 42, 54, 62, 1010, 1063,
             1065, 1068, 1111, 1163, 1301, 1311, 1312, 1313, 1315, 1337, 1617,

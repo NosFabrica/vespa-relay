@@ -423,6 +423,12 @@ object RouterConfigLoader {
             "router: stream '$stream' sets recycleSeconds — gone with the cycle engine. The pool has no laps: " +
                 "revisits are paced per relay by recent yield, and `refreshSeconds` paces rediscovery"
         }
+        require(!s.hasPath("sync")) {
+            "router: stream '$stream' sets `sync` beside a relaySource — the pool has one shape for every " +
+                "stream: page forward from the band's edge, reconcile the covered past on the verifySeconds " +
+                "audit. `sync` chooses transport for static `urls` streams only; writing it here would claim " +
+                "a choice nothing reads"
+        }
         val sources = s.getConfigList("relaySource").map { parseRelaySource(stream, it) }
         require(sources.isNotEmpty()) { "router: stream '$stream' has an empty `relaySource` list" }
         require(sources.all { it.verdicts != null || it.certified != null }) {

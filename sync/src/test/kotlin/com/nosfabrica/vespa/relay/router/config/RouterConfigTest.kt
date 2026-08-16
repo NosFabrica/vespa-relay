@@ -869,7 +869,7 @@ class RouterConfigTest {
                 }
             }
             """.trimIndent()
-        for (knob in listOf("authorsPerLeg = 1", "concurrency = 8", "recycleSeconds = 30")) {
+        for (knob in listOf("authorsPerLeg = 1", "concurrency = 8", "recycleSeconds = 30", """sync = "fetch"""")) {
             val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(gated(knob)) }
             assertTrue(knob.substringBefore(" ") in e.message!!, "the error names the knob: ${e.message}")
         }
@@ -1090,7 +1090,6 @@ class RouterConfigTest {
                 streams {
                     content {
                         dir    = "down"
-                        sync   = "fetch"
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
@@ -1114,7 +1113,6 @@ class RouterConfigTest {
             streams {
                 s {
                     dir    = "down"
-                    sync   = "fetch"
                     filter = { "kinds": [1] }
                     relaySource = [ $source ]
                 }
@@ -1152,7 +1150,6 @@ class RouterConfigTest {
             streams {
                 s {
                     dir    = "down"
-                    sync   = "fetch"
                     filter = { "kinds": [1] }
                     relaySource = [ $source ]
                 }
@@ -1222,7 +1219,6 @@ class RouterConfigTest {
                 streams {
                     content {
                         dir    = "down"
-                        sync   = "fetch"
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
@@ -1322,7 +1318,6 @@ class RouterConfigTest {
             streams {
                 s {
                     dir    = "down"
-                    sync   = "fetch"
                     filter = { "kinds": [30382] }
                     relaySource = [ $source ]
                 }
@@ -1383,7 +1378,6 @@ class RouterConfigTest {
                 streams {
                     content {
                         dir    = "down"
-                        sync   = "fetch"
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
