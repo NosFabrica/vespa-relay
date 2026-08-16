@@ -511,6 +511,8 @@ class SyncEngine(
             tor = tor,
             scope = scope,
             monitorAuthor = signer?.pubKey,
+            foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
+            keepBands = pinnedUrls,
             streams = visitStreams,
             progress = processors.of(VISITS_PROCESSOR),
             phases = phases,

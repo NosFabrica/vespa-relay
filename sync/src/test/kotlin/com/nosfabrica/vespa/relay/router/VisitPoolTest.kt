@@ -219,6 +219,42 @@ class VisitPoolTest {
     }
 
     @Test
+    fun `a rebuilt roster with the same asks is not news — one more ask is`() {
+        // The pool compares a url's want list across rebuilds with `wants`,
+        // and both directions of that comparison carry a failure mode.
+        // quartz's Filter has no equals, so the fresh-but-identical filters
+        // every rebuild derives MUST compare equal here — or each roster tick
+        // requeues every relay and the revisit pacing collapses. And one more
+        // bound author MUST compare different — or the new ask waits out the
+        // tailed revisit base for its first catch-up, its tail filter, and
+        // its retraction audit, which is how a staged phantom sat undeleted
+        // for half an hour on a relay another stream already tailed.
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    a { dir = "down", filter = { "kinds": [30382] }
+                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ] }
+                    b { dir = "down", filter = { "kinds": [30382] }
+                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ] }
+                }
+                """.trimIndent(),
+            )
+        val (a, b) = cfg.streams
+
+        fun ask(
+            stream: com.nosfabrica.vespa.relay.router.config.SyncStream,
+            vararg authors: String,
+        ) = VisitPool.Ask(stream, Filter(kinds = listOf(30382), authors = authors.toList().ifEmpty { null }))
+
+        val p1 = "a".repeat(64)
+        val p2 = "b".repeat(64)
+        assertEquals(VisitPool.wants(listOf(ask(a, p1))), VisitPool.wants(listOf(ask(a, p1))), "same shape, fresh instances — not news")
+        assertTrue(VisitPool.wants(listOf(ask(a, p1))) != VisitPool.wants(listOf(ask(a, p1), ask(a, p2))), "a new bound author is news")
+        assertTrue(VisitPool.wants(listOf(ask(a))) != VisitPool.wants(listOf(ask(b))), "the stream asking is part of the identity")
+    }
+
+    @Test
     fun `verifySeconds has an hour floor — an audit is not a re-walk loop`() {
         val cfg =
             RouterConfigLoader.parse(

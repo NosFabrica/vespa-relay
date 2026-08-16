@@ -111,6 +111,19 @@ internal class VisitPool(
     private val scope: CoroutineScope,
     /** Whose 30166 verdicts build the roster — see [RelayDiscovery.syncable]. */
     private val monitorAuthor: String?,
+    /**
+     * The duplicate-url fold, applied READ-ONLY: url → the survivor standing
+     * in for it, over one scan's candidates ([AliasFolding.apply] — standing
+     * verdicts, no sockets). The pool uses it for what the legacy cycle did
+     * as the fold took hold: the duplicate out of the dial list, and its
+     * stale bands out of the state file ([SyncBands.dropFolded]) — left in,
+     * the coverage card names a dozen urls of one host as separately walked
+     * while one of them is synced. Defaults to folding nothing: the probes,
+     * and a router with no signer to read verdicts by.
+     */
+    private val foldedAway: suspend (List<NormalizedRelayUrl>) -> Map<NormalizedRelayUrl, NormalizedRelayUrl> = { emptyMap() },
+    /** Urls a static subscription holds — their bands are never dropped, see [SyncBands.dropFolded]. */
+    private val keepBands: Set<NormalizedRelayUrl> = emptySet(),
     /** The visit-mode streams: every relaySource entry a kind-30166 verdict source. */
     private val streams: List<SyncStream>,
     private val progress: Processors.Handle,
@@ -186,8 +199,20 @@ internal class VisitPool(
     private val queued = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
     private val inFlight = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
-    /** url → live tail subscription id. A held [sockets] claim rides with each. */
-    private val tails = ConcurrentHashMap<NormalizedRelayUrl, String>()
+    /**
+     * One held live subscription: the id to unsubscribe, and [wants] of the
+     * roster entry it was opened on. The set is what lets the next visit see
+     * that the roster changed its asks since — a scan finding a new provider
+     * pairing on a relay another stream already tails — and re-open the tail
+     * on the current want list instead of returning early forever. A held
+     * [sockets] claim rides with each.
+     */
+    private class Tail(
+        val subId: String,
+        val asked: Set<String>,
+    )
+
+    private val tails = ConcurrentHashMap<NormalizedRelayUrl, Tail>()
     private val tailSeq = AtomicInteger()
 
     /**
@@ -436,12 +461,12 @@ internal class VisitPool(
             }
         }
         sharedAuthors = shared
-        val previous = roster.keys
+        val previous = roster
         roster = next
         // A relay the monitor stopped certifying loses its tail and its socket
         // claim: the verdict is the admission, and holding a connection to a
         // relay we no longer trust to sync is the old machine's habit.
-        for (url in previous - next.keys) {
+        for (url in previous.keys - next.keys) {
             dropTail(url)
             // The score dies with the certificate: a relay that comes back
             // after a week earns its tail on what it delivers then, not on a
@@ -449,8 +474,13 @@ internal class VisitPool(
             yields.remove(url)
         }
         var enqueued = 0
-        for (url in next.keys) {
-            if (url !in previous && queued.add(url)) {
+        for ((url, asks) in next) {
+            // (Re)queued when the url's ASK SET is news — a relay new to the
+            // roster, or one already tailed whose want list changed (a scan
+            // found a new provider pairing on a relay another stream holds).
+            // Without the second half, that new ask would wait out the TAILED
+            // revisit base for its first catch-up — and its retraction audit.
+            if (wants(previous[url].orEmpty()) != wants(asks) && queued.add(url)) {
                 queue.trySend(url)
                 enqueued++
             }
@@ -479,13 +509,21 @@ internal class VisitPool(
     ): List<DiscoveredRelay> {
         val nowMs = System.currentTimeMillis()
         scans[stream.name]?.takeIf { it.expiresAtMs > nowMs }?.let { return it.relays }
-        val scanned =
+        val discovered =
             RelayDiscovery.discover(
                 store,
                 dynamic,
                 skip = setOfNotNull(store.relay),
                 allowOnion = tor != null,
             )
+        // The fold, applied where the legacy cycle applied it. `dropFolded`
+        // wants the WHOLE fold set every pass — it diffs against last time,
+        // and a url missing from the set un-hides — so it is called here on
+        // the scan clock with the full discovered universe, never with an
+        // increment.
+        val folded = foldedAway(discovered.map { it.url })
+        bands.dropFolded(stream.name, folded.keys, keep = keepBands)
+        val scanned = if (folded.isEmpty()) discovered else discovered.filter { it.url !in folded }
         // The fork only admits all-certified scans, but the strictest gate is
         // taken rather than assumed — same arithmetic as the legacy engine's.
         val gate = dynamic.scanSources.mapNotNull { it.certified }.minByOrNull { it.maxAgeSeconds }
@@ -557,6 +595,21 @@ internal class VisitPool(
         sockets.claim(url)
         try {
             for (ask in roster[url].orEmpty()) {
+                // The legacy leg give-up, kept across the port: [NEG_IDLE_MS]
+                // bounds one ask, this bounds the SEQUENCE of them. A relay
+                // with hundreds of bound authors that answers each with a
+                // full, empty idle window costs `asks * NEG_IDLE_MS` of a
+                // worker — measured at 5h00m on one url. Silence, not a
+                // deadline: any sign of life resets [Ongoing.lastActivityMs],
+                // so a visit that is delivering is never cut, and the clock
+                // starts at the claim so it cannot fire before the first ask.
+                if (System.currentTimeMillis() - o.lastActivityMs > LEG_QUIET_GIVE_UP_MS) {
+                    aborted.incrementAndGet()
+                    System.err.println(
+                        "router: visit ${url.url} gave up after ${LEG_QUIET_GIVE_UP_MS / 60_000} quiet minute(s) — the revisit takes the remaining asks",
+                    )
+                    return
+                }
                 o.stream = ask.stream.name
                 val clean = catchUp(ask, url)
                 // A refusal ends the whole visit, not just this ask's part:
@@ -761,9 +814,20 @@ internal class VisitPool(
      * is what "constantly connected" means.
      */
     private fun openTail(url: NormalizedRelayUrl) {
-        if (tails.containsKey(url) || !roster.containsKey(url)) return
+        if (!roster.containsKey(url)) return
         val wanting = roster[url].orEmpty()
         if (wanting.isEmpty()) return
+        val asked = wants(wanting)
+        val sitting = tails[url]
+        if (sitting != null) {
+            if (sitting.asked == asked) return
+            // The live subscription upstream still carries the want list from
+            // when it was opened; the roster has since changed its mind about
+            // this relay. Re-opened below on the current asks — a tail that
+            // never asks for the new filter would silently miss its live
+            // events until eviction did the re-open by accident.
+            dropTail(url)
+        }
         // THE BUDGET, and how a tail is earned past it. Under it every visited
         // relay keeps its tail. Over it, the candidate must outrank the
         // weakest sitting tail on recent yield — the socket goes to the relay
@@ -780,7 +844,7 @@ internal class VisitPool(
             if (roster.containsKey(weakest) && queued.add(weakest)) queue.trySend(weakest)
         }
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
-        if (tails.putIfAbsent(url, subId) != null) return
+        if (tails.putIfAbsent(url, Tail(subId, asked)) != null) return
         sockets.claim(url)
         val since = nowSeconds() - TAIL_OVERLAP_SECONDS
         val filters = wanting.map { it.filter.copy(since = since) }.distinct()
@@ -820,8 +884,8 @@ internal class VisitPool(
     }
 
     private fun dropTail(url: NormalizedRelayUrl) {
-        val subId = tails.remove(url) ?: return
-        runCatching { client.unsubscribe(subId) }
+        val tail = tails.remove(url) ?: return
+        runCatching { client.unsubscribe(tail.subId) }
         sockets.release(url)
         publishPhases()
     }
@@ -899,6 +963,16 @@ internal class VisitPool(
                 DiscoveredRelay(discovered.url, discovered.narrow + ("authors" to setOf(author))).narrowed(base)
             }
         }
+
+        /**
+         * The IDENTITY of an ask set, for change detection: stream name plus
+         * the filter's own JSON — the `toJson` keying [SyncBands] already
+         * trusts. quartz's [Filter] compares by reference, so two rebuilds
+         * that derive the very same roster produce unequal [Ask]s; comparing
+         * those directly would requeue the whole roster on every tick, and
+         * comparing nothing left a new ask waiting out the tailed revisit.
+         */
+        internal fun wants(asks: List<Ask>): Set<String> = asks.mapTo(mutableSetOf()) { "${it.stream.name} ${it.filter.toJson()}" }
 
         /**
          * Concurrent visits, which is concurrent DIALS — see the constructor
