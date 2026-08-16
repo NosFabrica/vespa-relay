@@ -69,10 +69,10 @@ class RouterConfExamplesTest {
         // and it fails silently — there is no error, just no relays.
         val mirrored = example.streams.flatMap { it.filter.kinds.orEmpty() }.toSet()
         example.discoveryStreams().forEach { stream ->
-            // Verdict queries excepted: they read the monitor's own kind-30166
-            // records, which the monitor WRITES into this store — no stream
-            // mirrors them, and none needs to.
-            stream.discovery!!.sources.filterNot { it.vouchesForItself }.forEach { source ->
+            // Kind 30166 excepted: those are the monitor's own records, which
+            // it WRITES into this store — no stream mirrors them, and none
+            // needs to.
+            stream.discovery!!.sources.filterNot { it.filter.kinds == listOf(30166) }.forEach { source ->
                 source.filter.kinds.orEmpty().forEach { kind ->
                     assertTrue(kind in mirrored, "stream '${stream.name}' scans kind $kind, which no stream mirrors")
                 }
@@ -152,7 +152,7 @@ class RouterConfExamplesTest {
         // stream then asks them for what a group actually holds.
         assertTrue(
             example.streams.any {
-                it.discovery?.sources?.any { s -> s.vouchesForItself } == true &&
+                it.discovery?.sources?.any { s -> s.filter.kinds == listOf(30166) } == true &&
                     it.filter.kinds
                         .orEmpty()
                         .containsAll(listOf(9, 11, 1111, 39000))

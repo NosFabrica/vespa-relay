@@ -816,10 +816,18 @@ entry is either a **verdict source** (`filter = { "kinds": [30166],
 path: a verdict query is a scan whose select is NIP-66's `d` tag, which the
 loader supplies. `VerdictSource` and its separate verified read are gone —
 they differed in the questions they were allowed to answer and in almost
-nothing else once the epoch and the tag-stamp freshness left. What survives is
-a derived predicate, `RelaySource.vouchesForItself`, used for exactly one
-thing: letting a stream whose sources all say `syncable` skip a `gatedBy` that
-would only restate them. Whose verdicts count is the
+nothing else once the epoch and the tag-stamp freshness left.
+
+**NOTHING IN THE SYNC PLANE KNOWS THAT `s` IS THE TAG OR THAT `syncable` IS THE
+VALUE.** That is the whole point of a gate being a filter: another monitor
+spelling its opinion `["l", "live"]` needs no code here, only a different
+filter. Keying anything on `s`/`syncable` — a default tag, a refusal of other
+values, an inferred freshness bound, a "this source vouches for itself"
+predicate — hands our vocabulary back to every operator who wanted theirs, and
+each one was tried and removed. What the loader MAY key on is kind 30166,
+because NIP-66 fixes two things about that kind and neither is a semantic
+guess: the url is in the `d` tag, and the author is a monitor identity. Whose
+verdicts count is the
 source's `authors` npubs, and **absent means unscoped** — every monitor whose
 30166s reached the store, exactly as an absent `authors` means on any NIP-01
 filter. There is deliberately no fallback to the router's own signer: it made
@@ -1084,12 +1092,23 @@ monitor at all.
 day it was written.** `maxAgeSeconds` is the relative form of `since`, whose
 absolute instant a file cannot hold; writing both is refused, since the relative
 one wins and the other would be read by a human and by nothing else. It defaults
-to UNBOUNDED, and a bound would be a bug: a NIP-65 relay list is replaceable and
+to UNBOUNDED and nothing infers otherwise: a NIP-65 relay list is replaceable and
 timeless, so one published in 2023 that nobody revised says what its author
 still means, while a verdict nobody has re-taken for a month is how a dead relay
-stays in the fan-out for a month. The loader therefore supplies the 14h default
-for a verdict query and leaves every other source unbounded. `refreshSeconds` is
+stays in the fan-out for a month — and which of those a given filter is asking
+for is the operator's knowledge, not a thing to read off a kind or a tag.
+`RelaySource.DEFAULT_MAX_AGE_SECONDS` is a documented number to reach for, and
+the shipped config writes it explicitly on every verdict read. `refreshSeconds` is
 per source for the same kind of reason — see the cadence note below.
+
+**An ungated stream is a warning, not a parse error.** The old rule — a scan
+needs `certified`/`gatedBy` unless every source is a verdict query — could only
+be stated by deciding which tag and which value constitute a vouching, which is
+exactly the operator's call. A filter that gates and a filter that scans are
+indistinguishable from here, so the loader says which streams have no `gatedBy`
+at boot and the config is the authority. **This is a deliberate safety
+downgrade**: it was a hard error and is now a line on stderr, bought in exchange
+for gates the router does not have to understand.
 
 **Cheap sources must be allowed to run far more often than expensive ones.** A
 kind-30166 read is one indexed query bounded by `maxAgeSeconds`; a 10002 scan

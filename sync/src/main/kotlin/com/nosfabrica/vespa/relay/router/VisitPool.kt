@@ -825,17 +825,14 @@ internal class VisitPool(
 
     companion object {
         /**
-         * Does [stream] ride the pool? Yes when something vouches for every
-         * url it would dial — a stream-level `gatedBy`, or sources that are
-         * themselves verdict queries. A retracting stream rides too: its
-         * `deleteMissing` comparison IS its audit ([RetractionAudit]), on the
-         * `auditSeconds` clock the loader requires it to set.
+         * Does [stream] ride the pool? Yes when it builds its relay list from
+         * the store at all — whether it gates that list is the operator's
+         * business, not a precondition for the engine that walks it. A
+         * retracting stream rides too: its `deleteMissing` comparison IS its
+         * audit ([RetractionAudit]), on the `auditSeconds` clock the loader
+         * requires it to set.
          */
-        internal fun ridesThePool(stream: SyncStream): Boolean {
-            val discovery = stream.discovery ?: return false
-            return discovery.sources.isNotEmpty() &&
-                (discovery.gatedBy.isNotEmpty() || discovery.sources.all { it.vouchesForItself })
-        }
+        internal fun ridesThePool(stream: SyncStream): Boolean = stream.discovery?.sources?.isNotEmpty() == true
 
         /**
          * Did this leg's walk end in a way that makes the NEXT leg futile?

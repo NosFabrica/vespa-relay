@@ -529,16 +529,21 @@ object RouterConfigLoader {
             } else {
                 emptyList()
             }
-        // The pool dials only relays something vouches for. A source that IS a
-        // verdict query vouches for its own urls, so a stream built entirely
-        // out of those needs no gate — restating the same query as `gatedBy`
-        // would be a tautology the operator has to type. Anything else scans
-        // whatever urls happen to be in somebody's relay list, and needs one.
-        require(gatedBy.isNotEmpty() || sources.all { it.vouchesForItself }) {
-            "router: stream '$stream' scans relay lists without a `gatedBy` — those urls are as writable as the " +
-                "events naming them, and each dead one costs a dial and a timeout every cycle forever. Gate the " +
-                "stream with `gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], " +
-                "\"#s\": [\"${RelayVerdictStatus.SYNCABLE}\"] } } ]`"
+        // SAID, NOT REFUSED. An ungated stream dials whatever its sources name,
+        // and relay lists are as writable as the events carrying them — each
+        // dead url costs a dial and a timeout every cycle forever. That used
+        // to be a parse error, on the rule "unless every source is a verdict
+        // query"; stating that rule meant this module deciding which tag, and
+        // which value in it, constitutes a vouching — the operator's choice
+        // and another monitor's spelling. A filter that gates and a filter
+        // that scans are indistinguishable from here, so the config is the
+        // authority and this is a line at boot naming the stream.
+        if (gatedBy.isEmpty()) {
+            System.err.println(
+                "router: stream '$stream' has no `gatedBy` — every url its relaySource names will be dialled, " +
+                    "and a relay list is as writable as the event carrying it. Right where the sources are " +
+                    "already somebody's vetted list; otherwise gate the stream.",
+            )
         }
         return RelayDiscoveryConfig(
             sources = sources,
@@ -599,7 +604,11 @@ object RouterConfigLoader {
         val written = parseFilter(s.getConfig("filter"))
         val kinds = written.kinds
         require(!kinds.isNullOrEmpty()) { "router: stream '$stream' $what filter needs `kinds`" }
-        val isVerdictQuery = kinds == listOf(RelayDiscoveryEvent.KIND)
+        // KIND, not semantics. NIP-66 fixes two things about a 30166 that this
+        // module may rely on without guessing anyone's vocabulary: the url
+        // lives in the `d` tag, and the author is a monitor identity. What the
+        // other tags are called and what their values mean is not ours.
+        val isNip66Record = kinds == listOf(RelayDiscoveryEvent.KIND)
         // npub-ONLY where the authors are MONITOR IDENTITIES, for the reason
         // the relay side's PubKeys spells out: hex has no checksum, so one
         // mistyped character is a valid-looking key that is nobody, and a
@@ -607,7 +616,7 @@ object RouterConfigLoader {
         // kinds keep NIP-01's own spelling — a scan's `authors` is an ordinary
         // filter field and narrowing it is not a trust statement.
         val filter =
-            if (isVerdictQuery) {
+            if (isNip66Record) {
                 written.copy(authors = decodeNpubs(stream, written.authors.orEmpty()).takeIf { it.isNotEmpty() })
             } else {
                 written
@@ -637,37 +646,18 @@ object RouterConfigLoader {
                     require(it.isNotEmpty()) { "router: stream '$stream' has a $what entry with an empty `select`" }
                 }
             } else {
-                require(kinds == listOf(RelayDiscoveryEvent.KIND)) {
+                require(isNip66Record) {
                     "router: stream '$stream' has a $what entry over kinds ${kinds.joinToString("/")} with no " +
                         "`select` — only kind ${RelayDiscoveryEvent.KIND} has its url fixed by the protocol " +
                         "(the `d` tag); say where the urls sit"
                 }
                 listOf(RelaySelect(kind = RelayDiscoveryEvent.KIND, tag = "d", urlIndex = 1))
             }
-        // The one refusal that outlived the verdict/scan split, because it is
-        // about what a value MEANS rather than how it is read: the refusals
-        // are diagnoses of a relay, not a list of relays to sync from.
-        filter.tags?.get(RelayVerdictStatus.TAG)?.let { verdicts ->
-            require(verdicts == listOf(RelayVerdictStatus.SYNCABLE)) {
-                "router: stream '$stream' asks for verdicts $verdicts — `${RelayVerdictStatus.SYNCABLE}` is the " +
-                    "only value that admits a relay to a sync stream; the refusals are diagnoses, not relay lists"
-            }
-        }
-        // A kind-30166 read with no `#s` at all would take the refusals too —
-        // dialling every relay the monitor called dead. It has only ever meant
-        // `syncable`, back when a separate read hardcoded that, so it says so
-        // now instead of depending on one.
-        val bounded =
-            if (isVerdictQuery && filter.tags?.containsKey(RelayVerdictStatus.TAG) != true) {
-                filter.copy(tags = (filter.tags ?: emptyMap()) + (RelayVerdictStatus.TAG to listOf(RelayVerdictStatus.SYNCABLE)))
-            } else {
-                filter
-            }
         require(!s.hasPath("certified")) {
             "router: stream '$stream' uses `certified { }`, which is gone — it could only ever mean `a fresh " +
                 "syncable from our own monitor`, and both halves of that are now expressible. Write the gate as " +
                 "a stream-level `gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], " +
-                "\"#s\": [\"${RelayVerdictStatus.SYNCABLE}\"] } } ]`"
+                "\"#s\": [\"syncable\"] } } ]` — naming whatever tag and value the monitor you trust writes"
         }
         require(!s.hasPath("resultsFilteredBy")) {
             "router: stream '$stream' puts `resultsFilteredBy` on a $what entry — it was renamed to `gatedBy` and " +
@@ -676,16 +666,11 @@ object RouterConfigLoader {
         }
         return RelaySource(
             selects = selects,
-            filter = bounded,
-            // Unbounded unless this source is a verdict query, which is the
-            // one shape where age changes what the data MEANS — see
-            // [RelaySource.maxAgeSeconds].
-            maxAgeSeconds =
-                when {
-                    s.hasPath("maxAgeSeconds") -> s.getLong("maxAgeSeconds").coerceAtLeast(60L)
-                    isVerdictQuery -> RelaySource.DEFAULT_MAX_AGE_SECONDS
-                    else -> null
-                },
+            filter = filter,
+            // Unbounded unless written. Which filters describe a measurement
+            // that goes stale, and which describe a list that does not, is the
+            // operator's knowledge — see [RelaySource.maxAgeSeconds].
+            maxAgeSeconds = if (s.hasPath("maxAgeSeconds")) s.getLong("maxAgeSeconds").coerceAtLeast(60L) else null,
             refreshSeconds = if (s.hasPath("refreshSeconds")) s.getLong("refreshSeconds").coerceAtLeast(10L) else null,
         )
     }

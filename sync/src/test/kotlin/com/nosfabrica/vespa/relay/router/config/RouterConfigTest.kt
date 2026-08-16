@@ -946,27 +946,6 @@ class RouterConfigTest {
             val e = assertFailsWith<IllegalArgumentException> { RouterConfigLoader.parse(gated(knob)) }
             assertTrue(knob.substringBefore(" ") in e.message!!, "the error names the knob: ${e.message}")
         }
-        // ...and an ungated scan is refused with the way in.
-        val e =
-            assertFailsWith<IllegalArgumentException> {
-                RouterConfigLoader.parse(
-                    """
-                    streams {
-                        s {
-                            dir    = "down"
-                            filter = { "kinds": [1] }
-                            relaySource = [
-                                {
-                                    select = [ { tag = "r" } ]
-                                    filter = { "kinds": [10002] }
-                                }
-                            ]
-                        }
-                    }
-                    """.trimIndent(),
-                )
-            }
-        assertTrue("gatedBy" in e.message!!, "the error says how to gate it: ${e.message}")
     }
 
     /** A one-stream config, with [body] as the stream's keys. */
@@ -1181,7 +1160,7 @@ class RouterConfigTest {
                 .sources
                 .single()
         assertEquals(7200L, source.maxAgeSeconds)
-        assertTrue(source.vouchesForItself, "a `syncable` query is its own permission — no `gatedBy` required")
+        assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), source.selects, "the `d` tag NIP-66 fixes")
     }
 
     @Test
@@ -1206,7 +1185,7 @@ class RouterConfigTest {
                 .discovery!!
                 .sources
                 .single()
-        assertEquals(RelaySource.DEFAULT_MAX_AGE_SECONDS, bare.maxAgeSeconds)
+        assertEquals(null, bare.maxAgeSeconds, "no bound is inferred from the kind, or from any tag in the filter")
         assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), bare.selects)
         // …and a select written by hand is honoured rather than refused: there
         // is no verified read left for it to be incompatible with.
@@ -1221,11 +1200,15 @@ class RouterConfigTest {
                 .single()
                 .selects,
         )
-        // A refusal verdict is a diagnosis rather than a relay list, which is
-        // about what the VALUE means and so outlived the split.
-        assertFailsWith<IllegalArgumentException> {
-            RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#s": ["dead"] } }"""))
-        }
+        // Any tag value parses. `#s: ["dead"]` as a SOURCE is a stream that
+        // syncs from relays our monitor called dead, which is odd but is the
+        // operator's odd; refusing it would mean this loader having an opinion
+        // about what values in what tag mean, which is the opinion the whole
+        // shape exists to avoid holding.
+        RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#s": ["dead"] } }"""))
+        // Mixing 30166 with another kind still fails, and for a reason that is
+        // not about semantics: the `d`-tag default is a NIP-66 fact about kind
+        // 30166 and says nothing about where kind 10002 keeps its urls.
         assertFailsWith<IllegalArgumentException> {
             RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166, 10002] } }"""))
         }
@@ -1430,9 +1413,10 @@ class RouterConfigTest {
         assertEquals(null, gate.filter.authors, "absent authors is the unscoped read, not a substituted identity")
         // NIP-66 fixes the url in the `d` tag, so a 30166 gate needs no select.
         assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), gate.selects)
-        // …and the default bound applies where none is written.
+        // …and NOTHING is inferred where none is written: which filters
+        // describe a measurement that goes stale is the operator's knowledge.
         assertEquals(
-            RelaySource.DEFAULT_MAX_AGE_SECONDS,
+            null,
             RouterConfigLoader
                 .parse(
                     stream(
@@ -1511,19 +1495,45 @@ class RouterConfigTest {
     }
 
     @Test
-    fun `an ungated scan is refused, and a syncable query needs no gate`() {
-        // The pool dials only relays something vouches for. A `syncable` query
-        // vouches for its own urls, so restating it as `gatedBy` would be a
-        // tautology the operator has to type; anything else scans whatever is
-        // in somebody's relay list and needs one.
-        val e =
-            assertFailsWith<IllegalArgumentException> {
-                RouterConfigLoader.parse(
-                    stream("""relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]"""),
-                )
-            }
-        assertTrue("gatedBy" in e.message!!, e.message!!)
-        RouterConfigLoader.parse(stream("""relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]"""))
+    fun `an ungated stream parses, because nothing here can tell a gate from a scan`() {
+        // This was a parse error, on the rule "unless every source is a verdict
+        // query". Stating that rule meant the loader deciding which tag, and
+        // which value in it, constitutes a vouching — the operator's choice and
+        // another monitor's spelling. A monitor writing `["status", "live"]` is
+        // as good a gate as ours and the config is the only thing that knows,
+        // so an ungated stream parses and says so at boot instead.
+        val ungated =
+            RouterConfigLoader.parse(
+                stream("""relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]"""),
+            )
+        assertEquals(
+            emptyList(),
+            ungated.streams
+                .single()
+                .discovery!!
+                .gatedBy,
+        )
+        // …and a gate spelled somebody else's way is an ordinary filter here.
+        val foreign =
+            RouterConfigLoader.parse(
+                stream(
+                    """
+                    relaySource = [ { select = [ { tag = "r" } ], filter = { "kinds": [10002] } } ]
+                    gatedBy = [ { filter = { "kinds": [30166], "#l": ["live"] }, maxAgeSeconds = 3600 } ]
+                    """.trimIndent(),
+                ),
+            )
+        assertEquals(
+            mapOf("l" to listOf("live")),
+            foreign.streams
+                .single()
+                .discovery!!
+                .gatedBy
+                .single()
+                .filter.tags,
+            "no tag and no value is privileged; NIP-01 only indexes single-letter tags, which bounds the " +
+                "spellings a monitor can pick but not which one this router understands",
+        )
     }
 
     @Test
@@ -1571,6 +1581,10 @@ class RouterConfigTest {
         // and gets it anyway — which is the point of hoisting it: permission
         // is a question about the stream, not about how a url was found.
         assertEquals(1, discovery.gatedBy.size)
-        assertEquals(listOf(true, false), discovery.sources.map { it.vouchesForItself })
+        assertEquals(
+            listOf(listOf(30166), listOf(10009)),
+            discovery.sources.map { it.filter.kinds },
+            "two ways of finding urls; the gate above does not care which is which",
+        )
     }
 }

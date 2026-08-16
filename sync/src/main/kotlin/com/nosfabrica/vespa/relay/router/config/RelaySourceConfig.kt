@@ -23,7 +23,6 @@ package com.nosfabrica.vespa.relay.router.config
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
-import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 
 /**
  * A stream's relay list, read from events our own store already holds instead
@@ -183,24 +182,22 @@ internal fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
  * every select is applied to what it returns, so a whole shelf of relay-list
  * kinds costs one query rather than one each.
  *
- * A VERDICT SOURCE ([verdicts] set): the filter asks for the monitor's own
- * kind-30166 records — `{ "kinds": [30166], "#s": ["syncable"] }` — and the
- * relay list is every url whose record carries a fresh `syncable` from OUR
- * monitor identity. No selects: NIP-66 fixes the url in the `d` tag, and the
- * read is the VERIFIED path ([discovery.RelayDiscovery.syncable] — epoch,
- * measured-at freshness, the one admitting value), not a generic tag scan; a
- * generic scan would admit a verdict whose evidence rules have since changed,
- * or one nobody has re-taken for a month. This is not a gate in front of a
- * source — it IS the source: the monitor earns the verdicts on its own clock
- * and the stream's discovery collapses to one indexed query.
+ * A MONITOR'S VERDICTS are just another shape of this, not a second kind of
+ * thing: `{ "kinds": [30166], "#s": ["syncable"] }` with the `d`-tag select
+ * NIP-66 fixes, which the loader supplies when none is written. Nothing in
+ * this module knows that `s` is the tag or that `syncable` is the value — a
+ * verdict source and a gate are both filters, and which tag carries a
+ * monitor's opinion, and what value in it means "worth dialling", is that
+ * monitor's business and the operator's. Another monitor spelling it
+ * `["status", "live"]` needs no code here, only a different filter.
  */
 data class RelaySource(
     /**
      * Where the url sits in what [filter] returns. Defaults, when the operator
-     * writes none, to NIP-66's own answer — the `d` tag of a kind-30166 record
-     * — which is the only position the protocol fixes for us. Everything else
-     * has to say, because every relay list in the wild puts the url somewhere
-     * of its own choosing and a guessed index reads the wrong slot in silence.
+     * writes none, to the `d` tag of a kind-30166 record — the one position
+     * the PROTOCOL fixes, which is why keying that default on the kind is a
+     * fact rather than a guess about anyone's semantics. Every other relay
+     * list puts the url somewhere of its own choosing, so it has to say.
      */
     val selects: List<RelaySelect>,
     val filter: Filter,
@@ -211,15 +208,19 @@ data class RelaySource(
      * Tuesday it means Tuesday forever — so the relative knob stays out here
      * and becomes `since = now - maxAgeSeconds` at read time.
      *
-     * UNBOUNDED IS THE RIGHT DEFAULT AND A BOUND WOULD BE A BUG, because the
-     * question has no answer that holds across sources. A NIP-65 relay list is
-     * timeless: it is replaceable, the newest version is the truth, and one
-     * published in 2023 that nobody has revised says exactly what its author
-     * still means. A verdict is the opposite — it is a measurement, and one
-     * nobody has re-taken for a month is how a dead relay stays in the fan-out
-     * for a month. So the loader supplies [DEFAULT_MAX_AGE_SECONDS] for a
-     * source that IS a verdict query ([vouchesForItself]) and leaves everything
-     * else unbounded, and either can be written explicitly.
+     * UNBOUNDED IS THE DEFAULT, because the question has no answer this code
+     * can supply. A NIP-65 relay list is timeless: it is replaceable, the
+     * newest version is the truth, and one published in 2023 that nobody has
+     * revised says exactly what its author still means. A monitor's verdict is
+     * the opposite — it is a measurement, and one nobody has re-taken for a
+     * month is how a dead relay stays in the fan-out for a month.
+     *
+     * WHICH OF THOSE A FILTER IS ASKING FOR IS THE OPERATOR'S KNOWLEDGE, not
+     * ours. Nothing here reads a tag name or a tag value to guess: another
+     * monitor may spell its verdict any way it likes, and the whole point of a
+     * gate being a filter is that the operator can name that spelling. So
+     * [DEFAULT_MAX_AGE_SECONDS] is a documented number to reach for, not one
+     * anything infers.
      *
      * It bounds the EVENT's own clock, which for a monitor record is when that
      * monitor last re-checked the relay. That reading only became available
@@ -235,31 +236,13 @@ data class RelaySource(
      * the difference is not a matter of taste. A kind-30166 read is one
      * indexed query bounded by [maxAgeSeconds]; a 10002 scan walks a corpus.
      * Cached alike at the stream's default of six hours, the cheap one would
-     * hold a newly-certified relay out of the fan-out for six hours — against
-     * a monitor fast lane that earns it a verdict in two minutes, and a
-     * documented promise that it joins on its first `syncable`. Set it short
-     * on the reads that are cheap.
+     * hold a newly-verdicted relay out of the fan-out for six hours — against
+     * a monitor fast lane that measures it in two minutes, and a documented
+     * promise that it joins as soon as it is vouched for. Set it short on the
+     * reads that are cheap.
      */
     val refreshSeconds: Long? = null,
 ) {
-    /**
-     * Is this source ALREADY a permission statement — a query for monitor
-     * verdicts admitting relays — rather than a scan of whatever urls happen
-     * to be in somebody's relay list?
-     *
-     * Derived, never declared. This used to be a type (`VerdictSource`) and a
-     * second read path beside the scan one, which made "where do urls come
-     * from" and "may we dial them" look like two kinds of source instead of
-     * two questions about every source. All that survives of the distinction
-     * is this predicate, and it is used for exactly one thing: letting a
-     * stream whose sources all say `syncable` skip a
-     * [RelayDiscoveryConfig.gatedBy] that would only restate them.
-     */
-    val vouchesForItself: Boolean
-        get() =
-            filter.kinds == listOf(RelayDiscoveryEvent.KIND) &&
-                filter.tags?.get(RelayVerdictStatus.TAG) == listOf(RelayVerdictStatus.SYNCABLE)
-
     companion object {
         /**
          * Two of the monitor's 6h sweeps plus slack: one missed sweep must not
@@ -269,16 +252,6 @@ data class RelaySource(
          */
         const val DEFAULT_MAX_AGE_SECONDS = 14 * 60 * 60L
     }
-}
-
-/**
- * The two strings the config layer needs to recognise a verdict query without
- * depending on the monitor that writes one. Kept here rather than reached for
- * across the package boundary: `discovery` already depends on `config`.
- */
-object RelayVerdictStatus {
-    const val TAG = "s"
-    const val SYNCABLE = "syncable"
 }
 
 /**

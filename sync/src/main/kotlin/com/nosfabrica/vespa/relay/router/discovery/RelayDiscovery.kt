@@ -204,10 +204,19 @@ object RelayDiscovery {
     /**
      * The hold-out read: urls one of [monitorAuthors] currently calls `dead`,
      * so a probe pass does not spend a connect timeout re-learning what a
-     * record already says. The inverse of [syncable] in every way that
-     * matters, including the one that is NOT symmetric — see
-     * [StreamWorld.monitorAuthors] for why this one must stay scoped while
-     * admitting may be unscoped.
+     * record already says.
+     *
+     * THE ONE PLACE A VERDICT VALUE IS NAMED IN CODE, and it is not a config
+     * surface: this is the MONITOR plane reading records the monitor itself
+     * wrote, in the vocabulary it defines ([FitnessPass.Verdict]), to decide
+     * what its own next pass should dial. Nothing an operator writes reaches
+     * it, and no foreign monitor's spelling has to. The STREAM plane — which
+     * relays a sync stream may dial — names nothing: it is filters all the way
+     * down, and see [RelayDiscoveryConfig.gatedBy].
+     *
+     * Not symmetric with admitting, which is the asymmetry
+     * [StreamWorld.monitorAuthors] exists to state: this stays scoped where a
+     * gate may be unscoped.
      *
      * `dead` alone, never the other refusals: `alias`, `inconsistent`,
      * `unpageable`, `auth-refused` and `restricted` are all verdicts a relay
@@ -215,9 +224,9 @@ object RelayDiscovery {
      * stability gate from ever re-measuring the relays they exist to judge.
      * Only the transport saying no is a reason not to dial.
      *
-     * EMPTY AUTHORS HOLDS NOTHING OUT — the opposite of what it means to
-     * [syncable], and refused here rather than left to each caller to
-     * remember. Unscoped, this is the starvation vector: any stranger whose
+     * EMPTY AUTHORS HOLDS NOTHING OUT — the opposite of what an absent
+     * `authors` means to a gate, and settled here rather than left to each
+     * caller to remember. Unscoped, this is the starvation vector: any stranger whose
      * 30166s we mirror could take a relay out of every pass for good. A router
      * with no signer and no named monitors has no standing to call anything
      * dead, and dialling a corpse costs one timeout — which is the cheaper of

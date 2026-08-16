@@ -182,7 +182,14 @@ streams {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
                 # ...naming the monitors to trust, and nobody else:
                 # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["npub1..."] }
-                maxAgeSeconds = 50400  # two 6h sweeps + slack
+                # How stale a verdict may be and still admit its relay, measured
+                # on the record's own clock. There is NO default: nothing in the
+                # router knows which filters describe a measurement that goes
+                # stale and which describe a list that does not, so an unwritten
+                # bound is no bound. Two 6h sweeps + slack — one missed sweep
+                # must not empty the roster, three missed sweeps is a monitor
+                # whose silence should.
+                maxAgeSeconds = 50400
                 # How often to RE-READ this source. One indexed query, so it can
                 # run far more often than a relay-list scan — and it has to: this
                 # is what bounds a newly-certified relay's wait to join the
@@ -247,10 +254,13 @@ streams {
         # `"authors": ["npub1..."]` to name whose, or point it at a curated list
         # entirely — with a `select` saying where that list keeps its urls,
         # since only kind 30166 has the position fixed by the protocol (the `d`
-        # tag). A stream whose sources are all `syncable` queries needs no
-        # gate: they already are one.
+        # tag). Nothing in the router knows that `s` is the tag or that
+        # `syncable` is the value — a monitor spelling its opinion
+        # `["status", "live"]` needs no code change here, only this filter
+        # written differently. A stream with no `gatedBy` dials whatever its
+        # sources name and says so at boot.
         gatedBy = [
-            { filter = { "kinds": [30166], "#s": ["syncable"] }, refreshSeconds = 120 }
+            { filter = { "kinds": [30166], "#s": ["syncable"] }, maxAgeSeconds = 50400, refreshSeconds = 120 }
         ]
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
@@ -284,6 +294,7 @@ streams {
         relaySource = [
             {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
+                maxAgeSeconds = 50400
                 refreshSeconds = 120  # see profileViaOutbox
             }
         ]
