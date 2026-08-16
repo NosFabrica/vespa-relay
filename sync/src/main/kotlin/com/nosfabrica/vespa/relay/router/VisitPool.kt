@@ -160,6 +160,17 @@ internal class VisitPool(
     private val queued = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
     private val inFlight = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
 
+    /** Urls whose requeue arrived while their visit was running — see [workerLoop]. */
+    private val pendingVisit = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
+    /**
+     * Urls with a revisit timer already parked. Without it, an out-of-band
+     * requeue (an eviction, a changed ask set) produced a second visit whose
+     * own timer then ran BESIDE the first — two self-perpetuating chains
+     * revisiting one relay at double cadence.
+     */
+    private val revisitArmed = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
+
     /**
      * One held live subscription: the id to unsubscribe, and [wants] of the
      * roster entry it was opened on. The set is what lets the next visit see
@@ -440,7 +451,14 @@ internal class VisitPool(
     private suspend fun workerLoop() {
         for (url in queue) {
             queued.remove(url)
-            if (!inFlight.add(url)) continue
+            if (!inFlight.add(url)) {
+                // Someone is mid-visit on this url — usually the rebuild
+                // requeueing a changed ask set. Dropping the entry here
+                // would swallow that promptness promise, so it is parked and
+                // the visit's own worker requeues it the moment it finishes.
+                pendingVisit.add(url)
+                continue
+            }
             try {
                 if (roster.containsKey(url)) visit(url)
             } catch (e: CancellationException) {
@@ -451,7 +469,13 @@ internal class VisitPool(
             } finally {
                 inFlight.remove(url)
             }
-            scheduleRevisit(url)
+            if (pendingVisit.remove(url)) {
+                // A requeue arrived mid-visit: back on the queue now, and no
+                // revisit timer — the prompt visit schedules its own.
+                if (queued.add(url)) queue.trySend(url)
+            } else {
+                scheduleRevisit(url)
+            }
         }
     }
 
@@ -463,8 +487,13 @@ internal class VisitPool(
      * within either, more content lately means sooner ([revisitDelayMs]).
      */
     private fun scheduleRevisit(url: NormalizedRelayUrl) {
+        if (!revisitArmed.add(url)) return
+        // Read, never getOrPut: a roster drop prunes this url's yield, and a
+        // finishing visit racing that prune must not resurrect the entry.
+        val score = yields[url]?.current(System.currentTimeMillis()) ?: 0.0
         scope.launch {
-            delay(revisitDelayMs(yieldOf(url).current(System.currentTimeMillis()), tails.containsKey(url)))
+            delay(revisitDelayMs(score, tails.containsKey(url)))
+            revisitArmed.remove(url)
             if (roster.containsKey(url) && queued.add(url)) queue.trySend(url)
         }
     }
@@ -697,7 +726,6 @@ internal class VisitPool(
      * is what "constantly connected" means.
      */
     private fun openTail(url: NormalizedRelayUrl) {
-        if (!roster.containsKey(url)) return
         val wanting = roster[url].orEmpty()
         if (wanting.isEmpty()) return
         val asked = RosterBuilder.wants(wanting)
@@ -727,42 +755,92 @@ internal class VisitPool(
             if (roster.containsKey(weakest) && queued.add(weakest)) queue.trySend(weakest)
         }
         val subId = "visit-tail-${tailSeq.incrementAndGet()}"
-        if (tails.putIfAbsent(url, Tail(subId, asked)) != null) return
+        // CLAIM AND SUBSCRIBE BEFORE PUBLISHING: a concurrent dropTail — a
+        // roster drop, another worker's eviction — must only ever meet a
+        // FULLY-FORMED tail, a subscription it can unsubscribe and a claim it
+        // can release. The old order (publish, claim, subscribe) let a
+        // dropTail landing inside that window release someone else's claim
+        // and strand a ghost subscription that re-attached on every
+        // reconnect.
         sockets.claim(url)
-        val since = nowSeconds() - TAIL_OVERLAP_SECONDS
-        val filters = wanting.map { it.filter.copy(since = since) }.distinct()
-        client.subscribe(
-            subId,
-            mapOf(url to filters),
-            object : SubscriptionListener {
-                override suspend fun onEvent(
-                    event: Event,
-                    isLive: Boolean,
-                    relay: NormalizedRelayUrl,
-                    forFilters: List<Filter>?,
-                ) {
-                    if (relay != url) return
-                    arrived(url, o = null)
-                    // Bind trust per stream, and re-check scope so a broken
-                    // relay cannot widen what we ingest — the same rule the
-                    // static tails follow. Matching is against each ASK's
-                    // filter: a narrowed ask admits only its own provider's
-                    // events off the tail, exactly as it does off a page.
-                    val wanted = roster[url].orEmpty().filter { it.filter.match(event) }
-                    if (wanted.isEmpty()) return
-                    ingest.submit(
-                        event,
-                        wanted.all { it.stream.trusted },
-                        IngestOrigin(
-                            url,
-                            healContent = wanted.any { it.stream.healContent },
-                            healRetractions = wanted.any { it.stream.healRetractions },
-                        ),
-                    )
-                }
-            },
-        )
+        try {
+            client.subscribe(
+                subId,
+                mapOf(url to tailFilters(wanting, nowSeconds() - TAIL_OVERLAP_SECONDS)),
+                object : SubscriptionListener {
+                    override suspend fun onEvent(
+                        event: Event,
+                        isLive: Boolean,
+                        relay: NormalizedRelayUrl,
+                        forFilters: List<Filter>?,
+                    ) {
+                        if (relay != url) return
+                        arrived(url, o = null)
+                        // Bind trust per stream, and re-check scope so a broken
+                        // relay cannot widen what we ingest — the same rule the
+                        // static tails follow. Matching is against each ASK's
+                        // filter: a narrowed ask admits only its own provider's
+                        // events off the tail, exactly as it does off a page.
+                        val wanted = roster[url].orEmpty().filter { it.filter.match(event) }
+                        if (wanted.isEmpty()) return
+                        ingest.submit(
+                            event,
+                            wanted.all { it.stream.trusted },
+                            IngestOrigin(
+                                url,
+                                healContent = wanted.any { it.stream.healContent },
+                                healRetractions = wanted.any { it.stream.healRetractions },
+                            ),
+                        )
+                    }
+                },
+            )
+        } catch (e: CancellationException) {
+            sockets.release(url)
+            throw e
+        } catch (e: Exception) {
+            // No entry was published, so nothing believes this relay is
+            // tailed: it keeps the untailed revisit cadence and the next
+            // visit tries again.
+            sockets.release(url)
+            System.err.println("router: tail ${url.url} failed to open: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+            return
+        }
+        if (tails.putIfAbsent(url, Tail(subId, asked)) != null) {
+            // Another opener won this url. Visits are inFlight-guarded, so
+            // this is nearly unreachable — handled because ours would
+            // otherwise leak a subscription and a claim.
+            runCatching { client.unsubscribe(subId) }
+            sockets.release(url)
+            return
+        }
+        // The rebuild may have decertified this url between the roster read
+        // above and the publish — its dropTail then found nothing to drop.
+        // Re-checking AFTER the publish closes the window: whichever side
+        // runs second sees the other's write.
+        if (!roster.containsKey(url)) {
+            dropTail(url)
+            return
+        }
+        trimTails(keep = url)
         publishPhases()
+    }
+
+    /**
+     * The check-then-act budget admits a few extra tails under concurrency
+     * (N workers can pass the size check together), and an overshoot that is
+     * never repaired holds sockets past the ceiling forever. Trimmed back to
+     * budget after each publication, sparing the tail that just EARNED its
+     * way in.
+     */
+    private fun trimTails(keep: NormalizedRelayUrl) {
+        val nowMs = System.currentTimeMillis()
+        while (tails.size > tailBudget) {
+            val weakest = tails.keys.filter { it != keep }.minByOrNull { yieldOf(it).current(nowMs) } ?: return
+            tailsEvicted.incrementAndGet()
+            dropTail(weakest)
+            if (roster.containsKey(weakest) && queued.add(weakest)) queue.trySend(weakest)
+        }
     }
 
     private fun dropTail(url: NormalizedRelayUrl) {
@@ -829,6 +907,31 @@ internal class VisitPool(
          * an operator is watching.
          */
         internal fun attemptSpacingSeconds(verifySeconds: Long): Long = (verifySeconds / 4).coerceIn(900L, 21_600L)
+
+        /**
+         * The tail subscription's filters: every ask the roster wants at the
+         * relay, single-author asks MERGED by the rest of their shape — a
+         * relay paired with N providers gets one filter naming N authors,
+         * not N filters. The old `.distinct()` deduplicated nothing
+         * (quartz's Filter compares by reference), so a many-provider
+         * relay's REQ carried hundreds of filters and filter-capped relays
+         * refused the whole tail. Safe for the TAIL alone: trust and heal
+         * are re-derived per event against each ask, so nothing downstream
+         * needs per-filter granularity. An unbound ask absorbs the bound
+         * ones of its shape — it already asks for every author.
+         */
+        internal fun tailFilters(
+            asks: List<RosterBuilder.Ask>,
+            since: Long,
+        ): List<Filter> {
+            val byShape = LinkedHashMap<String, MutableList<Filter>>()
+            for (ask in asks) byShape.getOrPut(ask.filter.copy(authors = null).toJson()) { mutableListOf() } += ask.filter
+            return byShape.values.map { group ->
+                val unbound = group.firstOrNull { it.authors.isNullOrEmpty() }
+                val authors = if (unbound != null) null else group.flatMap { it.authors.orEmpty() }.distinct().sorted()
+                (unbound ?: group.first()).copy(authors = authors, since = since)
+            }
+        }
 
         /**
          * Concurrent visits, which is concurrent DIALS — see the constructor

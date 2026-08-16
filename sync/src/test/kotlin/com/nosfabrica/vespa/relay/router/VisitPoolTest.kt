@@ -29,6 +29,7 @@ import kotlin.test.Test
 import kotlin.test.assertEquals
 import kotlin.test.assertFailsWith
 import kotlin.test.assertFalse
+import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
 /**
@@ -216,6 +217,55 @@ class VisitPoolTest {
         // A select that binds nothing keeps one ask: the stream's own filter.
         val unbound = RosterBuilder.asksOf(base, DiscoveredRelay(url))
         assertEquals(listOf(base), unbound)
+    }
+
+    @Test
+    fun `a tail asks once per shape, not once per provider`() {
+        // quartz's Filter has no equals, so the old `.distinct()` kept every
+        // per-author filter and a relay paired with N providers got an
+        // N-filter REQ — tens of KB that filter-capped relays refuse whole.
+        // Merged by shape: bound asks union their authors, an unbound ask
+        // absorbs its shape's bound ones, and different shapes stay apart.
+        val cfg =
+            RouterConfigLoader.parse(
+                """
+                streams {
+                    a { dir = "down", filter = { "kinds": [30382] }
+                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ] }
+                }
+                """.trimIndent(),
+            )
+        val s = cfg.streams.single()
+        val p1 = "a".repeat(64)
+        val p2 = "b".repeat(64)
+
+        fun ask(filter: Filter) = RosterBuilder.Ask(s, filter)
+
+        val merged =
+            VisitPool.tailFilters(
+                listOf(
+                    ask(Filter(kinds = listOf(30382), authors = listOf(p2))),
+                    ask(Filter(kinds = listOf(30382), authors = listOf(p1))),
+                    ask(Filter(kinds = listOf(0))),
+                ),
+                since = 1_000L,
+            )
+        assertEquals(2, merged.size, "two shapes, however many providers")
+        val bound = merged.single { it.kinds == listOf(30382) }
+        assertEquals(listOf(p1, p2), bound.authors, "authors union, sorted — the band key discipline")
+        assertEquals(1_000L, bound.since)
+        val unbound = merged.single { it.kinds == listOf(0) }
+        assertNull(unbound.authors)
+
+        val absorbed =
+            VisitPool.tailFilters(
+                listOf(
+                    ask(Filter(kinds = listOf(30382), authors = listOf(p1))),
+                    ask(Filter(kinds = listOf(30382))),
+                ),
+                since = 1_000L,
+            )
+        assertNull(absorbed.single().authors, "an unbound ask already asks for every author")
     }
 
     @Test
