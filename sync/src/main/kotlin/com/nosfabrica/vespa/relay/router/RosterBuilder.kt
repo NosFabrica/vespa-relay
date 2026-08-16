@@ -103,7 +103,6 @@ internal class RosterBuilder(
 
     suspend fun rebuild(): Roster {
         val next = HashMap<NormalizedRelayUrl, MutableList<Ask>>()
-        val shared = HashMap<String, Set<String>>()
 
         fun want(
             url: NormalizedRelayUrl,
@@ -128,16 +127,27 @@ internal class RosterBuilder(
                 for (relay in certified) want(relay.url, Ask(stream, stream.filter))
             }
             if (dynamic.scanSources.isNotEmpty()) {
-                val urlsByAuthor = HashMap<String, MutableSet<NormalizedRelayUrl>>()
                 for (relay in certifiedScan(stream, dynamic)) {
                     for (filter in asksOf(stream.filter, relay)) {
                         want(relay.url, Ask(stream, filter))
-                        filter.authors?.forEach { urlsByAuthor.getOrPut(it) { mutableSetOf() } += relay.url }
                     }
                 }
-                shared[stream.name] = urlsByAuthor.filterValues { it.size > 1 }.keys
             }
         }
+        // Shared authors are read off EVERY ask in the built roster — verdict
+        // sources and scans alike. They used to be counted only in the scan
+        // branch, so an author-bound stream filter fanned to N relays by a
+        // verdict source ran its retraction audits with an empty shared set,
+        // and one relay's answer could retract what its siblings still serve.
+        val byAuthor = HashMap<String, HashMap<String, MutableSet<NormalizedRelayUrl>>>()
+        for ((url, asks) in next) {
+            for (ask in asks) {
+                ask.filter.authors?.forEach { author ->
+                    byAuthor.getOrPut(ask.stream.name) { HashMap() }.getOrPut(author) { mutableSetOf() } += url
+                }
+            }
+        }
+        val shared = byAuthor.mapValues { (_, authors) -> authors.filterValues { it.size > 1 }.keys }
         return Roster(next, shared)
     }
 

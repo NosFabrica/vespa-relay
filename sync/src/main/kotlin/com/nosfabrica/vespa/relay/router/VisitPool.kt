@@ -145,13 +145,16 @@ internal class VisitPool(
      */
     private val tailBudget: Int = DEFAULT_TAIL_BUDGET,
 ) {
-    /** url → the asks that want it, rebuilt on the roster clock — see [RosterBuilder.Ask]. */
+    /**
+     * The whole rebuild, swapped as ONE reference — the asks and the shared
+     * authors they were computed against. Two separate volatiles let a
+     * delete decision judge an old roster's ask against a newer rebuild's
+     * shrunken shared set; one snapshot cannot mix generations.
+     */
     @Volatile
-    private var roster: Map<NormalizedRelayUrl, List<RosterBuilder.Ask>> = emptyMap()
+    private var current: RosterBuilder.Roster = RosterBuilder.Roster(emptyMap(), emptyMap())
 
-    /** Per stream: authors the roster found at more than one relay — see [RosterBuilder.Roster.sharedAuthors]. */
-    @Volatile
-    private var sharedAuthors: Map<String, Set<String>> = emptyMap()
+    private val roster: Map<NormalizedRelayUrl, List<RosterBuilder.Ask>> get() = current.asks
 
     private val queue = Channel<NormalizedRelayUrl>(Channel.UNLIMITED)
     private val queued = ConcurrentHashMap.newKeySet<NormalizedRelayUrl>()
@@ -401,9 +404,8 @@ internal class VisitPool(
     private suspend fun rebuildRoster() {
         val built = rosterBuilder.rebuild()
         val next = built.asks
-        sharedAuthors = built.sharedAuthors
-        val previous = roster
-        roster = next
+        val previous = current.asks
+        current = built
         // A relay the monitor stopped certifying loses its tail and its socket
         // claim: the verdict is the admission, and holding a connection to a
         // relay we no longer trust to sync is the old machine's habit.
@@ -473,8 +475,11 @@ internal class VisitPool(
         val o = Ongoing(System.currentTimeMillis())
         ongoing[url] = o
         sockets.claim(url)
+        // One generation for the whole visit: the asks below and the shared
+        // authors the retraction consults were computed together.
+        val snapshot = current
         try {
-            for (ask in roster[url].orEmpty()) {
+            for (ask in snapshot.asks[url].orEmpty()) {
                 // The legacy leg give-up, kept across the port: [NEG_IDLE_MS]
                 // bounds one ask, this bounds the SEQUENCE of them. A relay
                 // with hundreds of bound authors that answers each with a
@@ -500,7 +505,7 @@ internal class VisitPool(
                     aborted.incrementAndGet()
                     return
                 }
-                auditIfDue(ask, url, o)
+                auditIfDue(ask, url, o, snapshot.sharedAuthors[ask.stream.name].orEmpty())
             }
             o.doing = "draining queued heals, then the tail"
             healer.drain(url)
@@ -576,10 +581,11 @@ internal class VisitPool(
         ask: RosterBuilder.Ask,
         url: NormalizedRelayUrl,
         o: Ongoing,
+        sharedAuthors: Set<String>,
     ) {
         val verifySeconds = ask.stream.verifySeconds ?: return
         if (ask.stream.deleteMissing != DeleteMissing.OFF) {
-            retractionIfDue(ask, url, verifySeconds, o)
+            retractionIfDue(ask, url, verifySeconds, o, sharedAuthors)
         } else {
             sweepAudit(ask, url, verifySeconds, o)
         }
@@ -668,6 +674,7 @@ internal class VisitPool(
         url: NormalizedRelayUrl,
         verifySeconds: Long,
         o: Ongoing,
+        sharedAuthors: Set<String>,
     ) {
         val retraction = retraction ?: return
         if (!retraction.due(ask.stream, url, ask.filter, verifySeconds)) return
@@ -676,7 +683,7 @@ internal class VisitPool(
             ask.stream,
             url,
             ask.filter,
-            sharedAuthors[ask.stream.name].orEmpty(),
+            sharedAuthors,
             onActivity = { o.lastActivityMs = System.currentTimeMillis() },
         ) { arrived(url, o) }
         audits.incrementAndGet()
