@@ -128,10 +128,17 @@ class FitnessPass(
         RESTRICTED("restricted"),
     }
 
-    /** One url's outcome, for the pass's own funnel. */
+    /**
+     * One url's outcome, for the pass's own funnel — carrying the measured
+     * facts that ride the same record edit. Fields on the return value
+     * rather than side maps keyed by url: a dial that throws after learning
+     * a fact cannot strand an entry a remove-on-read map would hold forever.
+     */
     private class Outcome(
         val verdict: Verdict,
         val evidence: String,
+        val pageable: Pair<Boolean, String>? = null,
+        val nip77: Pair<Boolean, String>? = null,
     )
 
     /**
@@ -216,8 +223,8 @@ class FitnessPass(
                     url = url,
                     status = outcome.verdict.value,
                     evidence = outcome.evidence,
-                    pageable = pageableOf(url),
-                    nip77 = nip77Of(url),
+                    pageable = outcome.pageable,
+                    nip77 = outcome.nip77,
                 )
             }
 
@@ -227,14 +234,6 @@ class FitnessPass(
         }
         return downloaded.get()
     }
-
-    /** Per-url facts collected by [dialVerdict], read back at write time. */
-    private val pageableFacts = ConcurrentHashMap<NormalizedRelayUrl, Pair<Boolean, String>>()
-    private val nip77Facts = ConcurrentHashMap<NormalizedRelayUrl, Pair<Boolean, String>>()
-
-    private fun pageableOf(url: NormalizedRelayUrl): Pair<Boolean, String>? = pageableFacts.remove(url)
-
-    private fun nip77Of(url: NormalizedRelayUrl): Pair<Boolean, String>? = nip77Facts.remove(url)
 
     /**
      * The dial itself: the ask ladder for "answers", the anchored events for
@@ -302,28 +301,38 @@ class FitnessPass(
         // Vacuously pageable when the anchored window is empty: an EOSE on an
         // empty page is a drain, which is exactly how a paged walk terminates.
         if (above > 0 && above == seen) {
-            pageableFacts[url] = false to "$above of $seen events came back above the anchor — the cursor was ignored"
-            return Outcome(Verdict.UNPAGEABLE, "every event answered above the `until` it was asked for")
+            return Outcome(
+                Verdict.UNPAGEABLE,
+                "every event answered above the `until` it was asked for",
+                pageable = false to "$above of $seen events came back above the anchor — the cursor was ignored",
+            )
         }
-        pageableFacts[url] = true to (if (seen == 0) "empty anchored page, honestly EOSEd" else "$seen events, all at or below the anchor")
+        val pageable = true to (if (seen == 0) "empty anchored page, honestly EOSEd" else "$seen events, all at or below the anchor")
 
         // One NEG-OPEN against a sliver of the window. A normal return —
         // however empty — is the relay speaking NIP-77; the dedicated
         // exception is it declining. Anything else proves nothing and writes
         // nothing, so a flaky moment cannot demote a reconciling relay.
         val sliver = Filter(kinds = shape, since = anchor - NIP77_WINDOW_SECONDS, until = anchor)
-        try {
-            client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
-            nip77Facts[url] = true to "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window"
-        } catch (e: CancellationException) {
-            throw e
-        } catch (e: NegentropySyncException) {
-            nip77Facts[url] = false to "declined the NEG-OPEN: ${e.reason}"
-        } catch (_: Exception) {
-            // No fact: the failure was ours or the moment's, not the relay's.
-        }
+        val nip77 =
+            try {
+                client.negentropyReconcileIds(url, sliver, emptyList(), idleTimeoutMs = NIP77_IDLE_MS)
+                true to "answered a NEG-OPEN over a ${NIP77_WINDOW_SECONDS / 3600}h window"
+            } catch (e: CancellationException) {
+                throw e
+            } catch (e: NegentropySyncException) {
+                false to "declined the NEG-OPEN: ${e.reason}"
+            } catch (_: Exception) {
+                // No fact: the failure was ours or the moment's, not the relay's.
+                null
+            }
 
-        return Outcome(Verdict.SYNCABLE, "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor")
+        return Outcome(
+            Verdict.SYNCABLE,
+            "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor",
+            pageable = pageable,
+            nip77 = nip77,
+        )
     }
 
     private fun report(
