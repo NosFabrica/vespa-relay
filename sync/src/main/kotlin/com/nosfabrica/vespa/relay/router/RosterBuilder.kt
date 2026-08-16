@@ -21,7 +21,6 @@
 package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
-import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.discovery.DiscoveredRelay
 import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
@@ -140,7 +139,6 @@ internal class RosterBuilder(
                 store,
                 monitorAuthors = authors,
                 maxAgeSeconds = maxAgeSeconds,
-                exclude = RelayExcludes.NONE,
                 skip = setOfNotNull(store.relay),
                 allowOnion = tor != null,
             )

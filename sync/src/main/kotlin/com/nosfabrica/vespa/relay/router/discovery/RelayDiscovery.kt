@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
-import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.Slot
 import com.nosfabrica.vespa.relay.router.config.withoutDefaultPort
@@ -221,7 +220,6 @@ object RelayDiscovery {
         store: IEventStore,
         monitorAuthors: List<String>,
         maxAgeSeconds: Long,
-        exclude: RelayExcludes,
         skip: Set<NormalizedRelayUrl> = emptySet(),
         allowOnion: Boolean = false,
         now: Long = nowSeconds(),
@@ -254,7 +252,7 @@ object RelayDiscovery {
                     .firstOrNull { it.size > 1 && it[0] == "d" }
                     ?.get(1)
                     ?.let { normalize(it, allowOnion) }
-            }.filter { it !in exclude && it !in skip }
+            }.filter { it !in skip }
             .distinct()
             .map { DiscoveredRelay(it) }
             .sortedBy { it.url.url }
@@ -284,7 +282,6 @@ object RelayDiscovery {
                 store,
                 monitorAuthors = monitorAuthors,
                 maxAgeSeconds = maxAgeSeconds,
-                exclude = RelayExcludes.NONE,
                 allowOnion = allowOnion,
                 now = now,
             ).mapTo(HashSet()) { it.url }

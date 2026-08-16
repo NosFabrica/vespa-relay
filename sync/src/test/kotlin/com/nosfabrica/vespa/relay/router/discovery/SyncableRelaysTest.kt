@@ -22,7 +22,6 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
-import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
@@ -67,7 +66,6 @@ class SyncableRelaysTest {
                     store,
                     monitorAuthors = listOf(signer.pubKey),
                     maxAgeSeconds = 3600,
-                    exclude = RelayExcludes.NONE,
                 )
             assertEquals(listOf(good), admitted.map { it.url })
             assertEquals(emptyMap(), admitted.single().narrow, "a certified relay carries no narrow — the ask is the stream's whole filter")
@@ -90,7 +88,6 @@ class SyncableRelaysTest {
                     store,
                     monitorAuthors = listOf(signer.pubKey),
                     maxAgeSeconds = 3600,
-                    exclude = RelayExcludes.NONE,
                     now = nowSeconds() + 7200,
                 )
             assertEquals(emptyList(), admitted)
@@ -138,7 +135,6 @@ class SyncableRelaysTest {
                     store,
                     monitorAuthors = listOf(signer.pubKey),
                     maxAgeSeconds = 3600,
-                    exclude = RelayExcludes.NONE,
                 )
             assertEquals(1, fresh.size)
         }

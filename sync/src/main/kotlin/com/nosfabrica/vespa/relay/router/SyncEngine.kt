@@ -322,10 +322,7 @@ class SyncEngine(
                 // circuit is still being built, and comes back as an empty
                 // window — which folds nothing, clears nothing, and leaves every
                 // url on that host in the fan-out forever. See [probeIdleMs].
-                probe =
-                    AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
-                        probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
-                    },
+                probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(FOLD_PROCESSOR),
             )
@@ -347,13 +344,20 @@ class SyncEngine(
             ConsistencyPass(
                 consistency = consistency,
                 record = RelayAliasRecord(store, it),
-                probe =
-                    AliasProbe.over(client, RelayAliases.DEFAULT_PROBE_TARGET) { url ->
-                        probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
-                    },
+                probe = probeOver(RelayAliases.DEFAULT_PROBE_TARGET),
                 concurrency = monitorConcurrency,
                 progress = processors.of(STABILITY_PROCESSOR),
             )
+        }
+
+    /**
+     * One spelling of the probe constructor for the three passes — the fold,
+     * the stability gate, the fitness pass. Same transport and the same
+     * timeout budget; only the target depth differs.
+     */
+    private fun probeOver(target: Int) =
+        AliasProbe.over(client, target) { url ->
+            probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
         }
 
     /**
@@ -405,10 +409,7 @@ class SyncEngine(
         signer?.let { s ->
             FitnessPass(
                 record = RelayAliasRecord(store, s),
-                probe =
-                    AliasProbe.over(client, FitnessPass.FITNESS_TARGET) { url ->
-                        probeIdleMs(url, tor, config.connectionTimeoutSec * 1000L)
-                    },
+                probe = probeOver(FitnessPass.FITNESS_TARGET),
                 client = client,
                 foldedAway = { urls -> folding?.apply(urls)?.aliases ?: emptyMap() },
                 unstable = { urls -> stability?.apply(urls)?.toSet() ?: emptySet() },

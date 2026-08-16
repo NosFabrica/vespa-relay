@@ -123,7 +123,6 @@ class VisitPoolLiveProbe {
                         store,
                         monitorAuthors = listOf(signer.pubKey),
                         maxAgeSeconds = 3600,
-                        exclude = RelayExcludes.NONE,
                     )
                 println("  syncable roster read back: ${roster.map { it.url.url }}")
                 println("=".repeat(78))
