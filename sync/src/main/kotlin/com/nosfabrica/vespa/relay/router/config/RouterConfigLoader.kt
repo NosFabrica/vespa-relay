@@ -628,9 +628,10 @@ object RouterConfigLoader {
         // npub, so naming it is one copy-paste — and npub-ONLY, for the reason
         // the relay side's PubKeys spells out: hex has no checksum, so one
         // mistyped character is a valid-looking key that simply is not anybody,
-        // and a roster built on it is empty with no error anywhere. Absent
-        // means this process's own signer — the single-process deployment,
-        // where monitor and router share one identity.
+        // and a roster built on it is empty with no error anywhere. Absent is
+        // UNSCOPED — every monitor whose 30166s are in the store — and is left
+        // that way rather than substituted with our own signer, which is the
+        // config saying one thing and the read doing another.
         val authors = decodeMonitorNpubs(stream, filter.authors.orEmpty())
         require(!s.hasPath("certified")) {
             "router: stream '$stream' puts `certified` on its verdict source — a verdict source IS the " +
@@ -662,8 +663,8 @@ object RouterConfigLoader {
      * reason the relay side's PubKeys spells out: hex has no checksum, so one
      * mistyped character is a valid-looking key that simply is not anybody,
      * and a roster or gate built on it is empty with no error anywhere.
-     * Absent means this process's own signer — the single-process deployment,
-     * where monitor and router share one identity.
+     * Absent is unscoped, never a substituted identity — see
+     * [com.nosfabrica.vespa.relay.router.config.VerdictSource.authors].
      */
     private fun decodeMonitorNpubs(
         stream: String,

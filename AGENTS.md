@@ -813,9 +813,22 @@ whether a relay is worth dialling; it reads the verdicts back. A relaySource
 entry is either a **verdict source** (`filter = { "kinds": [30166],
 "#s": ["syncable"] }` — the verdict list IS the relay list) or a **certified
 scan** (`select` over stored lists like 10002/10040, gated by `certified = {}`
-so only urls holding a fresh verdict pass). Verdicts are trusted from OUR OWN
-monitor only: the configured `authors` npubs, or the router's signer where none
-are named — a foreign monitor's 30166s can never admit a relay here. The pool
+so only urls holding a fresh verdict pass). Whose verdicts count is the
+source's `authors` npubs, and **absent means unscoped** — every monitor whose
+30166s reached the store, exactly as an absent `authors` means on any NIP-01
+filter. There is deliberately no fallback to the router's own signer: it made
+the trust anchor rotate with `RELAY_NSEC` (emptying every roster, silently,
+until the new identity finished a sweep) and it narrowed the one deployment
+that had mirrored a foreign monitor's verdicts on purpose. Admitting is safe
+unscoped because everything admitted is still dialled and measured; **the
+hold-out read is the asymmetric one and stays author-bound**. `StreamWorld`'s
+dead query — a rtt-less 30166 inside the TTL means "checked, could not open" —
+is scoped to our signer plus the npubs the config names, because unscoped, one
+record from anybody starves a relay out of the candidate set permanently: held
+out it is never dialled, never re-measured, and the mark never clears.
+`ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
+why the router does its own author-bound read instead of using it. **Admitting
+widens, holding out forecloses — do not give them the same default.** The pool
 then rotates VISITS (per-ask catch-up, the `auditSeconds` audit, the heal
 drain) across `visitConcurrency` workers and holds up to `tailBudget` live
 tails, revisit-paced by each relay's recent yield. A scan whose select binds

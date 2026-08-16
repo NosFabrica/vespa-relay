@@ -46,8 +46,8 @@
 #   filter          the NIP-01 filter to mirror — kinds, since/until
 #   urls            static relays to talk to (bypass the monitor's verdicts)
 #   relaySource     where the relay list comes from: scans of relay-list events
-#                   (10002, 10009, ...), or the monitor's own kind-30166
-#                   verdicts — `filter = { "kinds": [30166], "#s": ["syncable"] }`
+#                   (10002, 10009, ...), or monitor kind-30166 verdicts —
+#                   `filter = { "kinds": [30166], "#s": ["syncable"] }`
 #   sync            how to ask (see below)
 #   auditSeconds   fetch forward, audit the past: when a relay's last verified
 #                   full pass is older than this, its next visit reconciles the
@@ -163,20 +163,35 @@ streams {
         # The monitor's verdicts ARE the relay list: kind-30166 records,
         # admitting every relay whose indexed `s` tag says syncable and whose
         # verdict is fresher than maxAgeSeconds (measured on the verdict tag's
-        # own stamp — record createdAt proves nothing). `authors` names the
-        # monitor identity to trust, as its npub (npub only: bare hex has no
-        # checksum, so a typo is a nobody with an empty roster and no error).
-        # Left off, it is this process's own signer — RELAY_NSEC's npub — which
-        # is the single-process deployment this file ships as. A stranger's
-        # 30166s never enter either way.
+        # own stamp — record createdAt proves nothing).
+        #
+        # WHOSE verdicts is `authors`, and it means what it means in any other
+        # NIP-01 filter: left off, EVERY monitor whose 30166s reached this
+        # store. On a stock deployment that is one identity, our own, because
+        # nothing here mirrors anyone else's 30166s — but if you add 30166 to a
+        # stream's kinds, or point one at a public monitor, those verdicts join
+        # this roster and the router says so on startup and on every change:
+        #
+        #   router: unscoped verdict source (maxAge 50400s) — admitting on
+        #   2 monitor identity(ies): npub1…, npub1…
+        #
+        # Name the identities to scope it. npub only — bare hex has no
+        # checksum, so a typo is a nobody with an empty roster and no error:
         relaySource = [
             {
                 filter = { "kinds": [30166], "#s": ["syncable"] }
-                # ...naming a split-process monitor's identity explicitly:
+                # ...naming the monitors to trust, and nobody else:
                 # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["npub1..."] }
                 maxAgeSeconds = 50400  # two 6h sweeps + slack
             }
         ]
+        # ROTATING RELAY_NSEC: name the OLD npub here first. The new key starts
+        # writing verdicts the moment it boots, but the store's existing ones
+        # are the old key's, and a source scoped to the new identity alone
+        # selects nothing until a full sweep has run — an empty roster for up
+        # to `monitor.sweepSeconds`. Scoped to both, or left unscoped, the
+        # roster never dips and the old npub comes out once the new one covers
+        # the corpus.
         auditSeconds = 604800  # weekly negentropy audit of the covered past
     }
 
@@ -206,13 +221,17 @@ streams {
                     { tag = "30382:followers", relay = 2, authors = 1 }
                 ]
                 filter = { "kinds": [10040] }
-                # Only relays the monitor certifies syncable are dialled — the
-                # scan supplies the (relay, provider) pairing, the verdicts the
+                # Only relays certified syncable are dialled — the scan
+                # supplies the (relay, provider) pairing, the verdicts the
                 # right to be dialled at all. 300 users write 10040s today;
                 # millions will, with the same spammed dead urls a 10002
                 # carries, and without this gate each of them costs a dial and
                 # a timeout per cycle forever. An uncertified url waits like
                 # any new relay: the fast lane probes it within minutes.
+                #
+                # An empty block is the default freshness bound and the same
+                # unscoped read a verdict source does — `authors = ["npub1..."]`
+                # here scopes the gate to named monitors.
                 certified = {}
             }
         ]

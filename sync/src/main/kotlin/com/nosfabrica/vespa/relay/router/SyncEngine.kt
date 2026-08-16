@@ -386,6 +386,15 @@ class SyncEngine(
             // Whose unreachability records may hold a candidate out: our own
             // signer, plus every monitor npub the config's verdict sources
             // and certified gates name — the operator's trust statements.
+            //
+            // DELIBERATELY NOT the roster's rule. A source that names no
+            // `authors` reads verdicts unscoped, because admitting is a
+            // positive claim that still has to survive a dial. Holding out is
+            // the opposite: unscoped, one rtt-less 30166 from anybody starves
+            // a relay out of the candidate set for good — never dialled, never
+            // re-measured, so the mark never clears. So an unscoped source
+            // contributes nothing here, and the set stays the identities the
+            // operator actually vouched for. See ForeignMonitorTest.
             monitorAuthors =
                 (
                     listOfNotNull(signer?.pubKey) +
@@ -532,7 +541,6 @@ class SyncEngine(
                 RosterBuilder(
                     store = store,
                     streams = visitStreams,
-                    monitorAuthor = signer?.pubKey,
                     bands = bands,
                     foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                     keepBands = pinnedUrls,

@@ -155,7 +155,11 @@ class VisitPoolLiveProbe {
                                             RelaySource(
                                                 selects = emptyList(),
                                                 filter = Filter(kinds = listOf(30166), tags = mapOf("s" to listOf("syncable"))),
-                                                verdicts = VerdictSource(3600),
+                                                // Named, not left to a fallback: the roster printed
+                                                // above reads on this identity, and the pool below
+                                                // has to be reading the same one for the two halves
+                                                // of the probe to be about the same thing.
+                                                verdicts = VerdictSource(3600, authors = listOf(signer.pubKey)),
                                             ),
                                         ),
                                     refreshSeconds = 3600,
@@ -185,7 +189,6 @@ class VisitPoolLiveProbe {
                             RosterBuilder(
                                 store = store,
                                 streams = probeStreams,
-                                monitorAuthor = signer.pubKey,
                                 bands = bands,
                             ),
                         streams = probeStreams,

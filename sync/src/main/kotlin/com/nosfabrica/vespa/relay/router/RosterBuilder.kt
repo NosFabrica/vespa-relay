@@ -27,6 +27,8 @@ import com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip19Bech32.toNpub
+import com.vitorpamplona.quartz.utils.Hex
 import java.util.concurrent.ConcurrentHashMap
 
 /**
@@ -44,11 +46,6 @@ internal class RosterBuilder(
     private val store: IEventStore,
     /** The visit-mode streams: every relaySource entry a kind-30166 verdict source or a certified scan. */
     private val streams: List<SyncStream>,
-    /**
-     * Whose 30166 verdicts admit a relay where a source names no `authors` —
-     * this process's own signer. See [RelayDiscovery.syncable].
-     */
-    private val monitorAuthor: String?,
     /** For [SyncBands.dropFolded], as the fold is applied to a scan — see [certifiedScan]. */
     private val bands: SyncBands,
     /**
@@ -141,13 +138,13 @@ internal class RosterBuilder(
                 maxAgeSeconds = maxAgeSeconds,
                 skip = setOfNotNull(store.relay),
                 allowOnion = tor != null,
+                admitting = { reportUnscoped(maxAgeSeconds, it) },
             )
         }
         for (stream in streams) {
             val discovery = stream.discovery ?: continue
             for (source in discovery.verdictSources) {
-                val authors = monitorIdentity(source.authors, stream.name, "has a verdict source") ?: continue
-                val certified = syncableFor(authors, source.maxAgeSeconds).filter { it.url !in discovery.exclude }
+                val certified = syncableFor(source.authors, source.maxAgeSeconds).filter { it.url !in discovery.exclude }
                 for (relay in certified) want(relay.url, Ask(stream, stream.filter))
             }
             if (discovery.scanSources.isNotEmpty()) {
@@ -176,25 +173,30 @@ internal class RosterBuilder(
     }
 
     /**
-     * The verdict-writing identity one source trusts: its configured
-     * `authors`, or our own signer where none are named. Null — with the
-     * warning said on EVERY rebuild rather than once ever, so an operator
-     * fixing the signer sees it take effect — when there is neither:
-     * verdicts nobody here can write admit nothing.
+     * WHO an unscoped verdict read is actually trusting, said once per change
+     * rather than per rebuild. A source that names no `authors` admits every
+     * monitor whose 30166s reached this store — usually just ours, which is
+     * why the union is worth naming out loud the day it stops being: from the
+     * config's side "my own monitor" and "my monitor and four strangers" are
+     * the same absent field, and the second one is a mirroring decision
+     * somebody made upstream in the kinds list.
+     *
+     * Keyed by the freshness bound so two sources reading unscoped at
+     * different `maxAgeSeconds` report independently instead of overwriting
+     * each other's last-said set and flapping a line per rebuild.
      */
-    private fun monitorIdentity(
-        named: List<String>,
-        stream: String,
-        what: String,
-    ): List<String>? {
-        val authors = named.ifEmpty { listOfNotNull(monitorAuthor) }
-        if (authors.isEmpty()) {
-            System.err.println(
-                "router: $stream $what, no `authors` and no signer — no monitor identity, nothing is admitted",
-            )
-            return null
-        }
-        return authors
+    private val reportedMonitors = ConcurrentHashMap<Long, Set<String>>()
+
+    private fun reportUnscoped(
+        maxAgeSeconds: Long,
+        monitors: Set<String>,
+    ) {
+        if (reportedMonitors.put(maxAgeSeconds, monitors) == monitors) return
+        val named = monitors.sorted().joinToString(", ") { runCatching { Hex.decode(it).toNpub() }.getOrDefault(it) }
+        System.err.println(
+            "router: unscoped verdict source (maxAge ${maxAgeSeconds}s) — admitting on " +
+                if (monitors.isEmpty()) "NO monitor identity; no fresh syncable verdicts in the store yet" else "${monitors.size} monitor identity(ies): $named",
+        )
     }
 
     /**
@@ -237,10 +239,15 @@ internal class RosterBuilder(
             perSource.flatMap { (source, found) ->
                 val scanned = if (folded.isEmpty()) found else found.filter { it.url !in folded }
                 val gate = source.certified ?: return@flatMap scanned
-                val authors = monitorIdentity(gate.authors, stream.name, "gates its scan on verdicts") ?: return@flatMap emptyList()
                 RelayDiscovery
-                    .certifiedOnly(store, scanned, authors, gate.maxAgeSeconds, allowOnion = tor != null)
-                    .also {
+                    .certifiedOnly(
+                        store,
+                        scanned,
+                        gate.authors,
+                        gate.maxAgeSeconds,
+                        allowOnion = tor != null,
+                        admitting = { reportUnscoped(gate.maxAgeSeconds, it) },
+                    ).also {
                         if (it.size != scanned.size) {
                             System.err.println(
                                 "router: ${stream.name} — ${scanned.size - it.size} of ${scanned.size} scanned relay(s) " +

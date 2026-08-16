@@ -99,9 +99,14 @@ data class VerdictSource(
     val maxAgeSeconds: Long = DEFAULT_MAX_AGE_SECONDS,
     /**
      * Whose verdicts to trust, as 64-char lowercase hex — decoded from the
-     * `authors = ["npub1…"]` the operator wrote. EMPTY means this process's
-     * own signer, which is the single-process deployment where the monitor
-     * and the router share one identity and the operator has nothing to copy.
+     * `authors = ["npub1…"]` the operator wrote. EMPTY is UNSCOPED, the same
+     * as leaving `authors` off any other NIP-01 filter: every monitor whose
+     * 30166s reached this store. It does not mean this process's own signer —
+     * that fallback existed, and silently emptied every roster the moment
+     * `RELAY_NSEC` rotated, while narrowing the one deployment that had
+     * deliberately mirrored somebody else's verdicts. See
+     * [com.nosfabrica.vespa.relay.router.discovery.RelayDiscovery.syncable].
+     *
      * Named explicitly, it is a deliberate trust statement: the deployment
      * where the monitor runs as its own process under its own key, and every
      * router consuming its verdicts writes that key here.
