@@ -160,7 +160,12 @@ internal class RosterBuilder(
     ): List<DiscoveredRelay> {
         val found = discovered(stream, discovery)
         if (discovery.gatedBy.isEmpty()) return found
-        val vouched = urlsOf(discovery.gatedBy, discovery)
+        // Cached on the same per-source clock the sources use. It was not, and
+        // a gate is a store read like any other: re-derived every roster tick
+        // it ignored its own `refreshSeconds`, which for a 30166 gate is an
+        // extra indexed query a minute and for one pointed at a curated 10002
+        // list is a corpus walk a minute.
+        val vouched = cached(stream.name, "gate", discovery.gatedBy, discovery).mapTo(HashSet()) { it.url }
         val kept = found.filter { it.url in vouched }
         if (kept.size != found.size) {
             System.err.println(
@@ -187,26 +192,40 @@ internal class RosterBuilder(
         stream: SyncStream,
         discovery: RelayDiscoveryConfig,
     ): List<DiscoveredRelay> {
-        val nowMs = System.currentTimeMillis()
-        val perSource =
-            discovery.sources.mapIndexed { index, source ->
-                val key = "${stream.name}#$index"
-                scans[key]?.takeIf { it.expiresAtMs > nowMs }?.relays ?: run {
-                    val relays = urlsFound(listOf(source), discovery)
-                    val ttl = source.refreshSeconds ?: discovery.refreshSeconds
-                    val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else ttl * 1000L
-                    scans[key] = ScannedList(nowMs + holdMs, relays)
-                    relays
-                }
-            }
+        val perSource = cached(stream.name, "source", discovery.sources, discovery)
         // The fold, applied where the legacy cycle applied it — over the WHOLE
         // discovered universe, because `dropFolded` diffs against last time
         // and a url missing from the set un-hides. Called on the scan clock,
         // never with an increment.
-        val all = perSource.flatten()
+        val all = perSource
         val folded = foldedAway(all.map { it.url }.distinct())
         bands.dropFolded(stream.name, folded.keys, keep = keepBands)
         return if (folded.isEmpty()) all else all.filter { it.url !in folded }
+    }
+
+    /**
+     * [sources] read out of the store, each held for its own
+     * `refreshSeconds`, unioned. [what] separates a stream's sources from its
+     * gate in the cache — they are different reads on different clocks and a
+     * shared key would serve one the other's answer.
+     */
+    private suspend fun cached(
+        streamName: String,
+        what: String,
+        sources: List<RelaySource>,
+        discovery: RelayDiscoveryConfig,
+    ): List<DiscoveredRelay> {
+        val nowMs = System.currentTimeMillis()
+        return sources.flatMapIndexed { index, source ->
+            val key = "$streamName#$what$index"
+            scans[key]?.takeIf { it.expiresAtMs > nowMs }?.relays ?: run {
+                val relays = urlsFound(listOf(source), discovery)
+                val ttl = source.refreshSeconds ?: discovery.refreshSeconds
+                val holdMs = if (relays.isEmpty()) VisitPool.EMPTY_ROSTER_RETRY_MS else ttl * 1000L
+                scans[key] = ScannedList(nowMs + holdMs, relays)
+                relays
+            }
+        }
     }
 
     /** Every relay [sources] name, unioned, with the stream's excludes and this relay itself dropped. */
@@ -220,12 +239,6 @@ internal class RosterBuilder(
             skip = setOfNotNull(store.relay),
             allowOnion = tor != null,
         )
-
-    /** …the same, as a url set — what a gate is for. */
-    private suspend fun urlsOf(
-        sources: List<RelaySource>,
-        discovery: RelayDiscoveryConfig,
-    ): Set<NormalizedRelayUrl> = urlsFound(sources, discovery).mapTo(HashSet()) { it.url }
 
     companion object {
         /**

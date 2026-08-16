@@ -101,7 +101,19 @@ object RelayDiscovery {
             // so a source carries the span and the read turns it into the
             // instant. Null is no bound — see there for why a relay list is
             // timeless and a verdict is not.
-            val bounded = source.maxAgeSeconds?.let { source.filter.copy(since = now - it) } ?: source.filter
+            //
+            // COMBINED with any `since` the caller already set, never
+            // overwriting it. The loader refuses both in one config entry, but
+            // [StreamWorld.candidatesSince] narrows these filters at RUN time —
+            // the fast lane asking "what arrived in the last two minutes" — and
+            // a bound that replaced that one turned the lane into a full sweep:
+            // every source carrying `maxAgeSeconds` handed back its whole
+            // window, so the fitness pass re-dialled the entire roster every
+            // `fastLaneSeconds` instead of the handful of new urls. Two floors
+            // on one field mean the later one.
+            val floor = source.maxAgeSeconds?.let { now - it }
+            val bounded =
+                if (floor == null) source.filter else source.filter.copy(since = maxOf(floor, source.filter.since ?: floor))
             // A named tag with no bindings goes to the store's tags-only
             // projection, which streams one field instead of materializing
             // whole events (a 2.6M-event scan became the projection's walk).
