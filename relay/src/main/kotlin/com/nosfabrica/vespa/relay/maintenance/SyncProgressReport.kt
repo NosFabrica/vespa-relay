@@ -703,6 +703,29 @@ internal object SyncProgressReport {
             "sourced",
             "excluded",
             "heldOutDead",
+            // the fitness pass's verdict funnel — one certificate per relay,
+            // `syncable` the only admitting value, the rest the refusals
+            "syncable",
+            "dead",
+            "silent",
+            "alias",
+            "inconsistent",
+            "unpageable",
+            "auth-refused",
+            "restricted",
+            // the visit pool — the roster it read back, where every slot is,
+            // and what the rotation has done since boot
+            "roster",
+            "awaitingVisit",
+            "visiting",
+            "tails",
+            "visitsRun",
+            "auditing",
+            "auditsRun",
+            "retracted",
+            "abortedVisits",
+            "evictedTails",
+            "poolReceived",
         )
 
     /**
@@ -762,7 +785,7 @@ internal object SyncProgressReport {
     /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
     private const val MAX_PASSES = 4
 
-    /** Six today (fold, stability, reachability, ingest, heal, push), with room to grow. */
+    /** Eight today (fold, stability, reachability, fitness, visits, ingest, heal, push), with room to grow. */
     private const val MAX_PROCESSORS = 12
 
     /** A processor reports per stream, and a router runs a handful of them. */

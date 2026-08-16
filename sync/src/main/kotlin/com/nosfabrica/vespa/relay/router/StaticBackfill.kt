@@ -45,8 +45,6 @@ import com.vitorpamplona.quartz.nip01Core.store.IdAndTime
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
-import kotlinx.coroutines.async
-import kotlinx.coroutines.awaitAll
 import kotlinx.coroutines.coroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
@@ -77,7 +75,7 @@ internal class StaticBackfill(
     private val paging: PagingProgress,
     // Windowed reconciliation for streams too big to snapshot in one piece.
     private val pager: NegentropyPager,
-    // One stream reconciles at a time, across static and dynamic both: a
+    // One stream reconciles at a time, across static and discovery both: a
     // stream holds its whole id set from snapshot start to its last relay, so
     // concurrent streams would hold their sets simultaneously (measured: three
     // at once heading for ~9 GiB). Serialising costs little wall clock — they
@@ -99,7 +97,7 @@ internal class StaticBackfill(
      *
      * A static stream folds nothing and discovers nothing — its urls are in
      * `router.conf` — so `discovered` is the configured count and
-     * `foldedOntoAnother` is 0. The partition is otherwise the dynamic one, and
+     * `foldedOntoAnother` is 0. The partition is otherwise the discovery one, and
      * that is the point: a reader must not need to know which kind of stream it
      * is looking at to read the numbers.
      */
@@ -116,7 +114,7 @@ internal class StaticBackfill(
      * `nothingNew` covers both "answered, we were in sync" and "its band already
      * covers the filter, so nothing was asked": neither downloaded anything and
      * neither is a failure, and splitting them would need a fourth outcome the
-     * dynamic side has no equivalent for.
+     * discovery side has no equivalent for.
      */
     private fun settle(
         upstream: SyncUpstream,
@@ -197,7 +195,7 @@ internal class StaticBackfill(
         // reconcile-or-page decision.
         val ours = runCatching { store.count(filter) }.getOrNull() ?: 0
         val (reconcilers, pagers) =
-            group.partitionSuspend { worthReconciling(it.value, filter, ours) }
+            group.partition { worthReconciling(it.value, ours) }
         System.err.println(
             "router: $name ${reconcilers.size} relay(s) will reconcile, ${pagers.size} will fetch" +
                 " [sync=${group.first().value.sync.wire}]" +
@@ -355,8 +353,6 @@ internal class StaticBackfill(
             return 0
         }
         var downloaded = 0
-        // Invariant for this upstream: hoisted out of the per-event
-        // callback, which allocated an identical object per event.
         val origin = originFor(upstream)
         transferring.incrementAndGet()
         return try {
@@ -379,7 +375,7 @@ internal class StaticBackfill(
                 // The walk's own account of why it stopped. Only `DRAINED` — the
                 // relay EOSEd an empty page, so there is nothing older — earns the
                 // band the right to close its older leg. See `drainSettlesThePast`.
-                // In a try/finally for the same reason as DynamicSync's: the
+                // In a try/finally for the usual walk reason: the
                 // caller catches Exception, and a throw between begin and
                 // finish strands this walk in PagingProgress at 0%, which
                 // `fraction` then averages into the stream's number forever.
@@ -475,9 +471,8 @@ internal class StaticBackfill(
      * redundant id exchange; guessing wrong the other way re-downloads
      * everything.
      */
-    private suspend fun worthReconciling(
+    private fun worthReconciling(
         upstream: SyncUpstream,
-        filter: Filter,
         ours: Int,
     ): Boolean {
         // Declared beats measured.
@@ -598,8 +593,6 @@ internal class StaticBackfill(
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
-        // Invariant for this upstream: hoisted out of the per-event
-        // callback, which allocated an identical object per event.
         val origin = originFor(upstream)
         transferring.incrementAndGet()
         return try {
@@ -752,8 +745,6 @@ internal class StaticBackfill(
             System.err.println("router: static backfill ${upstream.url.url} already covers its filter — nothing outside the synced band")
             return 0
         }
-        // Invariant for this upstream: hoisted out of the per-event
-        // callback, which allocated an identical object per event.
         val origin = originFor(upstream)
         transferring.incrementAndGet()
         try {
@@ -847,7 +838,7 @@ internal class StaticBackfill(
     }
 
     /** Print overall progress until every upstream is done, then a closing line. */
-    suspend fun progressLoop(dynamicStreams: Int) {
+    suspend fun progressLoop(discoveryStreams: Int) {
         while (scope.isActive) {
             delay(PROGRESS_INTERVAL_MS)
             val s = progress.snapshot()
@@ -858,7 +849,7 @@ internal class StaticBackfill(
                 System.err.println(
                     "router: static backfill complete — ${s.downloaded} events from ${s.total} relay(s)" +
                         " in ${fmtDuration(s.elapsedMs)}; live tail now streaming" +
-                        if (dynamicStreams > 0) "; $dynamicStreams dynamic stream(s) still syncing" else "",
+                        if (discoveryStreams > 0) "; $discoveryStreams dynamic stream(s) still syncing" else "",
                 )
                 return
             }
@@ -925,10 +916,10 @@ internal class StaticBackfill(
             need[idx] = maxOf(need[idx] ?: 0L, downloaded.toLong())
         }
 
-        fun snapshot(): Snapshot {
+        fun snapshot(): ProgressSnapshot {
             val need = need.values.sum()
             val got = got.values.sum()
-            return Snapshot(
+            return ProgressSnapshot(
                 need = need,
                 downloaded = got,
                 done = finished.size,
@@ -939,7 +930,7 @@ internal class StaticBackfill(
         }
     }
 
-    private data class Snapshot(
+    private data class ProgressSnapshot(
         val need: Long,
         val downloaded: Long,
         val done: Int,
@@ -965,17 +956,10 @@ internal class StaticBackfill(
             { id -> !refusedIds.suppressedInWindow(id, window.since, window.until) }
         }
 
-    /** What this upstream's stream lets the healer do about a stale copy. */
+    /**
+     * What this upstream's stream lets the healer do about a stale copy.
+     * Called once per upstream, never inside a per-event callback — built
+     * there, it allocated an identical object per event.
+     */
     private fun originFor(upstream: SyncUpstream) = IngestOrigin(upstream.url, healContent = upstream.healContent, healRetractions = upstream.healRetractions)
 }
-
-/**
- * [List.partition] where the predicate suspends, evaluated concurrently — the
- * predicate this exists for is a NIP-45 COUNT round trip with its own
- * timeout, and serially, twelve silent relays would be a minute of dead wait.
- */
-private suspend fun <T> List<T>.partitionSuspend(predicate: suspend (T) -> Boolean): Pair<List<T>, List<T>> =
-    coroutineScope {
-        val marked = map { item -> async { item to predicate(item) } }.awaitAll()
-        marked.filter { it.second }.map { it.first } to marked.filterNot { it.second }.map { it.first }
-    }

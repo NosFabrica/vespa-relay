@@ -79,7 +79,7 @@ import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
  * anything measured by SUPERSEDED RULES too — see [FOLD_EPOCH], which is the
  * lever for forcing exactly that.
  */
-class RelayAliasRecord(
+class RelayVerdictRecord(
     private val store: IEventStore,
     private val signer: NostrSigner?,
     private val ttlSeconds: Long = DEFAULT_TTL_SECONDS,
@@ -99,9 +99,9 @@ class RelayAliasRecord(
         /** Urls proven to be their own relay. Never a key in [aliases]. */
         val distinct: Set<NormalizedRelayUrl> = emptySet(),
         /** Urls measured as answering one filter the same way twice. */
-        val stable: Set<NormalizedRelayUrl> = emptySet(),
+        val consistent: Set<NormalizedRelayUrl> = emptySet(),
         /** Urls measured as NOT doing so — the ones the fan-out refuses. */
-        val unstable: Set<NormalizedRelayUrl> = emptySet(),
+        val inconsistent: Set<NormalizedRelayUrl> = emptySet(),
     )
 
     /**
@@ -133,8 +133,8 @@ class RelayAliasRecord(
         val floor = nowSeconds() - ttlSeconds
         val aliases = HashMap<NormalizedRelayUrl, NormalizedRelayUrl>()
         val distinct = HashSet<NormalizedRelayUrl>()
-        val stable = HashSet<NormalizedRelayUrl>()
-        val unstable = HashSet<NormalizedRelayUrl>()
+        val consistent = HashSet<NormalizedRelayUrl>()
+        val inconsistent = HashSet<NormalizedRelayUrl>()
         for (chunk in candidates.map { it.url }.chunked(QUERY_CHUNK)) {
             val held: List<Event> =
                 store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), tags = mapOf("d" to chunk)))
@@ -157,9 +157,9 @@ class RelayAliasRecord(
                     ?.get(1)
                     ?.let { answer ->
                         when (answer) {
-                            CONSISTENT_YES -> stable += from
+                            CONSISTENT_YES -> consistent += from
 
-                            CONSISTENT_NO -> unstable += from
+                            CONSISTENT_NO -> inconsistent += from
 
                             // An answer this writer does not recognise is not a
                             // verdict. Ignored rather than guessed at: guessing
@@ -169,7 +169,7 @@ class RelayAliasRecord(
                     }
             }
         }
-        return Verdicts(aliases, distinct, stable, unstable)
+        return Verdicts(aliases, distinct, consistent, inconsistent)
     }
 
     /**
@@ -217,6 +217,40 @@ class RelayAliasRecord(
                     ),
                 ),
         )
+
+    /**
+     * The fitness pass's whole write: the status a stream filters on, and the
+     * two measured facts a visit reads back off the record.
+     *
+     * The `s` tag is single-letter ON PURPOSE, unlike every other tag this
+     * monitor defines: it is the one value streams FILTER on, and only
+     * single-letter tags are indexed. Its shape follows the house rule all the
+     * same — value, evidence, measured-at, epoch — so it ages by its own
+     * measurement like `same-as` does, not by the record's much-rewritten
+     * `createdAt`. The facts are spelled out (`pageable`, `nip77`), because
+     * they are read from the fetched record rather than filtered on, and every
+     * other NIP-66 consumer skips them as unknown tags.
+     */
+    suspend fun publishFitness(
+        url: NormalizedRelayUrl,
+        status: String,
+        evidence: String,
+        pageable: Pair<Boolean, String>?,
+        nip77: Pair<Boolean, String>?,
+    ): Event? {
+        val at = nowSeconds().toString()
+        val add =
+            buildList {
+                add(arrayOf(STATUS_TAG, status, evidence, at, FITNESS_EPOCH))
+                pageable?.let { (yes, why) -> add(arrayOf(PAGEABLE_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
+                nip77?.let { (yes, why) -> add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
+            }
+        // Owns all three even when a fact is absent this pass: a verdict that
+        // changed makes the old facts claims about a different relay, and
+        // carrying them forward would pin, say, `pageable true` to a url that
+        // has been dead for a week.
+        return edit(url, owned = setOf(STATUS_TAG, PAGEABLE_TAG, NIP77_TAG), add = add)
+    }
 
     /**
      * Sign and store one verdict. Returns the event so a caller can push it
@@ -556,7 +590,7 @@ class RelayAliasRecord(
          *
          * Do NOT bump it for a change that leaves the conclusion alone —
          * logging, budget, ordering, the socket refcount. The cost is a full
-         * re-fingerprint of the store — one pass, [AliasFolding.DEFAULT_CONCURRENCY]
+         * re-fingerprint of the store — one pass, [AliasFolding.DEFAULT_DIAL_CONCURRENCY]
          * at a time, however many urls that is — and while it runs every
          * un-re-measured url is dialled unfolded. That is the correct price for
          * a rule change and pure waste for anything else.
@@ -587,6 +621,29 @@ class RelayAliasRecord(
          * here they age normally.
          */
         const val CONSISTENCY_EPOCH = "1"
+
+        /**
+         * The fitness verdict — the one tag streams FILTER on, which is why it
+         * is the one single-letter tag this monitor writes: only single-letter
+         * tags are indexed, and `"#s": ["syncable"]` is a whole relay list.
+         * See [FitnessPass.Verdict] for the vocabulary.
+         */
+        const val STATUS_TAG = "s"
+
+        /** Measured: does the relay honour `until`, i.e. can a paged walk terminate? */
+        const val PAGEABLE_TAG = "pageable"
+
+        /** Measured: did it answer a NEG-OPEN, i.e. is reconcile on the table? */
+        const val NIP77_TAG = "nip77"
+
+        /**
+         * The fitness verdict's own rules version, separate from the fold's
+         * and the consistency pass's for the same reason those two are
+         * separate: each is its own measurement with its own re-take cost.
+         *
+         * **1** — the vocabulary and checks as first shipped.
+         */
+        const val FITNESS_EPOCH = "1"
 
         /** How old the stability anchor is, for the evidence string. */
         private const val ANCHOR_DAYS = RelayConsistency.ANCHOR_LAG_SECONDS / (24 * 60 * 60)

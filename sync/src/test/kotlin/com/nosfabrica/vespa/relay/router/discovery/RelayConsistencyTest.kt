@@ -168,13 +168,13 @@ class RelayConsistencyTest {
             // restart must not re-dial every relay it already measured, and the
             // evidence has to be readable by whoever asks why we stopped.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             record.publishConsistency(shuffler, consistent = false, first = 203, second = 179, shared = 128, score = 0.715)
             record.publishConsistency(steady, consistent = true, first = 500, second = 500, shared = 500, score = 1.0)
 
             val held = record.load(listOf(steady, shuffler))
-            assertEquals(setOf(shuffler), held.unstable)
-            assertEquals(setOf(steady), held.stable)
+            assertEquals(setOf(shuffler), held.inconsistent)
+            assertEquals(setOf(steady), held.consistent)
         }
 
     @Test
@@ -186,11 +186,11 @@ class RelayConsistencyTest {
             // stability verdict on an unfolded url invisible — which is most of
             // them.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             record.publishConsistency(shuffler, consistent = false, first = 203, second = 179, shared = 128, score = 0.715)
 
             val held = record.load(listOf(shuffler))
-            assertEquals(setOf(shuffler), held.unstable)
+            assertEquals(setOf(shuffler), held.inconsistent)
             assertTrue(held.aliases.isEmpty())
             assertTrue(held.distinct.isEmpty())
         }
@@ -202,7 +202,7 @@ class RelayConsistencyTest {
             // carry the other's forward untouched — the same rule the passive
             // NIP-66 monitor already forced on `same-as`.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             val alias = RelayUrlNormalizer.normalize("wss://nos.lol/cipher-zulu")
 
             record.publish(alias, steady, 500, 498)
@@ -210,7 +210,7 @@ class RelayConsistencyTest {
 
             val held = record.load(listOf(alias))
             assertEquals(steady, held.aliases[alias], "publishing the stability verdict dropped the fold")
-            assertEquals(setOf(alias), held.stable)
+            assertEquals(setOf(alias), held.consistent)
         }
 
     @Test
@@ -226,7 +226,7 @@ class RelayConsistencyTest {
             val pass =
                 ConsistencyPass(
                     consistency = consistency,
-                    record = RelayAliasRecord(store, signer),
+                    record = RelayVerdictRecord(store, signer),
                     probe =
                         AliasProbe(
                             fetch = { at, want, _, _ ->
@@ -245,7 +245,7 @@ class RelayConsistencyTest {
             val decided = pass.measure("t", listOf(steady, shuffler), canDial = { true })
 
             assertEquals(2, decided, "both urls should have reached a verdict")
-            assertEquals(listOf(shuffler), pass.apply(listOf(steady, shuffler)))
+            assertEquals(listOf(shuffler), pass.applyVerdicts(listOf(steady, shuffler)))
 
             // …and a second pass costs nothing: the verdicts are in the store.
             val afterFirst = dials.get()
@@ -262,7 +262,7 @@ class RelayConsistencyTest {
             val pass =
                 ConsistencyPass(
                     consistency = RelayConsistency(),
-                    record = RelayAliasRecord(newStore(), signer),
+                    record = RelayVerdictRecord(newStore(), signer),
                     probe =
                         AliasProbe(
                             fetch = { _, _, _, _ ->
@@ -272,7 +272,7 @@ class RelayConsistencyTest {
                         ),
                 )
 
-            assertEquals(emptyList(), pass.apply(listOf(steady, shuffler)))
+            assertEquals(emptyList(), pass.applyVerdicts(listOf(steady, shuffler)))
             assertEquals(0, dials.get(), "apply() opened ${dials.get()} socket(s)")
         }
 
@@ -285,12 +285,12 @@ class RelayConsistencyTest {
             val pass =
                 ConsistencyPass(
                     consistency = RelayConsistency(),
-                    record = RelayAliasRecord(store, signer),
+                    record = RelayVerdictRecord(store, signer),
                     probe = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(null) }),
                 )
 
             assertEquals(0, pass.measure("t", listOf(steady, shuffler), canDial = { true }))
-            assertEquals(emptyList(), pass.apply(listOf(steady, shuffler)))
+            assertEquals(emptyList(), pass.applyVerdicts(listOf(steady, shuffler)))
         }
 
     @Test
@@ -309,20 +309,20 @@ class RelayConsistencyTest {
             // over a verdict measured a month and a day ago. It must read stale.
             val store = newStore()
             val month = 30L * 24 * 60 * 60
-            val record = RelayAliasRecord(store, signer, ttlSeconds = month)
+            val record = RelayVerdictRecord(store, signer, ttlSeconds = month)
             store.insert(
                 signer.sign(
                     RelayDiscoveryEvent.build(steady, "", nowSeconds()) {
                         add(
                             arrayOf(
-                                RelayAliasRecord.SELF_CONSISTENT_TAG,
-                                RelayAliasRecord.CONSISTENT_YES,
+                                RelayVerdictRecord.SELF_CONSISTENT_TAG,
+                                RelayVerdictRecord.CONSISTENT_YES,
                                 "500 + 500 events at a 7d anchor, 500 shared -> 1.000",
                                 (nowSeconds() - month - 1).toString(),
                                 // Current rules, so age is the only thing left
                                 // that can make this stale — which is what the
                                 // test is about.
-                                RelayAliasRecord.CONSISTENCY_EPOCH,
+                                RelayVerdictRecord.CONSISTENCY_EPOCH,
                             ),
                         )
                     },
@@ -331,7 +331,7 @@ class RelayConsistencyTest {
 
             val held = record.load(listOf(steady))
             assertTrue(
-                held.stable.isEmpty(),
+                held.consistent.isEmpty(),
                 "a verdict measured over a month ago read as current because the record had just been rewritten",
             )
         }
@@ -354,8 +354,8 @@ class RelayConsistencyTest {
                     RelayDiscoveryEvent.build(shuffler, "", nowSeconds()) {
                         add(
                             arrayOf(
-                                RelayAliasRecord.SELF_CONSISTENT_TAG,
-                                RelayAliasRecord.CONSISTENT_NO,
+                                RelayVerdictRecord.SELF_CONSISTENT_TAG,
+                                RelayVerdictRecord.CONSISTENT_NO,
                                 "old-style, no timestamp",
                             ),
                         )
@@ -363,8 +363,8 @@ class RelayConsistencyTest {
                 ),
             )
 
-            val held = RelayAliasRecord(store, signer).load(listOf(shuffler))
-            assertTrue(held.unstable.isEmpty(), "a verdict with no measurement time read as current off the record's clock")
+            val held = RelayVerdictRecord(store, signer).load(listOf(shuffler))
+            assertTrue(held.inconsistent.isEmpty(), "a verdict with no measurement time read as current off the record's clock")
         }
 
     @Test

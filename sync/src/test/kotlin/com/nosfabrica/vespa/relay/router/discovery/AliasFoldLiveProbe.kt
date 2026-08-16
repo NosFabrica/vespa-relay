@@ -117,7 +117,7 @@ class AliasFoldLiveProbe {
                 println("-".repeat(78))
                 println("  $host — ${group.size} url(s)")
                 val store = NostrSemanticsStore(InMemoryEventIndex(), relay = null)
-                val record = RelayAliasRecord(store, signer)
+                val record = RelayVerdictRecord(store, signer)
                 val aliases = RelayAliases()
                 val folding =
                     AliasFolding(

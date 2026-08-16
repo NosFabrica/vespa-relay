@@ -22,11 +22,11 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.router.config.BindingSlot
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
 import com.nosfabrica.vespa.relay.router.config.RelaySource
-import com.nosfabrica.vespa.relay.router.config.Slot
 import com.nosfabrica.vespa.relay.router.config.TagCondition
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -51,7 +51,7 @@ class RelayDiscoveryTest {
         index: Int = 1,
         kind: Int? = null,
         where: List<TagCondition> = emptyList(),
-    ) = RelaySelect(kind = kind, tag = tag, index = index, where = where)
+    ) = RelaySelect(kind = kind, tag = tag, urlIndex = index, where = where)
 
     /** What `marker = <value>` desugars to: marked that side, marked "", or no marker slot. */
     private fun marker(
@@ -76,7 +76,6 @@ class RelayDiscoveryTest {
     ) = RelayDiscoveryConfig(
         sources = sources.toList(),
         refreshSeconds = 3_600,
-        concurrency = 4,
         // Production compilation, so these tests exercise the same entry
         // classification and case rules the loader produces.
         exclude = RelayExcludes.parse(exclude.toList()),
@@ -414,15 +413,15 @@ class RelayDiscoveryTest {
                                 10040,
                                 selects =
                                     listOf(
-                                        RelaySelect(kind = null, tag = "30382:rank", index = 2, bindings = mapOf("authors" to Slot.OfTag(1))),
-                                        RelaySelect(kind = null, tag = "30382:followers", index = 2, bindings = mapOf("authors" to Slot.OfTag(1))),
+                                        RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1))),
+                                        RelaySelect(kind = null, tag = "30382:followers", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1))),
                                     ),
                             ),
                         ),
                     ).associateBy { it.url.url }
 
-            assertEquals(setOf(rankSvc), found["wss://rank.example/"]?.narrow?.get("authors"))
-            assertEquals(setOf(followSvc), found["wss://follow.example/"]?.narrow?.get("authors"))
+            assertEquals(setOf(rankSvc), found["wss://rank.example/"]?.bindings?.get("authors"))
+            assertEquals(setOf(followSvc), found["wss://follow.example/"]?.bindings?.get("authors"))
         }
 
     @Test
@@ -441,12 +440,12 @@ class RelayDiscoveryTest {
                         dynamic(
                             source(
                                 10040,
-                                selects = listOf(RelaySelect(kind = null, tag = "30382:rank", index = 2, bindings = mapOf("authors" to Slot.OfTag(1)))),
+                                selects = listOf(RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1)))),
                             ),
                         ),
                     ).single()
 
-            assertEquals(setOf(one, two), found.narrow["authors"])
+            assertEquals(setOf(one, two), found.bindings["authors"])
             // Sorted into the filter, because the band is keyed on the
             // filter's serialized form — an unordered set would key the same ask
             // two ways and re-walk history for nothing.
@@ -472,9 +471,9 @@ class RelayDiscoveryTest {
                                         RelaySelect(
                                             kind = 10002,
                                             tag = "r",
-                                            index = 1,
+                                            urlIndex = 1,
                                             where = marker("write"),
-                                            bindings = mapOf("authors" to Slot.EventPubkey),
+                                            bindings = mapOf("authors" to BindingSlot.EventPubkey),
                                         ),
                                     ),
                             ),
@@ -483,7 +482,7 @@ class RelayDiscoveryTest {
 
             // "fetch THIS author's events from the relays their own 10002 marks
             // write" — the author is nowhere in the tag.
-            assertEquals(setOf(list.pubKey), found.narrow["authors"])
+            assertEquals(setOf(list.pubKey), found.bindings["authors"])
         }
 
     @Test
@@ -502,7 +501,7 @@ class RelayDiscoveryTest {
                     dynamic(
                         source(
                             10040,
-                            selects = listOf(RelaySelect(kind = null, tag = "30382:rank", index = 2, bindings = mapOf("authors" to Slot.OfTag(1)))),
+                            selects = listOf(RelaySelect(kind = null, tag = "30382:rank", urlIndex = 2, bindings = mapOf("authors" to BindingSlot.OfTag(1)))),
                         ),
                     ),
                 )
@@ -524,7 +523,7 @@ class RelayDiscoveryTest {
                         dynamic(source(10002, selects = listOf(select(tag = "r", where = marker("write"))))),
                     ).single()
 
-            assertTrue(found.narrow.isEmpty())
+            assertTrue(found.bindings.isEmpty())
             // The stream's own filter, untouched — every config written before
             // bindings existed behaves exactly as it did.
             val base = Filter(kinds = listOf(0, 10002))

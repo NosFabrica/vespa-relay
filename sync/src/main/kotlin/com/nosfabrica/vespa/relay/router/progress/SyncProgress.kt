@@ -325,7 +325,7 @@ class SyncProgress(
                                                             // word, which is a
                                                             // state and not a
                                                             // gap.
-                                                            r.doing?.let { put("doing", it) }
+                                                            r.stage?.let { put("doing", it) }
                                                             // Absent when no
                                                             // walk is running.
                                                             r.pagingUntil?.let { put("pagingUntil", it) }

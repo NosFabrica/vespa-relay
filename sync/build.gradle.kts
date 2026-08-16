@@ -44,12 +44,9 @@ tasks.test {
     useJUnitPlatform()
     // Forwarded, not inherited: a system property on the Gradle command line
     // reaches the DAEMON, and the tests run in a forked JVM that never sees it.
-    // These four dial the public internet, so they stay off unless asked for
-    // by name — `RealRelayDrainProbe`, `DeleteMissingBandProbe`,
-    // `InFlightReportProbe` and `PagingCursorProbe`.
+    // These dial the public internet, so they stay off unless asked for
+    // by name — `RealRelayDrainProbe` and `PagingCursorProbe`.
     System.getProperty("realRelayProbe")?.let { systemProperty("realRelayProbe", it) }
-    System.getProperty("deleteMissingBandProbe")?.let { systemProperty("deleteMissingBandProbe", it) }
-    System.getProperty("inFlightProbe")?.let { systemProperty("inFlightProbe", it) }
     System.getProperty("pagingCursorProbe")?.let { systemProperty("pagingCursorProbe", it) }
     // Same forwarding, same reason. `SyncBandsProdScaleProbe` builds a ~14MB
     // corpus and hands the two files to the relay-side probe through
@@ -78,4 +75,16 @@ tasks.test {
     // what a fake page says. Same forwarding, same trap.
     System.getProperty("liveConsistency")?.let { systemProperty("liveConsistency", it) }
     System.getProperty("liveConsistencyUrls")?.let { systemProperty("liveConsistencyUrls", it) }
+    // The two planes end to end against real relays: fitness verdicts onto
+    // records, the roster read back, a small VisitPool run on it.
+    System.getProperty("visitPoolProbe")?.let { systemProperty("visitPoolProbe", it) }
+    // Seeds one synthetic 10040 into a LOCAL relay so the `certified` gate
+    // and the monitor's 10040 source can be watched live. Same trap.
+    System.getProperty("seed10040")?.let { systemProperty("seed10040", it) }
+    System.getProperty("seed10040Url")?.let { systemProperty("seed10040Url", it) }
+    // Stages the enforce-mode retraction scenario — a provider on a real
+    // relay, a phantom score only in our store. Same trap.
+    System.getProperty("enforceProbe")?.let { systemProperty("enforceProbe", it) }
+    System.getProperty("enforceProviderRelay")?.let { systemProperty("enforceProviderRelay", it) }
+    System.getProperty("enforceLocalRelay")?.let { systemProperty("enforceLocalRelay", it) }
 }

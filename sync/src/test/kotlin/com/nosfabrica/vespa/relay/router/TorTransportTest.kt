@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router
 
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.nosfabrica.vespa.relay.router.discovery.Unreachability
+import com.nosfabrica.vespa.relay.router.discovery.shouldPreProbe
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import okhttp3.OkHttpClient
 import okhttp3.Request
@@ -132,11 +133,11 @@ class TorTransportTest {
     private fun settings(
         host: String = "127.0.0.1",
         port: Int,
-        everything: Boolean = false,
+        routeAll: Boolean = false,
     ) = TorSettings(
         socksHost = host,
         socksPort = port,
-        everything = everything,
+        routeAll = routeAll,
         connectTimeoutSec = 5,
         maxSockets = 4,
     )
@@ -212,7 +213,7 @@ class TorTransportTest {
     @Test
     fun `SYNC_TOR_ALL routes clearnet through Tor too`() {
         val direct = OkHttpClient()
-        val transport = TorTransport(settings(port = 9050, everything = true), direct)
+        val transport = TorTransport(settings(port = 9050, routeAll = true), direct)
         assertTrue(transport.routes(clearnet))
         assertTrue(transport.clientFor(clearnet) !== direct)
     }
@@ -278,7 +279,7 @@ class TorTransportTest {
         val plain = assertNotNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "tor:9050")))
         assertEquals("tor", plain.socksHost)
         assertEquals(9050, plain.socksPort)
-        assertFalse(plain.everything)
+        assertFalse(plain.routeAll)
         assertEquals(TorSettings.DEFAULT_CONNECT_TIMEOUT_SEC, plain.connectTimeoutSec)
 
         val scheme = assertNotNull(TorSettings.fromEnv(mapOf("SYNC_TOR_SOCKS" to "socks5://127.0.0.1:9150")))
@@ -364,7 +365,7 @@ class TorTransportTest {
      */
     @Test
     fun `SYNC_TOR_ALL takes the onion rules with it to clearnet relays`() {
-        val all = TorTransport(settings(port = 9050, everything = true), OkHttpClient())
+        val all = TorTransport(settings(port = 9050, routeAll = true), OkHttpClient())
         assertFalse(shouldPreProbe(clearnet, all), "SYNC_TOR_ALL must not leave a direct probe of every relay running")
         assertFalse(shouldPreProbe(onion, all))
         assertTrue(all.routes(clearnet), "the strike and UNREACHABLE guards key on this")
@@ -421,7 +422,7 @@ class TorTransportTest {
                     ),
                 ),
             )
-        assertTrue(s.everything)
+        assertTrue(s.routeAll)
         assertEquals(5, s.connectTimeoutSec, "a sub-5s connect timeout cannot survive a rendezvous")
         assertEquals(512, s.maxSockets)
     }

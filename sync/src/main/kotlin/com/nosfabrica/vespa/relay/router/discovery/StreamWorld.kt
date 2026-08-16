@@ -22,11 +22,15 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.relay.router.IngestPipeline
 import com.nosfabrica.vespa.relay.router.TorTransport
+import com.nosfabrica.vespa.relay.router.config.MonitorConfig
+import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
+import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
 import kotlinx.coroutines.CancellationException
 
 /**
@@ -49,10 +53,42 @@ internal class StreamWorld(
     private val streams: List<SyncStream>,
     private val probe: ReachabilityProbe,
     private val ingest: IngestPipeline,
-    private val monitor: RelayMonitor?,
+    /**
+     * Whose unreachability records may hold a url out of the candidate set —
+     * this router's signer, plus every monitor npub the config names. NEVER
+     * every author: quartz's own dead set honours any rtt-less 30166 within
+     * the TTL (ForeignMonitorTest pins it), and this router mirrors
+     * strangers' 30166s by design, so unscoped, anyone whose records we
+     * mirror could starve a relay out of the roster indefinitely — held out
+     * of the candidate set, it is never dialled, never re-measured, and
+     * never earns the live record that would clear the mark.
+     */
+    private val monitorAuthors: List<String>,
     private val tor: TorTransport?,
     override val sockets: AliasFolding.Sockets,
-) : AliasMonitor.Source {
+    /**
+     * The monitor's OWN url sources — the `monitor { sources = [...] }` block —
+     * unioned with whatever the streams' parsed sources yield. This is what
+     * lets a deployment move relay-list parsing off the streams entirely: a
+     * stream running on verdict sources alone contributes no candidates, and
+     * the monitor block is then the one place urls enter the system.
+     */
+    private val monitorConfig: MonitorConfig? = null,
+) : AliasMonitor.CandidateSource {
+    /**
+     * The monitor block dressed as a discovery config, which is all
+     * [RelayDiscovery.discover] reads of one. Cadence fields are inert here —
+     * the monitor's clock belongs to [AliasMonitor].
+     */
+    private val monitorDiscovery: RelayDiscoveryConfig? =
+        monitorConfig?.takeIf { it.sources.isNotEmpty() }?.let {
+            RelayDiscoveryConfig(
+                sources = it.sources,
+                refreshSeconds = it.sweepSeconds,
+                exclude = it.exclude,
+            )
+        }
+
     /**
      * What the last derivation started from and what it dropped — the two nodes
      * ABOVE `candidates`, which nothing could see before.
@@ -92,6 +128,27 @@ internal class StreamWorld(
     )
 
     /**
+     * The author-scoped dead set — see [monitorAuthors] for why quartz's
+     * unscoped one cannot be used here. Same convention as quartz's
+     * [RelayReachabilityStore]: within the TTL, a 30166 WITHOUT `rtt-open`
+     * is "checked and could not open"; kind 30166 is addressable per
+     * (author, url), so the current record is the verdict. The author
+     * re-check on the returned events is one string compare of defence in
+     * depth over the store's own `authors` filter.
+     */
+    private suspend fun ownDead(): Set<NormalizedRelayUrl> {
+        if (monitorAuthors.isEmpty()) return emptySet()
+        val since = (System.currentTimeMillis() / 1000) - RelayReachabilityStore.DEFAULT_TTL_SECONDS
+        return store
+            .query<RelayDiscoveryEvent>(
+                Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = monitorAuthors, since = since),
+            ).asSequence()
+            .filter { it.pubKey in monitorAuthors && it.rttOpen() == null }
+            .mapNotNull { it.relay() }
+            .toSet()
+    }
+
+    /**
      * Urls a signed record already calls dead are held out: they cannot be
      * fingerprinted, so they cannot be folded, and dialling them is a connect
      * timeout spent re-learning what the record says. Not permanent — the record
@@ -102,27 +159,13 @@ internal class StreamWorld(
      * How many, and out of what, is [lastDerivation].
      */
     override suspend fun candidates(): List<NormalizedRelayUrl> {
-        val dead = monitor?.deadSet().orEmpty()
+        val dead = ownDead()
         val all = LinkedHashSet<NormalizedRelayUrl>()
         // Kept rather than only skipped, so the funnel's first branch divides.
         // An operator who excluded a hundred urls and then asks why the fan-out
         // is a hundred short is asking about a number nothing published.
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
-        for (stream in streams) {
-            val dynamic = stream.dynamic ?: continue
-            val found =
-                try {
-                    RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay), allowOnion = tor != null)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    System.err.println("router: alias source could not derive ${stream.name}: ${e.message}")
-                    emptyList()
-                }
-            found.forEach {
-                if (it.url !in dynamic.exclude && it.url != store.relay) all += it.url else excluded += it.url
-            }
-        }
+        derive("alias source", { it }) { url, kept -> if (kept) all += url else excluded += url }
         // `exclude` is PER STREAM, so a url one stream excludes and another asks
         // for is a candidate — it is dialled, and counting it as excluded would
         // put it on both sides of a partition that has to divide exactly once.
@@ -139,6 +182,55 @@ internal class StreamWorld(
                 (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else ""),
         )
         return live
+    }
+
+    /** Every derivation the world runs: each stream's parsed sources, plus the monitor's own block. */
+    private fun derivations(): List<Pair<String, RelayDiscoveryConfig>> =
+        streams.mapNotNull { s -> s.discovery?.let { s.name to it } } +
+            listOfNotNull(monitorDiscovery?.let { "monitor sources" to it })
+
+    /**
+     * One walk over every derivation, [bound] applied to each config first —
+     * the shared core of [candidates] and [candidatesSince], so a source that
+     * fails to derive is reported (and survived) the same way on both paths.
+     * [onUrl]'s `kept` says whether the url survived the per-stream exclude
+     * list and the self check; the caller decides what a dropped url means.
+     */
+    private suspend fun derive(
+        what: String,
+        bound: (RelayDiscoveryConfig) -> RelayDiscoveryConfig,
+        onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
+    ) {
+        for ((label, discovery) in derivations()) {
+            val found =
+                try {
+                    RelayDiscovery.discover(store, bound(discovery), skip = setOfNotNull(store.relay), allowOnion = tor != null)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    System.err.println("router: $what could not derive $label: ${e.message}")
+                    emptyList()
+                }
+            found.forEach { onUrl(it.url, it.url !in discovery.exclude && it.url != store.relay) }
+        }
+    }
+
+    /**
+     * The fast lane's derivation: the same sources, `since`-bounded to
+     * relay-list events ingested at or after [since]. Reads minutes of events
+     * where [candidates] walks the store — which is the whole reason a new
+     * relay can be verdicted in minutes without the lane costing a sweep.
+     *
+     * Known-dead urls are held out on the same reasoning as [candidates];
+     * the exclude lists apply inside [RelayDiscovery.discover] as ever.
+     */
+    override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
+        val dead = ownDead()
+        val fresh = LinkedHashSet<NormalizedRelayUrl>()
+        derive("fast lane", { discovery ->
+            discovery.copy(sources = discovery.sources.map { it.copy(filter = it.filter.copy(since = since)) })
+        }) { url, kept -> if (kept) fresh += url }
+        return fresh.filterNot { it in dead }
     }
 
     override suspend fun canDial(url: NormalizedRelayUrl): Boolean = probe.canDial(url)

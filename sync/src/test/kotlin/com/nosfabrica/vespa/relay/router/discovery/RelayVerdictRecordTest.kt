@@ -47,7 +47,7 @@ import kotlin.test.assertTrue
  *
  * These tests hold the merge from both directions.
  */
-class RelayAliasRecordTest {
+class RelayVerdictRecordTest {
     private val self = RelayUrlNormalizer.normalize("ws://localhost:7777")
     private val alias = RelayUrlNormalizer.normalize("wss://nos.lol/cipher-zulu")
     private val canonical = RelayUrlNormalizer.normalize("wss://nos.lol")
@@ -75,7 +75,7 @@ class RelayAliasRecordTest {
     fun `the fold's verdict survives the monitor's next dial`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
@@ -87,7 +87,7 @@ class RelayAliasRecordTest {
 
             val after = tagNames(recordFor(store, alias.url))
             assertTrue(
-                RelayAliasRecord.SAME_AS_TAG in after,
+                RelayVerdictRecord.SAME_AS_TAG in after,
                 "the monitor erased the fold's verdict: left $after",
             )
             // And it did write what it came to write, so this is a merge rather
@@ -103,7 +103,7 @@ class RelayAliasRecordTest {
             // would resolve the url to itself through a verdict and the whole
             // point — not re-probing it — would be lost.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
 
             record.publishDistinct(alias, sampled = 500, comparedAgainst = "3 compared peer(s)", bestShared = 2)
 
@@ -121,7 +121,7 @@ class RelayAliasRecordTest {
             // `RelayAliases.adopt` silently drops — leaving the url unmeasured
             // and re-probed every pass, the exact bug this half exists to fix.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             val unslashed = RelayUrlNormalizer.normalize("wss://nos.lol")
 
             record.publishDistinct(unslashed, sampled = 500, comparedAgainst = "2 compared peer(s)", bestShared = 0)
@@ -137,7 +137,7 @@ class RelayAliasRecordTest {
             // the newer verdict replaces the older rather than sitting beside it
             // and contradicting it.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
             record.publishDistinct(alias, sampled = 500, comparedAgainst = "1 compared peer(s)", bestShared = 3)
@@ -145,20 +145,20 @@ class RelayAliasRecordTest {
             val held = record.load(listOf(alias))
             assertEquals(setOf(alias), held.distinct)
             assertTrue(held.aliases.isEmpty(), "the stale fold outlived the verdict that replaced it")
-            assertEquals(1, recordFor(store, alias.url)?.tags?.count { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG })
+            assertEquals(1, recordFor(store, alias.url)?.tags?.count { it.firstOrNull() == RelayVerdictRecord.SAME_AS_TAG })
         }
 
     @Test
     fun `a cleared verdict carries the evidence it rests on`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
 
             record.publishDistinct(alias, sampled = 500, comparedAgainst = "19 compared peer(s)", bestShared = 2)
 
             assertEquals(
                 "500 newest events, best 2 shared with 19 compared peer(s)",
-                recordFor(store, alias.url)?.tags?.first { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG }?.get(2),
+                recordFor(store, alias.url)?.tags?.first { it.firstOrNull() == RelayVerdictRecord.SAME_AS_TAG }?.get(2),
             )
         }
 
@@ -166,7 +166,7 @@ class RelayAliasRecordTest {
     fun `a monitor observation survives the fold's verdict`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
 
             monitor.recordProbed(mapOf(alias to 120L), emptySet(), 1_700_000_000L)
@@ -175,26 +175,26 @@ class RelayAliasRecordTest {
 
             val after = tagNames(recordFor(store, alias.url))
             assertTrue(
-                after.containsAll(before - RelayAliasRecord.SAME_AS_TAG),
+                after.containsAll(before - RelayVerdictRecord.SAME_AS_TAG),
                 "publishing the verdict dropped the monitor's tags: had $before, left $after",
             )
-            assertTrue(RelayAliasRecord.SAME_AS_TAG in after)
+            assertTrue(RelayVerdictRecord.SAME_AS_TAG in after)
         }
 
     @Test
     fun `re-probing replaces the verdict rather than appending a second one`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
             record.publish(alias, canonical, sampled = 500, shared = 500)
 
             val held = recordFor(store, alias.url)
-            assertEquals(1, held?.tags?.count { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG })
+            assertEquals(1, held?.tags?.count { it.firstOrNull() == RelayVerdictRecord.SAME_AS_TAG })
             assertEquals(
                 "500 newest events, 500 shared with ${canonical.url}",
-                held?.tags?.first { it.firstOrNull() == RelayAliasRecord.SAME_AS_TAG }?.get(2),
+                held?.tags?.first { it.firstOrNull() == RelayVerdictRecord.SAME_AS_TAG }?.get(2),
             )
         }
 
@@ -202,7 +202,7 @@ class RelayAliasRecordTest {
     fun `an edit lands even when the record it replaces is newer than the clock`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
             // A record stamped well into the future — a peer's clock, or simply
             // two writers inside the same second. `now` alone would be rejected
@@ -212,14 +212,14 @@ class RelayAliasRecordTest {
             val written = record.publish(alias, canonical, sampled = 500, shared = 500)
 
             assertTrue(written != null, "the edit was silently lost to replaceable-event ordering")
-            assertTrue(RelayAliasRecord.SAME_AS_TAG in tagNames(recordFor(store, alias.url)))
+            assertTrue(RelayVerdictRecord.SAME_AS_TAG in tagNames(recordFor(store, alias.url)))
         }
 
     @Test
     fun `an edit keeps tags it does not own, whoever wrote them`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
             monitor.recordProbed(mapOf(alias to 120L), emptySet(), nowSeconds())
             val theirs = tagNames(recordFor(store, alias.url)) - "d"
@@ -236,7 +236,7 @@ class RelayAliasRecordTest {
     fun `the verdict is readable back as an alias`() =
         runBlocking {
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             record.publish(alias, canonical, sampled = 500, shared = 498)
 
             assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
@@ -257,7 +257,7 @@ class RelayAliasRecordTest {
             //
             // So this asserts what `load` DECIDES, not what the tags are called.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)
 
             record.publish(alias, canonical, sampled = 500, shared = 498)
@@ -272,7 +272,7 @@ class RelayAliasRecordTest {
                 held.aliases,
                 "the verdict survived as a tag but stopped reading as current — its clock or its rules version was dropped",
             )
-            assertEquals(setOf(alias), held.stable, "the stability verdict did not survive its own round trip")
+            assertEquals(setOf(alias), held.consistent, "the stability verdict did not survive its own round trip")
         }
 
     @Test
@@ -294,7 +294,7 @@ class RelayAliasRecordTest {
                     RelayDiscoveryEvent.build(alias, "", nowSeconds()) {
                         add(
                             arrayOf(
-                                RelayAliasRecord.SAME_AS_TAG,
+                                RelayVerdictRecord.SAME_AS_TAG,
                                 canonical.url,
                                 "500 newest events, 498 shared with ${canonical.url}",
                                 nowSeconds().toString(),
@@ -305,7 +305,7 @@ class RelayAliasRecordTest {
                 ),
             )
 
-            val held = RelayAliasRecord(store, signer).load(listOf(alias))
+            val held = RelayVerdictRecord(store, signer).load(listOf(alias))
             assertTrue(
                 held.aliases.isEmpty() && held.distinct.isEmpty(),
                 "a verdict from superseded rules was still being acted on: ${held.aliases}${held.distinct}",
@@ -326,12 +326,12 @@ class RelayAliasRecordTest {
             store.insert(
                 signer.sign(
                     RelayDiscoveryEvent.build(alias, "", nowSeconds()) {
-                        add(arrayOf(RelayAliasRecord.SAME_AS_TAG, canonical.url, "old-style, no timestamp"))
+                        add(arrayOf(RelayVerdictRecord.SAME_AS_TAG, canonical.url, "old-style, no timestamp"))
                     },
                 ),
             )
 
-            val held = RelayAliasRecord(store, signer).load(listOf(alias))
+            val held = RelayVerdictRecord(store, signer).load(listOf(alias))
             assertTrue(held.aliases.isEmpty(), "a pre-epoch verdict on a freshly rewritten record read as current")
         }
 
@@ -344,11 +344,11 @@ class RelayAliasRecordTest {
             // entire fan-out every pass and never converge, and every test here
             // that goes through `publish` would still pass.
             val store = newStore()
-            val record = RelayAliasRecord(store, signer)
+            val record = RelayVerdictRecord(store, signer)
             record.publish(alias, canonical, sampled = 500, shared = 498)
             record.publishConsistency(canonical, consistent = true, first = 500, second = 500, shared = 500, score = 1.0)
 
             assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
-            assertEquals(setOf(canonical), record.load(listOf(canonical)).stable)
+            assertEquals(setOf(canonical), record.load(listOf(canonical)).consistent)
         }
 }

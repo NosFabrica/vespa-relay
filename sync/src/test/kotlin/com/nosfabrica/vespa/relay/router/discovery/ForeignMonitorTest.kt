@@ -93,8 +93,11 @@ class ForeignMonitorTest {
                 // Documenting what quartz DOES, not what it should: the
                 // reachability snapshot is queried without an `authors` filter,
                 // so a record we never signed lands in the set the fan-out
-                // skips on. If this assertion ever flips, quartz has started
-                // scoping it and the local guard in SyncEngine can go.
+                // skips on. The router therefore scopes its own read —
+                // StreamWorld's author-bound dead query — instead of using
+                // this set for candidate hold-out. If this assertion ever
+                // flips, quartz has started scoping it and that local read
+                // can go.
                 assertEquals(
                     setOf(dead),
                     ours.deadSet(),

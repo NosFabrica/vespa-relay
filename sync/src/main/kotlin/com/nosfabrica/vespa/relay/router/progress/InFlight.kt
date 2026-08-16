@@ -70,7 +70,7 @@ package com.nosfabrica.vespa.relay.router.progress
  * disclose the truncation reads as the whole answer.
  */
 class InFlight(
-    /** The quietest relays, at most [RelayRotation.DEFAULT_IN_FLIGHT_ROWS] of them. */
+    /** The quietest relays, bounded by whoever built the list — see [VisitPool.MAX_IN_FLIGHT_ROWS][com.nosfabrica.vespa.relay.router.VisitPool]. */
     val relays: List<Relay>,
     /** How many more had a worker and are not named here. Never silently dropped. */
     val omitted: Int,
@@ -149,7 +149,7 @@ class InFlight(
          * the rest; nothing separated the last two. Null before a leg reaches a
          * stage worth the word.
          */
-        val doing: String? = null,
+        val stage: String? = null,
         /**
          * WHERE IN TIME its paged walk has got to — the `created_at` second the
          * cursor is reading now.

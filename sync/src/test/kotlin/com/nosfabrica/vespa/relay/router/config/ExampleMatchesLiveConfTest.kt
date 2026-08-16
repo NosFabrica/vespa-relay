@@ -63,14 +63,11 @@ class ExampleMatchesLiveConfTest {
             s.trusted,
             s.sync,
             s.deleteMissing,
-            s.dynamic?.refreshSeconds,
-            s.dynamic?.recycleSeconds,
-            s.dynamic?.concurrency,
-            s.dynamic?.authorsPerLeg,
-            s.dynamic
+            s.discovery?.refreshSeconds,
+            s.discovery
                 ?.exclude
                 ?.let { ex -> ex.urls.map { it.url }.sorted() + ex.patterns.map { it.pattern }.sorted() },
-            s.dynamic?.sources?.map { src -> src.filter.toJson() to src.selects },
+            s.discovery?.sources?.map { src -> src.filter.toJson() to src.selects },
         ).joinToString("\n")
 
     /** Tests run from the module directory, so the repo root is one level up. */

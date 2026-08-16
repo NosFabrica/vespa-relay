@@ -56,9 +56,9 @@ data class RouterConfig(
     // From SYNC_INGEST_CONCURRENCY / SYNC_INGEST_BATCH.
     val ingestConcurrency: Int = 2,
     val ingestBatch: Int = 1000,
-    // How much overlap makes a negentropy reconcile worth its id exchange, and
-    // how long a relay gets to answer the NIP-45 COUNT that measures it.
-    // From SYNC_NEG_MIN_EVENTS.
+    // How many matching events WE must already hold before a negentropy
+    // reconcile beats paging — our own count decides alone; the NIP-45 COUNT
+    // round trip this once paired with was removed. From SYNC_NEG_MIN_EVENTS.
     val negMinEvents: Int = 5_000,
     /**
      * Automatic negentropy paging: how many events one reconcile window aims to
@@ -75,7 +75,44 @@ data class RouterConfig(
     val negPageMin: Int = 1_000,
     val negPageMax: Int = 1_000_000,
     val negPageSlackSec: Long = 60,
+    /**
+     * The monitor plane's own configuration — see [MonitorConfig]. Null runs
+     * the probe passes exactly as before: candidates derived from the streams'
+     * parsed sources, on the default six-hour clock.
+     */
+    val monitor: MonitorConfig? = null,
+    /**
+     * The visit pool's dial width: how many relays are visited — and
+     * therefore dialled — at once, across every visit-mode stream. Router-wide
+     * rather than per stream because the pool is one shared engine; the
+     * per-stream `concurrency` knob paces only the legacy fan-out.
+     */
+    val visitConcurrency: Int = DEFAULT_VISIT_CONCURRENCY,
+    /**
+     * The visit pool's steady state: how many live-tail sockets it may hold
+     * open at once. Visit width plus this is the most sockets the pool ever
+     * owns — size the pair against the dispatcher ceiling, leaving room for
+     * the static upstreams, the monitor's dials and the healer.
+     */
+    val tailBudget: Int = DEFAULT_TAIL_BUDGET,
 ) {
+    companion object {
+        /**
+         * Matches the monitor's dial width: the same arithmetic — simultaneous
+         * TLS handshakes against their own connect timeout — sizes both. The
+         * first 440-relay integration run let the pool dial its whole socket
+         * budget at once and watched 436 dials time out inside a minute.
+         */
+        const val DEFAULT_VISIT_CONCURRENCY = 128
+
+        /**
+         * Sized to the measured syncable population (~600 responsive hosts
+         * after folding): the whole point is that every certified relay is
+         * effectively always connected.
+         */
+        const val DEFAULT_TAIL_BUDGET = 600
+    }
+
     /** Every (stream, url) pair whose direction pulls events down into our store. */
     fun downUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.DOWN)
 
@@ -83,12 +120,76 @@ data class RouterConfig(
     fun upUpstreams(): List<SyncUpstream> = upstreamsFor(SyncDirection.UP)
 
     /** The streams whose relay list is discovered from the store, not configured. */
-    fun dynamicStreams(): List<SyncStream> = streams.filter { it.dynamic != null }
+    fun discoveryStreams(): List<SyncStream> = streams.filter { it.discovery != null }
 
     private fun upstreamsFor(want: SyncDirection): List<SyncUpstream> =
         streams
             .filter { it.dir == want || it.dir == SyncDirection.BOTH }
             .flatMap { s -> s.urls.map { SyncUpstream(s.name, it, s.filter, s.trusted, s.sync, s.healContent, s.healRetractions) } }
+}
+
+/**
+ * The monitor plane's configuration: where candidate urls come from, and the
+ * clocks its passes run on.
+ *
+ * The `monitor { }` block is what makes the config file "routers + monitor"
+ * rather than router-only. Its [sources] use the same select syntax a stream's
+ * `relaySource` does — every relay list in the protocol is a tag with a url at
+ * a fixed offset — but they feed the PROBE PASSES (fold, consistency,
+ * fitness), whose verdicts land on kind-30166 records, where a
+ * [VerdictSource] stream then finds its relay list. A deployment can thus
+ * move every ounce of relay-list parsing off the streams and onto this block.
+ *
+ * Candidates derived here UNION with whatever the streams' own parsed sources
+ * still yield — the migration posture everywhere in this config.
+ */
+data class MonitorConfig(
+    /** Where candidate urls come from — same shape as a stream's `relaySource`. */
+    val sources: List<RelaySource>,
+    val exclude: RelayExcludes = RelayExcludes.NONE,
+    /**
+     * The full-sweep cadence: how often every candidate is re-verdicted.
+     * The default is the probe passes' historical six hours.
+     */
+    val sweepSeconds: Long = DEFAULT_SWEEP_SECONDS,
+    /**
+     * The fast lane: how often the monitor looks for urls that have NEVER
+     * been measured and verdicts just those. This is what bounds a new
+     * relay's wait for its first `syncable` at minutes instead of a sweep —
+     * the price of "unmeasured urls are not dialled by streams" is paid here.
+     * Null turns the lane off.
+     *
+     * Cheap by construction: the derivation is `since`-bounded to relay-list
+     * events ingested after the last look, so it reads minutes of events, not
+     * the store.
+     */
+    val fastLaneSeconds: Long? = DEFAULT_FAST_LANE_SECONDS,
+    /**
+     * How many relays a probe pass dials at once — the sweep's wall clock,
+     * since the corpus is mostly dead relays whose cost is a timeout. Shared
+     * by all three dialling passes, which run serialized, so this is also the
+     * most sockets the monitor plane ever holds; size it against the
+     * dispatcher ceiling minus the visit pool's budget.
+     */
+    val dialConcurrency: Int = DEFAULT_DIAL_CONCURRENCY,
+) {
+    companion object {
+        const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
+
+        /** Two minutes: a new relay is syncable before its author refreshes the page. */
+        const val DEFAULT_FAST_LANE_SECONDS = 120L
+
+        /**
+         * This was 16, with a note calling the probe work "a side quest"
+         * that must stay below the fan-out's concurrency — true when the
+         * fold shared its sockets with the streams' fan-out, and a relic
+         * after the split. Nothing certifies until the passes finish, and a
+         * mostly-dead corpus costs timeouts, not bandwidth: a 929-url sweep
+         * measured at 16 spent half an hour in the fitness dials alone,
+         * nearly all of it waiting.
+         */
+        const val DEFAULT_DIAL_CONCURRENCY = 128
+    }
 }
 
 /** One upstream connection: a single relay url with the filter/flags of its stream. */
@@ -109,7 +210,7 @@ data class SyncStream(
     val urls: List<NormalizedRelayUrl>,
     val trusted: Boolean,
     // Null for an ordinary stream; set when its relays come out of the store.
-    val dynamic: RelayDiscoveryConfig? = null,
+    val discovery: RelayDiscoveryConfig? = null,
     // Whether this stream's relays share events with each other — see [SyncMode].
     val sync: SyncMode = SyncMode.AUTO,
     // Whether an upstream dropping a record means we drop it too.
@@ -127,6 +228,16 @@ data class SyncStream(
      * already addressed to every relay and most relays never received.
      */
     val healRetractions: Boolean = false,
+    /**
+     * Fetch forward, audit the past: when set, a relay whose band's last full
+     * pass is older than this gets a windowed negentropy audit on its next
+     * visit — the covered history reconciled, only the diff downloaded, and
+     * `fullAt` re-stamped. A week is the intended magnitude. Staggering is
+     * free (each relay's band ages on its own clock), so no herd and no cap.
+     * Null audits nothing, which leaves history exactly as complete as the
+     * paged walks left it.
+     */
+    val auditSeconds: Long? = null,
     /**
      * The kinds this stream's upstreams are the source of truth for — the only
      * kinds [deleteMissing] may delete on their own absence. Required whenever

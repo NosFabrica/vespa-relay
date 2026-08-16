@@ -104,7 +104,7 @@ class SyncBands(
 
     @Volatile private var flusher: Thread? = null
 
-    private val streams = ConcurrentHashMap<String, SyncCoverage>()
+    private val coverageByStream = ConcurrentHashMap<String, SyncCoverage>()
 
     /**
      * stream -> the relays it currently folds away, whose bands are left out of
@@ -128,6 +128,68 @@ class SyncBands(
      */
     private val folded = ConcurrentHashMap<String, Set<String>>()
 
+    /**
+     * THE AUDIT'S OWN CLOCK, because quartz's `fullAt` is not it.
+     *
+     * `Band.widen` keeps the OLD `fullAt` on every non-stale merge — upstream
+     * defines it as "when the last pass that started from nothing finished",
+     * and only a stale replace (the 7-day full resync) restarts it. Read as
+     * "last verified", it freezes: the moment a band aged past
+     * `auditSeconds`, every visit's audit was due again, and one relay was
+     * measured taking 13 full history sweeps in 40 minutes. So the router
+     * keeps its own stamp, advanced by every `reconciledThrough` record and
+     * persisted beside the band it belongs to. Callers fall back to `fullAt`
+     * when no stamp exists yet — a fresh band's paged full walk still defers
+     * the first audit one `auditSeconds`, exactly as before.
+     */
+    private data class VerifiedKey(
+        val stream: String,
+        val filter: String,
+        val relay: String,
+    )
+
+    private val verified = ConcurrentHashMap<VerifiedKey, Long>()
+
+    /**
+     * When each ask's audit was last CLAIMED, complete or not — the spacing
+     * half of [claimAudit]. In-memory on purpose: a restart retrying once is
+     * fine, a revisit-floor retry loop is not.
+     */
+    private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
+
+    /**
+     * THE AUDIT GATE, both halves in one place: is this ask's history due —
+     * the [verifiedAt] clock aged past [auditSeconds], falling back to the
+     * band's `fullAt` so a fresh catch-up still defers the first audit — and
+     * is the ask outside its attempt spacing? TRUE CLAIMS THE ATTEMPT: the
+     * caller is expected to run the audit, and an audit that cannot complete
+     * (negentropy refused, sweep interrupted) advances no clock, so the
+     * claim itself is what stands between that and a retry on every visit.
+     * The clock chain and the spacing map each used to be spelled twice —
+     * once per audit path — which is exactly how they would have drifted.
+     */
+    fun claimAudit(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        auditSeconds: Long,
+        now: Long = System.currentTimeMillis() / 1000,
+    ): Boolean {
+        val key = VerifiedKey(stream, filter.toJson(), url.url)
+        val clock = verified[key] ?: band(stream, url, filter)?.fullAt ?: 0L
+        if (!auditDue(clock, now, auditSeconds)) return false
+        if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(auditSeconds)) return false
+        attempts[key] = now
+        return true
+    }
+
+    /** When this ask's history was last VERIFIED by a completed reconcile, or null before its first. */
+    fun verifiedAt(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+    ): Long? = verified[VerifiedKey(stream, filter.toJson(), url.url)]
+
     init {
         val pruned = load()
         // restore() does not fire onChange, but stay defensive: reopening a
@@ -142,7 +204,7 @@ class SyncBands(
      * The bands of one stream. Created on first use: a stream that never syncs
      * costs nothing, and the engine does not announce its stream list here.
      */
-    private fun coverage(stream: String): SyncCoverage = streams.computeIfAbsent(stream) { SyncCoverage(fullResyncSeconds, onChange = { dirty = true }) }
+    private fun coverage(stream: String): SyncCoverage = coverageByStream.computeIfAbsent(stream) { SyncCoverage(fullResyncSeconds, onChange = { dirty = true }) }
 
     // ---- the band arithmetic, upstream's ------------------------------------
     // Delegated rather than exposing `coverage` directly: these five calls are
@@ -174,6 +236,10 @@ class SyncBands(
         drained: Boolean = false,
     ) {
         coverage(stream).record(url, filter, observedMin, observedMax, paged, reconciledThrough, observedByKind, drained)
+        if (reconciledThrough != null) {
+            verified[VerifiedKey(stream, filter.toJson(), url.url)] = reconciledThrough
+            dirty = true
+        }
     }
 
     fun coveringWindow(
@@ -195,7 +261,7 @@ class SyncBands(
         filter: Filter,
     ): SyncCoverage.Band? = coverage(stream).band(url, filter)
 
-    fun size(): Int = streams.values.sumOf { it.size() }
+    fun size(): Int = coverageByStream.values.sumOf { it.size() }
 
     /**
      * Stop keeping band state for urls the alias fold proved are another url's
@@ -277,7 +343,7 @@ class SyncBands(
         // asking is the difference between reporting what changed and
         // reporting the whole verdict set back at every boot.
         val held =
-            streams[stream]
+            coverageByStream[stream]
                 ?.export()
                 ?.keys
                 ?.mapTo(HashSet()) { it.relay }
@@ -387,6 +453,9 @@ class SyncBands(
                         // Straight back into the pair, which is what the two
                         // inner levels have always been.
                         bandOf(band.jsonObject)?.let { restored[SyncCoverage.BandKey(relay, filter)] = it }
+                        band.jsonObject["verifiedAt"]?.jsonPrimitive?.longOrNull?.let {
+                            verified[VerifiedKey(streamOrFlatKey, filter, relay)] = it
+                        }
                     }
                 }
                 if (restored.isNotEmpty()) coverage(streamOrFlatKey).restore(restored)
@@ -413,7 +482,10 @@ class SyncBands(
     }
 
     /** One band, as it is written. */
-    private fun bandOf(band: SyncCoverage.Band): JsonObject =
+    private fun bandOf(
+        band: SyncCoverage.Band,
+        verifiedAt: Long?,
+    ): JsonObject =
         buildJsonObject {
             // min/max are the outer edges across every kind, written for two
             // readers: a human debugging why a relay re-synced, and a ROLLBACK
@@ -423,6 +495,9 @@ class SyncBands(
             put("max", band.maxCreatedAt)
             put("complete", band.complete)
             put("fullAt", band.fullAt)
+            // The router's own audit clock, absent until the ask's first
+            // completed reconcile — see [verified]. An old build ignores it.
+            verifiedAt?.let { put("verifiedAt", it) }
             put(
                 "spans",
                 buildJsonObject {
@@ -496,7 +571,7 @@ class SyncBands(
         return runCatching {
             val snapshot: JsonObject =
                 buildJsonObject {
-                    streams.forEach { (stream, coverage) ->
+                    coverageByStream.forEach { (stream, coverage) ->
                         // The key's own two halves become the two inner levels.
                         val byFilter = LinkedHashMap<String, LinkedHashMap<String, SyncCoverage.Band>>()
                         // A url this stream folded away is skipped rather than
@@ -521,7 +596,9 @@ class SyncBands(
                                     put(
                                         filter,
                                         buildJsonObject {
-                                            byRelay.forEach { (relay, band) -> put(relay, bandOf(band)) }
+                                            byRelay.forEach { (relay, band) ->
+                                                put(relay, bandOf(band, verified[VerifiedKey(stream, filter, relay)]))
+                                            }
                                         },
                                     )
                                 }
@@ -548,6 +625,28 @@ class SyncBands(
         // Pretty-printed: this file is read by a human debugging why a relay
         // re-synced.
         private val json = Json { prettyPrint = true }
+
+        /**
+         * Is the ask's history due its audit? A clock of zero is an ask that
+         * has NEVER had a verified pass — always due, which is what makes a
+         * fresh relay's first audit happen on its first visit rather than a
+         * week later.
+         */
+        internal fun auditDue(
+            fullAt: Long,
+            now: Long,
+            auditSeconds: Long,
+        ): Boolean = fullAt <= 0L || now - fullAt >= auditSeconds
+
+        /**
+         * How long after an audit RAN before the same ask may try again,
+         * whatever the outcome — the backstop for audits that cannot
+         * complete and so never advance the verified-at clock. A quarter of
+         * the knob, floored so a flaky relay is not re-swept on the revisit
+         * floor and capped so a weekly audit still retries within the shift
+         * an operator is watching.
+         */
+        internal fun attemptSpacingSeconds(auditSeconds: Long): Long = (auditSeconds / 4).coerceIn(900L, 21_600L)
 
         // Often enough that a kill costs little, rare enough to be free.
         private const val DEFAULT_FLUSH_SECONDS = 30L

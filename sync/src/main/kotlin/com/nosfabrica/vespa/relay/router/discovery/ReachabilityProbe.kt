@@ -21,12 +21,34 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.relay.router.TorTransport
-import com.nosfabrica.vespa.relay.router.shouldPreProbe
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayMonitor
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.TcpProber
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.withContext
+
+/**
+ * Is the cheap TCP pre-probe able to answer anything about this relay?
+ *
+ * Only when the dial it precedes takes the same route it does. [TcpProber]
+ * opens a plain socket to `InetSocketAddress(host, port)` — a DNS lookup and a
+ * direct connection from this box's own address — so for anything the router
+ * reaches THROUGH Tor it measures a path the transfer will never use.
+ *
+ * For a `.onion` that is a wrong answer: no resolver can answer the name, so
+ * the probe reports `UnknownHostException` for a service that is up, and
+ * [Unreachability] accepts that as proof and publishes it, signed, about
+ * someone else's server. Under `SYNC_TOR_ALL` it is worse than wrong — the
+ * probe would resolve and connect to every discovered relay directly, which is
+ * precisely the exposure that setting exists to remove.
+ *
+ * There is nothing to replace it with: reachability through Tor is exactly
+ * what the websocket dial measures, so the dial is the only verdict.
+ */
+internal fun shouldPreProbe(
+    url: NormalizedRelayUrl,
+    tor: TorTransport?,
+): Boolean = tor?.routes(url) != true
 
 /**
  * CAN WE OPEN A SOCKET AT ALL — the cheap guard in front of every dial, and the
@@ -49,7 +71,7 @@ internal class ReachabilityProbe(
      * re-run once for its cause and published only for what [Unreachability]
      * accepts — the extra connect is paid on the failing path alone.
      */
-    suspend fun reachable(url: NormalizedRelayUrl): Boolean {
+    suspend fun probeAndRecord(url: NormalizedRelayUrl): Boolean {
         if (!shouldPreProbe(url, tor)) return true
         val ok = runCatching { TcpProber.tcpReachable(url) }.getOrDefault(true)
         if (!ok) {
@@ -61,7 +83,7 @@ internal class ReachabilityProbe(
     }
 
     /** Our transport can carry it AND something answers — what a probe pass asks. */
-    suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && reachable(url)
+    suspend fun canDial(url: NormalizedRelayUrl): Boolean = (tor?.routes(url) != true || tor.socksAnswers()) && probeAndRecord(url)
 
     /**
      * Null when it unexpectedly succeeds — the pre-probe's budget is tight and a

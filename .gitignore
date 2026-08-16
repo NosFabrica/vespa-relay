@@ -37,3 +37,6 @@ router.conf
 *.db-wal
 *.db.state.json
 sync-state.json
+# Local compose overrides — compose auto-loads this file, so a committed one
+# would rewrite every deployment's networking. Machine-specific by design.
+docker-compose.override.yml

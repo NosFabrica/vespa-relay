@@ -20,7 +20,6 @@
  */
 package com.nosfabrica.vespa.relay.router.discovery
 
-import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -29,6 +28,8 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.isActive
 import kotlinx.coroutines.launch
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -69,7 +70,7 @@ class AliasMonitor(
      *
      * Sequential because they share a destination: both [AliasFolding] and
      * [ConsistencyPass] write tags onto the same addressable kind-30166 record
-     * for a url, and [RelayAliasRecord.edit] is a read-modify-write with no
+     * for a url, and [RelayVerdictRecord.edit] is a read-modify-write with no
      * compare-and-set. Two of them writing one url at once would drop whichever
      * tag was written between the other's read and its store — silently, since
      * the result is still a valid signed record that simply says less. Running
@@ -90,7 +91,16 @@ class AliasMonitor(
      * Where the candidate set comes from, or null to fall back on whatever the
      * streams have pushed through [submit] — see [Source].
      */
-    private val source: Source? = null,
+    private val source: CandidateSource? = null,
+    /**
+     * The fast lane: how often to look for urls named by relay-list events
+     * ingested since the last look, and the ONE pass to run over them —
+     * fitness, in practice, because a first `syncable` is what a new relay is
+     * waiting on where a fold or consistency verdict can ride the next sweep.
+     * Null (either of them) turns the lane off.
+     */
+    private val fastLaneEveryMs: Long? = null,
+    private val fastLanePass: Pass? = null,
 ) {
     /**
      * All this needs of the fold: measure one stream's urls, say how many new
@@ -131,9 +141,18 @@ class AliasMonitor(
      * six hours for a pass they missed by three minutes. A source is derived by
      * the pass itself, so there is no race to lose.
      */
-    interface Source {
+    interface CandidateSource {
         /** Every url worth measuring, across every configured stream. */
         suspend fun candidates(): List<NormalizedRelayUrl>
+
+        /**
+         * Only the urls named by relay-list events ingested at or after
+         * [since] — the fast lane's derivation. Bounded by construction: it
+         * reads minutes of events where [candidates] walks the store. The
+         * default is "unsupported", which turns the lane into a no-op rather
+         * than an error — a Source is allowed not to know how.
+         */
+        suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> = emptyList()
 
         /** Whether this process can reach that url at all — transport, not policy. */
         suspend fun canDial(url: NormalizedRelayUrl): Boolean
@@ -166,7 +185,7 @@ class AliasMonitor(
      * dialling it.
      *
      * A stream that holds its discovered relay list in memory across cycles
-     * ([RelayDiscoveryConfig.recycleSeconds]) is holding a list the fold has
+     * ([the certified scans' refresh cache]) is holding a list the fold has
      * since had something to say about: a url that folded away between two
      * cycles goes on being dialled, taking a socket and a band for events its
      * survivor already delivers, until the list is rebuilt. This number
@@ -218,7 +237,7 @@ class AliasMonitor(
                 // computed. It rendered as "measuring · next pass in 0s", which
                 // reads as a pass that is late rather than one in progress.
                 dueAtMs = null
-                runPass()
+                passGate.withLock { runPass() }
                 // Asked AFTER the pass, because only the pass knows: the
                 // candidate set is derived inside it now, so "was there
                 // anything to do" cannot be answered before it runs.
@@ -227,8 +246,47 @@ class AliasMonitor(
                 delay(wait)
             }
         }
+        // THE FAST LANE, under the same gate as the sweep. The record edits
+        // are read-modify-write with no CAS, and "passes never overlap" is the
+        // whole discipline that makes them safe — a lane that ran fitness over
+        // a url mid-sweep would race the sweep's own edit of the same record.
+        // Sharing the mutex serializes them; a lane tick that lands mid-sweep
+        // simply waits, and its since-bound means it then reads the same
+        // minutes of events it would have.
+        val everyMs = fastLaneEveryMs
+        val lane = fastLanePass
+        if (everyMs != null && lane != null && source != null) {
+            scope.launch {
+                delay(startupDelayMs)
+                // From the boot, not from zero: everything older is the
+                // sweep's job, and a store-wide derivation is exactly what
+                // this lane exists not to do.
+                var lastLookSec = System.currentTimeMillis() / 1000
+                while (scope.isActive) {
+                    delay(everyMs)
+                    val lookFrom = lastLookSec
+                    lastLookSec = System.currentTimeMillis() / 1000
+                    try {
+                        passGate.withLock {
+                            val fresh = source.candidatesSince(lookFrom)
+                            if (fresh.isNotEmpty()) {
+                                System.err.println("router: fast lane — ${fresh.size} url(s) named since the last look")
+                                lane.measure("fast lane", fresh, source::canDial, source::onEvent, source.sockets)
+                            }
+                        }
+                    } catch (e: CancellationException) {
+                        throw e
+                    } catch (e: Exception) {
+                        System.err.println("router: fast lane failed: ${e.javaClass.simpleName}: ${e.message?.take(80)}")
+                    }
+                }
+            }
+        }
         return this
     }
+
+    /** Serializes the sweep and the fast lane — see the lane's comment in [start]. */
+    private val passGate = Mutex()
 
     /**
      * When the next pass is due, in epoch millis, asked live by whatever is

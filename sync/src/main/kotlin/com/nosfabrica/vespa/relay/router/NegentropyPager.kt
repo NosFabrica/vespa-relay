@@ -260,6 +260,9 @@ internal class NegentropyPager(
     private val state: SweepState,
     private val tuning: NegPageTuning,
 ) {
+    /** How far below `now` a sweep stops — the head its claims must not over-run. */
+    internal val slackSeconds: Long get() = tuning.slackSeconds
+
     /**
      * Reconcile [leg] against [url], one right-sized window at a time.
      *
@@ -278,6 +281,13 @@ internal class NegentropyPager(
         shape: Filter,
         leg: Filter,
         onProgress: ((Int, Int) -> Unit)? = null,
+        /**
+         * WHERE IN TIME the sweep is: called with (since, until) as each
+         * window is taken up, newest first. The progress callback above counts
+         * events, and a sweep that finds nothing missing delivers none — this
+         * is the only signal that moves on a clean audit.
+         */
+        onWindow: ((Long, Long) -> Unit)? = null,
         onEvent: suspend (Event) -> Unit,
     ): SweepOutcome {
         val floor = leg.since ?: SyncCoverage.PLAUSIBLE_FLOOR
@@ -308,15 +318,16 @@ internal class NegentropyPager(
 
         while (stack.isNotEmpty()) {
             // Newest first — the invariant the cursor rests on.
-            val w = stack.removeLast()
-            val minimal = w.last - w.first <= MIN_WINDOW_SECONDS
+            val sweepWindow = stack.removeLast()
+            onWindow?.invoke(sweepWindow.first, sweepWindow.last)
+            val minimal = sweepWindow.last - sweepWindow.first <= MIN_WINDOW_SECONDS
 
             // (1) Our side, before the round trip: this is what sizes the
             // CHECKPOINT — how much a crash costs — and quartz re-uses the same
             // number to bound its own reads inside the window.
-            val ours = if (minimal) null else local.count(window(shape, w))
+            val ours = if (minimal) null else local.count(windowFilter(shape, sweepWindow))
             if (ours != null && ours > target) {
-                bisect(stack, w)
+                bisect(stack, sweepWindow)
                 continue
             }
 
@@ -330,10 +341,10 @@ internal class NegentropyPager(
                 val result =
                     peer.reconcile(
                         url = url,
-                        window = window(shape, w),
+                        window = windowFilter(shape, sweepWindow),
                         // Primed so quartz's own sizing check does not re-ask the
                         // store for the count we just took.
-                        local = PrimedIndex(local, window(shape, w), ours),
+                        local = PrimedIndex(local, windowFilter(shape, sweepWindow), ours),
                         targetWindow = target,
                         onProgress = progress,
                         // A second the peer will not reconcile at any size is
@@ -359,7 +370,7 @@ internal class NegentropyPager(
                         result.windows > 1 -> shrink(url, target)
                         else -> grow(url, target)
                     }
-                complete(cursor, w)
+                complete(cursor, sweepWindow)
             } catch (e: NegentropySyncException) {
                 lastFailure = e
                 when (e.reason) {
@@ -370,17 +381,17 @@ internal class NegentropyPager(
                         // named and keep the rest of the window on the stack.
                         e.cap?.let { fitToCap(url, it) } ?: shrink(url, target)
                         target = state.target(url, tuning.target)
-                        val badFrom = (e.window.since ?: w.first).coerceIn(w.first, w.last)
-                        val badTo = (e.window.until ?: w.last).coerceIn(badFrom, w.last)
-                        downloaded += drainDense(url, shape, window(shape, badFrom..badTo), target, onEvent)
+                        val badFrom = (e.window.since ?: sweepWindow.first).coerceIn(sweepWindow.first, sweepWindow.last)
+                        val badTo = (e.window.until ?: sweepWindow.last).coerceIn(badFrom, sweepWindow.last)
+                        downloaded += drainDense(url, shape, windowFilter(shape, badFrom..badTo), target, onEvent)
                         paged++
-                        if (badFrom > w.first) stack.addLast(w.first..(badFrom - 1))
-                        if (badTo < w.last) stack.addLast((badTo + 1)..w.last)
+                        if (badFrom > sweepWindow.first) stack.addLast(sweepWindow.first..(badFrom - 1))
+                        if (badTo < sweepWindow.last) stack.addLast((badTo + 1)..sweepWindow.last)
                         // Only claimable when the drained slice reaches the top
                         // of the window: a slice out of the middle leaves a
                         // pending piece ABOVE it, and a cursor that reached down
                         // past that piece would claim ground no one compared.
-                        if (badTo >= w.last) state.advance(cursor, badFrom, w.last)
+                        if (badTo >= sweepWindow.last) state.advance(cursor, badFrom, sweepWindow.last)
                         consecutiveFailures = 0
                     }
 
@@ -404,15 +415,15 @@ internal class NegentropyPager(
                         // Mid-sweep: one window's worth of trouble. Page it so
                         // the sweep keeps its contiguity and moves on.
                         System.err.println(
-                            "router: sweep ${url.url} window [${w.first}, ${w.last}] could not reconcile (${e.detail}) — paging this window",
+                            "router: sweep ${url.url} window [${sweepWindow.first}, ${sweepWindow.last}] could not reconcile (${e.detail}) — paging this window",
                         )
-                        downloaded += peer.page(url, window(shape, w), onEvent)
+                        downloaded += peer.page(url, windowFilter(shape, sweepWindow), onEvent)
                         paged++
-                        complete(cursor, w)
+                        complete(cursor, sweepWindow)
                         if (++consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
                             System.err.println(
                                 "router: sweep ${url.url} gave up after $consecutiveFailures window(s) in a row failed" +
-                                    " — ${fmtCount(downloaded)} event(s) kept, cursor holds at ${state.reconciled(cursor)?.downTo ?: w.first}",
+                                    " — ${fmtCount(downloaded)} event(s) kept, cursor holds at ${state.reconciled(cursor)?.downTo ?: sweepWindow.first}",
                             )
                             return SweepOutcome(downloaded, reconciled, paged, complete = false, negentropyUsable = true, outstanding = null, failure = e)
                         }
@@ -500,11 +511,11 @@ internal class NegentropyPager(
     /** Halve a window in time; the halves are pushed newest-last so they pop newest-first. */
     private fun bisect(
         stack: ArrayDeque<LongRange>,
-        w: LongRange,
+        sweepWindow: LongRange,
     ) {
-        val mid = w.first + (w.last - w.first) / 2
-        stack.addLast(w.first..mid)
-        stack.addLast((mid + 1)..w.last)
+        val mid = sweepWindow.first + (sweepWindow.last - sweepWindow.first) / 2
+        stack.addLast(sweepWindow.first..mid)
+        stack.addLast((mid + 1)..sweepWindow.last)
     }
 
     /**
@@ -578,8 +589,8 @@ internal class NegentropyPager(
     /** One window finished, by any route: move the cursor. */
     private fun complete(
         cursor: SweepState.Cursor,
-        w: LongRange,
-    ) = state.advance(cursor, w.first, w.last)
+        sweepWindow: LongRange,
+    ) = state.advance(cursor, sweepWindow.first, sweepWindow.last)
 
     /**
      * Shrink toward what the peer will take: their own number when they sent
@@ -615,10 +626,10 @@ internal class NegentropyPager(
         return next
     }
 
-    private fun window(
+    private fun windowFilter(
         shape: Filter,
-        w: LongRange,
-    ): Filter = shape.copy(since = w.first, until = w.last, limit = null)
+        sweepWindow: LongRange,
+    ): Filter = shape.copy(since = sweepWindow.first, until = sweepWindow.last, limit = null)
 
     companion object {
         /**

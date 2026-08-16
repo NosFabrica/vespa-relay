@@ -21,24 +21,26 @@
 package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.VespaEventStore
+import com.nosfabrica.vespa.relay.router.config.BindingSlot
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
 import com.nosfabrica.vespa.relay.router.config.RelaySelect
-import com.nosfabrica.vespa.relay.router.config.Slot
 import com.nosfabrica.vespa.relay.router.config.withoutDefaultPort
+import com.nosfabrica.vespa.relay.util.nowSeconds
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
+import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 
 /**
  * One relay a [RelayDiscoveryConfig] found, and what the tags that named it paired
- * it with. [narrow] is empty for a select that binds nothing but the url, and
+ * it with. [bindings] is empty for a select that binds nothing but the url, and
  * the stream then asks this relay for its whole filter.
  */
 data class DiscoveredRelay(
     val url: NormalizedRelayUrl,
-    val narrow: Map<String, Set<String>> = emptyMap(),
+    val bindings: Map<String, Set<String>> = emptyMap(),
 ) {
     /**
      * [base] narrowed by everything this relay was paired with. Values are
@@ -47,13 +49,13 @@ data class DiscoveredRelay(
      * and re-walk history for nothing.
      */
     fun narrowed(base: Filter): Filter {
-        if (narrow.isEmpty()) return base
+        if (bindings.isEmpty()) return base
         var f = base
-        narrow["authors"]?.let { f = f.copy(authors = it.sorted()) }
-        narrow["ids"]?.let { f = f.copy(ids = it.sorted()) }
-        narrow["kinds"]?.let { v -> f = f.copy(kinds = v.mapNotNull { it.toIntOrNull() }.sorted()) }
+        bindings["authors"]?.let { f = f.copy(authors = it.sorted()) }
+        bindings["ids"]?.let { f = f.copy(ids = it.sorted()) }
+        bindings["kinds"]?.let { v -> f = f.copy(kinds = v.mapNotNull { it.toIntOrNull() }.sorted()) }
         // Filter.tags keys drop the '#' — `#p` on the wire is `p` in the map.
-        val tags = narrow.filterKeys { it.startsWith("#") }
+        val tags = bindings.filterKeys { it.startsWith("#") }
         if (tags.isNotEmpty()) {
             f = f.copy(tags = (f.tags ?: emptyMap()) + tags.map { (k, v) -> k.substring(1) to v.sorted() })
         }
@@ -91,7 +93,10 @@ object RelayDiscovery {
         // rather than silently applied, because a cap set too low reads from
         // outside exactly like a store that holds nothing.
         var oversizedLists = 0
-        for (source in dynamic.sources) {
+        // Scan sources only: a verdict source's read is [syncable], the
+        // verified path — running its 30166 filter through the tag scan here
+        // would admit records with no freshness or epoch check at all.
+        for (source in dynamic.scanSources) {
             // A named tag with no bindings goes to the store's tags-only
             // projection, which streams one field instead of materializing
             // whole events (a 2.6M-event scan became the projection's walk).
@@ -125,7 +130,7 @@ object RelayDiscovery {
                         semantics.distinctTagValues(
                             filter = filter,
                             tagName = select.tag!!,
-                            valueIndex = select.index,
+                            valueIndex = select.urlIndex,
                             // The whole tag, so a positional condition on
                             // another element still applies (NIP-65's marker).
                             where = { tag -> select.where.isEmpty() || select.where.any { it.matches(tag.toTypedArray()) } },
@@ -189,6 +194,98 @@ object RelayDiscovery {
                 DiscoveredRelay(url, narrowing[url]?.mapValues { (_, v) -> v.toSet() }.orEmpty())
             }.sortedBy { it.url.url }
             .toList()
+    }
+
+    /**
+     * The relay list a [VerdictSource] stream runs on: every url whose
+     * kind-30166 record carries a FRESH `["s", "syncable", …]` from one of
+     * [monitorAuthors] — one indexed query where parsing relay lists is a
+     * store walk of minutes. The authors are the trust boundary: the source's
+     * configured monitor keys, or this process's own signer where none are
+     * named — never unscoped, so a stranger's records are queried out before
+     * verification even starts.
+     *
+     * Freshness and rules come from the TAG, not the event. The record's
+     * `createdAt` is rewritten by quartz's passive monitor on every connection
+     * it opens, so it says "we talked recently" — true of every relay in the
+     * fan-out and evidence of nothing. The verdict's own measured-at stamp
+     * (element 3) and epoch (element 4) are what age and version it; a stale
+     * or foreign-epoch `syncable` admits nothing, exactly as no verdict does.
+     *
+     * The url is taken from the `d` tag and put through the same [normalize]
+     * as every other source — the record's OWN address is our monitor's, but
+     * defence in depth costs one function call.
+     */
+    suspend fun syncable(
+        store: IEventStore,
+        monitorAuthors: List<String>,
+        maxAgeSeconds: Long,
+        skip: Set<NormalizedRelayUrl> = emptySet(),
+        allowOnion: Boolean = false,
+        now: Long = nowSeconds(),
+    ): List<DiscoveredRelay> {
+        if (monitorAuthors.isEmpty()) return emptyList()
+        val records =
+            store.query<Event>(
+                Filter(
+                    kinds = listOf(RelayDiscoveryEvent.KIND),
+                    authors = monitorAuthors,
+                    tags = mapOf(RelayVerdictRecord.STATUS_TAG to listOf(FitnessPass.Verdict.SYNCABLE.value)),
+                ),
+            )
+        val floor = now - maxAgeSeconds
+        return records
+            .asSequence()
+            .filter { event ->
+                val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayVerdictRecord.STATUS_TAG }
+                // The store's `authors` filter is the trust boundary; this
+                // one string compare re-states it on the returned events, so
+                // a query layer that ever treated `authors` as a hint rather
+                // than a predicate cannot hand a stranger's verdict through.
+                event.pubKey in monitorAuthors &&
+                    s != null &&
+                    s[1] == FitnessPass.Verdict.SYNCABLE.value &&
+                    s.getOrNull(4) == RelayVerdictRecord.FITNESS_EPOCH &&
+                    (s.getOrNull(3)?.toLongOrNull() ?: 0L) >= floor
+            }.mapNotNull { event ->
+                event.tags
+                    .firstOrNull { it.size > 1 && it[0] == "d" }
+                    ?.get(1)
+                    ?.let { normalize(it, allowOnion) }
+            }.filter { it !in skip }
+            .distinct()
+            .map { DiscoveredRelay(it) }
+            .sortedBy { it.url.url }
+            .toList()
+    }
+
+    /**
+     * [discovered] with every url that holds no fresh `syncable` verdict held
+     * out — the `certified { }` gate on a scan source. INTERSECTION, never
+     * union: the scan supplied the pairing (which relay, narrowed to which
+     * authors — the narrows ride through untouched), and the verdicts supply
+     * the right to be dialled at all. An uncertified url is not refused
+     * forever; it waits exactly as a new relay does, for the monitor's fast
+     * lane and its first `syncable`.
+     */
+    suspend fun certifiedOnly(
+        store: IEventStore,
+        discovered: List<DiscoveredRelay>,
+        monitorAuthors: List<String>,
+        maxAgeSeconds: Long,
+        allowOnion: Boolean = false,
+        now: Long = nowSeconds(),
+    ): List<DiscoveredRelay> {
+        if (discovered.isEmpty()) return discovered
+        val live =
+            syncable(
+                store,
+                monitorAuthors = monitorAuthors,
+                maxAgeSeconds = maxAgeSeconds,
+                allowOnion = allowOnion,
+                now = now,
+            ).mapTo(HashSet()) { it.url }
+        return discovered.filter { it.url in live }
     }
 
     /**
@@ -288,7 +385,7 @@ object RelayDiscovery {
         for (tag in event.tags) {
             for (select in selects) {
                 if (select.kind != null && select.kind != event.kind) continue
-                if (tag.size <= select.index) continue
+                if (tag.size <= select.urlIndex) continue
                 if (select.tag != null && tag[0] != select.tag) continue
                 seen++
                 if (seen > cap) return true
@@ -343,13 +440,13 @@ object RelayDiscovery {
         onMatch: (NormalizedRelayUrl, Map<String, String>) -> Unit,
     ) {
         for (tag in event.tags) {
-            if (tag.size <= select.index) continue
+            if (tag.size <= select.urlIndex) continue
             if (select.tag != null && tag[0] != select.tag) continue
             // `where` entries OR together and each ANDs its own fields.
             if (select.where.isNotEmpty() && select.where.none { it.matches(tag) }) continue
             // With no tag name to go on, only take values that already say
             // they are a relay.
-            val url = normalize(tag[select.index], allowOnion) ?: continue
+            val url = normalize(tag[select.urlIndex], allowOnion) ?: continue
             if (select.bindings.isEmpty()) {
                 onMatch(url, emptyMap())
                 continue
@@ -359,9 +456,9 @@ object RelayDiscovery {
             for ((dest, slot) in select.bindings) {
                 val raw =
                     when (slot) {
-                        is Slot.OfTag -> tag.getOrNull(slot.index)
-                        Slot.EventPubkey -> event.pubKey
-                        Slot.EventId -> event.id
+                        is BindingSlot.OfTag -> tag.getOrNull(slot.index)
+                        BindingSlot.EventPubkey -> event.pubKey
+                        BindingSlot.EventId -> event.id
                     }
                 // A tag that cannot fill a binding is dropped WHOLE rather
                 // than half-applied: a `["30382:rank", relay]` missing its

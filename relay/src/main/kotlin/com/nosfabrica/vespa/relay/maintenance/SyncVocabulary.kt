@@ -768,5 +768,117 @@ internal object SyncVocabulary {
                     "stopped one are the same document without it. Anything past a few minutes means the sync process is " +
                     "not running.",
             )
+            // THE FITNESS PASS — the monitor's verdict funnel. Each member is
+            // one value of the `s` tag it signs onto a relay's kind-30166
+            // record, so the funnel here and the certificate a stream selects
+            // on are the same numbers by construction.
+            put(
+                "syncable",
+                "Relays the monitor currently certifies fit to sync: reachable AND answering AND canonical AND " +
+                    "consistent AND pageable AND readable by us, measured on the socket in one pass. This is the whole " +
+                    "admission decision — a stream's relay list is the store query `#s = syncable` and nothing else. " +
+                    "Slow is not a refusal, empty is not a refusal, and a small message cap is not a refusal.",
+            )
+            put(
+                "dead",
+                "The transport itself said no: the name does not resolve, the connection was refused, TLS failed, or " +
+                    "the websocket upgrade was turned down. The one refusal about a relay that is actually absent.",
+            )
+            put(
+                "silent",
+                "Connected, then nothing — no EOSE, no CLOSED, the idle window lapsed. Alive and saying nothing, " +
+                    "which is not the same finding as dead and retries on its own terms.",
+            )
+            put(
+                "alias",
+                "Works fine, and is another record's relay: the fold proved this url and its canonical are one " +
+                    "server. Syncing it would double every event, so the certificate goes to the canonical alone.",
+            )
+            put(
+                "unpageable",
+                "Ignores the `until` cursor, so a paged walk against it cannot terminate — the measured failure mode " +
+                    "is ~5.5 pages a second forever. Refused outright in v1 rather than given tail-only treatment.",
+            )
+            put(
+                "auth-refused",
+                "Requires NIP-42 and rejected OUR key. A relay whose challenge our signer satisfies is certified like " +
+                    "any open one — an auth wall we can clear is no wall.",
+            )
+            put(
+                "restricted",
+                "Answers only shaped queries this router cannot generally send — a group host demanding an `#h` tag, " +
+                    "a filter service minting per-user paths. Probed with the same shaped-ask ladder the fold climbs " +
+                    "before the verdict is written.",
+            )
+            // THE ROTATING POOL — the visit-mode streams' engine. A slot IS a
+            // socket here, which is what these numbers being small and equal
+            // to each other is evidence of.
+            put(
+                "roster",
+                "Relays currently certified syncable and in rotation: the pool's whole world, rebuilt from the " +
+                    "monitor's records on half the tightest freshness bound. A relay the monitor stops certifying " +
+                    "leaves the roster, its tail and its socket on the next rebuild.",
+            )
+            put(
+                "awaitingVisit",
+                "Roster relays queued for a worker right now. NOT ingest's `queued`, which is a depth of events — " +
+                    "this is a count of relays between visits, and most of the roster sits here between top-ups.",
+            )
+            put(
+                "visiting",
+                "Visits in flight this instant — and therefore sockets held by workers, because a visit-pool slot is " +
+                    "a socket by construction. The number the old engine's `transferring` could never truthfully be.",
+            )
+            put(
+                "tails",
+                "Live subscriptions left open after a visit's catch-up, one per relay, carrying every wanting " +
+                    "stream's filter. This is what \"constantly connected\" means: new events arrive the moment they " +
+                    "exist, and the revisit only covers what a dropped tail missed. Bounded by the tail budget: past " +
+                    "it a tail is EARNED, and the relay with more content lately takes the socket of the one that " +
+                    "has delivered least.",
+            )
+            put(
+                "evictedTails",
+                "Tails closed to give their socket to a relay with more content lately — the tail budget's rotation, " +
+                    "counted since boot. An evicted relay is requeued promptly and falls back to the untailed revisit " +
+                    "cadence; nothing about its certificate changes.",
+            )
+            put(
+                "visitsRun",
+                "Visits completed since boot — catch-up, audit where due, heal drain, tail. The pool's odometer, " +
+                    "beside `roster` for the rotation rate.",
+            )
+            put(
+                "auditing",
+                "Audits RUNNING right now — the gauge beside `auditsRun`'s odometer. A deep history's audit " +
+                    "holds its worker for minutes, and without this it was one unit of `visiting` that could " +
+                    "not be told from a catch-up. The relay under audit is named in its stream's in-flight " +
+                    "rows, stage `auditing history (negentropy)`, with the window it has reached.",
+            )
+            put(
+                "auditsRun",
+                "History audits run since boot: the windowed negentropy reconcile a stream's `auditSeconds` " +
+                    "schedules when a relay's last verified full pass ages out. Each relay's clock is its own, so " +
+                    "this climbs as a trickle — roster over auditSeconds — never a herd.",
+            )
+            put(
+                "retracted",
+                "Records deleted because the upstream that owns them stopped serving them — a NIP-85 provider's " +
+                    "retracted scores, and the cascade of a wholly-retracted service's profile. The only number in " +
+                    "the router that goes DOWN, decided only by a completed negentropy comparison on the audit's " +
+                    "clock; a failed reconcile deletes nothing.",
+            )
+            put(
+                "abortedVisits",
+                "Visits ended early because the relay refused with nothing delivered — a CLOSED, an auth wall, a " +
+                    "dead subscription. One bounded visit is all a wedged relay can cost; whether it stays on the " +
+                    "roster is the monitor's next sweep's decision, not a retry ladder's.",
+            )
+            put(
+                "poolReceived",
+                "Events the pool's visits and tails have delivered to ingest since boot, counted at the socket. The " +
+                    "same larger-than-stored caveat as every `received` on this card: ingest drops the copies other " +
+                    "relays already delivered.",
+            )
         }
 }

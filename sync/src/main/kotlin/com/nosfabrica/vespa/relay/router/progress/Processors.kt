@@ -125,7 +125,7 @@ class Processors {
          * getting somewhere" looks like, and this sitting still while [dialled]
          * climbs is the state that used to be invisible.
          *
-         * Named for [AliasFolding.Cleaned.unmeasured], which is the same set
+         * Named for [AliasFolding.Collapsed.unmeasured], which is the same set
          * computed by the same call. It is deliberately NOT the complement of
          * [dialled]: that one counts what this PASS spent, this one counts what
          * the whole candidate set still lacks.

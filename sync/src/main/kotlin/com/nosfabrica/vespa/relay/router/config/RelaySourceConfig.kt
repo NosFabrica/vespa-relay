@@ -34,7 +34,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
  *       dir            = "down"
  *       filter         = { "kinds": [0, 3, 10002] }
  *       refreshSeconds = 21600
- *       concurrency    = 8
  *       relaySource = [
  *         {
  *           select = [ { kind = 10002, tag = "r", marker = "write" } ]
@@ -43,81 +42,21 @@ import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
  *       ]
  *     }
  *
- * Every refresh the router runs each scan, unions the relays they name, and
- * syncs the stream filter against every one of them — nothing truncates the
- * set, [concurrency] only paces it. There is no live tail: a set this size is
- * synced on a period, not held open.
+ * Every refresh the pool re-derives each scan, unions the relays they name,
+ * gates them on the monitor's verdicts, and asks — nothing truncates the set.
  *
- * @param sources every scan to read relay urls from, merged.
- * @param refreshSeconds how often the relay list is READ OUT OF THE STORE
- *   again. With [recycleSeconds] unset this is also the cycle period, because
- *   every cycle rediscovers.
- * @param concurrency how many relays sync at the same time. A relay's sync has
- *   no wall-clock cap: every client timeout is measured from the last message,
- *   so a silent relay is dropped in seconds and a delivering one is doing the
- *   work the slot exists for.
+ * @param sources every source to read relay urls from, merged: kind-30166
+ *   verdict sources and `certified`-gated scans.
+ * @param refreshSeconds how often a scan's relay list is READ OUT OF THE
+ *   STORE again — deriving one is a store walk, so the pool caches it this
+ *   long. The verdict half rebuilds on its own freshness clock.
  * @param exclude patterns for relays to skip however many sources name them —
  *   see [RelayExcludes] for how an entry matches.
  */
 data class RelayDiscoveryConfig(
     val sources: List<RelaySource>,
     val refreshSeconds: Long,
-    val concurrency: Int,
     val exclude: RelayExcludes,
-    /**
-     * How soon after a pass finishes HANDING OUT its relay list the next one
-     * starts, on the list the last one used. Null keeps the old behaviour
-     * exactly: one pass per [refreshSeconds], each of them rediscovering.
-     *
-     * **"Finishes handing out" is not "finishes".** A pass ends when the walk
-     * has given its last url to a worker; the slow relays keep their slots and
-     * run on into the next pass, which is the entire point of the rotation. So
-     * this is a FLOOR ON THE GAP between laps and not a cycle period — the
-     * period is the walk plus this, and the walk is paced by the worker pool
-     * rather than by any clock. Measured on live relays, 18,687 urls took 26:29
-     * to hand out; against that a 30-second gap is a tail. Setting it to 5 does
-     * not buy a five-second cycle, it buys a five-second pause between laps as
-     * long as the network makes them.
-     *
-     * Two consequences worth knowing before tuning it. A pass whose whole list
-     * is still busy hands out NOTHING and ends immediately — ordinary on a short
-     * list, where every url is still with a worker from the last pass — and the
-     * loop then ticks at this interval until slots free, which is why the floor
-     * is seconds rather than zero. And the walk can still block, at the
-     * admission gate: a stream stops only when every one of its 128–512 slots is
-     * held at once, where the join this replaced needed exactly one straggler.
-     *
-     * The two knobs answer different questions, and conflating them is what
-     * made a 6h refresh mean 6h of idling. Deriving the fan-out set is a store
-     * walk (every relay-list event, or the tag projection over them), a
-     * normalisation pass over tens of thousands of strings, and one `#d` query
-     * per 500 urls to read the alias verdicts back — minutes on a full store,
-     * paid to produce a list that is nearly identical to the previous cycle's.
-     * The DOWNLOAD is what should repeat often; the derivation is what should
-     * not. So the list is held in memory for [refreshSeconds], and every pass
-     * inside that window runs on it.
-     *
-     * What it does NOT stale, because neither is derived here: the NIP-66
-     * known-dead set is re-read at the top of every pass from the monitor's own
-     * memory, and host strikes are pass-local and rebuilt each time. A cached
-     * list is a list of urls to consider, not a decision to dial them.
-     *
-     * The floor is 5s rather than the 60s [refreshSeconds] carries: this paces
-     * the pause between laps, not a store walk, and "start again shortly" is the
-     * whole point of setting it.
-     */
-    val recycleSeconds: Long? = null,
-    /**
-     * How many bound `authors` go into ONE ask, and therefore into one cursor
-     * band. Null keeps them all in a single filter.
-     *
-     * A band is keyed on its filter, so an author set that changes invalidates
-     * it and re-walks that relay's history. At 1 the band is `(relay, one
-     * author)` and stays valid forever — right for a small pairing like NIP-85
-     * providers. An outbox stream pairing millions of authors has to chunk,
-     * and accept that a chunk re-walks when its membership shifts.
-     */
-    val authorsPerLeg: Int? = null,
     /**
      * The most relays one event may name before the whole event is ignored as
      * a relay list, or null for no limit.
@@ -137,15 +76,47 @@ data class RelayDiscoveryConfig(
      */
     val maxRelaysPerList: Int? = null,
 ) {
+    /** Every source that consults the monitor's kind-30166 verdicts — see [RelaySource.verdicts]. */
+    val verdictSources: List<VerdictSource> get() = sources.mapNotNull { it.verdicts }
+
+    /** Every source that scans relay-list events with selects — the certified-scan half. */
+    val scanSources: List<RelaySource> get() = sources.filter { it.verdicts == null }
+}
+
+/**
+ * A relaySource that consults the monitor's own NIP-66 records: the verified
+ * read behind a `relaySource` entry whose filter asks for kind 30166.
+ *
+ * The knob is how stale a verdict may be and still admit its relay. Freshness
+ * is read off the VERDICT TAG's own measured-at stamp, never the record's
+ * `createdAt` — quartz's passive monitor rewrites the record on every
+ * connection it opens, so `createdAt` says "we talked recently", which for a
+ * relay in the fan-out is always true and for a verdict is no evidence at all.
+ * A stale `syncable` is no verdict: the relay simply waits for the monitor's
+ * next sweep, the same as a url the monitor has never seen.
+ */
+data class VerdictSource(
+    val maxAgeSeconds: Long = DEFAULT_MAX_AGE_SECONDS,
     /**
-     * How long the stream sleeps after a cycle it actually ran — the recycle
-     * gap where one is configured, the refresh period otherwise.
-     *
-     * One property because it is also what the router SAYS it will do ("next in
-     * Ns", `Phase.Idle`), and a countdown that names a different number from the
-     * one the loop sleeps is worse than no countdown.
+     * Whose verdicts to trust, as 64-char lowercase hex — decoded from the
+     * `authors = ["npub1…"]` the operator wrote. EMPTY means this process's
+     * own signer, which is the single-process deployment where the monitor
+     * and the router share one identity and the operator has nothing to copy.
+     * Named explicitly, it is a deliberate trust statement: the deployment
+     * where the monitor runs as its own process under its own key, and every
+     * router consuming its verdicts writes that key here.
      */
-    val nextCycleSeconds: Long get() = recycleSeconds ?: refreshSeconds
+    val authors: List<String> = emptyList(),
+) {
+    companion object {
+        /**
+         * Two of the monitor's 6h sweeps plus slack: one missed sweep must not
+         * empty a stream's relay list, and three missed sweeps is a monitor
+         * whose silence SHOULD empty it — mirroring off verdicts nobody is
+         * re-taking is how a dead relay gets dialled for a month.
+         */
+        const val DEFAULT_MAX_AGE_SECONDS = 14 * 60 * 60L
+    }
 }
 
 /**
@@ -238,14 +209,44 @@ internal fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
 }
 
 /**
- * One scan of the store: the [selects] saying which relay urls to pull out,
- * and a NIP-01 [filter] saying which events to pull them from. The filter runs
- * once and every select is applied to what it returns, so a whole shelf of
- * relay-list kinds costs one query rather than one each.
+ * One entry of a stream's `relaySource` list, in one of two shapes.
+ *
+ * A SCAN: the [selects] saying which relay urls to pull out, and a NIP-01
+ * [filter] saying which events to pull them from. The filter runs once and
+ * every select is applied to what it returns, so a whole shelf of relay-list
+ * kinds costs one query rather than one each.
+ *
+ * A VERDICT SOURCE ([verdicts] set): the filter asks for the monitor's own
+ * kind-30166 records — `{ "kinds": [30166], "#s": ["syncable"] }` — and the
+ * relay list is every url whose record carries a fresh `syncable` from OUR
+ * monitor identity. No selects: NIP-66 fixes the url in the `d` tag, and the
+ * read is the VERIFIED path ([discovery.RelayDiscovery.syncable] — epoch,
+ * measured-at freshness, the one admitting value), not a generic tag scan; a
+ * generic scan would admit a verdict whose evidence rules have since changed,
+ * or one nobody has re-taken for a month. This is not a gate in front of a
+ * source — it IS the source: the monitor earns the verdicts on its own clock
+ * and the stream's discovery collapses to one indexed query.
  */
 data class RelaySource(
     val selects: List<RelaySelect>,
     val filter: Filter,
+    val verdicts: VerdictSource? = null,
+    /**
+     * A LIVENESS GATE on a scan: keep only the discovered urls that ALSO hold
+     * a fresh `syncable` verdict — the monitor's, or the identity the block
+     * names. Intersection, never union: the scan supplies the pairing (which
+     * relay, narrowed to which authors) and the verdicts supply the right to
+     * be dialled at all.
+     *
+     * This is what makes an author-bound source safe at scale. A 10040 is as
+     * writable as a 10002 — the same dead hosts and spammed urls, multiplied
+     * by every future user — and without the gate each of them costs the
+     * stream a dial and a timeout per cycle, forever. With it, an uncertified
+     * url waits exactly as a new relay does: the monitor's fast lane probes
+     * it within minutes, and its first `syncable` is its admission. Meaningless
+     * beside [verdicts] — a verdict source IS certified.
+     */
+    val certified: VerdictSource? = null,
 )
 
 /**
@@ -257,7 +258,7 @@ data class RelaySource(
  *   everything the filter returned.
  * @param tag the tag name to read, or null for any tag — at the cost of a
  *   stricter url check, see [RelayDiscovery].
- * @param index which element of the tag holds the url. 1 for nearly
+ * @param urlIndex which element of the tag holds the url. 1 for nearly
  *   everything; 2 for NIP-85 service tags and `e`/`p`/`a`/`q` relay hints.
  * @param where conditions on the rest of the tag, see [TagCondition]. The
  *   config's `marker = "write" / "read" / "any"` is sugar that expands into
@@ -266,7 +267,7 @@ data class RelaySource(
 data class RelaySelect(
     val kind: Int?,
     val tag: String?,
-    val index: Int,
+    val urlIndex: Int,
     val where: List<TagCondition> = emptyList(),
     /**
      * Extra NIP-01 filter fields read out of the SAME tag, so the relay this
@@ -277,7 +278,7 @@ data class RelaySelect(
      * collecting the slots independently would produce the cross product
      * (measured: 5,928 asks standing in for the 256 pairs that exist).
      */
-    val bindings: Map<String, Slot> = emptyMap(),
+    val bindings: Map<String, BindingSlot> = emptyMap(),
 )
 
 /**
@@ -285,17 +286,17 @@ data class RelaySelect(
  * read; [EventPubkey] is what makes NIP-65's outbox model expressible — "fetch
  * THIS AUTHOR's events from the relays their own 10002 marks write".
  */
-sealed interface Slot {
+sealed interface BindingSlot {
     /** Element [index] of the tag this select matched. */
     data class OfTag(
         val index: Int,
-    ) : Slot
+    ) : BindingSlot
 
     /** The scanned event's own author. */
-    data object EventPubkey : Slot
+    data object EventPubkey : BindingSlot
 
     /** The scanned event's own id. */
-    data object EventId : Slot
+    data object EventId : BindingSlot
 }
 
 /**
@@ -327,10 +328,7 @@ data class TagCondition(
     }
 }
 
-/** Env-level fallbacks for the per-stream dynamic-relay knobs. */
+/** Env-level fallback for the one per-stream discovery knob that survived the pool. */
 data class RelaySourceDefaults(
     val refreshSeconds: Long = 21_600,
-    val concurrency: Int = 8,
-    /** Null keeps a rediscovery per cycle — see [RelayDiscoveryConfig.recycleSeconds]. */
-    val recycleSeconds: Long? = null,
 )

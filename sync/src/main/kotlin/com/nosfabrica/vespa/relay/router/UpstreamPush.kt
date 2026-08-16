@@ -60,8 +60,8 @@ internal class UpstreamPush(
         while (scope.isActive) {
             try {
                 var rounds = 0
+                var pushedThisRound = 0L
                 var pushedThisPass = 0L
-                var pushedThisWindow = 0L
                 streamGate.withPermit {
                     // One snapshot per pass, reused across the rounds: a
                     // round changes the UPSTREAM's set (it gains what we
@@ -69,7 +69,7 @@ internal class UpstreamPush(
                     // round bought nothing.
                     val local: List<IdAndTime> = store.snapshotIdsForNegentropy(listOf(up.filter))
                     do {
-                        pushedThisPass = 0
+                        pushedThisRound = 0
                         client.negentropyReconcile(
                             relay = up.url,
                             filter = up.filter,
@@ -84,19 +84,19 @@ internal class UpstreamPush(
                                     for (event in events) {
                                         client.publish(event, setOf(up.url))
                                         pushed.incrementAndGet()
-                                        pushedThisPass++
+                                        pushedThisRound++
                                         delay(PUBLISH_PACE_MS)
                                     }
                                 }
                             },
                             onNeedIds = { /* up-only: the down tail pulls, not this */ },
                         )
-                        pushedThisWindow += pushedThisPass
+                        pushedThisPass += pushedThisRound
                         rounds++
-                    } while (pushedThisPass > 0 && rounds < MAX_ROUNDS && scope.isActive)
+                    } while (pushedThisRound > 0 && rounds < MAX_ROUNDS && scope.isActive)
                 }
                 System.err.println(
-                    "router: up ${up.url.url} pushed $pushedThisWindow event(s) upstream ($rounds round(s))",
+                    "router: up ${up.url.url} pushed $pushedThisPass event(s) upstream ($rounds round(s))",
                 )
             } catch (e: CancellationException) {
                 // Shutdown, not a failed push — the log must not cry wolf.

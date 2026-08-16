@@ -77,7 +77,7 @@ class ConsistencyReportTest {
         fetch: suspend (NormalizedRelayUrl, Int, Long?, List<Int>?) -> AliasProbe.Page,
     ) = ConsistencyPass(
         consistency = RelayConsistency(),
-        record = RelayAliasRecord(store, signer),
+        record = RelayVerdictRecord(store, signer),
         probe = AliasProbe(fetch = fetch, target = 40, page = 40, fallbackPage = 40),
         progress = handle,
     )
@@ -317,7 +317,7 @@ class ConsistencyReportTest {
             val store = newStore()
             // A url the FOLD has already taken out. It must count once, as
             // folded — it is never measured, so it can carry no verdict.
-            RelayAliasRecord(store, signer).publish(duplicate, steady, sampled = 40, shared = 40)
+            RelayVerdictRecord(store, signer).publish(duplicate, steady, sampled = 40, shared = 40)
 
             val processors = Processors()
             val whole = corpus()
