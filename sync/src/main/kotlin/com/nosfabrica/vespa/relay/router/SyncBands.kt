@@ -150,6 +150,39 @@ class SyncBands(
 
     private val verified = ConcurrentHashMap<VerifiedKey, Long>()
 
+    /**
+     * When each ask's audit was last CLAIMED, complete or not — the spacing
+     * half of [claimAudit]. In-memory on purpose: a restart retrying once is
+     * fine, a revisit-floor retry loop is not.
+     */
+    private val attempts = ConcurrentHashMap<VerifiedKey, Long>()
+
+    /**
+     * THE AUDIT GATE, both halves in one place: is this ask's history due —
+     * the [verifiedAt] clock aged past [verifySeconds], falling back to the
+     * band's `fullAt` so a fresh catch-up still defers the first audit — and
+     * is the ask outside its attempt spacing? TRUE CLAIMS THE ATTEMPT: the
+     * caller is expected to run the audit, and an audit that cannot complete
+     * (negentropy refused, sweep interrupted) advances no clock, so the
+     * claim itself is what stands between that and a retry on every visit.
+     * The clock chain and the spacing map each used to be spelled twice —
+     * once per audit path — which is exactly how they would have drifted.
+     */
+    fun claimAudit(
+        stream: String,
+        url: NormalizedRelayUrl,
+        filter: Filter,
+        verifySeconds: Long,
+        now: Long = System.currentTimeMillis() / 1000,
+    ): Boolean {
+        val key = VerifiedKey(stream, filter.toJson(), url.url)
+        val clock = verified[key] ?: band(stream, url, filter)?.fullAt ?: 0L
+        if (!auditDue(clock, now, verifySeconds)) return false
+        if (now - (attempts[key] ?: 0L) < attemptSpacingSeconds(verifySeconds)) return false
+        attempts[key] = now
+        return true
+    }
+
     /** When this ask's history was last VERIFIED by a completed reconcile, or null before its first. */
     fun verifiedAt(
         stream: String,
@@ -592,6 +625,28 @@ class SyncBands(
         // Pretty-printed: this file is read by a human debugging why a relay
         // re-synced.
         private val json = Json { prettyPrint = true }
+
+        /**
+         * Is the ask's history due its audit? A clock of zero is an ask that
+         * has NEVER had a verified pass — always due, which is what makes a
+         * fresh relay's first audit happen on its first visit rather than a
+         * week later.
+         */
+        internal fun auditDue(
+            fullAt: Long,
+            now: Long,
+            verifySeconds: Long,
+        ): Boolean = fullAt <= 0L || now - fullAt >= verifySeconds
+
+        /**
+         * How long after an audit RAN before the same ask may try again,
+         * whatever the outcome — the backstop for audits that cannot
+         * complete and so never advance the verified-at clock. A quarter of
+         * the knob, floored so a flaky relay is not re-swept on the revisit
+         * floor and capped so a weekly audit still retries within the shift
+         * an operator is watching.
+         */
+        internal fun attemptSpacingSeconds(verifySeconds: Long): Long = (verifySeconds / 4).coerceIn(900L, 21_600L)
 
         // Often enough that a kill costs little, rare enough to be free.
         private const val DEFAULT_FLUSH_SECONDS = 30L

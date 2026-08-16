@@ -35,6 +35,7 @@ import kotlinx.serialization.json.put
 import java.io.File
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertFalse
 import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertSame
@@ -183,6 +184,50 @@ class SyncBandsTest {
         assertEquals(second, rebooted.verifiedAt(mirror, relay, profiles), "the stamp rides the band file")
         assertNull(rebooted.verifiedAt(mirror, other, profiles), "per relay, like the band it belongs to")
         f.delete()
+    }
+
+    @Test
+    fun `an ask that never had a verified pass is due on its first visit`() {
+        // A clock of zero is quartz's "never": a fresh relay's history should
+        // be verified as soon as there is a covered range to verify, not a
+        // week after it appeared.
+        assertTrue(SyncBands.auditDue(fullAt = 0L, now = 1_000_000, verifySeconds = 604_800))
+        val week = 604_800L
+        val nowSec = 2_000_000L
+        assertFalse(SyncBands.auditDue(fullAt = nowSec - week + 1, now = nowSec, verifySeconds = week))
+        assertTrue(SyncBands.auditDue(fullAt = nowSec - week, now = nowSec, verifySeconds = week))
+        assertTrue(SyncBands.auditDue(fullAt = nowSec - 2 * week, now = nowSec, verifySeconds = week))
+    }
+
+    @Test
+    fun `an audit that cannot complete is spaced, not retried on the revisit floor`() {
+        // A failed audit advances no clock and so stays due; the attempt
+        // spacing is what stands between that and a full re-sweep every 60s.
+        // A quarter of the knob, floored at 15 minutes, capped at 6 hours.
+        assertEquals(900L, SyncBands.attemptSpacingSeconds(3600L))
+        assertEquals(21_600L, SyncBands.attemptSpacingSeconds(86_400L))
+        assertEquals(21_600L, SyncBands.attemptSpacingSeconds(604_800L), "a weekly audit still retries within a shift")
+    }
+
+    @Test
+    fun `claimAudit admits once, spaces the retry, and stands down when verified`() {
+        // The whole gate, both halves: TRUE claims the attempt, so an audit
+        // that cannot complete cannot retry before the spacing lapses, and a
+        // completed reconcile (the verifiedAt stamp) stands the gate down for
+        // a full verifySeconds.
+        val c = SyncBands(null)
+        val verifySeconds = 86_400L
+        val t0 = now()
+        assertTrue(c.claimAudit(mirror, relay, profiles, verifySeconds, now = t0), "never verified: due, and the claim is taken")
+        assertFalse(c.claimAudit(mirror, relay, profiles, verifySeconds, now = t0 + 60), "inside the attempt spacing")
+        assertTrue(
+            c.claimAudit(mirror, relay, profiles, verifySeconds, now = t0 + SyncBands.attemptSpacingSeconds(verifySeconds)),
+            "spacing lapsed and still unverified: retry",
+        )
+        val verifiedAt = t0 + 30_000
+        c.record(mirror, relay, profiles, null, null, paged = false, reconciledThrough = verifiedAt)
+        assertFalse(c.claimAudit(mirror, relay, profiles, verifySeconds, now = verifiedAt + verifySeconds - 1), "verified: not due")
+        assertTrue(c.claimAudit(mirror, relay, profiles, verifySeconds, now = verifiedAt + verifySeconds), "aged past the knob")
     }
 
     @Test

@@ -329,14 +329,6 @@ internal class VisitPool(
         }
     }
 
-    /**
-     * When each ask's audit last RAN, complete or not — the spacing that
-     * keeps an audit that cannot complete from retrying on every revisit.
-     * In-memory on purpose: a restart retrying once is fine, a revisit-floor
-     * retry loop is not.
-     */
-    private val auditAttempts = ConcurrentHashMap<String, Long>()
-
     private val phasesDirty =
         java.util.concurrent.atomic
             .AtomicBoolean(false)
@@ -654,18 +646,7 @@ internal class VisitPool(
     ) {
         val stream = ask.stream
         val now = nowSeconds()
-        // The clock is the router's own verified-at stamp — quartz's `fullAt`
-        // freezes on merge (see [SyncBands.verifiedAt]) — falling back to
-        // `fullAt` so a fresh band's paged full walk still defers the first
-        // audit. The attempt stamp is the other half: an audit that cannot
-        // COMPLETE (negentropy refused, sweep interrupted) records no band,
-        // and without it the next visit retried the whole sweep on the 60s
-        // revisit floor, forever.
-        val verifiedAt = bands.verifiedAt(stream.name, url, ask.filter) ?: bands.band(stream.name, url, ask.filter)?.fullAt ?: 0L
-        if (!auditDue(verifiedAt, now, verifySeconds)) return
-        val attemptKey = "${stream.name}|${url.url}|${ask.filter.toJson()}"
-        if (now - (auditAttempts[attemptKey] ?: 0L) < attemptSpacingSeconds(verifySeconds)) return
-        auditAttempts[attemptKey] = now
+        if (!bands.claimAudit(stream.name, url, ask.filter, verifySeconds, now)) return
         val auditStarted = now
         var received = 0
         o.doing = STAGE_AUDITING
@@ -727,7 +708,7 @@ internal class VisitPool(
         sharedAuthors: Set<String>,
     ) {
         val retraction = retraction ?: return
-        if (!retraction.due(ask.stream, url, ask.filter, verifySeconds)) return
+        if (!retraction.claimAudit(ask.stream, url, ask.filter, verifySeconds)) return
         o.doing = STAGE_RETRACTING
         retraction.reconcileAndDelete(
             ask.stream,
@@ -911,28 +892,6 @@ internal class VisitPool(
                     PagedFetchResult.End.UNPAGEABLE,
                     -> true
                 }
-
-        /**
-         * Is the band's history due its audit? A `fullAt` of zero is a band
-         * that has NEVER had a full pass — always due, which is what makes the
-         * first audit of a fresh relay happen on its first visit rather than
-         * a week later.
-         */
-        internal fun auditDue(
-            fullAt: Long,
-            now: Long,
-            verifySeconds: Long,
-        ): Boolean = fullAt <= 0L || now - fullAt >= verifySeconds
-
-        /**
-         * How long after an audit RAN before the same ask may try again,
-         * whatever the outcome — the backstop for audits that cannot
-         * complete and so never advance the verified-at clock. A quarter of
-         * the knob, floored so a flaky relay is not re-swept on the revisit
-         * floor and capped so a weekly audit still retries within the shift
-         * an operator is watching.
-         */
-        internal fun attemptSpacingSeconds(verifySeconds: Long): Long = (verifySeconds / 4).coerceIn(900L, 21_600L)
 
         /**
          * The tail subscription's filters: every ask the roster wants at the

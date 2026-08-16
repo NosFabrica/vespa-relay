@@ -39,23 +39,6 @@ import kotlin.test.assertTrue
  */
 class VisitPoolTest {
     @Test
-    fun `a band that never had a full pass is audited on its first visit`() {
-        // fullAt = 0 is quartz's "never": a fresh relay's history should be
-        // verified as soon as there is a covered range to verify, not a week
-        // after it appeared.
-        assertTrue(VisitPool.auditDue(fullAt = 0L, now = 1_000_000, verifySeconds = 604_800))
-    }
-
-    @Test
-    fun `the audit fires when the last full pass ages past the knob, and not before`() {
-        val week = 604_800L
-        val now = 2_000_000L
-        assertFalse(VisitPool.auditDue(fullAt = now - week + 1, now = now, verifySeconds = week))
-        assertTrue(VisitPool.auditDue(fullAt = now - week, now = now, verifySeconds = week))
-        assertTrue(VisitPool.auditDue(fullAt = now - 2 * week, now = now, verifySeconds = week))
-    }
-
-    @Test
     fun `more content lately means a sooner revisit, on both bases`() {
         // The priority rule: yield divides the wait. Fifty decayed events
         // halves it, five hundred pins it near the floor — and the tailed
@@ -266,16 +249,6 @@ class VisitPoolTest {
                 since = 1_000L,
             )
         assertNull(absorbed.single().authors, "an unbound ask already asks for every author")
-    }
-
-    @Test
-    fun `an audit that cannot complete is spaced, not retried on the revisit floor`() {
-        // A failed audit records no band and so stays due; the attempt
-        // spacing is what stands between that and a full re-sweep every 60s.
-        // A quarter of the knob, floored at 15 minutes, capped at 6 hours.
-        assertEquals(900L, VisitPool.attemptSpacingSeconds(3600L))
-        assertEquals(21_600L, VisitPool.attemptSpacingSeconds(86_400L))
-        assertEquals(21_600L, VisitPool.attemptSpacingSeconds(604_800L), "a weekly audit still retries within a shift")
     }
 
     @Test

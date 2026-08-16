@@ -35,7 +35,6 @@ import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.negentropyRec
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
 import com.vitorpamplona.quartz.nip01Core.store.IEventStore
-import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.atomic.AtomicLong
 
 /**
@@ -95,40 +94,22 @@ internal class RetractionAudit(
     }
 
     /**
-     * When each ask's reconcile last RAN, complete or failed — see
-     * [VisitPool.attemptSpacingSeconds]. Without it a relay whose reconcile
-     * keeps failing was retried on every revisit, and every retry paid the
-     * full [IEventStore.snapshotIdsForNegentropy] walk of the provider's
-     * owned set before the reconcile that would fail again.
+     * Claim this ask's comparison if it is due — [SyncBands.claimAudit] on
+     * the OWNED ask, the same filter [reconcileAndDelete]'s band record
+     * advances, derived by the same [ownedAskOf]. True commits the caller
+     * to running the reconcile: the claim is the spacing that keeps a
+     * failing one from retrying on every revisit at the cost of a full
+     * [IEventStore.snapshotIdsForNegentropy] walk each time.
      */
-    private val attempts = ConcurrentHashMap<String, Long>()
-
-    /**
-     * Is this ask's comparison due — the owned ask's verified-at clock aged
-     * past [verifySeconds] (falling back to the band's `fullAt`, which a
-     * fresh catch-up stamps and quartz thereafter freezes — see
-     * [SyncBands.verifiedAt]), and no attempt inside the spacing window?
-     * [reconcileAndDelete]'s band record is what advances the clock, on the
-     * same [ownedAskOf] filter.
-     */
-    fun due(
+    fun claimAudit(
         stream: SyncStream,
         url: NormalizedRelayUrl,
         ask: Filter,
         verifySeconds: Long,
     ): Boolean {
         val ownedAsk = ownedAskOf(stream, ask) ?: return false
-        val now = nowSeconds()
-        val verifiedAt = bands.verifiedAt(stream.name, url, ownedAsk) ?: bands.band(stream.name, url, ownedAsk)?.fullAt ?: 0L
-        if (!VisitPool.auditDue(verifiedAt, now, verifySeconds)) return false
-        return now - (attempts[attemptKey(stream, url, ownedAsk)] ?: 0L) >= VisitPool.attemptSpacingSeconds(verifySeconds)
+        return bands.claimAudit(stream.name, url, ownedAsk, verifySeconds)
     }
-
-    private fun attemptKey(
-        stream: SyncStream,
-        url: NormalizedRelayUrl,
-        ownedAsk: Filter,
-    ): String = "${stream.name}|${url.url}|${ownedAsk.toJson()}"
 
     /**
      * Reconcile one ask's OWNED kinds both ways, and act on the difference.
@@ -173,7 +154,6 @@ internal class RetractionAudit(
         // catch-up keeps mirroring it, this decides nothing from it.
         if (bound.any { it in sharedAuthors }) return
 
-        attempts[attemptKey(stream, url, ownedAsk)] = nowSeconds()
         val mine = store.snapshotIdsForNegentropy(listOf(ownedAsk))
         // NOT an early return when we hold nothing: an ask we have no records
         // for is exactly a service we have never fetched, and reconciling
