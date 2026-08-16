@@ -132,20 +132,7 @@ internal class StreamWorld(
         // An operator who excluded a hundred urls and then asks why the fan-out
         // is a hundred short is asking about a number nothing published.
         val excluded = LinkedHashSet<NormalizedRelayUrl>()
-        for ((label, dynamic) in derivations()) {
-            val found =
-                try {
-                    RelayDiscovery.discover(store, dynamic, skip = setOfNotNull(store.relay), allowOnion = tor != null)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    System.err.println("router: alias source could not derive $label: ${e.message}")
-                    emptyList()
-                }
-            found.forEach {
-                if (it.url !in dynamic.exclude && it.url != store.relay) all += it.url else excluded += it.url
-            }
-        }
+        derive("alias source", { it }) { url, kept -> if (kept) all += url else excluded += url }
         // `exclude` is PER STREAM, so a url one stream excludes and another asks
         // for is a candidate — it is dialled, and counting it as excluded would
         // put it on both sides of a partition that has to divide exactly once.
@@ -170,6 +157,32 @@ internal class StreamWorld(
             listOfNotNull(monitorDiscovery?.let { "monitor sources" to it })
 
     /**
+     * One walk over every derivation, [bound] applied to each config first —
+     * the shared core of [candidates] and [candidatesSince], so a source that
+     * fails to derive is reported (and survived) the same way on both paths.
+     * [onUrl]'s `kept` says whether the url survived the per-stream exclude
+     * list and the self check; the caller decides what a dropped url means.
+     */
+    private suspend fun derive(
+        what: String,
+        bound: (RelayDiscoveryConfig) -> RelayDiscoveryConfig,
+        onUrl: (NormalizedRelayUrl, kept: Boolean) -> Unit,
+    ) {
+        for ((label, dynamic) in derivations()) {
+            val found =
+                try {
+                    RelayDiscovery.discover(store, bound(dynamic), skip = setOfNotNull(store.relay), allowOnion = tor != null)
+                } catch (e: CancellationException) {
+                    throw e
+                } catch (e: Exception) {
+                    System.err.println("router: $what could not derive $label: ${e.message}")
+                    emptyList()
+                }
+            found.forEach { onUrl(it.url, it.url !in dynamic.exclude && it.url != store.relay) }
+        }
+    }
+
+    /**
      * The fast lane's derivation: the same sources, `since`-bounded to
      * relay-list events ingested at or after [since]. Reads minutes of events
      * where [candidates] walks the store — which is the whole reason a new
@@ -181,22 +194,9 @@ internal class StreamWorld(
     override suspend fun candidatesSince(since: Long): List<NormalizedRelayUrl> {
         val dead = monitor?.deadSet().orEmpty()
         val fresh = LinkedHashSet<NormalizedRelayUrl>()
-        for ((label, dynamic) in derivations()) {
-            val bounded =
-                dynamic.copy(
-                    sources = dynamic.sources.map { it.copy(filter = it.filter.copy(since = since)) },
-                )
-            val found =
-                try {
-                    RelayDiscovery.discover(store, bounded, skip = setOfNotNull(store.relay), allowOnion = tor != null)
-                } catch (e: CancellationException) {
-                    throw e
-                } catch (e: Exception) {
-                    System.err.println("router: fast lane could not derive $label: ${e.message}")
-                    emptyList()
-                }
-            found.forEach { if (it.url !in dynamic.exclude && it.url != store.relay) fresh += it.url }
-        }
+        derive("fast lane", { dynamic ->
+            dynamic.copy(sources = dynamic.sources.map { it.copy(filter = it.filter.copy(since = since)) })
+        }) { url, kept -> if (kept) fresh += url }
         return fresh.filterNot { it in dead }
     }
 
