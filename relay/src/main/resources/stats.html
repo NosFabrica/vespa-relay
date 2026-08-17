@@ -918,7 +918,7 @@ import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/v
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
 // and a grep cannot see a wrong denominator.
-import { STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf, measuringOf, probeProgress, rotationOf } from "/web/shared/sync.js";
+import { STUCK_LEG_SEC, constraintOf, funnelOf, isLive, legsOf, measuringOf, probeProgress, rotationOf, splitProcessors } from "/web/shared/sync.js";
 
 const fmt = (n) => Number(n).toLocaleString();
 
@@ -1964,18 +1964,26 @@ function streamBlock(s) {
 }
 
 /**
- * THE PASSES THAT ARE NOT STREAMS — the fold, the stability gate, ingest,
- * reachability, the healer.
+ * THE WORK THAT IS NOT A STREAM — the fold, the stability gate, fitness,
+ * reachability, the pool, ingest, the healer, the push.
  *
  * One line each, and exactly one number: the one that says whether it is
  * getting anywhere. They are here rather than dropped because a stalled fold is
  * not a side quest — an unfolded list downloads the same relay once per url,
  * which is a sync fault that shows up nowhere else on this card.
  *
+ * ONE TABLE, TWO CARDS. The rows are split by `splitProcessors` into what the
+ * MONITOR decides (which urls may be dialled at all) and what the SYNC does
+ * (moving events), because those are two questions and reading one array meant
+ * holding both at once. This table is the labels and the tooltips for either
+ * side; the split itself is a judgement and lives in `/web/shared/sync.js`
+ * where it can be tested.
+ *
  * The probe passes' number is `probeProgress`, in `/web/shared/sync.js` — it
- * sums across streams, draws the RISING half of the pair, and withholds the
- * clock while a pass is dialling. All three are decisions that can be wrong
- * silently, which is why none of them is made here.
+ * sums across streams, drops the urls the fold removed from BOTH halves, draws
+ * the RISING half of the pair, and withholds the clock while a pass is
+ * dialling. All four are decisions that can be wrong silently, which is why
+ * none of them is made here.
  */
 const BACKGROUND = [
   ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
@@ -1988,8 +1996,7 @@ const BACKGROUND = [
   ["upstreamPush", "upstream push", "Events published to this relay and forwarded on to the upstreams configured to receive them."],
 ];
 
-function backgroundPanel(progress) {
-  const rows = (progress && progress.processors) || [];
+function backgroundPanel(rows, withFunnel = false) {
   if (!rows.length) return null;
   const box = el("div", "sy-bg");
   // THE CORPUS FIRST, above every pass's line.
@@ -2005,7 +2012,11 @@ function backgroundPanel(progress) {
   // pass's name: `folded onto another url` is the STABILITY GATE's reading of
   // the fold's verdicts, taken when the gate last ran, and unlabelled at the top
   // of a section it would read as the card's own arithmetic.
-  for (const p of rows) {
+  //
+  // Drawn only where it is asked for: the corpus is what the MONITOR works on,
+  // and the same tree above ingest and the healer would be a chart about relay
+  // urls at the head of a section that counts events.
+  for (const p of withFunnel ? rows : []) {
     const funnel = funnelPanel(p);
     if (!funnel) continue;
     const known = BACKGROUND.find((row) => row[0] === p.name);
@@ -2335,13 +2346,25 @@ function fmtDur(sec) {
  * ## What is left
  *
  * One status line (working?), one block per stream (progress), one line per
- * background pass (the faults that show up nowhere else — a stalled fold makes
- * the fan-out download one relay once per url), and one depth strip (how far
- * back the coverage actually goes).
+ * pipeline job (where a slow mirror is actually diagnosed — a full ingest queue
+ * means every download is backpressured behind it), and one depth strip (how
+ * far back the coverage actually goes).
+ *
+ * ## What moved OUT of it
+ *
+ * The alias fold, the stability gate, fitness and the reachability monitor are
+ * the `Relay monitor` card now, with the corpus tree that describes their
+ * subject. They were here because they arrive in the same array, and the card
+ * asked two questions at once: *is the mirror keeping up* is answered by
+ * streams, queue depth and ingest, while *which relays may we dial at all* is
+ * answered by four passes on a six-hour clock whose unit is a url and whose
+ * output is a signed record. An operator arrives with one of those questions,
+ * never both. `splitProcessors` is the rule and it is a partition — nothing is
+ * dropped by being sorted.
  *
  * Nothing was removed from `/stats.json`. Every number this card stopped
  * drawing is still published; what changed is which of them a person is made
- * to read.
+ * to read, and where.
  */
 function syncCard(section) {
   const d = (section && section.data) || {};
@@ -2361,9 +2384,11 @@ function syncCard(section) {
     for (const s of lanes) card.appendChild(streamBlock(s));
   }
 
-  const background = backgroundPanel(progress);
+  // The half of the background work that moves EVENTS. The half that decides
+  // which relays may be dialled at all is its own card — see `monitorCard`.
+  const background = backgroundPanel(splitProcessors(progress).pipeline);
   if (background) {
-    card.appendChild(el("p", "sy-h", "background passes"));
+    card.appendChild(el("p", "sy-h", "the pipeline"));
     card.appendChild(background);
   }
 
@@ -2378,6 +2403,58 @@ function syncCard(section) {
       `Frame starts ${dayOf(d.from)} — the oldest span anything here reaches. Not a target: these filters carry ` +
       `no lower bound, so depth means "as deep as anything reaches", not "finished".`));
   }
+  return card;
+}
+
+/**
+ * WHICH RELAYS MAY BE DIALLED AT ALL — the four passes that decide it, and the
+ * corpus they decide over.
+ *
+ * ## Why this is not part of Sync coverage
+ *
+ * It was, and the card asked two questions at once. These four run on the alias
+ * monitor's own clock, nothing about them is configured by a stream, their unit
+ * is a RELAY URL rather than an event, and what they produce is a signed
+ * kind-30166 record that outlives this process — the same records the card
+ * below looks up one url at a time. Sync coverage answers "is the mirror
+ * keeping up"; this answers "what is out there, and how much of it can we
+ * use". An operator arrives with one of those, and the split is what lets them
+ * stop reading at the answer.
+ *
+ * ## The tree first, then the passes
+ *
+ * The corpus is the subject all four share, so it heads the card rather than
+ * hanging under whichever pass happens to publish it — and it is captioned with
+ * that pass's name, because it IS that pass's reading and unlabelled it would
+ * pass for the card's own arithmetic. See `funnelOf`.
+ *
+ * Drawn only when a router has written processor rows. A serve-only relay runs
+ * no monitor, and an empty card there would read as a broken one.
+ */
+function monitorCard(section) {
+  const d = (section && section.data) || {};
+  const rows = splitProcessors(d.progress).monitor;
+  if (!rows.length) return null;
+  // The document's own glossary, set again here rather than inherited from
+  // whichever card drew first: two cards reading one section must not depend on
+  // the order `PANELS` happens to build them in.
+  TERMS = d.terms || {};
+  const card = el("div", "card");
+  cardHead(card, "Relay monitor", null, section);
+  // ON THE HEADING, not as a `card-sub`: that slot is a STATE — "no kind
+  // histogram in this document" — and the panels here deliberately stopped
+  // explaining themselves in prose. A card whose name is new to the reader
+  // still owes them a sentence, so it goes where every other explanation on
+  // this page goes, on the label itself.
+  const heading = card.querySelector("h2");
+  if (heading) {
+    heading.title =
+      "What the router has decided about the relay urls it discovers — which are one server wearing several " +
+      "addresses, which cannot answer the same question twice, which are certified `syncable`, and which are " +
+      "unreachable. Every stream's relay list is what these passes admit; the per-url verdicts they sign are " +
+      "in Monitor verdicts below.";
+  }
+  card.appendChild(backgroundPanel(rows, true));
   return card;
 }
 
@@ -3048,6 +3125,12 @@ const PANELS = [
   // not mirror, and an empty coverage card there would read as a broken mirror
   // rather than as no mirror.
   { name: "sync", reads: ["sync"], build: (doc) => (doc.sync ? [syncCard(doc.sync)] : []) },
+  // The monitor's own half of that section, beside the per-url verdicts it
+  // writes rather than beside the mirror it feeds — see `monitorCard`. Its own
+  // panel rather than a second card off the `sync` entry so it keeps its own
+  // container and its own redraw, and so a router with no monitor rows draws
+  // nothing here instead of an empty heading.
+  { name: "monitor", reads: ["sync"], build: (doc) => (doc.sync ? [monitorCard(doc.sync)].filter(Boolean) : []) },
   // `reads: []` on purpose: this panel is built ONCE and never rebuilt by the
   // poller. It holds what the reader asked for over a websocket and what they
   // typed into its filter, and a minute-by-minute rebuild would throw both

@@ -178,6 +178,43 @@ export function measuringOf(p) {
   };
 }
 
+/**
+ * THE MONITOR'S WORK, AND THE SYNC'S — one list of processor rows, split by
+ * what each of them DECIDES.
+ *
+ * They were one panel because they arrive in one array, and reading it meant
+ * holding two unrelated questions at once. The passes named here answer *which
+ * relay urls are worth dialling at all*: the fold collapses one server's several
+ * addresses, the stability gate refuses a url that answers a filter two ways,
+ * the fitness pass signs the `syncable` certificate every visit-mode stream's
+ * relay list is made of, and the reachability monitor is what holds a dead url
+ * out of every fan-out. All four run on the alias monitor's own clock, none of
+ * them is configured by a stream, and their unit is a RELAY. What is left —
+ * the rotating pool, ingest, the healer, the upstream push — moves EVENTS, on
+ * the streams' clock, and is where a slow mirror is actually diagnosed.
+ *
+ * `MONITOR_PROCESSORS` is a list rather than a Set literal for the reason
+ * `BOTTLENECK` carries `__proto__: null`: the names are strings off the wire,
+ * and a lookup that can reach `Object.prototype` answers `true` for
+ * `constructor`.
+ *
+ * **AN UNKNOWN NAME GOES TO THE PIPELINE, never nowhere.** A router that starts
+ * publishing a processor this page has not been taught must still draw it: the
+ * two lists are a PARTITION of what the document carries, and the sync card is
+ * the one that already carries the status line and the leftovers. Dropping a row
+ * to keep a card tidy is how a new job runs unwatched for a year.
+ */
+export const MONITOR_PROCESSORS = ["aliasFold", "consistency", "fitness", "reachability"];
+
+export function splitProcessors(progress) {
+  const monitor = [];
+  const pipeline = [];
+  for (const p of progress?.processors || []) {
+    if (p) (MONITOR_PROCESSORS.includes(p.name) ? monitor : pipeline).push(p);
+  }
+  return { monitor, pipeline };
+}
+
 /** The phase word a visit-mode stream carries — `StreamPhases.Phase.Rotating`. */
 export const ROTATING = "rotating";
 

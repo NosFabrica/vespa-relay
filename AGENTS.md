@@ -658,16 +658,23 @@ relay/src/main/resources/
                         protocol feature to test, and thirty days of
                         distinct-pubkey counts is not a question to ask over a
                         websocket, so every chart here is a rollup read.
-                        The Sync coverage card is three things stacked, in the
-                        order the questions are asked: what the router is doing
-                        NOW (one disposition bar per RUNNING PASS, so the walk
-                        that is finishing and the one that is walking are two
-                        rows rather than one blended total), then *Also running*
-                        — the six processors that are not streams, each with the
-                        same phase-and-clock header a stream gets and a meter for
-                        the two that have a denominator — and only then the
-                        coverage bars, which are where it has WALKED rather than
-                        what it is doing. Two pins keep the JS honest against the
+                        The router's state is TWO cards off one `sync` section,
+                        split by what each row decides. *Sync coverage* answers
+                        "is the mirror keeping up": the heartbeat and the
+                        constraint, a block per stream, then *the pipeline* —
+                        the pool, ingest, the healer, the push, which move
+                        EVENTS — and last the coverage bars, which are where it
+                        has WALKED rather than what it is doing. *Relay monitor*
+                        answers "which relays may we dial at all": the corpus
+                        tree, then the alias fold, the stability gate, fitness
+                        and reachability, whose unit is a URL, whose clock is the
+                        monitor's own and whose output is a signed 30166 record
+                        — so it sits beside the panel that reads those records
+                        back. `splitProcessors` (shared/sync.js) is the rule and
+                        it is a PARTITION: a processor name the page has not been
+                        taught draws on the sync side rather than nowhere, since
+                        dropping a row to keep a card tidy is how a new job runs
+                        unwatched. Two pins keep the JS honest against the
                         Kotlin that feeds it, and both are in
                         `SyncProgressReportTest`: every `taken` outcome must have
                         a `DISPOSITION` row and every published gauge a line in
