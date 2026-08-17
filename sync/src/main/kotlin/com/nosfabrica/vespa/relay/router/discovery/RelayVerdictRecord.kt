@@ -407,6 +407,44 @@ class RelayVerdictRecord(
         bestShared: Int,
     ): Event? = write(url, url, "$sampled newest events, best $bestShared shared with $comparedAgainst")
 
+    /**
+     * The one edit every fold form goes through — and, for a fold onto ANOTHER
+     * url, the retraction of the fitness verdict that fold has just disproved.
+     *
+     * `syncable` is a COMPOSITE — reachable AND answering AND **canonical** AND
+     * consistent AND pageable — so proving a url is a duplicate takes the
+     * premise out from under a verdict already signed. Left standing, one
+     * record states both, and the sync plane's admission is ONE filter over
+     * `s` that cannot express "and not folded": the duplicate goes on being
+     * admitted, on our own signature, until the next fitness pass reaches it —
+     * a whole stability pass later, on the sweep's clock. Measured on the
+     * production store on 2026-08-17: **108 urls carried a live `same-as` and a
+     * `syncable` at once**, out of 1,753 syncable urls in all, `relay.primal.net`
+     * wearing six of them.
+     *
+     * Two things make that worse than a race we could wait out. This edit
+     * REPUBLISHES the record, so the stale verdict's freshness — the event's
+     * `created_at`, which is what a source's `maxAgeSeconds` reads — is renewed
+     * by the very write that disproved it. And where the survivor holds no
+     * `syncable` of its own (9 of those 108, every one a `relay.primal.net`
+     * path folding onto a root our own dials found silent), [RosterBuilder]'s
+     * read-only fold collapses the alias ONTO it, so a url the fitness pass
+     * never admitted is dialled on the strength of a certificate belonging to
+     * another one.
+     *
+     * A RETRACTION AND NEVER AN `s` VALUE. The fold does not own that
+     * vocabulary and must not start spelling it — see [FitnessPass.Verdict],
+     * whose `alias` the next fitness pass writes here for free, off this
+     * standing `same-as` and without a dial. Between the two the url reads as
+     * unmeasured, which is exactly the state that gets a url re-measured and
+     * keeps it out of every roster meanwhile.
+     *
+     * The self-form ([publishDistinct]) owns `same-as` alone. "This url is a
+     * relay in its own right" is what a `syncable` rests ON rather than a
+     * contradiction of it, and retracting there would clear the verdict of
+     * every url the fold measured and confirmed — 49 of them on the same store,
+     * each costing a re-dial to say again what the record already said.
+     */
     private suspend fun write(
         subject: NormalizedRelayUrl,
         sameAs: NormalizedRelayUrl,
@@ -414,10 +452,17 @@ class RelayVerdictRecord(
     ): Event? =
         edit(
             subject,
-            owned = setOf(SAME_AS_TAG),
+            owned =
+                if (sameAs.url == subject.url) {
+                    setOf(SAME_AS_TAG)
+                } else {
+                    setOf(SAME_AS_TAG, STATUS_TAG, PAGEABLE_TAG, NIP77_TAG)
+                },
             // The measurement's own clock — see [current] for why the event's
             // cannot be used — and the rules it was taken under, see
-            // [FOLD_EPOCH].
+            // [FOLD_EPOCH]. Nothing is added for the retracted tags: `owned`
+            // with nothing to put back is how a claim leaves a record, the same
+            // way [retireFitness] does it.
             add = listOf(arrayOf(SAME_AS_TAG, sameAs.url, evidence, nowSeconds().toString(), FOLD_EPOCH)),
         )
 

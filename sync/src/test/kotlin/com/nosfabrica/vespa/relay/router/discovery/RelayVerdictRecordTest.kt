@@ -149,6 +149,104 @@ class RelayVerdictRecordTest {
         }
 
     @Test
+    fun `a fold retracts the fitness verdict it disproves`() =
+        runBlocking {
+            // `syncable` asserts CANONICAL among other things, so a fold takes
+            // the premise out from under a verdict already signed. Both on one
+            // record is not a contradiction a reader can resolve: a stream's
+            // whole admission is `"#s": ["syncable"]`, which cannot say "and
+            // not folded", so the duplicate goes on being admitted on our own
+            // signature — and this very edit republishes the record, renewing
+            // the `created_at` that a source's `maxAgeSeconds` ages it by.
+            //
+            // Seen in production on 2026-08-17: 108 urls carrying both, six of
+            // them `relay.primal.net` paths folded onto a root our own dials
+            // had found silent.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            val monitor = RelayReachabilityStore(store, signer)
+            monitor.recordProbed(mapOf(alias to 120L), emptySet(), nowSeconds())
+            record.publishFitness(
+                alias,
+                "syncable",
+                "answered 500 events at a settled anchor",
+                pageable = true to "500 events, all at or below the anchor",
+                nip77 = true to "answered a NEG-OPEN over a 1h window",
+            )
+
+            record.publish(alias, canonical, sampled = 500, shared = 498)
+
+            val after = tagNames(recordFor(store, alias.url))
+            assertTrue(
+                RelayVerdictRecord.STATUS_TAG !in after,
+                "the fold left a `syncable` standing on a url it had just proved a duplicate: $after",
+            )
+            assertTrue(
+                RelayVerdictRecord.PAGEABLE_TAG !in after && RelayVerdictRecord.NIP77_TAG !in after,
+                "the verdict went and its two measured facts stayed, pinned to a relay this url is not: $after",
+            )
+            // What it retracts is OURS and nothing more: the fold's own verdict
+            // lands, and the passive monitor's tags ride through as they do
+            // through every other edit here.
+            assertTrue(RelayVerdictRecord.SAME_AS_TAG in after)
+            assertTrue("rtt-open" in after, "the retraction took another writer's tags with it: $after")
+            assertEquals(mapOf(alias to canonical), record.load(listOf(alias)).aliases)
+        }
+
+    @Test
+    fun `every fold form retracts it, whatever the evidence rests on`() =
+        runBlocking {
+            // The four alias-pointing forms differ only in the sentence they
+            // sign — a containment, a TLS twin, a group list, a shared name with
+            // nothing readable behind it. Each one is still "this url is not a
+            // relay of its own", so a certificate saying it is may not survive
+            // any of them. Written as one loop because the branch is in the one
+            // funnel they share, and a form added later that skips it is the
+            // failure this pins.
+            val forms: List<Pair<String, suspend (RelayVerdictRecord) -> Unit>> =
+                listOf(
+                    "publish" to { r -> r.publish(alias, canonical, sampled = 500, shared = 498) },
+                    "publishSecureTwin" to { r -> r.publishSecureTwin(alias, canonical, sampled = 9) },
+                    "publishGroupList" to { r -> r.publishGroupList(alias, canonical, sampled = 7, shared = 7) },
+                    "publishUnreadable" to { r -> r.publishUnreadable(alias, canonical, urls = 5) },
+                )
+            for ((name, fold) in forms) {
+                val store = newStore()
+                val record = RelayVerdictRecord(store, signer)
+                record.publishFitness(alias, "syncable", "answers and pages", pageable = null, nip77 = null)
+
+                fold(record)
+
+                assertTrue(
+                    RelayVerdictRecord.STATUS_TAG !in tagNames(recordFor(store, alias.url)),
+                    "$name folded the url and left its `syncable` standing",
+                )
+            }
+        }
+
+    @Test
+    fun `clearing a url leaves the fitness verdict it confirms`() =
+        runBlocking {
+            // The self-form is the opposite statement: this url IS a relay in
+            // its own right, which is what a `syncable` rests on rather than a
+            // contradiction of it. Retracting here would clear the verdict of
+            // every url the fold measured and CONFIRMED — 49 of them on the
+            // production store the same day — and each would pay a re-dial to
+            // say again what the record already said.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(canonical, "syncable", "answered 500 events at a settled anchor", pageable = null, nip77 = null)
+
+            record.publishDistinct(canonical, sampled = 500, comparedAgainst = "3 compared peer(s)", bestShared = 2)
+
+            assertEquals(
+                "syncable",
+                recordFor(store, canonical.url)?.tags?.firstOrNull { it.firstOrNull() == RelayVerdictRecord.STATUS_TAG }?.get(1),
+                "a url the fold confirmed as its own relay lost the verdict that confirmation supports",
+            )
+        }
+
+    @Test
     fun `a cleared verdict carries the evidence it rests on`() =
         runBlocking {
             val store = newStore()

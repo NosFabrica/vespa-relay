@@ -1096,6 +1096,40 @@ valid signed record that simply says less). The verdicts panel on `/stats.html`
 is where one url's whole record is read back, and it exists because that merge
 is only pinnable in isolation by `RelayVerdictRecordTest`.
 
+**One tag per writer, and ONE EXCEPTION: a fold retracts the fitness verdict it
+disproves.** `syncable` is a composite — reachable AND answering AND *canonical*
+AND consistent AND pageable — so a `same-as` pointing at another url takes the
+premise out from under a certificate already signed. Nothing used to withdraw
+it: the fold owned `same-as` alone, and the record went on saying both until the
+next fitness pass reached that url, a whole stability pass later on the sweep's
+clock. Measured on the production store on 2026-08-17, out of 19,849 urls and
+1,753 `syncable` ones: **108 carried a live fold and a `syncable` at once**,
+`relay.primal.net` wearing six of them (`/xray-raven`, `/bravo`, `/oscar-glyph`,
+`/yonder-prism`, `/v1/papa-xray-umbra`, and the `ws://` root). Two things made
+it more than a race — the fold's own edit REPUBLISHES the record, so the stale
+verdict's `created_at` (what a source's `maxAgeSeconds` ages it by) is renewed
+by the write that disproved it; and where the survivor holds no `syncable` of
+its own (9 of the 108, all `relay.primal.net` paths folding onto a root our own
+dials found `silent`), `RosterBuilder`'s read-only fold collapses the alias ONTO
+it, so a url the fitness pass never admitted gets dialled on another url's
+certificate. `RelayVerdictRecord.write` therefore owns `s`/`pageable`/`nip77`
+too when the fold points elsewhere, with nothing to put back — a RETRACTION,
+never an `s` value, since the fold does not own that vocabulary and the next
+fitness pass writes `alias` off the standing `same-as` for free. The self-form
+(`publishDistinct`) does not retract: "this url is a relay in its own right" is
+what a `syncable` rests ON, and clearing it would cost a re-dial to every url
+the fold measured and confirmed (49 the same day). The reason this cannot be
+fixed on the read side is the sync plane's whole design — admission is one
+filter over `s`, and no filter can say "and not folded".
+
+**Do not read a self-pointing `same-as` as a fold.** `["same-as", <the record's
+own d>]` is the CLEARED verdict — measured, equivalent to nothing but itself —
+and counting those as duplicates says the store is full of contradictions it
+does not have: the first cut of the survey above reported 159 contradictory
+records where 108 were real and 49 were confirmations. `RelayVerdictRecord.load`
+tells them apart after normalising both sides, and any script asking the same
+question of `/stats.html`'s verdict panel or of a raw dump has to do the same.
+
 **The gate is stream-level and it is an ordinary source.** `gatedBy` sits beside
 `exclude` and takes the same `{ select, filter, maxAgeSeconds }` entries a
 `relaySource` does; every source's discovery is intersected with the union of

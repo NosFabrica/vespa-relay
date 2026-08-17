@@ -147,6 +147,29 @@ class SyncableRelaysTest {
         }
 
     @Test
+    fun `a url stops being admitted the moment the fold proves it a duplicate`() =
+        runBlocking {
+            // The admission is one filter over `s`, and no filter can say "and
+            // not folded" — so the record itself has to stop saying `syncable`
+            // when the fold disproves the CANONICAL half of it. Nothing here
+            // waits for the next fitness pass: that is a whole stability pass
+            // away, and on 2026-08-17 the production store held 108 urls in
+            // exactly that window.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(good, "syncable", "answered 20 events at a settled anchor", pageable = null, nip77 = null)
+            assertEquals(listOf(good), admitted(store, authors = listOf(signer.pubKey)))
+
+            record.publish(good, dead, sampled = 500, shared = 498)
+
+            assertEquals(
+                emptyList(),
+                admitted(store, authors = listOf(signer.pubKey)),
+                "a url the fold folded away was still admitting itself into the fan-out",
+            )
+        }
+
+    @Test
     fun `a dead verdict is held out, and only a dead one`() =
         runBlocking {
             // The hold-out read — the one place a typed read survives, because
