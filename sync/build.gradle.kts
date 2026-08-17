@@ -81,6 +81,13 @@ tasks.test {
     // Seeds one synthetic 10040 into a LOCAL relay so the `certified` gate
     // and the monitor's 10040 source can be watched live. Same trap.
     System.getProperty("seed10040")?.let { systemProperty("seed10040", it) }
+    // The verdicts-panel seed: a monitor corpus in a LOCAL relay, so the stats
+    // page's one protocol-speaking panel can be driven against a real store.
+    System.getProperty("seedVerdicts")?.let { systemProperty("seedVerdicts", it) }
+    System.getProperty("seedVerdictsUrl")?.let { systemProperty("seedVerdictsUrl", it) }
+    System.getProperty("seedVerdictsNsec")?.let { systemProperty("seedVerdictsNsec", it) }
+    System.getProperty("seedVerdictsCount")?.let { systemProperty("seedVerdictsCount", it) }
+    System.getProperty("seedVerdictsLegacy")?.let { systemProperty("seedVerdictsLegacy", it) }
     System.getProperty("seed10040Url")?.let { systemProperty("seed10040Url", it) }
     // Stages the enforce-mode retraction scenario — a provider on a real
     // relay, a phantom score only in our store. Same trap.

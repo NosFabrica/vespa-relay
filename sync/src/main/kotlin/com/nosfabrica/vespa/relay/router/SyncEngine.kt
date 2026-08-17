@@ -33,6 +33,7 @@ import com.nosfabrica.vespa.relay.router.discovery.FitnessPass
 import com.nosfabrica.vespa.relay.router.discovery.ReachabilityProbe
 import com.nosfabrica.vespa.relay.router.discovery.RelayAliases
 import com.nosfabrica.vespa.relay.router.discovery.RelayConsistency
+import com.nosfabrica.vespa.relay.router.discovery.RelayDocument
 import com.nosfabrica.vespa.relay.router.discovery.RelaySockets
 import com.nosfabrica.vespa.relay.router.discovery.RelayVerdictRecord
 import com.nosfabrica.vespa.relay.router.discovery.StreamWorld
@@ -388,7 +389,7 @@ class SyncEngine(
             // DELIBERATELY NOT the roster's rule. A source that names no
             // `authors` reads verdicts unscoped, because admitting is a
             // positive claim that still has to survive a dial. Holding out is
-            // the opposite: unscoped, one rtt-less 30166 from anybody starves
+            // the opposite: unscoped, one `dead` grade from anybody starves
             // a relay out of the candidate set for good — never dialled, never
             // re-measured, so the mark never clears. So an unscoped source
             // contributes nothing here, and the set stays the identities the
@@ -409,7 +410,7 @@ class SyncEngine(
         )
 
     /**
-     * The verdict the sync plane selects on — `"#s": ["syncable"]` — plus the
+     * The grade the sync plane selects on — `"#l": ["prime"]` — plus the
      * measured facts a visit reads back. Third in the pass order on purpose:
      * fitness turns the fold's and the consistency pass's standing verdicts
      * into refusals without re-dialling, so both must have run first or a
@@ -424,6 +425,12 @@ class SyncEngine(
                 foldedAway = { urls -> folding?.applyVerdicts(urls)?.aliases ?: emptyMap() },
                 inconsistent = { urls -> consistencyPass?.applyVerdicts(urls)?.toSet() ?: emptySet() },
                 progress = processors.of(FITNESS_PROCESSOR),
+                // THE SAME PER-URL TRANSPORT THE DIAL USES. A `.onion`
+                // document has to be fetched inside the circuit, and handing
+                // this the direct client would both fail and put a hidden
+                // service through the local resolver — see [TorTransport].
+                document = RelayDocument({ url -> tor?.clientFor(url) ?: okhttp }),
+                routesThroughTor = { url -> tor?.routes(url) == true },
                 concurrency = monitorConcurrency,
             )
         }
@@ -482,7 +489,7 @@ class SyncEngine(
                     // historical six hours otherwise.
                     intervalMs = (config.monitor?.sweepSeconds ?: MonitorConfig.DEFAULT_SWEEP_SECONDS) * 1000L,
                     source = world,
-                    // The fast lane runs FITNESS alone: a first `syncable` is
+                    // The fast lane runs FITNESS alone: a first `prime` is
                     // what a new relay waits on; fold and consistency verdicts
                     // ride the next sweep.
                     fastLaneEveryMs = config.monitor?.fastLaneSeconds?.times(1000L),
@@ -584,7 +591,15 @@ class SyncEngine(
         // exchange for never serving on a verdict we would not re-take.
         signer?.let { s ->
             runCatching {
-                runBlocking { FitnessPass.retireStaleEpochs(store, RelayVerdictRecord(store, s), s.pubKey) }
+                runBlocking {
+                    val record = RelayVerdictRecord(store, s)
+                    FitnessPass.retireStaleEpochs(store, record, s.pubKey)
+                    // …and the grades written before the move off `s`, which
+                    // are not stale readings but readings in a tag that now
+                    // means something else entirely. Same retraction, same
+                    // boot, same reason it cannot be left to the readers.
+                    FitnessPass.retireLegacyGrades(store, record, s.pubKey)
+                }
             }.onFailure { System.err.println("router: could not retire stale-epoch verdicts: ${it.message}") }
         }
 

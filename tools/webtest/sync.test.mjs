@@ -306,7 +306,7 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(riding.waiting, false);
 
   // ZERO IS THE READING WORTH HAVING: before the fitness pass signs its first
-  // `syncable`, a visit stream is a stream with an empty world — busy-looking
+  // `prime`, a visit stream is a stream with an empty world — busy-looking
   // and dialling nothing.
   assert.equal(rotationOf({ phase: ROTATING, roster: 0, tails: 0 }).waiting, true);
   assert.equal(rotationOf({ phase: ROTATING, roster: 0 }).tails, null, "no tail count is not a claim of none");

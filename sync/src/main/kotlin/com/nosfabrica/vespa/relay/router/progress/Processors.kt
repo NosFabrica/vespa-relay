@@ -37,7 +37,7 @@ import java.util.concurrent.atomic.AtomicLong
  *  - the **alias fold** and the **stability pass**, which run on
  *    `AliasMonitor`'s own six-hour clock and decide which discovered urls the
  *    fan-out is allowed to stop dialling;
- *  - the **fitness pass**, which signs the `syncable` certificate every
+ *  - the **fitness pass**, which signs the `prime` certificate every
  *    visit-mode stream's relay list is made of, on the same clock;
  *  - the **rotating pool**, which is that list turned into sockets;
  *  - **ingest**, which is where every mirrored event actually lands, and whose

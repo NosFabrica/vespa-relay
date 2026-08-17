@@ -38,8 +38,32 @@ export const SAME_AS = "same-as";
 export const SELF_CONSISTENT = "self-consistent";
 
 /**
- * The tags this reader RENDERS besides the two verdicts — quartz's passive
- * monitor writes them onto the same record every time the client connects.
+ * NIP-32's label, which is where the monitor's FITNESS GRADE lives, and the
+ * namespace that says the grade is ours to read.
+ *
+ * It used to be spelled `["s", "prime"]`, and that was a straight collision:
+ * `s` is the relay's SOFTWARE to every other monitor on the network — sampled
+ * live off `relay.nostr.watch` and `nos.lol`, 12 monitors, and every `s` value
+ * is a repository url. So this panel drew our own grade in the software column
+ * and had no way to draw the software at all.
+ *
+ * The namespace is what makes `l` safe to share. The same record carries
+ * country, ISP and ASN labels from other monitors, all on `l`, so a reader
+ * matching the tag NAME would read a country code as a fitness grade.
+ */
+export const LABEL = "l";
+
+export const LABEL_NAMESPACE = "L";
+
+export const FITNESS_NAMESPACE = "relay.fitness";
+
+/** The one grade that admits a relay to a stream's roster. */
+export const PRIME = "prime";
+
+/**
+ * The tags this reader RENDERS besides the verdicts — the NIP-66 payload
+ * proper, which the monitor's fitness pass now writes on every record it
+ * grades.
  *
  * They are here because they are the other half of a diagnosis. `R: auth` says
  * the relay gates reads behind NIP-42, which is worth checking when a url will
@@ -52,30 +76,45 @@ export const SELF_CONSISTENT = "self-consistent";
  *
  * Drawing them is also the live check on something the Kotlin side can only
  * test in isolation. A replaceable record has one address and several writers,
- * so `RelayAliasRecord.edit` must carry forward every tag it does not own — a
+ * so `RelayVerdictRecord.edit` must carry forward every tag it does not own — a
  * writer that rebuilds instead silently deletes the others, and the result is
  * still a valid signed record that simply says less. That regression has
  * happened once (`[d, n, rtt-open]` became `[d, same-as]`). Seeing `n` and
  * `rtt-open` beside `same-as` on one row is what says the merge still works in
  * production and not only in a unit test.
  *
- * Measured on this store, 6,000 records: `n` on 5,988, `rtt-open` on 2,742,
- * `rtt-read` on 2,599, `R` on 252, and no NIP-11 content on any of them.
+ * **`v`, `g` and `T` are NOT here, and their absence is the finding.** This map
+ * used to list all three, which made the panel look like it was reporting a
+ * version, a geohash and a relay type that nothing has ever written: NIP-66
+ * defines no `v` at all, and `g`/`T` come from IP geolocation and a classifier
+ * this monitor does not run — see `RelayFacts` for why they stay unwritten
+ * rather than guessed. A column that is always empty reads as a relay that
+ * declined to answer, which is a different and false claim.
  */
 const RENDERED = {
   n: "network",
   R: "requirements",
+  N: "supportedNips",
   "rtt-open": "rttOpen",
   "rtt-read": "rttRead",
   "rtt-write": "rttWrite",
   s: "software",
-  v: "version",
-  g: "geohash",
-  T: "relayType",
 };
 
 /** Tags this panel accounts for. Anything else is COUNTED, never dropped silently. */
-const OWNED = new Set(["d", SAME_AS, SELF_CONSISTENT, ...Object.keys(RENDERED)]);
+const OWNED = new Set([
+  "d",
+  SAME_AS,
+  SELF_CONSISTENT,
+  LABEL,
+  LABEL_NAMESPACE,
+  // The fitness pass's two measured facts. They were in neither list before, so
+  // the panel counted the monitor's OWN writes as tags it had never heard of
+  // and reported `+2 other tag(s)` on every graded row.
+  "pageable",
+  "nip77",
+  ...Object.keys(RENDERED),
+]);
 
 /**
  * How long a verdict stands: thirty days, matching
@@ -94,6 +133,30 @@ const MEASURED_AT_INDEX = 3;
 
 /** Where it carries the version of the rules that measured it. */
 const EPOCH_INDEX = 4;
+
+/**
+ * The same three positions on a NIP-32 label, each one to the right: the spec
+ * fixes index 2 as the namespace, so the grade's evidence starts at 3.
+ *
+ * Spelled out rather than derived from the pair above, because the two shapes
+ * are set by different specs and a change to either must not silently move the
+ * other.
+ */
+const LABEL_NAMESPACE_INDEX = 2;
+
+const LABEL_EVIDENCE_INDEX = 3;
+
+const LABEL_MEASURED_AT_INDEX = 4;
+
+const LABEL_EPOCH_INDEX = 5;
+
+/**
+ * The fitness pass's rules version — `RelayVerdictRecord.FITNESS_EPOCH`.
+ *
+ * Same duplication and the same mitigation as the two below: an out-of-epoch
+ * grade is drawn as expired WITH its evidence and age, never hidden.
+ */
+export const FITNESS_EPOCH = "1";
 
 /**
  * The rule versions the router currently acts on — `RelayAliasRecord.FOLD_EPOCH`
@@ -187,12 +250,19 @@ export function readRecord(event) {
     stableEvidence: null,
     stableMeasuredAt: null,
     stableEpoch: null,
+    // The fitness grade, which is a THIRD verdict and was never drawn at all —
+    // it lived on `s` and this panel rendered it as the relay's software.
+    grade: null,
+    gradeEvidence: null,
+    gradeMeasuredAt: null,
+    gradeEpoch: null,
     // Everything the OTHER writers put on this record. `requirements` is a list
     // because a relay can be both auth-gated and paid, and `extra` is a count
     // of tag names this reader does not know — reported rather than dropped, so
     // a record carrying something new is visible as such instead of looking
     // like a record that carries nothing.
     requirements: [],
+    supportedNips: [],
     extra: 0,
     // The NIP-11-ish document the monitor carries in the content. Kept as a
     // flag, not parsed: this panel is about verdicts, and it should not grow a
@@ -200,9 +270,29 @@ export function readRecord(event) {
     hasDoc: !!(event.content && event.content.length),
   };
   for (const t of tags) {
+    // The two tags a relay may carry SEVERAL of. Everything else in RENDERED is
+    // one value, so it is assigned; these are collected, and flattening them
+    // would draw a relay that is both auth-gated and paid as only the last one.
     if (t[0] === "R") out.requirements.push(t[1]);
+    else if (t[0] === "N") out.supportedNips.push(t[1]);
     else if (RENDERED[t[0]]) out[RENDERED[t[0]]] = t[1];
     else if (!OWNED.has(t[0])) out.extra++;
+  }
+  // OUR namespace's label, not any label carrying a value we recognise. A
+  // monitor labelling this relay `["l", "CA", "countryCode"]` is not grading it.
+  const graded = tags.find(
+    (t) => t.length > LABEL_NAMESPACE_INDEX && t[0] === LABEL && t[LABEL_NAMESPACE_INDEX] === FITNESS_NAMESPACE,
+  );
+  if (graded) {
+    out.grade = graded[1] || null;
+    // NIP-32 spends index 2 on the namespace, so the house shape — evidence,
+    // measured-at, epoch — sits one place right of where the fold and the
+    // stability tag carry it. Reading it at the fold's offsets would date every
+    // grade by its own evidence string, which parses to null and draws as "this
+    // record does not say".
+    out.gradeEvidence = graded[LABEL_EVIDENCE_INDEX] || null;
+    out.gradeMeasuredAt = Number(graded[LABEL_MEASURED_AT_INDEX]) || null;
+    out.gradeEpoch = graded[LABEL_EPOCH_INDEX] || null;
   }
   const sameAs = tag(SAME_AS);
   if (sameAs) {
@@ -273,10 +363,13 @@ export function groupByHost(events, nowSec) {
   }
   const hosts = new Map();
   for (const rec of newest.values()) {
-    if (!hosts.has(rec.host)) hosts.set(rec.host, { host: rec.host, urls: [], folded: 0, cleared: 0, unstable: 0, expired: 0 });
+    if (!hosts.has(rec.host)) hosts.set(rec.host, { host: rec.host, urls: [], folded: 0, cleared: 0, unstable: 0, expired: 0, graded: 0, prime: 0 });
     const group = hosts.get(rec.host);
     const current = isCurrent(rec.foldMeasuredAt, nowSec, rec.foldEpoch, FOLD_EPOCH);
-    group.urls.push({ ...rec, foldCurrent: current });
+    const gradeCurrent = isCurrent(rec.gradeMeasuredAt, nowSec, rec.gradeEpoch, FITNESS_EPOCH);
+    group.urls.push({ ...rec, foldCurrent: current, gradeCurrent });
+    if (rec.grade && gradeCurrent) group.graded++;
+    if (rec.grade === PRIME && gradeCurrent) group.prime++;
     // Counted on what the router would ACT on. A fold whose verdict has aged
     // out is not folding anything today, and counting it would draw a host as
     // collapsed while every url of it is back in the fan-out.
@@ -326,6 +419,7 @@ export function groupByHost(events, nowSec) {
         cleared: false,
         stable: null,
         foldCurrent: false,
+        gradeCurrent: false,
         foldEvidence: null,
         foldMeasuredAt: null,
         foldEpoch: null,
@@ -339,8 +433,13 @@ export function groupByHost(events, nowSec) {
         // hidden. The fixture rule again: a stand-in that does not have the
         // shape of the thing it stands in for tests the stand-in.
         requirements: [],
+        supportedNips: [],
         extra: 0,
         hasDoc: false,
+        grade: null,
+        gradeEvidence: null,
+        gradeMeasuredAt: null,
+        gradeEpoch: null,
       });
       group.inferred = (group.inferred || 0) + 1;
     }
@@ -448,11 +547,16 @@ function oneSecond(events) {
  * The totals a reader needs before reading any row: how many records answered,
  * and how many of them say anything at all.
  *
- * `silent` is the number worth having on screen. A 30166 record with no verdict
- * tag is one quartz's passive monitor wrote — reachability, rtt — and a store
- * full of those next to zero folds is a completely different diagnosis from a
- * store with no records: the first says the monitor is running and the fold is
- * not, the second says neither is.
+ * `silent` is the number worth having on screen: a url no pass has reached at
+ * all. A store full of those next to zero grades is a completely different
+ * diagnosis from a store with no records — the first says the monitor is
+ * running and has not got here yet, the second says nothing is running.
+ *
+ * **It is NOT "not folded", which is what the tile above it used to be called.**
+ * The fold's own pill wears those two words on every row it has not folded, and
+ * on a live store that is most of them: measured here, 77 urls carried no
+ * verdict of any kind while 540 rows were drawn `not folded`, 510 of them
+ * graded by the fitness pass. One phrase, two meanings, on one card.
  */
 export function summarise(groups, nowSec) {
   let urls = 0;
@@ -463,6 +567,8 @@ export function summarise(groups, nowSec) {
   let unstable = 0;
   let stable = 0;
   let inferred = 0;
+  let graded = 0;
+  let prime = 0;
   for (const group of groups) {
     urls += group.urls.length;
     folded += group.folded;
@@ -470,14 +576,22 @@ export function summarise(groups, nowSec) {
     expired += group.expired;
     unstable += group.unstable;
     inferred += group.inferred || 0;
+    graded += group.graded;
+    prime += group.prime;
     for (const u of group.urls) {
       // A synthesised survivor carries no verdict BY CONSTRUCTION — it is the
       // url the others point at. Counting it as silent would inflate the one
       // number that is supposed to mean "the monitor has not looked at this".
       if (u.synthetic) continue;
-      if (!u.fold && !u.cleared && u.stable == null) silent++;
+      // **A GRADE COUNTS AS HAVING BEEN LOOKED AT, and it did not.** This
+      // tested the fold and the stability tag only, so every url the fitness
+      // pass had measured — the pass that dials the whole corpus, and the only
+      // one most urls ever get — landed in the number that means "nothing has
+      // looked at this". A store mid-sweep read as a store with no monitor
+      // running, which is the exact confusion the tile exists to end.
+      if (!u.fold && !u.cleared && u.stable == null && !u.grade) silent++;
       if (u.stable === true) stable++;
     }
   }
-  return { hosts: groups.length, urls, folded, cleared, expired, silent, stable, unstable, inferred };
+  return { hosts: groups.length, urls, folded, cleared, expired, silent, stable, unstable, inferred, graded, prime };
 }

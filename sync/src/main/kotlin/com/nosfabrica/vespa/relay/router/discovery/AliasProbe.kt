@@ -271,6 +271,20 @@ class AliasProbe(
         val authRefused: Boolean = false,
         /** Why [ids] is null — see [Page.reason]. Null on a walk that reached the relay. */
         val reason: String? = null,
+        /**
+         * How long the FIRST page took, ask to answer — NIP-66's `rtt-read`.
+         *
+         * The first page and not the walk, because a walk is however many
+         * round trips this relay's cap makes necessary: a host capping at 10
+         * pages twice for a 20-event target, and timing the whole thing would
+         * publish our target divided by their cap as their latency. One page
+         * is one REQ and its EOSE, which is what a read round trip is.
+         *
+         * Null when the walk never got a page at all — a relay that did not
+         * answer has no read latency, and a zero would say it answered
+         * instantly.
+         */
+        val firstPageMs: Long? = null,
     )
 
     private suspend fun walk(
@@ -290,9 +304,19 @@ class AliasProbe(
         var size = page
         var spoke = false
         var stalls = 0
+        // Set once, by the first ask that comes back — see [Window.firstPageMs].
+        var firstPageMs: Long? = null
+
+        // Every exit from this walk goes through here, so the measurement
+        // cannot be dropped by whichever of the seven returns is taken.
+        fun done(
+            found: Set<String>?,
+            authRefused: Boolean = false,
+            reason: String? = null,
+        ) = Window(found, authRefused, reason, firstPageMs)
 
         repeat(maxPages) {
-            if (ids.size >= target) return Window(newest(ids))
+            if (ids.size >= target) return done(newest(ids))
             // A FULL page every time, never trimmed to what is still missing.
             // `until` is inclusive, so each page re-reads its boundary and
             // yields one fewer new id than it returned; trimming the last ask
@@ -300,16 +324,23 @@ class AliasProbe(
             // target by that boundary, and then asking for 1, and then for 1
             // again. Over-fetching by at most a page costs nothing — the
             // events go to ingest either way.
+            val startedNs = System.nanoTime()
             val page = fetch(url, size, until, kinds)
+            // The relay ANSWERED — an empty page and a CLOSED are answers, and
+            // both are round trips. Only a transport that never returned one
+            // leaves this null.
+            if (firstPageMs == null && (page.events != null || page.authRefused)) {
+                firstPageMs = (System.nanoTime() - startedNs) / 1_000_000
+            }
             val events = page.events
             if (events == null) {
                 // A refusal with no page at all is still the relay ANSWERING,
                 // so it ends the walk here rather than reading as silence.
-                if (page.authRefused) return Window(newest(ids), authRefused = true)
+                if (page.authRefused) return done(newest(ids), authRefused = true)
                 // Mid-walk the transport gave up. Keep what the walk already
                 // proved rather than throwing it away — but a walk that never
                 // got a single page has nothing to stand behind.
-                return if (spoke) Window(newest(ids)) else Window(null, reason = page.reason)
+                return if (spoke) done(newest(ids)) else done(null, reason = page.reason)
             }
             spoke = true
             if (events.isEmpty()) {
@@ -318,12 +349,12 @@ class AliasProbe(
                 // let the next page decide which it was.
                 // Nothing came with the refusal, so there is nothing to keep
                 // and no smaller page worth trying.
-                if (page.authRefused) return Window(newest(ids), authRefused = true)
+                if (page.authRefused) return done(newest(ids), authRefused = true)
                 if (ids.isEmpty() && size > fallbackPage) {
                     size = fallbackPage
                     return@repeat
                 }
-                return Window(newest(ids))
+                return done(newest(ids))
             }
             val before = ids.size
             for (event in events) {
@@ -338,7 +369,7 @@ class AliasProbe(
             // away a fingerprint the relay had actually served — a partial
             // window is still a window, and the refusal only means there is no
             // point asking for MORE.
-            if (page.authRefused) return Window(newest(ids), authRefused = true)
+            if (page.authRefused) return done(newest(ids), authRefused = true)
             // `until` is INCLUSIVE, so the next page re-sees everything sharing
             // the oldest timestamp — harmless for a set, except that a page
             // which is entirely one timestamp cannot move the cursor at all.
@@ -350,13 +381,13 @@ class AliasProbe(
                 until = oldest - 1
                 // Two stalled pages in a row is a relay that is not walking
                 // backwards for us. Take what we have.
-                if (++stalls >= MAX_STALLS) return Window(newest(ids))
+                if (++stalls >= MAX_STALLS) return done(newest(ids))
             } else {
                 until = oldest
                 stalls = 0
             }
         }
-        return Window(newest(ids))
+        return done(newest(ids))
     }
 
     /** The [target] newest ids of a walk that may have overshot by up to a page. */

@@ -59,7 +59,7 @@ import kotlin.test.Test
 /**
  * THE NEW PLANES AGAINST REAL RELAYS, end to end: the fitness pass earns
  * verdicts on live servers, the verdicts land on kind-30166 records in an
- * in-memory store, `RelayDiscovery.syncable` reads the roster back, and a
+ * in-memory store, `RelayDiscovery` reads the roster back, and a
  * small [VisitPool] runs it — catch-up pages, tails, the works — printing what
  * each stage decided.
  *
@@ -78,11 +78,16 @@ import kotlin.test.Test
  * ```
  */
 class VisitPoolLiveProbe {
-    /** The kind-30166 source the loader writes for `filter = { "kinds": [30166], "#s": ["syncable"] }`. */
+    /** The kind-30166 source the loader writes for `filter = { "kinds": [30166], "#l": ["prime"] }`. */
     private fun probeSource(monitor: String) =
         RelaySource(
             selects = listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)),
-            filter = Filter(kinds = listOf(30166), authors = listOf(monitor), tags = mapOf("s" to listOf("syncable"))),
+            filter =
+                Filter(
+                    kinds = listOf(30166),
+                    authors = listOf(monitor),
+                    tags = mapOf(RelayVerdictRecord.LABEL_TAG to listOf(FitnessPass.Verdict.PRIME.value)),
+                ),
             maxAgeSeconds = 3600,
         )
 
@@ -127,7 +132,7 @@ class VisitPoolLiveProbe {
                 println("=".repeat(78))
                 println("fitness pass over ${candidates.size} url(s) in ${System.currentTimeMillis() - started}ms — records now say:")
                 val roster = RelayDiscovery.discover(store, RelayDiscoveryConfig(listOf(probeSource(signer.pubKey)), 3600, RelayExcludes.NONE))
-                println("  syncable roster read back: ${roster.map { it.url.url }}")
+                println("  prime roster read back: ${roster.map { it.url.url }}")
                 println("=".repeat(78))
 
                 // ---- Plane two: the pool runs the roster it just read.
@@ -197,7 +202,7 @@ class VisitPoolLiveProbe {
                 pool.start()
                 // Long enough for the roster loop's first rebuild, a full
                 // rotation of visits, tails to open, and — with a 3-tail budget
-                // over a larger syncable set — at least one eviction decision.
+                // over a larger prime set — at least one eviction decision.
                 delay(45_000)
                 println("=".repeat(78))
                 for (p in processors.snapshot()) {

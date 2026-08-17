@@ -27,6 +27,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertNotNull
 import kotlin.test.assertNull
 import kotlin.test.assertTrue
 
@@ -108,6 +109,39 @@ class AliasProbeTest {
         target: Int,
         page: Int = 500,
     ) = AliasProbe(fetch = fake::fetch, target = target, page = page, fallbackPage = 100)
+
+    @Test
+    fun `the read latency is the FIRST page, not the walk it took to reach the target`() =
+        runBlocking {
+            // NIP-66's `rtt-read` is a round trip, and this is signed as a
+            // month-long claim about somebody else's server. Timing the walk
+            // billed a relay capping at 10 for the pages OUR target then costs
+            // — a measurement of our depth against their cap, published as
+            // their latency. A relay that pages four times must report the
+            // same read latency as one that answers in a single page.
+            val capped = Fake(total = 5_000, cap = 10)
+            val walked = probe(capped, target = 40).window(url, null, null) {}
+            assertTrue(capped.asks.size > 1, "the fixture has to actually page, or it tests nothing")
+            assertNotNull(walked.firstPageMs)
+
+            val single = Fake(total = 5_000, cap = 500)
+            val once = probe(single, target = 40).window(url, null, null) {}
+            assertEquals(1, single.asks.size)
+            assertNotNull(once.firstPageMs)
+        }
+
+    @Test
+    fun `a url that never spoke reports no read latency rather than an instant one`() =
+        runBlocking {
+            // A zero would say the relay answered immediately, which is the
+            // opposite of what happened, and it would rank a dead host as the
+            // fastest in the store.
+            val silent = AliasProbe(fetch = { _, _, _, _ -> AliasProbe.Page(events = null, reason = "cannot:timeout") })
+            val window = silent.window(url, null, null) {}
+
+            assertNull(window.ids, "the fixture is a url that never answered")
+            assertNull(window.firstPageMs)
+        }
 
     @Test
     fun `a relay capping every REQ still yields the full depth`() =
