@@ -106,7 +106,7 @@ data class RouterConfig(
         const val DEFAULT_VISIT_CONCURRENCY = 128
 
         /**
-         * Sized to the measured syncable population (~600 responsive hosts
+         * Sized to the measured prime population (~600 responsive hosts
          * after folding): the whole point is that every certified relay is
          * effectively always connected.
          */
@@ -155,7 +155,7 @@ data class MonitorConfig(
     /**
      * The fast lane: how often the monitor looks for urls that have NEVER
      * been measured and verdicts just those. This is what bounds a new
-     * relay's wait for its first `syncable` at minutes instead of a sweep —
+     * relay's wait for its first `prime` at minutes instead of a sweep —
      * the price of "unmeasured urls are not dialled by streams" is paid here.
      * Null turns the lane off.
      *
@@ -176,7 +176,7 @@ data class MonitorConfig(
     companion object {
         const val DEFAULT_SWEEP_SECONDS = 6L * 60 * 60
 
-        /** Two minutes: a new relay is syncable before its author refreshes the page. */
+        /** Two minutes: a new relay is graded prime before its author refreshes the page. */
         const val DEFAULT_FAST_LANE_SECONDS = 120L
 
         /**

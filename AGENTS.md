@@ -44,6 +44,19 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # records, the roster read back off them, and a small VisitPool run on it.
 ./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i
 
+# Seeds a MONITOR CORPUS into a LOCAL relay so stats.html's verdicts panel — the
+# one panel that speaks the protocol rather than reading the rollup — can be
+# driven against a real store. Writes graded records in the current shape (a
+# NIP-32 label under `relay.fitness`, plus the facts the fitness pass publishes
+# beside it) and, for a share of them, the OLD grade still on `s`, which is what
+# a store looks like before the boot migration has run. The nsec must be the
+# relay's own RELAY_NSEC or the panel correctly counts them as another monitor's.
+# Then open /stats.html and press "Read verdicts from this relay".
+./gradlew :sync:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true \
+  -DseedVerdictsNsec=nsec1... -DseedVerdictsCount=600 --rerun -i
+#   …a different relay, or more/fewer legacy rows:
+#   -DseedVerdictsUrl=ws://localhost:7777 -DseedVerdictsLegacy=15
+
 # Seeds one signed 10040 into a LOCAL relay so the `gatedBy` gate and the
 # monitor's 10040 source can be watched live against a sandbox stack.
 ./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true \
@@ -372,11 +385,25 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       AliasMonitor.kt       the schedule the probe passes run on, off the sync
                             plane entirely: fold, then stability, then fitness
       RelayVerdictRecord.kt the signed 30166 edit every pass writes through:
-                            `same-as`, the consistency tag, the fitness verdict
+                            `same-as`, the consistency tag, the fitness grade.
+                            OWNERSHIP IS A PREDICATE, not a set of tag names,
+                            because `l`/`L` are shared: the fitness writer may
+                            replace its own NIP-32 namespace and must carry
+                            every other labeller's through
+      RelayFacts.kt         the DESCRIPTIVE half of the record — `n`, the two
+                            rtts, `R`, `s` (+version), `N`. Absent writes no tag
+                            rather than a zero, and everything it writes it also
+                            OWNS, so a reading cannot outlive the dial that took
+                            it. Says which fields are deliberately unwritten
+                            (`rtt-write`, `g`, `T`, a `v` tag) and why
+      RelayDocument.kt      the relay's own NIP-11 document, for the fields no
+                            dial can measure — and the connect that carries it,
+                            which IS the `rtt-open` we publish. Pure `parse`,
+                            because it is somebody else's json
       RelayConsistency.kt   which relays answer one filter the same way twice
       ConsistencyPass.kt    the pass that measures it (the stability gate)
       Silence.kt            classifying what a quiet socket actually said
-      FitnessPass.kt        the syncable verdict: `["s","syncable",…]` on the
+      FitnessPass.kt        the fitness grade: `["l","prime","relay.fitness",…]` on the
                             30166 record, earned by answering a settled-anchor
                             probe — the tag [VisitPool]'s roster selects on
       ReachabilityProbe.kt  the TCP pre-probe, and whether a url warrants one
@@ -697,14 +724,31 @@ relay/src/main/resources/
                         records off this relay's own websocket (shared/verdicts.js
                         parses; verdicts.test.mjs holds the tag semantics) and is
                         drawn on a BUTTON, not on the minute poll.
-                        It draws the WHOLE record, not just our two tags —
-                        quartz's `n` / `rtt-open` / `rtt-read` / `R` as well,
-                        with unknown tag names counted rather than dropped. Two
-                        reasons: `R: auth` is the first explanation for a url
-                        that will not fold, and a row showing `same-as` and
-                        nothing else is what a CLOBBERED record looks like, so
-                        the panel is the production-side check on the tag merge
-                        that `RelayVerdictRecordTest` can only pin in isolation.
+                        It draws the WHOLE record, not just our three verdicts
+                        — `n` / `rtt-open` / `rtt-read` / `R` / `s` / `N` as
+                        well, with unknown tag names counted rather than
+                        dropped. Two reasons: `R: auth` is the first explanation
+                        for a url that will not fold, and a row showing
+                        `same-as` and nothing else is what a CLOBBERED record
+                        looks like, so the panel is the production-side check on
+                        the tag merge that `RelayVerdictRecordTest` can only pin
+                        in isolation.
+                        THREE VERDICTS, and it drew two. The fitness grade rode
+                        the `s` tag, which is the SOFTWARE field to every
+                        monitor in the wild, so the panel rendered `prime` and
+                        `dead` in the software column — the one verdict that
+                        decides whether a relay is in any roster, drawn as a
+                        vendor string, with no way to show the software at all.
+                        The grade is a NIP-32 label now (`relay.fitness`) and
+                        the panel reads it under that namespace, never by tag
+                        name: `l` also carries other monitors' country and ASN
+                        labels, and matching the name would read a country code
+                        as a grade. Two counters moved with it — `pageable` and
+                        `nip77` were in neither the rendered nor the owned set,
+                        so the panel counted the monitor's OWN writes as
+                        `+2 other tag(s)`, and `not folded` counted every url
+                        the fitness pass had measured as one nothing had ever
+                        looked at.
                         Every verdict it draws is tested for BOTH expiry rules —
                         age and rules epoch — and both forms are tested, which
                         the cleared half was not: it drew `keep` off the tag's
@@ -822,21 +866,22 @@ would be a mirror that quietly stopped mirroring. Two kinds of stream:
 **Dynamic streams run on two planes.** The MONITOR plane (`AliasMonitor`'s
 passes: the fold, then stability, then `FitnessPass`) measures every url the
 streams' sources surface and writes what it finds on signed NIP-66 kind-30166
-records — culminating in the `["s","syncable",…]` verdict a relay earns by
+records — culminating in the `["l","prime","relay.fitness",…]` verdict a relay earns by
 answering a settled-anchor probe. The SYNC plane (`VisitPool`) never decides
 whether a relay is worth dialling; it reads the verdicts back. A relaySource
 entry is either a **verdict source** (`filter = { "kinds": [30166],
-"#s": ["syncable"] }` — the verdict list IS the relay list) or a **scan**
+"#l": ["prime"] }` — the verdict list IS the relay list) or a **scan**
 (`select` over stored lists like 10002/10040). They are ONE TYPE and one read
 path: a verdict query is a scan whose select is NIP-66's `d` tag, which the
 loader supplies. `VerdictSource` and its separate verified read are gone —
 they differed in the questions they were allowed to answer and in almost
 nothing else once the epoch and the tag-stamp freshness left.
 
-**NOTHING IN THE SYNC PLANE KNOWS THAT `s` IS THE TAG OR THAT `syncable` IS THE
+**NOTHING IN THE SYNC PLANE KNOWS THAT `l` IS THE TAG OR THAT `prime` IS THE
 VALUE.** That is the whole point of a gate being a filter: another monitor
-spelling its opinion `["l", "live"]` needs no code here, only a different
-filter. Keying anything on `s`/`syncable` — a default tag, a refusal of other
+spelling its opinion `["l", "online", "monitor.example"]` — or on a tag of its
+own entirely — needs no code here, only a different filter. Ours is a NIP-32
+label under `relay.fitness`, which is itself a spelling and not a privilege. Keying anything on `l`/`prime` — a default tag, a refusal of other
 values, an inferred freshness bound, a "this source vouches for itself"
 predicate — hands our vocabulary back to every operator who wanted theirs, and
 each one was tried and removed. What the loader MAY key on is kind 30166,
@@ -851,8 +896,10 @@ until the new identity finished a sweep) and it narrowed the one deployment
 that had mirrored a foreign monitor's verdicts on purpose. Admitting is safe
 unscoped because everything admitted is still dialled and measured; **the
 hold-out read is the asymmetric one and stays author-bound**. `StreamWorld`'s
-dead query — a rtt-less 30166 inside the TTL means "checked, could not open" —
-is scoped to our signer plus the keys the config names, because unscoped, one
+dead query — records carrying OUR `dead` grade, matched on the label's
+namespace and not just its value, since `l` also carries other monitors'
+country and ASN labels — is scoped to our signer plus the keys the config
+names, because unscoped, one
 record from anybody starves a relay out of the candidate set permanently: held
 out it is never dialled, never re-measured, and the mark never clears.
 `ForeignMonitorTest` pins that quartz's own `deadSet()` is NOT scoped, which is
@@ -1040,7 +1087,7 @@ the roster size as `running`, which is defined as "relays this stream has a
 WORKER on right now" and is the opposite of what a roster is: the pool visits a
 handful at a time and most of the list sits between visits. **An empty roster is
 the reading worth having** — that is a stream waiting on the fitness pass to
-sign its first `syncable`, which is the state that looked exactly like a busy
+sign its first `prime`, which is the state that looked exactly like a busy
 one, and the card says so in the fault tone.
 
 **`reached` is the one that matters**, and it wants drawing on the coverage
@@ -1110,7 +1157,7 @@ what they find. Beside `exclude` for a reason: `exclude` says which urls are
 forbidden however many sources name them, `gatedBy` says which are permitted
 however many sources found them, and **neither is a property of HOW a url was
 discovered** — which is all a source describes. It replaced per-source
-`certified = {}`, which could only ever mean "a fresh `syncable`" and — because
+`certified = {}`, which could only ever mean "a fresh `prime`" and — because
 the read behind it enforced our own rules epoch — could only ever mean OUR
 monitor's, whatever identity the block named. Both of those are gone, so a
 third-party NIP-66 monitor works as a gate, and so does something that is not a
@@ -1154,7 +1201,7 @@ kind-30166 read is one indexed query bounded by `maxAgeSeconds`; a 10002 scan
 walks a corpus. Cached alike at the stream's six-hour default, the cheap one
 would hold a newly-certified relay out of the fan-out for six hours — against a
 monitor fast lane that verdicts a new url in two minutes and a documented promise
-that it joins on its first `syncable`. So `refreshSeconds` is settable per
+that it joins on its first `prime`. So `refreshSeconds` is settable per
 source and the shipped config sets 120 on its verdict queries. This used to be
 implicit: verdict sources bypassed the scan cache entirely because they were a
 different type, and collapsing the types without stating the cadence would have

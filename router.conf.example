@@ -24,7 +24,7 @@
 #             reachability, aliasing, consistency, whether `until` is honoured,
 #             whether NIP-77 is spoken, whether our auth sticks — and signs the
 #             verdict onto that relay's kind-30166 record. The verdict a stream
-#             cares about is one tag: ["s", "syncable"]. Everything is measured
+#             cares about is one tag: ["l", "prime"]. Everything is measured
 #             on the socket; NIP-11 is never trusted for a decision.
 #
 #   streams   mirror events. A stream whose relaySource consults those
@@ -35,7 +35,7 @@
 #             open socket so new events arrive the moment they exist.
 #
 # A new url is probed by the monitor's fast lane within minutes
-# (monitor.fastLaneSeconds) and joins the fan-out on its first `syncable`.
+# (monitor.fastLaneSeconds) and joins the fan-out on its first `prime`.
 #
 #
 # HOW A STREAM WORKS
@@ -47,7 +47,7 @@
 #   urls            static relays to talk to (bypass the monitor's verdicts)
 #   relaySource     where the relay list comes from: scans of relay-list events
 #                   (10002, 10009, ...), or monitor kind-30166 verdicts —
-#                   `filter = { "kinds": [30166], "#s": ["syncable"] }`
+#                   `filter = { "kinds": [30166], "#l": ["prime"] }`
 #   sync            how to ask (see below)
 #   auditSeconds   fetch forward, audit the past: when a relay's last verified
 #                   full pass is older than this, its next visit reconciles the
@@ -120,7 +120,7 @@ monitor {
 
     # The fast lane: how often to look for urls named by relay-list events
     # ingested since the last look, and run the fitness probe over just those.
-    # This is what bounds a NEW relay's wait for its first `syncable` at
+    # This is what bounds a NEW relay's wait for its first `prime` at
     # minutes. 0 turns the lane off.
     fastLaneSeconds = 120
 
@@ -161,7 +161,7 @@ streams {
         dir  = "down"
         filter = { "kinds": [0, 10002, 10040] }
         # The monitor's verdicts ARE the relay list: kind-30166 records,
-        # admitting every relay whose indexed `s` tag says syncable and whose
+        # admitting every relay whose indexed `l` tag says prime and whose
         # record is newer than maxAgeSeconds. A monitor republishes the record
         # when it re-checks, so the event's own clock dates the check — the
         # reading every other NIP-66 consumer applies.
@@ -180,9 +180,9 @@ streams {
         # object, and an npub here is refused rather than quietly decoded.
         relaySource = [
             {
-                filter = { "kinds": [30166], "#s": ["syncable"] }
+                filter = { "kinds": [30166], "#l": ["prime"] }
                 # ...naming the monitors to trust, and nobody else:
-                # filter = { "kinds": [30166], "#s": ["syncable"], "authors": ["3bf0c63f…"] }
+                # filter = { "kinds": [30166], "#l": ["prime"], "authors": ["3bf0c63f…"] }
                 # How stale a verdict may be and still admit its relay, measured
                 # on the record's own clock. There is NO default: nothing in the
                 # router knows which filters describe a measurement that goes
@@ -256,12 +256,12 @@ streams {
         # entirely — with a `select` saying where that list keeps its urls,
         # since only kind 30166 has the position fixed by the protocol (the `d`
         # tag). Nothing in the router knows that `s` is the tag or that
-        # `syncable` is the value — a monitor spelling its opinion
+        # `prime` is the value — a monitor spelling its opinion
         # `["status", "live"]` needs no code change here, only this filter
         # written differently. A stream with no `gatedBy` dials whatever its
         # sources name and says so at boot.
         gatedBy = [
-            { filter = { "kinds": [30166], "#s": ["syncable"] }, maxAgeSeconds = 50400, refreshSeconds = 120 }
+            { filter = { "kinds": [30166], "#l": ["prime"] }, maxAgeSeconds = 50400, refreshSeconds = 120 }
         ]
         # The deleteMissing comparison runs as this stream's history audit —
         # daily: each (relay, provider) band ages on its own clock, and a
@@ -294,7 +294,7 @@ streams {
         ] }
         relaySource = [
             {
-                filter = { "kinds": [30166], "#s": ["syncable"] }
+                filter = { "kinds": [30166], "#l": ["prime"] }
                 maxAgeSeconds = 50400
                 refreshSeconds = 120  # see profileViaOutbox
             }

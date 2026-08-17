@@ -314,9 +314,15 @@ object RelayDiscovery {
     }
 
     /**
-     * One indexed query for "records carrying THIS verdict, signed by these
-     * identities, re-checked since the floor" — the shared core of [syncable]
-     * and [undialable].
+     * One indexed query for "records carrying THIS grade in OUR vocabulary,
+     * signed by these identities, re-checked since the floor" — [undialable]'s
+     * whole read, and the only place the sync plane names a verdict value.
+     *
+     * The tag index answers on the label's VALUE, which is shared ground:
+     * `["l", …]` on a 30166 also carries country codes, ISPs and ASNs from
+     * other monitors, so the namespace is re-checked on what comes back. The
+     * value `dead` is unlikely to collide, but "unlikely" is not the standard
+     * for a read that can starve a relay out of every pass permanently.
      *
      * NOTHING PRIVATE IS READ HERE. There was a rules-epoch check on the tag's
      * fifth element, which meant every read enforced our own versioning scheme
@@ -343,13 +349,24 @@ object RelayDiscovery {
                     // is the unscoped read. An EMPTY list would be a predicate
                     // nothing satisfies.
                     authors = monitorAuthors.takeIf { it.isNotEmpty() },
-                    tags = mapOf(RelayVerdictRecord.STATUS_TAG to listOf(verdict.value)),
-                    // The freshness bound, indexed — see the note on [syncable]
-                    // about why the record's own clock is the right one again.
+                    tags = mapOf(RelayVerdictRecord.LABEL_TAG to listOf(verdict.value)),
+                    // The freshness bound, indexed — the record's own clock says
+                    // when this monitor last re-checked the relay again, now
+                    // that no passive writer bumps it on every socket.
                     since = now - maxAgeSeconds,
                 ),
             ).filter { event ->
-                val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayVerdictRecord.STATUS_TAG }
+                // OUR NAMESPACE'S label, not any label carrying this value.
+                // `l` is shared — the same records carry country codes and ASNs
+                // from other monitors — and the store's tag index answers on the
+                // value alone, so the namespace check is what makes this read a
+                // read of fitness grades rather than of every label in the store.
+                val s =
+                    event.tags.firstOrNull {
+                        it.size > RelayVerdictRecord.LABEL_NAMESPACE_INDEX &&
+                            it[0] == RelayVerdictRecord.LABEL_TAG &&
+                            it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
+                    }
                 // Where the read IS scoped, the store's `authors` filter is the
                 // trust boundary and this one string compare re-states it on the
                 // returned events, so a query layer that ever treated `authors`

@@ -647,9 +647,9 @@ object RouterConfigLoader {
             }
         require(!s.hasPath("certified")) {
             "router: stream '$stream' uses `certified { }`, which is gone — it could only ever mean `a fresh " +
-                "syncable from our own monitor`, and both halves of that are now expressible. Write the gate as " +
+                "prime from our own monitor`, and both halves of that are now expressible. Write the gate as " +
                 "a stream-level `gatedBy = [ { filter = { \"kinds\": [${RelayDiscoveryEvent.KIND}], " +
-                "\"#s\": [\"syncable\"] } } ]` — naming whatever tag and value the monitor you trust writes"
+                "\"#l\": [\"prime\"] } } ]` — naming whatever tag and value the monitor you trust writes"
         }
         require(!s.hasPath("resultsFilteredBy")) {
             "router: stream '$stream' puts `resultsFilteredBy` on a $what entry — it was renamed to `gatedBy` and " +

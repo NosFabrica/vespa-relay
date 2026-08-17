@@ -629,7 +629,7 @@ internal object SyncVocabulary {
             put(
                 "rotating",
                 "A `phase` value, and the one that says least without its numbers. The stream does not walk a relay " +
-                    "list at all: its world is the monitor's `syncable` verdicts and its engine is the visit pool, " +
+                    "list at all: its world is the monitor's `prime` grades and its engine is the visit pool, " +
                     "which turns over that roster — a catch-up visit, a history audit where due, then a live tail on " +
                     "the open socket — so there is no pass to be a phase OF and the phase simply lasts. `roster` and " +
                     "`tails` are what it is doing; a roster of ZERO is a stream waiting on the fitness pass to certify " +
@@ -844,14 +844,14 @@ internal object SyncVocabulary {
                     "not running.",
             )
             // THE FITNESS PASS — the monitor's verdict funnel. Each member is
-            // one value of the `s` tag it signs onto a relay's kind-30166
+            // one value of the NIP-32 label it signs onto a relay's kind-30166
             // record, so the funnel here and the certificate a stream selects
             // on are the same numbers by construction.
             put(
-                "syncable",
-                "Relays the monitor currently certifies fit to sync: reachable AND answering AND canonical AND " +
+                "prime",
+                "Relays the monitor currently grades prime: reachable AND answering AND canonical AND " +
                     "consistent AND pageable AND readable by us, measured on the socket in one pass. This is the whole " +
-                    "admission decision — a stream's relay list is the store query `#s = syncable` and nothing else. " +
+                    "admission decision — a stream's relay list is the store query `#l = prime` and nothing else. " +
                     "Slow is not a refusal, empty is not a refusal, and a small message cap is not a refusal.",
             )
             put(
@@ -890,7 +890,7 @@ internal object SyncVocabulary {
             // to each other is evidence of.
             put(
                 "roster",
-                "Relays currently certified syncable and in rotation: the pool's whole world, rebuilt from the " +
+                "Relays currently graded prime and in rotation: the pool's whole world, rebuilt from the " +
                     "monitor's records on half the tightest freshness bound. A relay the monitor stops certifying " +
                     "leaves the roster, its tail and its socket on the next rebuild. On a STREAM's row it is that " +
                     "stream's share — the roster relays carrying at least one of its asks — and zero there is a " +

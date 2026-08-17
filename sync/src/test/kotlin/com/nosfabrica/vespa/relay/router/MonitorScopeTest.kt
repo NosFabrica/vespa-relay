@@ -64,9 +64,9 @@ class MonitorScopeTest {
     private suspend fun storeWithBothMonitors(): NostrSemanticsStore {
         val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
         RelayVerdictRecord(store, ours)
-            .publishFitness(ourRelay, "syncable", "answered at a settled anchor", pageable = null, nip77 = null)
+            .publishFitness(ourRelay, "prime", "answered at a settled anchor", pageable = null, nip77 = null)
         RelayVerdictRecord(store, stranger)
-            .publishFitness(theirRelay, "syncable", "somebody else measured this one", pageable = null, nip77 = null)
+            .publishFitness(theirRelay, "prime", "somebody else measured this one", pageable = null, nip77 = null)
         return store
     }
 
@@ -81,7 +81,7 @@ class MonitorScopeTest {
                     """
                     streams {
                         a { dir = "down", filter = { "kinds": [1] }
-                            relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"]$authors } } ] }
+                            relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"]$authors } } ] }
                     }
                     """.trimIndent(),
                 ).streams,
@@ -121,7 +121,7 @@ class MonitorScopeTest {
             // the roster is whatever the store can prove — not empty.
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             RelayVerdictRecord(store, ours)
-                .publishFitness(ourRelay, "syncable", "signed before the rotation", pageable = null, nip77 = null)
+                .publishFitness(ourRelay, "prime", "signed before the rotation", pageable = null, nip77 = null)
             assertEquals(setOf(ourRelay), rosterOf(store).rebuild().asks.keys)
         }
 
@@ -135,7 +135,7 @@ class MonitorScopeTest {
             RelayVerdictRecord(store, stranger)
                 .publishFitness(theirRelay, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
             RelayVerdictRecord(store, ours)
-                .publishFitness(ourRelay, "syncable", "answers and pages", pageable = null, nip77 = null)
+                .publishFitness(ourRelay, "prime", "answers and pages", pageable = null, nip77 = null)
             assertEquals(setOf(ourRelay), rosterOf(store).rebuild().asks.keys)
         }
 

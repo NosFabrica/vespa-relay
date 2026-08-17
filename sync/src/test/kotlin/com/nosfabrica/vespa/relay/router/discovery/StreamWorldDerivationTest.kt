@@ -228,7 +228,7 @@ class StreamWorldDerivationTest {
             // sides of that would inflate the whole tree's denominator.
             record.publishFitness(
                 RelayUrlNormalizer.normalize("wss://ordinary.example"),
-                "syncable",
+                "prime",
                 "answered at a settled anchor",
                 pageable = null,
                 nip77 = null,
@@ -254,7 +254,7 @@ class StreamWorldDerivationTest {
             val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
             store.insert(event(10002, arrayOf("r", "wss://ordinary.example", "write")))
             RelayVerdictRecord(store, stranger)
-                .publishFitness(RelayUrlNormalizer.normalize("wss://theirs.example"), "syncable", "not ours", pageable = null, nip77 = null)
+                .publishFitness(RelayUrlNormalizer.normalize("wss://theirs.example"), "prime", "not ours", pageable = null, nip77 = null)
 
             val world = world(store, emptyList())
             world.candidates()

@@ -10,7 +10,7 @@
 import assert from "node:assert/strict";
 import {
   MONITOR_KIND, hostOf, sameUrl, readRecord, isCurrent, groupByHost, summarise, walkRecords, TTL_SECONDS,
-  FOLD_EPOCH, CONSISTENCY_EPOCH,
+  FOLD_EPOCH, CONSISTENCY_EPOCH, FITNESS_EPOCH, FITNESS_NAMESPACE, PRIME,
 } from "../../relay/src/main/resources/web/shared/verdicts.js";
 
 const ok = (name) => console.log(`  ✓ ${name}`);
@@ -29,6 +29,9 @@ const rec = (url, tags, at = NOW) => ({
 // older build, which is a case of its own and asserted as such below.
 const sameAs = (target, evidence, at, epoch = FOLD_EPOCH) => ["same-as", target, evidence, String(at), epoch];
 const consistent = (v, evidence, at, epoch = CONSISTENCY_EPOCH) => ["self-consistent", v, evidence, String(at), epoch];
+// The fitness grade, whose shape is NIP-32's and therefore ONE PLACE RIGHT of
+// the two above: the namespace takes index 2, so evidence starts at 3.
+const grade = (value, evidence, at, epoch = FITNESS_EPOCH) => ["l", value, FITNESS_NAMESPACE, evidence, String(at), epoch];
 
 // ---- the host, which is what decides a GROUP -------------------------------
 {
@@ -249,10 +252,78 @@ const consistent = (v, evidence, at, epoch = CONSISTENCY_EPOCH) => ["self-consis
 
 {
   assert.deepEqual(groupByHost([], NOW), []);
-  assert.deepEqual(summarise([], NOW), { hosts: 0, urls: 0, folded: 0, cleared: 0, expired: 0, silent: 0, stable: 0, unstable: 0, inferred: 0 });
+  assert.deepEqual(summarise([], NOW), {
+    hosts: 0, urls: 0, folded: 0, cleared: 0, expired: 0, silent: 0, stable: 0, unstable: 0, inferred: 0, graded: 0, prime: 0,
+  });
   // A record with no `d` tag is not addressed at anything and cannot be drawn.
   assert.equal(readRecord({ tags: [["same-as", "wss://x.example/"]], created_at: NOW }), null);
   ok("an empty store and a record with no d tag are both handled, not thrown on");
+}
+
+// ---- the fitness grade, which is a NIP-32 label ----------------------------
+{
+  // THE COLLISION THIS TAG MOVED TO ESCAPE. `s` is the relay's software to
+  // every monitor on the network, and the grade used to be written there — so
+  // the panel drew `prime` where a reader expected strfry's git url, and could
+  // not draw the software at all. Both now read, and neither is the other.
+  const r = readRecord({
+    created_at: NOW,
+    tags: [
+      ["d", "wss://good.example/"],
+      grade(PRIME, "answered 20 events at a settled anchor", NOW),
+      ["L", FITNESS_NAMESPACE],
+      ["s", "git+https://github.com/hoytech/strfry.git"],
+    ],
+  });
+  assert.equal(r.grade, PRIME);
+  assert.equal(r.software, "git+https://github.com/hoytech/strfry.git");
+  assert.equal(r.gradeEvidence, "answered 20 events at a settled anchor");
+  assert.equal(r.gradeMeasuredAt, NOW, "the grade's clock sits one place right of the fold's");
+  assert.equal(r.extra, 0, "`l` and `L` are the panel's own tags, not unknown ones");
+  ok("the grade is read off the label and the software off `s`, each as itself");
+}
+
+{
+  // `l` IS SHARED GROUND. nostr.watch labels the same relay with its country,
+  // ISP and ASN — all on `l` — so a reader matching the tag NAME would read a
+  // country code as a fitness grade and admit a relay nothing has measured.
+  const r = readRecord({
+    created_at: NOW,
+    tags: [["d", "wss://foreign.example/"], ["l", "CA", "countryCode"], ["l", "prime", "somebody.else"]],
+  });
+  assert.equal(r.grade, null, "another namespace's label is not our grade, whatever it says");
+  ok("a foreign monitor's label under another namespace is not read as a grade");
+}
+
+{
+  // The grade expires on BOTH rules, like the other two verdicts: an aged-out
+  // one is re-taken on schedule, an out-of-epoch one was retired at boot.
+  const aged = groupByHost([rec("wss://a.example/", [grade(PRIME, "e", NOW - TTL_SECONDS - 1)])], NOW);
+  assert.equal(aged[0].prime, 0, "a grade past its TTL admits nothing");
+  assert.equal(aged[0].graded, 0);
+  const wrongEpoch = groupByHost([rec("wss://b.example/", [grade(PRIME, "e", NOW, "0")])], NOW);
+  assert.equal(wrongEpoch[0].prime, 0, "a grade from superseded rules admits nothing either");
+  const good = groupByHost([rec("wss://c.example/", [grade(PRIME, "e", NOW)])], NOW);
+  assert.equal(good[0].prime, 1);
+  assert.equal(good[0].graded, 1);
+  // A refusal is graded but not prime — the distinction the two tiles carry.
+  const dead = groupByHost([rec("wss://d.example/", [grade("dead", "no TCP answer", NOW)])], NOW);
+  assert.equal(dead[0].graded, 1);
+  assert.equal(dead[0].prime, 0);
+  ok("a grade admits only inside its TTL and its epoch, and only `prime` admits");
+}
+
+{
+  // **A GRADED URL IS NOT A SILENT ONE**, and it counted as one. `silent` tested
+  // the fold and the stability tag only, so every url the fitness pass had
+  // measured — the pass that dials the whole corpus, and the only one most urls
+  // ever get — landed in the tile that means "nothing has looked at this".
+  const graded = summarise(groupByHost([rec("wss://a.example/", [grade("dead", "no TCP answer", NOW)])], NOW), NOW);
+  assert.equal(graded.silent, 0, "the monitor looked at this url and wrote down what it found");
+  assert.equal(graded.graded, 1);
+  const nothing = summarise(groupByHost([rec("wss://b.example/", [["n", "clearnet"]])], NOW), NOW);
+  assert.equal(nothing.silent, 1, "a record with no verdict of any kind is still silent");
+  ok("a url carrying a grade is not counted as one the monitor has never looked at");
 }
 
 // ---- the rest of the record, which several writers share -------------------
@@ -285,7 +356,7 @@ const consistent = (v, evidence, at, epoch = CONSISTENCY_EPOCH) => ["self-consis
   assert.deepEqual(r.requirements, ["auth", "payment"], "a relay can be both auth-gated and paid");
   assert.equal(r.rttOpen, "875");
   assert.equal(r.rttRead, "897");
-  assert.equal(r.software, "git+https://github.com/hoytech/strfry.git");
+  assert.equal(r.software, "git+https://github.com/hoytech/strfry.git", "`s` is the relay's software, which is what it means everywhere else");
   assert.equal(r.hasDoc, true);
   assert.equal(r.cleared, true, "reading the metadata does not disturb the verdict");
   // Counted, never dropped: a record carrying a tag this reader has not heard

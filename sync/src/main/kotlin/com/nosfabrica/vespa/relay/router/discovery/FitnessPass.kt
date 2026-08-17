@@ -42,10 +42,10 @@ import java.util.concurrent.atomic.AtomicInteger
  * THE FITNESS CERTIFICATE — one measured verdict per url, written where a
  * stream can select on it.
  *
- * ## What `syncable` asserts, and what it deliberately does not
+ * ## What `prime` asserts, and what it deliberately does not
  *
  * A sync stream's relay list is built from one filter over kind-30166 records:
- * `"#s": ["syncable"]`. For that filter to be the WHOLE admission decision, the
+ * `"#l": ["prime"]`. For that filter to be the WHOLE admission decision, the
  * value has to be a composite: reachable AND answering AND canonical AND
  * consistent AND pageable AND readable by us. Five of the refusals below
  * describe relays that are perfectly alive — an alias serves events, an
@@ -55,7 +55,11 @@ import java.util.concurrent.atomic.AtomicInteger
  * honest answer), and a small message cap is not a refusal (a shape the asks
  * respect).
  *
- * ## Measured on the socket, never read off NIP-11
+ * The grade is a NIP-32 label under [RelayVerdictRecord.FITNESS_NAMESPACE] and
+ * it names the RELAY, not our use of it — see [Verdict] for why that stopped
+ * being `syncable`.
+ *
+ * ## No VERDICT is read off NIP-11; the descriptive fields are
  *
  * Every verdict here comes from what the relay DID: the ask ladder for whether
  * it answers, the anchored walk for whether it honours `until`, one NEG-OPEN
@@ -64,6 +68,15 @@ import java.util.concurrent.atomic.AtomicInteger
  * measured on this corpus: a relay that served a REQ over its declared
  * `max_message_length`, a fleet that publishes no document at all — so nothing
  * that changes a decision is taken from one.
+ *
+ * That rule is about DECISIONS, and it used to be applied to the whole record.
+ * The result was a 30166 carrying a verdict and nothing else — no software, no
+ * supported nips, no rtt, no network — which is not a neutral record but a
+ * misleading one: quartz's own convention reads a rtt-less 30166 inside the TTL
+ * as "checked, could not open". So the pass also fetches the document and
+ * publishes the descriptive half, clearly separated. [RelayFacts] is what goes
+ * on the record and where each field came from; [factsOf] is the one place a
+ * measurement overrides a claim.
  *
  * ## Why a separate pass, on the monitor's clock
  *
@@ -75,10 +88,11 @@ import java.util.concurrent.atomic.AtomicInteger
  *
  * ## One writer per tag
  *
- * This pass owns `s`, `pageable` and `nip77` and nothing else; the fold's
- * `same-as` and the consistency pass's tag are read, never written, and
- * everything else on the record is carried forward untouched by
- * [RelayVerdictRecord]'s edit. The alias and inconsistency REFUSALS therefore
+ * This pass owns its own NIP-32 namespace, `pageable`, `nip77` and the
+ * descriptive tags in [RelayFacts.OWNED] — and nothing else. The fold's
+ * `same-as` and the consistency pass's tag are read, never written; another
+ * labeller's namespace on the same record rides through untouched, which is
+ * exactly what moving off `s` bought. The alias and inconsistency REFUSALS
  * cost no dial at all — those passes already paid for the evidence, and this
  * one turns their standing verdicts into the one value a stream filters on.
  */
@@ -96,17 +110,45 @@ class FitnessPass(
     /** The consistency pass's standing refusals — same bargain. */
     private val inconsistent: suspend (List<NormalizedRelayUrl>) -> Set<NormalizedRelayUrl>,
     val progress: Processors.Handle,
+    /**
+     * The relay's own NIP-11 document, for the descriptive fields no dial can
+     * measure — see [RelayDocument], and [RelayFacts] for which those are and
+     * which they deliberately are not.
+     *
+     * NULLABLE, and null is a monitor that publishes the same verdicts with
+     * fewer facts beside them. A test that only cares what a relay was graded
+     * should not have to stand up an HTTP client to find out, and a deployment
+     * that would rather not ask strangers for their documents has a way to say
+     * so that does not involve a second code path.
+     */
+    private val document: RelayDocument? = null,
+    /**
+     * Does this url go through Tor? Bound to the same predicate the dial
+     * consults, so `n` cannot disagree with the transport that carried the
+     * measurement.
+     *
+     * A function rather than the transport itself: `TorTransport` is internal
+     * to the router module and this class is not, and the only thing the
+     * question needs is the answer.
+     */
+    private val routesThroughTor: (NormalizedRelayUrl) -> Boolean = { false },
     private val concurrency: Int = AliasFolding.DEFAULT_DIAL_CONCURRENCY,
 ) {
     /**
-     * The verdict vocabulary. [SYNCABLE] is the only admitting value; every
-     * refusal is descriptive, so the record explains itself instead of a
-     * worker's log line having to.
+     * The grade vocabulary. [PRIME] is the only admitting value; every refusal
+     * is descriptive, so the record explains itself instead of a worker's log
+     * line having to.
+     *
+     * **`prime`, and it used to be `syncable`.** The old word named OUR use of
+     * the relay, on a record published for everyone — a crawler, an archiver, a
+     * client choosing read relays all want this same composite, and none of them
+     * are syncing. A grade names the relay; what the reader does with a prime
+     * one is their business.
      */
     enum class Verdict(
         val value: String,
     ) {
-        SYNCABLE("syncable"),
+        PRIME("prime"),
 
         /** No TCP, no TLS, no websocket — the transport itself said no. */
         DEAD("dead"),
@@ -141,6 +183,41 @@ class FitnessPass(
         val evidence: String,
         val pageable: Pair<Boolean, String>? = null,
         val nip77: Pair<Boolean, String>? = null,
+        /**
+         * NIP-66's `rtt-read`: how long the relay took to answer the ask that
+         * settled the verdict.
+         *
+         * From the rung that ANSWERED, never from the ladder as a whole. A
+         * relay that refuses a bare filter and serves the kinds one has told us
+         * how fast it reads once asked properly; billing it for the rung it
+         * declined would publish our ladder's shape as the relay's latency.
+         *
+         * And from that rung's FIRST PAGE, not its walk — see
+         * [AliasProbe.Window.firstPageMs]. Timing the walk billed a relay
+         * capping at ten events for the two round trips our twenty-event
+         * target then costs, which is a measurement of our target against
+         * their cap rather than of their latency.
+         */
+        val rttReadMs: Long? = null,
+        /**
+         * The relay demanded NIP-42 and would not take our key — a MEASURED
+         * requirement, which outranks whatever its document claims.
+         *
+         * **ONLY EVER TRUE, and the asymmetry is the instrument's, not an
+         * oversight.** A dial that read cleanly proves nothing about `!auth`:
+         * quartz reports `authRefused` and nothing else, so a relay that
+         * challenged us and accepted our signer is indistinguishable here from
+         * one that never challenged at all — and the first genuinely DOES
+         * require auth. Publishing `!auth` off a successful read would
+         * therefore tell every reader without our key that a gated relay is
+         * open to them.
+         *
+         * So the override is one-directional: we can contradict a document
+         * that claims `!auth`, and we defer to one that claims `auth`. Making
+         * it symmetric needs a "was challenged" signal from the client, not a
+         * change here.
+         */
+        val authRequired: Boolean? = null,
     )
 
     /**
@@ -159,6 +236,11 @@ class FitnessPass(
         progress.begin("measuring fitness")
         val startedMs = System.currentTimeMillis()
         val outcomes = ConcurrentHashMap<NormalizedRelayUrl, Outcome>()
+        // What each url's NIP-11 ask returned. Kept beside the outcomes rather
+        // than on them because the two are taken by different asks that fail
+        // independently: a relay can serve a perfect document and refuse every
+        // REQ, or answer every REQ and serve no document at all.
+        val readings = ConcurrentHashMap<NormalizedRelayUrl, RelayDocument.Reading>()
         val downloaded = AtomicInteger()
         try {
             // THE FREE REFUSALS FIRST. Both are standing verdicts other passes
@@ -205,6 +287,12 @@ class FitnessPass(
                                 outcomes[url] = Outcome(Verdict.DEAD, "no TCP answer at the pre-probe")
                                 return@withPermit
                             }
+                            // The relay's own account of itself, and the
+                            // handshake that carries it — asked BEFORE the
+                            // socket is claimed, because it is an ordinary
+                            // HTTP call to the same host and has nothing to do
+                            // with the websocket refcount.
+                            document?.read(url)?.let { readings[url] = it }
                             sockets.claim(url)
                             try {
                                 outcomes[url] =
@@ -224,7 +312,7 @@ class FitnessPass(
                         // two passes carry: this url is behind the pass
                         // however it ended, and both of the early returns
                         // above are verdicts a reader is waiting on as much as
-                        // a `syncable` is.
+                        // a `prime` is.
                     }.invokeOnCompletion { progress.attempted() }
                 }
             }
@@ -239,6 +327,7 @@ class FitnessPass(
                     evidence = outcome.evidence,
                     pageable = outcome.pageable,
                     nip77 = outcome.nip77,
+                    facts = factsOf(url, outcome, readings[url]),
                 )
             }
 
@@ -276,14 +365,22 @@ class FitnessPass(
         var lastReason: String? = null
         var answered: AliasProbe.Window? = null
         var shape: List<Int>? = null
+        var readMs: Long? = null
         for (rung in listOf(null, AliasProbe.FALLBACK_KINDS, RelayAliases.GROUP_METADATA_KINDS)) {
             val window = probe.window(url, anchor, rung, counting)
             if (window.authRefused) {
-                return Outcome(Verdict.AUTH_REFUSED, "asked for NIP-42 and rejected our key")
+                return Outcome(
+                    Verdict.AUTH_REFUSED,
+                    "asked for NIP-42 and rejected our key",
+                    // The one requirement this router can state from
+                    // MEASUREMENT rather than from the relay's own word.
+                    authRequired = true,
+                )
             }
             if (window.ids != null) {
                 answered = window
                 shape = rung
+                readMs = window.firstPageMs
                 break
             }
             lastReason = window.reason ?: lastReason
@@ -319,6 +416,9 @@ class FitnessPass(
                 Verdict.UNPAGEABLE,
                 "every event answered above the `until` it was asked for",
                 pageable = false to "$above of $seen events came back above the anchor — the cursor was ignored",
+                // A relay that ignores the cursor still answered, and how fast
+                // it did so is a fact about it either way.
+                rttReadMs = readMs,
             )
         }
         val pageable = true to (if (seen == 0) "empty anchored page, honestly EOSEd" else "$seen events, all at or below the anchor")
@@ -342,12 +442,65 @@ class FitnessPass(
             }
 
         return Outcome(
-            Verdict.SYNCABLE,
+            Verdict.PRIME,
             "answered ${if (seen == 0) "an empty anchored page" else "$seen events"} at a settled anchor",
             pageable = pageable,
             nip77 = nip77,
+            rttReadMs = readMs,
         )
     }
+
+    /**
+     * The NIP-66 payload for one url: what the dial measured, over what the
+     * document claimed.
+     *
+     * **MEASURED BEATS ADVERTISED, tag by tag**, which NIP-66 names as the
+     * expected case — *"Information corresponding to field in a relay's NIP 11
+     * document MAY contradict actual values if monitors find that a different
+     * policy is implemented than is advertised."* A relay that publishes
+     * `auth_required: false` and then rejects our key is not a relay with an
+     * open read policy, and a monitor that copied the document across would be
+     * signing the relay's mistake under its own name.
+     *
+     * Only `auth` can currently be measured, and only in the POSITIVE
+     * direction — see [Outcome.authRequired] for why a clean read is not
+     * evidence of `!auth`. The rest of the limitation block rides through as
+     * the claim it is.
+     *
+     * The two free refusals — a url the fold already called an alias, one the
+     * stability gate already refused — reach here having dialled NOTHING this
+     * pass, so they carry only [network], which is a property of the url rather
+     * than a reading of the relay. Everything else stays absent and therefore
+     * gets cleared, which is correct: those tags would otherwise be a rtt and a
+     * software version standing as current for a url nothing measured.
+     */
+    private fun factsOf(
+        url: NormalizedRelayUrl,
+        outcome: Outcome,
+        reading: RelayDocument.Reading?,
+    ): RelayFacts {
+        val doc = reading?.doc
+        val measured =
+            outcome.authRequired?.let { listOf(RelayFacts.requirement(RelayFacts.REQUIREMENT_AUTH, it)) }.orEmpty()
+        return RelayFacts(
+            network = network(url),
+            rttOpenMs = reading?.openMs,
+            rttReadMs = outcome.rttReadMs,
+            requirements = RelayFacts.merge(measured = measured, advertised = doc?.requirements.orEmpty()),
+            software = doc?.software,
+            version = doc?.version,
+            supportedNips = doc?.supportedNips.orEmpty(),
+        )
+    }
+
+    /**
+     * NIP-66's `n`, from the transport that would actually carry this url.
+     *
+     * From the URL and not from the document, which cannot know how we reached
+     * it — and from the same predicate the dial itself uses, so a record can
+     * never say `clearnet` about a url the fan-out sends through Tor.
+     */
+    private fun network(url: NormalizedRelayUrl): String = if (routesThroughTor(url)) NETWORK_TOR else NETWORK_CLEARNET
 
     private fun report(
         label: String,
@@ -401,16 +554,19 @@ class FitnessPass(
                         Filter(
                             kinds = listOf(RelayDiscoveryEvent.KIND),
                             authors = listOf(author),
-                            tags = mapOf(RelayVerdictRecord.STATUS_TAG to Verdict.entries.map { it.value }),
+                            tags = mapOf(RelayVerdictRecord.LABEL_TAG to Verdict.entries.map { it.value }),
                         ),
                     ).filter { event ->
-                        val s = event.tags.firstOrNull { it.size > 1 && it[0] == RelayVerdictRecord.STATUS_TAG }
-                        // A tag carrying no epoch is such a record by
-                        // definition — nothing has ever written one but an
-                        // older build.
-                        s != null && s.getOrNull(4) != RelayVerdictRecord.FITNESS_EPOCH
+                        // A record with NO grade of ours is not a stale grade,
+                        // it is somebody else's label that happened to carry
+                        // one of our values — the tag index answers on the
+                        // value alone, so the query can return those. Retiring
+                        // on a null here would edit records we have no verdict
+                        // on at all.
+                        val grade = ourGrade(event) ?: return@filter false
+                        grade.getOrNull(RelayVerdictRecord.LABEL_EPOCH_INDEX) != RelayVerdictRecord.FITNESS_EPOCH
                     }.mapNotNull { it.relay() }
-            for (url in stale) record.retireFitness(url)
+            retire(record, stale)
             if (stale.isNotEmpty()) {
                 System.err.println(
                     "router: fitness — retired ${stale.size} verdict(s) taken under older rules; " +
@@ -419,6 +575,141 @@ class FitnessPass(
             }
             return stale.size
         }
+
+        /**
+         * TAKE BACK EVERY GRADE STILL WRITTEN ON `s` — the one-time migration
+         * off the tag this monitor should never have taken.
+         *
+         * `s` is the software field everywhere else (see
+         * [RelayVerdictRecord.LEGACY_STATUS_TAG]), so a record left carrying
+         * `["s", "dead"]` does not merely fail to be read as a grade: it is read
+         * as the relay running a piece of software called `dead`, by every
+         * NIP-66 consumer including our own stats panel. Every record this
+         * deployment has ever signed carries one.
+         *
+         * Retracting is the whole of it. [RelayVerdictRecord.retireFitness]
+         * owns `s`, so the stale grade leaves; the url then reads as unmeasured,
+         * which is the state that gets it re-graded — under `l` this time — on
+         * the next sweep. Nothing has to be deleted and no operator has to
+         * intervene.
+         *
+         * Runs at boot beside [retireStaleEpochs] and is a store walk with no
+         * dials. It stops finding anything once the store holds no pre-migration
+         * records, so it costs one empty indexed query per boot forever after —
+         * which is the price of not having to remember to delete it.
+         */
+        suspend fun retireLegacyGrades(
+            store: IEventStore,
+            record: RelayVerdictRecord,
+            author: String,
+        ): Int {
+            val legacy =
+                store
+                    .query<RelayDiscoveryEvent>(
+                        Filter(
+                            kinds = listOf(RelayDiscoveryEvent.KIND),
+                            authors = listOf(author),
+                            // THE OLD BUILD'S VOCABULARY, which is not this
+                            // one — see [LEGACY_GRADES]. Querying today's
+                            // values here missed every `syncable` record in
+                            // the store, i.e. the only admitting grade and the
+                            // largest group of them.
+                            tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
+                        ),
+                    ).mapNotNull { it.relay() }
+            retire(record, legacy)
+            if (legacy.isNotEmpty()) {
+                System.err.println(
+                    "router: fitness — retired ${legacy.size} grade(s) still written on the `s` tag; " +
+                        "they re-grade onto NIP-32 labels on the next sweep",
+                )
+            }
+            return legacy.size
+        }
+
+        /**
+         * Withdraw a verdict from each of [urls], several at a time.
+         *
+         * **SERIAL, THIS COST A BLOCKED BOOT.** Both callers run before any
+         * pass reads a verdict, and both do a read-modify-write per url — a
+         * store query for the current record, a schnorr signature, an insert.
+         * Measured against the live corpus that is 17,189 records on the first
+         * boot after the grade move, and one round trip at a time it is minutes
+         * of a router that has not started mirroring yet.
+         *
+         * Concurrent WITHIN one pass, and that does not weaken the
+         * single-writer rule [AliasMonitor] keeps: every url here is a distinct
+         * addressable record, so no two of these edits ever touch the same
+         * address. What must not happen is this running BESIDE the fitness
+         * pass, which is why both callers stay on the boot path rather than
+         * moving to a background job — a retraction racing a re-grade is two
+         * writers on one address, and the loser's tags are gone.
+         */
+        private suspend fun retire(
+            record: RelayVerdictRecord,
+            urls: List<NormalizedRelayUrl>,
+        ) {
+            if (urls.isEmpty()) return
+            val gate = Semaphore(RETIRE_CONCURRENCY)
+            coroutineScope {
+                for (url in urls) launch { gate.withPermit { record.retireFitness(url) } }
+            }
+        }
+
+        /**
+         * How many retractions are in flight at once.
+         *
+         * The work is a store round trip and a signature, not a dial, so this
+         * is not [AliasFolding.DEFAULT_DIAL_CONCURRENCY]'s question — nobody
+         * else's server is being asked for anything. Bounded all the same
+         * because the store is shared with a relay that is serving reads.
+         */
+        private const val RETIRE_CONCURRENCY = 16
+
+        /**
+         * This monitor's grade on a record, told apart from everyone else's
+         * labels by its NAMESPACE.
+         *
+         * `l` is shared vocabulary — the same record carries country and ASN
+         * labels from other monitors — so matching on the tag name alone would
+         * read a foreign label's third element as our epoch and retire a verdict
+         * on the strength of it.
+         */
+        private fun ourGrade(event: RelayDiscoveryEvent): Array<String>? =
+            event.tags.firstOrNull {
+                it.size > RelayVerdictRecord.LABEL_NAMESPACE_INDEX &&
+                    it[0] == RelayVerdictRecord.LABEL_TAG &&
+                    it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
+            }
+
+        /**
+         * WHAT THE OLD BUILD COULD ACTUALLY HAVE WRITTEN on `s` — every grade
+         * in today's vocabulary plus the one word that changed.
+         *
+         * **Spelled out rather than derived from [Verdict], and that is the
+         * whole point.** A migration query built from `Verdict.entries` asks
+         * for the vocabulary of the build doing the asking, which is precisely
+         * the build whose records do not need migrating. Written that way it
+         * silently missed every `["s","syncable"]` record in the store — the
+         * admitting grade, and the largest group of them: 1,716 of 4,000 on
+         * this deployment. The refusals happened to survive because their
+         * spellings did not change, which is what made the miss look like a
+         * working migration.
+         *
+         * A list frozen in source is the correct shape for this: it describes
+         * history, so it may only ever GROW, and it must not follow a rename
+         * made after the records were signed.
+         */
+        val LEGACY_GRADES = Verdict.entries.map { it.value } + "syncable"
+
+        /**
+         * NIP-66's two network values this router can honestly write. `i2p` and
+         * `loki` are in its vocabulary and not here — no transport, so no url on
+         * one was ever dialled to write a record about.
+         */
+        const val NETWORK_CLEARNET = "clearnet"
+
+        const val NETWORK_TOR = "tor"
 
         /**
          * Events per fitness ask. A verdict needs "answers and pages", which

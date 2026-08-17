@@ -225,7 +225,7 @@ export function measuringOf(p) {
  * holding two unrelated questions at once. The passes named here answer *which
  * relay urls are worth dialling at all*: the fold collapses one server's several
  * addresses, the stability gate refuses a url that answers a filter two ways,
- * and the fitness pass signs the `syncable` certificate every visit-mode
+ * and the fitness pass signs the `prime` certificate every visit-mode
  * stream's relay list is made of — including the `dead` verdict that holds an
  * unreachable url out of every fan-out. All three run on the alias monitor's own
  * clock, none of them is configured by a stream, and their unit is a RELAY. What
@@ -270,7 +270,7 @@ export const ROTATING = "rotating";
  * draws is absent and the row rendered as `rotating for 58m` and nothing else.
  * That line is the same whether the stream is riding four hundred relays or
  * none, and "none" is the state worth seeing: before the fitness pass has
- * signed its first `syncable`, a visit stream is a stream with an empty world.
+ * signed its first `prime`, a visit stream is a stream with an empty world.
  *
  * So `waiting` is called here rather than left to the page: it is the one
  * reading that changes what an operator does next, and it is a judgement about

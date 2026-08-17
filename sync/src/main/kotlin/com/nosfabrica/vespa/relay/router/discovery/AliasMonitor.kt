@@ -95,7 +95,7 @@ class AliasMonitor(
     /**
      * The fast lane: how often to look for urls named by relay-list events
      * ingested since the last look, and the ONE pass to run over them —
-     * fitness, in practice, because a first `syncable` is what a new relay is
+     * fitness, in practice, because a first `prime` is what a new relay is
      * waiting on where a fold or consistency verdict can ride the next sweep.
      * Null (either of them) turns the lane off.
      */

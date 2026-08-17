@@ -74,6 +74,34 @@ class SyncProgressReportTest {
     private fun firstCycle(doc: JsonObject) = (doc["streams"] as JsonArray)[0].jsonObject["cycle"]!!.jsonObject
 
     @Test
+    fun `a router still on the previous vocabulary keeps its grade funnel on the card`() {
+        // DEPLOY SKEW IS THE NORMAL CASE, not an edge one: `:relay` and `:sync`
+        // are separate containers and AGENTS.md's own dev loop restarts one
+        // without the other. So for as long as a fleet is half-updated, the
+        // router writes the grade funnel under the word it was built with.
+        //
+        // [COUNTERS] is an allowlist, so an unrecognised name is DROPPED rather
+        // than passed through — the count never reaches the document, the
+        // fitness row loses its whole fact line, and the card still looks
+        // complete. That is the exact failure this file's two pins exist to
+        // catch in the other direction.
+        val old =
+            """
+            {
+              "writtenAt": 1770000000,
+              "processors": [
+                {"name": "fitness", "phase": "idle", "syncable": 612, "dead": 44, "silent": 9}
+              ]
+            }
+            """.trimIndent()
+        val fitness = (SyncProgressReport.build(old, nowSeconds = 1_770_000_000)!!["processors"] as JsonArray)[0].jsonObject
+
+        assertEquals(612, fitness["prime"]?.jsonPrimitive?.int, "the previous spelling has to reach the card under the current name")
+        assertNull(fitness["syncable"], "…and only under the current name: the document speaks one vocabulary")
+        assertEquals(44, fitness["dead"]?.jsonPrimitive?.int, "the refusals never changed spelling and must be untouched")
+    }
+
+    @Test
     fun `the disposition accounts for every discovered url`() {
         // The number this whole file exists to produce: 16,752 discovered against
         // 5,323 band-bearing used to leave ~11,400 with no published disposition
