@@ -129,17 +129,33 @@ export const MEASURING = "measuring";
  *
  * Only where the row publishes `foldedAway` at all — the fold's own row measures
  * no folds away from itself, and there the complement is exactly right.
+ *
+ * **WHERE THE ROW SAYS HOW MANY URLS ARRIVED UNDECIDED, that is the denominator
+ * instead, and `newOnly` says so** — the caller has a word to add. Neither half
+ * of the older pair described the PASS: the denominator was every url it was
+ * handed, most of which carry a verdict from weeks ago that nothing re-asks
+ * until it ages out, and the numerator was every url that holds one at all —
+ * folds made a month ago in another process included. On the real card a fold
+ * that had just run for eleven minutes read `143 of 1,754 relay(s) checked`,
+ * and neither number moved with the work. `newUrls` is the set the pass is FOR
+ * and `unmeasured` is that same set once it has run, so the pair is a fraction
+ * of one population: of the urls that arrived undecided, how many left decided.
  */
 export function probeProgress(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
   const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
   const folded = sum("foldedAway");
-  const candidates = Math.max(0, sum("candidates") - folded);
+  // Presence, not truthiness: a pass that saw no new urls publishes zero, and
+  // that is an answer — `|| ` there would silently fall back to the whole
+  // candidate set exactly when the fold has caught up with the corpus.
+  const fresh = streams.some((w) => w.newUrls != null) ? sum("newUrls") : null;
+  const candidates = fresh ?? Math.max(0, sum("candidates") - folded);
   const unmeasured = sum("unmeasured");
   return {
     candidates,
     checked: Math.max(0, candidates - unmeasured),
+    newOnly: fresh != null,
     tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
   };
 }
@@ -265,10 +281,11 @@ const FUNNEL_TONE = {
   consistent: "good",
   inconsistent: "warn",
   // Neither a fault nor a finding: a duplicate url leaving the fan-out is the
-  // fold working, and a url held out on a signed record is one we already
-  // measured.
+  // fold working, a url held out on a signed record is one we already measured,
+  // and a url only our records know is one nobody asked for this round.
   foldedAway: "mute",
   heldOutDead: "mute",
+  recordedOnly: "mute",
   // Ours, in both senses: we could not carry it, or our probe broke.
   "declined by our own transport": "ours",
   "the probe failed mid-walk": "ours",
@@ -334,10 +351,19 @@ export function funnelOf(p) {
   const excluded = Math.max(0, p.excluded || 0);
   const heldOutDead = Math.max(0, p.heldOutDead || 0);
   const dropped = excluded + heldOutDead;
-  // The root: everything the streams named. `sourced` is the honest one when
-  // the router publishes it; without it the root is what we can still account
-  // for, and the tree simply starts lower rather than inventing a mouth.
-  const total = Math.max(candidates + dropped, p.sourced || 0);
+  // …AND WHAT THE STREAMS DID NOT NAME. A url leaves the relay lists for
+  // reasons of its own — the author who listed it revised their 10002, a source
+  // was reconfigured — and every measurement this router took of it is still in
+  // the store, still read by the fold. Rooted at `sourced` alone the tree lost
+  // those without a word, on a card whose caption says "every relay url this
+  // router knows of": a deployment holding records for five figures of urls
+  // whose current lists name a couple of thousand drew an eighth of its corpus.
+  const recordedOnly = Math.max(0, p.recordedOnly || 0);
+  // The root: everything this router knows of. `sourced` is the honest count of
+  // what was named when the router publishes it; without it the root is what we
+  // can still account for, and the tree simply starts lower rather than
+  // inventing a mouth.
+  const total = Math.max(candidates + dropped, p.sourced || 0) + recordedOnly;
 
   /** One node. `children` is built by the callers below, never inferred. */
   const node = (key, label, value, children = []) => ({
@@ -414,12 +440,24 @@ export function funnelOf(p) {
     node("inconsistent", "inconsistent — refused", sum("inconsistent")),
     node("unmeasured", "no verdict", sum("unmeasured"), reasons),
   ];
+  // A branch only where the router counted it: a zero row under a mouth that
+  // has always been "what the streams named" is a claim about a corpus a router
+  // this old never measured.
+  const beyond = recordedOnly
+    ? [node("recordedOnly", "known from our own records — no relay list names it now", recordedOnly)]
+    : [];
+  // KEYED `corpus`, NOT `sourced`. `sourced` is a published member with an
+  // exact meaning — what the streams named this round — and the root is now
+  // that plus what only our records know. One key, one meaning: a root labelled
+  // "everything this router knows of" while hanging `sourced`'s glossary entry
+  // would document the wrong number for the biggest row on the card.
   const root =
-    node("sourced", "every url the streams named", total, [
+    node("corpus", "every relay url this router knows of", total, [
       node("dropped", "dropped before a pass could see it", dropped, [
         node("excluded", "excluded by config, or our own url", excluded),
         node("heldOutDead", "known dead — a signed unreachability record", heldOutDead),
       ]),
+      ...beyond,
       node("candidates", "in reach — the candidate set", candidates, kept),
     ]);
   // WHAT THE RELAY THINKS OF THE ARITHMETIC, which is not the same question as

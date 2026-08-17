@@ -149,7 +149,48 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(two.checked, 8012, "both rows counted, not the first one");
   assert.equal(probeProgress(fold({ streams: [{ candidates: 10 }, {}] })).checked, 10,
     "a missing member is a zero on its row, not a NaN across the total");
+  assert.equal(probeProgress(fold()).newOnly, false, "a row that does not count new urls says so");
   ok("the pass draws what HAS a verdict, summed across rows and never negative");
+}
+
+{
+  // WHERE THE ROW SAYS WHAT ARRIVED UNDECIDED, that is the denominator — and
+  // the card gets a word for it. The real fold read `143 of 1,754 relay(s)
+  // checked` after an eleven-minute pass, where 1,611 of that denominator were
+  // urls carrying month-old verdicts nothing was going to re-ask: the position
+  // could not move whatever the pass achieved.
+  const fresh = probeProgress({
+    name: "aliasFold", phase: "idle", lastPassSec: 660,
+    streams: [{ name: "all streams", candidates: 11693, newUrls: 1754, unmeasured: 1611 }],
+  });
+  assert.equal(fresh.candidates, 1754, "the denominator is what arrived with no verdict");
+  assert.equal(fresh.checked, 143, "…and the numerator is how many of THOSE left with one");
+  assert.equal(fresh.newOnly, true, "the page has a word to add");
+
+  // Presence, not truthiness: a fold that has caught up publishes zero, which
+  // is an answer and not an absence. Falling back to `candidates` there would
+  // put the whole corpus back in the denominator exactly when the pass is done.
+  //
+  // This pair is also what the CARD branches on to stop saying `0 of 0 new
+  // relay(s) checked` — see `PROBE_NONE` in stats.html. It is not a rare state:
+  // it is the one both passes work towards, and a settled corpus holds it for
+  // most of a monthly TTL.
+  const caught = probeProgress({
+    name: "aliasFold", phase: "idle",
+    streams: [{ candidates: 11693, newUrls: 0, unmeasured: 0 }],
+  });
+  assert.equal(caught.candidates, 0);
+  assert.equal(caught.newOnly, true);
+
+  // Summed across rows like every other member, and a row that omits it counts
+  // zero rather than dragging the whole document back to the old denominator.
+  const mixed = probeProgress({
+    name: "aliasFold", phase: "idle",
+    streams: [{ candidates: 100, newUrls: 40, unmeasured: 30 }, { candidates: 16, unmeasured: 4 }],
+  });
+  assert.equal(mixed.candidates, 40);
+  assert.equal(mixed.checked, 6, "34 unmeasured across both rows, against 40 new");
+  ok("a pass that counts what arrived undecided is drawn against that, and says so");
 }
 
 {
@@ -333,13 +374,13 @@ const leg = (n, quiet, over = {}) => ({
 
   const f = funnelOf(gate());
   const at = (key) => f.rows.find((r) => r.key === key);
-  assert.equal(f.total, 17584, "the root is every url the streams named");
+  assert.equal(f.total, 17584, "the root is every relay url this router knows of");
 
   // THE SHAPE. Depth is the relationship, so it is the thing to assert: a host
   // is under its reason, a reason under `no verdict`, that under the candidate
   // set, and the two dropped kinds under one branch of their own.
   assert.deepEqual(f.rows.map((r) => [r.depth, r.key]), [
-    [0, "sourced"],
+    [0, "corpus"],
     [1, "dropped"], [2, "excluded"], [2, "heldOutDead"],
     [1, "candidates"], [2, "foldedAway"], [2, "consistent"], [2, "inconsistent"], [2, "unmeasured"],
     [3, "never answered a REQ"],
@@ -383,6 +424,37 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(at("never answered a REQ").tone, null, "a relay that will not answer is not our fault");
   assert.equal(at("never answered a REQ").hosts, 2201, "the url count's resolution into servers rides along");
   ok("the tree nests by depth, guides its own branches, and scales every bar to the root");
+}
+
+{
+  // THE CORPUS IS NOT ONE DERIVATION'S YIELD. A url leaves the relay lists for
+  // reasons of its own and every measurement of it stays in the store — the
+  // fold still groups new urls against it — so rooted at `sourced` alone the
+  // tree lost it silently, on a card captioned "every relay url this router
+  // knows of". A deployment holding records for 17,584 urls whose current lists
+  // name 1,754 drew a tenth of its own corpus.
+  const shrunk = (over = {}) => funnelOf({
+    name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50, recordedOnly: 15830,
+    streams: [{ candidates: 1700, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 1000 }],
+    ...over,
+  });
+  const f = shrunk();
+  const at = (key) => f.rows.find((r) => r.key === key);
+  assert.equal(f.total, 17584, "the mouth is what was named PLUS what only our records know");
+  assert.equal(at("recordedOnly").value, 15830);
+  assert.equal(at("recordedOnly").depth, 1, "a sibling of the candidate set, not a slice of it");
+  assert.equal(at("recordedOnly").tone, "mute", "nothing was decided against them — nobody asked");
+  // The three children still divide the root exactly once.
+  assert.equal(at("dropped").value + at("recordedOnly").value + at("candidates").value, f.total);
+  assert.equal(f.rows.some((r) => r.key === "unattributed"), false, "the partition still closes");
+
+  // Absent, and the tree is exactly what it always was — a router older than
+  // this member never measured that corpus and must not be shown a zero row
+  // claiming it did.
+  const old = shrunk({ recordedOnly: undefined });
+  assert.equal(old.total, 1754);
+  assert.equal(old.rows.some((r) => r.key === "recordedOnly"), false);
+  ok("the tree's mouth is every url the router knows of, not what one derivation named");
 }
 
 {

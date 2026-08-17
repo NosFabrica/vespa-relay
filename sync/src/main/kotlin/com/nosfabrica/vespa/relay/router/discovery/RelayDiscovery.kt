@@ -257,6 +257,63 @@ object RelayDiscovery {
     }
 
     /**
+     * Every url THIS ROUTER holds a current record about, whatever that record
+     * says.
+     *
+     * Not a verdict read and not a gate: this is the answer to "how many relay
+     * urls does this router know of", which is a wider question than "how many
+     * did a relay list name this round" and used to have no answer at all. A url
+     * leaves the streams' relay lists for reasons of its own — the author who
+     * listed it revised their 10002, the source that carried it was
+     * reconfigured — and the moment it does, the corpus the coverage card draws
+     * silently loses it, while every measurement this router ever took of it is
+     * still in the store. The card's own caption promises "every relay url this
+     * router knows of"; this is what makes that true rather than aspirational.
+     *
+     * **[self] ALONE, and not [undialable]'s wider trust set.** That one takes
+     * every monitor identity the operator vouched for, because a hold-out is a
+     * decision an operator may delegate. This is not a decision at all, it is
+     * the size of our own corpus — and unscoped it is somebody else's: a
+     * deployment mirroring a busy foreign monitor's 30166s would draw that
+     * monitor's whole world as the mouth of ITS coverage tree, shrinking every
+     * bar under it to a sliver of a corpus this router has never touched. It is
+     * also exactly the population [RelayVerdictRecord.loadAll] hands the fold,
+     * so the card's mouth and the fold's world stay one corpus.
+     *
+     * Null [self] is a router with no signer: it holds no records, and the
+     * honest count of what it knows beyond today's relay lists is none.
+     *
+     * Reads the `d` values through the store's TAGS-ONLY PROJECTION where there
+     * is one — this asks a question about a whole kind, and materializing five
+     * figures of records to read one field off each is the cost that projection
+     * exists to remove. A store without it pages instead.
+     */
+    suspend fun recorded(
+        store: IEventStore,
+        self: String?,
+        maxAgeSeconds: Long,
+        allowOnion: Boolean = false,
+        now: Long = nowSeconds(),
+    ): Set<NormalizedRelayUrl> {
+        if (self == null) return emptySet()
+        val filter = Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = now - maxAgeSeconds)
+        val found = HashSet<NormalizedRelayUrl>()
+        val semantics = (store as? VespaEventStore)?.store
+        if (semantics != null) {
+            // Through the same [normalize] every discovered url goes through, so
+            // one url cannot be two entries here and one there — a `d` value is
+            // a string somebody else wrote, and the onion rule is this
+            // deployment's transport rather than the tag's business.
+            for (value in semantics.distinctTagValues(filter = filter, tagName = "d", valueIndex = 1, where = { true })) {
+                normalize(value, allowOnion)?.let(found::add)
+            }
+            return found
+        }
+        scan(store, filter, SCAN_PAGE) { event -> urlOf(event, allowOnion)?.let(found::add) }
+        return found
+    }
+
+    /**
      * One indexed query for "records carrying THIS verdict, signed by these
      * identities, re-checked since the floor" — the shared core of [syncable]
      * and [undialable].
@@ -324,8 +381,13 @@ object RelayDiscovery {
      * page that is entirely one timestamp grows until it spans two — the one
      * place a page may exceed [pageSize], and the only way not to lose the
      * run.
+     *
+     * Internal rather than private since [RelayVerdictRecord.loadAll] walks a
+     * corpus too: an unbounded read of somebody's whole kind is the shape this
+     * exists to page, and a second hand-rolled cursor beside it is a second
+     * place for the boundary handling above to be got wrong.
      */
-    private suspend fun scan(
+    internal suspend fun scan(
         store: IEventStore,
         filter: Filter,
         pageSize: Int,
