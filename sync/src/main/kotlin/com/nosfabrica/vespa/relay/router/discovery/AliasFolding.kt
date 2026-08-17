@@ -176,7 +176,15 @@ class AliasFolding(
      * `#d` query per 500 urls and no network at all.
      */
     suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): Collapsed {
-        if (candidates.size < 2) return Collapsed(candidates, emptyMap(), candidates)
+        // ONE URL IS STILL WORTH ASKING ABOUT. This returned it untouched on the
+        // reasoning that a duplicate needs two urls side by side — true of
+        // [measure], which has to compare something, and false here: the
+        // comparison already happened, possibly in another process, and reading
+        // its answer back is one indexed query. A caller holding a single url is
+        // the shape a fold is most useful on, since the verdict is the only
+        // thing that can tell it the url it has is somebody else's second
+        // address.
+        if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
         adopt(candidates)
         return collapse(candidates)
     }
@@ -229,13 +237,16 @@ class AliasFolding(
      * Fingerprint what [apply] could not answer, and publish what that proves.
      *
      * The dialling half, and the reason the two are separate: this fingerprints
-     * every group its candidates leave unresolved, [concurrency] at a time, and each fingerprint is a paged websocket conversation with
-     * somebody else's relay. Returns how many new aliases it learned, so a
-     * caller can log a pass that did nothing differently from one that never
-     * ran.
+     * every group left unresolved once [candidates] are grouped against
+     * everything the store already has a verdict about ([adoptWorld]),
+     * [concurrency] at a time, and each fingerprint is a paged websocket
+     * conversation with somebody else's relay. Returns how many new aliases it
+     * learned, so a caller can log a pass that did nothing differently from one
+     * that never ran.
      *
-     * Safe to call with anything: a url whose host wears no other url is never
-     * probed, and a set of one returns immediately.
+     * Safe to call with anything: a url whose host wears no other url — and
+     * whose host nothing in the store knows another url for either — is never
+     * probed, and a world of one returns immediately.
      *
      * [canDial] is the caller's own transport guard — the same one its fan-out
      * applies — so a probe never dials what the caller would refuse to.
@@ -252,17 +263,32 @@ class AliasFolding(
         onEvent: suspend (Event) -> Unit = {},
         sockets: Sockets = Sockets.NONE,
     ): Int {
-        if (candidates.size < 2) return 0
+        if (candidates.isEmpty()) return 0
         val startedMs = System.currentTimeMillis()
 
-        adopt(candidates)
+        // THE WHOLE RECORDED WORLD, not this pass's candidates — see
+        // [adoptWorld]. Grouping is done over the union so a url arriving alone
+        // on a host we have already measured is measured against what we know
+        // about that host rather than against nothing.
+        val grouped = adoptWorld(candidates)
+        val world = grouped.urls
+        if (world.size < 2) return 0
+        // Urls with NO VERDICT of any kind as this pass begins — read after the
+        // adopt and before the first dial, which is the only moment "new" means
+        // anything. This is the number the card counts against: `unmeasured` is
+        // the same population once the pass has run, so the two make a
+        // fraction — of the urls that arrived undecided, how many leave decided.
+        // Counted over the CANDIDATES rather than the world, because that is the
+        // set the caller is waiting on; a decided url pulled in for context is
+        // neither new nor progress.
+        val fresh = candidates.count { !aliases.measured(it) }
 
         // Everything unresolved, minus the hosts a recent pass already dialled
         // and could not decide. Held back rather than dropped: the cooldown
         // lapses and they are tried again, just not at the front of every pass
         // between now and then. See [undecidable].
         val startedAtMs = System.currentTimeMillis()
-        val all = aliases.unresolved(candidates)
+        val all = aliases.unresolved(world)
         val groups = all.filter { group -> !onCooldown(group, startedAtMs) }
         var learned = 0
         var probed = 0
@@ -684,8 +710,32 @@ class AliasFolding(
                                 }
                             if (again == null || !aliases.reproducible(leaderPrint, again)) {
                                 val self = again?.let { s -> leaderPrint.count { it in s } } ?: 0
-                                aliases.forget(group)
-                                // Forgotten means nothing was written down, which
+                                // BACK TO WHAT THE STORE SAYS, which is not the
+                                // same as forgetting the group.
+                                //
+                                // `forget` dropped every verdict held about
+                                // these urls — including the ones this pass
+                                // ADOPTED moments ago, which are still in the
+                                // store and still perfectly good. Between here
+                                // and the next `apply` the fan-out therefore saw
+                                // a host's settled duplicates as separate
+                                // relays, dialling each one, and the pass's own
+                                // row counted them as urls that arrived decided
+                                // and left undecided: `unmeasured` above
+                                // `newUrls`, which the card can only draw as
+                                // `0 of N checked` on a pass that decided
+                                // plenty. Grouping the world made it worse by
+                                // making the groups bigger.
+                                //
+                                // Replacing with [World.held] undoes exactly
+                                // this pass's learnings about this group and
+                                // nothing else — the store is the record, and
+                                // "start from the store exactly as if this pass
+                                // had never run" is literally what it does.
+                                grouped.held
+                                    ?.let { aliases.replace(group, it.aliases, it.distinct) }
+                                    ?: aliases.forget(group)
+                                // Nothing new was written down, which
                                 // means this group comes back on the next pass —
                                 // widest first — and fails the same way. A host
                                 // that cannot reproduce its own window today is
@@ -826,6 +876,7 @@ class AliasFolding(
             Processors.Work(
                 stream = label,
                 candidates = candidates.size,
+                newUrls = fresh,
                 unmeasured = cleaned?.unmeasured?.size ?: candidates.size,
                 dialled = probed,
                 decided = learned,
@@ -1024,14 +1075,111 @@ class AliasFolding(
     }
 
     /**
+     * Adopt every verdict the store holds and hand back the set to GROUP: this
+     * pass's candidates, plus every url one of those verdicts is about.
+     *
+     * **A duplicate is a property of a url next to another one, and the
+     * candidate set is not the whole neighbourhood.** A url's siblings on the
+     * same host drop out of it for reasons that have nothing to do with the
+     * fold — held out as known dead by [StreamWorld], gone from the relay list
+     * that named them, discovered by a stream since reconfigured. Grouped from
+     * candidates alone, a url that arrives on such a host is a group of ONE,
+     * [RelayAliases.unresolved] drops it for that, and it is dialled as its own
+     * relay for as long as it is discovered — while a signed record naming the
+     * very url it folds onto sits in the store, unread, because nothing asked
+     * for it.
+     *
+     * Grouping the world instead costs [RelayVerdictRecord.loadAll]'s one query
+     * per pass and nothing per url. What the extra urls contribute is the one
+     * thing such a group was missing — a measured url to hold the ruler, which
+     * [RelayAliases.leaderOf] then picks ahead of everything else.
+     *
+     * **SURVIVORS ONLY: the urls something folded ONTO, and the ones a pass
+     * cleared as their own relay.** Those are the two kinds that can be a
+     * yardstick. The urls that folded AWAY are deliberately left out, and both
+     * reasons are load-bearing. They can contribute nothing — [RelayAliases.toProbe]
+     * drops them from the dials and [RelayAliases.learn] skips them for want of
+     * a fingerprint — so on a polluted corpus they are tens of thousands of
+     * group members that exist only to be walked past. And a group whose
+     * survivor is absent would hand [RelayAliases.leaderOf] a folded url as its
+     * `PREFERENCE` pick, which dials a known duplicate to lead a group and folds
+     * the newcomer onto an alias rather than onto the relay.
+     *
+     * It also bounds what a pass can dial. Every url this router has written a
+     * record about includes the corpse of every dead one; a survivor is a url we
+     * have already fingerprinted SUCCESSFULLY, and it costs at most the leader
+     * dial the group pays anyway.
+     *
+     * Falls back to the candidate-scoped [adopt] when the store cannot answer,
+     * which fails into keeping what we hold rather than into unfolding it.
+     */
+    private suspend fun adoptWorld(candidates: List<NormalizedRelayUrl>): World {
+        val held =
+            try {
+                record.loadAll()
+            } catch (e: CancellationException) {
+                // The scope is shutting down — see [adopt].
+                throw e
+            } catch (e: Exception) {
+                adopt(candidates)
+                return World(candidates, null)
+            }
+        // Candidates FIRST, so the world keeps the caller's order and a group's
+        // members sort the way they always did.
+        val world = LinkedHashSet(candidates)
+        world += held.aliases.values
+        world += held.distinct
+        aliases.replace(world, held.aliases, held.distinct)
+        return World(world.toList(), held)
+    }
+
+    /**
+     * What a pass grouped, and the store's own answer about it.
+     *
+     * [held] is carried rather than dropped because one exit needs to put the
+     * store's verdicts BACK — see the reproducibility guard, which has to undo
+     * exactly what this pass learned about one group and nothing else. NULL
+     * when the store could not answer, which is not "no verdict": there is then
+     * nothing to restore FROM, and an exit that needs to undo its own work has
+     * to fall back on forgetting.
+     */
+    private class World(
+        val urls: List<NormalizedRelayUrl>,
+        val held: RelayVerdictRecord.Verdicts?,
+    )
+
+    /**
      * The candidate set as the verdicts currently in memory see it.
      *
      * Pure — no store, no network — so both halves end the same way and the
      * numbers [measure] logs are the numbers the next [apply] will produce.
+     *
+     * **A FOLD IS ONLY APPLIED WHERE ITS SURVIVOR IS IN THE SET.** Every live
+     * consumer applies [Collapsed.aliases] by DROPPING the alias — `RosterBuilder`
+     * filters it out of the discovered list, `FitnessPass` stamps it
+     * `Verdict.ALIAS` — and neither adds the canonical, because until the fold
+     * grouped the whole recorded world the canonical was always in the same list
+     * by construction. It no longer is: a verdict can name a survivor this
+     * caller never asked about — held out as known dead, gone from the relay
+     * list that named it, measured on another stream's world — and dropping the
+     * alias then takes the relay out of the fan-out with nothing put back. One
+     * live url, folded onto a url nobody dials, for the record's whole TTL.
+     *
+     * The same hazard existed before the fold ever looked past its candidates,
+     * quietly and rarely: a stored verdict outlives the discovery that produced
+     * it, so a canonical could always drift out of a later cycle's list. Guarded
+     * HERE rather than at the publication end because the verdict is not wrong —
+     * the two urls really are one relay — it is simply not actionable while the
+     * survivor is absent, and it becomes actionable again, with no re-probe, the
+     * moment that url is discovered again.
      */
     private fun collapse(candidates: List<NormalizedRelayUrl>): Collapsed {
-        val dial = candidates.map { aliases.canonicalOf(it) }.distinct()
-        val map = candidates.filter { aliases.canonicalOf(it) != it }.associateWith { aliases.canonicalOf(it) }
+        val present = candidates.toHashSet()
+        // The url to dial in place of this one, or the url itself when the
+        // stand-in is not here to stand in.
+        val standIn = { url: NormalizedRelayUrl -> aliases.canonicalOf(url).takeIf { it in present } ?: url }
+        val dial = candidates.map(standIn).distinct()
+        val map = candidates.filter { standIn(it) != it }.associateWith(standIn)
         return Collapsed(dial, map, dial.filter { !aliases.measured(it) })
     }
 

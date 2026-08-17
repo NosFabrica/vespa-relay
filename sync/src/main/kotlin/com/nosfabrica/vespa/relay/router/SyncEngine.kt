@@ -400,6 +400,9 @@ class SyncEngine(
                             .flatMap { it.discovery?.let { d -> d.sources + d.gatedBy }.orEmpty() }
                             .flatMap { it.filter.authors.orEmpty() }
                 ).distinct(),
+            // …and OURS alone, for the one count that is about the size of this
+            // router's own corpus rather than about whose word it takes.
+            self = signer?.pubKey,
             tor = tor,
             sockets = sockets,
             monitorConfig = config.monitor,
@@ -516,6 +519,11 @@ class SyncEngine(
                             Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
                             Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
                             Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
+                            // The corpus BESIDE the derivation: urls we hold
+                            // records about that no relay list named this round.
+                            // Without it the card's mouth is one walk's yield
+                            // and calls itself everything this router knows of.
+                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
                         )
                     }
                 }

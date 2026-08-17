@@ -431,6 +431,16 @@ internal object SyncVocabulary {
                     "verdict and is never asked again until it ages out.",
             )
             put(
+                "newUrls",
+                "…of those, how many arrived at the pass with NO verdict at all — the urls it exists to decide, and " +
+                    "the number the card draws its position against (`143 of 1,754 new relay(s) checked for aliases`). " +
+                    "`unmeasured` is the same population after the pass has run, so `newUrls - unmeasured` is what it " +
+                    "decided. Counted against `candidates` instead, the position barely moves however much a pass " +
+                    "achieves: most of a settled candidate set carries a verdict from weeks ago and is never asked " +
+                    "again until it ages out. Absent on a pass that does not count it, where the card falls back to " +
+                    "the whole candidate set.",
+            )
+            put(
                 "unmeasured",
                 "THE PROGRESS NUMBER for a processor: how many of its `candidates` still have no verdict after the pass " +
                     "that just ran. Falling pass over pass is the fold getting somewhere; standing still while " +
@@ -459,6 +469,26 @@ internal object SyncVocabulary {
                     "widest number this router has about the network it can see, and the one `candidates` is a share " +
                     "of. Per PASS and over the union of every stream, so it is not the sum of the streams' own " +
                     "`discovered`: two streams routinely find the same url and it is one url here.",
+            )
+            put(
+                "corpus",
+                "The coverage tree's root: every relay url this router knows of, which is `sourced + recordedOnly` — " +
+                    "what a relay list named this round, plus what only our own signed records still know about. Its " +
+                    "own name because `sourced` means one of those two and the root means both: a row labelled " +
+                    "\"everything this router knows of\" carrying `sourced`'s definition would document the wrong " +
+                    "number for the widest row on the card. Not a published member — the page synthesises it from " +
+                    "the two that are.",
+            )
+            put(
+                "recordedOnly",
+                "Urls this router holds a signed verdict record about that NO relay list named this round — the rest " +
+                    "of the funnel's mouth, beside `sourced` rather than inside it, so the tree's root is " +
+                    "`sourced + recordedOnly`. Not a drop and not a refusal: nothing was decided against these urls, " +
+                    "they simply were not asked for, because the author who listed one revised their relay list or a " +
+                    "source was reconfigured. The store still holds every measurement ever taken of them and the " +
+                    "alias fold still groups a new url against them, which is why counting the corpus as one " +
+                    "derivation's yield understated it. Zero on a router with no signer and no named monitors: it " +
+                    "holds no records of its own.",
             )
             put(
                 "heldOutDead",
