@@ -842,10 +842,16 @@ internal object SyncProgressReport {
      */
     private const val MAX_UNDECIDED_ROWS = 16
     private const val MAX_REJECTION_ROWS = 4
-    private const val MAX_UNDECIDED_EXAMPLES = 3
+
+    /**
+     * Named hosts kept under one reason, matching `Processors.MAX_UNDECIDED_EXAMPLES`.
+     * Three named three of twenty-eight, and WHICH servers will not fold is
+     * the whole use of the list — see the router's constant for the argument.
+     */
+    private const val MAX_UNDECIDED_EXAMPLES = 100
 
     /** Ranked hosts kept under one reason, matching `Processors.MAX_UNDECIDED_HOSTS`. */
-    private const val MAX_UNDECIDED_HOSTS = 6
+    private const val MAX_UNDECIDED_HOSTS = 100
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 

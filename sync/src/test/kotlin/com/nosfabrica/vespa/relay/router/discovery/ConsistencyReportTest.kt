@@ -263,20 +263,26 @@ class ConsistencyReportTest {
     @Test
     fun `the named hosts are capped, and the reason still counts every url`() =
         runBlocking {
-            // Ten hosts, six named. The cap is the point: what must NOT happen
-            // is the row's own `urls` falling to what the cap could name, which
-            // would make the funnel's fourth level close over a truncated list
-            // and report the tail as if it did not exist.
+            // More hosts than the cap can name. The cap is the point: what must
+            // NOT happen is the row's own `urls` falling to what the cap could
+            // name, which would make the funnel's fourth level close over a
+            // truncated list and report the tail as if it did not exist.
+            //
+            // Sized off the constant rather than a literal, because the
+            // constant moved once already — it was six, which a ten-host case
+            // exercised; at a hundred that same case named every host and the
+            // assertion below quietly stopped testing anything.
             val processors = Processors()
-            val many = (1..10).map { RelayUrlNormalizer.normalize("wss://h$it.example") }
+            val hostCount = Processors.MAX_UNDECIDED_HOSTS + 20
+            val many = (1..hostCount).map { RelayUrlNormalizer.normalize("wss://h$it.example") }
             val gate = pass(processors.of("consistency")) { _, _, _, _ -> AliasProbe.Page(null) }
 
             gate.measure("t", many, canDial = { true })
 
             val row = row(processors).undecided.single()
             assertEquals(Processors.MAX_UNDECIDED_HOSTS, row.top.size)
-            assertEquals(10, row.urls, "the count is over every url, not over the ones that fitted")
-            assertEquals(10, row.hosts)
+            assertEquals(hostCount, row.urls, "the count is over every url, not over the ones that fitted")
+            assertEquals(hostCount, row.hosts)
             assertTrue(
                 row.urls > row.top.sumOf { it.urls },
                 "a ranked head that summed to its reason would hide the tail it was taken from",

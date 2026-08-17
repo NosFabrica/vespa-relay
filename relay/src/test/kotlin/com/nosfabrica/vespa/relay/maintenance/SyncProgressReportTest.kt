@@ -217,6 +217,39 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `the named hosts under a reason keep a ceiling, high enough to be an inventory`() {
+        // The cap that replaced the three-name sample. It is still a cap —
+        // unlike `inFlight`, this list is bounded only by the host universe,
+        // and the whole reason it is re-applied here is a file this process
+        // did not write. What changed is that it now clears a real
+        // enumeration: production's fold had reasons holding 28, 30 and 18
+        // hosts and named three of each.
+        val examples = (1..120).joinToString(",") { "\"h$it.example\"" }
+        val top = (1..120).joinToString(",") { """{"host": "t$it.example", "urls": $it}""" }
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [],
+                 "processors": [{"name": "aliasFold", "phase": "idle", "streams": [
+                   {"name": "content", "candidates": 400, "unmeasured": 240,
+                    "undecided": {"reasons": [{"reason": "a host that cannot repeat itself", "hosts": 120,
+                                               "urls": 240, "examples": [$examples], "top": [$top]}],
+                                  "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+
+        val work = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val reason = (work["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject
+        assertEquals(100, (reason["examples"] as JsonArray).size, "bounded, and far above the old three")
+        assertEquals(100, (reason["top"] as JsonArray).size, "the ranked head is bounded the same way")
+        // The property the cap must never break: the reason still counts every
+        // url, so the funnel's level cannot close over the truncated list.
+        assertEquals(240L, reason["urls"]!!.jsonPrimitive.long, "the count is over every url, not the named ones")
+        assertEquals(120L, reason["hosts"]!!.jsonPrimitive.long, "and the remainder stays readable as hosts minus the list")
+    }
+
+    @Test
     fun `every worker is published, however many the pool is holding`() {
         // The regression this exists to stop. `inFlight` was cut to twenty rows
         // on BOTH sides, so a pool holding 128 workers published a sixth of the
@@ -520,7 +553,10 @@ class SyncProgressReportTest {
         val work = (fold["streams"] as JsonArray)[0].jsonObject
         assertEquals(12L, work["unmeasured"]!!.jsonPrimitive.long)
         val reason = (work["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject
-        assertEquals(3, (reason["examples"] as JsonArray).size, "the examples are capped again on this side")
+        // Four, not three: the example cap is a CEILING now rather than a
+        // sample, so an ordinary row passes through whole. What it is still
+        // bounded by is pinned separately, below.
+        assertEquals(4, (reason["examples"] as JsonArray).size, "an ordinary row's examples pass through whole")
         assertEquals(1L, work["undecided"]!!.jsonObject["omitted"]!!.jsonPrimitive.long, "and the cap discloses itself")
         assertEquals(12L, rows[1].jsonObject["queued"]!!.jsonPrimitive.long)
     }

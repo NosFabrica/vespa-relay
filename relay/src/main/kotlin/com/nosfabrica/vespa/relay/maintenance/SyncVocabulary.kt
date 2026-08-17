@@ -534,13 +534,17 @@ internal object SyncVocabulary {
             )
             put(
                 "top",
-                "The widest few HOSTS under one undecided reason, ranked by how many of their urls ended there, " +
+                "The widest HOSTS under one undecided reason, ranked by how many of their urls ended there, " +
                     "with the name beside the count. It answers the question the pair `urls`/`hosts` raises and " +
                     "cannot settle: 3,902 urls on 2,201 hosts is either a dead network spread thin — no host above " +
                     "a dozen urls — or three servers wearing a thousand urls each, and those are opposite findings " +
-                    "wanting opposite responses. DELIBERATELY DOES NOT SUM to the reason's `urls`: it is a ranked " +
-                    "head, and the remainder is the tail it is a head OF. The card draws that remainder as its own " +
-                    "slice rather than closing the level, so a list that was cut can never read as the whole one.",
+                    "wanting opposite responses. It also answers the OTHER question these rows get asked, which " +
+                    "the shape alone never could: WHICH servers, since the reason a url will not fold or settle is " +
+                    "a property of the server and the names are the half you can act on. Long enough to be that " +
+                    "inventory rather than a sample of it. Still DELIBERATELY DOES NOT SUM to the reason's `urls`: " +
+                    "it is a ranked head, and the remainder is the tail it is a head OF. The card draws that " +
+                    "remainder as its own slice rather than closing the level, so a list that was cut can never " +
+                    "read as the whole one.",
             )
             put(
                 "lastPassAt",

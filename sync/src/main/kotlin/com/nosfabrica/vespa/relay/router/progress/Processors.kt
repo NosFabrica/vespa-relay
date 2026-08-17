@@ -242,9 +242,14 @@ class Processors {
         /** How many hosts ended the pass that way. */
         val hosts: Int,
         /**
-         * A couple of them by name, for a pass that has only NAMES to give —
-         * the fold, which decides a host at a time. A pass that can count fills
-         * [top] instead: the same disclosure with the number that ranks it.
+         * Them by name, for a pass that has only NAMES to give — the fold,
+         * which decides a host at a time. A pass that can count fills [top]
+         * instead: the same disclosure with the number that ranks it.
+         *
+         * Bounded at [MAX_UNDECIDED_EXAMPLES], which is a ceiling and not a
+         * sample: this used to be three, and three names under a reason
+         * holding twenty-eight hosts made the one actionable thing about the
+         * row — which servers — the thing it withheld.
          */
         val examples: List<String> = emptyList(),
         /**
@@ -670,19 +675,47 @@ class Processors {
          */
         const val MAX_UNDECIDED_REASONS = 16
 
-        /** Named hosts per reason. Enough to recognise the pattern, not an inventory. */
-        const val MAX_UNDECIDED_EXAMPLES = 3
+        /**
+         * Named hosts per reason.
+         *
+         * It WAS three — "enough to recognise the pattern, not an inventory" —
+         * and an inventory turns out to be the thing this list is for. The
+         * fold's undecided rows are the answer to "which servers will not
+         * fold", which is where an investigation of a roster inflated by
+         * unfolded aliases starts, and three names out of twenty-eight cannot
+         * start one: the pattern was already legible from the reason string,
+         * so the only information the names carried was WHICH, and that was
+         * the part being cut.
+         *
+         * A hundred, not unbounded, and that differs from `inFlight` on
+         * purpose: a row there is a worker and the pool bounds it, while this
+         * is bounded only by the host universe, which has no ceiling but
+         * discovery. So this stays a safety ceiling rather than an editorial
+         * one — it covers the fold's whole enumeration today with room over,
+         * and the remainder past it is still readable as [Undecided.hosts]
+         * minus the list.
+         */
+        const val MAX_UNDECIDED_EXAMPLES = 100
 
         /**
          * …and how many are named WITH their url counts, where a pass can count
          * them — see [Undecided.top].
          *
-         * Six rather than three, because these are ranked and a rank of three is
-         * not one: the question they answer is whether a reason is concentrated
-         * on a few servers or spread across thousands, and three rows is too
-         * short a head to see the shape of the tail. Still an inventory nobody
-         * has to scroll, and still bounded twice — the relay re-caps it.
+         * It was six — ranked, so a rank of three was not one, and six was
+         * enough head to see the shape of a tail. That answered the SHAPE
+         * question ("concentrated on a few servers, or spread across
+         * thousands") and only that one. The other question these rows get
+         * asked is WHICH, and six names out of a hundred and eighty-six is
+         * not an answer to it — the reason a url will not stabilise is a
+         * property of the server, so the names are the actionable half.
+         *
+         * A hundred for the same reason as [MAX_UNDECIDED_EXAMPLES], and
+         * with the same rule: a safety ceiling, not an editorial one. Still
+         * bounded twice, since the relay re-caps it, and still DELIBERATELY
+         * NOT SUMMING to the reason's urls — a long head is still a head,
+         * and the card draws the remainder as its own slice so a cut list
+         * can never read as the whole one.
          */
-        const val MAX_UNDECIDED_HOSTS = 6
+        const val MAX_UNDECIDED_HOSTS = 100
     }
 }
