@@ -140,8 +140,9 @@ class SyncVocabularyTest {
                     "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
                       "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
-                   {"name": "consistency", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
-                    "lastPassAt": 880, "lastPassSec": 900, "nextInSec": 20800,
+                   {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
+                    "lastPassAt": 880, "lastPassSec": 900,
+                    "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300},
                     "sourced": 44, "excluded": 1, "heldOutDead": 3,
                     "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
                       "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
@@ -151,7 +152,6 @@ class SyncVocabularyTest {
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
                     "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
-                   {"name": "reachability", "phase": "watching", "phaseForSec": 900, "observed": 40, "knownDead": 8},
                    {"name": "fitness", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 60, "nextInSec": 20800,
                     "syncable": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
@@ -207,6 +207,10 @@ class SyncVocabularyTest {
                     "unnamed",
                     "outcome",
                     "holding",
+                    // The other phase word that reads as a stall and is not —
+                    // a visit stream has no pass to be a phase OF, so the word
+                    // simply lasts and its numbers are the whole story.
+                    "rotating",
                     "accountedFor",
                     "staleForSec",
                 ) +
@@ -272,13 +276,18 @@ class SyncVocabularyTest {
                     "lastPassAt",
                     "lastPassSec",
                     "nextInSec",
+                    // …and the countdown's opposite half: where the pass
+                    // RUNNING right now has got to, in units it names itself.
+                    "measuring",
+                    "attempted",
+                    "toProbe",
+                    "unit",
                     "queued",
                     "capacity",
                     "accepted",
                     "rejected",
                     "pushed",
                     "dropped",
-                    "observed",
                     // The fitness pass's verdict funnel — each member one value
                     // of the `s` tag it signs — and the rotating pool's row.
                     "syncable",

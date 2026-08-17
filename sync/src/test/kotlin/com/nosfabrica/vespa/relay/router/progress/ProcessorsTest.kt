@@ -99,6 +99,92 @@ class ProcessorsTest {
     }
 
     @Test
+    fun `a pass in flight publishes where it has got to, and what that rate implies`() {
+        // The state this exists for: a stability pass runs for hours, its
+        // countdown is deliberately unset while it does, and every other number
+        // on the row describes the pass BEFORE it. `measuring` is the only
+        // member that moves, so it has to carry both halves of the position and
+        // the estimate they imply.
+        val p = Processors()
+        val gate = p.of("consistency")
+        gate.begin(nowMs = 1_000)
+        // The walk's own clock starts here, not at `begin` — the pass spends
+        // its first stretch reading stored verdicts, and that is not dialling.
+        gate.measuring(10, Processors.UNIT_URL, nowMs = 1_000)
+
+        assertNull(
+            p
+                .snapshot(nowMs = 6_000)
+                .single()
+                .measuring!!
+                .etaSec,
+            "nothing has landed, so there is no rate to extrapolate from",
+        )
+
+        gate.attempted()
+        gate.attempted()
+
+        val run = p.snapshot(nowMs = 11_000).single().measuring!!
+        assertEquals(Processors.UNIT_URL, run.unit)
+        assertEquals(2, run.attempted)
+        assertEquals(10, run.toProbe)
+        // Ten seconds for two urls is five seconds each, and eight are left.
+        assertEquals(40L, run.etaSec)
+    }
+
+    @Test
+    fun `a position belongs to the pass that had it`() {
+        // Both directions of the same rule. A stale position under `idle` reads
+        // as a pass that stopped halfway, which is a fault report rather than a
+        // measurement; the previous pass's `10 of 10` under a fresh `measuring`
+        // reads as one that finished instantly. Neither may survive its pass.
+        val p = Processors()
+        val fold = p.of("aliasFold")
+        fold.begin(nowMs = 1_000)
+        fold.measuring(10, Processors.UNIT_HOST, nowMs = 1_000)
+        fold.attempted(10)
+        fold.finish(nowMs = 11_000)
+
+        assertNull(p.snapshot(nowMs = 12_000).single().measuring, "no pass is running, so there is no position")
+
+        fold.begin(nowMs = 20_000)
+        assertNull(
+            p.snapshot(nowMs = 20_001).single().measuring,
+            "a pass derives its set some way in — until it does, the last pass's position is not this one's",
+        )
+    }
+
+    @Test
+    fun `a pass that brackets itself inside another bracket is one pass, not two`() {
+        // The fitness pass brackets its own `measure` — it must, because the
+        // fast lane calls it outside the monitor's loop — and the sweep
+        // brackets every pass it runs. Both finishes landed, so the row
+        // reported two `passesRun` per sweep and the clock came from the loop
+        // rather than from the measure.
+        val p = Processors()
+        val fitness = p.of("fitness")
+        fitness.begin(nowMs = 1_000) // the monitor's bracket
+        fitness.begin("measuring fitness", nowMs = 2_000) // the pass's own
+        fitness.finish(nowMs = 8_000) // …which ends it
+        fitness.finish(nowMs = 8_100) // and the monitor's, arriving after
+
+        val row = p.snapshot(nowMs = 9_000).single()
+        assertEquals(1L, row.passes, "one pass ran")
+        assertEquals(6L, row.lastPassSec, "and it is timed from the measure, not from the loop around it")
+    }
+
+    @Test
+    fun `a pass that reports no position is silent rather than empty`() {
+        // Three of the router's processors have no set to walk at all — ingest,
+        // the healer, the push — and `0 of 0` from them would be a measurement
+        // they never took, drawn on the card as a pass that has nothing to do.
+        val p = Processors()
+        p.of("ingest").phase(Processors.RUNNING)
+
+        assertNull(p.snapshot().single().measuring)
+    }
+
+    @Test
     fun `work is kept per stream, replacing rather than accumulating`() {
         // A stream re-submits its whole candidate set every cycle, so appending
         // would publish the same stream once per pass forever.

@@ -340,9 +340,9 @@ internal object SyncVocabulary {
                     "within its TTL (24h by quartz's default), so this cycle skipped it without asking. It comes back when " +
                     "the record ages out — or immediately, if anything else on its host delivers. These two — knownDead and " +
                     "hostStruckOut — were one number called \"skipped as dead\", which answered \"will it try again, and " +
-                    "when\" in two opposite ways under one label. On the `reachability` processor the same name is the " +
-                    "SET rather than one cycle\'s count: how many urls currently carry such a record, which is what " +
-                    "makes this outcome explicable instead of mysterious.",
+                    "when\" in two opposite ways under one label. How many urls carry such a record across the whole " +
+                    "candidate set is `heldOutDead` on a probe pass\'s row, which is what makes this outcome " +
+                    "explicable instead of mysterious.",
             )
             put(
                 "torUnavailable",
@@ -409,13 +409,14 @@ internal object SyncVocabulary {
             )
             put(
                 "processors",
-                "The router's work that is NOT a stream, and the answer to \"what else is running\". Six of them: the " +
-                    "alias fold and the stability gate (both on the alias monitor's own six-hour clock, both writing " +
-                    "tags onto the same NIP-66 kind-30166 records), the NIP-66 reachability monitor (quartz's, which " +
-                    "watches every socket this client opens rather than dialling on a schedule), ingest, the healer " +
-                    "and the upstream push. A processor that is not registered is one this router does not run — a " +
-                    "deployment with no signer has no fold and no monitor at all — so an absent row is a fact rather " +
-                    "than missing data.",
+                "The router's work that is NOT a stream, and the answer to \"what else is running\". Seven of them: " +
+                    "the alias fold, the stability gate and the fitness pass (all three on the alias monitor's own " +
+                    "six-hour clock, all three writing tags onto the same NIP-66 kind-30166 records), the rotating " +
+                    "pool the visit-mode streams ride, ingest, the healer and the upstream push. A passive NIP-66 " +
+                    "watcher used to be an eighth, signing a record per socket this client opened; the passes own the " +
+                    "record now. A processor that is not registered is one this router does not run — a deployment " +
+                    "with no signer has no fold and no monitor at all — so an absent row is a fact rather than " +
+                    "missing data.",
             )
             put(
                 "candidates",
@@ -432,8 +433,11 @@ internal object SyncVocabulary {
                     "Zero is the state both probe passes are working towards — every url measured, nothing left to " +
                     "ask — and it is reached and held for most of a monthly TTL. NOT the complement of `dialled`: that " +
                     "one counts what a single pass spent, this one what the whole candidate set still lacks. The CARD " +
-                    "draws this subtracted from `candidates` — the count that has a verdict, which rises as the pass " +
-                    "gets somewhere — so the two read in opposite directions and the number on screen is not this one.",
+                    "draws the count that HAS a verdict, which rises as the pass gets somewhere, so the two read in " +
+                    "opposite directions and the number on screen is not this one. It also drops `foldedAway` from " +
+                    "both halves where a row publishes it: a url the fold removed is one the stability gate never " +
+                    "dials, so counting it as checked for consistency overstated that line by every duplicate in the " +
+                    "corpus — 12,024 of 16,752 where the honest reading was 595 of 5,323.",
             )
             put(
                 "dialled",
@@ -553,6 +557,46 @@ internal object SyncVocabulary {
                     "nothing submitted retries in a minute, and a long pass pushes the next one back by its own length.",
             )
             put(
+                "measuring",
+                "WHERE THE PASS RUNNING RIGHT NOW HAS GOT TO, and the only number on a processor's row that moves " +
+                    "while one runs — every other one describes the pass that ENDED. Present exactly while a pass is " +
+                    "dialling. On a monitor SWEEP it stands where `nextInSec` would be, which the sweep unsets while " +
+                    "it runs: a pass takes as long as it takes, so nothing has computed when the next one is due " +
+                    "until this one returns. A FAST LANE pass carries both, and both are true — the lane is measuring " +
+                    "the urls named since its last look while the sweep is still due when it says. Before this, a " +
+                    "stability pass spent hours saying `measuring` and nothing else — no size, no position, no end.",
+            )
+            put(
+                "attempted",
+                "Units of the current pass that are BEHIND it, however they ended — including a url our own transport " +
+                    "declined and a host with nothing to compare against. Not a success count: what a pass LEARNED is " +
+                    "`decided`, and on a discovered corpus most of a pass is spent on urls that cannot be measured at " +
+                    "all, so a position that only moved on success would sit still while the pass worked hardest.",
+            )
+            put(
+                "toProbe",
+                "How many units the pass now running set out to walk — the denominator `attempted` is a share of. NOT " +
+                    "`candidates`: both probe passes drop every url already carrying a current verdict before dialling " +
+                    "anything, so on a settled corpus this is a small fraction of the candidate set, and it is the " +
+                    "ratio to watch while a pass runs.",
+            )
+            put(
+                "unit",
+                "What `attempted` and `toProbe` are counts OF, because the passes do not decide the same thing: the " +
+                    "stability gate and the fitness pass answer about a `url`, the alias fold answers about a `host` " +
+                    "and dials every url of one to do it. A fold position counted in urls would jump by 55 for one " +
+                    "verdict and by 1 for the next.",
+            )
+            put(
+                "rotating",
+                "A `phase` value, and the one that says least without its numbers. The stream does not walk a relay " +
+                    "list at all: its world is the monitor's `syncable` verdicts and its engine is the visit pool, " +
+                    "which turns over that roster — a catch-up visit, a history audit where due, then a live tail on " +
+                    "the open socket — so there is no pass to be a phase OF and the phase simply lasts. `roster` and " +
+                    "`tails` are what it is doing; a roster of ZERO is a stream waiting on the fitness pass to certify " +
+                    "its first relay, which is the state that looked identical to a busy one.",
+            )
+            put(
                 "queued",
                 "Items waiting in a processor's queue right now — a DEPTH, on both of the queues that publish it. For " +
                     "ingest, read it against `capacity`: full means ingest is the limit and every download is " +
@@ -586,14 +630,6 @@ internal object SyncVocabulary {
                 "pushed",
                 "Events this router SENT to somebody else's relay: repairs for the healer, and whatever an upstream " +
                     "configured `dir = up` was missing for the push. The only two paths that write outward.",
-            )
-            put(
-                "observed",
-                "Urls this PROCESS has opened a socket to since it started, whatever came of it — quartz's observer " +
-                    "holds them in memory and they are gone on a restart. NOT a denominator for `knownDead`: that set " +
-                    "is read from the STORE and carries records written by earlier runs and by any router signing with " +
-                    "the same key, so a freshly restarted mirror routinely publishes 1,609 known dead against 5 " +
-                    "observed. Two populations, both true, and dividing one by the other says nothing.",
             )
             put(
                 "reached",
@@ -817,7 +853,9 @@ internal object SyncVocabulary {
                 "roster",
                 "Relays currently certified syncable and in rotation: the pool's whole world, rebuilt from the " +
                     "monitor's records on half the tightest freshness bound. A relay the monitor stops certifying " +
-                    "leaves the roster, its tail and its socket on the next rebuild.",
+                    "leaves the roster, its tail and its socket on the next rebuild. On a STREAM's row it is that " +
+                    "stream's share — the roster relays carrying at least one of its asks — and zero there is a " +
+                    "stream with nothing certified for it yet, not a stream that has stopped.",
             )
             put(
                 "awaitingVisit",
@@ -835,7 +873,8 @@ internal object SyncVocabulary {
                     "stream's filter. This is what \"constantly connected\" means: new events arrive the moment they " +
                     "exist, and the revisit only covers what a dropped tail missed. Bounded by the tail budget: past " +
                     "it a tail is EARNED, and the relay with more content lately takes the socket of the one that " +
-                    "has delivered least.",
+                    "has delivered least. On a STREAM's row it counts the tails held on that stream's `roster` " +
+                    "share; on the pool's row, every tail this router holds.",
             )
             put(
                 "evictedTails",

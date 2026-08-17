@@ -86,7 +86,8 @@ import java.nio.file.StandardCopyOption
  *       },
  *       "passes": [{"number": 11, "outcome": "completed", "…": "the walk before it, still finishing"},
  *                  {"number": 12, "outcome": "running",   "…": "the one `cycle` carries"}]
- *     }
+ *     },
+ *     {"name": "visits", "phase": "rotating", "phaseForSec": 3480, "roster": 412, "tails": 300}
  *   ],
  *   "processors": [
  *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
@@ -98,8 +99,9 @@ import java.nio.file.StandardCopyOption
  *                   "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass",
  *                                              "urls": 0, "hosts": 214, "examples": ["relay.example"]}],
  *                                 "omitted": 0}}]},
- *     {"name": "consistency", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
- *      "lastPassAt": 1769998000, "lastPassSec": 9720, "nextInSec": 11880,
+ *     {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
+ *      "lastPassAt": 1769998000, "lastPassSec": 9720,
+ *      "measuring": {"unit": "url", "attempted": 604, "toProbe": 4728, "etaSec": 2724},
  *      "sourced": 17584, "heldOutDead": 832,
  *      "streams": [{"name": "all streams", "candidates": 16752, "foldedAway": 11429,
  *                   "consistent": 583, "inconsistent": 12, "unmeasured": 4728,
@@ -120,6 +122,13 @@ import java.nio.file.StandardCopyOption
  * new one opened. `processors` is the work that is not a stream at all: the
  * alias fold, the stability gate, the NIP-66 monitor, ingest, the healer, the
  * push. See [Processors].
+ *
+ * `measuring` is the live position of a probe pass and the only member of a
+ * processor row that moves while one runs — every other number there describes
+ * the pass that ENDED. On a sweep it stands where `nextInSec` would be, because
+ * a countdown to the next pass is a promise nobody has computed until this one
+ * returns; a fast-lane pass carries both, and both are true. See
+ * [Processors.Measuring].
  *
  * `writtenAt` is the HEARTBEAT and is the most load-bearing member here: it is
  * rewritten on every tick whatever the streams are doing, so a reader can tell a
@@ -282,6 +291,14 @@ class SyncProgress(
                                     d.nextInSec?.let { put("nextInSec", it) }
                                     d.retrySec?.let { put("retryInSec", it) }
                                     d.reason?.let { put("reason", it) }
+                                    // A rotating stream's whole state, and the
+                                    // one phase that published nothing at all
+                                    // until now: the card drew `rotating for
+                                    // 58m` beside a stream riding four hundred
+                                    // relays, and beside one riding none. See
+                                    // [StreamPhases.Detail.roster].
+                                    d.roster?.let { put("roster", it) }
+                                    d.tails?.let { put("tails", it) }
                                 }
                                 // WHICH relays are running, beside the cycle
                                 // rather than inside it: a worker outlives the
@@ -486,6 +503,32 @@ class SyncProgress(
                 // until you know its clock is six hours long and the next turn
                 // is four of them away.
                 p.nextInSec?.let { put("nextInSec", it) }
+                // …and the countdown's opposite half: where the pass RUNNING
+                // right now has got to. The sweep unsets its due time while it
+                // runs, which is exactly why this had to exist: for the hours a
+                // stability pass takes, the row's only number disappeared and
+                // `measuring` stood alone with no size, no position and no end.
+                //
+                // NOT mutually exclusive, though a sweep makes them look it. A
+                // FAST LANE pass runs between sweeps — see [AliasMonitor.start]
+                // — so the fitness row can carry a position and a countdown at
+                // once, and both are true: the lane is measuring the urls named
+                // since its last look, and the sweep is still due when it says.
+                p.measuring?.let { m ->
+                    put(
+                        "measuring",
+                        buildJsonObject {
+                            put("unit", m.unit)
+                            put("attempted", m.attempted)
+                            put("toProbe", m.toProbe)
+                            // Absent until a unit has landed, and again once the
+                            // last one has — an estimate with nothing behind it
+                            // is the failure mode the paging ETA is remembered
+                            // for.
+                            m.etaSec?.let { put("etaSec", it) }
+                        },
+                    )
+                }
                 for (c in p.counts) put(c.name, c.value)
                 // WHAT A TOTAL IS MADE OF. `rejected` is the largest number this
                 // router publishes and the least readable one: a mirror is

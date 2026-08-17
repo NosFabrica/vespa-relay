@@ -273,6 +273,12 @@ class AliasFolding(
             undecided[RelayAliases.hostOf(group.first().url)] = Undecided.COOLDOWN
         }
         if (groups.isNotEmpty()) {
+            // WHAT THIS PASS IS ABOUT TO WALK, published before the first dial
+            // — see [Processors.Measuring]. Counted in HOSTS, because a group
+            // is a host and a host is what this pass decides: the urls under it
+            // are dials, not answers, and a position counted in them would jump
+            // by 55 for one verdict and by 1 for the next.
+            progress?.measuring(groups.size, Processors.UNIT_HOST)
             val gate = Semaphore(concurrency)
             // The pass-wide count of folds, and nothing else: a second map of
             // the cleared urls was accumulated here and never read, and the
@@ -783,7 +789,16 @@ class AliasFolding(
                         for ((url, c) in cleared) {
                             runCatching { record.publishDistinct(url, c.sampled, c.comparedAgainst, c.bestShared) }
                         }
-                    }
+                        // FROM THE JOB'S COMPLETION, not from a counter inside
+                        // the body: this host is behind the pass however it
+                        // ended, and three of its four exits are a
+                        // `return@launch` on a group that could not be decided
+                        // at all — no yardstick, nothing to compare against
+                        // one, a leader that cannot repeat itself. Those are
+                        // what a pass over a polluted store spends most of its
+                        // time on, so an increment at the bottom would leave
+                        // the position crawling while the pass worked hardest.
+                    }.invokeOnCompletion { progress?.attempted() }
                 }
             }
             probed = taken.get()

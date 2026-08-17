@@ -116,18 +116,134 @@ export const MEASURING = "measuring";
  * `candidates` on an unreadable row. Summed rather than `streams[0]`, which once
  * reported a 16-url stream's residue as the whole picture. `lastPassSec` is
  * withheld while a pass runs: it belongs to the previous one.
+ *
+ * **A FOLDED URL IS NOT A CHECKED ONE, and is out of BOTH halves.** The row's
+ * partition is `candidates = foldedAway + consistent + inconsistent +
+ * unmeasured`, so the bare complement of `unmeasured` counts every url the fold
+ * removed as one the stability gate checked — which is the opposite of what the
+ * gate does with them: a folded url is deliberately never dialled, because it is
+ * another relay's second address. On the real card that read `12,024 of 16,752
+ * relay(s) checked for consistency` beside a tree showing 583 consistent and 12
+ * inconsistent, from the same document, in the same tick. The gate's own line is
+ * `595 of 5,323`, and the missing 11,429 are named one row above it.
+ *
+ * Only where the row publishes `foldedAway` at all — the fold's own row measures
+ * no folds away from itself, and there the complement is exactly right.
  */
 export function probeProgress(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
   const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
-  const candidates = sum("candidates");
+  const folded = sum("foldedAway");
+  const candidates = Math.max(0, sum("candidates") - folded);
   const unmeasured = sum("unmeasured");
   return {
     candidates,
     checked: Math.max(0, candidates - unmeasured),
     tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
   };
+}
+
+/**
+ * WHERE THE PASS RUNNING RIGHT NOW HAS GOT TO — the live half of `probeProgress`.
+ *
+ * `probeProgress` reads the row the last pass LEFT, which is the right answer
+ * for twenty-nine days of a monthly TTL and the wrong one for the hours a pass
+ * is actually running: the numbers stand still, `lastPassSec` is withheld
+ * because it belongs to the pass before, and the sweep unsets `nextInSec` while
+ * it runs because nothing has computed when the next one is due. The row said
+ * `measuring` and carried no size, no position and no end.
+ *
+ * Returns null unless the router published a real denominator. A share of zero
+ * candidates is the division this module exists to keep out of the page, and a
+ * position with nothing to be a position IN is worse than the phase word alone.
+ *
+ * `attempted` is clamped INTO the denominator rather than trusted: the two are
+ * read at the same instant from the same entry, but they are read off a live
+ * pass, and `4,729 of 4,728` is a rendering bug rather than a finding.
+ *
+ * NO `share`. This returned one — the position as a 0..1 fraction, ready for a
+ * bar — and nothing drew it: the card states the pair in words, and the bar
+ * would have to live in a three-column grid whose third column is already the
+ * row's facts. A computed member with one caller in its own test is how this
+ * module grew the fourteen exports its rebuild deleted.
+ */
+export function measuringOf(p) {
+  const m = p?.measuring;
+  if (!m || !(m.toProbe > 0)) return null;
+  return {
+    unit: m.unit || "url",
+    attempted: Math.max(0, Math.min(m.attempted || 0, m.toProbe)),
+    toProbe: m.toProbe,
+    // `??`, not `||`: the router omits this until a unit has landed and again
+    // once the last one has, and both absences are "no estimate" — where a
+    // zero would be a claim that the pass is done.
+    etaSec: m.etaSec ?? null,
+  };
+}
+
+/**
+ * THE MONITOR'S WORK, AND THE SYNC'S — one list of processor rows, split by
+ * what each of them DECIDES.
+ *
+ * They were one panel because they arrive in one array, and reading it meant
+ * holding two unrelated questions at once. The passes named here answer *which
+ * relay urls are worth dialling at all*: the fold collapses one server's several
+ * addresses, the stability gate refuses a url that answers a filter two ways,
+ * and the fitness pass signs the `syncable` certificate every visit-mode
+ * stream's relay list is made of — including the `dead` verdict that holds an
+ * unreachable url out of every fan-out. All three run on the alias monitor's own
+ * clock, none of them is configured by a stream, and their unit is a RELAY. What
+ * is left — the rotating pool, ingest, the healer, the upstream push — moves
+ * EVENTS, on the streams' clock, and is where a slow mirror is actually
+ * diagnosed.
+ *
+ * A fourth used to sit here: a passive NIP-66 watcher signing a record per
+ * socket. It is gone — the passes own the record now — and if a watcher ever
+ * returns, its row belongs in this list rather than beside ingest.
+ *
+ * `MONITOR_PROCESSORS` is a list rather than a Set literal for the reason
+ * `BOTTLENECK` carries `__proto__: null`: the names are strings off the wire,
+ * and a lookup that can reach `Object.prototype` answers `true` for
+ * `constructor`.
+ *
+ * **AN UNKNOWN NAME GOES TO THE PIPELINE, never nowhere.** A router that starts
+ * publishing a processor this page has not been taught must still draw it: the
+ * two lists are a PARTITION of what the document carries, and the sync card is
+ * the one that already carries the status line and the leftovers. Dropping a row
+ * to keep a card tidy is how a new job runs unwatched for a year.
+ */
+export const MONITOR_PROCESSORS = ["aliasFold", "consistency", "fitness"];
+
+export function splitProcessors(progress) {
+  const monitor = [];
+  const pipeline = [];
+  for (const p of progress?.processors || []) {
+    if (p) (MONITOR_PROCESSORS.includes(p.name) ? monitor : pipeline).push(p);
+  }
+  return { monitor, pipeline };
+}
+
+/** The phase word a visit-mode stream carries — `StreamPhases.Phase.Rotating`. */
+export const ROTATING = "rotating";
+
+/**
+ * WHAT A ROTATING STREAM IS ACTUALLY RIDING, which its row could not say.
+ *
+ * A visit-mode stream has no pass, no fraction and no cycle — its world is the
+ * monitor's verdicts and its engine is the pool — so every mark `streamBlock`
+ * draws is absent and the row rendered as `rotating for 58m` and nothing else.
+ * That line is the same whether the stream is riding four hundred relays or
+ * none, and "none" is the state worth seeing: before the fitness pass has
+ * signed its first `syncable`, a visit stream is a stream with an empty world.
+ *
+ * So `waiting` is called here rather than left to the page: it is the one
+ * reading that changes what an operator does next, and it is a judgement about
+ * a number rather than a number.
+ */
+export function rotationOf(s) {
+  if (s?.phase !== ROTATING || s.roster == null) return null;
+  return { roster: s.roster, tails: s.tails ?? null, waiting: s.roster === 0 };
 }
 
 /**

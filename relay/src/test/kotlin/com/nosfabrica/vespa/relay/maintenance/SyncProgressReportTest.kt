@@ -502,6 +502,65 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `the position of a pass in flight survives whole, or not at all`() {
+        // A position needs both halves to mean anything: `604` with no
+        // denominator says nothing, and a denominator with no position says
+        // less — so an unreadable member costs the object rather than half of
+        // it, and the card falls back to the phase word it drew before this
+        // existed. The unit is checked against the router's own two words for
+        // the reason `bottleneck` is: it lands in a rendered sentence, not in
+        // a number.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [],
+                 "processors": [
+                   {"name": "consistency", "phase": "measuring",
+                    "measuring": {"unit": "url", "attempted": 604, "toProbe": 4728, "etaSec": 2724, "invented": 3}},
+                   {"name": "aliasFold", "phase": "measuring", "measuring": {"unit": "relays", "attempted": 4, "toProbe": 9}},
+                   {"name": "fitness", "phase": "measuring", "measuring": {"unit": "url", "attempted": 4}},
+                   {"name": "ingest", "phase": "running", "queued": 12}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val rows = out["processors"] as JsonArray
+
+        val running = rows[0].jsonObject["measuring"]!!.jsonObject
+        assertEquals("url", running["unit"]!!.jsonPrimitive.content)
+        assertEquals(604L, running["attempted"]!!.jsonPrimitive.long)
+        assertEquals(4_728L, running["toProbe"]!!.jsonPrimitive.long)
+        assertEquals(2_724L, running["etaSec"]!!.jsonPrimitive.long)
+        assertNull(running["invented"], "a member this side does not name is not passed through")
+
+        assertNull(rows[1].jsonObject["measuring"], "a unit this router cannot produce is not rendered into a sentence")
+        assertNull(rows[2].jsonObject["measuring"], "half a position is worse than the phase word alone")
+        assertNull(rows[3].jsonObject["measuring"], "a processor with no pass to be in publishes none")
+    }
+
+    @Test
+    fun `a rotating stream keeps the pair that is its whole state`() {
+        // The row that drew `rotating for 58m` and nothing else. A visit stream
+        // has no cycle, no fraction and no legs of its own for the rest of this
+        // object to carry, so these two members are all there is — and zero is
+        // a report rather than an absence: it is a stream waiting on the
+        // fitness pass to certify its first relay.
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [{"name": "visits", "phase": "rotating", "phaseForSec": 3480,
+                  "roster": 412, "tails": 300},
+                 {"name": "cold", "phase": "rotating", "phaseForSec": 3480, "roster": 0, "tails": 0}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+        val rows = out["streams"] as JsonArray
+
+        assertEquals(412L, rows[0].jsonObject["roster"]!!.jsonPrimitive.long)
+        assertEquals(300L, rows[0].jsonObject["tails"]!!.jsonPrimitive.long)
+        assertEquals(0L, rows[1].jsonObject["roster"]!!.jsonPrimitive.long)
+    }
+
+    @Test
     fun `a processor with no name says nothing, rather than an anonymous row`() {
         val out =
             SyncProgressReport.build(
@@ -533,7 +592,7 @@ class SyncProgressReportTest {
         // other module and cannot be read from here. Restated rather than
         // imported, and the pin is still worth having: it is the page half that
         // silently stops describing a processor.
-        val processors = listOf("aliasFold", "consistency", "reachability", "ingest", "heal", "upstreamPush")
+        val processors = listOf("aliasFold", "consistency", "fitness", "visits", "ingest", "heal", "upstreamPush")
         val unnamed = processors.filterNot { card.contains("[\"$it\", ") }
         assertEquals(emptyList(), unnamed, "the router registers these and the card names none of them: $unnamed")
     }

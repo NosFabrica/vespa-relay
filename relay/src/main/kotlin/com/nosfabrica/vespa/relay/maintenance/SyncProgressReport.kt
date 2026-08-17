@@ -343,6 +343,7 @@ internal object SyncProgressReport {
             num(o["lastPassAt"])?.let { put("lastPassAt", it) }
             num(o["lastPassSec"])?.let { put("lastPassSec", it) }
             num(o["nextInSec"])?.let { put("nextInSec", it) }
+            measuring(o["measuring"] as? JsonObject)?.let { put("measuring", it) }
             for (counter in COUNTERS) num(o[counter])?.let { put(counter, it) }
             rejections(o["rejections"] as? JsonObject)?.let { put("rejections", it) }
             (o["streams"] as? JsonArray)
@@ -351,6 +352,33 @@ internal object SyncProgressReport {
                 ?.mapNotNull { processorWork(it) }
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { rows -> putJsonArray("streams") { for (r in rows) add(r) } }
+        }
+    }
+
+    /**
+     * WHERE THE PASS RUNNING RIGHT NOW HAS GOT TO, rebuilt like everything else
+     * here — and dropped whole where any of it fails to read.
+     *
+     * A position needs both halves to mean anything: `604` with no denominator
+     * says nothing, and `of 4,728` with no numerator says less. So an
+     * unreadable member costs the object rather than half of it, and the card
+     * falls back to the phase word it drew before this existed.
+     *
+     * `unit` is validated against the two words the router has, exactly as
+     * `bottleneck` is. It is not free text like `reason`: the card renders it
+     * into a sentence — "604 of 4,728 url(s)" — and a member that lands in
+     * prose is one a hand-edited file must not be able to choose.
+     */
+    private fun measuring(o: JsonObject?): JsonObject? {
+        if (o == null) return null
+        val unit = text(o["unit"])?.takeIf { it in UNITS } ?: return null
+        val toProbe = num(o["toProbe"]) ?: return null
+        val attempted = num(o["attempted"]) ?: return null
+        return buildJsonObject {
+            put("unit", unit)
+            put("attempted", attempted)
+            put("toProbe", toProbe)
+            num(o["etaSec"])?.let { put("etaSec", it) }
         }
     }
 
@@ -693,9 +721,6 @@ internal object SyncProgressReport {
             // the healer and the upstream push
             "pushed",
             "dropped",
-            // the NIP-66 monitor
-            "observed",
-            "knownDead",
             // ingest's one loss counter
             "lostToStore",
             // where the two probe passes' candidate set came from — the funnel's
@@ -751,6 +776,9 @@ internal object SyncProgressReport {
     /** The four words `SyncEngine.bottleneckOf` can produce, and no others. */
     private val BOTTLENECKS = setOf("ingest", "downloads", "upstream", "mixed")
 
+    /** …and the two `Processors.UNIT_URL`/`UNIT_HOST` can, for the same reason. */
+    private val UNITS = setOf("url", "host")
+
     private val HEALTH_NUMBERS =
         listOf("eventsPerSec", "heapUsedMb", "heapMaxMb", "sockets", "socketCeiling", "servingMs")
 
@@ -775,6 +803,10 @@ internal object SyncProgressReport {
             "slotsNeeded",
             "nextInSec",
             "retryInSec",
+            // A rotating stream's pair — the pool's roster share and the tails
+            // held on it. See `StreamPhases.Detail.roster`.
+            "roster",
+            "tails",
         )
 
     /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
@@ -785,7 +817,7 @@ internal object SyncProgressReport {
     /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
     private const val MAX_PASSES = 4
 
-    /** Eight today (fold, stability, reachability, fitness, visits, ingest, heal, push), with room to grow. */
+    /** Seven today (fold, stability, fitness, visits, ingest, heal, push), with room to grow. */
     private const val MAX_PROCESSORS = 12
 
     /** A processor reports per stream, and a router runs a handful of them. */

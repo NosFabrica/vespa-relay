@@ -395,8 +395,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       InFlight.kt           WHICH relays a stream is holding right now, which
                             those counts never said; bounded to the longest-held
       Processors.kt         the work that is NOT a stream: the alias fold, the
-                            stability gate, the NIP-66 monitor, ingest, the
-                            healer, the push. Same shape as a stream — a phase
+                            stability gate, fitness, the rotating pool, ingest,
+                            the healer, the push. Same shape as a stream — a phase
                             and a clock — plus either a pass schedule and an
                             `outstanding` count, or live gauges read through a
                             supplier
@@ -658,16 +658,23 @@ relay/src/main/resources/
                         protocol feature to test, and thirty days of
                         distinct-pubkey counts is not a question to ask over a
                         websocket, so every chart here is a rollup read.
-                        The Sync coverage card is three things stacked, in the
-                        order the questions are asked: what the router is doing
-                        NOW (one disposition bar per RUNNING PASS, so the walk
-                        that is finishing and the one that is walking are two
-                        rows rather than one blended total), then *Also running*
-                        — the six processors that are not streams, each with the
-                        same phase-and-clock header a stream gets and a meter for
-                        the two that have a denominator — and only then the
-                        coverage bars, which are where it has WALKED rather than
-                        what it is doing. Two pins keep the JS honest against the
+                        The router's state is TWO cards off one `sync` section,
+                        split by what each row decides. *Sync coverage* answers
+                        "is the mirror keeping up": the heartbeat and the
+                        constraint, a block per stream, then *the pipeline* —
+                        the pool, ingest, the healer, the push, which move
+                        EVENTS — and last the coverage bars, which are where it
+                        has WALKED rather than what it is doing. *Relay monitor*
+                        answers "which relays may we dial at all": the corpus
+                        tree, then the alias fold, the stability gate and
+                        fitness, whose unit is a URL, whose clock is the
+                        monitor's own and whose output is a signed 30166 record
+                        — so it sits beside the panel that reads those records
+                        back. `splitProcessors` (shared/sync.js) is the rule and
+                        it is a PARTITION: a processor name the page has not been
+                        taught draws on the sync side rather than nowhere, since
+                        dropping a row to keep a card tidy is how a new job runs
+                        unwatched. Two pins keep the JS honest against the
                         Kotlin that feeds it, and both are in
                         `SyncProgressReportTest`: every `taken` outcome must have
                         a `DISPOSITION` row and every published gauge a line in
@@ -1016,6 +1023,19 @@ which is why `pending` is five thousand and not a fault), `fraction`, `etaSec`,
 `reached`, `collected`/`collectedTotal`, `slotsFree`/`slotsNeeded`, `nextInSec`,
 `retryInSec` and `reason`. Only what a phase can answer is written.
 
+**`rotating` had no numbers at all until it was given its own two.** A
+visit-mode stream has no pass, no fraction and no cycle — its world is the
+monitor's verdicts and its engine is the pool — so every member above is absent
+for it and the card drew `rotating for 58m` and nothing else, identically for a
+stream riding four hundred relays and for one riding none. It publishes `roster`
+and `tails` now, the pool's own words for both quantities. It used to publish
+the roster size as `running`, which is defined as "relays this stream has a
+WORKER on right now" and is the opposite of what a roster is: the pool visits a
+handful at a time and most of the list sits between visits. **An empty roster is
+the reading worth having** — that is a stream waiting on the fitness pass to
+sign its first `syncable`, which is the state that looked exactly like a busy
+one, and the card says so in the fault tone.
+
 **`reached` is the one that matters**, and it wants drawing on the coverage
 axis rather than in a sentence. It is the oldest `created_at` a stream's paged
 walks have got to: on an unbounded walk `fraction` rounds to zero for hours
@@ -1175,6 +1195,28 @@ whichever stream was last. It strengthens the ordering the passes already
 depended on: the fold now finishes on every stream before the stability gate
 measures anything, so no stability walk is spent on a url another stream's fold
 was about to remove.
+
+**A PASS IN FLIGHT PUBLISHES WHERE IT HAS GOT TO** — `measuring: {unit,
+attempted, toProbe, etaSec}`, and it is the only member of a processor row that
+moves between passes; every other one describes the pass that ENDED. It exists
+because the row went blind exactly when it became interesting: a stability pass
+runs for hours, `lastPassSec` belongs to the pass before it, and a SWEEP unsets
+`nextInSec` while it runs (a pass takes as long as it takes, so nothing has
+computed when the next one is due — a fast-lane pass carries both, and both are
+true). What was left was the word
+`measuring` with no size, no position and no end. Each pass declares its set
+with `Processors.Handle.measuring` the moment it derives it and ticks a unit off
+with `attempted` from the job's completion — from `invokeOnCompletion`, not from
+the bottom of the body, because most of a pass over a discovered corpus ends in
+an early return and a position that only counted successes would sit still while
+the pass worked hardest. The `unit` is carried because the passes do not count
+the same thing: the gate and the fitness pass decide a `url`, the fold decides a
+`host` and dials every url of one to do it. `toProbe` is the pass's OWN set, not
+`candidates` — both passes drop everything already carrying a verdict — and
+`etaSec` is withheld until a unit has landed, for the reason the paging ETA is
+remembered for. The fold walks its groups widest-first, so its estimate reads
+long and improves, which is the safe direction for a number someone uses to
+decide whether to wait.
 
 **Three words, and they are not synonyms.** "Done" covered all three, and the
 least meaningful of them was the one being read as progress:

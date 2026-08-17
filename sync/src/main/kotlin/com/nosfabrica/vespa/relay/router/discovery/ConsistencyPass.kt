@@ -226,6 +226,11 @@ class ConsistencyPass(
             return 0
         }
 
+        // WHAT THIS PASS IS ABOUT TO WALK, published before the first dial —
+        // see [Processors.Measuring]. `wanted`, not `candidates`: everything
+        // already carrying a verdict was dropped above, and on a settled corpus
+        // that is most of it.
+        progress?.measuring(wanted.size, Processors.UNIT_URL)
         val gate = Semaphore(concurrency)
         val decided = AtomicInteger()
         val refused = AtomicInteger()
@@ -328,7 +333,15 @@ class ConsistencyPass(
                             )
                         }
                     }
-                }
+                    // FROM THE JOB'S COMPLETION, not from a counter inside the
+                    // body: this url is behind the pass however it ended, and
+                    // the body ends five ways — the transport guard throwing,
+                    // the guard refusing, the probe failing, an answer that
+                    // decided nothing, and a verdict. Four of those are early
+                    // returns, so an increment at the bottom would count only
+                    // the urls that worked and a position that stops counting
+                    // failures reads as a pass slowing down.
+                }.invokeOnCompletion { progress?.attempted() }
             }
         }
 
