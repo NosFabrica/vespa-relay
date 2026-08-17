@@ -344,7 +344,7 @@ internal object SyncProgressReport {
             num(o["lastPassSec"])?.let { put("lastPassSec", it) }
             num(o["nextInSec"])?.let { put("nextInSec", it) }
             measuring(o["measuring"] as? JsonObject)?.let { put("measuring", it) }
-            for (counter in COUNTERS) num(o[counter])?.let { put(counter, it) }
+            for (counter in COUNTERS) (num(o[counter]) ?: LEGACY_COUNTERS[counter]?.let { num(o[it]) })?.let { put(counter, it) }
             rejections(o["rejections"] as? JsonObject)?.let { put("rejections", it) }
             (o["streams"] as? JsonArray)
                 ?.filterIsInstance<JsonObject>()
@@ -752,6 +752,31 @@ internal object SyncProgressReport {
             "evictedTails",
             "poolReceived",
         )
+
+    /**
+     * WHAT A ROUTER ON THE PREVIOUS BUILD CALLS THESE — current name to the one
+     * it is written under, read only when the current name is absent.
+     *
+     * **Deploy skew is the normal case here, not an edge one.** `:relay` and
+     * `:sync` are separate processes in separate containers, and the documented
+     * dev loop restarts one without the other on purpose. So for as long as a
+     * fleet is half-updated the progress file speaks the vocabulary of the build
+     * that wrote it, while this side reads it with the vocabulary of the build
+     * serving the page.
+     *
+     * [COUNTERS] is an ALLOWLIST, which makes that skew silent: an unrecognised
+     * name is dropped rather than passed through, so the fitness row simply
+     * loses its whole fact line while the card goes on looking complete. That is
+     * precisely the failure the two pins in `SyncProgressReportTest` exist to
+     * catch in the other direction, and it was reachable here by ordinary
+     * deployment.
+     *
+     * Renamed at THIS boundary rather than tolerated downstream, so the served
+     * document carries exactly one spelling and no reader — the page, an
+     * operator's script, a future chart — has to know the rename happened. One
+     * entry, deletable once no router in the fleet predates the grade move.
+     */
+    private val LEGACY_COUNTERS = mapOf("prime" to "syncable")
 
     /**
      * The gauges kept as a series, in draw order — see [series].

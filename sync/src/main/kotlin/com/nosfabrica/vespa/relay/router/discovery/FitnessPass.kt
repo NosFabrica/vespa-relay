@@ -566,7 +566,7 @@ class FitnessPass(
                         val grade = ourGrade(event) ?: return@filter false
                         grade.getOrNull(RelayVerdictRecord.LABEL_EPOCH_INDEX) != RelayVerdictRecord.FITNESS_EPOCH
                     }.mapNotNull { it.relay() }
-            for (url in stale) record.retireFitness(url)
+            retire(record, stale)
             if (stale.isNotEmpty()) {
                 System.err.println(
                     "router: fitness — retired ${stale.size} verdict(s) taken under older rules; " +
@@ -617,7 +617,7 @@ class FitnessPass(
                             tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
                         ),
                     ).mapNotNull { it.relay() }
-            for (url in legacy) record.retireFitness(url)
+            retire(record, legacy)
             if (legacy.isNotEmpty()) {
                 System.err.println(
                     "router: fitness — retired ${legacy.size} grade(s) still written on the `s` tag; " +
@@ -626,6 +626,45 @@ class FitnessPass(
             }
             return legacy.size
         }
+
+        /**
+         * Withdraw a verdict from each of [urls], several at a time.
+         *
+         * **SERIAL, THIS COST A BLOCKED BOOT.** Both callers run before any
+         * pass reads a verdict, and both do a read-modify-write per url — a
+         * store query for the current record, a schnorr signature, an insert.
+         * Measured against the live corpus that is 17,189 records on the first
+         * boot after the grade move, and one round trip at a time it is minutes
+         * of a router that has not started mirroring yet.
+         *
+         * Concurrent WITHIN one pass, and that does not weaken the
+         * single-writer rule [AliasMonitor] keeps: every url here is a distinct
+         * addressable record, so no two of these edits ever touch the same
+         * address. What must not happen is this running BESIDE the fitness
+         * pass, which is why both callers stay on the boot path rather than
+         * moving to a background job — a retraction racing a re-grade is two
+         * writers on one address, and the loser's tags are gone.
+         */
+        private suspend fun retire(
+            record: RelayVerdictRecord,
+            urls: List<NormalizedRelayUrl>,
+        ) {
+            if (urls.isEmpty()) return
+            val gate = Semaphore(RETIRE_CONCURRENCY)
+            coroutineScope {
+                for (url in urls) launch { gate.withPermit { record.retireFitness(url) } }
+            }
+        }
+
+        /**
+         * How many retractions are in flight at once.
+         *
+         * The work is a store round trip and a signature, not a dial, so this
+         * is not [AliasFolding.DEFAULT_DIAL_CONCURRENCY]'s question — nobody
+         * else's server is being asked for anything. Bounded all the same
+         * because the store is shared with a relay that is serving reads.
+         */
+        private const val RETIRE_CONCURRENCY = 16
 
         /**
          * This monitor's grade on a record, told apart from everyone else's
