@@ -491,13 +491,101 @@ class AliasFoldingTest {
             val fold = folding(store, up)
 
             assertEquals(1, fold.measure("t", listOf(newcomer), canDial = { true }), "the newcomer had a canonical to measure against")
-            assertEquals(listOf(canonical), fold.applyVerdicts(listOf(newcomer)).dial, "one new url, and the fan-out dials the survivor")
+            // The verdict is the lasting part: the next caller holding both urls
+            // dials one relay, and never pays a probe to find that out. Holding
+            // the newcomer ALONE it is dialled as it stands — a fold is only
+            // applied where its survivor is in the set, see `collapse`.
+            assertEquals(
+                listOf(canonical),
+                fold.applyVerdicts(listOf(canonical, newcomer)).dial,
+                "one new url, measured against the host's history, and the fan-out dials the survivor",
+            )
+            assertEquals(mapOf(newcomer to canonical), fold.applyVerdicts(listOf(canonical, newcomer)).aliases)
             // The urls pulled in for context are already decided, so they are
             // the group's yardstick and nothing else: the canonical is dialled
             // because every group dials its leader, and the url that folded onto
             // it last time is not dialled at all.
             assertTrue(canonical in up.contacted, "the survivor is the yardstick and has to answer for itself")
             assertTrue(alias !in up.contacted, "a url that already carries a verdict must not cost a dial")
+        }
+
+    @Test
+    fun `a fold whose survivor is not in the set is not applied to it`() =
+        runBlocking {
+            // **DROPPING AN ALIAS IS ONLY SAFE WHEN THE SURVIVOR IS THERE TO
+            // TAKE OVER.** Every live consumer applies the map by dropping —
+            // `RosterBuilder` filters the alias out of the discovered list,
+            // `FitnessPass` stamps it `alias` — and neither puts the canonical
+            // back, because until the fold grouped the recorded world the
+            // canonical was in the same list by construction. It no longer is:
+            // fold X onto a survivor this caller never asked about and the relay
+            // leaves the fan-out with nothing dialled in its place, for the
+            // record's whole TTL.
+            val store = newStore()
+            folding(store, upstreams()).measure("t", listOf(canonical, alias), canDial = { true })
+
+            val fold = folding(store, upstreams())
+            // The survivor is present: the fold applies, which is the whole
+            // point and must keep working.
+            assertEquals(listOf(canonical), fold.applyVerdicts(listOf(canonical, alias)).dial)
+
+            // …and now a caller that holds the alias alone — the canonical held
+            // out as dead this round, or gone from the relay list that named it.
+            val stranded = fold.applyVerdicts(listOf(alias))
+            assertEquals(listOf(alias), stranded.dial, "the only live address we have must still be dialled")
+            assertTrue(stranded.aliases.isEmpty(), "a drop-only consumer would take the relay out of the fan-out")
+            assertTrue(stranded.unmeasured.isEmpty(), "…and it is still a MEASURED url: nothing here needs re-probing")
+        }
+
+    @Test
+    fun `a host that cannot repeat itself leaves the store's other verdicts alone`() =
+        runBlocking {
+            // The reproducibility guard forgot the whole GROUP, which since the
+            // world is grouped includes urls it merely adopted moments earlier —
+            // still in the store, still perfectly good. The fan-out then saw a
+            // settled host's duplicates as separate relays until the next
+            // `apply`, and the row counted them as urls that arrived decided and
+            // left undecided, which the card can only draw as `0 of N checked`
+            // on a pass that decided plenty.
+            val store = newStore()
+            val host = "wss://shuffles.example"
+            val settled = listOf("$host/a", "$host/b").map { RelayUrlNormalizer.normalize(it) }
+            // One pass on a host that behaves, so the store holds a real verdict.
+            folding(store, upstreams()).measure("t", settled, canDial = { true })
+            assertEquals(1, folding(store, upstreams()).applyVerdicts(settled).aliases.size, "the fixture needs a stored fold")
+
+            // Now the same host serves a DIFFERENT window on every ask, which is
+            // what `reproducible` refuses to publish a negative claim against.
+            val shuffling = AtomicInteger()
+            val up =
+                Upstreams { _ ->
+                    val run = shuffling.getAndIncrement()
+                    (0 until 40).map { events.sign(1_700_000_000L - it, 1, emptyArray(), "run$run-e$it") }
+                }
+            val processors = Processors()
+            val fold =
+                AliasFolding(
+                    aliases = RelayAliases(),
+                    record = RelayVerdictRecord(store, signer),
+                    probe = AliasProbe(fetch = up::fetch, target = 40, page = 40, fallbackPage = 40),
+                    progress = processors.of("aliasFold"),
+                )
+            val newcomer = RelayUrlNormalizer.normalize("$host/c")
+            fold.measure("t", settled + newcomer, canDial = { true })
+
+            // The group was abandoned, and what the STORE says about it survives.
+            val after = fold.applyVerdicts(settled + newcomer)
+            assertEquals(1, after.aliases.size, "an adopted verdict is the store's, not this pass's to drop")
+            val work =
+                processors
+                    .snapshot()
+                    .single()
+                    .work
+                    .single()
+            assertTrue(
+                work.unmeasured <= (work.newUrls ?: 0),
+                "a pass cannot leave more urls undecided than arrived so — got ${work.unmeasured} of ${work.newUrls}",
+            )
         }
 
     @Test

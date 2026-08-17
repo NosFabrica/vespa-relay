@@ -169,12 +169,24 @@ class RelayVerdictRecord(
      *
      * THROWS for [load]'s reason, and the caller's fallback is the same: a store
      * that cannot answer is not a store saying "no verdict".
+     *
+     * PAGED, because the whole point is that this asks for a corpus rather than
+     * for a list: [load] is bounded by the caller's candidates and this is
+     * bounded by nothing, so a single unlimited query materializes every record
+     * this router has ever signed at once — five figures of events on the
+     * deployment that needed the feature, held whole while the tags are read off
+     * them. [RelayDiscovery.scan] walks the same filter a page at a time for
+     * exactly this reason, and the verdicts it accumulates are two small maps.
      */
     suspend fun loadAll(): Verdicts {
         val self = signer?.pubKey ?: return Verdicts()
         val floor = nowSeconds() - ttlSeconds
         val held = Building()
-        held.take(store.query<Event>(Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = floor)), floor)
+        RelayDiscovery.scan(
+            store,
+            Filter(kinds = listOf(RelayDiscoveryEvent.KIND), authors = listOf(self), since = floor),
+            RECORD_PAGE,
+        ) { event -> held.take(event, floor) }
         return held.verdicts()
     }
 
@@ -195,41 +207,46 @@ class RelayVerdictRecord(
         fun verdicts() = Verdicts(aliases, distinct, consistent, inconsistent)
     }
 
-    /** One page of records, folded into the sets above — see [Building]. */
+    /** A page of records, folded into the sets above — see [Building]. */
     private fun Building.take(
         held: List<Event>,
         floor: Long,
     ) {
-        for (event in held) {
-            val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: continue
-            val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: continue
-            // Two independent verdicts on one record, read independently: a
-            // url may carry a fold, a stability answer, both or neither, and
-            // an early `continue` for a missing `same-as` used to drop the
-            // whole event — which would make every stability verdict on a
-            // url that was never folded invisible.
-            event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, FOLD_EPOCH, floor) }?.get(1)?.let { sameAs ->
-                RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
-                    if (from == to) distinct += from else aliases[from] = to
+        for (event in held) take(event, floor)
+    }
+
+    /** One record, read the one way both loads read it — see [Building]. */
+    private fun Building.take(
+        event: Event,
+        floor: Long,
+    ) {
+        val subject = event.tags.firstOrNull { it.size > 1 && it[0] == "d" }?.get(1) ?: return
+        val from = RelayUrlNormalizer.normalizeOrNull(subject) ?: return
+        // Two independent verdicts on one record, read independently: a url may
+        // carry a fold, a stability answer, both or neither, and an early exit
+        // for a missing `same-as` used to drop the whole event — which would
+        // make every stability verdict on a url that was never folded invisible.
+        event.tags.firstOrNull { it.size > 1 && it[0] == SAME_AS_TAG }?.takeIf { current(it, FOLD_EPOCH, floor) }?.get(1)?.let { sameAs ->
+            RelayUrlNormalizer.normalizeOrNull(sameAs)?.let { to ->
+                if (from == to) distinct += from else aliases[from] = to
+            }
+        }
+        event.tags
+            .firstOrNull { it.size > 1 && it[0] == SELF_CONSISTENT_TAG }
+            ?.takeIf { current(it, CONSISTENCY_EPOCH, floor) }
+            ?.get(1)
+            ?.let { answer ->
+                when (answer) {
+                    CONSISTENT_YES -> consistent += from
+
+                    CONSISTENT_NO -> inconsistent += from
+
+                    // An answer this writer does not recognise is not a
+                    // verdict. Ignored rather than guessed at: guessing
+                    // "unstable" would drop a relay on a tag we cannot read.
+                    else -> Unit
                 }
             }
-            event.tags
-                .firstOrNull { it.size > 1 && it[0] == SELF_CONSISTENT_TAG }
-                ?.takeIf { current(it, CONSISTENCY_EPOCH, floor) }
-                ?.get(1)
-                ?.let { answer ->
-                    when (answer) {
-                        CONSISTENT_YES -> consistent += from
-
-                        CONSISTENT_NO -> inconsistent += from
-
-                        // An answer this writer does not recognise is not a
-                        // verdict. Ignored rather than guessed at: guessing
-                        // "unstable" would drop a relay on a tag we cannot read.
-                        else -> Unit
-                    }
-                }
-        }
     }
 
     /**
@@ -740,5 +757,16 @@ class RelayVerdictRecord(
 
         /** Urls per `#d` query. The fan-out is five figures wide; the filter should not be. */
         private const val QUERY_CHUNK = 500
+
+        /**
+         * Records held in memory at once while [loadAll] walks the corpus.
+         *
+         * Deliberately smaller than [RelayDiscovery.SCAN_PAGE]: that one pages a
+         * relay-list scan whose events are read and dropped, and this walks a
+         * kind whose whole population is one record per url this router has
+         * measured — the thing being bounded here is a page of somebody's
+         * five-figure corpus, not the number of round trips.
+         */
+        private const val RECORD_PAGE = 2_000
     }
 }

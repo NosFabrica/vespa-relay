@@ -2619,7 +2619,11 @@ every url the pass was handed, most of them carrying month-old verdicts nothing
 was going to re-ask, and the numerator was every url holding a verdict at all —
 including folds made weeks earlier, and in another process. Eleven minutes of
 work moved neither. Absent on a pass that does not count it (the stability gate),
-where the page falls back to `candidates - foldedAway`.
+where the page falls back to `candidates - foldedAway`. A pass whose subject is
+EMPTY says so in words (`PROBE_NONE`, "nothing new to check for aliases") rather
+than `0 of 0`: that is not a rare state, it is the one both passes work towards
+and hold for most of a monthly TTL, and two zeroes read as a broken pass. Caught
+by rendering the real card against a live `/stats.json`, not by a unit test.
 
 > **The engine this next stretch describes is DELETED.** `DynamicSync`,
 > `DeleteMissingSync`, `RelayRotation`, `CachedRelayList` and `LegProgress`

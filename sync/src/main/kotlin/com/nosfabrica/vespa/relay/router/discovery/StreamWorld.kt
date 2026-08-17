@@ -66,6 +66,18 @@ internal class StreamWorld(
      * anything dead.
      */
     private val monitorAuthors: List<String>,
+    /**
+     * THIS router's own signing identity, or null where it has none — the scope
+     * of [ownRecords] and of nothing else.
+     *
+     * Deliberately not [monitorAuthors], which is wider by design: that set is
+     * the identities an operator vouched for, and a hold-out is a decision an
+     * operator may delegate. "How big is our corpus" is not a decision at all,
+     * and answered over the wider set it is somebody else's corpus — a
+     * deployment mirroring a busy foreign monitor's 30166s would draw that
+     * monitor's whole world as the mouth of its own coverage tree.
+     */
+    private val self: String?,
     private val tor: TorTransport?,
     override val sockets: AliasFolding.Sockets,
     /**
@@ -189,7 +201,7 @@ internal class StreamWorld(
     private suspend fun ownRecords(): Set<NormalizedRelayUrl> =
         RelayDiscovery.recorded(
             store,
-            monitorAuthors = monitorAuthors,
+            self = self,
             maxAgeSeconds = RelayVerdictRecord.DEFAULT_TTL_SECONDS,
             allowOnion = tor != null,
         )

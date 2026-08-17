@@ -2169,6 +2169,23 @@ const PROBE_FOR = {
 };
 
 /**
+ * …and how each says it had NOTHING to check, which is not a rare state: it is
+ * the one both passes are working towards, and on a settled corpus they hold it
+ * for most of a monthly TTL.
+ *
+ * Written out per pass rather than assembled from the phrase above, for the
+ * reason that map is a map at all — a sentence a reader sees is a sentence
+ * somebody wrote. `0 of 0 new relay(s) checked for aliases` is the alternative,
+ * and a position with nothing to be a position IN is worse than no position:
+ * the two zeroes read as a pass that found nothing to do because it is broken.
+ */
+const PROBE_NONE = {
+  __proto__: null,
+  aliasFold: "nothing new to check for aliases",
+  consistency: "nothing new to check for consistency",
+};
+
+/**
  * WHAT ONE BACKGROUND PASS HAS TO SHOW FOR ITSELF.
  *
  * One line, and only counters that mean something on their own. A loss counter
@@ -2241,8 +2258,15 @@ function processorFact(p) {
     // The tooltip hangs on whichever member the denominator came from, so the
     // glossary entry a reader lands on is the one describing the number they
     // are pointing at.
-    add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} ${probe.newOnly ? "new " : ""}relay(s) ` +
-        `${PROBE_FOR[p.name] || "checked"}${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`,
+    const took = probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : "";
+    // A pass whose subject is empty says so in words — see `PROBE_NONE`. Only
+    // where the row COUNTED that subject: a router that publishes no `newUrls`
+    // has a zero denominator for want of a candidate set, which is a different
+    // fact and keeps the reading it has always had.
+    add(probe.newOnly && !probe.candidates
+        ? `${PROBE_NONE[p.name] || "nothing new to check"}${took}`
+        : `${fmt(probe.checked)} of ${fmt(probe.candidates)} ${probe.newOnly ? "new " : ""}relay(s) ` +
+          `${PROBE_FOR[p.name] || "checked"}${took}`,
         probe.newOnly ? "newUrls" : "unmeasured");
     return cell;
   }

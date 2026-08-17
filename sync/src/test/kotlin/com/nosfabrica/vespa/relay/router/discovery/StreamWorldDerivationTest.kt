@@ -117,6 +117,7 @@ class StreamWorldDerivationTest {
         store: NostrSemanticsStore,
         exclude: List<String>,
         monitorAuthors: List<String> = emptyList(),
+        self: String? = null,
     ): StreamWorld {
         val scope = CoroutineScope(Job())
         return StreamWorld(
@@ -132,6 +133,7 @@ class StreamWorldDerivationTest {
                     scope,
                 ),
             monitorAuthors = monitorAuthors,
+            self = self,
             tor = null,
             sockets = AliasFolding.Sockets.NONE,
             monitorConfig = monitorConfig(exclude),
@@ -232,7 +234,7 @@ class StreamWorldDerivationTest {
                 nip77 = null,
             )
 
-            val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey))
+            val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
             world.candidates()
 
             val d = world.lastDerivation

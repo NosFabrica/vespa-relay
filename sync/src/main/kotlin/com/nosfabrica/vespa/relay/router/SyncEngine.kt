@@ -400,6 +400,9 @@ class SyncEngine(
                             .flatMap { it.discovery?.let { d -> d.sources + d.gatedBy }.orEmpty() }
                             .flatMap { it.filter.authors.orEmpty() }
                 ).distinct(),
+            // …and OURS alone, for the one count that is about the size of this
+            // router's own corpus rather than about whose word it takes.
+            self = signer?.pubKey,
             tor = tor,
             sockets = sockets,
             monitorConfig = config.monitor,

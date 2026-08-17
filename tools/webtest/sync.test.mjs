@@ -170,6 +170,11 @@ const leg = (n, quiet, over = {}) => ({
   // Presence, not truthiness: a fold that has caught up publishes zero, which
   // is an answer and not an absence. Falling back to `candidates` there would
   // put the whole corpus back in the denominator exactly when the pass is done.
+  //
+  // This pair is also what the CARD branches on to stop saying `0 of 0 new
+  // relay(s) checked` — see `PROBE_NONE` in stats.html. It is not a rare state:
+  // it is the one both passes work towards, and a settled corpus holds it for
+  // most of a monthly TTL.
   const caught = probeProgress({
     name: "aliasFold", phase: "idle",
     streams: [{ candidates: 11693, newUrls: 0, unmeasured: 0 }],
