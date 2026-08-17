@@ -426,6 +426,16 @@ internal object SyncVocabulary {
                     "verdict and is never asked again until it ages out.",
             )
             put(
+                "newUrls",
+                "…of those, how many arrived at the pass with NO verdict at all — the urls it exists to decide, and " +
+                    "the number the card draws its position against (`143 of 1,754 new relay(s) checked for aliases`). " +
+                    "`unmeasured` is the same population after the pass has run, so `newUrls - unmeasured` is what it " +
+                    "decided. Counted against `candidates` instead, the position barely moves however much a pass " +
+                    "achieves: most of a settled candidate set carries a verdict from weeks ago and is never asked " +
+                    "again until it ages out. Absent on a pass that does not count it, where the card falls back to " +
+                    "the whole candidate set.",
+            )
+            put(
                 "unmeasured",
                 "THE PROGRESS NUMBER for a processor: how many of its `candidates` still have no verdict after the pass " +
                     "that just ran. Falling pass over pass is the fold getting somewhere; standing still while " +

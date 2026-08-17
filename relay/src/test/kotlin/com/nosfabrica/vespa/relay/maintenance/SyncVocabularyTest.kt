@@ -137,7 +137,7 @@ class SyncVocabularyTest {
                    {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
                     "sourced": 44, "excluded": 1, "heldOutDead": 3,
-                    "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
+                    "streams": [{"name": "content", "candidates": 40, "newUrls": 16, "unmeasured": 12, "dialled": 20, "decided": 4,
                       "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
                    {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
@@ -256,6 +256,9 @@ class SyncVocabularyTest {
                     "passesRun",
                     "processors",
                     "candidates",
+                    // …the share of them that arrived undecided, which is what
+                    // the card counts against rather than the whole set.
+                    "newUrls",
                     // The candidate set's own partition, and the two nodes above
                     // it that say where the set came from.
                     "sourced",

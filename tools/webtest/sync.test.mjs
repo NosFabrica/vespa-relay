@@ -149,7 +149,43 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(two.checked, 8012, "both rows counted, not the first one");
   assert.equal(probeProgress(fold({ streams: [{ candidates: 10 }, {}] })).checked, 10,
     "a missing member is a zero on its row, not a NaN across the total");
+  assert.equal(probeProgress(fold()).newOnly, false, "a row that does not count new urls says so");
   ok("the pass draws what HAS a verdict, summed across rows and never negative");
+}
+
+{
+  // WHERE THE ROW SAYS WHAT ARRIVED UNDECIDED, that is the denominator — and
+  // the card gets a word for it. The real fold read `143 of 1,754 relay(s)
+  // checked` after an eleven-minute pass, where 1,611 of that denominator were
+  // urls carrying month-old verdicts nothing was going to re-ask: the position
+  // could not move whatever the pass achieved.
+  const fresh = probeProgress({
+    name: "aliasFold", phase: "idle", lastPassSec: 660,
+    streams: [{ name: "all streams", candidates: 11693, newUrls: 1754, unmeasured: 1611 }],
+  });
+  assert.equal(fresh.candidates, 1754, "the denominator is what arrived with no verdict");
+  assert.equal(fresh.checked, 143, "…and the numerator is how many of THOSE left with one");
+  assert.equal(fresh.newOnly, true, "the page has a word to add");
+
+  // Presence, not truthiness: a fold that has caught up publishes zero, which
+  // is an answer and not an absence. Falling back to `candidates` there would
+  // put the whole corpus back in the denominator exactly when the pass is done.
+  const caught = probeProgress({
+    name: "aliasFold", phase: "idle",
+    streams: [{ candidates: 11693, newUrls: 0, unmeasured: 0 }],
+  });
+  assert.equal(caught.candidates, 0);
+  assert.equal(caught.newOnly, true);
+
+  // Summed across rows like every other member, and a row that omits it counts
+  // zero rather than dragging the whole document back to the old denominator.
+  const mixed = probeProgress({
+    name: "aliasFold", phase: "idle",
+    streams: [{ candidates: 100, newUrls: 40, unmeasured: 30 }, { candidates: 16, unmeasured: 4 }],
+  });
+  assert.equal(mixed.candidates, 40);
+  assert.equal(mixed.checked, 6, "34 unmeasured across both rows, against 40 new");
+  ok("a pass that counts what arrived undecided is drawn against that, and says so");
 }
 
 {

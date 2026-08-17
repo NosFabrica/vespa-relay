@@ -93,7 +93,7 @@ import java.nio.file.StandardCopyOption
  *     {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
  *      "lastPassAt": 1769998000, "lastPassSec": 812, "nextInSec": 20800,
  *      "sourced": 17584, "heldOutDead": 832,
- *      "streams": [{"name": "all streams", "candidates": 16752, "foldedAway": 0,
+ *      "streams": [{"name": "all streams", "candidates": 16752, "newUrls": 4139, "foldedAway": 0,
  *                   "consistent": 0, "inconsistent": 0, "unmeasured": 4021,
  *                   "dialled": 2000, "decided": 118,
  *                   "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass",
@@ -559,6 +559,12 @@ class SyncProgress(
                                 buildJsonObject {
                                     put("name", w.stream)
                                     put("candidates", w.candidates)
+                                    // …and the share of them that arrived with
+                                    // nothing decided, which is what the card
+                                    // draws its position against. Absent from a
+                                    // pass that does not count it — see
+                                    // [Processors.Work.newUrls].
+                                    w.newUrls?.let { put("newUrls", it) }
                                     // THE PARTITION, in precedence order:
                                     // `candidates = foldedAway + consistent +
                                     // inconsistent + unmeasured`, and

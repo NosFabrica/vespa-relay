@@ -2228,16 +2228,22 @@ function processorFact(p) {
   }
   const probe = probeProgress(p);
   if (probe) {
-    // The tooltip hangs on `unmeasured`: the member this is derived from, and
-    // the one the glossary can be checked against.
     // ONE FACT: how far it got, and how long that took. The verdicts behind it
     // — how many relays are consistent, and the count this router refuses —
     // were briefly on this line too, because nothing anywhere published them;
     // they are now the tree at the head of the section, with the rest of the
     // partition around them. A line that repeats what a chart six rows above it
     // already says is a line a reader has to reconcile.
-    add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} relay(s) ${PROBE_FOR[p.name] || "checked"}` +
-        `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
+    // NEW where the row counted what arrived undecided — see `probeProgress`.
+    // The word is the difference between "the fold has checked 143 of the
+    // 1,754 relays it knows about" and what the number actually means, which is
+    // that 1,754 urls turned up with no verdict and 143 of them left with one.
+    // The tooltip hangs on whichever member the denominator came from, so the
+    // glossary entry a reader lands on is the one describing the number they
+    // are pointing at.
+    add(`${fmt(probe.checked)} of ${fmt(probe.candidates)} ${probe.newOnly ? "new " : ""}relay(s) ` +
+        `${PROBE_FOR[p.name] || "checked"}${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`,
+        probe.newOnly ? "newUrls" : "unmeasured");
     return cell;
   }
   if (p.pushed != null) {

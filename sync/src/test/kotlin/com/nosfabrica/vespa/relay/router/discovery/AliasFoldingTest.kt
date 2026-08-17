@@ -22,6 +22,7 @@ package com.nosfabrica.vespa.relay.router.discovery
 
 import com.nosfabrica.vespa.eventstore.NostrSemanticsStore
 import com.nosfabrica.vespa.eventstore.engine.InMemoryEventIndex
+import com.nosfabrica.vespa.relay.router.progress.Processors
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
@@ -466,6 +467,83 @@ class AliasFoldingTest {
             assertEquals(listOf(canonical), cleaned.dial)
             assertEquals(mapOf(alias to canonical), cleaned.aliases)
             assertEquals(0, reader.dials.get(), "the reader re-probed what the store already knew")
+        }
+
+    @Test
+    fun `a url that arrives alone on a measured host folds against the stored world`() =
+        runBlocking {
+            // THE CANDIDATE SET IS NOT THE NEIGHBOURHOOD. A url's siblings drop
+            // out of it for reasons that have nothing to do with the fold — held
+            // out as known dead, gone from the relay list that named them — and
+            // grouped from candidates alone the newcomer is a group of ONE,
+            // which `unresolved` drops for being a group of one. It was then
+            // dialled as its own relay for as long as it was discovered, while a
+            // signed record naming the very url it folds onto sat in the store
+            // unread.
+            val store = newStore()
+            folding(store, upstreams()).measure("t", listOf(canonical, alias), canDial = { true })
+
+            // A new path on the same host, arriving by itself — and a fresh
+            // RelayAliases, so the only place the host's history exists is the
+            // store. This is the next sweep, or another router entirely.
+            val newcomer = RelayUrlNormalizer.normalize("wss://nos.lol/delta-new")
+            val up = upstreams()
+            val fold = folding(store, up)
+
+            assertEquals(1, fold.measure("t", listOf(newcomer), canDial = { true }), "the newcomer had a canonical to measure against")
+            assertEquals(listOf(canonical), fold.applyVerdicts(listOf(newcomer)).dial, "one new url, and the fan-out dials the survivor")
+            // The urls pulled in for context are already decided, so they are
+            // the group's yardstick and nothing else: the canonical is dialled
+            // because every group dials its leader, and the url that folded onto
+            // it last time is not dialled at all.
+            assertTrue(canonical in up.contacted, "the survivor is the yardstick and has to answer for itself")
+            assertTrue(alias !in up.contacted, "a url that already carries a verdict must not cost a dial")
+        }
+
+    @Test
+    fun `the pass counts the urls that arrived undecided, not the whole candidate set`() =
+        runBlocking {
+            // What the card draws its position against — see
+            // [Processors.Work.newUrls]. Two urls fold on the first pass; on the
+            // second they carry verdicts, so a set of the same size arrives with
+            // nothing new in it and the row has to say so. Counted against
+            // `candidates` this read `2 of 2 checked` on a pass that checked
+            // nothing.
+            val store = newStore()
+            val processors = Processors()
+            val handle = processors.of("aliasFold")
+            val group = listOf(canonical, alias)
+            val fold =
+                AliasFolding(
+                    aliases = RelayAliases(),
+                    record = RelayVerdictRecord(store, signer),
+                    probe = AliasProbe(fetch = upstreams()::fetch, target = 40, page = 40, fallbackPage = 40),
+                    progress = handle,
+                )
+
+            fold.measure("t", group, canDial = { true })
+            assertEquals(
+                2,
+                processors
+                    .snapshot()
+                    .single()
+                    .work
+                    .single()
+                    .newUrls,
+                "both urls arrived with no verdict",
+            )
+
+            fold.measure("t", group, canDial = { true })
+            assertEquals(
+                0,
+                processors
+                    .snapshot()
+                    .single()
+                    .work
+                    .single()
+                    .newUrls,
+                "a settled host arrives with nothing new",
+            )
         }
 
     /**

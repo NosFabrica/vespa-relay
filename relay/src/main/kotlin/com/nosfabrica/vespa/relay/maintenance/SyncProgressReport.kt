@@ -413,6 +413,11 @@ internal object SyncProgressReport {
         return buildJsonObject {
             put("name", name)
             put("candidates", num(o["candidates"]) ?: 0)
+            // What arrived undecided, carried only where the router counted it
+            // — the card's denominator, and NOT part of the partition below: a
+            // new url is one that has yet to land in any of those slices, so
+            // adding it to them would double-count every url twice over.
+            num(o["newUrls"])?.let { put("newUrls", it) }
             // The other three members of the partition, carried only where the
             // router wrote them. NOT defaulted to zero: the alias fold measures
             // no stability verdicts and a router older than the partition

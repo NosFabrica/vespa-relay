@@ -176,7 +176,15 @@ class AliasFolding(
      * `#d` query per 500 urls and no network at all.
      */
     suspend fun applyVerdicts(candidates: List<NormalizedRelayUrl>): Collapsed {
-        if (candidates.size < 2) return Collapsed(candidates, emptyMap(), candidates)
+        // ONE URL IS STILL WORTH ASKING ABOUT. This returned it untouched on the
+        // reasoning that a duplicate needs two urls side by side — true of
+        // [measure], which has to compare something, and false here: the
+        // comparison already happened, possibly in another process, and reading
+        // its answer back is one indexed query. A caller holding a single url is
+        // the shape a fold is most useful on, since the verdict is the only
+        // thing that can tell it the url it has is somebody else's second
+        // address.
+        if (candidates.isEmpty()) return Collapsed(candidates, emptyMap(), candidates)
         adopt(candidates)
         return collapse(candidates)
     }
@@ -229,13 +237,16 @@ class AliasFolding(
      * Fingerprint what [apply] could not answer, and publish what that proves.
      *
      * The dialling half, and the reason the two are separate: this fingerprints
-     * every group its candidates leave unresolved, [concurrency] at a time, and each fingerprint is a paged websocket conversation with
-     * somebody else's relay. Returns how many new aliases it learned, so a
-     * caller can log a pass that did nothing differently from one that never
-     * ran.
+     * every group left unresolved once [candidates] are grouped against
+     * everything the store already has a verdict about ([adoptWorld]),
+     * [concurrency] at a time, and each fingerprint is a paged websocket
+     * conversation with somebody else's relay. Returns how many new aliases it
+     * learned, so a caller can log a pass that did nothing differently from one
+     * that never ran.
      *
-     * Safe to call with anything: a url whose host wears no other url is never
-     * probed, and a set of one returns immediately.
+     * Safe to call with anything: a url whose host wears no other url — and
+     * whose host nothing in the store knows another url for either — is never
+     * probed, and a world of one returns immediately.
      *
      * [canDial] is the caller's own transport guard — the same one its fan-out
      * applies — so a probe never dials what the caller would refuse to.
@@ -252,17 +263,31 @@ class AliasFolding(
         onEvent: suspend (Event) -> Unit = {},
         sockets: Sockets = Sockets.NONE,
     ): Int {
-        if (candidates.size < 2) return 0
+        if (candidates.isEmpty()) return 0
         val startedMs = System.currentTimeMillis()
 
-        adopt(candidates)
+        // THE WHOLE RECORDED WORLD, not this pass's candidates — see
+        // [adoptWorld]. Grouping is done over the union so a url arriving alone
+        // on a host we have already measured is measured against what we know
+        // about that host rather than against nothing.
+        val world = adoptWorld(candidates)
+        if (world.size < 2) return 0
+        // Urls with NO VERDICT of any kind as this pass begins — read after the
+        // adopt and before the first dial, which is the only moment "new" means
+        // anything. This is the number the card counts against: `unmeasured` is
+        // the same population once the pass has run, so the two make a
+        // fraction — of the urls that arrived undecided, how many leave decided.
+        // Counted over the CANDIDATES rather than the world, because that is the
+        // set the caller is waiting on; a decided url pulled in for context is
+        // neither new nor progress.
+        val fresh = candidates.count { !aliases.measured(it) }
 
         // Everything unresolved, minus the hosts a recent pass already dialled
         // and could not decide. Held back rather than dropped: the cooldown
         // lapses and they are tried again, just not at the front of every pass
         // between now and then. See [undecidable].
         val startedAtMs = System.currentTimeMillis()
-        val all = aliases.unresolved(candidates)
+        val all = aliases.unresolved(world)
         val groups = all.filter { group -> !onCooldown(group, startedAtMs) }
         var learned = 0
         var probed = 0
@@ -826,6 +851,7 @@ class AliasFolding(
             Processors.Work(
                 stream = label,
                 candidates = candidates.size,
+                newUrls = fresh,
                 unmeasured = cleaned?.unmeasured?.size ?: candidates.size,
                 dialled = probed,
                 decided = learned,
@@ -1021,6 +1047,61 @@ class AliasFolding(
         // two walks was a window in which every fold in the store was missing.
         // See [RelayAliases.replace].
         aliases.replace(candidates, held.aliases, held.distinct)
+    }
+
+    /**
+     * Adopt every verdict the store holds and hand back the set to GROUP: this
+     * pass's candidates, plus every url one of those verdicts is about.
+     *
+     * **A duplicate is a property of a url next to another one, and the
+     * candidate set is not the whole neighbourhood.** A url's siblings on the
+     * same host drop out of it for reasons that have nothing to do with the
+     * fold — held out as known dead by [StreamWorld], gone from the relay list
+     * that named them, discovered by a stream since reconfigured. Grouped from
+     * candidates alone, a url that arrives on such a host is a group of ONE,
+     * [RelayAliases.unresolved] drops it for that, and it is dialled as its own
+     * relay for as long as it is discovered — while a signed record naming the
+     * very url it folds onto sits in the store, unread, because nothing asked
+     * for it.
+     *
+     * Grouping the world instead costs [RelayVerdictRecord.loadAll]'s one query
+     * per pass, and the extra urls it brings are FREE TO CARRY: every one of
+     * them already holds a fold verdict, so [RelayAliases.toProbe] leaves them
+     * out of the dials and [RelayAliases.learn] skips them for want of a
+     * fingerprint. What they contribute is the one thing the group was missing —
+     * a canonical to be the yardstick, which [RelayAliases.leaderOf] then picks
+     * ahead of everything else.
+     *
+     * **Verdicted urls only, and that bound is load-bearing.** Every url this
+     * router has ever written a record about includes the corpse of every dead
+     * one, and pulling those back in as group members would put five figures of
+     * connect timeouts into a pass — undoing `heldOutDead` from the inside. A
+     * url carrying a fold verdict, by contrast, is one we have already
+     * fingerprinted successfully, and it costs at most the leader dial the group
+     * pays anyway.
+     *
+     * Falls back to the candidate-scoped [adopt] when the store cannot answer,
+     * which fails into keeping what we hold rather than into unfolding it.
+     */
+    private suspend fun adoptWorld(candidates: List<NormalizedRelayUrl>): List<NormalizedRelayUrl> {
+        val held =
+            try {
+                record.loadAll()
+            } catch (e: CancellationException) {
+                // The scope is shutting down — see [adopt].
+                throw e
+            } catch (e: Exception) {
+                adopt(candidates)
+                return candidates
+            }
+        // Candidates FIRST, so the world keeps the caller's order and a group's
+        // members sort the way they always did.
+        val world = LinkedHashSet(candidates)
+        world += held.aliases.keys
+        world += held.aliases.values
+        world += held.distinct
+        aliases.replace(world, held.aliases, held.distinct)
+        return world.toList()
     }
 
     /**

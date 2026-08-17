@@ -129,17 +129,33 @@ export const MEASURING = "measuring";
  *
  * Only where the row publishes `foldedAway` at all — the fold's own row measures
  * no folds away from itself, and there the complement is exactly right.
+ *
+ * **WHERE THE ROW SAYS HOW MANY URLS ARRIVED UNDECIDED, that is the denominator
+ * instead, and `newOnly` says so** — the caller has a word to add. Neither half
+ * of the older pair described the PASS: the denominator was every url it was
+ * handed, most of which carry a verdict from weeks ago that nothing re-asks
+ * until it ages out, and the numerator was every url that holds one at all —
+ * folds made a month ago in another process included. On the real card a fold
+ * that had just run for eleven minutes read `143 of 1,754 relay(s) checked`,
+ * and neither number moved with the work. `newUrls` is the set the pass is FOR
+ * and `unmeasured` is that same set once it has run, so the pair is a fraction
+ * of one population: of the urls that arrived undecided, how many left decided.
  */
 export function probeProgress(p) {
   const streams = p?.streams || [];
   if (!streams.length) return null;
   const sum = (member) => streams.reduce((a, w) => a + (w[member] || 0), 0);
   const folded = sum("foldedAway");
-  const candidates = Math.max(0, sum("candidates") - folded);
+  // Presence, not truthiness: a pass that saw no new urls publishes zero, and
+  // that is an answer — `|| ` there would silently fall back to the whole
+  // candidate set exactly when the fold has caught up with the corpus.
+  const fresh = streams.some((w) => w.newUrls != null) ? sum("newUrls") : null;
+  const candidates = fresh ?? Math.max(0, sum("candidates") - folded);
   const unmeasured = sum("unmeasured");
   return {
     candidates,
     checked: Math.max(0, candidates - unmeasured),
+    newOnly: fresh != null,
     tookSec: p.phase === MEASURING ? null : (p.lastPassSec ?? null),
   };
 }
