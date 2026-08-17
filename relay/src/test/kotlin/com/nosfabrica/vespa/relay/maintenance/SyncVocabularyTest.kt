@@ -136,14 +136,14 @@ class SyncVocabularyTest {
                  "processors": [
                    {"name": "aliasFold", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 42, "nextInSec": 20800,
-                    "sourced": 44, "excluded": 1, "heldOutDead": 3,
-                    "streams": [{"name": "content", "candidates": 40, "unmeasured": 12, "dialled": 20, "decided": 4,
+                    "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
+                    "streams": [{"name": "content", "candidates": 40, "newUrls": 16, "unmeasured": 12, "dialled": 20, "decided": 4,
                       "undecided": {"reasons": [{"reason": "cooling down from an earlier failed pass", "hosts": 2,
                                                  "examples": ["a.example"]}], "omitted": 0}}]},
                    {"name": "consistency", "phase": "measuring", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 900,
                     "measuring": {"unit": "url", "attempted": 6, "toProbe": 22, "etaSec": 300},
-                    "sourced": 44, "excluded": 1, "heldOutDead": 3,
+                    "sourced": 44, "excluded": 1, "heldOutDead": 3, "recordedOnly": 6,
                     "streams": [{"name": "all streams", "candidates": 40, "foldedAway": 8, "consistent": 9,
                       "inconsistent": 1, "unmeasured": 22, "dialled": 22, "decided": 2,
                       "undecided": {"reasons": [{"reason": "the connection was refused",
@@ -203,6 +203,10 @@ class SyncVocabularyTest {
                     "walkEnvelope",
                     "evidence",
                     "holdings",
+                    // The coverage tree's root, synthesised by the page from
+                    // `sourced` and `recordedOnly` — a name for the sum, which
+                    // is why no document member carries it.
+                    "corpus",
                     "frame",
                     "unnamed",
                     "outcome",
@@ -256,10 +260,14 @@ class SyncVocabularyTest {
                     "passesRun",
                     "processors",
                     "candidates",
+                    // …the share of them that arrived undecided, which is what
+                    // the card counts against rather than the whole set.
+                    "newUrls",
                     // The candidate set's own partition, and the two nodes above
                     // it that say where the set came from.
                     "sourced",
                     "heldOutDead",
+                    "recordedOnly",
                     "foldedAway",
                     "consistent",
                     "inconsistent",

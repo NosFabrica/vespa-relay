@@ -90,6 +90,26 @@ class Processors {
          */
         val candidates: Int,
         /**
+         * …of those, how many arrived with NO VERDICT AT ALL — the pass's own
+         * subject, and the denominator the card counts against.
+         *
+         * `candidates` is the wrong one to show a reader watching the fold
+         * work. Most of a settled candidate set carries a verdict from weeks ago
+         * and is never asked again until it ages out, so a position counted
+         * against it moves by a rounding error however much a pass achieves, and
+         * every url the fold removed from the fan-out counted as one it had just
+         * checked. This is the set the pass exists to decide, so `newUrls -
+         * unmeasured` is what it decided: the same population before and after,
+         * which is what makes the pair a fraction rather than two numbers next
+         * to each other.
+         *
+         * Null on a pass that does not report it, for the reason [foldedAway]
+         * is nullable: a zero would be the claim that nothing arrived undecided,
+         * which is the state both passes are working towards and must not be
+         * manufactured by a router that never counted.
+         */
+        val newUrls: Int? = null,
+        /**
          * …of those, how many a FOLD has already taken out of the fan-out.
          *
          * First member of the partition and first in precedence, because a

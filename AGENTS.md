@@ -2228,10 +2228,11 @@ identity and one test per reason.
 `/web/shared/sync.js`, one row per node, five levels deep:
 
 ```
-every url the streams named                                           17,584
+every relay url this router knows of                                  17,584
 ├─ dropped before a pass could see it                                    832
 │  ├─ excluded by config, or our own url                                   3
 │  └─ known dead — one of our own signed `dead` verdicts               829
+├─ known from our own records — no relay list names it now                 0
 └─ in reach — the candidate set                                       16,752
    ├─ folded onto another url                                         11,429
    ├─ consistent                                                         583
@@ -2244,6 +2245,27 @@ every url the streams named                                           17,584
       │  └─ the TLS handshake failed  on 121 host(s)                     156
       └─ refused our auth  on 4 host(s), largest 600                     826
 ```
+
+**The mouth is `sourced + recordedOnly`, not one derivation's yield.** It was
+`sourced` alone — every url the streams' relay lists named THIS round — under a
+caption reading "every relay url this router knows of", and the two are not the
+same corpus: a url leaves the relay lists for reasons of its own (the author who
+listed it revised their 10002, a source was reconfigured, a stream was retired)
+and every measurement this router ever took of it is still in the store, still
+read by `AliasFolding.adoptWorld`. `StreamWorld.candidates` counts them —
+`RelayDiscovery.recorded`, our own authors, on the verdict TTL, minus whatever
+this round named — and the tree gets a branch for them beside `dropped` rather
+than inside it, because nothing was decided against them: nobody asked. On a
+deployment whose store holds records for five figures of urls while its current
+relay lists name a couple of thousand, the card was drawing a tenth of its own
+corpus and calling it everything.
+
+The root is keyed `corpus`, NOT `sourced`, and that is the glossary's rule rather
+than a preference: `sourced` is a published member meaning one of the two halves,
+and a root row labelled "everything this router knows of" carrying that entry
+would document the wrong number for the widest row on the card. Absent
+`recordedOnly` — a router older than it — the tree is exactly what it was, with
+no zero row claiming a corpus nobody measured.
 
 It was an icicle first — one row per LEVEL, each a share of one width, a child
 drawn under the parent it subdivides. That was correct, and it needed three
@@ -2608,6 +2630,47 @@ The 59 fingerprints in that timeline are what a pass cost when `markDistinct`
 was in memory only: a fold persisted, "this url is its own relay" did not, so
 every boot re-measured all the non-duplicates. The cleared `same-as` form fixed
 that — see the verdict section above for the shape and what it does not claim.
+
+**`measure` groups the WORLD, not its candidate set** —
+`RelayVerdictRecord.loadAll` reads every 30166 we still stand behind and
+`AliasFolding.adoptWorld` unions the urls those verdicts are about into the set
+being grouped. A duplicate is a property of a url next to another one, and the
+candidate set is not the whole neighbourhood: a url's siblings drop out of it for
+reasons that have nothing to do with the fold — held out as known dead by
+`StreamWorld`, gone from the relay list that named them, discovered by a stream
+since reconfigured. Grouped from candidates alone the newcomer is a group of ONE,
+`unresolved` drops it for that, and it is dialled as its own relay for as long as
+it is discovered while a signed record naming the very url it folds onto sits in
+the store unread.
+
+The urls this pulls in are free to carry: every one already holds a fold verdict,
+so `toProbe` leaves them out of the dials and `learn` skips them for want of a
+fingerprint. What they contribute is the one thing the group was missing — a
+canonical for `leaderOf` to pick as the yardstick. **Verdicted urls only, and
+that bound is load-bearing**: every url this router has written a record about
+includes the corpse of every dead one, and pulling those in as group members
+would put five figures of connect timeouts into a pass — `heldOutDead` undone
+from the inside. `apply`'s `#d` read is unchanged and still runs in front of the
+fan-out; only its "a set of one returns immediately" guard went, because reading
+a stored verdict back for one url is an indexed query and a caller holding a
+single url is exactly who needs to be told it is somebody else's second address.
+
+**The card counts against what arrived UNDECIDED, not against the candidate
+set.** `Work.newUrls` is the urls with no verdict when the pass began, read after
+the adopt and before the first dial; `unmeasured` is that same population after,
+so the pair is a fraction of one set rather than two numbers side by side, and
+`probeProgress` draws it with a word — `… new relay(s) checked for aliases`.
+Neither half of the older pair described the PASS. The line that prompted this
+read `143 of 1,754 relay(s) checked for aliases in 11m`: the denominator was
+every url the pass was handed, most of them carrying month-old verdicts nothing
+was going to re-ask, and the numerator was every url holding a verdict at all —
+including folds made weeks earlier, and in another process. Eleven minutes of
+work moved neither. Absent on a pass that does not count it (the stability gate),
+where the page falls back to `candidates - foldedAway`. A pass whose subject is
+EMPTY says so in words (`PROBE_NONE`, "nothing new to check for aliases") rather
+than `0 of 0`: that is not a rare state, it is the one both passes work towards
+and hold for most of a monthly TTL, and two zeroes read as a broken pass. Caught
+by rendering the real card against a live `/stats.json`, not by a unit test.
 
 > **The engine this next stretch describes is DELETED.** `DynamicSync`,
 > `DeleteMissingSync`, `RelayRotation`, `CachedRelayList` and `LegProgress`

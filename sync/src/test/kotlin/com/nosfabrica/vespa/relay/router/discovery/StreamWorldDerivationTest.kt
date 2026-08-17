@@ -26,7 +26,9 @@ import com.nosfabrica.vespa.relay.router.IngestPipeline
 import com.nosfabrica.vespa.relay.router.config.RouterConfig
 import com.nosfabrica.vespa.relay.router.config.RouterConfigLoader
 import com.vitorpamplona.quartz.nip01Core.core.Event
+import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerSync
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
@@ -114,6 +116,8 @@ class StreamWorldDerivationTest {
     private fun world(
         store: NostrSemanticsStore,
         exclude: List<String>,
+        monitorAuthors: List<String> = emptyList(),
+        self: String? = null,
     ): StreamWorld {
         val scope = CoroutineScope(Job())
         return StreamWorld(
@@ -128,7 +132,8 @@ class StreamWorldDerivationTest {
                     null,
                     scope,
                 ),
-            monitorAuthors = emptyList(),
+            monitorAuthors = monitorAuthors,
+            self = self,
             tor = null,
             sockets = AliasFolding.Sockets.NONE,
             monitorConfig = monitorConfig(exclude),
@@ -200,6 +205,61 @@ class StreamWorldDerivationTest {
             assertEquals(1, world.lastDerivation.excluded, "our own url is a drop an operator can act on")
             assertEquals(2, world.lastDerivation.sourced)
             assertTrue(candidates.none { it == self }, "and still never dialled")
+        }
+
+    @Test
+    fun `urls only our records know about are counted beside what the streams named`() =
+        runBlocking {
+            // THE CORPUS IS NOT ONE DERIVATION'S YIELD. A url leaves the relay
+            // lists for reasons of its own — the author who listed it revised
+            // their 10002 — and every measurement of it stays in the store,
+            // still read by the fold. The coverage card's caption says "every
+            // relay url this router knows of" and its tree was rooted at
+            // `sourced`, so those urls left the corpus without a word.
+            val monitor = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            store.insert(event(10002, arrayOf("r", "wss://ordinary.example", "write")))
+            val record = RelayVerdictRecord(store, monitor)
+            for (url in listOf("wss://forgotten.example", "wss://gone.example")) {
+                record.publishFitness(RelayUrlNormalizer.normalize(url), "dead", "nothing answered", pageable = null, nip77 = null)
+            }
+            // …and one the relay list DOES still name, which must not be counted
+            // twice: the mouth is `sourced + recordedOnly` and a url on both
+            // sides of that would inflate the whole tree's denominator.
+            record.publishFitness(
+                RelayUrlNormalizer.normalize("wss://ordinary.example"),
+                "prime",
+                "answered at a settled anchor",
+                pageable = null,
+                nip77 = null,
+            )
+
+            val world = world(store, emptyList(), monitorAuthors = listOf(monitor.pubKey), self = monitor.pubKey)
+            world.candidates()
+
+            val d = world.lastDerivation
+            assertEquals(1, d.sourced, "one url is what the relay lists name")
+            assertEquals(2, d.recordedOnly, "the two nothing names any more are still urls this router knows of")
+        }
+
+    @Test
+    fun `a router with no monitor identity claims to know nothing beyond its lists`() =
+        runBlocking {
+            // Same asymmetry `undialable` documents: with no signer and no named
+            // monitors this router holds no records, so the honest count of what
+            // it knows beyond today's relay lists is none — not "everything in
+            // the store", which would let a mirrored stranger's 30166s decide
+            // the size of our own corpus.
+            val stranger = NostrSignerInternal(KeyPair())
+            val store = NostrSemanticsStore(InMemoryEventIndex(), relay = self)
+            store.insert(event(10002, arrayOf("r", "wss://ordinary.example", "write")))
+            RelayVerdictRecord(store, stranger)
+                .publishFitness(RelayUrlNormalizer.normalize("wss://theirs.example"), "prime", "not ours", pageable = null, nip77 = null)
+
+            val world = world(store, emptyList())
+            world.candidates()
+
+            assertEquals(0, world.lastDerivation.recordedOnly)
         }
 
     @Test

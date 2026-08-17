@@ -1175,7 +1175,7 @@ class RouterConfigTest {
                 }
             }
             """.trimIndent()
-        // The "#s" left off entirely takes the default age, and the `d`-tag
+        // The "#l" left off entirely takes the default age, and the `d`-tag
         // select NIP-66 fixes for us.
         val bare =
             RouterConfigLoader

@@ -360,6 +360,7 @@ class SyncProgressTest {
                             Processors.Work(
                                 stream = "content",
                                 candidates = 16_752,
+                                newUrls = 4_139,
                                 unmeasured = 4_021,
                                 dialled = 2_000,
                                 decided = 118,
@@ -395,6 +396,11 @@ class SyncProgressTest {
         assertEquals(20_800L, fold["nextInSec"]!!.jsonPrimitive.long, "a six-hour clock explains a fold that has said nothing")
         val work = (fold["streams"] as kotlinx.serialization.json.JsonArray)[0].jsonObject
         assertEquals(4_021, work["unmeasured"]!!.jsonPrimitive.int, "the progress number")
+        // …and the denominator it is a share of: the urls that arrived with no
+        // verdict, which is what the card counts against rather than the whole
+        // candidate set. 118 of 4,139 got one here; 16,752 is the set they came
+        // in with and moves by a rounding error whatever a pass does.
+        assertEquals(4_139, work["newUrls"]!!.jsonPrimitive.int, "what arrived undecided")
         assertEquals(
             "cooling down from an earlier failed pass",
             (work["undecided"]!!.jsonObject["reasons"] as kotlinx.serialization.json.JsonArray)[0]
