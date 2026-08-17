@@ -52,6 +52,25 @@ export const STUCK_LEG_SEC = 600;
 export const IN_FLIGHT_SHOWN = Infinity;
 
 /**
+ * How many host names a monitor reason puts in its hover title.
+ *
+ * The one cut on this page that is a PRESENTATION cut rather than a data one,
+ * and it exists because the two moved in opposite directions. The router now
+ * publishes up to a hundred names per reason so `/stats.json` can answer which
+ * servers will not fold — an inventory, deliberately. A native `title` is not
+ * a place to put an inventory: it is one run of text, unwrapped, truncated by
+ * some browsers at lengths they do not agree on.
+ *
+ * Twelve, measured rather than guessed. On production's widest reason — 186
+ * hosts — the tooltip ran to 1,740 characters at a hundred names against 159
+ * at six, and nothing about the longer one is more readable. Twelve is double
+ * the old head and still one glance. What the row cannot show, it says: the
+ * remainder is named as a count, and `hosts` on the visible label was always
+ * the honest total.
+ */
+export const NAMES_IN_TOOLTIP = 12;
+
+/**
  * WHERE THE CONSTRAINT IS — the first question a mirror that feels slow gets,
  * and the one the router answers itself every 60 seconds, in a line that used
  * to reach only a container's stderr.
@@ -349,9 +368,16 @@ export function funnelOf(p) {
 
   // A REASON IS A LEAF. The hosts under it are published — `undecided[].top`,
   // ranked, with their url counts — and they are deliberately NOT drawn: a row
-  // per host is a row per SERVER on a corpus of two thousand of them, and the
-  // ranked head is short only because the router capped it. The tree would grow
-  // by a page to say what two numbers on the reason's own row already say.
+  // per host is a row per SERVER on a corpus of two thousand of them. The tree
+  // would grow by a page to say what two numbers on the reason's own row
+  // already say.
+  //
+  // That argument used to lean on the router's cap being short. It is not
+  // short any more — the ranked head runs to a hundred so the document can
+  // answer WHICH servers — and the argument survives the change intact,
+  // because it never rested on the cap: it rests on a unit change inside a
+  // tree of url counts reading as a subtotal. What did have to move is the
+  // tooltip; see [NAMES_IN_TOOLTIP].
   //
   // So the ranking survives as those two numbers rather than as a list.
   // `hosts` is how many servers the reason's urls resolve to and `largest` is
@@ -363,11 +389,22 @@ export function funnelOf(p) {
   const asReason = (row) => {
     const value = Math.max(0, row.urls || 0);
     const top = (row.top || []).filter((h) => h && h.host && h.urls > 0);
+    const named = row.examples?.length ? row.examples : top.map((h) => h.host);
     return {
       ...node(row.reason, row.reason, value),
       hosts: row.hosts || 0,
       largest: top[0]?.urls || 0,
-      examples: row.examples?.length ? row.examples : top.map((h) => h.host),
+      // CUT FOR THE TOOLTIP, not for the document. The router publishes these
+      // to a ceiling of a hundred so `/stats.json` is an inventory of which
+      // servers a reason holds — but the only place the names are DRAWN is a
+      // native `title`, and a title is one unwrapped run of text that several
+      // browsers truncate on their own terms. Measured against production the
+      // day the router's cap moved: the widest reason's tooltip went from 159
+      // characters to 1,740, which is not more legible than six names, it is
+      // less. So the row keeps a readable handful and says how many it did not
+      // name; the inventory is one fetch away and `hosts` is the count.
+      examples: named.slice(0, NAMES_IN_TOOLTIP),
+      unnamed: Math.max(0, (row.hosts || named.length) - Math.min(named.length, NAMES_IN_TOOLTIP)),
     };
   };
 

@@ -357,6 +357,9 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(at("never answered a REQ").largest, 61, "the widest host's share, not a list of them");
   assert.deepEqual(at("never answered a REQ").examples, ["dead.example", "gone.example"],
     "…and the names ride along for the row's title, which costs no height");
+  // A short list is not cut, and says it was not.
+  assert.equal(at("never answered a REQ").unnamed, 2199,
+    "the names it did NOT fit are a count, because 2,201 hosts arrived as two names");
 
   // EVERY BAR AGAINST THE ROOT, never against the parent — against its parent a
   // host with 61 urls under a reason with 3,902 would draw at the width the
