@@ -2154,8 +2154,14 @@ function funnelPanel(p) {
     fill.style.width = `${Math.min(100, r.share * 100)}%`;
     track.appendChild(fill);
     row.appendChild(track);
+    // The names, to a readable handful, and then the count of what is left —
+    // see NAMES_IN_TOOLTIP. A title that silently stopped at twelve would be
+    // the same "reads as the whole answer" bug the JSON's own `omitted`
+    // members exist to prevent, one layer up.
     row.title = `${fmt(r.value)} url(s) — ${(r.share * 100).toFixed(r.share < 0.01 ? 2 : 1)}% of ${fmt(f.total)}` +
-      (r.examples && r.examples.length ? ` (e.g. ${r.examples.join(", ")})` : "");
+      (r.examples && r.examples.length
+        ? ` (e.g. ${r.examples.join(", ")}${r.unnamed ? `, and ${fmt(r.unnamed)} more — see the JSON` : ""})`
+        : "");
     box.appendChild(row);
   }
   if (f.omitted) {

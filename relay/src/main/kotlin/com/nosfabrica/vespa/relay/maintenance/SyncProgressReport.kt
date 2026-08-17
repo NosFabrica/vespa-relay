@@ -152,9 +152,19 @@ internal object SyncProgressReport {
             // rather than empty when the file carries none: a router built
             // before this existed makes no claim about them, and an empty array
             // would be the claim that it runs none.
+            //
+            // EVERY ONE OF THEM, uncapped. This list is bounded by the SOURCE:
+            // a processor exists because someone registered one in SyncEngine,
+            // so it cannot grow with the corpus, the roster or the url
+            // universe the way the host lists below can. And the failure mode
+            // of capping it is the exact one `splitProcessors` is written to
+            // prevent — "dropping a row to keep a card tidy is how a new job
+            // runs unwatched for a year". The page defends that by routing an
+            // unrecognised processor to the pipeline card rather than nowhere;
+            // a cap here would have dropped the row before the page could,
+            // and silently, since this had no `omitted` to disclose it with.
             (doc["processors"] as? JsonArray)
                 ?.filterIsInstance<JsonObject>()
-                ?.take(MAX_PROCESSORS)
                 ?.mapNotNull { processor(it) }
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { rows -> putJsonArray("processors") { for (r in rows) add(r) } }
@@ -346,9 +356,14 @@ internal object SyncProgressReport {
             measuring(o["measuring"] as? JsonObject)?.let { put("measuring", it) }
             for (counter in COUNTERS) (num(o[counter]) ?: LEGACY_COUNTERS[counter]?.let { num(o[it]) })?.let { put(counter, it) }
             rejections(o["rejections"] as? JsonObject)?.let { put("rejections", it) }
+            // Uncapped for the same reason as the processor list itself: these
+            // rows come from the router's own stream set, which is `router.conf`
+            // and not the network, and each one carries an `undecided`
+            // partition that is the only account of what that stream's pass
+            // could not decide. Dropping one loses a whole stream's work with
+            // nothing said.
             (o["streams"] as? JsonArray)
                 ?.filterIsInstance<JsonObject>()
-                ?.take(MAX_PROCESSOR_STREAMS)
                 ?.mapNotNull { processorWork(it) }
                 ?.takeIf { it.isNotEmpty() }
                 ?.let { rows -> putJsonArray("streams") { for (r in rows) add(r) } }
@@ -539,19 +554,24 @@ internal object SyncProgressReport {
     }
 
     /**
-     * The quietest legs, rebuilt row by row and capped again on this side.
+     * The quietest legs, rebuilt row by row and NOT capped again on this side.
      *
-     * Same terms as [foldedOnto]: the router already bounds its list, and this
-     * bounds it a second time rather than trusting that it did. `omitted` is
-     * carried through and ADDED to whatever this side drops, because a
-     * truncated list that does not say it is truncated reads as the whole
-     * answer — and here the whole answer is what an operator is chasing.
+     * The exception to [foldedOnto]'s rule, and the reason is what the list is
+     * of: a fold row is one of however many urls discovery found, while an
+     * in-flight row is one of the router's WORKERS, a number the router itself
+     * bounds by `visitConcurrency`. Re-capping it at twenty published a sixth
+     * of the mirror's live state and called the rest `omitted` — and "which
+     * relays is this thing actually talking to" is the question the card gets
+     * asked, so the truncation landed squarely on the answer.
+     *
+     * `omitted` is still carried through and ADDED to whatever this side
+     * drops: the router may bound its own list some day, and a row this side
+     * cannot read is still a row that vanished.
      */
     private fun inFlight(o: JsonObject?): JsonObject? {
         if (o == null) return null
-        val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
-        if (rows.isEmpty()) return null
-        val kept = rows.take(MAX_IN_FLIGHT_ROWS)
+        val kept = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (kept.isEmpty()) return null
         // Rows this side could not read are DROPPED, so they have to be counted
         // — see `omitted` below. A row with no url says nothing and cannot be
         // published, but letting it vanish silently is the exact failure the
@@ -592,7 +612,7 @@ internal object SyncProgressReport {
                     )
                 }
             }
-            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
+            put("omitted", (num(o["omitted"]) ?: 0) + unreadable)
         }
     }
 
@@ -842,19 +862,22 @@ internal object SyncProgressReport {
             "tails",
         )
 
-    /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
+    /**
+     * This side's own ceilings — see [foldedOnto] for why they are restated
+     * here.
+     *
+     * What is NOT here is the shape of the argument: `inFlight`, the processor
+     * list and a processor's stream rows all carry none, because each is
+     * bounded by something that is not the network — a worker, a registration
+     * in SyncEngine, a line in `router.conf`. A cap earns its place over a
+     * list discovery can grow without limit; over one the source already
+     * bounds it only decides which rows an operator is not shown.
+     */
     private const val MAX_FOLD_ROWS = 20
     private const val MAX_FOLD_EXAMPLES = 2
-    private const val MAX_IN_FLIGHT_ROWS = 20
 
     /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
     private const val MAX_PASSES = 4
-
-    /** Seven today (fold, stability, fitness, visits, ingest, heal, push), with room to grow. */
-    private const val MAX_PROCESSORS = 12
-
-    /** A processor reports per stream, and a router runs a handful of them. */
-    private const val MAX_PROCESSOR_STREAMS = 12
 
     /**
      * Undecided reasons kept per row, matching `Processors.MAX_UNDECIDED_REASONS`.
@@ -868,10 +891,16 @@ internal object SyncProgressReport {
      */
     private const val MAX_UNDECIDED_ROWS = 16
     private const val MAX_REJECTION_ROWS = 4
-    private const val MAX_UNDECIDED_EXAMPLES = 3
+
+    /**
+     * Named hosts kept under one reason, matching `Processors.MAX_UNDECIDED_EXAMPLES`.
+     * Three named three of twenty-eight, and WHICH servers will not fold is
+     * the whole use of the list — see the router's constant for the argument.
+     */
+    private const val MAX_UNDECIDED_EXAMPLES = 100
 
     /** Ranked hosts kept under one reason, matching `Processors.MAX_UNDECIDED_HOSTS`. */
-    private const val MAX_UNDECIDED_HOSTS = 6
+    private const val MAX_UNDECIDED_HOSTS = 100
 
     private fun num(value: JsonElement?): Long? = (value as? JsonPrimitive)?.longOrNull
 

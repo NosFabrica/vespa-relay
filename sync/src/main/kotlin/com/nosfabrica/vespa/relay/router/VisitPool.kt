@@ -259,8 +259,22 @@ internal class VisitPool(
      * The in-flight rows for one stream: every relay whose visit is currently
      * serving it, quietest first — the same ordering argument as
      * [InFlight]'s, because the row worth reading is the one nothing is
-     * arriving on. Bounded here as everywhere a list leaves the process, with
-     * the cut disclosed.
+     * arriving on.
+     *
+     * UNBOUNDED, unlike every other list that leaves this process, and the
+     * exception is earned. The others are derived from the url universe and
+     * have no ceiling but discovery; this one cannot exceed
+     * [visitConcurrency], because a row IS a worker. Twenty rows against 128
+     * workers meant the card answered "what is this mirror connected to" with
+     * a sixth of the answer and an `omitted` nobody reads as "you are seeing
+     * 16% of it" — an operator watching one stream's rows drain to a single
+     * relay was reading a truncation, not the mirror. The whole set is the
+     * question, so the whole set is published.
+     *
+     * Note this is per CURRENT ASK, not per stream membership: one visit
+     * serves every stream's asks in turn ([visit]), so a relay appears under
+     * whichever stream it is on at this instant and the rows across streams
+     * still sum to the worker count rather than multiplying by it.
      */
     private fun inFlightFor(stream: String): InFlight {
         val nowMs = System.currentTimeMillis()
@@ -283,10 +297,11 @@ internal class VisitPool(
                         pagingUntil = row.pagingUntil,
                     )
                 }.sortedWith(compareByDescending<InFlight.Relay> { it.quietForSec }.thenByDescending { it.heldForSec }.thenBy { it.relay })
-        return InFlight(
-            relays = rows.take(MAX_IN_FLIGHT_ROWS),
-            omitted = (rows.size - MAX_IN_FLIGHT_ROWS).coerceAtLeast(0),
-        )
+        // Zero, always, and published anyway: `omitted` is the schema's promise
+        // that a list says what it dropped, and a reader that finds the member
+        // missing cannot tell "nothing was dropped" from "this router does not
+        // disclose". Kept so the answer stays explicit.
+        return InFlight(relays = rows, omitted = 0)
     }
 
     /**
@@ -898,9 +913,6 @@ internal class VisitPool(
         const val STAGE_PAGING = "paging"
         const val STAGE_AUDITING = "auditing history (negentropy)"
         const val STAGE_RETRACTING = "reconciling the provider's own records (negentropy)"
-
-        /** In-flight rows published per stream — matches the report side's own ceiling. */
-        const val MAX_IN_FLIGHT_ROWS = 20
 
         /**
          * Held tails, the pool's steady-state socket count — `tailBudget` in

@@ -245,6 +245,63 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `the named hosts under a reason keep a ceiling, high enough to be an inventory`() {
+        // The cap that replaced the three-name sample. It is still a cap —
+        // unlike `inFlight`, this list is bounded only by the host universe,
+        // and the whole reason it is re-applied here is a file this process
+        // did not write. What changed is that it now clears a real
+        // enumeration: production's fold had reasons holding 28, 30 and 18
+        // hosts and named three of each.
+        val examples = (1..120).joinToString(",") { "\"h$it.example\"" }
+        val top = (1..120).joinToString(",") { """{"host": "t$it.example", "urls": $it}""" }
+        val out =
+            SyncProgressReport.build(
+                """
+                {"writtenAt": 900, "streams": [],
+                 "processors": [{"name": "aliasFold", "phase": "idle", "streams": [
+                   {"name": "content", "candidates": 400, "unmeasured": 240,
+                    "undecided": {"reasons": [{"reason": "a host that cannot repeat itself", "hosts": 120,
+                                               "urls": 240, "examples": [$examples], "top": [$top]}],
+                                  "omitted": 0}}]}]}
+                """.trimIndent(),
+                nowSeconds = 1_000,
+            )!!
+
+        val work = ((out["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray)[0].jsonObject
+        val reason = (work["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject
+        assertEquals(100, (reason["examples"] as JsonArray).size, "bounded, and far above the old three")
+        assertEquals(100, (reason["top"] as JsonArray).size, "the ranked head is bounded the same way")
+        // The property the cap must never break: the reason still counts every
+        // url, so the funnel's level cannot close over the truncated list.
+        assertEquals(240L, reason["urls"]!!.jsonPrimitive.long, "the count is over every url, not the named ones")
+        assertEquals(120L, reason["hosts"]!!.jsonPrimitive.long, "and the remainder stays readable as hosts minus the list")
+    }
+
+    @Test
+    fun `every worker is published, however many the pool is holding`() {
+        // The regression this exists to stop. `inFlight` was cut to twenty rows
+        // on BOTH sides, so a pool holding 128 workers published a sixth of the
+        // mirror's live state on the one card an operator reads to answer "what
+        // is this thing connected to" — and the `omitted` beside it does not
+        // read as "you are seeing 16%". Unlike every other bounded list here, a
+        // row is a WORKER, so the router's own `visitConcurrency` is the bound
+        // and the whole set is the answer.
+        val rows = (1..25).joinToString(",") { """{"relay": "wss://r$it.example/", "heldForSec": $it, "events": 0, "quietForSec": 0}""" }
+        val out =
+            SyncProgressReport.build(
+                """{"writtenAt": 900, "streams": [{"name": "content", "inFlight": {"relays": [$rows], "omitted": 0}}]}""",
+                nowSeconds = 1_000,
+            )!!
+
+        val f =
+            (out["streams"] as JsonArray)[0]
+                .jsonObject["inFlight"]!!
+                .jsonObject
+        assertEquals(25, (f["relays"] as JsonArray).size, "all 25 workers survive the report side")
+        assertEquals(0, f["omitted"]!!.jsonPrimitive.int, "and nothing is reported as dropped")
+    }
+
+    @Test
     fun `a row this side cannot read is counted, not silently dropped`() {
         // The contract this object states about itself. A truncated list that
         // does not disclose the truncation reads as the whole answer — and for
@@ -496,6 +553,39 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `every processor is republished, and every stream row under it`() {
+        // The row that used to be dropped, and the reason it must not be. The
+        // page routes a processor name it has not been taught to the pipeline
+        // card ON PURPOSE — `splitProcessors`: "dropping a row to keep a card
+        // tidy is how a new job runs unwatched for a year" — and a cap on this
+        // side dropped it before the page could ever apply that rule, with no
+        // `omitted` to say so. Twenty processors is far past anything
+        // SyncEngine registers; the point is that the ceiling is the source's,
+        // not this side's.
+        val procs =
+            (1..20).joinToString(",") {
+                """{"name": "job$it", "phase": "running", "streams": [
+                 {"name": "s$it", "candidates": 5, "unmeasured": 0}]}"""
+            }
+        val out = SyncProgressReport.build("""{"writtenAt": 900, "streams": [], "processors": [$procs]}""", nowSeconds = 1_000)!!
+        val rows = out["processors"] as JsonArray
+
+        assertEquals(20, rows.size, "no processor is dropped to keep the card short")
+        assertEquals("job20", rows[19].jsonObject["name"]!!.jsonPrimitive.content, "including the last one")
+
+        // …and a processor's own per-stream rows, which carry the only account
+        // of what that stream's pass could not decide.
+        val many = (1..20).joinToString(",") { """{"name": "stream$it", "candidates": 9, "unmeasured": 1}""" }
+        val wide =
+            SyncProgressReport.build(
+                """{"writtenAt": 900, "streams": [], "processors": [{"name": "aliasFold", "phase": "idle", "streams": [$many]}]}""",
+                nowSeconds = 1_000,
+            )!!
+        val work = (wide["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray
+        assertEquals(20, work.size, "every stream a processor reports on survives")
+    }
+
+    @Test
     fun `the processors are republished, and only the counters this side names`() {
         // Rebuilt member by member like everything else here: the file is
         // another process's, and a hand-edited one must not be able to put a new
@@ -524,7 +614,10 @@ class SyncProgressReportTest {
         val work = (fold["streams"] as JsonArray)[0].jsonObject
         assertEquals(12L, work["unmeasured"]!!.jsonPrimitive.long)
         val reason = (work["undecided"]!!.jsonObject["reasons"] as JsonArray)[0].jsonObject
-        assertEquals(3, (reason["examples"] as JsonArray).size, "the examples are capped again on this side")
+        // Four, not three: the example cap is a CEILING now rather than a
+        // sample, so an ordinary row passes through whole. What it is still
+        // bounded by is pinned separately, below.
+        assertEquals(4, (reason["examples"] as JsonArray).size, "an ordinary row's examples pass through whole")
         assertEquals(1L, work["undecided"]!!.jsonObject["omitted"]!!.jsonPrimitive.long, "and the cap discloses itself")
         assertEquals(12L, rows[1].jsonObject["queued"]!!.jsonPrimitive.long)
     }

@@ -420,7 +420,14 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
                             partition that sums to what discovery handed over,
                             not a bag of counters
       InFlight.kt           WHICH relays a stream is holding right now, which
-                            those counts never said; bounded to the longest-held
+                            those counts never said. UNBOUNDED, and the one list
+                            here that is: a row is a WORKER, so the pool's
+                            visitConcurrency already bounds it, and a top-N
+                            answered "what is this mirror connected to" with a
+                            sixth of the answer on a card that looked whole.
+                            Quietest first — held is not risk. Attributed by the
+                            ask RUNNING NOW, so a cheap stream showing one row
+                            beside an expensive one is them sharing workers
       Processors.kt         the work that is NOT a stream: the alias fold, the
                             stability gate, fitness, the rotating pool, ingest,
                             the healer, the push. Same shape as a stream — a phase
@@ -1235,6 +1242,19 @@ on. The relay side re-derives nothing but bounds everything: `COUNTERS` in
 `SyncProgressReport` is an ALLOWLIST, so a name that is not in it (and therefore
 in `SyncVocabulary`) cannot reach a document served under this relay's name.
 
+**A CAP IS FOR A LIST THE NETWORK CAN GROW, and for nothing else.** The rollup
+bounds `foldedOnto` and the undecided reasons because discovery decides how long
+those get; it bounds NOTHING whose length is decided by our own source — the
+processor rows (a registration in `SyncEngine`), a processor's stream rows (a
+line in `router.conf`), the in-flight rows (a worker, so `visitConcurrency`).
+Capping those only picks which rows an operator is not shown, and the processor
+one had the worst version of that: `splitProcessors` deliberately draws a
+processor name the page has not been taught rather than dropping it, because
+"dropping a row to keep a card tidy is how a new job runs unwatched" — and a cap
+in the rollup dropped that row before the page could apply the rule, silently,
+since neither had an `omitted` to disclose it with. The invariant is now held on
+both sides rather than defended on one and undermined on the other.
+
 `AliasMonitor.runPass` runs ONE PASS over every stream rather than one stream
 over every pass, which is what makes a pass a clocked unit — `lastPassAt`,
 `lastPassSec` and the `measuring` phase describe the whole pass instead of
@@ -1301,7 +1321,7 @@ live `/stats.json` showed, and what each thing confirms:
 | observed | confirms |
 |---|---|
 | `indexers` (static) publishes NO `inFlight` | a stream with no rotation makes no claim, rather than claiming nothing is running |
-| `inFlight: 20 named, 279 omitted`, and `pending` = 299 | the cap is the documented 20, and `omitted` closes the arithmetic exactly |
+| `inFlight: 20 named, 279 omitted`, and `pending` = 299 | `omitted` closed the arithmetic exactly. THE CAP IS GONE — that reading is from the legacy fan-out, whose admission gate ran far wider than its transfer pool; under the pool a row is a worker, so the list is published whole and `omitted` reads 0 |
 | four rows `transferring` with `events` climbing and `quiet 0s`; the rest `transferring` ABSENT, `events 0` | absent means *queued for a slot*, and here it was our own pool being the constraint — 128 workers against 4 slots |
 | ties broken by url, `ws://` before `wss://` | the ordering is total, so two rollups of one state diff cleanly |
 

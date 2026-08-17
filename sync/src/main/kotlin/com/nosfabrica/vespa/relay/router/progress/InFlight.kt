@@ -52,27 +52,37 @@ package com.nosfabrica.vespa.relay.router.progress
  * worker yet**, because the walk has not reached them. Read this as "what is
  * actually running", never as "the list of pending urls".
  *
- * ## Bounded, QUIETEST first, and it says what it left out
+ * ## WHOLE, quietest first, and it still says what it left out
  *
- * A fan-out's admission gate is far wider than its transfer pool — 128 workers
- * against 8 slots is ordinary, the other 120 being connect timeouts to hosts
- * that will never answer — so the whole set is neither small nor interesting.
- * The few rows worth keeping are the legs nothing is arriving on, and
- * [RelayRotation.held] sorts on exactly that; the tail is the ordinary churn.
+ * It used to be cut to twenty rows, and the cut was wrong twice over.
  *
- * It was sorted by how long each had been HELD, and that is a different set.
- * Held is not risk — the healthiest thing this router does is hold one relay
- * for an hour while it streams two million events — so the twenty rows were
- * routinely twenty healthy long-haulers with the wedged leg cut into `omitted`.
- * See [RelayRotation.held] for the whole argument.
+ * The sizing argument was that a fan-out's admission gate is far wider than
+ * its transfer pool — 128 workers against 8 slots, the other 120 being connect
+ * timeouts to hosts that will never answer — so the whole set was neither
+ * small nor interesting. The pool killed that premise: a row here IS a worker
+ * holding a socket, so the list is bounded by `visitConcurrency` and the whole
+ * set is exactly the interesting thing.
  *
- * `omitted` says how much tail there was: a truncated list that does not
- * disclose the truncation reads as the whole answer.
+ * The ordering was the second half. Sorted by how long each had been HELD, the
+ * twenty rows were routinely twenty healthy long-haulers with the wedged leg
+ * cut into `omitted` — held is not risk, since the healthiest thing this
+ * router does is hold one relay for an hour while it streams two million
+ * events. Quietest-first fixed which twenty, and publishing all of them
+ * retires the question.
+ *
+ * What the cut cost in the end was not a wedged leg but the plain reading: an
+ * operator asking "what is this mirror connected to" got a sixth of the answer
+ * on a card that looked complete, and one stream showing a single row was a
+ * truncation artifact rather than a mirror down to one relay.
+ *
+ * `omitted` survives as the schema's promise — a list that does not disclose
+ * its truncation reads as the whole answer, and a reader finding the member
+ * absent cannot tell "nothing dropped" from "does not say".
  */
 class InFlight(
-    /** The quietest relays, bounded by whoever built the list — see [VisitPool.MAX_IN_FLIGHT_ROWS][com.nosfabrica.vespa.relay.router.VisitPool]. */
+    /** Every relay with a worker on it, quietest first. */
     val relays: List<Relay>,
-    /** How many more had a worker and are not named here. Never silently dropped. */
+    /** How many more had a worker and are not named here. Zero from the pool; never silently dropped. */
     val omitted: Int,
 ) {
     /**
