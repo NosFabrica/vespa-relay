@@ -1102,15 +1102,19 @@ AND consistent AND pageable — so a `same-as` pointing at another url takes the
 premise out from under a certificate already signed. Nothing used to withdraw
 it: the fold owned `same-as` alone, and the record went on saying both until the
 next fitness pass reached that url, a whole stability pass later on the sweep's
-clock. Measured on the production store on 2026-08-17, out of 19,849 urls and
-1,753 `syncable` ones: **108 carried a live fold and a `syncable` at once**,
-`relay.primal.net` wearing six of them (`/xray-raven`, `/bravo`, `/oscar-glyph`,
-`/yonder-prism`, `/v1/papa-xray-umbra`, and the `ws://` root). Two things made
-it more than a race — the fold's own edit REPUBLISHES the record, so the stale
-verdict's `created_at` (what a source's `maxAgeSeconds` ages it by) is renewed
-by the write that disproved it; and where the survivor holds no `syncable` of
-its own (9 of the 108, all `relay.primal.net` paths folding onto a root our own
-dials found `silent`), `RosterBuilder`'s read-only fold collapses the alias ONTO
+clock. **The order is the whole story, and it is only ever this order**: a
+certificate is never granted over a standing fold, because `FitnessPass` turns
+the fold's verdict into a free refusal before it dials — so the contradiction
+can only be built the other way round, certify then fold. Measured on the
+production store on 2026-08-17, over 19,795 urls and 1,740 `syncable` ones:
+**59 carried a live fold beside their verdict, every one of them stamped AFTER
+it and not one the other way**, `relay.primal.net` wearing six (`/xray-raven`,
+`/bravo`, `/oscar-glyph`, `/yonder-prism`, `/v1/papa-xray-umbra`, and the `ws://`
+root). Two things made it more than a race — the fold's own edit REPUBLISHES the
+record, so the stale verdict's `created_at` (what a source's `maxAgeSeconds` ages
+it by) is renewed by the write that disproved it; and where the survivor holds no
+`syncable` of its own (6 of the 59, all `relay.primal.net` paths folding onto a
+root our own dials found `silent`), `RosterBuilder`'s read-only fold collapses the alias ONTO
 it, so a url the fitness pass never admitted gets dialled on another url's
 certificate. `RelayVerdictRecord.write` therefore owns `s`/`pageable`/`nip77`
 too when the fold points elsewhere, with nothing to put back — a RETRACTION,
@@ -1122,13 +1126,22 @@ the fold measured and confirmed (49 the same day). The reason this cannot be
 fixed on the read side is the sync plane's whole design — admission is one
 filter over `s`, and no filter can say "and not folded".
 
-**Do not read a self-pointing `same-as` as a fold.** `["same-as", <the record's
-own d>]` is the CLEARED verdict — measured, equivalent to nothing but itself —
-and counting those as duplicates says the store is full of contradictions it
-does not have: the first cut of the survey above reported 159 contradictory
-records where 108 were real and 49 were confirmations. `RelayVerdictRecord.load`
-tells them apart after normalising both sides, and any script asking the same
-question of `/stats.html`'s verdict panel or of a raw dump has to do the same.
+**Counting that survey takes THREE filters, and dropping any of them inflates
+it.** Asking a dump for "records carrying `s: syncable` and a `same-as`" returned
+159; the number that means anything is 59, and both wrong answers on the way are
+instructive:
+
+| filter | left | why the rest are not contradictions |
+|---|---|---|
+| `s = syncable` and any `same-as` | 159 | — |
+| …pointing at ANOTHER url | 108 | a self-pointing `same-as` is the CLEARED verdict — measured, equivalent to nothing but itself — so those 49 CONFIRM the certificate rather than contradict it |
+| …under the current `FOLD_EPOCH`, within its TTL | **59** | a further 49 carry a superseded-epoch tag, which `current()` reads as no verdict at all: those urls really are unfolded as far as this build is concerned, and the fold re-measures them next pass |
+
+The two 49s are different sets and it is a coincidence they are equal. Both
+tests are `RelayVerdictRecord.load`'s own — the self-form after normalising both
+sides, the epoch and clock in `current` — so a script asking this of a raw dump
+or of `/stats.html`'s verdict panel has to apply them itself or it is counting
+records the router does not act on.
 
 **The gate is stream-level and it is an ordinary source.** `gatedBy` sits beside
 `exclude` and takes the same `{ select, filter, maxAgeSeconds }` entries a

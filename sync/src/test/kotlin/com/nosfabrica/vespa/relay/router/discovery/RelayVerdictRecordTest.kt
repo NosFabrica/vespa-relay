@@ -159,9 +159,12 @@ class RelayVerdictRecordTest {
             // signature — and this very edit republishes the record, renewing
             // the `created_at` that a source's `maxAgeSeconds` ages it by.
             //
-            // Seen in production on 2026-08-17: 108 urls carrying both, six of
-            // them `relay.primal.net` paths folded onto a root our own dials
-            // had found silent.
+            // The order in this test is the only order that produces it: a
+            // certificate is never granted over a standing fold, since the
+            // fitness pass refuses a folded url before it dials. Seen in
+            // production on 2026-08-17: 59 urls carrying both, every one folded
+            // AFTER it was certified, six of them `relay.primal.net` paths
+            // folded onto a root our own dials had found silent.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             val monitor = RelayReachabilityStore(store, signer)

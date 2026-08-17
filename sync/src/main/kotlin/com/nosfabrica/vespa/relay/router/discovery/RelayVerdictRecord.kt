@@ -417,16 +417,24 @@ class RelayVerdictRecord(
      * record states both, and the sync plane's admission is ONE filter over
      * `s` that cannot express "and not folded": the duplicate goes on being
      * admitted, on our own signature, until the next fitness pass reaches it —
-     * a whole stability pass later, on the sweep's clock. Measured on the
-     * production store on 2026-08-17: **108 urls carried a live `same-as` and a
-     * `syncable` at once**, out of 1,753 syncable urls in all, `relay.primal.net`
-     * wearing six of them.
+     * a whole stability pass later, on the sweep's clock.
+     *
+     * **THE ORDER IS THE WHOLE STORY, and it is only ever this order.** A
+     * certificate is never granted over a standing fold: [FitnessPass] takes
+     * the fold's verdict as a free refusal before it dials, so the contradiction
+     * can only be built the other way round — certify, then fold. Measured on
+     * the production store on 2026-08-17, over 19,795 urls and 1,740 `syncable`
+     * ones: **59 carried a live `same-as` beside their verdict, every one of
+     * them stamped AFTER it, and not one the other way**. (A further 49 carry a
+     * `same-as` from a superseded [FOLD_EPOCH], which reads as no verdict here —
+     * those urls really are unfolded as far as this build is concerned, and the
+     * fold re-measures them on its next pass.)
      *
      * Two things make that worse than a race we could wait out. This edit
      * REPUBLISHES the record, so the stale verdict's freshness — the event's
      * `created_at`, which is what a source's `maxAgeSeconds` reads — is renewed
      * by the very write that disproved it. And where the survivor holds no
-     * `syncable` of its own (9 of those 108, every one a `relay.primal.net`
+     * `syncable` of its own (6 of those 59, every one a `relay.primal.net`
      * path folding onto a root our own dials found silent), [RosterBuilder]'s
      * read-only fold collapses the alias ONTO it, so a url the fitness pass
      * never admitted is dialled on the strength of a certificate belonging to

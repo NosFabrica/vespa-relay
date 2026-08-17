@@ -153,8 +153,9 @@ class SyncableRelaysTest {
             // not folded" — so the record itself has to stop saying `syncable`
             // when the fold disproves the CANONICAL half of it. Nothing here
             // waits for the next fitness pass: that is a whole stability pass
-            // away, and on 2026-08-17 the production store held 108 urls in
-            // exactly that window.
+            // away, and on 2026-08-17 the production store held 59 urls in
+            // exactly that window — every one of them certified first and
+            // folded after, which is the only order that reaches this state.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
             record.publishFitness(good, "syncable", "answered 20 events at a settled anchor", pageable = null, nip77 = null)
