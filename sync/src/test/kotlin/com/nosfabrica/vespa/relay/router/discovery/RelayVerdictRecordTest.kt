@@ -276,6 +276,32 @@ class RelayVerdictRecordTest {
         }
 
     @Test
+    fun `a label carrying no namespace is dropped rather than carried forever`() =
+        runBlocking {
+            // Nobody can attribute it — not us, not the monitor that wrote it —
+            // so there is no writer it could be taken from, and leaving it
+            // costs a tag on the record for the life of the address.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            store.insert(
+                signer.sign(
+                    EventTemplate(
+                        nowSeconds(),
+                        30166,
+                        arrayOf(arrayOf("d", alias.url), arrayOf("l", "orphan"), arrayOf("L"), arrayOf("l", "CA", "countryCode")),
+                        "",
+                    ),
+                ),
+            )
+            record.publishFitness(alias, "prime", "answered", pageable = null, nip77 = null)
+
+            val tags = recordFor(store, alias.url)!!.tags
+            assertTrue(tags.none { it[0] == "l" && it.size < 3 }, "a namespace-less label survived: ${tags.map { it.toList() }}")
+            assertTrue(tags.none { it[0] == "L" && it.size < 2 })
+            assertTrue(tags.any { it[0] == "l" && it.getOrNull(2) == "countryCode" }, "and the attributable one is untouched")
+        }
+
+    @Test
     fun `the measured facts are replaced on every pass, not accumulated`() =
         runBlocking {
             // The residue this is written against: `n` and `rtt-open` written

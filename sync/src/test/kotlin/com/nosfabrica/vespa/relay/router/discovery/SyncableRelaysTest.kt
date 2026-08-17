@@ -37,6 +37,7 @@ import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import kotlinx.coroutines.runBlocking
 import kotlin.test.Test
 import kotlin.test.assertEquals
+import kotlin.test.assertTrue
 
 /**
  * The verdict-built relay list, end to end through the record: what
@@ -317,7 +318,12 @@ class SyncableRelaysTest {
                         30166,
                         arrayOf(
                             arrayOf("d", good.url),
-                            arrayOf("s", "prime", "answered at a settled anchor", nowSeconds().toString(), "1"),
+                            // `syncable`, NOT `prime`: the fixture has to be
+                            // what the OLD build signed, or it tests the
+                            // migration against records that never existed.
+                            // It did, and the migration missed the only grade
+                            // that admits anything.
+                            arrayOf("s", "syncable", "answered at a settled anchor", nowSeconds().toString(), "1"),
                             arrayOf("same-as", "wss://canonical.example", "fold evidence", nowSeconds().toString(), "2"),
                         ),
                         "",
@@ -340,6 +346,41 @@ class SyncableRelaysTest {
             )
             // Idempotent, and it stays cheap once no legacy records remain.
             assertEquals(0, FitnessPass.retireLegacyGrades(store, record, signer.pubKey))
+        }
+
+    @Test
+    fun `every word the old build could have signed is one the migration looks for`() =
+        runBlocking {
+            // The pin that would have caught the miss. `syncable` is the word
+            // that changed, so it is the one a query derived from today's
+            // `Verdict` cannot ask for — and it was the admitting grade, which
+            // makes it both the largest group in the store and the only one
+            // whose survival keeps a relay wrongly out of a roster.
+            assertTrue("syncable" in FitnessPass.LEGACY_GRADES, "the previous admitting grade must stay findable")
+            for (verdict in FitnessPass.Verdict.entries) {
+                assertTrue(verdict.value in FitnessPass.LEGACY_GRADES, "`${verdict.value}` is spelled the same today and must still be swept")
+            }
+
+            // …and it holds end to end, one record per legacy word.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            for ((i, word) in FitnessPass.LEGACY_GRADES.withIndex()) {
+                store.insert(
+                    signer.sign(
+                        EventTemplate(
+                            nowSeconds(),
+                            30166,
+                            arrayOf(arrayOf("d", "wss://legacy$i.example/"), arrayOf("s", word, "old", nowSeconds().toString(), "1")),
+                            "",
+                        ),
+                    ),
+                )
+            }
+            assertEquals(
+                FitnessPass.LEGACY_GRADES.size,
+                FitnessPass.retireLegacyGrades(store, record, signer.pubKey),
+                "a grade left on `s` is published as the relay's software until it is retracted",
+            )
         }
 
     @Test

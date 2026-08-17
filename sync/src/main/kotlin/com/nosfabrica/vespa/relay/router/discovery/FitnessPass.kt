@@ -191,12 +191,31 @@ class FitnessPass(
          * relay that refuses a bare filter and serves the kinds one has told us
          * how fast it reads once asked properly; billing it for the rung it
          * declined would publish our ladder's shape as the relay's latency.
+         *
+         * And from that rung's FIRST PAGE, not its walk — see
+         * [AliasProbe.Window.firstPageMs]. Timing the walk billed a relay
+         * capping at ten events for the two round trips our twenty-event
+         * target then costs, which is a measurement of our target against
+         * their cap rather than of their latency.
          */
         val rttReadMs: Long? = null,
         /**
-         * The relay demanded NIP-42 — a MEASURED requirement, which outranks
-         * whatever its document claims. Null where the dial never got far
-         * enough to find out.
+         * The relay demanded NIP-42 and would not take our key — a MEASURED
+         * requirement, which outranks whatever its document claims.
+         *
+         * **ONLY EVER TRUE, and the asymmetry is the instrument's, not an
+         * oversight.** A dial that read cleanly proves nothing about `!auth`:
+         * quartz reports `authRefused` and nothing else, so a relay that
+         * challenged us and accepted our signer is indistinguishable here from
+         * one that never challenged at all — and the first genuinely DOES
+         * require auth. Publishing `!auth` off a successful read would
+         * therefore tell every reader without our key that a gated relay is
+         * open to them.
+         *
+         * So the override is one-directional: we can contradict a document
+         * that claims `!auth`, and we defer to one that claims `auth`. Making
+         * it symmetric needs a "was challenged" signal from the client, not a
+         * change here.
          */
         val authRequired: Boolean? = null,
     )
@@ -348,7 +367,6 @@ class FitnessPass(
         var shape: List<Int>? = null
         var readMs: Long? = null
         for (rung in listOf(null, AliasProbe.FALLBACK_KINDS, RelayAliases.GROUP_METADATA_KINDS)) {
-            val startedNs = System.nanoTime()
             val window = probe.window(url, anchor, rung, counting)
             if (window.authRefused) {
                 return Outcome(
@@ -362,7 +380,7 @@ class FitnessPass(
             if (window.ids != null) {
                 answered = window
                 shape = rung
-                readMs = (System.nanoTime() - startedNs) / 1_000_000
+                readMs = window.firstPageMs
                 break
             }
             lastReason = window.reason ?: lastReason
@@ -444,8 +462,10 @@ class FitnessPass(
      * open read policy, and a monitor that copied the document across would be
      * signing the relay's mistake under its own name.
      *
-     * Only `auth` can currently be measured, so it is the only override. The
-     * rest of the limitation block rides through as the claim it is.
+     * Only `auth` can currently be measured, and only in the POSITIVE
+     * direction — see [Outcome.authRequired] for why a clean read is not
+     * evidence of `!auth`. The rest of the limitation block rides through as
+     * the claim it is.
      *
      * The two free refusals — a url the fold already called an alias, one the
      * stability gate already refused — reach here having dialled NOTHING this
@@ -589,11 +609,12 @@ class FitnessPass(
                         Filter(
                             kinds = listOf(RelayDiscoveryEvent.KIND),
                             authors = listOf(author),
-                            // Only OUR vocabulary. A relay genuinely running
-                            // software called `alias` is not a record to edit,
-                            // and the values are specific enough that the
-                            // coincidence is what the query has to exclude.
-                            tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to Verdict.entries.map { it.value }),
+                            // THE OLD BUILD'S VOCABULARY, which is not this
+                            // one — see [LEGACY_GRADES]. Querying today's
+                            // values here missed every `syncable` record in
+                            // the store, i.e. the only admitting grade and the
+                            // largest group of them.
+                            tags = mapOf(RelayVerdictRecord.LEGACY_STATUS_TAG to LEGACY_GRADES),
                         ),
                     ).mapNotNull { it.relay() }
             for (url in legacy) record.retireFitness(url)
@@ -621,6 +642,26 @@ class FitnessPass(
                     it[0] == RelayVerdictRecord.LABEL_TAG &&
                     it[RelayVerdictRecord.LABEL_NAMESPACE_INDEX] == RelayVerdictRecord.FITNESS_NAMESPACE
             }
+
+        /**
+         * WHAT THE OLD BUILD COULD ACTUALLY HAVE WRITTEN on `s` — every grade
+         * in today's vocabulary plus the one word that changed.
+         *
+         * **Spelled out rather than derived from [Verdict], and that is the
+         * whole point.** A migration query built from `Verdict.entries` asks
+         * for the vocabulary of the build doing the asking, which is precisely
+         * the build whose records do not need migrating. Written that way it
+         * silently missed every `["s","syncable"]` record in the store — the
+         * admitting grade, and the largest group of them: 1,716 of 4,000 on
+         * this deployment. The refusals happened to survive because their
+         * spellings did not change, which is what made the miss look like a
+         * working migration.
+         *
+         * A list frozen in source is the correct shape for this: it describes
+         * history, so it may only ever GROW, and it must not follow a rename
+         * made after the records were signed.
+         */
+        val LEGACY_GRADES = Verdict.entries.map { it.value } + "syncable"
 
         /**
          * NIP-66's two network values this router can honestly write. `i2p` and

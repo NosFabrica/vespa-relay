@@ -310,7 +310,10 @@ class RelayVerdictRecord(
      * a namespace of its own. Owning the tag NAME would delete all of that on
      * every sweep. Owning our own namespace inside it deletes exactly our own
      * previous answer, which is what a replaceable record's writer is entitled
-     * to. A bare `L` with no namespace element is ours to drop as malformed.
+     * to. A bare `l` or `L` carrying no namespace is nobody's vocabulary — no
+     * reader can attribute it, so there is no writer it could be taken from —
+     * and it is dropped rather than carried forward for the life of the
+     * record.
      *
      * The measured facts are owned WHOLE and unconditionally, including on a
      * pass that learned none of them. A verdict that changed makes the old
@@ -323,9 +326,18 @@ class RelayVerdictRecord(
     private fun ownedByFitness(tag: Array<String>): Boolean =
         when (val name = tag.firstOrNull()) {
             null -> false
-            LABEL_TAG -> tag.getOrNull(LABEL_NAMESPACE_INDEX) == FITNESS_NAMESPACE
-            LABEL_NAMESPACE_TAG -> tag.getOrNull(NAMESPACE_DECLARATION_INDEX) == FITNESS_NAMESPACE
+
+            // A LABEL WITH NO NAMESPACE is nobody's vocabulary and cannot be
+            // read by anyone, including us. Dropped as malformed rather than
+            // carried forward forever, which is the one case where owning a
+            // shared tag by name is right: there is no other writer it could
+            // belong to.
+            LABEL_TAG -> tag.getOrNull(LABEL_NAMESPACE_INDEX).let { it == null || it == FITNESS_NAMESPACE }
+
+            LABEL_NAMESPACE_TAG -> tag.getOrNull(NAMESPACE_DECLARATION_INDEX).let { it == null || it == FITNESS_NAMESPACE }
+
             PAGEABLE_TAG, NIP77_TAG -> true
+
             else -> name in RelayFacts.OWNED
         }
 
