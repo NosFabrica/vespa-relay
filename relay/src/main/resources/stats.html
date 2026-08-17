@@ -2041,12 +2041,17 @@ function backgroundPanel(rows, withFunnel = false) {
  * THE CLOCK CELL: what the processor is doing, and either where the pass in
  * flight has got to or when the next one is due.
  *
- * The two are never both there — the monitor unsets its countdown while a pass
- * runs — and that is exactly why this cell used to go blank on the passes worth
- * watching: a stability pass runs for hours, and for all of them the line read
- * `measuring` with the one number on it gone. `measuringOf` is the decision, in
- * `/web/shared/sync.js`; both branches are appended the same way so a router
- * publishing neither still gets its phase word.
+ * The countdown is unset while the SWEEP runs, which is why this cell used to
+ * go blank on the passes worth watching: a stability pass runs for hours, and
+ * for all of them the line read `measuring` with the one number on it gone.
+ *
+ * The two are not exclusive, though the sweep makes them look it. A FAST LANE
+ * pass runs between sweeps, so the fitness row can carry a live position AND a
+ * countdown to the next sweep, both true. The position wins: it is about the
+ * work in front of the reader, and the countdown is still one hover away on the
+ * row below. `measuringOf` is the decision, in `/web/shared/sync.js`; both
+ * branches are appended the same way so a router publishing neither still gets
+ * its phase word.
  */
 function phaseCell(p) {
   const cell = el("em", null, p.phase || "unknown");

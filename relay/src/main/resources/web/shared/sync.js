@@ -150,9 +150,9 @@ export function probeProgress(p) {
  * `probeProgress` reads the row the last pass LEFT, which is the right answer
  * for twenty-nine days of a monthly TTL and the wrong one for the hours a pass
  * is actually running: the numbers stand still, `lastPassSec` is withheld
- * because it belongs to the pass before, and `nextInSec` is unset because
- * nothing has computed when the next pass is due. The row said `measuring` and
- * carried no size, no position and no end.
+ * because it belongs to the pass before, and the sweep unsets `nextInSec` while
+ * it runs because nothing has computed when the next one is due. The row said
+ * `measuring` and carried no size, no position and no end.
  *
  * Returns null unless the router published a real denominator. A share of zero
  * candidates is the division this module exists to keep out of the page, and a
@@ -160,17 +160,21 @@ export function probeProgress(p) {
  *
  * `attempted` is clamped INTO the denominator rather than trusted: the two are
  * read at the same instant from the same entry, but they are read off a live
- * pass, and a bar past its own track is a rendering bug rather than a finding.
+ * pass, and `4,729 of 4,728` is a rendering bug rather than a finding.
+ *
+ * NO `share`. This returned one — the position as a 0..1 fraction, ready for a
+ * bar — and nothing drew it: the card states the pair in words, and the bar
+ * would have to live in a three-column grid whose third column is already the
+ * row's facts. A computed member with one caller in its own test is how this
+ * module grew the fourteen exports its rebuild deleted.
  */
 export function measuringOf(p) {
   const m = p?.measuring;
   if (!m || !(m.toProbe > 0)) return null;
-  const attempted = Math.max(0, Math.min(m.attempted || 0, m.toProbe));
   return {
     unit: m.unit || "url",
-    attempted,
+    attempted: Math.max(0, Math.min(m.attempted || 0, m.toProbe)),
     toProbe: m.toProbe,
-    share: attempted / m.toProbe,
     // `??`, not `||`: the router omits this until a unit has landed and again
     // once the last one has, and both absences are "no estimate" — where a
     // zero would be a claim that the pass is done.

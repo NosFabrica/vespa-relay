@@ -432,8 +432,11 @@ internal object SyncVocabulary {
                     "Zero is the state both probe passes are working towards — every url measured, nothing left to " +
                     "ask — and it is reached and held for most of a monthly TTL. NOT the complement of `dialled`: that " +
                     "one counts what a single pass spent, this one what the whole candidate set still lacks. The CARD " +
-                    "draws this subtracted from `candidates` — the count that has a verdict, which rises as the pass " +
-                    "gets somewhere — so the two read in opposite directions and the number on screen is not this one.",
+                    "draws the count that HAS a verdict, which rises as the pass gets somewhere, so the two read in " +
+                    "opposite directions and the number on screen is not this one. It also drops `foldedAway` from " +
+                    "both halves where a row publishes it: a url the fold removed is one the stability gate never " +
+                    "dials, so counting it as checked for consistency overstated that line by every duplicate in the " +
+                    "corpus — 12,024 of 16,752 where the honest reading was 595 of 5,323.",
             )
             put(
                 "dialled",
@@ -555,9 +558,11 @@ internal object SyncVocabulary {
             put(
                 "measuring",
                 "WHERE THE PASS RUNNING RIGHT NOW HAS GOT TO, and the only number on a processor's row that moves " +
-                    "between passes — every other one describes the pass that ENDED. Present exactly while a pass is " +
-                    "dialling, and it replaces `nextInSec`, which is deliberately unset then: a pass takes as long as " +
-                    "it takes, so nothing has computed when the next one is due until this one returns. Before it, a " +
+                    "while one runs — every other one describes the pass that ENDED. Present exactly while a pass is " +
+                    "dialling. On a monitor SWEEP it stands where `nextInSec` would be, which the sweep unsets while " +
+                    "it runs: a pass takes as long as it takes, so nothing has computed when the next one is due " +
+                    "until this one returns. A FAST LANE pass carries both, and both are true — the lane is measuring " +
+                    "the urls named since its last look while the sweep is still due when it says. Before this, a " +
                     "stability pass spent hours saying `measuring` and nothing else — no size, no position, no end.",
             )
             put(

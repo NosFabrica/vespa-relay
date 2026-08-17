@@ -177,16 +177,15 @@ const leg = (n, quiet, over = {}) => ({
 {
   // The gap this fills, and the reason it is a second function rather than a
   // member of the one above: `probeProgress` reads the row the LAST pass left,
-  // which stands still for the hours the next one takes. With the countdown
-  // unset while a pass runs — the monitor cannot promise a time nobody has
-  // computed — the row carried the word `measuring` and no number at all.
+  // which stands still for the hours the next one takes. With the sweep's
+  // countdown unset while it runs — the monitor cannot promise a time nobody
+  // has computed — the row carried the word `measuring` and no number at all.
   const gate = (over) => ({ name: "consistency", phase: MEASURING, measuring: over });
 
   const run = measuringOf(gate({ unit: "url", attempted: 604, toProbe: 4728, etaSec: 2724 }));
   assert.equal(run.attempted, 604);
   assert.equal(run.toProbe, 4728, "the denominator is what this PASS set out to walk, not the candidate set");
   assert.equal(run.etaSec, 2724);
-  assert.equal(Math.round(run.share * 1000) / 1000, 0.128);
 
   // No denominator is no position. A share of zero is the division this module
   // exists to keep out of the page, and the phase word alone is the better draw.
@@ -205,9 +204,9 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(measuringOf(gate({ unit: "url", attempted: 12, toProbe: 4728, etaSec: 0 })).etaSec, 0,
     "a real zero from the router is a pass about to end, not a missing estimate");
 
-  // Read off a LIVE pass, so the two halves can be a tick apart. A bar past its
-  // own track is a rendering fault rather than a finding.
-  assert.equal(measuringOf(gate({ unit: "host", attempted: 99, toProbe: 10 })).share, 1);
+  // Read off a LIVE pass, so the two halves can be a tick apart. `4,729 of
+  // 4,728` is a rendering fault rather than a finding.
+  assert.equal(measuringOf(gate({ unit: "host", attempted: 99, toProbe: 10 })).attempted, 10);
   assert.equal(measuringOf(gate({ unit: "host", attempted: -4, toProbe: 10 })).attempted, 0);
 
   // The unit is the router's, because the passes do not count the same thing —

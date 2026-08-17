@@ -1200,9 +1200,10 @@ was about to remove.
 attempted, toProbe, etaSec}`, and it is the only member of a processor row that
 moves between passes; every other one describes the pass that ENDED. It exists
 because the row went blind exactly when it became interesting: a stability pass
-runs for hours, `lastPassSec` belongs to the pass before it, and `nextInSec` is
-deliberately unset while a pass runs (a pass takes as long as it takes, so
-nothing has computed when the next one is due). What was left was the word
+runs for hours, `lastPassSec` belongs to the pass before it, and a SWEEP unsets
+`nextInSec` while it runs (a pass takes as long as it takes, so nothing has
+computed when the next one is due — a fast-lane pass carries both, and both are
+true). What was left was the word
 `measuring` with no size, no position and no end. Each pass declares its set
 with `Processors.Handle.measuring` the moment it derives it and ticks a unit off
 with `attempted` from the job's completion — from `invokeOnCompletion`, not from

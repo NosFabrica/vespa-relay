@@ -124,10 +124,11 @@ import java.nio.file.StandardCopyOption
  * push. See [Processors].
  *
  * `measuring` is the live position of a probe pass and the only member of a
- * processor row that moves between passes — every other number there describes
- * the pass that ENDED. It replaces `nextInSec` while a pass runs, because a
- * countdown to the next pass is a promise nobody has computed until this one
- * returns; see [Processors.Measuring].
+ * processor row that moves while one runs — every other number there describes
+ * the pass that ENDED. On a sweep it stands where `nextInSec` would be, because
+ * a countdown to the next pass is a promise nobody has computed until this one
+ * returns; a fast-lane pass carries both, and both are true. See
+ * [Processors.Measuring].
  *
  * `writtenAt` is the HEARTBEAT and is the most load-bearing member here: it is
  * rewritten on every tick whatever the streams are doing, so a reader can tell a
@@ -503,11 +504,16 @@ class SyncProgress(
                 // is four of them away.
                 p.nextInSec?.let { put("nextInSec", it) }
                 // …and the countdown's opposite half: where the pass RUNNING
-                // right now has got to. The two are never both present by
-                // construction — the monitor unsets the due time while a pass
-                // runs — which is exactly why this had to exist: for the hours
-                // a stability pass takes, the row's only number disappeared and
+                // right now has got to. The sweep unsets its due time while it
+                // runs, which is exactly why this had to exist: for the hours a
+                // stability pass takes, the row's only number disappeared and
                 // `measuring` stood alone with no size, no position and no end.
+                //
+                // NOT mutually exclusive, though a sweep makes them look it. A
+                // FAST LANE pass runs between sweeps — see [AliasMonitor.start]
+                // — so the fitness row can carry a position and a countdown at
+                // once, and both are true: the lane is measuring the urls named
+                // since its last look, and the sweep is still due when it says.
                 p.measuring?.let { m ->
                     put(
                         "measuring",
