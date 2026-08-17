@@ -222,7 +222,7 @@ class RouterConfigTest {
                         filter         = { "kinds": [0, 3, 10002] }
                         refreshSeconds     = 3600
                         exclude            = [ "wss://skip.example" ]
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         relaySource = [
                             {
                                 select = [
@@ -240,7 +240,7 @@ class RouterConfigTest {
                     }
                     assertions {
                         filter = { "kinds": [30382] }
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         relaySource = [
                             {
                                 filter = { "kinds": [10040] }
@@ -309,7 +309,7 @@ class RouterConfigTest {
                     outbox {
                         filter  = { "kinds": [10002] }
                         exclude = [ "PURPLEPAG.ES", "wss://DIRECTORY.YABU.ME:443", "wss://filter.nostr.wine/npub.*" ]
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "r" } ]
@@ -354,7 +354,7 @@ class RouterConfigTest {
                         outbox {
                             filter  = { "kinds": [10002] }
                             exclude = [ "wss://filter.nostr.wine/[" ]
-                            gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                            gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                             relaySource = [
                                 {
                                     select = [ { tag = "r" } ]
@@ -376,7 +376,7 @@ class RouterConfigTest {
         select: String = """{ tag = "r" }""",
     ) = stream(
         """
-        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
         relaySource = [
             {
                 select = [ $select ]
@@ -636,7 +636,7 @@ class RouterConfigTest {
                 .single()
 
         val gated = """
-            gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+            gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
             relaySource = [
                 {
                     select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
@@ -706,7 +706,7 @@ class RouterConfigTest {
                     s {
                         dir = "down"
                         filter = { "kinds": [1] }
-                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         verifySeconds = 604800
                     }
                 }
@@ -735,14 +735,14 @@ class RouterConfigTest {
                     ownedKinds = [30382]
                     deleteMissing = true
                     auditSeconds = 86400
-                    gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                    gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                     relaySource = [ $source ]
                   }
                 }
                 """.trimIndent(),
             )
         assertFailsWith<IllegalArgumentException>("verdict source") {
-            stream("""{ filter = { "kinds": [30166], "#s": ["syncable"] } }""")
+            stream("""{ filter = { "kinds": [30166], "#l": ["prime"] } }""")
         }
         assertFailsWith<IllegalArgumentException>("select without authors") {
             stream(
@@ -775,7 +775,7 @@ class RouterConfigTest {
                     dir = "down"
                     filter = { $kinds }
                     auditSeconds = 86400
-                    gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                    gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                     relaySource = [
                         {
                             select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
@@ -904,7 +904,7 @@ class RouterConfigTest {
                         streams {
                             outbox {
                                 filter = { "kinds": [1] }
-                                gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                                gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                                 relaySource = [
                                     {
                                         select = [ { tag = "r" } ]
@@ -932,7 +932,7 @@ class RouterConfigTest {
                     dir    = "down"
                     filter = { "kinds": [1] }
                     $extra
-                    gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                    gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                     relaySource = [
                         {
                             select = [ { tag = "r" } ]
@@ -1145,7 +1145,7 @@ class RouterConfigTest {
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
-                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                filter = { "kinds": [30166], "#l": ["prime"] }
                                 maxAgeSeconds = 7200
                             }
                         ]
@@ -1187,7 +1187,7 @@ class RouterConfigTest {
                 .single()
         assertEquals(null, bare.maxAgeSeconds, "no bound is inferred from the kind, or from any tag in the filter")
         assertEquals(listOf(RelaySelect(kind = 30166, tag = "d", urlIndex = 1)), bare.selects)
-        // A WIDE CONFIG STAYS WIDE. This used to have `#s: ["syncable"]` put on
+        // A WIDE CONFIG STAYS WIDE. This used to have `#l: ["prime"]` put on
         // it — first by a read that hardcoded the value, then by the loader
         // making that explicit — so a filter asking for every verdict quietly
         // asked for one. Narrowing what the operator wrote is the same mistake
@@ -1212,7 +1212,7 @@ class RouterConfigTest {
         // operator's odd; refusing it would mean this loader having an opinion
         // about what values in what tag mean, which is the opinion the whole
         // shape exists to avoid holding.
-        RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#s": ["dead"] } }"""))
+        RouterConfigLoader.parse(stream("""{ filter = { "kinds": [30166], "#l": ["dead"] } }"""))
         // Mixing 30166 with another kind still fails, and for a reason that is
         // not about semantics: the `d`-tag default is a NIP-66 fact about kind
         // 30166 and says nothing about where kind 10002 keeps its urls.
@@ -1239,7 +1239,7 @@ class RouterConfigTest {
         val named =
             RouterConfigLoader.parse(
                 stream(
-                    """{ filter = { "kinds": [30166], "#s": ["syncable"],
+                    """{ filter = { "kinds": [30166], "#l": ["prime"],
                          "authors": ["0000000000000000000000000000000000000000000000000000000000000001"] } }""",
                 ),
             )
@@ -1321,7 +1321,7 @@ class RouterConfigTest {
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
-                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                filter = { "kinds": [30166], "#l": ["prime"] }
                             }
                         ]
                     }
@@ -1425,7 +1425,7 @@ class RouterConfigTest {
                         filter = { "kinds": [10040] }
                     } ]
                     gatedBy = [
-                        { filter = { "kinds": [30166], "#s": ["syncable"] }, maxAgeSeconds = 7200 }
+                        { filter = { "kinds": [30166], "#l": ["prime"] }, maxAgeSeconds = 7200 }
                     ]
                     """.trimIndent(),
                 ),
@@ -1449,7 +1449,7 @@ class RouterConfigTest {
                     stream(
                         """
                         relaySource = [ { select = [ { tag = "30382:rank", relay = 2 } ], filter = { "kinds": [10040] } } ]
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         """.trimIndent(),
                     ),
                 ).streams
@@ -1588,7 +1588,7 @@ class RouterConfigTest {
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
-                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                filter = { "kinds": [30166], "#l": ["prime"] }
                                 maxAgeSeconds = 7200
                             },
                             {
@@ -1596,7 +1596,7 @@ class RouterConfigTest {
                                 filter = { "kinds": [10009] }
                             }
                         ]
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                     }
                 }
                 """.trimIndent(),

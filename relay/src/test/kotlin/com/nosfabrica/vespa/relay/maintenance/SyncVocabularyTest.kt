@@ -154,7 +154,7 @@ class SyncVocabularyTest {
                     "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
                    {"name": "fitness", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 60, "nextInSec": 20800,
-                    "syncable": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
+                    "prime": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
                     "unpageable": 1, "auth-refused": 1, "restricted": 1},
                    {"name": "visits", "phase": "rotating", "phaseForSec": 900,
                     "roster": 30, "awaitingVisit": 3, "visiting": 5, "tails": 22,
@@ -290,7 +290,7 @@ class SyncVocabularyTest {
                     "dropped",
                     // The fitness pass's verdict funnel — each member one value
                     // of the `s` tag it signs — and the rotating pool's row.
-                    "syncable",
+                    "prime",
                     "dead",
                     "silent",
                     "alias",

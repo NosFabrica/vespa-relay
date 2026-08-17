@@ -55,7 +55,7 @@ internal class StreamWorld(
      * Whose `dead` verdicts may hold a url out of the candidate set — this
      * router's signer, plus every monitor npub the config names. NEVER every
      * author, and deliberately NOT the rule the roster read follows: a
-     * `syncable` admits, and everything admitted still has to survive a dial,
+     * `prime` admits, and everything admitted still has to survive a dial,
      * so reading those unscoped costs at worst a connect attempt. A hold-out
      * forecloses. Unscoped, anyone whose 30166s we mirror could starve a relay
      * out indefinitely — held out of the candidate set it is never dialled,

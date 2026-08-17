@@ -183,9 +183,9 @@ internal fun withoutDefaultPort(url: NormalizedRelayUrl): NormalizedRelayUrl {
  * kinds costs one query rather than one each.
  *
  * A MONITOR'S VERDICTS are just another shape of this, not a second kind of
- * thing: `{ "kinds": [30166], "#s": ["syncable"] }` with the `d`-tag select
+ * thing: `{ "kinds": [30166], "#l": ["prime"] }` with the `d`-tag select
  * NIP-66 fixes, which the loader supplies when none is written. Nothing in
- * this module knows that `s` is the tag or that `syncable` is the value — a
+ * this module knows that `l` is the tag or that `prime` is the value — a
  * verdict source and a gate are both filters, and which tag carries a
  * monitor's opinion, and what value in it means "worth dialling", is that
  * monitor's business and the operator's. Another monitor spelling it

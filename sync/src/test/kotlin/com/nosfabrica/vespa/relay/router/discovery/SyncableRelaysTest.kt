@@ -72,7 +72,7 @@ class SyncableRelaysTest {
             Filter(
                 kinds = listOf(30166),
                 authors = authors.takeIf { it.isNotEmpty() },
-                tags = mapOf("s" to listOf(verdict)),
+                tags = mapOf(RelayVerdictRecord.LABEL_TAG to listOf(verdict)),
             ),
         maxAgeSeconds = maxAgeSeconds,
     )
@@ -82,7 +82,7 @@ class SyncableRelaysTest {
         authors: List<String> = emptyList(),
         maxAgeSeconds: Long = 3600,
         now: Long = nowSeconds(),
-        verdict: String = "syncable",
+        verdict: String = "prime",
     ): List<NormalizedRelayUrl> =
         RelayDiscovery
             .discover(
@@ -96,16 +96,16 @@ class SyncableRelaysTest {
             ).map { it.url }
 
     @Test
-    fun `admits exactly the fresh syncable verdicts our monitor signed`() =
+    fun `admits exactly the fresh prime grades our monitor signed`() =
         runBlocking {
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(good, "syncable", "answered 20 events at a settled anchor", pageable = true to "all at or below", nip77 = null)
+            record.publishFitness(good, "prime", "answered 20 events at a settled anchor", pageable = true to "all at or below", nip77 = null)
             record.publishFitness(dead, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
             // A stranger's certificate for a url our monitor never passed: the
             // authors filter is what keeps somebody else's 30166s from
             // steering our fan-out.
-            RelayVerdictRecord(store, stranger).publishFitness(forged, "syncable", "trust me", pageable = null, nip77 = null)
+            RelayVerdictRecord(store, stranger).publishFitness(forged, "prime", "trust me", pageable = null, nip77 = null)
 
             assertEquals(listOf(good), admitted(store, authors = listOf(signer.pubKey)))
             assertEquals(
@@ -119,7 +119,7 @@ class SyncableRelaysTest {
     fun `freshness is the record's own clock`() =
         runBlocking {
             val store = newStore()
-            RelayVerdictRecord(store, signer).publishFitness(stale, "syncable", "was fine last week", pageable = null, nip77 = null)
+            RelayVerdictRecord(store, signer).publishFitness(stale, "prime", "was fine last week", pageable = null, nip77 = null)
 
             // A monitor republishes the record when it re-checks, so `created_at`
             // dates the check — the reading every other NIP-66 consumer applies,
@@ -136,10 +136,10 @@ class SyncableRelaysTest {
     @Test
     fun `a refusal is not an admission`() =
         runBlocking {
-            // Only `#s` separates these: same kind, same monitor, same clock.
+            // Only the label VALUE separates these: same kind, same monitor, same clock.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(good, "syncable", "answers and pages", pageable = null, nip77 = null)
+            record.publishFitness(good, "prime", "answers and pages", pageable = null, nip77 = null)
             record.publishFitness(dead, "dead", "no TCP answer at the pre-probe", pageable = null, nip77 = null)
 
             assertEquals(listOf(good), admitted(store, authors = listOf(signer.pubKey)))
@@ -198,7 +198,7 @@ class SyncableRelaysTest {
             // so we withdraw it and the read stays a plain question.
             val store = newStore()
             val record = RelayVerdictRecord(store, signer)
-            record.publishFitness(good, "syncable", "current rules", pageable = null, nip77 = null)
+            record.publishFitness(good, "prime", "current rules", pageable = null, nip77 = null)
             store.insert(
                 signer.sign(
                     EventTemplate(
@@ -206,7 +206,17 @@ class SyncableRelaysTest {
                         30166,
                         arrayOf(
                             arrayOf("d", stale.url),
-                            arrayOf("s", "syncable", "measured under rules we have since changed", nowSeconds().toString(), "0"),
+                            // NIP-32's shape: value, namespace, then the
+                            // house's evidence / measured-at / epoch, one
+                            // place right of where the fold carries them.
+                            arrayOf(
+                                "l",
+                                "prime",
+                                RelayVerdictRecord.FITNESS_NAMESPACE,
+                                "measured under rules we have since changed",
+                                nowSeconds().toString(),
+                                "0",
+                            ),
                         ),
                         "",
                     ),
@@ -226,6 +236,22 @@ class SyncableRelaysTest {
             )
             // Idempotent: a second boot has nothing left to take back.
             assertEquals(0, FitnessPass.retireStaleEpochs(store, record, signer.pubKey))
+
+            // A label carrying one of our VALUES under somebody else's
+            // namespace is not a stale grade of ours. The tag index answers on
+            // the value alone, so the query returns these; retiring on one
+            // would edit a record we hold no verdict on.
+            store.insert(
+                signer.sign(
+                    EventTemplate(
+                        nowSeconds(),
+                        30166,
+                        arrayOf(arrayOf("d", "wss://labelled.example/"), arrayOf("l", "prime", "somebody.else")),
+                        "",
+                    ),
+                ),
+            )
+            assertEquals(0, FitnessPass.retireStaleEpochs(store, record, signer.pubKey))
         }
 
     @Test
@@ -243,7 +269,12 @@ class SyncableRelaysTest {
                         30166,
                         arrayOf(
                             arrayOf("d", good.url),
-                            arrayOf("s", "syncable", "old rules", nowSeconds().toString(), "0"),
+                            arrayOf("l", "prime", RelayVerdictRecord.FITNESS_NAMESPACE, "old rules", nowSeconds().toString(), "0"),
+                            // Another labeller on the same record. `l` is
+                            // shared ground — nostr.watch puts country and ASN
+                            // labels here — so owning the NAME would delete
+                            // theirs on every sweep.
+                            arrayOf("l", "CA", "countryCode"),
                             arrayOf("same-as", "wss://canonical.example", "fold evidence", nowSeconds().toString(), "2"),
                         ),
                         "",
@@ -258,6 +289,80 @@ class SyncableRelaysTest {
                     .single()
                     .tags
                     .map { it[0] }
-            assertEquals(listOf("d", "same-as"), tags, "our tag left; the fold's stayed")
+            assertEquals(listOf("d", "l", "same-as"), tags, "our label left; the fold's tag and the foreign label stayed")
+            val labels =
+                store
+                    .query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey)))
+                    .single()
+                    .tags
+                    .filter { it[0] == "l" }
+            assertEquals(listOf("CA"), labels.map { it[1] }, "the label that survived is the one under somebody else's namespace")
+        }
+
+    @Test
+    fun `a grade still written on the s tag is retracted at boot`() =
+        runBlocking {
+            // THE MIGRATION. Every record this deployment signed before the
+            // move carries its grade on `s` — 4,000 of 4,000, measured — and
+            // `s` is the SOFTWARE field to every other NIP-66 reader. Left
+            // alone it does not merely stop being read as a grade: it is read
+            // as the relay running a piece of software called `dead`, and
+            // `edit` would carry it forward forever.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            store.insert(
+                signer.sign(
+                    EventTemplate(
+                        nowSeconds(),
+                        30166,
+                        arrayOf(
+                            arrayOf("d", good.url),
+                            arrayOf("s", "prime", "answered at a settled anchor", nowSeconds().toString(), "1"),
+                            arrayOf("same-as", "wss://canonical.example", "fold evidence", nowSeconds().toString(), "2"),
+                        ),
+                        "",
+                    ),
+                ),
+            )
+            assertEquals(1, FitnessPass.retireLegacyGrades(store, record, signer.pubKey))
+
+            val tags =
+                store
+                    .query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey)))
+                    .single()
+                    .tags
+                    .map { it[0] }
+            assertEquals(listOf("d", "same-as"), tags, "the stale grade left `s` free for the software string")
+            assertEquals(
+                emptyList(),
+                admitted(store, authors = listOf(signer.pubKey)),
+                "and the url reads as unmeasured, which is what gets it re-graded",
+            )
+            // Idempotent, and it stays cheap once no legacy records remain.
+            assertEquals(0, FitnessPass.retireLegacyGrades(store, record, signer.pubKey))
+        }
+
+    @Test
+    fun `a relay genuinely running software we grade by is not mistaken for a legacy record`() =
+        runBlocking {
+            // The migration queries `s` for OUR vocabulary, so the one way it
+            // can be wrong is a relay whose software is honestly called
+            // `alias`. It is signed by somebody else here, which is the same
+            // boundary every other read on this record uses.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            store.insert(
+                signer.sign(
+                    EventTemplate(
+                        nowSeconds(),
+                        30166,
+                        arrayOf(arrayOf("d", good.url), arrayOf("s", "git+https://github.com/hoytech/strfry.git")),
+                        "",
+                    ),
+                ),
+            )
+            assertEquals(0, FitnessPass.retireLegacyGrades(store, record, signer.pubKey), "a repository url is not one of our grades")
+            val tags = store.query<Event>(Filter(kinds = listOf(30166), authors = listOf(signer.pubKey))).single().tags
+            assertEquals(listOf("d", "s"), tags.map { it[0] }, "the software string is left exactly where it is")
         }
 }

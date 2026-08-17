@@ -27,6 +27,7 @@ import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.crypto.KeyPair
 import com.vitorpamplona.quartz.nip01Core.relay.filters.Filter
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.RelayUrlNormalizer
+import com.vitorpamplona.quartz.nip01Core.signers.EventTemplate
 import com.vitorpamplona.quartz.nip01Core.signers.NostrSignerInternal
 import com.vitorpamplona.quartz.nip66RelayMonitor.discovery.RelayDiscoveryEvent
 import com.vitorpamplona.quartz.nip66RelayMonitor.reachability.RelayReachabilityStore
@@ -230,6 +231,94 @@ class RelayVerdictRecordTest {
             // Two edits later, everything the other writer put there is intact.
             val after = tagNames(recordFor(store, alias.url))
             assertTrue(after.containsAll(theirs), "an edit dropped $theirs, leaving $after")
+        }
+
+    @Test
+    fun `the fitness writer owns its own label namespace and nobody else's`() =
+        runBlocking {
+            // `l` IS SHARED GROUND — nostr.watch labels the same relay with its
+            // country, ISP and ASN, all on `l` — which is the whole reason
+            // ownership here is a predicate over the NAMESPACE rather than the
+            // tag name. Owning the name would delete every other labeller's
+            // work on each sweep, which is the mistake this record type exists
+            // to make impossible.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            store.insert(
+                signer.sign(
+                    EventTemplate(
+                        nowSeconds(),
+                        30166,
+                        arrayOf(
+                            arrayOf("d", alias.url),
+                            arrayOf("l", "CA", "countryCode"),
+                            arrayOf("L", "countryCode"),
+                            arrayOf("l", "prime", RelayVerdictRecord.FITNESS_NAMESPACE, "an older pass", nowSeconds().toString(), "1"),
+                        ),
+                        "",
+                    ),
+                ),
+            )
+            record.publishFitness(alias, "dead", "no TCP answer", pageable = null, nip77 = null)
+
+            val tags = recordFor(store, alias.url)!!.tags
+            val labels = tags.filter { it[0] == "l" }.map { it[1] to it.getOrNull(2) }
+            assertEquals(
+                setOf("CA" to "countryCode", "dead" to RelayVerdictRecord.FITNESS_NAMESPACE),
+                labels.toSet(),
+                "our grade was replaced; the country label was not touched",
+            )
+            assertEquals(
+                setOf("countryCode", RelayVerdictRecord.FITNESS_NAMESPACE),
+                tags.filter { it[0] == "L" }.map { it[1] }.toSet(),
+                "and both namespaces are still declared — ours re-stated, theirs carried",
+            )
+        }
+
+    @Test
+    fun `the measured facts are replaced on every pass, not accumulated`() =
+        runBlocking {
+            // The residue this is written against: `n` and `rtt-open` written
+            // by a passive monitor that no longer exists, carried forward by
+            // every edit since, and drawn on the stats panel as current
+            // readings of a socket nobody had opened in months.
+            val store = newStore()
+            val record = RelayVerdictRecord(store, signer)
+            record.publishFitness(
+                alias,
+                "prime",
+                "answered",
+                pageable = null,
+                nip77 = null,
+                facts = RelayFacts(network = "clearnet", rttOpenMs = 40, software = "strfry", version = "1.0.3"),
+            )
+            assertEquals("40", recordFor(store, alias.url)!!.tags.single { it[0] == "rtt-open" }[1])
+
+            // A pass that learned nothing must CLEAR them rather than leave the
+            // old reading standing beside a new verdict.
+            record.publishFitness(alias, "dead", "no TCP answer", pageable = null, nip77 = null)
+            val names = tagNames(recordFor(store, alias.url))
+            for (gone in listOf("rtt-open", "s", "n")) {
+                assertTrue(gone !in names, "`$gone` outlived the dial that measured it: $names")
+            }
+        }
+
+    @Test
+    fun `the grade carries its clock and rules one place right of the fold's`() =
+        runBlocking {
+            // NIP-32 spends index 2 on the namespace, so the house shape sits
+            // at 3/4/5 here and 2/3/4 on `same-as`. A reader using the fold's
+            // offsets would date every grade by its own evidence string.
+            val store = newStore()
+            RelayVerdictRecord(store, signer)
+                .publishFitness(alias, "prime", "answered 20 events", pageable = null, nip77 = null)
+
+            val grade = recordFor(store, alias.url)!!.tags.single { it[0] == "l" }
+            assertEquals("prime", grade[1])
+            assertEquals(RelayVerdictRecord.FITNESS_NAMESPACE, grade[RelayVerdictRecord.LABEL_NAMESPACE_INDEX])
+            assertEquals("answered 20 events", grade[3])
+            assertTrue(grade[RelayVerdictRecord.LABEL_MEASURED_AT_INDEX].toLong() > 0)
+            assertEquals(RelayVerdictRecord.FITNESS_EPOCH, grade[RelayVerdictRecord.LABEL_EPOCH_INDEX])
         }
 
     @Test

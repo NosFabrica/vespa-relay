@@ -52,7 +52,7 @@ import java.util.concurrent.atomic.AtomicLong
  *
  * There are no walks, cycles or rounds here, and no admission gates, transfer
  * pools or holding phases either. One rotating queue holds every relay the
- * monitor currently certifies syncable; a fixed set of workers pulls from it,
+ * monitor currently grades prime; a fixed set of workers pulls from it,
  * and the only loop that exists is the inner one a specific relay needs. When
  * a relay finishes, it re-enters the queue on a revisit delay and the next one
  * starts. A slot IS a socket by construction — the worker that holds one is
@@ -443,7 +443,7 @@ internal class VisitPool(
         }
         if (enqueued > 0 || previous.size != next.size) {
             System.err.println(
-                "router: visit roster — ${next.size} syncable relay(s) across ${streams.size} stream(s)" +
+                "router: visit roster — ${next.size} prime relay(s) across ${streams.size} stream(s)" +
                     (if (enqueued > 0) ", $enqueued newly queued" else ""),
             )
         }

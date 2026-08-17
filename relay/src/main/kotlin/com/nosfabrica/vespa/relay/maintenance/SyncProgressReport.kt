@@ -728,9 +728,9 @@ internal object SyncProgressReport {
             "sourced",
             "excluded",
             "heldOutDead",
-            // the fitness pass's verdict funnel — one certificate per relay,
-            // `syncable` the only admitting value, the rest the refusals
-            "syncable",
+            // the fitness pass's grade funnel — one certificate per relay,
+            // `prime` the only admitting value, the rest the refusals
+            "prime",
             "dead",
             "silent",
             "alias",

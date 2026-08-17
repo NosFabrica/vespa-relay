@@ -666,6 +666,23 @@
      that has aged out and is no longer being acted on. */
   .vd-pill.none { color: var(--muted); opacity: .75; }
   .vd-pill.expired { color: var(--warn); border: 1px solid currentColor; }
+  /* THE FITNESS GRADE, beside the url rather than in the verdict column: that
+     column answers "what did the fold decide", and a second pill in it would
+     read as a competing answer to the same question. Its own class rather than
+     `.badge`, which has no admitting tone — the panel needs `prime` to look
+     like a pass and every refusal to look like the same kind of thing. */
+  .vd-grade {
+    display: inline-block; font-size: .65rem; text-transform: uppercase; letter-spacing: .05em;
+    padding: 0 .3rem; border-radius: .25rem; font-weight: 700; vertical-align: .1em;
+    color: var(--muted); border: 1px solid var(--line);
+  }
+  .vd-grade.prime { color: var(--accent); border-color: currentColor; }
+  .vd-grade.refused { color: var(--warn); border-color: currentColor; }
+  /* Retired — aged out or measured under rules we no longer apply. Struck
+     rather than hidden, the same bargain the two verdict pills make: a reader
+     seeing a stale grade and its age can act on it, where a hidden one reads
+     as a url nothing has ever measured. */
+  .vd-grade.retired { color: var(--muted); opacity: .7; text-decoration: line-through; }
   .vd-stale { color: var(--warn); }
   /* The panel's controls on one line: the action, the filter, and whatever the
      read has to say about itself. */
@@ -913,7 +930,7 @@
 <script type="module">
 import { kindLabel } from "/web/shared/kinds.js";
 import { Relay } from "/web/shared/relay.js";
-import { MONITOR_KIND, groupByHost, summarise, walkRecords } from "/web/shared/verdicts.js";
+import { MONITOR_KIND, PRIME, groupByHost, summarise, walkRecords } from "/web/shared/verdicts.js";
 // The sync card's judgements — which legs are worth naming, what each bar is a
 // proportion of, whether a partition divides. Extracted so `tools/webtest` can
 // assert them: the only pins over this code were string greps for member names,
@@ -1902,7 +1919,7 @@ function streamBlock(s) {
       // Drawn LOUD, because it is the one rotating state that is not the
       // stream working: nothing is certified for it yet, and the fitness row
       // in the section below is where the wait is.
-      const none = el("s", null, "no certified relay yet — waiting on the fitness pass to sign the first `syncable`");
+      const none = el("s", null, "no certified relay yet — waiting on the fitness pass to sign the first `prime`");
       none.title = term("roster");
       line.appendChild(none);
     } else {
@@ -1988,7 +2005,7 @@ function streamBlock(s) {
 const BACKGROUND = [
   ["aliasFold", "alias fold", "Finds the urls that are one relay wearing several addresses, so the fan-out stops dialling forty urls of one server. Runs on the alias monitor's own clock, not a stream's."],
   ["consistency", "stability gate", "Refuses a url that answers one filter two different ways. Such a relay cannot hold a cursor still, so every cycle re-serves what the last one already took."],
-  ["fitness", "fitness", "The monitor's verdict funnel: one measured certificate per relay, signed onto its NIP-66 record. `syncable` is the only admitting value, and it is the whole relay list of every stream that selects on it."],
+  ["fitness", "fitness", "The monitor's verdict funnel: one measured certificate per relay, signed onto its NIP-66 record. `prime` is the only admitting value, and it is the whole relay list of every stream that selects on it."],
   ["visits", "rotating pool", "The visit-mode streams' engine: socket-owning workers over every certified relay — catch-up pages, the history audit where due, then a live tail on the open socket. A slot here IS a socket."],
   ["ingest", "ingest", "The queue every downloaded event passes through on its way to the store. Full means downloads are backpressured behind it."],
   ["heal", "healer", "Events this mirror holds that a relay which should have them does not, pushed back to it."],
@@ -2198,12 +2215,12 @@ function processorFact(p) {
     if (p.lostToStore) add(`${fmt(p.lostToStore)} LOST TO THE STORE`, "lostToStore", true);
     return cell;
   }
-  if (p.syncable != null) {
+  if (p.prime != null) {
     // The verdict funnel, one line: the certificate count first — it is the
     // number every visit-mode stream's whole relay list equals — then the
-    // refusals that are ALIVE, which is the argument for the word `syncable`
+    // refusals that are ALIVE, which is the argument for the word `prime`
     // over `live`, then the dead. The glossary hangs per member.
-    add(`${fmt(p.syncable)} certified syncable`, "syncable");
+    add(`${fmt(p.prime)} graded prime`, "prime");
     const alive = (p.silent || 0) + (p.alias || 0) + (p.inconsistent || 0) +
                   (p.unpageable || 0) + (p["auth-refused"] || 0) + (p.restricted || 0);
     if (alive) add(`${fmt(alive)} refused while alive`, "silent");
@@ -2448,7 +2465,7 @@ function monitorCard(section) {
   if (heading) {
     heading.title =
       "What the router has decided about the relay urls it discovers — which are one server wearing several " +
-      "addresses, which cannot answer the same question twice, which are certified `syncable`, and which are " +
+      "addresses, which cannot answer the same question twice, which are graded `prime`, and which are " +
       "unreachable. Every stream's relay list is what these passes admit; the per-url verdicts they sign are " +
       "in Monitor verdicts below.";
   }
@@ -2570,6 +2587,10 @@ function verdictsCard() {
         ["folded away", sum.folded],
         ["measured, kept", sum.cleared],
         ["not folded", sum.silent],
+        // The GRADE's two numbers, which no tile carried while the grade was
+        // hidden inside the software column. `prime` is the one that answers
+        // "how much of this store is actually in a roster right now".
+        ...(sum.graded ? [["graded", sum.graded], ["prime", sum.prime]] : []),
         ...(sum.expired ? [["verdict expired", sum.expired]] : []),
         ...(sum.unstable ? [["refused as inconsistent", sum.unstable]] : []),
       ]));
@@ -2804,6 +2825,25 @@ function drawVerdicts(box, groups, nowSec) {
         if (!u.foldCurrent) when.className = "vd-stale";
         right.append(when);
       }
+      // THE FITNESS GRADE, which this panel could not draw at all until the
+      // monitor stopped writing it on `s`. It is the verdict that decides
+      // whether the relay is in any stream's roster — the most consequential of
+      // the three — and it was being rendered as the relay's software.
+      //
+      // On the LEFT, beside the url, rather than as a third pill on the right:
+      // the right-hand column answers "what did the fold decide", and a second
+      // pill there would read as a competing answer to that question. An
+      // out-of-epoch or aged-out grade is drawn struck rather than hidden, the
+      // same bargain the two verdict pills make.
+      if (u.grade) {
+        const tone = u.gradeCurrent ? (u.grade === PRIME ? "prime" : "refused") : "retired";
+        const badge = el("span", `vd-grade ${tone}`, u.grade);
+        badge.title =
+          (u.gradeEvidence ? `${u.gradeEvidence} — ` : "") +
+          `graded ${ago(u.gradeMeasuredAt)}` +
+          (u.gradeCurrent ? "" : "; the router has retired this grade and will re-take it");
+        left.append(" ", badge);
+      }
       if (u.stable === false) left.append(" ", el("span", "badge bad", "inconsistent"));
       row.append(left, right);
       // ONE evidence line, and NAMED — the two verdicts answer different
@@ -2847,10 +2887,15 @@ function drawVerdicts(box, groups, nowSec) {
       if (u.rttOpen) meta.push(["open", `${u.rttOpen}ms`]);
       if (u.rttRead) meta.push(["read", `${u.rttRead}ms`]);
       if (u.rttWrite) meta.push(["write", `${u.rttWrite}ms`]);
+      // The relay's own claim about itself, and it is drawn as the SOFTWARE it
+      // is. This line used to render the monitor's own fitness grade here,
+      // because the grade was written on `s` — so a dead relay showed a chip
+      // saying `dead` in the slot where every other NIP-66 reader shows
+      // strfry's repository url. The grade is a pill on the right now.
       if (u.software) meta.push(["", u.software.replace(/^git\+https?:\/\//, "")]);
-      if (u.version) meta.push(["", u.version]);
-      if (u.relayType) meta.push(["type", u.relayType]);
-      if (u.geohash) meta.push(["geo", u.geohash]);
+      // A count, not the list: a relay advertising thirty NIPs would take the
+      // whole row, and the number is what says whether it answered at all.
+      if (u.supportedNips.length) meta.push(["nips", String(u.supportedNips.length)]);
       if (u.hasDoc) meta.push(["", "nip-11 doc"]);
       // Counted, never dropped: a record carrying a tag this page has not heard
       // of should look different from one carrying nothing.

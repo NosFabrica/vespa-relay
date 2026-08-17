@@ -82,7 +82,7 @@ class VisitPoolTest {
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
-                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                filter = { "kinds": [30166], "#l": ["prime"] }
                             }
                         ]
                         auditSeconds  = 604800
@@ -90,7 +90,7 @@ class VisitPoolTest {
                     gatedScan {
                         dir    = "down"
                         filter = { "kinds": [30382] }
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
@@ -104,7 +104,7 @@ class VisitPoolTest {
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
                         auditSeconds = 86400
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
@@ -135,7 +135,7 @@ class VisitPoolTest {
                         filter = { "kinds": [0, 30382] }
                         deleteMissing = "dryRun"
                         ownedKinds = [30382]
-                        gatedBy = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ]
+                        gatedBy = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ]
                         relaySource = [
                             {
                                 select = [ { tag = "30382:rank", relay = 2, authors = 1 } ]
@@ -214,7 +214,7 @@ class VisitPoolTest {
                 """
                 streams {
                     a { dir = "down", filter = { "kinds": [30382] }
-                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ] }
+                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
                 }
                 """.trimIndent(),
             )
@@ -267,9 +267,9 @@ class VisitPoolTest {
                 """
                 streams {
                     a { dir = "down", filter = { "kinds": [30382] }
-                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ] }
+                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
                     b { dir = "down", filter = { "kinds": [30382] }
-                        relaySource = [ { filter = { "kinds": [30166], "#s": ["syncable"] } } ] }
+                        relaySource = [ { filter = { "kinds": [30166], "#l": ["prime"] } } ] }
                 }
                 """.trimIndent(),
             )
@@ -298,7 +298,7 @@ class VisitPoolTest {
                         filter = { "kinds": [1] }
                         relaySource = [
                             {
-                                filter = { "kinds": [30166], "#s": ["syncable"] }
+                                filter = { "kinds": [30166], "#l": ["prime"] }
                             }
                         ]
                         auditSeconds  = 5

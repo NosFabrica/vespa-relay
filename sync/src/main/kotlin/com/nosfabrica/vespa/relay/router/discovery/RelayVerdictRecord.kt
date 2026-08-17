@@ -201,7 +201,7 @@ class RelayVerdictRecord(
     ): Event? =
         edit(
             url,
-            owned = setOf(SELF_CONSISTENT_TAG),
+            owns = owning(SELF_CONSISTENT_TAG),
             add =
                 listOf(
                     arrayOf(
@@ -219,17 +219,45 @@ class RelayVerdictRecord(
         )
 
     /**
-     * The fitness pass's whole write: the status a stream filters on, and the
-     * two measured facts a visit reads back off the record.
+     * The fitness pass's whole write: the grade a stream filters on, the two
+     * measured facts a visit reads back, and everything the pass learned about
+     * the relay on the way there.
      *
-     * The `s` tag is single-letter ON PURPOSE, unlike every other tag this
-     * monitor defines: it is the one value streams FILTER on, and only
-     * single-letter tags are indexed. Its shape follows the house rule all the
-     * same — value, evidence, measured-at, epoch — so it ages by its own
-     * measurement like `same-as` does, not by the record's much-rewritten
-     * `createdAt`. The facts are spelled out (`pageable`, `nip77`), because
-     * they are read from the fetched record rather than filtered on, and every
-     * other NIP-66 consumer skips them as unknown tags.
+     * ## The grade is a NIP-32 LABEL, and it used to squat `s`
+     *
+     * It has to be single-letter — only those are indexed, and the grade is the
+     * one value streams FILTER on. It used to take `s` for that reason alone,
+     * which was a straight collision: `s` is where every monitor in the wild
+     * publishes the relay's SOFTWARE (`git+https://github.com/hoytech/strfry.git`
+     * on 172 of 400 records sampled off `nos.lol`), so our records said
+     * `s: dead` where a reader expected a repository url — and this monitor
+     * could not publish the software field at all.
+     *
+     * NIP-32 is the seam that exists for precisely this: [LABEL_TAG] carries an
+     * opinion, [LABEL_NAMESPACE_TAG] says whose vocabulary it is written in, and
+     * a reader who does not know that vocabulary skips it. So the grade rides
+     * `l` under [FITNESS_NAMESPACE], beside the country and ASN labels other
+     * monitors already put on the same record, and `s` goes back to meaning what
+     * everyone else means by it.
+     *
+     * **NIP-32 fixes index 2 as the namespace**, so this one tag carries the
+     * house shape one place to the right of the others — value, namespace,
+     * evidence, measured-at, epoch. [LABEL_MEASURED_AT_INDEX] is why that is
+     * spelled out rather than shared with [MEASURED_AT_INDEX].
+     *
+     * ## What else it writes, and why it is the same edit
+     *
+     * `n`, `R` and the two rtts are MEASURED on the dial this pass already
+     * paid for; `s` and `N` are read off the relay's NIP-11 document. Written
+     * here rather than by a second writer because they are facts about the
+     * same url learned in the same pass, and a record is cheaper to reason
+     * about with one author per address than with two racing edits.
+     *
+     * They are also what makes our records legible to anyone else. A 30166
+     * carrying no `rtt-open` inside the TTL is read by quartz's own convention
+     * as "checked, could not open" — so every record this monitor signed,
+     * `prime` ones included, told every foreign crawler applying that rule
+     * that the relay was unreachable.
      */
     suspend fun publishFitness(
         url: NormalizedRelayUrl,
@@ -237,26 +265,25 @@ class RelayVerdictRecord(
         evidence: String,
         pageable: Pair<Boolean, String>?,
         nip77: Pair<Boolean, String>?,
+        facts: RelayFacts = RelayFacts(),
     ): Event? {
         val at = nowSeconds().toString()
         val add =
             buildList {
-                add(arrayOf(STATUS_TAG, status, evidence, at, FITNESS_EPOCH))
+                add(arrayOf(LABEL_TAG, status, FITNESS_NAMESPACE, evidence, at, FITNESS_EPOCH))
+                add(arrayOf(LABEL_NAMESPACE_TAG, FITNESS_NAMESPACE))
                 pageable?.let { (yes, why) -> add(arrayOf(PAGEABLE_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
                 nip77?.let { (yes, why) -> add(arrayOf(NIP77_TAG, if (yes) "true" else "false", why, at, FITNESS_EPOCH)) }
+                addAll(facts.tags())
             }
-        // Owns all three even when a fact is absent this pass: a verdict that
-        // changed makes the old facts claims about a different relay, and
-        // carrying them forward would pin, say, `pageable true` to a url that
-        // has been dead for a week.
-        return edit(url, owned = setOf(STATUS_TAG, PAGEABLE_TAG, NIP77_TAG), add = add)
+        return edit(url, owns = ::ownedByFitness, add = add)
     }
 
     /**
-     * Take the fitness verdict back: the same owned set as [publishFitness]
-     * with nothing to add, so the three tags leave the record and everyone
+     * Take the fitness verdict back: the same ownership as [publishFitness]
+     * with nothing to add, so this pass's tags leave the record and everyone
      * else's — the fold's `same-as`, the gate's `self-consistent`, another
-     * monitor's — ride through untouched.
+     * monitor's label under another namespace — ride through untouched.
      *
      * This is how a rules change reaches readers now. The epoch used to be
      * checked on every read, which meant every consumer of our records had to
@@ -265,8 +292,42 @@ class RelayVerdictRecord(
      * stated where it belongs: a verdict taken under rules we no longer apply
      * stops being a verdict, and the url reads as one we have not measured —
      * which is exactly the state that gets it re-measured.
+     *
+     * The measured facts go with it. They were taken on the dial that produced
+     * the verdict, so a retraction that kept them would leave an rtt and a
+     * software string standing as current readings of a url nothing has
+     * measured since.
      */
-    suspend fun retireFitness(url: NormalizedRelayUrl): Event? = edit(url, owned = setOf(STATUS_TAG, PAGEABLE_TAG, NIP77_TAG), add = emptyList())
+    suspend fun retireFitness(url: NormalizedRelayUrl): Event? = edit(url, owns = ::ownedByFitness, add = emptyList())
+
+    /**
+     * Everything the fitness pass replaces on each write — and NOTHING else,
+     * which is why this is a predicate rather than the name set the other
+     * writers use.
+     *
+     * `l` and `L` are shared vocabulary: a foreign monitor labels the same relay
+     * with its country and its ASN, and a future pass of ours may label it under
+     * a namespace of its own. Owning the tag NAME would delete all of that on
+     * every sweep. Owning our own namespace inside it deletes exactly our own
+     * previous answer, which is what a replaceable record's writer is entitled
+     * to. A bare `L` with no namespace element is ours to drop as malformed.
+     *
+     * The measured facts are owned WHOLE and unconditionally, including on a
+     * pass that learned none of them. A verdict that changed makes the old
+     * facts claims about a different relay, and carrying them forward would pin
+     * `pageable true`, a 40ms rtt and strfry's version to a url that has been
+     * dead for a week. That is also what retires the old grades: `s` is in
+     * [RelayFacts.OWNED] as the software field now, so `[s, dead]` is replaced
+     * the first time this pass re-measures the url.
+     */
+    private fun ownedByFitness(tag: Array<String>): Boolean =
+        when (val name = tag.firstOrNull()) {
+            null -> false
+            LABEL_TAG -> tag.getOrNull(LABEL_NAMESPACE_INDEX) == FITNESS_NAMESPACE
+            LABEL_NAMESPACE_TAG -> tag.getOrNull(NAMESPACE_DECLARATION_INDEX) == FITNESS_NAMESPACE
+            PAGEABLE_TAG, NIP77_TAG -> true
+            else -> name in RelayFacts.OWNED
+        }
 
     /**
      * Sign and store one verdict. Returns the event so a caller can push it
@@ -414,7 +475,7 @@ class RelayVerdictRecord(
     ): Event? =
         edit(
             subject,
-            owned = setOf(SAME_AS_TAG),
+            owns = owning(SAME_AS_TAG),
             // The measurement's own clock — see [current] for why the event's
             // cannot be used — and the rules it was taken under, see
             // [FOLD_EPOCH].
@@ -436,9 +497,12 @@ class RelayVerdictRecord(
      * it did. Anything that reads that record downstream loses information it
      * had no way to know was ever there.
      *
-     * [owned] is the small set of tag names this writer is allowed to replace.
-     * Everything else is carried forward untouched, whoever wrote it and
-     * whatever it means.
+     * [owns] decides which tags this writer is allowed to replace. Everything
+     * else is carried forward untouched, whoever wrote it and whatever it
+     * means. A PREDICATE rather than a set of names because ownership is not
+     * always a whole tag name: NIP-32's `l` carries every labeller's opinion,
+     * and the fitness pass may replace only its own namespace's — see
+     * [ownedByFitness]. [owning] is the name-set form the other writers use.
      *
      * The timestamp is `max(now, existing + 1)` rather than `now`, because a
      * store enforcing replaceable semantics REJECTS an edit that is not newer
@@ -448,12 +512,12 @@ class RelayVerdictRecord(
      */
     private suspend fun edit(
         url: NormalizedRelayUrl,
-        owned: Set<String>,
+        owns: (Array<String>) -> Boolean,
         add: List<Array<String>>,
     ): Event? {
         val signer = signer ?: return null
         val current = currentRecord(url)
-        val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || it.firstOrNull() in owned }.orEmpty()
+        val kept = current?.tags?.filterNot { it.firstOrNull() == "d" || owns(it) }.orEmpty()
         val at = maxOf(nowSeconds(), (current?.createdAt ?: 0L) + 1)
         val template =
             RelayDiscoveryEvent.build(url, current?.content.orEmpty(), at) {
@@ -466,6 +530,14 @@ class RelayVerdictRecord(
             event
         }.getOrNull()
     }
+
+    /**
+     * The ordinary form of [edit]'s ownership: these tag NAMES, whole.
+     *
+     * Right for every tag this monitor is the only possible writer of. Wrong
+     * for `l`/`L`, which are shared — see [ownedByFitness].
+     */
+    private fun owning(vararg names: String): (Array<String>) -> Boolean = { it.firstOrNull() in names }
 
     /**
      * Is this VERDICT one we would still act on: taken under the rules we
@@ -639,12 +711,75 @@ class RelayVerdictRecord(
         const val CONSISTENCY_EPOCH = "1"
 
         /**
-         * The fitness verdict — the one tag streams FILTER on, which is why it
-         * is the one single-letter tag this monitor writes: only single-letter
-         * tags are indexed, and `"#s": ["syncable"]` is a whole relay list.
-         * See [FitnessPass.Verdict] for the vocabulary.
+         * NIP-32's label, which is where the fitness grade lives — the one tag
+         * streams FILTER on, and single-letter because only those are indexed:
+         * `"#l": ["prime"]` is a whole relay list.
+         *
+         * See [FitnessPass.Verdict] for the vocabulary and [FITNESS_NAMESPACE]
+         * for what stops it colliding with anyone else's.
          */
-        const val STATUS_TAG = "s"
+        const val LABEL_TAG = "l"
+
+        /** NIP-32's namespace declaration, which every `l` on this record needs. */
+        const val LABEL_NAMESPACE_TAG = "L"
+
+        /**
+         * Whose vocabulary the grade is written in.
+         *
+         * NAMED FOR THE JUDGEMENT, NOT FOR US. A monitor's opinion is only worth
+         * publishing if somebody else can act on it, and `nosfabrica.*` or
+         * `vespa.*` would say the answer is about our deployment rather than
+         * about the relay. `relay.fitness` says what was measured, so a crawler,
+         * an archiver or a client picking read relays can use the same records
+         * without adopting our stack — and a second monitor may publish grades
+         * under this namespace and be understood without asking us anything.
+         *
+         * It also names the SHAPE: everything under this namespace is one of
+         * [FitnessPass.Verdict]'s values, so a reader who knows the namespace
+         * knows the whole vocabulary.
+         */
+        const val FITNESS_NAMESPACE = "relay.fitness"
+
+        /** Where an `["l", <value>, <namespace>]` carries the namespace. */
+        const val LABEL_NAMESPACE_INDEX = 2
+
+        /** …and where an `["L", <namespace>]` carries the one it declares. */
+        const val NAMESPACE_DECLARATION_INDEX = 1
+
+        /**
+         * The house shape — evidence, measured-at, epoch — one place right of
+         * where the other verdict tags carry it, because NIP-32 has already
+         * spent index 2 on the namespace.
+         *
+         * Spelled out rather than shared with [MEASURED_AT_INDEX] precisely
+         * because they differ by one: a reader that used the fold's constant
+         * here would age the grade by its own evidence string, which parses to
+         * null and reads as "this record does not say".
+         */
+        const val LABEL_MEASURED_AT_INDEX = 4
+
+        const val LABEL_EPOCH_INDEX = 5
+
+        /**
+         * Where the grade used to live — now the SOFTWARE field, which is what
+         * it always meant to everyone else.
+         *
+         * Sampled live off `relay.nostr.watch` and `nos.lol`, 12 monitors, 800
+         * records: 539 carry `s` and every value is a repository url
+         * (`git+https://github.com/hoytech/strfry.git`, `nostr-rs-relay`,
+         * `haven`). NIP-66 itself defines no `s` at all, so nothing in the spec
+         * ever stopped this monitor writing `s: dead` where a reader expected
+         * strfry's git url; only the wild made it a collision, and it is one all
+         * the same.
+         *
+         * The constant survives the move because the MIGRATION needs it: every
+         * record in this store still carries a grade here — measured, 4,000 of
+         * 4,000 — and [FitnessPass.retireLegacyGrades] queries exactly this tag
+         * to find them. The fitness writer owns it either way, so a url the
+         * pass re-measures has its stale grade replaced by the real software
+         * string without the migration having to reach it first.
+         */
+        const val LEGACY_STATUS_TAG = RelayFacts.SOFTWARE_TAG
 
         /** Measured: does the relay honour `until`, i.e. can a paged walk terminate? */
         const val PAGEABLE_TAG = "pageable"
