@@ -534,19 +534,24 @@ internal object SyncProgressReport {
     }
 
     /**
-     * The quietest legs, rebuilt row by row and capped again on this side.
+     * The quietest legs, rebuilt row by row and NOT capped again on this side.
      *
-     * Same terms as [foldedOnto]: the router already bounds its list, and this
-     * bounds it a second time rather than trusting that it did. `omitted` is
-     * carried through and ADDED to whatever this side drops, because a
-     * truncated list that does not say it is truncated reads as the whole
-     * answer — and here the whole answer is what an operator is chasing.
+     * The exception to [foldedOnto]'s rule, and the reason is what the list is
+     * of: a fold row is one of however many urls discovery found, while an
+     * in-flight row is one of the router's WORKERS, a number the router itself
+     * bounds by `visitConcurrency`. Re-capping it at twenty published a sixth
+     * of the mirror's live state and called the rest `omitted` — and "which
+     * relays is this thing actually talking to" is the question the card gets
+     * asked, so the truncation landed squarely on the answer.
+     *
+     * `omitted` is still carried through and ADDED to whatever this side
+     * drops: the router may bound its own list some day, and a row this side
+     * cannot read is still a row that vanished.
      */
     private fun inFlight(o: JsonObject?): JsonObject? {
         if (o == null) return null
-        val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
-        if (rows.isEmpty()) return null
-        val kept = rows.take(MAX_IN_FLIGHT_ROWS)
+        val kept = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
+        if (kept.isEmpty()) return null
         // Rows this side could not read are DROPPED, so they have to be counted
         // — see `omitted` below. A row with no url says nothing and cannot be
         // published, but letting it vanish silently is the exact failure the
@@ -587,7 +592,7 @@ internal object SyncProgressReport {
                     )
                 }
             }
-            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
+            put("omitted", (num(o["omitted"]) ?: 0) + unreadable)
         }
     }
 
@@ -809,10 +814,12 @@ internal object SyncProgressReport {
             "tails",
         )
 
-    /** This side's own ceilings — see [foldedOnto] for why they are restated here. */
+    /**
+     * This side's own ceilings — see [foldedOnto] for why they are restated
+     * here, and [inFlight] for the one list that has none.
+     */
     private const val MAX_FOLD_ROWS = 20
     private const val MAX_FOLD_EXAMPLES = 2
-    private const val MAX_IN_FLIGHT_ROWS = 20
 
     /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
     private const val MAX_PASSES = 4

@@ -207,10 +207,13 @@ internal object SyncVocabulary {
                     "which is why it sits beside the cycle rather than inside it: a worker outlives the pass that " +
                     "handed it out, so the same url is this cycle's `pending` if this pass dialled it and its `busy` " +
                     "if an earlier one did. NOT \"the pending urls\": `pending` also counts urls the walk has not " +
-                    "reached yet, which have no worker and are not here. Bounded to the few nothing is arriving on, " +
-                    "because that and not age is what a wedged leg looks like: a relay held an hour while it streams " +
-                    "two million events is this router working. The rest of a fan-out's workers are connect timeouts " +
-                    "to dead hosts and are counted in `omitted`.",
+                    "reached yet, which have no worker and are not here. WHOLE, not a top-N: a row is a worker " +
+                    "holding a socket, so this list is bounded by the pool's `visitConcurrency` and \"what is this " +
+                    "mirror connected to\" is answerable from it. Quietest first because that and not age is what a " +
+                    "wedged leg looks like — a relay held an hour while it streams two million events is this router " +
+                    "working. One visit serves every stream's asks in turn, so a relay appears under whichever " +
+                    "stream it is on AT THIS INSTANT: a cheap stream showing few rows beside an expensive one is " +
+                    "them sharing workers, not that stream running out of relays.",
             )
             put(
                 "heldForSec",
@@ -275,7 +278,9 @@ internal object SyncVocabulary {
                 "omitted",
                 "How many rows a bounded list left out. Never silent and never zero by omission: these lists run to " +
                     "thousands of urls on a document fetched every poll, and a truncation that does not disclose " +
-                    "itself reads as the whole answer.",
+                    "itself reads as the whole answer. Present on unbounded lists too, reading 0 — `inFlight` is " +
+                    "one — because a reader that finds the member missing cannot tell \"nothing was dropped\" from " +
+                    "\"this router does not say\".",
             )
             put(
                 "excluded",

@@ -217,6 +217,30 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `every worker is published, however many the pool is holding`() {
+        // The regression this exists to stop. `inFlight` was cut to twenty rows
+        // on BOTH sides, so a pool holding 128 workers published a sixth of the
+        // mirror's live state on the one card an operator reads to answer "what
+        // is this thing connected to" — and the `omitted` beside it does not
+        // read as "you are seeing 16%". Unlike every other bounded list here, a
+        // row is a WORKER, so the router's own `visitConcurrency` is the bound
+        // and the whole set is the answer.
+        val rows = (1..25).joinToString(",") { """{"relay": "wss://r$it.example/", "heldForSec": $it, "events": 0, "quietForSec": 0}""" }
+        val out =
+            SyncProgressReport.build(
+                """{"writtenAt": 900, "streams": [{"name": "content", "inFlight": {"relays": [$rows], "omitted": 0}}]}""",
+                nowSeconds = 1_000,
+            )!!
+
+        val f =
+            (out["streams"] as JsonArray)[0]
+                .jsonObject["inFlight"]!!
+                .jsonObject
+        assertEquals(25, (f["relays"] as JsonArray).size, "all 25 workers survive the report side")
+        assertEquals(0, f["omitted"]!!.jsonPrimitive.int, "and nothing is reported as dropped")
+    }
+
+    @Test
     fun `a row this side cannot read is counted, not silently dropped`() {
         // The contract this object states about itself. A truncated list that
         // does not disclose the truncation reads as the whole answer — and for
