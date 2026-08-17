@@ -24,6 +24,7 @@ import com.nosfabrica.vespa.relay.router.IngestPipeline
 import com.nosfabrica.vespa.relay.router.TorTransport
 import com.nosfabrica.vespa.relay.router.config.MonitorConfig
 import com.nosfabrica.vespa.relay.router.config.RelayDiscoveryConfig
+import com.nosfabrica.vespa.relay.router.config.RelayExcludes
 import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.vitorpamplona.quartz.nip01Core.core.Event
 import com.vitorpamplona.quartz.nip01Core.relay.normalizer.NormalizedRelayUrl
@@ -195,6 +196,17 @@ internal class StreamWorld(
      * fails to derive is reported (and survived) the same way on both paths.
      * [onUrl]'s `kept` says whether the url survived the per-stream exclude
      * list and the self check; the caller decides what a dropped url means.
+     *
+     * The discovery underneath is asked for the UNFILTERED set — no `exclude`,
+     * no `skip` — because those are the two tests `kept` makes, and letting
+     * [RelayDiscovery.discover] make them first is what silently pinned the
+     * funnel's `excluded` row at 0 for as long as it existed: everything that
+     * would have failed the predicate had already been dropped a frame down, so
+     * `kept` was true for every url that reached it. The urls were excluded
+     * correctly; the count of them was structurally unreachable, and `sourced`
+     * — "every url the streams named" — was quietly a post-exclusion number
+     * too. One place applies the rule, and it is the one place that can also
+     * count what the rule cost.
      */
     private suspend fun derive(
         what: String,
@@ -204,7 +216,12 @@ internal class StreamWorld(
         for ((label, discovery) in derivations()) {
             val found =
                 try {
-                    RelayDiscovery.discover(store, bound(discovery), skip = setOfNotNull(store.relay), allowOnion = tor != null)
+                    RelayDiscovery.discover(
+                        store,
+                        bound(discovery).copy(exclude = RelayExcludes.NONE),
+                        skip = emptySet(),
+                        allowOnion = tor != null,
+                    )
                 } catch (e: CancellationException) {
                     throw e
                 } catch (e: Exception) {
