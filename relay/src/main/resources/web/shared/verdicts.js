@@ -547,11 +547,16 @@ function oneSecond(events) {
  * The totals a reader needs before reading any row: how many records answered,
  * and how many of them say anything at all.
  *
- * `silent` is the number worth having on screen. A 30166 record with no verdict
- * tag is one quartz's passive monitor wrote — reachability, rtt — and a store
- * full of those next to zero folds is a completely different diagnosis from a
- * store with no records: the first says the monitor is running and the fold is
- * not, the second says neither is.
+ * `silent` is the number worth having on screen: a url no pass has reached at
+ * all. A store full of those next to zero grades is a completely different
+ * diagnosis from a store with no records — the first says the monitor is
+ * running and has not got here yet, the second says nothing is running.
+ *
+ * **It is NOT "not folded", which is what the tile above it used to be called.**
+ * The fold's own pill wears those two words on every row it has not folded, and
+ * on a live store that is most of them: measured here, 77 urls carried no
+ * verdict of any kind while 540 rows were drawn `not folded`, 510 of them
+ * graded by the fitness pass. One phrase, two meanings, on one card.
  */
 export function summarise(groups, nowSec) {
   let urls = 0;

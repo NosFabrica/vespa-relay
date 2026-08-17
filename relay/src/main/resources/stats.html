@@ -2586,7 +2586,15 @@ function verdictsCard() {
         ["hosts", sum.hosts],
         ["folded away", sum.folded],
         ["measured, kept", sum.cleared],
-        ["not folded", sum.silent],
+        // "NO VERDICT AT ALL", and it used to be spelled `not folded` — the
+        // same two words the fold's own pill wears on every row it did not
+        // fold. They count different things, and adding the grade pulled them
+        // apart on a live store: 77 urls carry no verdict of any kind, while
+        // 540 rows are drawn `not folded` because the FOLD has not folded them
+        // — 510 of those graded by the fitness pass minutes earlier. A reader
+        // comparing the tile to the rows under it saw one number contradict
+        // the column beneath it.
+        ["no verdict yet", sum.silent],
         // The GRADE's two numbers, which no tile carried while the grade was
         // hidden inside the software column. `prime` is the one that answers
         // "how much of this store is actually in a roster right now".

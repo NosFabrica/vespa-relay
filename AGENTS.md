@@ -44,6 +44,19 @@ Three Gradle modules, JVM only (toolchain 21), two processes over one store:
 # records, the roster read back off them, and a small VisitPool run on it.
 ./gradlew :sync:test --tests '*VisitPoolLiveProbe*' -DvisitPoolProbe=true --rerun -i
 
+# Seeds a MONITOR CORPUS into a LOCAL relay so stats.html's verdicts panel — the
+# one panel that speaks the protocol rather than reading the rollup — can be
+# driven against a real store. Writes graded records in the current shape (a
+# NIP-32 label under `relay.fitness`, plus the facts the fitness pass publishes
+# beside it) and, for a share of them, the OLD grade still on `s`, which is what
+# a store looks like before the boot migration has run. The nsec must be the
+# relay's own RELAY_NSEC or the panel correctly counts them as another monitor's.
+# Then open /stats.html and press "Read verdicts from this relay".
+./gradlew :sync:test --tests '*VerdictPanelSeedProbe*' -DseedVerdicts=true \
+  -DseedVerdictsNsec=nsec1... -DseedVerdictsCount=600 --rerun -i
+#   …a different relay, or more/fewer legacy rows:
+#   -DseedVerdictsUrl=ws://localhost:7777 -DseedVerdictsLegacy=15
+
 # Seeds one signed 10040 into a LOCAL relay so the `gatedBy` gate and the
 # monitor's 10040 source can be watched live against a sandbox stack.
 ./gradlew :sync:test --tests '*Seed10040Probe*' -Dseed10040=true \
