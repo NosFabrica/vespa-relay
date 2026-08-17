@@ -257,9 +257,40 @@ object RelayDiscovery {
     }
 
     /**
+     * Every url one of [monitorAuthors] holds a CURRENT record about, whatever
+     * that record says.
+     *
+     * Not a verdict read and not a gate: this is the answer to "how many relay
+     * urls does this router know of", which is a wider question than "how many
+     * did a relay list name this round" and used to have no answer at all. A url
+     * leaves the streams' relay lists for reasons of its own — the author who
+     * listed it revised their 10002, the source that carried it was
+     * reconfigured — and the moment it does, the corpus the coverage card draws
+     * silently loses it, while every measurement this router ever took of it is
+     * still in the store. The card's own caption promises "every relay url this
+     * router knows of"; this is what makes that true rather than aspirational.
+     *
+     * Scoped to [monitorAuthors] for [undialable]'s reason, and empty without
+     * them: a router with no signer and no named monitors holds no records, so
+     * the honest count of what it knows beyond today's relay lists is none.
+     */
+    suspend fun recorded(
+        store: IEventStore,
+        monitorAuthors: List<String>,
+        maxAgeSeconds: Long,
+        allowOnion: Boolean = false,
+        now: Long = nowSeconds(),
+    ): Set<NormalizedRelayUrl> {
+        if (monitorAuthors.isEmpty()) return emptySet()
+        return verdicts(store, null, monitorAuthors, maxAgeSeconds, now)
+            .mapNotNullTo(HashSet()) { urlOf(it, allowOnion) }
+    }
+
+    /**
      * One indexed query for "records carrying THIS verdict, signed by these
      * identities, re-checked since the floor" — the shared core of [syncable]
-     * and [undialable].
+     * and [undialable], and with a null [verdict] of [recorded], which asks for
+     * the records themselves rather than for one thing they might say.
      *
      * NOTHING PRIVATE IS READ HERE. There was a rules-epoch check on the tag's
      * fifth element, which meant every read enforced our own versioning scheme
@@ -273,7 +304,7 @@ object RelayDiscovery {
      */
     private suspend fun verdicts(
         store: IEventStore,
-        verdict: FitnessPass.Verdict,
+        verdict: FitnessPass.Verdict?,
         monitorAuthors: List<String>,
         maxAgeSeconds: Long,
         now: Long,
@@ -286,7 +317,7 @@ object RelayDiscovery {
                     // is the unscoped read. An EMPTY list would be a predicate
                     // nothing satisfies.
                     authors = monitorAuthors.takeIf { it.isNotEmpty() },
-                    tags = mapOf(RelayVerdictRecord.STATUS_TAG to listOf(verdict.value)),
+                    tags = verdict?.let { mapOf(RelayVerdictRecord.STATUS_TAG to listOf(it.value)) },
                     // The freshness bound, indexed — see the note on [syncable]
                     // about why the record's own clock is the right one again.
                     since = now - maxAgeSeconds,
@@ -299,8 +330,7 @@ object RelayDiscovery {
                 // as a hint rather than a predicate cannot hand a stranger's
                 // verdict through. Unscoped there is nothing to re-state.
                 (monitorAuthors.isEmpty() || event.pubKey in monitorAuthors) &&
-                    s != null &&
-                    s[1] == verdict.value
+                    (verdict == null || (s != null && s[1] == verdict.value))
             }
 
     /** A verdict record's subject: the `d` tag, normalized like every other discovered url. */

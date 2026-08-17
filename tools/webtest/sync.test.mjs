@@ -369,13 +369,13 @@ const leg = (n, quiet, over = {}) => ({
 
   const f = funnelOf(gate());
   const at = (key) => f.rows.find((r) => r.key === key);
-  assert.equal(f.total, 17584, "the root is every url the streams named");
+  assert.equal(f.total, 17584, "the root is every relay url this router knows of");
 
   // THE SHAPE. Depth is the relationship, so it is the thing to assert: a host
   // is under its reason, a reason under `no verdict`, that under the candidate
   // set, and the two dropped kinds under one branch of their own.
   assert.deepEqual(f.rows.map((r) => [r.depth, r.key]), [
-    [0, "sourced"],
+    [0, "corpus"],
     [1, "dropped"], [2, "excluded"], [2, "heldOutDead"],
     [1, "candidates"], [2, "foldedAway"], [2, "consistent"], [2, "inconsistent"], [2, "unmeasured"],
     [3, "never answered a REQ"],
@@ -419,6 +419,37 @@ const leg = (n, quiet, over = {}) => ({
   assert.equal(at("never answered a REQ").tone, null, "a relay that will not answer is not our fault");
   assert.equal(at("never answered a REQ").hosts, 2201, "the url count's resolution into servers rides along");
   ok("the tree nests by depth, guides its own branches, and scales every bar to the root");
+}
+
+{
+  // THE CORPUS IS NOT ONE DERIVATION'S YIELD. A url leaves the relay lists for
+  // reasons of its own and every measurement of it stays in the store — the
+  // fold still groups new urls against it — so rooted at `sourced` alone the
+  // tree lost it silently, on a card captioned "every relay url this router
+  // knows of". A deployment holding records for 17,584 urls whose current lists
+  // name 1,754 drew a tenth of its own corpus.
+  const shrunk = (over = {}) => funnelOf({
+    name: "consistency", sourced: 1754, excluded: 4, heldOutDead: 50, recordedOnly: 15830,
+    streams: [{ candidates: 1700, foldedAway: 600, consistent: 100, inconsistent: 0, unmeasured: 1000 }],
+    ...over,
+  });
+  const f = shrunk();
+  const at = (key) => f.rows.find((r) => r.key === key);
+  assert.equal(f.total, 17584, "the mouth is what was named PLUS what only our records know");
+  assert.equal(at("recordedOnly").value, 15830);
+  assert.equal(at("recordedOnly").depth, 1, "a sibling of the candidate set, not a slice of it");
+  assert.equal(at("recordedOnly").tone, "mute", "nothing was decided against them — nobody asked");
+  // The three children still divide the root exactly once.
+  assert.equal(at("dropped").value + at("recordedOnly").value + at("candidates").value, f.total);
+  assert.equal(f.rows.some((r) => r.key === "unattributed"), false, "the partition still closes");
+
+  // Absent, and the tree is exactly what it always was — a router older than
+  // this member never measured that corpus and must not be shown a zero row
+  // claiming it did.
+  const old = shrunk({ recordedOnly: undefined });
+  assert.equal(old.total, 1754);
+  assert.equal(old.rows.some((r) => r.key === "recordedOnly"), false);
+  ok("the tree's mouth is every url the router knows of, not what one derivation named");
 }
 
 {

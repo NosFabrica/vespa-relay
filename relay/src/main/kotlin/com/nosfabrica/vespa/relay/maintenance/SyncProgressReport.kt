@@ -733,6 +733,9 @@ internal object SyncProgressReport {
             "sourced",
             "excluded",
             "heldOutDead",
+            // …and what the streams did NOT name but our own records still
+            // know about, which is the rest of the funnel's mouth.
+            "recordedOnly",
             // the fitness pass's verdict funnel — one certificate per relay,
             // `syncable` the only admitting value, the rest the refusals
             "syncable",

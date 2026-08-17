@@ -111,7 +111,11 @@ internal class StreamWorld(
     var lastDerivation: Derivation = Derivation()
         private set
 
-    /** One derivation's arithmetic: `sourced = excluded + heldOutDead + candidates`. */
+    /**
+     * One derivation's arithmetic: `sourced = excluded + heldOutDead +
+     * candidates`, with [recordedOnly] beside it rather than inside it — see
+     * there.
+     */
     data class Derivation(
         /** Every url the streams' relay lists yielded, before anything was dropped. */
         val sourced: Int = 0,
@@ -127,6 +131,28 @@ internal class StreamWorld(
         val excluded: Int = 0,
         /** …and how many carried a current `dead` verdict of ours. */
         val heldOutDead: Int = 0,
+        /**
+         * Urls this router HOLDS A RECORD ABOUT that no relay list named this
+         * round — outside [sourced] rather than a slice of it, and the reason
+         * the funnel's mouth is `sourced + recordedOnly`.
+         *
+         * **The corpus is not what the last derivation happened to yield.** A
+         * url leaves the streams' relay lists for reasons of its own: the author
+         * who listed it revised their 10002, a source was reconfigured, a stream
+         * was retired. Every measurement this router ever took of it is still in
+         * the store — the fold reads exactly these records to group a new url
+         * against its host's history — but the coverage card's tree started at
+         * [sourced] and so lost them without a word. On a deployment holding
+         * records for five figures of urls whose current relay lists name a
+         * couple of thousand, the card claimed to draw "every relay url this
+         * router knows of" and drew an eighth of it.
+         *
+         * Its own branch and NOT folded into `dropped`, because it is not a
+         * drop: nothing decided against these urls this round, they simply were
+         * not asked for. Zero on a router with no signer and no named monitors,
+         * which holds no records and is telling the truth by saying so.
+         */
+        val recordedOnly: Int = 0,
     )
 
     /**
@@ -146,6 +172,25 @@ internal class StreamWorld(
             store,
             monitorAuthors = monitorAuthors,
             maxAgeSeconds = DEAD_TTL_SECONDS,
+            allowOnion = tor != null,
+        )
+
+    /**
+     * Every url one of our own records is about, on the verdict TTL rather than
+     * the dead one — see [Derivation.recordedOnly].
+     *
+     * [RelayVerdictRecord.DEFAULT_TTL_SECONDS] because that is how long a
+     * verdict is worth anything: a record past it is refused by every read that
+     * matters, so counting its url as "known" would put a number on the card
+     * that nothing downstream can use. This is the same population
+     * [RelayVerdictRecord.loadAll] hands the fold, which is what makes the
+     * card's mouth and the fold's world one corpus rather than two.
+     */
+    private suspend fun ownRecords(): Set<NormalizedRelayUrl> =
+        RelayDiscovery.recorded(
+            store,
+            monitorAuthors = monitorAuthors,
+            maxAgeSeconds = RelayVerdictRecord.DEFAULT_TTL_SECONDS,
             allowOnion = tor != null,
         )
 
@@ -172,15 +217,29 @@ internal class StreamWorld(
         // put it on both sides of a partition that has to divide exactly once.
         val onlyExcluded = excluded - all
         val live = all.filterNot { it in dead }
+        // WHAT WE KNOW BEYOND WHAT WAS NAMED — see [Derivation.recordedOnly].
+        // Counted here rather than derived from the passes, because it is a
+        // property of the DERIVATION: it is exactly the urls this walk did not
+        // reach and the store has already measured.
+        val recorded = ownRecords()
         lastDerivation =
             Derivation(
                 sourced = all.size + onlyExcluded.size,
                 excluded = onlyExcluded.size,
                 heldOutDead = all.size - live.size,
+                recordedOnly = recorded.count { it !in all && it !in onlyExcluded },
             )
         System.err.println(
             "router: alias source derived ${live.size} url(s) across ${streams.size} stream(s)" +
-                (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else ""),
+                (if (all.size > live.size) "; ${all.size - live.size} held out as known dead" else "") +
+                // The number that says a shrinking corpus is a shrinking RELAY
+                // LIST and not a shrinking store — see [Derivation.recordedOnly].
+                (
+                    lastDerivation.recordedOnly
+                        .takeIf { it > 0 }
+                        ?.let { "; $it more we hold records about that nothing named this round" }
+                        .orEmpty()
+                ),
         )
         return live
     }

@@ -516,6 +516,11 @@ class SyncEngine(
                             Processors.Count("sourced", world.lastDerivation.sourced.toLong()),
                             Processors.Count("excluded", world.lastDerivation.excluded.toLong()),
                             Processors.Count("heldOutDead", world.lastDerivation.heldOutDead.toLong()),
+                            // The corpus BESIDE the derivation: urls we hold
+                            // records about that no relay list named this round.
+                            // Without it the card's mouth is one walk's yield
+                            // and calls itself everything this router knows of.
+                            Processors.Count("recordedOnly", world.lastDerivation.recordedOnly.toLong()),
                         )
                     }
                 }
