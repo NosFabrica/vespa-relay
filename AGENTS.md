@@ -1195,6 +1195,19 @@ on. The relay side re-derives nothing but bounds everything: `COUNTERS` in
 `SyncProgressReport` is an ALLOWLIST, so a name that is not in it (and therefore
 in `SyncVocabulary`) cannot reach a document served under this relay's name.
 
+**A CAP IS FOR A LIST THE NETWORK CAN GROW, and for nothing else.** The rollup
+bounds `foldedOnto` and the undecided reasons because discovery decides how long
+those get; it bounds NOTHING whose length is decided by our own source — the
+processor rows (a registration in `SyncEngine`), a processor's stream rows (a
+line in `router.conf`), the in-flight rows (a worker, so `visitConcurrency`).
+Capping those only picks which rows an operator is not shown, and the processor
+one had the worst version of that: `splitProcessors` deliberately draws a
+processor name the page has not been taught rather than dropping it, because
+"dropping a row to keep a card tidy is how a new job runs unwatched" — and a cap
+in the rollup dropped that row before the page could apply the rule, silently,
+since neither had an `omitted` to disclose it with. The invariant is now held on
+both sides rather than defended on one and undermined on the other.
+
 `AliasMonitor.runPass` runs ONE PASS over every stream rather than one stream
 over every pass, which is what makes a pass a clocked unit — `lastPassAt`,
 `lastPassSec` and the `measuring` phase describe the whole pass instead of

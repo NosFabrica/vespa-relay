@@ -525,6 +525,39 @@ class SyncProgressReportTest {
     }
 
     @Test
+    fun `every processor is republished, and every stream row under it`() {
+        // The row that used to be dropped, and the reason it must not be. The
+        // page routes a processor name it has not been taught to the pipeline
+        // card ON PURPOSE — `splitProcessors`: "dropping a row to keep a card
+        // tidy is how a new job runs unwatched for a year" — and a cap on this
+        // side dropped it before the page could ever apply that rule, with no
+        // `omitted` to say so. Twenty processors is far past anything
+        // SyncEngine registers; the point is that the ceiling is the source's,
+        // not this side's.
+        val procs =
+            (1..20).joinToString(",") {
+                """{"name": "job$it", "phase": "running", "streams": [
+                 {"name": "s$it", "candidates": 5, "unmeasured": 0}]}"""
+            }
+        val out = SyncProgressReport.build("""{"writtenAt": 900, "streams": [], "processors": [$procs]}""", nowSeconds = 1_000)!!
+        val rows = out["processors"] as JsonArray
+
+        assertEquals(20, rows.size, "no processor is dropped to keep the card short")
+        assertEquals("job20", rows[19].jsonObject["name"]!!.jsonPrimitive.content, "including the last one")
+
+        // …and a processor's own per-stream rows, which carry the only account
+        // of what that stream's pass could not decide.
+        val many = (1..20).joinToString(",") { """{"name": "stream$it", "candidates": 9, "unmeasured": 1}""" }
+        val wide =
+            SyncProgressReport.build(
+                """{"writtenAt": 900, "streams": [], "processors": [{"name": "aliasFold", "phase": "idle", "streams": [$many]}]}""",
+                nowSeconds = 1_000,
+            )!!
+        val work = (wide["processors"] as JsonArray)[0].jsonObject["streams"] as JsonArray
+        assertEquals(20, work.size, "every stream a processor reports on survives")
+    }
+
+    @Test
     fun `the processors are republished, and only the counters this side names`() {
         // Rebuilt member by member like everything else here: the file is
         // another process's, and a hand-edited one must not be able to put a new
