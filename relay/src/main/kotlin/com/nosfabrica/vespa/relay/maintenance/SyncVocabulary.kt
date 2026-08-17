@@ -340,9 +340,9 @@ internal object SyncVocabulary {
                     "within its TTL (24h by quartz's default), so this cycle skipped it without asking. It comes back when " +
                     "the record ages out — or immediately, if anything else on its host delivers. These two — knownDead and " +
                     "hostStruckOut — were one number called \"skipped as dead\", which answered \"will it try again, and " +
-                    "when\" in two opposite ways under one label. On the `reachability` processor the same name is the " +
-                    "SET rather than one cycle\'s count: how many urls currently carry such a record, which is what " +
-                    "makes this outcome explicable instead of mysterious.",
+                    "when\" in two opposite ways under one label. How many urls carry such a record across the whole " +
+                    "candidate set is `heldOutDead` on a probe pass\'s row, which is what makes this outcome " +
+                    "explicable instead of mysterious.",
             )
             put(
                 "torUnavailable",
@@ -409,13 +409,14 @@ internal object SyncVocabulary {
             )
             put(
                 "processors",
-                "The router's work that is NOT a stream, and the answer to \"what else is running\". Six of them: the " +
-                    "alias fold and the stability gate (both on the alias monitor's own six-hour clock, both writing " +
-                    "tags onto the same NIP-66 kind-30166 records), the NIP-66 reachability monitor (quartz's, which " +
-                    "watches every socket this client opens rather than dialling on a schedule), ingest, the healer " +
-                    "and the upstream push. A processor that is not registered is one this router does not run — a " +
-                    "deployment with no signer has no fold and no monitor at all — so an absent row is a fact rather " +
-                    "than missing data.",
+                "The router's work that is NOT a stream, and the answer to \"what else is running\". Seven of them: " +
+                    "the alias fold, the stability gate and the fitness pass (all three on the alias monitor's own " +
+                    "six-hour clock, all three writing tags onto the same NIP-66 kind-30166 records), the rotating " +
+                    "pool the visit-mode streams ride, ingest, the healer and the upstream push. A passive NIP-66 " +
+                    "watcher used to be an eighth, signing a record per socket this client opened; the passes own the " +
+                    "record now. A processor that is not registered is one this router does not run — a deployment " +
+                    "with no signer has no fold and no monitor at all — so an absent row is a fact rather than " +
+                    "missing data.",
             )
             put(
                 "candidates",
@@ -629,14 +630,6 @@ internal object SyncVocabulary {
                 "pushed",
                 "Events this router SENT to somebody else's relay: repairs for the healer, and whatever an upstream " +
                     "configured `dir = up` was missing for the push. The only two paths that write outward.",
-            )
-            put(
-                "observed",
-                "Urls this PROCESS has opened a socket to since it started, whatever came of it — quartz's observer " +
-                    "holds them in memory and they are gone on a restart. NOT a denominator for `knownDead`: that set " +
-                    "is read from the STORE and carries records written by earlier runs and by any router signing with " +
-                    "the same key, so a freshly restarted mirror routinely publishes 1,609 known dead against 5 " +
-                    "observed. Two populations, both true, and dividing one by the other says nothing.",
             )
             put(
                 "reached",

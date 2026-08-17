@@ -395,8 +395,8 @@ sync/src/main/kotlin/com/nosfabrica/vespa/relay/
       InFlight.kt           WHICH relays a stream is holding right now, which
                             those counts never said; bounded to the longest-held
       Processors.kt         the work that is NOT a stream: the alias fold, the
-                            stability gate, the NIP-66 monitor, ingest, the
-                            healer, the push. Same shape as a stream — a phase
+                            stability gate, fitness, the rotating pool, ingest,
+                            the healer, the push. Same shape as a stream — a phase
                             and a clock — plus either a pass schedule and an
                             `outstanding` count, or live gauges read through a
                             supplier
@@ -666,8 +666,8 @@ relay/src/main/resources/
                         EVENTS — and last the coverage bars, which are where it
                         has WALKED rather than what it is doing. *Relay monitor*
                         answers "which relays may we dial at all": the corpus
-                        tree, then the alias fold, the stability gate, fitness
-                        and reachability, whose unit is a URL, whose clock is the
+                        tree, then the alias fold, the stability gate and
+                        fitness, whose unit is a URL, whose clock is the
                         monitor's own and whose output is a signed 30166 record
                         — so it sits beside the panel that reads those records
                         back. `splitProcessors` (shared/sync.js) is the rule and

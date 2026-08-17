@@ -37,9 +37,9 @@ import java.util.concurrent.atomic.AtomicLong
  *  - the **alias fold** and the **stability pass**, which run on
  *    `AliasMonitor`'s own six-hour clock and decide which discovered urls the
  *    fan-out is allowed to stop dialling;
- *  - the **NIP-66 reachability monitor**, quartz's, which watches every socket
- *    this client opens and signs what it learns into the same kind-30166
- *    records the two passes above write their tags onto;
+ *  - the **fitness pass**, which signs the `syncable` certificate every
+ *    visit-mode stream's relay list is made of, on the same clock;
+ *  - the **rotating pool**, which is that list turned into sockets;
  *  - **ingest**, which is where every mirrored event actually lands, and whose
  *    queue is the first thing to look at when the streams look busy and the
  *    store is not growing;
@@ -54,13 +54,13 @@ import java.util.concurrent.atomic.AtomicLong
  * ## The shape, and why it is one shape for all of them
  *
  * Two kinds of job are described here and they are deliberately not two
- * schemas. A PASS-shaped processor (the fold, the stability gate) has a clock,
- * a last run and a next one, and its progress is per stream — each stream
- * submits its own candidate set. A COUNTER-shaped one (ingest, the healer, the
- * push, the reachability monitor) has no passes at all; it is always running
- * and what it has is gauges. Both publish `phase` and `phaseForSec` like a
- * stream does, so the card can draw them the same way, and each fills in only
- * the members it can honestly answer.
+ * schemas. A PASS-shaped processor (the fold, the stability gate, fitness) has
+ * a clock, a last run and a next one, and its progress is per stream — each
+ * stream submits its own candidate set. A COUNTER-shaped one (the pool, ingest,
+ * the healer, the push) has no passes at all; it is always running and what it
+ * has is gauges. Both publish `phase` and `phaseForSec` like a stream does, so
+ * the card can draw them the same way, and each fills in only the members it
+ * can honestly answer.
  *
  * The counters are read through a supplier at snapshot time rather than pushed:
  * they are live atomics owned by the component itself, and a copy kept in step
@@ -643,9 +643,6 @@ class Processors {
 
         /** Always on, no passes — ingest, the healer, the push. */
         const val RUNNING = "running"
-
-        /** Always on and OBSERVING rather than working: the NIP-66 monitor rides other people's sockets. */
-        const val WATCHING = "watching"
 
         /**
          * Built, and never started, because this deployment gives it nothing to

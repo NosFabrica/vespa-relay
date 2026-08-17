@@ -223,13 +223,14 @@ const leg = (n, quiet, over = {}) => ({
   const doc = {
     processors: [
       { name: "aliasFold" }, { name: "consistency" }, { name: "fitness" }, { name: "visits" },
-      { name: "ingest" }, { name: "reachability" }, { name: "heal" }, { name: "upstreamPush" },
+      { name: "ingest" }, { name: "heal" }, { name: "upstreamPush" },
     ],
   };
   const { monitor, pipeline } = splitProcessors(doc);
-  assert.deepEqual(monitor.map((p) => p.name), ["aliasFold", "consistency", "fitness", "reachability"]);
+  assert.deepEqual(monitor.map((p) => p.name), ["aliasFold", "consistency", "fitness"]);
   assert.deepEqual(pipeline.map((p) => p.name), ["visits", "ingest", "heal", "upstreamPush"]);
   assert.equal(monitor.length + pipeline.length, doc.processors.length, "every row lands somewhere");
+  assert.equal(MONITOR_PROCESSORS.length, 3, "the three passes that decide a RELAY rather than move an event");
 
   // A processor this page has not been taught draws on the sync side rather
   // than nowhere — the card that already carries the status line and the
@@ -249,7 +250,6 @@ const leg = (n, quiet, over = {}) => ({
   assert.deepEqual(splitProcessors({ processors: [{ name: "constructor" }] }).monitor, []);
   assert.deepEqual(splitProcessors({ processors: [null, { name: "ingest" }] }).pipeline.map((p) => p.name), ["ingest"]);
   assert.deepEqual(splitProcessors(null), { monitor: [], pipeline: [] });
-  assert.equal(MONITOR_PROCESSORS.length, 4, "the four passes that decide a RELAY rather than move an event");
   ok("the monitor's passes and the event pipeline are a partition, and an unknown row is still drawn");
 }
 

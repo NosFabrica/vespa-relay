@@ -190,12 +190,17 @@ export function measuringOf(p) {
  * holding two unrelated questions at once. The passes named here answer *which
  * relay urls are worth dialling at all*: the fold collapses one server's several
  * addresses, the stability gate refuses a url that answers a filter two ways,
- * the fitness pass signs the `syncable` certificate every visit-mode stream's
- * relay list is made of, and the reachability monitor is what holds a dead url
- * out of every fan-out. All four run on the alias monitor's own clock, none of
- * them is configured by a stream, and their unit is a RELAY. What is left —
- * the rotating pool, ingest, the healer, the upstream push — moves EVENTS, on
- * the streams' clock, and is where a slow mirror is actually diagnosed.
+ * and the fitness pass signs the `syncable` certificate every visit-mode
+ * stream's relay list is made of — including the `dead` verdict that holds an
+ * unreachable url out of every fan-out. All three run on the alias monitor's own
+ * clock, none of them is configured by a stream, and their unit is a RELAY. What
+ * is left — the rotating pool, ingest, the healer, the upstream push — moves
+ * EVENTS, on the streams' clock, and is where a slow mirror is actually
+ * diagnosed.
+ *
+ * A fourth used to sit here: a passive NIP-66 watcher signing a record per
+ * socket. It is gone — the passes own the record now — and if a watcher ever
+ * returns, its row belongs in this list rather than beside ingest.
  *
  * `MONITOR_PROCESSORS` is a list rather than a Set literal for the reason
  * `BOTTLENECK` carries `__proto__: null`: the names are strings off the wire,
@@ -208,7 +213,7 @@ export function measuringOf(p) {
  * the one that already carries the status line and the leftovers. Dropping a row
  * to keep a card tidy is how a new job runs unwatched for a year.
  */
-export const MONITOR_PROCESSORS = ["aliasFold", "consistency", "fitness", "reachability"];
+export const MONITOR_PROCESSORS = ["aliasFold", "consistency", "fitness"];
 
 export function splitProcessors(progress) {
   const monitor = [];

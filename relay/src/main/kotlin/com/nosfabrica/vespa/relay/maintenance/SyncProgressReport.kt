@@ -721,9 +721,6 @@ internal object SyncProgressReport {
             // the healer and the upstream push
             "pushed",
             "dropped",
-            // the NIP-66 monitor
-            "observed",
-            "knownDead",
             // ingest's one loss counter
             "lostToStore",
             // where the two probe passes' candidate set came from — the funnel's
@@ -820,7 +817,7 @@ internal object SyncProgressReport {
     /** Matches the router's own `StreamPhases.MAX_TRACKED_CYCLES`, restated rather than trusted. */
     private const val MAX_PASSES = 4
 
-    /** Eight today (fold, stability, reachability, fitness, visits, ingest, heal, push), with room to grow. */
+    /** Seven today (fold, stability, fitness, visits, ingest, heal, push), with room to grow. */
     private const val MAX_PROCESSORS = 12
 
     /** A processor reports per stream, and a router runs a handful of them. */

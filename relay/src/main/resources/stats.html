@@ -1964,8 +1964,8 @@ function streamBlock(s) {
 }
 
 /**
- * THE WORK THAT IS NOT A STREAM — the fold, the stability gate, fitness,
- * reachability, the pool, ingest, the healer, the push.
+ * THE WORK THAT IS NOT A STREAM — the fold, the stability gate, fitness, the
+ * pool, ingest, the healer, the push.
  *
  * One line each, and exactly one number: the one that says whether it is
  * getting anywhere. They are here rather than dropped because a stalled fold is
@@ -1991,7 +1991,6 @@ const BACKGROUND = [
   ["fitness", "fitness", "The monitor's verdict funnel: one measured certificate per relay, signed onto its NIP-66 record. `syncable` is the only admitting value, and it is the whole relay list of every stream that selects on it."],
   ["visits", "rotating pool", "The visit-mode streams' engine: socket-owning workers over every certified relay — catch-up pages, the history audit where due, then a live tail on the open socket. A slot here IS a socket."],
   ["ingest", "ingest", "The queue every downloaded event passes through on its way to the store. Full means downloads are backpressured behind it."],
-  ["reachability", "reachability", "The NIP-66 monitor: which urls have been observed at all, and which carry a current unreachability record that holds them out of every fan-out."],
   ["heal", "healer", "Events this mirror holds that a relay which should have them does not, pushed back to it."],
   ["upstreamPush", "upstream push", "Events published to this relay and forwarded on to the upstreams configured to receive them."],
 ];
@@ -2241,11 +2240,6 @@ function processorFact(p) {
         `${probe.tookSec != null ? ` in ${fmtDur(probe.tookSec)}` : ""}`, "unmeasured");
     return cell;
   }
-  if (p.knownDead != null) {
-    if (p.observed != null) add(`${fmt(p.observed)} url(s) observed`, "observed");
-    add(`${fmt(p.knownDead)} held out of every fan-out as unreachable`, "knownDead");
-    return cell;
-  }
   if (p.pushed != null) {
     add(`${fmt(p.pushed)} event(s) pushed back to relays missing them`, "pushed");
     // The sweep declining to backpressure itself, which is a choice and not a
@@ -2357,9 +2351,8 @@ function fmtDur(sec) {
  *
  * ## What moved OUT of it
  *
- * The alias fold, the stability gate, fitness and the reachability monitor are
- * the `Relay monitor` card now, with the corpus tree that describes their
- * subject. They were here because they arrive in the same array, and the card
+ * The alias fold, the stability gate and fitness are the `Relay monitor` card
+ * now, with the corpus tree that describes their subject. They were here because they arrive in the same array, and the card
  * asked two questions at once: *is the mirror keeping up* is answered by
  * streams, queue depth and ingest, while *which relays may we dial at all* is
  * answered by four passes on a six-hour clock whose unit is a url and whose
@@ -2562,10 +2555,12 @@ function verdictsCard() {
       groups = drawVerdicts(scroll, byHost, nowSec);
       // The numbers as NUMBERS, over the list rather than as a run-on sentence
       // beside the button. `not folded` is the one that separates two very
-      // different diagnoses: a record with no verdict tag is quartz's passive
-      // monitor writing reachability, so a store full of those beside zero
-      // folds says the monitor is running and the FOLD is not — where no
-      // records at all says neither is.
+      // different diagnoses: a record carrying no verdict tag of ours was
+      // written by somebody else's monitor — this panel deliberately asks
+      // without an `authors` filter — or by this router back when a passive
+      // NIP-66 watcher still wrote one per socket. Either way a store full of
+      // them beside zero folds says the FOLD has not run, where no records at
+      // all says nothing has.
       // `replaceChildren`, not `fill`: that helper exists to carry a reader's
       // filter text and scroll position across a rebuild, and this box holds
       // neither. Using it here would imply a preservation that is not happening.

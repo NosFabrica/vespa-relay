@@ -152,7 +152,6 @@ class SyncVocabularyTest {
                    {"name": "ingest", "phase": "running", "phaseForSec": 900,
                     "queued": 3, "capacity": 4096, "accepted": 91, "rejected": 12, "lostToStore": 0,
                     "rejections": {"reasons": [{"reason": "duplicate: already have this event", "events": 9}]}},
-                   {"name": "reachability", "phase": "watching", "phaseForSec": 900, "observed": 40, "knownDead": 8},
                    {"name": "fitness", "phase": "idle", "phaseForSec": 400, "passesRun": 3,
                     "lastPassAt": 880, "lastPassSec": 60, "nextInSec": 20800,
                     "syncable": 30, "dead": 6, "silent": 2, "alias": 3, "inconsistent": 1,
@@ -289,7 +288,6 @@ class SyncVocabularyTest {
                     "rejected",
                     "pushed",
                     "dropped",
-                    "observed",
                     // The fitness pass's verdict funnel — each member one value
                     // of the `s` tag it signs — and the rotating pool's row.
                     "syncable",

@@ -592,7 +592,7 @@ class SyncProgressReportTest {
         // other module and cannot be read from here. Restated rather than
         // imported, and the pin is still worth having: it is the page half that
         // silently stops describing a processor.
-        val processors = listOf("aliasFold", "consistency", "reachability", "ingest", "heal", "upstreamPush")
+        val processors = listOf("aliasFold", "consistency", "fitness", "visits", "ingest", "heal", "upstreamPush")
         val unnamed = processors.filterNot { card.contains("[\"$it\", ") }
         assertEquals(emptyList(), unnamed, "the router registers these and the card names none of them: $unnamed")
     }
