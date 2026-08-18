@@ -342,7 +342,7 @@ class ConsistencyPass(
      * inconsistent + unmeasured`, and `unmeasured` in turn is the sum of the
      * [Unmeasured] rows. Every url the streams would dial lands in exactly one
      * leaf, so a reader can subdivide the fan-out without the arithmetic
-     * silently failing to close — the same rule [CycleTally] holds its own
+     * silently failing to close — the same rule the pass tallies hold their own
      * numbers to, for the same reason: a breakdown that does not sum is one
      * nobody can act on.
      *

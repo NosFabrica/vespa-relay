@@ -158,7 +158,7 @@ internal class StreamWorld(
          * `exclude` list, or this relay's own url.
          *
          * Its own number rather than folded into [heldOutDead], for the reason
-         * [CycleTally.excluded] gives: one is an instruction and the other is a
+         * an exclusion count gives: one is an instruction and the other is a
          * measurement, they have different fixes, and a reader who cannot tell
          * them apart cannot act on either.
          */

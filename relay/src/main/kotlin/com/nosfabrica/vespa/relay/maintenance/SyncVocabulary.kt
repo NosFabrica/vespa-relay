@@ -79,13 +79,6 @@ internal object SyncVocabulary {
                     "and neither may resume from the other's claim.",
             )
             put(
-                "returned",
-                "APPROACH ONLY. A fan-out leg that started and came back — including one that came back unreachable, " +
-                    "capped, or out of budget. It is not progress, not coverage, and not success; it is the cheapest " +
-                    "thing to count and the most often misread. What became of each leg is in progress.streams[].cycle.taken. " +
-                    "Published per stream as `returned`, whose denominator is `urls.taken` — the same set by construction.",
-            )
-            put(
                 "settled",
                 "Nothing outstanding below the span this stream has walked on this relay — published as `complete` on a " +
                     "row and counted as `reconciled`. Earned two ways: a finished negentropy reconcile, or a paged walk " +
@@ -159,46 +152,6 @@ internal object SyncVocabulary {
                 "A group read from state written before the file nested by stream. Its keys name no stream, so it has no " +
                     "identity beyond its filter. Not a second mirror and not an error — it disappears once every deployment " +
                     "has booted on a build that writes the nested shape.",
-            )
-            put(
-                "discovered",
-                "Urls a cycle was handed by discovery, before anything was dropped. The whole of `urls`, and " +
-                    "`discovered = foldedOntoAnother + refusedUnstable + excluded + taken` exactly.",
-            )
-            put(
-                "relayListAgeSec",
-                "How old the relay list this cycle fanned out over was when the cycle began. 0 means discovery ran for " +
-                    "this cycle; anything else means the router reused the set a previous cycle derived, which it may do " +
-                    "for up to that stream's refresh period. IT QUALIFIES `discovered`: on a recycling stream that count " +
-                    "describes a store walk from this many seconds ago, so two consecutive documents carrying identical " +
-                    "url counts are a mirror whose network has not been re-read, not necessarily one whose network has " +
-                    "not changed. Says nothing about the dial decisions — the NIP-66 known-dead set and the host strikes " +
-                    "are re-read every cycle whatever the list's age.",
-            )
-            put(
-                "refusedUnstable",
-                "Urls a stability pass MEASURED as unusable and removed from the fan-out: asked one filter twice, at a " +
-                    "seven-day-old anchor, the relay gave two different answers. Not a claim about the operator and not " +
-                    "an unreachable relay — it answers fine — but a server whose window is a different slice each time " +
-                    "holds no stable cursor, so every cycle re-downloads what the last one already took. Distinct from " +
-                    "`excluded`, which is an operator's instruction, and from `foldedOntoAnother`, which is a duplicate " +
-                    "url: this one is our own signed measurement, carried as a `self-consistent` tag on the url's NIP-66 " +
-                    "record and re-taken monthly, so a relay that is fixed rejoins on its own.",
-            )
-            put(
-                "foldedOntoAnother",
-                "Urls an alias verdict proved are the same server as another url in the same list, so they were never " +
-                    "dialled. Their earlier band state is dropped rather than merged: a containment measurement is enough " +
-                    "to stop dialling a duplicate and not enough to close the survivor's legs — which is also why a folded " +
-                    "url has no row in the coverage section. Measured from the verdict map, not inferred from a subtraction.",
-            )
-            put(
-                "foldedOnto",
-                "WHICH urls folded, grouped by the survivor that absorbed them, with a couple of examples each. The " +
-                    "biggest few only — the full list runs to thousands of urls, which is not publishable on a document " +
-                    "fetched every poll — and `omitted` names how many survivors were left out, because a truncated list " +
-                    "that does not say so reads as the whole answer. The full, per-url verdict is a signed NIP-66 kind " +
-                    "30166 `same-as` record in this relay's own store, queryable over the protocol.",
             )
             put(
                 "inFlight",
@@ -321,67 +274,6 @@ internal object SyncVocabulary {
                     "there — it is dialled, and counting it on both sides would break the one partition it belongs to.",
             )
             put(
-                "taken",
-                "Urls the cycle is responsible for, and the total the ten outcomes under it sum to. `pending` is derived " +
-                    "from the other nine, which is what keeps the partition closed while the cycle is still running.",
-            )
-            put(
-                "busy",
-                "Not dialled because a worker from an EARLIER pass was still syncing that relay when this one came round. " +
-                    "The router walks its relay list handing work to a fixed pool and does NOT wait for the pool to empty " +
-                    "before walking again — one relay that takes hours costs one slot instead of stopping the mirror — so " +
-                    "passes overlap and a relay slower than a pass is dialled every other pass. That is the rotation " +
-                    "working. Read it against `pending` and `outcome`: a `completed` pass routinely ends with urls still " +
-                    "in flight, which is the tail of the pool rather than a cycle that was killed. And do not read it as a " +
-                    "verdict about the relay — `hostStruckOut` and `knownDead` are also 'not dialled' and are the opposite " +
-                    "kind of fact.",
-            )
-            put(
-                "delivered",
-                "Reached, and it had events this store did not.",
-            )
-            put(
-                "nothingNew",
-                "Reached and answered cleanly with nothing new — a working relay this mirror is already in sync with. " +
-                    "Not a failure.",
-            )
-            put(
-                "unreachable",
-                "Never answered. The only outcome this relay publishes anything about (a signed NIP-66 record), and " +
-                    "deliberately the narrowest: an unknown failure stays quiet.",
-            )
-            put(
-                "transferFailed",
-                "Answered the handshake, then the transfer broke. NOT published and NOT struck out — the server was there, " +
-                    "so calling it unreachable would be a false statement about someone else's machine.",
-            )
-            put(
-                "noRoute",
-                "The TCP pre-probe was refused or the name did not resolve, so no websocket was opened. This is what most " +
-                    "of a large fan-out's shrinkage is: dead urls in old relay lists.",
-            )
-            put(
-                "hostStruckOut",
-                "Not dialled because a sibling url on the same authority failed enough times DURING THIS CYCLE to strike " +
-                    "the host out. Nothing about a strike persists: the url is dialled again on the very next cycle, so " +
-                    "the retry interval is the stream's refresh interval. Distinct from knownDead, which is the durable one.",
-            )
-            put(
-                "knownDead",
-                "Not dialled because an EARLIER run published a signed NIP-66 unreachability record for it that is still " +
-                    "within its TTL (24h by quartz's default), so this cycle skipped it without asking. It comes back when " +
-                    "the record ages out — or immediately, if anything else on its host delivers. These two — knownDead and " +
-                    "hostStruckOut — were one number called \"skipped as dead\", which answered \"will it try again, and " +
-                    "when\" in two opposite ways under one label. How many urls carry such a record across the whole " +
-                    "candidate set is `heldOutDead` on a probe pass\'s row, which is what makes this outcome " +
-                    "explicable instead of mysterious.",
-            )
-            put(
-                "torUnavailable",
-                "Not dialled because OUR Tor proxy was not answering. A fact about this container, never about their relay, " +
-                    "and nothing is published about these.",
-            )
-            put(
                 "pending",
                 "READ IT AGAINST `inFlight`, not against `outcome` alone. Derived, never counted: it is `taken` minus the " +
                     "nine terminal outcomes, which is what makes the partition add up mid-cycle. A `completed` cycle with a " +
@@ -391,31 +283,6 @@ internal object SyncVocabulary {
                     "The other reading is the one where `inFlight` is empty or absent: those urls never reached a verdict " +
                     "because the cycle stopped first, and they are dialled again on the next one. A router killed mid-fan-out " +
                     "is that case with the last file still saying `running`, which `staleForSec` is what gives away.",
-            )
-            put(
-                "received",
-                "Events this stream received from upstreams this cycle, counted at the socket. NOT the same as the events " +
-                    "the store gained: ingest drops the copies other relays already delivered and the versions it already " +
-                    "holds, so this is always the larger number, and the two disagreeing is not a fault in either.",
-            )
-            put(
-                "holding",
-                "A `phase` value, and the one that is easy to misread as idle. The stream's refresh interval came " +
-                    "round and it DECLINED to start the next pass, because fewer than half its transfer slots were " +
-                    "free — a pass started against a full pool cannot download anything, it can only walk the relay " +
-                    "list and queue. Seconds of it is the rotation breathing between passes. Minutes or hours of it " +
-                    "is a stream whose pool never frees up, and `inFlight` names the leg holding it.",
-            )
-            put(
-                "owner",
-                "Which half of the router opened a pass: `static` (a configured `urls` backfill) or `dynamic` (a " +
-                    "`relaySource` fan-out). ONE stream name can carry both and they run at once — so without this a " +
-                    "reader has two partitions under one name and no way to tell which is which.",
-            )
-            put(
-                "outcome",
-                "`running`, `completed` or `failed` for the cycle. Published because a cycle that aborted at 80% and one " +
-                    "that finished left the identical trace: both simply stopped saying anything.",
             )
             put(
                 "accountedFor",
@@ -429,15 +296,6 @@ internal object SyncVocabulary {
                 "How many passes a processor has run since this process started. Its own name because a stream's " +
                     "`passes` is a LIST of walks, and one word for a list and a count is exactly the overload this " +
                     "document exists to stop making.",
-            )
-            put(
-                "passes",
-                "The list of WALKS a stream still has worth reporting. On a stream it is the list of walks still worth " +
-                    "reporting: a walk ends when its last url is handed out, not when its last worker returns, so a " +
-                    "rotation normally has the previous pass finishing while the new one hands out — two rows, each " +
-                    "with its own partition, and the older one's `pending` is exactly the legs still going. Absent " +
-                    "when there is only one, which `cycle` already carries. A processor's count of passes is " +
-                    "`passesRun`, deliberately a different word.",
             )
             put(
                 "processors",
@@ -705,67 +563,10 @@ internal object SyncVocabulary {
                     "configured `dir = up` was missing for the push. The only two paths that write outward.",
             )
             put(
-                "reached",
-                "THE ONE THAT SHOWS A DEEP WALK MOVING. The oldest created_at a stream's paged walks have reached so " +
-                    "far, as a timestamp. On an unbounded walk `fraction` rounds to zero for hours while this date " +
-                    "moves with every event received, so it is the only live evidence that a leg going back through " +
-                    "years is going anywhere. It is the running counterpart of a band's floor and sits on the same " +
-                    "axis: where the row under Walked ends is where this walk currently is.",
-            )
-            put(
-                "fraction",
-                "APPROXIMATE, and of the WINDOW rather than of the work. How much of the time span its paged relays " +
-                    "are walking has been covered, 0 to 1, averaged over the walks still running. A finished walk " +
-                    "stays in the denominator on purpose — removing it made the percentage run backwards as fast " +
-                    "relays drained.",
-            )
-            put(
                 "etaSec",
                 "An estimate, from the rate the walks have averaged so far, of how long the paged half of this pass " +
                     "has left. It says nothing about the relays that reconcile rather than page, and nothing about " +
                     "how long the stragglers of the last pass will take.",
-            )
-            put(
-                "running",
-                "Relays this stream has a WORKER on right now — probing, in the guards, queued for a transfer slot " +
-                    "or transferring — across every pass, including legs handed out by a pass that has ended. It is " +
-                    "how much of the admission gate is committed, and it is much wider than `transferring`: a stream " +
-                    "with 8 transfer slots routinely shows 128 workers, of which 120 are deciding whether a dead host " +
-                    "is worth dialling. Reporting one as the other overstated the work five-fold.",
-            )
-            put(
-                "transferring",
-                "…and of those, how many hold a TRANSFER SLOT. The slot, not the socket: the websocket connect happens " +
-                    "inside it, so a url that never connects at all counts here while it tries. The gap between this " +
-                    "and `running` is where a fan-out's time actually goes.",
-            )
-            put(
-                "slotsFree",
-                "Transfer slots free while a stream is `holding` — the phase that most looks like a stall and could " +
-                    "not say what it was waiting for. Read it against `slotsNeeded`: the next pass will not start " +
-                    "until half the pool is free, because a pass started against a committed pool cannot download, " +
-                    "it can only walk the relay list and queue.",
-            )
-            put(
-                "slotsNeeded",
-                "How many free slots this stream will not start a pass without — half its configured concurrency, " +
-                    "rounded up.",
-            )
-            put(
-                "collected",
-                "Local ids walked so far while building the set a negentropy reconcile compares against, out of " +
-                    "`collectedTotal` where the store could be counted. The most expensive thing this router builds " +
-                    "and, for the minutes it takes, the phase that used to report nothing at all.",
-            )
-            put(
-                "collectedTotal",
-                "How many ids that snapshot expects, or absent when the store could not be counted — an unknown " +
-                    "denominator is better than a wrong one.",
-            )
-            put(
-                "retryInSec",
-                "Seconds until a stream that is waiting or has FAILED tries again. On a failure it is a backoff that " +
-                    "doubles up to the stream's refresh interval; on a wait it is fixed.",
             )
             put(
                 "reason",
@@ -773,12 +574,6 @@ internal object SyncVocabulary {
                     "out that they are the same finding. On a stream it is what the last attempt threw — a `failed` " +
                     "stream published the word and nothing else. Inside `undecided` it is why a probe pass left hosts " +
                     "alone; inside `rejections` it is why ingest refused events.",
-            )
-            put(
-                "pass",
-                "Which walk handed a held url out. Passes overlap by design, so a stream routinely holds legs from " +
-                    "two of them at once, and every clock on an in-flight row described the leg without ever saying " +
-                    "which walk it belonged to. Absent from a router that predates the stamp.",
             )
             put(
                 "fatals",

@@ -50,28 +50,14 @@ class SyncProgressReportTest {
           "streams": [
             {
               "name": "content",
-              "phase": "fetching",
+              "phase": "rotating",
               "phaseForSec": 412,
-              "cycle": {
-                "startedAt": 1769999000,
-                "outcome": "running",
-                "urls": {"discovered": 16752, "foldedOntoAnother": 11429, "excluded": 0, "taken": 5323},
-                "hosts": 850,
-                "taken": {"delivered": 2200, "nothingNew": 900, "unreachable": 800,
-                          "transferFailed": 100, "noRoute": 1000, "hostStruckOut": 200,
-                          "knownDead": 100, "torUnavailable": 0, "pending": 23},
-                "foldedOnto": {"relays": [{"relay": "wss://nostr.oxtr.dev/", "urls": 55,
-                                           "examples": ["wss://nostr.oxtr.dev/alpha", "wss://nostr.oxtr.dev/beta", "wss://nostr.oxtr.dev/x"]}],
-                               "omitted": 480},
-                "balanced": true,
-                "received": 481203
-              }
+              "roster": 5323,
+              "tails": 600
             }
           ]
         }
         """.trimIndent()
-
-    private fun firstCycle(doc: JsonObject) = (doc["streams"] as JsonArray)[0].jsonObject["cycle"]!!.jsonObject
 
     @Test
     fun `a router still on the previous vocabulary keeps its grade funnel on the card`() {
@@ -102,25 +88,6 @@ class SyncProgressReportTest {
     }
 
     @Test
-    fun `the disposition accounts for every discovered url`() {
-        // The number this whole file exists to produce: 16,752 discovered against
-        // 5,323 band-bearing used to leave ~11,400 with no published disposition
-        // at all.
-        val doc = SyncProgressReport.build(live, nowSeconds = 1_770_000_060)!!
-        val cycle = firstCycle(doc)
-        val urls = cycle["urls"]!!.jsonObject
-        val taken = cycle["taken"]!!.jsonObject
-
-        assertEquals(16_752L, urls["discovered"]!!.jsonPrimitive.long)
-        assertEquals(
-            urls["discovered"]!!.jsonPrimitive.long,
-            urls["foldedOntoAnother"]!!.jsonPrimitive.long + urls["excluded"]!!.jsonPrimitive.long + urls["taken"]!!.jsonPrimitive.long,
-        )
-        assertEquals(5_323L, taken.values.sumOf { it.jsonPrimitive.long })
-        assertTrue(cycle["accountedFor"]!!.jsonPrimitive.booleanOrNull!!)
-    }
-
-    @Test
     fun `staleness is measured against THIS rollup's clock, not the file's`() {
         // A router that stopped writing an hour ago has to say so however recent
         // its own last timestamp looked.
@@ -134,60 +101,6 @@ class SyncProgressReportTest {
         val doc = SyncProgressReport.build(live, nowSeconds = 1_769_999_999)!!
 
         assertEquals(0L, doc["staleForSec"]!!.jsonPrimitive.long, "a negative age reads as a bug in the relay")
-    }
-
-    @Test
-    fun `a partition that does not hold is published as not holding`() {
-        // Forwarding the writer's own `balanced` would make this side blind to a
-        // file that says one thing and carries another.
-        val broken = live.replace("\"delivered\": 2200", "\"delivered\": 2500")
-        val cycle = firstCycle(SyncProgressReport.build(broken, nowSeconds = 1_770_000_000)!!)
-
-        assertFalse(cycle["accountedFor"]!!.jsonPrimitive.booleanOrNull!!, "the outcomes no longer sum to `taken`")
-        assertTrue(cycle["balanced"]!!.jsonPrimitive.booleanOrNull!!, "and the router still thinks they do — which localises the fault")
-    }
-
-    @Test
-    fun `an outcome the file omits counts as zero rather than shrinking the sum`() {
-        // The member list is fixed on this side. Taking it from whatever the
-        // writer emitted would let a future router widen the total silently.
-        val thin =
-            """
-            {"writtenAt": 1, "streams": [{"name": "s", "cycle": {
-              "urls": {"discovered": 4, "foldedOntoAnother": 0, "taken": 4},
-              "taken": {"delivered": 4}}}]}
-            """.trimIndent()
-        val taken = firstCycle(SyncProgressReport.build(thin, nowSeconds = 1)!!)["taken"]!!.jsonObject
-
-        assertEquals(10, taken.size, "every outcome is named, present in the file or not")
-        assertEquals(0L, taken["noRoute"]!!.jsonPrimitive.long)
-        assertEquals(4L, taken.values.sumOf { it.jsonPrimitive.long })
-    }
-
-    @Test
-    fun `the fold summary names survivors, capped again on this side, truncation disclosed`() {
-        // The router already bounds its list; this bounds it a second time
-        // rather than trusting that it did, because the cap is the only thing
-        // between a hand-edited file and an unbounded array in a served
-        // document.
-        val fold = firstCycle(SyncProgressReport.build(live, nowSeconds = 1_770_000_000)!!)["foldedOnto"]!!.jsonObject
-        val row = (fold["relays"] as JsonArray)[0].jsonObject
-
-        assertEquals("wss://nostr.oxtr.dev/", row["relay"]!!.jsonPrimitive.content)
-        assertEquals(55L, row["urls"]!!.jsonPrimitive.long)
-        assertEquals(2, (row["examples"] as JsonArray).size, "examples are capped on this side too")
-        assertEquals(480L, fold["omitted"]!!.jsonPrimitive.long, "and what was left out is carried through")
-    }
-
-    @Test
-    fun `the two not-dialled-for-being-dead states are counted apart`() {
-        // One is out until a signed record ages past its TTL; the other is back
-        // on the next cycle. As one number they answered "will it try again"
-        // both ways at once.
-        val taken = firstCycle(SyncProgressReport.build(live, nowSeconds = 1_770_000_000)!!)["taken"]!!.jsonObject
-
-        assertEquals(200L, taken["hostStruckOut"]!!.jsonPrimitive.long)
-        assertEquals(100L, taken["knownDead"]!!.jsonPrimitive.long)
     }
 
     @Test
@@ -205,24 +118,6 @@ class SyncProgressReportTest {
         val doc = SyncProgressReport.build("""{"writtenAt": 1, "streams": [{"name": {}}]}""", nowSeconds = 1)!!
 
         assertEquals(0, (doc["streams"] as JsonArray).size)
-    }
-
-    @Test
-    fun `the url partition holds when the fold synthesised a survivor`() {
-        // `foldOnto` MERGES onto a canonical, and a canonical discovery did not
-        // itself hand over is added to the result — so the counts were once
-        // inferred from `candidates - relays`, which made `taken` over-count and
-        // left a healthy finished cycle with `pending` stuck above zero.
-        val synthesised =
-            """
-            {"writtenAt": 1, "streams": [{"name": "s", "cycle": {"outcome": "completed",
-              "urls": {"discovered": 10, "foldedOntoAnother": 4, "excluded": 1, "taken": 5},
-              "taken": {"delivered": 5}}}]}
-            """.trimIndent()
-        val cycle = firstCycle(SyncProgressReport.build(synthesised, nowSeconds = 1)!!)
-
-        assertEquals(0L, cycle["taken"]!!.jsonObject["pending"]!!.jsonPrimitive.long, "a finished cycle has nothing outstanding")
-        assertTrue(cycle["accountedFor"]!!.jsonPrimitive.booleanOrNull!!)
     }
 
     @Test
@@ -341,72 +236,6 @@ class SyncProgressReportTest {
         )
     }
 
-    @Test
-    fun `every pass still running is republished, each with its own partition`() {
-        // The state a single `cycle` could not describe: a walk ends when its
-        // last url is handed out and its slowest legs run on past it, so the
-        // previous pass is normally still finishing while the new one walks.
-        // Published as one cycle, the old pass's counters stopped being served
-        // the moment the new one opened.
-        val out =
-            SyncProgressReport.build(
-                """
-                {"writtenAt": 900, "streams": [{"name": "content",
-                 "cycle": {"number": 12, "owner": "dynamic", "outcome": "running",
-                   "urls": {"discovered": 10, "taken": 10}, "taken": {"delivered": 2}},
-                 "passes": [
-                   {"number": 11, "owner": "dynamic", "outcome": "completed", "endedAt": 880,
-                    "urls": {"discovered": 10, "taken": 10}, "taken": {"delivered": 6, "pending": 4}, "received": 400},
-                   {"number": 12, "owner": "dynamic", "outcome": "running",
-                    "urls": {"discovered": 10, "taken": 10}, "taken": {"delivered": 2, "pending": 8}, "received": 40}]}]}
-                """.trimIndent(),
-                nowSeconds = 1_000,
-            )!!
-        val passes = (out["streams"] as JsonArray)[0].jsonObject["passes"] as JsonArray
-
-        assertEquals(2, passes.size)
-        assertEquals(11L, passes[0].jsonObject["number"]!!.jsonPrimitive.long)
-        // Each pass's partition is closed on ITS OWN numbers, so a straggler's
-        // urls are never counted against the walk that did not hand them out —
-        // and the four still in flight belong to the pass that HANDED THEM OUT,
-        // not to the one walking now.
-        assertEquals(
-            4L,
-            passes[0]
-                .jsonObject["taken"]!!
-                .jsonObject["pending"]!!
-                .jsonPrimitive.long,
-        )
-        assertEquals(
-            8L,
-            passes[1]
-                .jsonObject["taken"]!!
-                .jsonObject["pending"]!!
-                .jsonPrimitive.long,
-        )
-        assertTrue(
-            passes[0]
-                .jsonObject["accountedFor"]!!
-                .jsonPrimitive.content
-                .toBoolean(),
-        )
-    }
-
-    @Test
-    fun `a router that publishes one pass publishes no passes array`() {
-        val out =
-            SyncProgressReport.build(
-                """
-                {"writtenAt": 900, "streams": [{"name": "content",
-                 "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}},
-                 "passes": [{"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}]}]}
-                """.trimIndent(),
-                nowSeconds = 1_000,
-            )!!
-
-        assertNull((out["streams"] as JsonArray)[0].jsonObject["passes"], "one pass is what `cycle` already says")
-    }
-
     /** A document with everything the gauge series is sampled from. */
     private fun sampled(
         rate: Int,
@@ -416,8 +245,7 @@ class SyncProgressReportTest {
          "health": {"bottleneck": "ingest", "eventsPerSec": $rate, "heapUsedMb": 900, "heapMaxMb": 2048,
                     "sockets": 41, "socketCeiling": 1024},
          "processors": [{"name": "ingest", "phase": "running", "queued": $queued, "capacity": 4096}],
-         "streams": [{"name": "c",
-          "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}}]}
+         "streams": [{"name": "c", "phase": "rotating", "roster": 4, "tails": 1}]}
         """.trimIndent()
 
     private fun series(doc: JsonObject) = doc["series"]!!.jsonObject
@@ -1003,35 +831,23 @@ class SyncProgressReportTest {
     }
 
     @Test
-    fun `every outcome this object publishes can be drawn by the card`() {
-        // The drift that produced the bug: `busy` was added to the partition,
-        // summed into `accountedFor`, and never added to the card's
-        // `DISPOSITION`. The stack is drawn from members that sum to the total
-        // BY CONSTRUCTION, so a missing one does not fail — it under-fills, and
-        // the count simply disappears from a card that still says the numbers
-        // add up. Nothing else pins the two lists together: one is Kotlin, the
-        // other is a JS table in a resource — see [card] for why that is read
-        // as more than one file.
+    fun `every member a stream publishes can be drawn by the card`() {
+        // The drift that produced the bug this pin was written for: a member
+        // was added to the document and never to the card, so the count simply
+        // disappeared from a page that still looked complete. Nothing else ties
+        // the two together — one is Kotlin, the other a JS table in a resource.
         val card = card()
         val out =
             SyncProgressReport.build(
                 """
-                {"writtenAt": 900, "streams": [{"name": "content",
-                 "cycle": {"outcome": "running", "urls": {"discovered": 1, "taken": 1}, "taken": {"delivered": 1}}}]}
+                {"writtenAt": 900, "streams": [{"name": "content", "phase": "rotating",
+                 "phaseForSec": 10, "roster": 412, "tails": 300}]}
                 """.trimIndent(),
                 nowSeconds = 1_000,
             )!!
-        val published =
-            ((out["streams"] as JsonArray)[0].jsonObject["cycle"]!!.jsonObject["taken"] as JsonObject).keys
+        val published = (out["streams"] as JsonArray)[0].jsonObject.keys
 
-        // The NAME anywhere in the card, not the `["x", …]` table shape it used
-        // to be stored in — the same rule the COUNTERS pin above already uses,
-        // and for the reason stated there: this is about "published and never
-        // drawn", not about which line does the drawing. The card summarises
-        // these outcomes now rather than stacking all ten into one bar, and
-        // pinning the old shape would have forced a partition table back into
-        // the page to satisfy a grep.
         val undrawn = published.filterNot { card.contains(it) }
-        assertEquals(emptyList(), undrawn, "published in the partition, drawn nowhere on the card: $undrawn")
+        assertEquals(emptyList(), undrawn, "published on a stream row, drawn nowhere on the card: $undrawn")
     }
 }

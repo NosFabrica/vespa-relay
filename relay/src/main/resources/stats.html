@@ -405,8 +405,8 @@
   .now { display: flex; flex-wrap: wrap; align-items: center; gap: .3rem .5rem; margin: 0 0 .9rem; }
   .now .fact { font-size: .8rem; color: var(--muted); font-variant-numeric: tabular-nums; }
 
-  /* One stream. The rule above it is what separates two streams' stacks of
-     bars — without it, a rotation running two passes reads as four streams. */
+  /* One stream. The rule above it is what separates two streams' rows —
+     without it, a stream and its legs panel read as two streams. */
   .stream { padding: .65rem 0; border-top: 1px solid var(--line); }
   .stream:first-of-type { border-top: 0; padding-top: 0; }
   .sh { display: flex; align-items: center; gap: .35rem; margin-bottom: .4rem; }
@@ -1904,29 +1904,32 @@ function legsPanel(s) {
 }
 
 /**
- * HOW FAR ONE STREAM HAS GOT, in four marks: what it is doing, how much of the
- * pass is behind it, when it expects to finish, and how far back it has reached.
+ * WHAT ONE STREAM IS DOING: the phase word, how long it has been in it, and the
+ * two numbers a rotation has — the relays it is riding and the tails it holds.
  *
- * `reached` earns its place because `fraction` cannot show a deep walk moving —
- * days of progress on an unbounded walk round to zero — while the date moves
- * every page. It is the only live evidence a slow stream is a working one.
+ * There used to be four more marks here (a pass meter, an ETA, how far back the
+ * walk had reached, and the pass's own disposition), drawn from the fan-out
+ * that walked a stream's relay list in cycles. Every stream rides the visit
+ * pool now: there is no pass to be a fraction OF, and where each relay has got
+ * to is per relay — the legs panel below, which is the question those marks
+ * were standing in for.
  */
 function streamBlock(s) {
   const box = el("div", "sy-stream");
   const top = el("div", "sy-top");
   top.appendChild(el("span", "sy-name", s.name));
   const meta = el("span", "sy-meta",
-    `${s.phase || "idle"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}`);
-  // THE PHASE WORD'S OWN DEFINITION, where the document has one. `rotating` and
-  // `holding` are the two that read as a stall and are not, and both had a
-  // glossary entry with nowhere to hang: the word was drawn as bare text, so
-  // "rotating for 58m" was a sentence a reader could only guess at.
+    `${s.phase || "starting"}${s.phaseForSec != null ? ` for ${fmtDur(s.phaseForSec)}` : ""}`);
+  // THE PHASE WORD'S OWN DEFINITION. `rotating` reads as a stall and is not,
+  // and its glossary entry had nowhere to hang: the word was drawn as bare
+  // text, so "rotating for 58m" was a sentence a reader could only guess at.
   const phaseWhy = term(s.phase);
   if (phaseWhy) meta.title = phaseWhy;
   top.appendChild(meta);
   box.appendChild(top);
-  // A ROTATING STREAM'S WHOLE STATE. It has no pass, no fraction and no cycle,
-  // so every mark below is absent for it and the row was the phase word alone.
+  // A ROTATING STREAM'S WHOLE STATE, and the row was the phase word alone until
+  // it was published: a stream riding four hundred relays and one riding none
+  // drew the identical line.
   const rot = rotationOf(s);
   if (rot) {
     const line = el("div", "sy-sub");
@@ -1938,7 +1941,7 @@ function streamBlock(s) {
       none.title = term("roster");
       line.appendChild(none);
     } else {
-      const riding = el("span", null, `riding ${fmt(rot.roster)} certified relay(s)`);
+      const riding = el("span", null, `riding ${fmt(rot.roster)} relay(s)`);
       riding.title = term("roster");
       line.appendChild(riding);
       if (rot.tails != null) {
@@ -1949,47 +1952,8 @@ function streamBlock(s) {
     }
     box.appendChild(line);
   }
-  if (s.fraction != null) {
-    const track = el("div", "sy-track");
-    const fill = el("i");
-    fill.style.width = Math.max(0, Math.min(100, s.fraction * 100)) + "%";
-    track.appendChild(fill);
-    box.appendChild(track);
-  }
-  const now = [];
-  if (s.fraction != null) now.push(`${Math.round(s.fraction * 100)}% of this pass handed out`);
-  if (s.etaSec != null) now.push(`~${fmtDur(s.etaSec)} left`);
-  if (s.reached != null) now.push(`walked back to ${dayOf(s.reached)}`);
-  if (now.length) box.appendChild(el("div", "sy-sub", now.join(" · ")));
-  // WHAT THE PASS ACTUALLY GOT. Grouped into the three outcomes a reader acts
-  // on — it gave us something, it had nothing to give, it could not be reached
-  // — rather than the eight the tally distinguishes. The rest is forensics and
-  // lives in the document.
-  const cycle = s.cycle || {};
-  const urls = cycle.urls || {}, taken = cycle.taken || {};
-  const got = [];
-  // Zero is not a finding here. "0 already in sync" beside a stream that has
-  // dialled five relays is the same filler the old card was full of.
-  if (urls.taken != null) got.push(`${fmt(urls.taken)} relay(s)`);
-  if (taken.delivered) got.push(`${fmt(taken.delivered)} sent events`);
-  if (taken.nothingNew) got.push(`${fmt(taken.nothingNew)} already in sync`);
-  const dead = (taken.knownDead || 0) + (taken.noRoute || 0) + (taken.unreachable || 0);
-  if (dead) got.push(`${fmt(dead)} unreachable`);
-  if (taken.busy) got.push(`${fmt(taken.busy)} still running from the last pass`);
-  if (taken.pending) got.push(`${fmt(taken.pending)} not reached yet`);
-  if (got.length) box.appendChild(el("div", "sy-sub", got.join(" · ")));
-  // THE FAULTS, each named rather than summed into the unreachable count,
-  // because they have different fixes and only one of them is about the relay.
-  // `transferFailed` is a handshake that succeeded and a transfer that broke —
-  // it says nothing about availability; `hostStruckOut` is our own back-off;
-  // `torUnavailable` is our own transport being down. Drawn only when non-zero.
-  const faults = [];
-  if (taken.transferFailed) faults.push(`${fmt(taken.transferFailed)} answered then broke mid-transfer`);
-  if (taken.hostStruckOut) faults.push(`${fmt(taken.hostStruckOut)} skipped — host already struck out`);
-  if (taken.torUnavailable) faults.push(`${fmt(taken.torUnavailable)} skipped — our tor proxy is down`);
-  if (faults.length) box.appendChild(el("div", "sy-sub", faults.join(" · ")));
-  // UNDER the pass counters, because "what is it doing right now" is read after
-  // "is it getting anywhere" and before anything else on this card.
+  // UNDER the rotation's two numbers, because "what is it doing right now" is
+  // read after "is it getting anywhere" and before anything else on this card.
   const legs = legsPanel(s);
   if (legs) box.appendChild(legs);
   return box;

@@ -148,7 +148,7 @@ import java.nio.file.StandardCopyOption
  * this one says the process was alive to say so.
  *
  * `urls` and `taken` are a PARTITION and the members are chosen to sum — see
- * [CycleTally] for the two identities and for why `pending` is derived. `balanced`
+ * the pass tallies for the two identities and for why `pending` was derived. `balanced`
  * is the writer's own check on them, published rather than asserted.
  */
 class SyncProgress(
@@ -279,38 +279,17 @@ class SyncProgress(
                                 put("phaseForSec", s.phaseForSec)
                                 // WHAT THE PHASE KNOWS, flat beside the word it
                                 // qualifies rather than in a container of its
-                                // own: every member here is about the phase and
-                                // nothing else, and a wrapper would be a name to
-                                // look up for no gain. Only what this phase can
-                                // answer is written — see [StreamPhases.Detail],
-                                // including the two members deliberately left
-                                // out because the document already has them.
-                                s.detail.let { d ->
-                                    d.returned?.let { put("returned", it) }
-                                    d.running?.let { put("running", it) }
-                                    d.transferring?.let { put("transferring", it) }
-                                    // Two decimals: this is a percentage a human
-                                    // reads, and a full double publishes sixteen
-                                    // digits of noise on every tick.
-                                    d.fraction?.let { put("fraction", Math.round(it * 10_000) / 10_000.0) }
-                                    d.etaMs?.let { put("etaSec", it / 1000) }
-                                    d.reachedSeconds?.let { put("reached", it) }
-                                    d.collected?.let { put("collected", it) }
-                                    d.collectedTotal?.let { put("collectedTotal", it) }
-                                    d.free?.let { put("slotsFree", it) }
-                                    d.needed?.let { put("slotsNeeded", it) }
-                                    d.nextInSec?.let { put("nextInSec", it) }
-                                    d.retrySec?.let { put("retryInSec", it) }
-                                    d.reason?.let { put("reason", it) }
-                                    // A rotating stream's whole state, and the
-                                    // one phase that published nothing at all
-                                    // until now: the card drew `rotating for
-                                    // 58m` beside a stream riding four hundred
-                                    // relays, and beside one riding none. See
-                                    // [StreamPhases.Detail.roster].
-                                    d.roster?.let { put("roster", it) }
-                                    d.tails?.let { put("tails", it) }
-                                }
+                                // own: both members are about the phase and
+                                // nothing else, and a wrapper would be a name
+                                // to look up for no gain.
+                                //
+                                // A rotating stream's whole state, and the one
+                                // phase that published nothing at all until it
+                                // was added: the card drew `rotating for 58m`
+                                // beside a stream riding four hundred relays,
+                                // and beside one riding none.
+                                s.roster?.let { put("roster", it) }
+                                s.tails?.let { put("tails", it) }
                                 // WHICH relays are running, beside the cycle
                                 // rather than inside it: a worker outlives the
                                 // pass that handed it out, so this set spans
@@ -329,13 +308,6 @@ class SyncProgress(
                                                     add(
                                                         buildJsonObject {
                                                             put("relay", r.relay)
-                                                            // WHICH WALK handed
-                                                            // this url out. With
-                                                            // two passes live the
-                                                            // table could not say,
-                                                            // and the rotation
-                                                            // knew all along.
-                                                            r.pass?.let { put("pass", it) }
                                                             put("heldForSec", r.heldForSec)
                                                             // Absent when the worker has no transfer
                                                             // slot — in the guards, or queued behind
@@ -367,26 +339,6 @@ class SyncProgress(
                                         },
                                     )
                                 }
-                                // THE NEWEST PASS, under the name it has always
-                                // had. Every reader of this document reads
-                                // `cycle`, and the passes beside it are an
-                                // addition rather than a replacement: a rollup
-                                // or a page that knows nothing about `passes`
-                                // goes on describing the current walk exactly
-                                // as it did.
-                                s.newest?.let { put("cycle", cycle(it)) }
-                                // …AND EVERY PASS STILL RUNNING, oldest first.
-                                // A walk ends when its last url is handed out,
-                                // not when its last worker returns, so the
-                                // ordinary state of a rotation is one pass
-                                // walking while the previous one's legs finish.
-                                // Published only when there is more than one:
-                                // a single-pass stream would otherwise carry a
-                                // verbatim copy of `cycle` on every tick, for
-                                // nothing.
-                                s.cycles.takeIf { it.size > 1 }?.let { cycles ->
-                                    putJsonArray("passes") { for (c in cycles) add(cycle(c)) }
-                                }
                             },
                         )
                     }
@@ -401,103 +353,6 @@ class SyncProgress(
                 }
             }
 
-        /** One pass, as the document carries it — both under `cycle` and inside `passes`. */
-        private fun cycle(c: StreamPhases.Cycle): JsonObject =
-            c.tally.let { t ->
-                buildJsonObject {
-                    // The pass number and who opened it. Without them two rows
-                    // of `passes` are two anonymous partitions, and the question
-                    // they exist to answer — is the old walk still finishing —
-                    // needs to know which is which.
-                    put("number", c.number)
-                    put("owner", c.owner)
-                    put("startedAt", c.startedSec)
-                    c.endedSec?.let { put("endedAt", it) }
-                    put("outcome", c.outcome)
-                    put(
-                        "urls",
-                        buildJsonObject {
-                            put("discovered", t.discovered)
-                            put("foldedOntoAnother", t.foldedOntoAnother)
-                            put("refusedUnstable", t.refusedUnstable)
-                            put("excluded", t.excluded)
-                            put("taken", t.taken)
-                        },
-                    )
-                    // Beside the url counts, never instead of them: the gap
-                    // between the two IS the disclosure — 3,272 urls on 850
-                    // hosts, in the run that motivated this.
-                    put("hosts", t.hosts)
-                    // How old the list those urls came from was when this cycle
-                    // started. Without it `discovered` changes meaning silently
-                    // on a stream that recycles its relay list: the count can
-                    // describe a store walk from hours ago, and two identical
-                    // documents cannot be told from a mirror that stopped
-                    // looking.
-                    put("relayListAgeSec", t.listAgeSec)
-                    put(
-                        "taken",
-                        buildJsonObject {
-                            put("delivered", t.delivered.get())
-                            put("nothingNew", t.nothingNew.get())
-                            put("unreachable", t.unreachable.get())
-                            put("transferFailed", t.transferFailed.get())
-                            put("noRoute", t.noRoute.get())
-                            put("hostStruckOut", t.hostStruckOut.get())
-                            put("knownDead", t.knownDead.get())
-                            put("torUnavailable", t.torUnavailable.get())
-                            // Not dialled because a worker from an earlier pass
-                            // still had it. Its own member because "the rotation
-                            // is overlapping" and "the relay is dead" are
-                            // opposite findings.
-                            put("busy", t.busy.get())
-                            // Derived, and it is what makes the eight members
-                            // sum to `urls.taken` while the cycle is still
-                            // running.
-                            put("pending", t.pending())
-                        },
-                    )
-                    put("balanced", t.balanced())
-                    put("received", t.received.get())
-                    // WHICH urls were folded, not only how many. The count
-                    // answers "how much of the fan-out was duplication"; this
-                    // answers "which server is wearing forty urls", which is the
-                    // one an operator can act on. Bounded, and it says what it
-                    // left out — see [CycleTally.foldedOnto].
-                    t.foldedOnto().takeIf { it.onto.isNotEmpty() }?.let { fold ->
-                        put(
-                            "foldedOnto",
-                            buildJsonObject {
-                                putJsonArray("relays") {
-                                    for (row in fold.onto) {
-                                        add(
-                                            buildJsonObject {
-                                                put("relay", row.relay)
-                                                put("urls", row.urls)
-                                                putJsonArray("examples") { for (u in row.examples) add(u) }
-                                            },
-                                        )
-                                    }
-                                }
-                                // Never silent: a truncated list that does not
-                                // say so reads as the whole answer.
-                                put("omitted", fold.omitted)
-                            },
-                        )
-                    }
-                }
-            }
-
-        /**
-         * One processor, as the document carries it — see [Processors].
-         *
-         * The counters are put as MEMBERS rather than as a `{name, value}` list,
-         * because that is how a reader of this document reads every other number
-         * in it and because each of them has an entry in the relay's published
-         * glossary. The set is fixed by the wiring in `SyncEngine`, not open to
-         * whatever a caller passes: `SyncVocabularyTest` fails the build for a
-         * published count with no term.
-         */
         private fun processor(p: Processors.Snapshot): JsonObject =
             buildJsonObject {
                 put("name", p.name)

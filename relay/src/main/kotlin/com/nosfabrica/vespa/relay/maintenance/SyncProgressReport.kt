@@ -27,10 +27,8 @@ import kotlinx.serialization.json.JsonNull
 import kotlinx.serialization.json.JsonObject
 import kotlinx.serialization.json.JsonPrimitive
 import kotlinx.serialization.json.add
-import kotlinx.serialization.json.booleanOrNull
 import kotlinx.serialization.json.buildJsonObject
 import kotlinx.serialization.json.contentOrNull
-import kotlinx.serialization.json.doubleOrNull
 import kotlinx.serialization.json.jsonObject
 import kotlinx.serialization.json.longOrNull
 import kotlinx.serialization.json.put
@@ -74,31 +72,6 @@ internal object SyncProgressReport {
             ignoreUnknownKeys = true
             isLenient = true
         }
-
-    /**
-     * The ten outcomes of a url the cycle took on, in the order the card reads
-     * them: what worked, then what did not, then what our own rotation declined
-     * to hand out, then what is still going.
-     *
-     * A fixed list, spelled here rather than taken from the file's key order.
-     * The document is a partition and a reader adds these up; taking the members
-     * from whatever the writer happened to emit would let a future router widen
-     * the sum silently, which is exactly the failure — counts that do not add up
-     * to their own total — this whole object exists to end.
-     */
-    private val OUTCOMES =
-        listOf(
-            "delivered",
-            "nothingNew",
-            "unreachable",
-            "transferFailed",
-            "noRoute",
-            "hostStruckOut",
-            "knownDead",
-            "torUnavailable",
-            "busy",
-            "pending",
-        )
 
     /**
      * Fold the progress file into the `progress` object of the `sync` section,
@@ -301,40 +274,15 @@ internal object SyncProgressReport {
             put("name", name)
             text(o["phase"])?.let { put("phase", it) }
             (o["phaseForSec"] as? JsonPrimitive)?.longOrNull?.let { put("phaseForSec", it) }
-            // WHAT THE PHASE KNOWS. Only what a phase can answer is present, so
-            // each is copied when it is there and absent when it is not — an
-            // absent `reached` is a walk that has not reported a depth, and a
-            // zero would be a claim about 1970.
+            // WHAT THE PHASE KNOWS — the two numbers a rotating stream has,
+            // copied when they are there and absent when they are not. Zero is
+            // a reading (a stream riding nothing) and absent is another (a
+            // stream that has not started), so neither is defaulted.
             for (member in PHASE_DETAIL) num(o[member])?.let { put(member, it) }
-            // The one that is not an integer: a fraction of the window walked.
-            (o["fraction"] as? JsonPrimitive)?.doubleOrNull?.let { put("fraction", it) }
-            text(o["reason"])?.let { put("reason", it) }
-            // WHICH relays this stream has workers on. Beside the cycle rather
-            // than inside it because a worker outlives the pass that handed it
-            // out — see the router's [InFlight] for the full account, and for
-            // why this is not simply "the pending urls".
+            // WHICH relays this stream has workers on — see the router's
+            // [InFlight] for the full account, and for why this is not simply
+            // "the pending urls".
             inFlight(o["inFlight"] as? JsonObject)?.let { put("inFlight", it) }
-            (o["cycle"] as? JsonObject)?.let { c -> cycle(c)?.let { put("cycle", it) } }
-            // EVERY PASS STILL RUNNING, not just the newest.
-            //
-            // A walk ends when its last url is handed out and its slowest legs
-            // run on past it, so the ordinary state of a rotation is one pass
-            // walking while the one before it finishes. With a single `cycle`
-            // the older pass stopped being published the moment the new one
-            // opened — its events went on arriving against a partition nothing
-            // was showing, and its still-running legs appeared only as the new
-            // pass's `busy`. Each row is rebuilt by the same [cycle] reader, so
-            // the arithmetic is checked per pass rather than per stream.
-            //
-            // Uncapped: `StreamPhases.MAX_TRACKED_CYCLES` bounds the list at
-            // source and it is OUR source, so a number over here restating one
-            // over there could only ever pick which passes an operator is not
-            // shown — and would have to be kept in step to go on doing nothing.
-            (o["passes"] as? JsonArray)
-                ?.filterIsInstance<JsonObject>()
-                ?.mapNotNull { cycle(it) }
-                ?.takeIf { it.size > 1 }
-                ?.let { rows -> putJsonArray("passes") { for (r in rows) add(r) } }
         }
     }
 
@@ -422,7 +370,7 @@ internal object SyncProgressReport {
      * held row is a JOB, so the monitor's `dialConcurrency` already bounds the
      * set — 128 by default, and whatever an operator chose when it is not. The
      * lists still capped here are the ones discovery decides the length of:
-     * [foldedOnto]'s survivors and the hosts named under an undecided reason.
+     * the hosts named under an undecided reason.
      *
      * What IS kept is the rest of the contract: unreadable rows counted rather
      * than dropped silently, and `omitted` carrying whatever the router left
@@ -541,7 +489,7 @@ internal object SyncProgressReport {
     /**
      * Why a pass left hosts undecided, bounded again on this side.
      *
-     * Same contract as [foldedOnto] and [inFlight]: the router bounds its list,
+     * Same contract as [inFlight]: the router bounds its list,
      * this bounds it a second time rather than trusting that it did, and
      * `omitted` carries through whatever either side dropped.
      */
@@ -584,7 +532,7 @@ internal object SyncProgressReport {
                             }
                             // The ranked hosts under this reason, rebuilt row by
                             // row and capped again here — the same contract
-                            // `foldedOnto` and `inFlight` are held to. A row
+                            // `inFlight` is held to. A row
                             // with no host is dropped rather than published as
                             // an anonymous count: it is the NAME that makes this
                             // level worth drawing.
@@ -624,7 +572,7 @@ internal object SyncProgressReport {
     /**
      * The quietest legs, rebuilt row by row and NOT capped again on this side.
      *
-     * The exception to [foldedOnto]'s rule, and the reason is what the list is
+     * The exception to the capping rule above, and the reason is what the list is
      * of: a fold row is one of however many urls discovery found, while an
      * in-flight row is one of the router's WORKERS, a number the router itself
      * bounds by `visitConcurrency`. Re-capping it at twenty published a sixth
@@ -659,7 +607,6 @@ internal object SyncProgressReport {
                             // Which walk handed it out. Absent on a router that
                             // predates the stamp, where the honest answer is
                             // nothing rather than a guess.
-                            num(row["pass"])?.let { put("pass", it) }
                             put("heldForSec", num(row["heldForSec"]) ?: 0)
                             // Absent means "holds no transfer slot", which is a
                             // statement. Defaulting it to 0 would turn a worker
@@ -681,118 +628,6 @@ internal object SyncProgressReport {
                 }
             }
             put("omitted", (num(o["omitted"]) ?: 0) + unreadable)
-        }
-    }
-
-    /**
-     * One cycle's disposition, re-derived rather than copied.
-     *
-     * The sums are recomputed HERE from the members this object names, so that
-     * `accountedFor` is a statement about the document being served rather than
-     * a boolean forwarded from a file nobody on this side has checked. A
-     * mismatch is published, not hidden: the counts are still worth having, and
-     * the flag is what stops a reader treating a broken partition as a whole
-     * one.
-     */
-    private fun cycle(o: JsonObject): JsonObject? {
-        val urls = o["urls"] as? JsonObject ?: return null
-        val discovered = num(urls["discovered"]) ?: return null
-        val folded = num(urls["foldedOntoAnother"]) ?: 0
-        val excluded = num(urls["excluded"]) ?: 0
-        // Defaulted to 0 rather than required: a router that predates the
-        // stability gate wrote no such member, and reading its absence as
-        // anything but "none were refused" would break the partition on every
-        // document written before this shipped.
-        val refusedUnstable = num(urls["refusedUnstable"]) ?: 0
-        val taken = num(urls["taken"]) ?: (discovered - folded - refusedUnstable - excluded)
-        val outcomes = o["taken"] as? JsonObject ?: JsonObject(emptyMap())
-        val byOutcome = OUTCOMES.associateWith { num(outcomes[it]) ?: 0L }
-        val settled = byOutcome.values.sum()
-        return buildJsonObject {
-            // Which pass this is, and which half of the router opened it. Absent
-            // on a file written before passes were published, where the single
-            // cycle needed no name to be told from the others.
-            num(o["number"])?.let { put("number", it) }
-            text(o["owner"])?.let { put("owner", it) }
-            num(o["startedAt"])?.let { put("startedAt", it) }
-            num(o["endedAt"])?.let { put("endedAt", it) }
-            text(o["outcome"])?.let { put("outcome", it) }
-            put(
-                "urls",
-                buildJsonObject {
-                    put("discovered", discovered)
-                    put("foldedOntoAnother", folded)
-                    put("refusedUnstable", refusedUnstable)
-                    put("excluded", excluded)
-                    put("taken", taken)
-                },
-            )
-            // Beside the urls, never instead of them. 3,272 urls resolved to 850
-            // hosts in the run that motivated this: every count taken over urls
-            // is inflated by whatever the alias fold has not decided yet, and the
-            // gap between the two numbers IS the disclosure.
-            num(o["hosts"])?.let { put("hosts", it) }
-            // Absent only on a file written before this member existed, where it
-            // is omitted rather than defaulted to 0 — "the list was derived for
-            // this cycle" is a claim, and an older router made no such claim
-            // either way. A current one always writes it, 0 included.
-            num(o["relayListAgeSec"])?.let { put("relayListAgeSec", it) }
-            put("taken", buildJsonObject { for ((k, v) in byOutcome) put(k, v) })
-            put("received", num(o["received"]) ?: 0L)
-            // Both halves of the partition, checked on this side.
-            // WHICH urls folded onto which survivor. Rebuilt row by row like
-            // everything else here — a file this process did not write must not
-            // be able to put arbitrary JSON, or an unbounded array, into a
-            // document served under this relay's name.
-            foldedOnto(o["foldedOnto"] as? JsonObject)?.let { put("foldedOnto", it) }
-            put("accountedFor", folded + refusedUnstable + excluded + taken == discovered && settled == taken)
-            // What the WRITER thought, kept separately. The two disagreeing
-            // localises the fault to the read or to the router, which one
-            // merged flag could never do.
-            (o["balanced"] as? JsonPrimitive)?.booleanOrNull?.let { put("balanced", it) }
-        }
-    }
-
-    /**
-     * The fold's biggest survivors, capped again on this side.
-     *
-     * The router already bounds its list, and this bounds it a second time
-     * rather than trusting that it did: the cap is the only thing standing
-     * between a hand-edited file and an unbounded array in a document served on
-     * every poll. `omitted` is carried through whatever happens, because a
-     * truncated list that does not say it is truncated reads as the whole
-     * answer.
-     */
-    private fun foldedOnto(o: JsonObject?): JsonObject? {
-        if (o == null) return null
-        val rows = (o["relays"] as? JsonArray)?.filterIsInstance<JsonObject>().orEmpty()
-        if (rows.isEmpty()) return null
-        val kept = rows.take(MAX_FOLD_ROWS)
-        // Counted, not dropped — see [inFlight] for the argument. Same contract,
-        // same failure if it is broken.
-        var unreadable = 0
-        return buildJsonObject {
-            putJsonArray("relays") {
-                for (row in kept) {
-                    val relay =
-                        text(row["relay"]) ?: run {
-                            unreadable++
-                            null
-                        } ?: continue
-                    add(
-                        buildJsonObject {
-                            put("relay", relay)
-                            put("urls", num(row["urls"]) ?: 0)
-                            putJsonArray("examples") {
-                                for (u in (row["examples"] as? JsonArray).orEmpty().take(MAX_FOLD_EXAMPLES)) {
-                                    text(u)?.let { add(it) }
-                                }
-                            }
-                        },
-                    )
-                }
-            }
-            put("omitted", (num(o["omitted"]) ?: 0) + (rows.size - kept.size) + unreadable)
         }
     }
 
@@ -924,25 +759,15 @@ internal object SyncProgressReport {
      */
     private val PHASE_DETAIL =
         listOf(
-            "returned",
-            "running",
-            "transferring",
-            "etaSec",
-            "reached",
-            "collected",
-            "collectedTotal",
-            "slotsFree",
-            "slotsNeeded",
-            "nextInSec",
-            "retryInSec",
-            // A rotating stream's pair — the pool's roster share and the tails
-            // held on it. See `StreamPhases.Detail.roster`.
+            // A rotating stream's pair, and the whole of what a phase knows now
+            // that there is one phase: the pool's roster share for this stream
+            // and the tails held on it.
             "roster",
             "tails",
         )
 
     /**
-     * This side's own ceilings — see [foldedOnto] for why they are restated
+     * This side's own ceilings — see [inFlight] for why they are restated
      * here.
      *
      * What is NOT here is the shape of the argument: `inFlight`, the processor
@@ -952,9 +777,6 @@ internal object SyncProgressReport {
      * list discovery can grow without limit; over one the source already
      * bounds it only decides which rows an operator is not shown.
      */
-    private const val MAX_FOLD_ROWS = 20
-    private const val MAX_FOLD_EXAMPLES = 2
-
     private const val MAX_REJECTION_ROWS = 4
 
     /**

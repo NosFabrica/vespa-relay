@@ -116,23 +116,12 @@ class SyncVocabularyTest {
                 {"writtenAt": 900, "fatals": 0,
                  "health": {"bottleneck": "ingest", "eventsPerSec": 2350, "heapUsedMb": 900, "heapMaxMb": 2048,
                             "sockets": 412, "socketCeiling": 1024, "servingMs": 18},
-                 "streams": [{"name": "content", "phase": "fetching", "phaseForSec": 5,
-                 "returned": 12, "running": 128, "transferring": 8, "fraction": 0.33, "etaSec": 3600,
-                 "reached": 1700000000, "collected": 10, "collectedTotal": 20, "slotsFree": 0, "slotsNeeded": 20,
-                 "nextInSec": 30, "retryInSec": 60, "reason": "connection reset",
-                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "pass": 11, "heldForSec": 41400,
+                 "streams": [{"name": "content", "phase": "rotating", "phaseForSec": 5,
+                 "roster": 412, "tails": 300,
+                 "inFlight": {"relays": [{"relay": "wss://slow.example/", "heldForSec": 41400,
                                           "transferringForSec": 41390, "events": 2, "quietForSec": 41000,
-                                           "doing": "paging", "pagingUntil": 1689857148}],
-                              "omitted": 118},
-                 "cycle": {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "completed",
-                   "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3},
-                   "hosts": 2, "relayListAgeSec": 120, "taken": {"delivered": 3, "busy": 1}, "balanced": true, "received": 9,
-                   "foldedOnto": {"relays": [{"relay": "wss://a.example/", "urls": 1, "examples": ["wss://a.example/x"]}],
-                                  "omitted": 0}},
-                 "passes": [{"number": 11, "owner": "dynamic", "startedAt": 700, "endedAt": 780, "outcome": "completed",
-                    "urls": {"discovered": 4, "taken": 4}, "taken": {"delivered": 2}, "received": 4},
-                   {"number": 12, "owner": "dynamic", "startedAt": 800, "outcome": "running",
-                    "urls": {"discovered": 4, "foldedOntoAnother": 1, "taken": 3}, "taken": {"delivered": 3}, "received": 9}]}],
+                                           "doing": "catching up (paging)", "pagingUntil": 1689857148}],
+                              "omitted": 118}}],
                  "processors": [
                    {"name": "aliasSource", "phase": "collecting", "phaseForSec": 90, "passesRun": 2,
                     "lastPassAt": 880, "lastPassSec": 300,
@@ -203,7 +192,6 @@ class SyncVocabularyTest {
                     // meanings of "done" that had to be told apart, plus the
                     // one deliberately NOT published here.
                     "scope",
-                    "returned",
                     "settled",
                     "open",
                     "walkEnvelope",
@@ -215,8 +203,6 @@ class SyncVocabularyTest {
                     "corpus",
                     "frame",
                     "unnamed",
-                    "outcome",
-                    "holding",
                     // The other phase word that reads as a stall and is not —
                     // a visit stream has no pass to be a phase OF, so the word
                     // simply lasts and its numbers are the whole story.
@@ -227,27 +213,11 @@ class SyncVocabularyTest {
                 setOf(
                     "relays",
                     "hosts",
-                    "relayListAgeSec",
                     "legs",
-                    "sweeping",
                     "rows",
-                    "discovered",
-                    "foldedOntoAnother",
-                    "refusedUnstable",
-                    "taken",
-                    "delivered",
-                    "nothingNew",
-                    "unreachable",
-                    "transferFailed",
-                    "noRoute",
-                    "hostStruckOut",
-                    "knownDead",
-                    "torUnavailable",
-                    "busy",
+                    "sweeping",
                     "excluded",
-                    "foldedOnto",
                     "pending",
-                    "received",
                     "inFlight",
                     "heldForSec",
                     "transferringForSec",
@@ -260,13 +230,11 @@ class SyncVocabularyTest {
                     "stage",
                     "pagingUntil",
                     "omitted",
-                    "owner",
                 ) +
                 // The passes beside a stream's current cycle, and the work that
                 // is not a stream at all — the two probe passes, the NIP-66
                 // monitor, ingest, the healer, the push.
                 setOf(
-                    "passes",
                     "passesRun",
                     "processors",
                     "candidates",
@@ -336,13 +304,11 @@ class SyncVocabularyTest {
                     "transferring",
                     "fraction",
                     "etaSec",
-                    "reached",
                     "collected",
                     "collectedTotal",
                     "slotsFree",
                     "slotsNeeded",
                     "retryInSec",
-                    "pass",
                     "fatals",
                     "rejections",
                     "lostToStore",
@@ -363,13 +329,13 @@ class SyncVocabularyTest {
     }
 
     @Test
-    fun `the three meanings of done are named apart`() {
-        // The core of the complaint: one word covered a leg that RETURNED, a
-        // walk that SETTLED, and the span every kind has EVIDENCE for — and the
-        // first, which is the least meaningful, was being read as progress.
+    fun `the meanings of done are named apart`() {
+        // The core of the complaint: one word covered a walk that SETTLED and
+        // the span every kind has EVIDENCE for. (It covered a third — a fan-out
+        // leg that had RETURNED, the least meaningful of them and the one being
+        // read as progress — until the fan-out itself went.)
         val terms = SyncVocabulary.TERMS
 
-        assertTrue(terms["returned"]!!.jsonPrimitive.content.contains("not progress"))
         assertTrue(terms["settled"]!!.jsonPrimitive.content.contains("Nothing outstanding"))
         assertTrue(terms["evidence"]!!.jsonPrimitive.content.contains("not a coverage claim"))
         // And the fourth thing none of them is.
@@ -383,34 +349,6 @@ class SyncVocabularyTest {
                 .jsonPrimitive.content
                 .startsWith("APPROXIMATE"),
         )
-        assertTrue(
-            SyncVocabulary.TERMS["returned"]!!
-                .jsonPrimitive.content
-                .startsWith("APPROACH ONLY"),
-        )
-    }
-
-    @Test
-    fun `the two not-dialled-for-being-dead states state opposite retry policies`() {
-        // They were one number called "skipped as dead", which answered "will it
-        // try again, and when" in two opposite ways under one label.
-        val struck = SyncVocabulary.TERMS["hostStruckOut"]!!.jsonPrimitive.content
-        val dead = SyncVocabulary.TERMS["knownDead"]!!.jsonPrimitive.content
-
-        assertTrue(struck.contains("next cycle"), "the cycle-local one says so: $struck")
-        assertTrue(dead.contains("TTL"), "the durable one says how long: $dead")
-        assertTrue(dead.contains("hostStruckOut"), "and points at the one it is not")
-    }
-
-    @Test
-    fun `the fold says where the per-url answer actually lives`() {
-        // `/stats.json` publishes a bounded summary; the full per-url verdict is
-        // a signed record in the store, and a reader has to be told that rather
-        // than concluding the information does not exist.
-        val fold = SyncVocabulary.TERMS["foldedOnto"]!!.jsonPrimitive.content
-
-        assertTrue(fold.contains("30166"), "got: $fold")
-        assertTrue(fold.contains("omitted"), "a truncated list has to disclose the truncation: $fold")
     }
 
     @Test

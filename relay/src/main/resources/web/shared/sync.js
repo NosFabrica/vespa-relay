@@ -332,12 +332,11 @@ export const ROTATING = "rotating";
 /**
  * WHAT A ROTATING STREAM IS ACTUALLY RIDING, which its row could not say.
  *
- * A visit-mode stream has no pass, no fraction and no cycle — its world is the
- * monitor's verdicts and its engine is the pool — so every mark `streamBlock`
- * draws is absent and the row rendered as `rotating for 58m` and nothing else.
- * That line is the same whether the stream is riding four hundred relays or
- * none, and "none" is the state worth seeing: before the fitness pass has
- * signed its first `prime`, a visit stream is a stream with an empty world.
+ * A stream's engine is the pool and its phase lasts the life of the process, so
+ * the row rendered as `rotating for 58m` and nothing else. That line is the
+ * same whether the stream is riding four hundred relays or none, and "none" is
+ * the state worth seeing: before the fitness pass has signed its first `prime`,
+ * a stream on discovered relays is a stream with an empty world.
  *
  * So `waiting` is called here rather than left to the page: it is the one
  * reading that changes what an operator does next, and it is a judgement about

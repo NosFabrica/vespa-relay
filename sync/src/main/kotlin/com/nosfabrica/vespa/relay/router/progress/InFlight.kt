@@ -29,7 +29,7 @@ package com.nosfabrica.vespa.relay.router.progress
  * A production `sync.progress` reported `pending = 2` on a stream that had
  * received two events in eleven and a half hours. Two relays had held their
  * slots since the small hours and there was no way, anywhere in the system, to
- * learn which two: [CycleTally.pending] is a bare count derived by subtraction,
+ * learn which two: a bare pending count is derived by subtraction,
  * the coverage card only draws relays that have EARNED a band (a stalled leg
  * never does), the diagnostic log line names urls only for the stream
  * `SYNC_DIAGNOSE` points at, and container stderr rotates inside the hour. The
@@ -37,20 +37,14 @@ package com.nosfabrica.vespa.relay.router.progress
  * holding them — and published nothing but their number.
  *
  * So this is the counts' missing half, on the same terms as
- * [CycleTally.foldedOnto]: not the count, the NAMES.
+ * the fold's own report: not the count, the NAMES.
  *
  * ## What it is a set of, exactly
  *
- * Urls with a live worker, across every pass. Passes overlap — the walk ends
- * when the last url is handed out, not when the last worker returns — so this
- * deliberately spans them, which is why it is published beside the cycle rather
- * than inside it. A url here is counted in the current cycle's `pending` if this
- * pass handed it out, and in its `busy` if an earlier one did, and the whole
- * point of naming a wedged leg is that it outlives the pass that dialled it.
- *
- * The containment runs one way only: **`pending` also counts urls that have no
- * worker yet**, because the walk has not reached them. Read this as "what is
- * actually running", never as "the list of pending urls".
+ * Urls this stream has a live worker on, right now — nothing else. Not the
+ * roster (most of it is between visits), not what is queued (a queued url has
+ * no worker yet, which is the whole difference). Read it as "what is actually
+ * running", and read the roster count beside the phase for the rest.
  *
  * ## WHOLE, quietest first, and it still says what it left out
  *
@@ -97,15 +91,6 @@ class InFlight(
      */
     class Relay(
         val relay: String,
-        /**
-         * The walk that handed this url out, or null where nothing numbers its
-         * passes.
-         *
-         * A leg outlives the pass that started it, so a stream with two live
-         * walks holds legs from both — and every clock on this row described the
-         * leg without ever saying which walk it belonged to.
-         */
-        val pass: Long? = null,
         /**
          * Since the rotation CLAIMED it — which is before the guards, the TCP
          * pre-probe and the wait for a transfer slot, not just the transfer.

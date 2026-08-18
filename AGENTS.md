@@ -879,10 +879,14 @@ gone with the `sync` knob, `SYNC_NEG_MIN_EVENTS` and `PagingProgress`: it
 walked a declared relay ONCE per process and then live-tailed, so
 `negentropySyncThePastSeconds` and `refetchThePastSeconds` could never mean
 anything on those streams, and both are refused at parse time now rather than
-accepted and ignored. **Still unpruned after the crossing**: `StreamPhases`'
-`Fetching`/`Syncing`/`Snapshotting`/`Holding` variants and their published
-members had only that engine as a producer — dead, and worth a pass of its own
-because the phase words are in the vocabulary and on the card.
+accepted and ignored. Pruned with it: `StreamPhases` is two phases now
+(`starting`, `rotating`) where it was eleven plus the passes each cycled
+through, `CycleTally` is gone, and the stream row on `/stats.json` carries the
+phase word, its clock, `roster`/`tails` and the in-flight legs — no cycle, no
+passes, no fraction, no ETA. A stream has no walk to be a phase OF, and where
+each relay has got to is per relay, which is what the phase words were standing
+in for. The card and the glossary followed: 30 terms describing the fan-out's
+vocabulary went with the members they described.
 
 **Dynamic streams run on two planes.** The MONITOR plane (`AliasMonitor`'s
 passes: the fold, then stability, then `FitnessPass`) measures every url the
@@ -2934,12 +2938,15 @@ than `0 of 0`: that is not a rare state, it is the one both passes work towards
 and hold for most of a monthly TTL, and two zeroes read as a broken pass. Caught
 by rendering the real card against a live `/stats.json`, not by a unit test.
 
-> **The engine this next stretch describes is DELETED.** `DynamicSync`,
-> `DeleteMissingSync`, `RelayRotation`, `CachedRelayList` and `LegProgress`
-> went with the two-plane split: dynamic streams ride `VisitPool` (see the
-> router intro above), retraction is `RetractionAudit`, and the loader refuses
-> the era's knobs by name — `concurrency`, `recycleSeconds`, `authorsPerLeg`,
-> `sync` beside `relaySource`, an ungated scan — each with a migration note.
+> **The engine this next stretch describes is DELETED**, and so is the one that
+> outlived it. `DynamicSync`, `DeleteMissingSync`, `RelayRotation`,
+> `CachedRelayList` and `LegProgress` went with the two-plane split;
+> `StaticBackfill`, `PagingProgress`, `CycleTally` and every phase but
+> `rotating` went when the declared-`urls` streams crossed onto the pool too.
+> EVERY down stream rides `VisitPool` now (see the router intro above),
+> retraction is `RetractionAudit`, and the loader refuses the era's knobs by
+> name — `concurrency`, `recycleSeconds`, `authorsPerLeg`, `sync`,
+> `SYNC_NEG_MIN_EVENTS`, an ungated scan — each with a migration note.
 > The war stories are KEPT because their lessons transferred: the two gates
 > became `visitConcurrency` against `tailBudget`; the leg give-up
 > (`LEG_QUIET_GIVE_UP_MS`) bounds a visit's quiet ask sequence; the fold's
