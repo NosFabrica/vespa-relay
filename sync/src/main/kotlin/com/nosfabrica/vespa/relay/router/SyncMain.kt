@@ -142,8 +142,11 @@ fun main() {
     val parseAudit = ParseAudit.installFromEnv(env)
 
     // Where a paged relay's already-walked history is remembered, so a
-    // restart resumes instead of re-reading the corpus.
-    val bands = SyncBands.fromEnv(env)
+    // restart resumes instead of re-reading the corpus. Built from the parsed
+    // streams, not from the environment alone: a stream may set its own
+    // `fullResyncSeconds`, and a period learned after its first band would be
+    // ignored for the life of the process.
+    val bands = SyncBands.fromEnv(env, config.streams)
 
     // What this router mirrors, published for the relay to serve. Written from
     // `config.streams`, which is what is RUNNING (SYNC_STREAMS narrows it), and

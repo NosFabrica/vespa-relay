@@ -689,6 +689,37 @@ class RouterConfigTest {
     }
 
     @Test
+    fun `a stream may set its own re-walk period, floored and read per stream`() {
+        // The re-walk is the coarse twin of the audit — the audit reconciles
+        // the covered history, this re-downloads it — and a visit pages before
+        // it audits, so a stream left on the same period as its audit re-pages
+        // everything and then reconciles the same ground.
+        fun stream(extra: String) =
+            RouterConfigLoader
+                .parse(
+                    """
+                    streams {
+                      s {
+                        dir = "down"
+                        filter = { "kinds": [1] }
+                        urls = [ "wss://a.example" ]
+                        $extra
+                      }
+                    }
+                    """.trimIndent(),
+                ).streams
+                .single()
+
+        assertEquals(2_592_000L, stream("fullResyncSeconds = 2592000").fullResyncSeconds)
+        // Unset is not zero: it means the router's default, which is the env
+        // knob and quartz's week under that.
+        assertNull(stream("").fullResyncSeconds)
+        // Same floor as the audit's, and for the same reason — under an hour
+        // it is a re-walk loop rather than a period.
+        assertEquals(3600L, stream("fullResyncSeconds = 60").fullResyncSeconds)
+    }
+
+    @Test
     fun `the renamed knobs still answer to their old names, loudly`() {
         // verifySeconds -> auditSeconds, newUrlSeconds -> fastLaneSeconds,
         // concurrency -> dialConcurrency. A renamed key must never silently

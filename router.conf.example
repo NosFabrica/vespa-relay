@@ -208,6 +208,14 @@ streams {
         # roster never dips and the old key comes out once the new one covers
         # the corpus.
         auditSeconds = 604800  # weekly negentropy audit of the covered past
+        # …and how often the bands EXPIRE into a full paged re-walk, which is
+        # the coarse version of the same check. Left at the default both land
+        # on seven days, and the catch-up runs before the audit inside a visit
+        # — so the stream re-pages its whole history from the plausible floor
+        # and THEN reconciles the same ground for the difference. Monthly keeps
+        # the safety net for whatever band arithmetic cannot see, at a quarter
+        # of the walks, with the weekly audit doing the real work between them.
+        fullResyncSeconds = 2592000
     }
 
     assertions {
@@ -309,5 +317,7 @@ streams {
             }
         ]
         auditSeconds = 604800
+        fullResyncSeconds = 2592000  # see profileViaOutbox — and this is the
+                                     # corpus where re-paging weekly costs most
     }
 }

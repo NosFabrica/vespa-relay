@@ -217,6 +217,24 @@ object RouterConfigLoader {
                             null
                         }
                     }?.coerceAtLeast(3600L)
+                // How often this stream's bands expire into a full paged
+                // re-walk. Floored at an hour for the reason above and warned
+                // about below its own audit, where it re-downloads exactly
+                // what the audit was about to reconcile.
+                val fullResyncSeconds =
+                    if (s.hasPath("fullResyncSeconds")) {
+                        s.getLong("fullResyncSeconds").coerceAtLeast(3600L).also {
+                            if (auditSeconds != null && it <= auditSeconds) {
+                                System.err.println(
+                                    "router: stream '$name' re-walks every ${it}s but audits every ${auditSeconds}s — " +
+                                        "the re-walk pages the whole history the audit was about to reconcile for the " +
+                                        "difference alone, so the audit can never be the cheaper path",
+                                )
+                            }
+                        }
+                    } else {
+                        null
+                    }
                 if (deleteMissing != DeleteMissing.OFF) {
                     // The comparison runs as the pool's history audit, so the
                     // config must give it a relay list the monitor answers
@@ -263,6 +281,7 @@ object RouterConfigLoader {
                     sync = sync,
                     deleteMissing = deleteMissing,
                     ownedKinds = parseOwnedKinds(name, s, filter, deleteMissing),
+                    fullResyncSeconds = fullResyncSeconds,
                     healContent = s.hasPath("healContent") && s.getBoolean("healContent"),
                     healRetractions = s.hasPath("healRetractions") && s.getBoolean("healRetractions"),
                     auditSeconds = auditSeconds,

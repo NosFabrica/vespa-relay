@@ -20,6 +20,7 @@
  */
 package com.nosfabrica.vespa.relay.router
 
+import com.nosfabrica.vespa.relay.router.config.SyncStream
 import com.nosfabrica.vespa.relay.router.config.syncEnv
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.PagedFetchResult
 import com.vitorpamplona.quartz.nip01Core.relay.client.accessories.SyncCoverage
@@ -99,6 +100,15 @@ import java.util.concurrent.ConcurrentHashMap
 class SyncBands(
     private val file: File?,
     private val fullResyncSeconds: Long = SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
+    /**
+     * Streams whose re-walk runs on a period of their own, by name. Fixed at
+     * construction rather than registered later: a [SyncCoverage] is built on
+     * a stream's first band and carries its period for the life of the
+     * process, so a value learned after that would be silently ignored — and
+     * the symptom, a stream re-walking on the wrong clock, is invisible for a
+     * week.
+     */
+    private val perStream: Map<String, Long> = emptyMap(),
 ) : AutoCloseable {
     @Volatile private var dirty = false
 
@@ -204,7 +214,10 @@ class SyncBands(
      * The bands of one stream. Created on first use: a stream that never syncs
      * costs nothing, and the engine does not announce its stream list here.
      */
-    private fun coverage(stream: String): SyncCoverage = coverageByStream.computeIfAbsent(stream) { SyncCoverage(fullResyncSeconds, onChange = { dirty = true }) }
+    private fun coverage(stream: String): SyncCoverage =
+        coverageByStream.computeIfAbsent(stream) {
+            SyncCoverage(perStream[stream] ?: fullResyncSeconds, onChange = { dirty = true })
+        }
 
     // ---- the band arithmetic, upstream's ------------------------------------
     // Delegated rather than exposing `coverage` directly: these five calls are
@@ -654,8 +667,15 @@ class SyncBands(
         /**
          * `SYNC_STATE_FILE` — where the bands live. Unset keeps them in memory,
          * which is the same as not having them.
+         *
+         * [streams] carry the per-stream re-walk periods, so this is built
+         * AFTER the config is parsed. `SYNC_FULL_RESYNC_SECONDS` remains the
+         * default for every stream that does not name one.
          */
-        fun fromEnv(env: Map<String, String>): SyncBands =
+        fun fromEnv(
+            env: Map<String, String>,
+            streams: List<SyncStream> = emptyList(),
+        ): SyncBands =
             SyncBands(
                 env
                     .syncEnv("SYNC_STATE_FILE", "ROUTER_SYNC_STATE_FILE")
@@ -667,6 +687,7 @@ class SyncBands(
                     ?.trim()
                     ?.toLongOrNull()
                     ?.takeIf { it > 0 } ?: SyncCoverage.DEFAULT_FULL_RESYNC_SECONDS,
+                streams.mapNotNull { stream -> stream.fullResyncSeconds?.let { stream.name to it } }.toMap(),
             ).startPeriodicFlush()
     }
 }

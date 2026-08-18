@@ -239,6 +239,20 @@ data class SyncStream(
      */
     val auditSeconds: Long? = null,
     /**
+     * How often this stream's bands EXPIRE, re-opening the whole filter for a
+     * paged re-walk — `SYNC_FULL_RESYNC_SECONDS` for the streams that do not
+     * name one, and quartz's `DEFAULT_FULL_RESYNC_SECONDS` (a week) under that.
+     *
+     * The coarse safety net, and the only full re-check a stream without
+     * [auditSeconds] has: band arithmetic can only widen what a walk observed,
+     * so nothing else would ever re-read a window a relay back-filled after we
+     * passed it. Where an audit DOES run it is the expensive twin of one —
+     * the audit reconciles the same history and downloads the difference,
+     * this re-downloads the history — which is why a stream that audits wants
+     * a period well above its `auditSeconds` rather than beside it.
+     */
+    val fullResyncSeconds: Long? = null,
+    /**
      * The kinds this stream's upstreams are the source of truth for — the only
      * kinds [deleteMissing] may delete on their own absence. Required whenever
      * it is on, and checked against [filter]: turning on deletion without

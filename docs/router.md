@@ -64,6 +64,10 @@ Each named stream mirrors a NIP-01 `filter` from a set of `urls`. Per stream:
   that the upstream no longer serves. Only for a stream whose upstream owns the
   records in the ask, and only with `sync = "negentropy"`. See
   [Deleting what an upstream retracted](#deleting-what-an-upstream-retracted).
+- **`fullResyncSeconds`** *(optional)* — how often this stream's bands expire
+  into a full paged re-walk of its whole filter. Defaults to
+  `SYNC_FULL_RESYNC_SECONDS` (7 days). See
+  [`fullResyncSeconds` and the audit](#fullresyncseconds-and-the-audit).
 - **`ownedKinds`** *(required by `deleteMissing`)* — which of the filter's kinds
   the upstream is the source of truth for, and therefore the only ones absence
   may delete. See
@@ -122,6 +126,24 @@ One thing it does not promise: Nostr lets an event be published with any
 `created_at`, so one can land inside a band already walked past. The trade is
 deliberate — re-reading a corpus every restart is a certain daily cost, while
 that hole is occasional and clears the next time the filter changes.
+
+### `fullResyncSeconds` and the audit
+
+A band narrows work; it never expires on its own evidence. So it also carries a
+period: once a band is older than `fullResyncSeconds` — the stream's own value,
+else `SYNC_FULL_RESYNC_SECONDS`, else quartz's 7 days — it is discarded and the
+whole filter is walked again from the plausible floor. That is the only thing
+that can re-read a window a relay back-filled after we passed it, and for a
+stream with no `auditSeconds` it is the only full re-check there is.
+
+Where an audit does run, the two are the same job at different prices: the audit
+reconciles the covered history and downloads the difference; the re-walk
+downloads the history. They also collide, because a visit runs its catch-up
+*before* its audit — leave both at a week and the stream re-pages everything and
+then reconciles the same ground in one visit. Give a stream that audits a period
+well above its `auditSeconds`; the example config runs the two outbox streams
+monthly against a weekly audit. Below its own `auditSeconds` the loader says so
+at boot, because there the audit can never be the cheaper path.
 
 The **live tail works against every relay**; the **negentropy backfill depends
 on the upstream**. Some relays advertise NIP-77 but their reconciliation never

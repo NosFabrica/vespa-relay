@@ -180,6 +180,29 @@ class RouterConfExamplesTest {
     }
 
     @Test
+    fun `a stream that audits re-walks far less often than it audits`() {
+        // The two are the same check at different prices — the audit
+        // reconciles the covered history, the re-walk re-downloads it — and a
+        // visit pages BEFORE it audits, so equal periods mean the stream pages
+        // its whole history and then reconciles the same ground in one visit.
+        example.streams.filter { it.auditSeconds != null && it.fullResyncSeconds != null }.forEach {
+            assertTrue(
+                it.fullResyncSeconds!! > it.auditSeconds!!,
+                "stream '${it.name}' re-walks every ${it.fullResyncSeconds}s against an audit every ${it.auditSeconds}s",
+            )
+        }
+        // The two outbox streams are the ones it costs most: every certified
+        // relay, ~130 kinds on the content mirror.
+        listOf("profileViaOutbox", "contentViaOutbox").forEach { name ->
+            assertEquals(
+                2_592_000L,
+                example.streams.single { it.name == name }.fullResyncSeconds,
+                "stream '$name' should re-walk monthly, not on the router's weekly default",
+            )
+        }
+    }
+
+    @Test
     fun `the assertions stream names the NIP-85 services it wants`() {
         val assertions = example.discoveryStreams().first { it.name == "assertions" }
         val source = assertions.discovery!!.sources.single()

@@ -1694,12 +1694,18 @@ ask reads, and cannot narrow it — which is a second reason to ask only for wha
 the audit compares. Where the two coincide, as they now do on `assertions`
 (`filter.kinds == ownedKinds`, so `ownedAskOf` is identity), the daily reconcile
 closes the catch-up's own older leg and the deep re-walk stops. And every
-`fullResyncSeconds`
-(quartz's `DEFAULT_FULL_RESYNC_SECONDS`, 604800 — `SYNC_FULL_RESYNC_SECONDS`
-here) a band is STALE and `legs()` hands back the whole filter, floored on the
+`fullResyncSeconds` — per stream now, `SYNC_FULL_RESYNC_SECONDS` for those that
+name none, quartz's week under that —
+a band is STALE and `legs()` hands back the whole filter, floored on the
 wire to `PLAUSIBLE_FLOOR` (2020-01-01). `isStale` reads `fullAt`, which
 `Band.widen` freezes on every non-stale merge, so it means "last walk from
-nothing" and a stale band is REPLACED rather than widened.
+nothing" and a stale band is REPLACED rather than widened — a completed
+reconcile does NOT reset it, which is why an audited stream still expires on
+this clock. The catch-up runs before the audit inside a visit, so a stream
+whose two periods coincide re-pages its whole history and then reconciles the
+same ground; the example runs the outbox streams monthly against their weekly
+audit, and the loader warns when a period sits at or under its own
+`auditSeconds`.
 
 **Do not assume the leg below a floor is empty. It was measured, and it is not.**
 `RealRelayDrainProbe` asked the five `indexers` relays for kind 10002 below the

@@ -306,6 +306,21 @@ class SyncBandsTest {
     }
 
     @Test
+    fun `a stream's own re-walk period beats the router's default`() {
+        // The outbox streams run monthly against a weekly audit while a stream
+        // with no audit keeps the shorter default — one router, two clocks, so
+        // the period has to be read per stream rather than per file. Expressed
+        // as 0 (always stale) against a long one, because a hermetic test
+        // cannot age a band by a week.
+        val c = SyncBands(null, fullResyncSeconds = 0, perStream = mapOf("patient" to 86_400))
+        c.record("patient", relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+        c.record("eager", relay, profiles, 1_700_001_000L, 1_700_002_000L, paged = true)
+
+        assertEquals(2, c.legs("patient", relay, profiles).size, "a band inside its own period still narrows")
+        assertSame(profiles, c.legs("eager", relay, profiles).single(), "the default still expires the other stream")
+    }
+
+    @Test
     fun `the re-walk replaces the old claim instead of widening it`() {
         // Widening would carry the stale band's floor forward forever and the
         // periodic pass would never actually reset anything.
